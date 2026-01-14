@@ -171,6 +171,10 @@ def run_md_simulation(
         simulation = Simulation(prmtop.topology, system, integrator)
         simulation.context.setPositions(inpcrd.positions)
 
+        # Set box vectors for periodic systems (required for PME)
+        if inpcrd.boxVectors is not None:
+            simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+
         # Apply restraints if provided
         if restraint_file and Path(restraint_file).is_file():
             logger.info(f"Applying restraints from {restraint_file}")
