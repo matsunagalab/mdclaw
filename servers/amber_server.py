@@ -392,7 +392,25 @@ def build_amber_system(
         ... )
     """
     logger.info(f"Building Amber system from: {pdb_file}")
-    
+
+    # Validate box_dimensions: empty dict {} should be treated as None
+    # This prevents the bug where solvent_type="explicit" but no PBC is set
+    box_dim_warning = None
+    original_box_dim = box_dimensions  # Store original for warning
+    if box_dimensions is not None:
+        if not isinstance(box_dimensions, dict) or not box_dimensions:
+            box_dim_warning = f"CRITICAL: box_dimensions was invalid (empty or not dict): {original_box_dim}. Building IMPLICIT solvent system. If you wanted explicit solvent, ensure solvate step returned box_dimensions and it was passed correctly."
+            logger.warning(box_dim_warning)
+            box_dimensions = None
+        elif not all(key in box_dimensions for key in ["box_a", "box_b", "box_c"]):
+            box_dim_warning = f"CRITICAL: box_dimensions missing required keys (box_a/b/c): {original_box_dim}. Building IMPLICIT solvent system."
+            logger.warning(box_dim_warning)
+            box_dimensions = None
+        elif not all(box_dimensions.get(key, 0) > 0 for key in ["box_a", "box_b", "box_c"]):
+            box_dim_warning = f"CRITICAL: box_dimensions has zero or negative values: {original_box_dim}. Building IMPLICIT solvent system."
+            logger.warning(box_dim_warning)
+            box_dimensions = None
+
     # Initialize result structure
     job_id = generate_job_id()
     result = {
@@ -416,7 +434,11 @@ def build_amber_system(
         "errors": [],
         "warnings": []
     }
-    
+
+    # Add box_dimensions validation warning to result
+    if box_dim_warning:
+        result["warnings"].append(box_dim_warning)
+
     # Validate input PDB file
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():

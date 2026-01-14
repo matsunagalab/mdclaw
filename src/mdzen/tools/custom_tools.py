@@ -140,6 +140,11 @@ def generate_simulation_brief(
     lipid_ratio = _normalize_null(lipid_ratio)
     pressure_bar = _normalize_null(pressure_bar)
 
+    # Default lipid composition for membrane systems
+    if is_membrane and not lipids:
+        lipids = "POPC"  # Default: mammalian membrane
+        lipid_ratio = lipid_ratio or "1"
+
     # Parse structure_analysis if provided
     parsed_analysis = None
     if structure_analysis and isinstance(structure_analysis, dict):
@@ -665,6 +670,26 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
     # Add simulation_brief for agent to access user's choices (include_types, etc.)
     if simulation_brief:
         result["simulation_brief"] = simulation_brief
+
+    # CRITICAL: Warn if build_topology is next but box_dimensions is missing
+    # This helps catch the bug where solvate step output wasn't passed correctly
+    current_step = result.get("current_step")
+    if current_step == "build_topology":
+        box_dims = outputs.get("box_dimensions")
+        if not box_dims:
+            result["critical_warning"] = (
+                "CRITICAL: box_dimensions is MISSING from outputs! "
+                "The solvate step should have stored box_dimensions via mark_step_complete. "
+                "Without box_dimensions, build_amber_system will create an IMPLICIT solvent system. "
+                "Check that mark_step_complete was called with box_dimensions after solvate_structure."
+            )
+        elif isinstance(box_dims, dict) and not all(
+            box_dims.get(k, 0) > 0 for k in ["box_a", "box_b", "box_c"]
+        ):
+            result["critical_warning"] = (
+                f"CRITICAL: box_dimensions has invalid values: {box_dims}. "
+                "Ensure the solvate step returned valid box dimensions."
+            )
 
     return result
 

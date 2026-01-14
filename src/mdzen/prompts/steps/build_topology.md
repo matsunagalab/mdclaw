@@ -101,8 +101,39 @@ Force fields must be loaded in this order in the generated tleap script:
 
 ## CRITICAL: box_dimensions
 
-The `box_dimensions` parameter is REQUIRED for `build_amber_system`.
-This comes from the solvate step output. Without it, topology generation will fail.
+The `box_dimensions` parameter is **REQUIRED** for explicit solvent simulations.
+This comes from the solvate step output.
+
+**If box_dimensions is missing or invalid:**
+- The system will be built as IMPLICIT solvent (no water, no PBC)
+- OpenMM PME will fail with "Illegal nonbonded method for a non-periodic system"
+- The simulation WILL NOT RUN correctly
+
+**How to check:**
+```python
+status = get_workflow_status_tool()
+
+# Check for critical warning about missing box_dimensions
+if "critical_warning" in status:
+    print(f"WARNING: {status['critical_warning']}")
+    # DO NOT proceed - the solvate step output was lost!
+
+# Get box_dimensions from available_outputs
+box_dimensions = status["available_outputs"].get("box_dimensions")
+if not box_dimensions:
+    # ERROR: box_dimensions was not stored by mark_step_complete after solvate
+    raise ValueError("box_dimensions missing - solvate step output was not saved correctly")
+```
+
+**If box_dimensions is missing:** This means `mark_step_complete("solvate", ...)` was called
+without including `box_dimensions` in the output_files dict. The solvate step MUST store
+box_dimensions like this:
+```python
+mark_step_complete("solvate", {
+    "solvated_pdb": solvate_result["output_file"],
+    "box_dimensions": solvate_result["box_dimensions"]  # REQUIRED!
+})
+```
 
 ## Metal Ion Handling
 

@@ -145,5 +145,25 @@ embed_in_membrane(..., output_dir=session_dir, ...)
 ## Expected Output
 
 Both tools return:
-- `solvated_pdb`: Path to solvated/membrane-embedded structure (in solvate/ directory)
-- `box_dimensions`: Box size for topology generation (IMPORTANT: save this!)
+- `output_file`: Path to solvated/membrane-embedded structure (in solvate/ directory)
+- `box_dimensions`: Box size for topology generation
+
+## CRITICAL: Save box_dimensions!
+
+After solvation succeeds, you MUST call `mark_step_complete` with BOTH outputs:
+
+```python
+# Get the solvation result
+result = solvate_structure(...)  # or embed_in_membrane(...)
+
+# CRITICAL: Save BOTH output_file AND box_dimensions
+mark_step_complete("solvate", {
+    "solvated_pdb": result["output_file"],
+    "box_dimensions": result["box_dimensions"]  # REQUIRED for build_topology step!
+})
+```
+
+**WARNING**: If you forget to include `box_dimensions`, the build_topology step will:
+- Build an implicit solvent system (no water, no PBC)
+- Cause OpenMM PME to fail with "Illegal nonbonded method for a non-periodic system"
+- The simulation WILL NOT RUN!
