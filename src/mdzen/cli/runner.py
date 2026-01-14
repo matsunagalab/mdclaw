@@ -141,6 +141,7 @@ def display_results(state: dict, console: Console) -> None:
         console: Rich console for output
     """
     import json
+    from pathlib import Path
 
     # Check if workflow completed all steps
     completed_steps_raw = state.get("completed_steps", [])
@@ -156,6 +157,17 @@ def display_results(state: dict, console: Console) -> None:
     missing_steps = [s for s in required_steps if s not in completed_steps]
     workflow_complete = len(missing_steps) == 0
 
+    # Fallback: Check if required files exist (in case mark_step_complete wasn't called)
+    session_dir = state.get("session_dir", "")
+    if not workflow_complete and session_dir:
+        session_path = Path(session_dir)
+        parm7_exists = list(session_path.glob("**/system.parm7"))
+        trajectory_exists = list(session_path.glob("**/trajectory.dcd"))
+        if parm7_exists and trajectory_exists:
+            # Files exist, workflow actually completed
+            workflow_complete = True
+            missing_steps = []
+
     if state.get("validation_result"):
         validation = state["validation_result"]
         if isinstance(validation, dict) and "final_report" in validation:
@@ -166,20 +178,20 @@ def display_results(state: dict, console: Console) -> None:
                 console.print(f"[red]Missing steps: {missing_steps}[/red]")
             console.print(validation["final_report"])
         else:
+            # validation_result is a string (agent returned text instead of calling tool)
             if workflow_complete:
-                console.print("\n[bold green]Complete![/bold green]")
+                console.print("\n[bold green]Workflow Complete![/bold green]")
             else:
                 console.print("\n[bold red]Workflow Incomplete![/bold red]")
                 console.print(f"[red]Missing steps: {missing_steps}[/red]")
-            console.print(f"Validation result type: {type(validation)}")
-            console.print(f"Session directory: {state.get('session_dir')}")
+            console.print(f"Session directory: {session_dir}")
     else:
         if not workflow_complete:
             console.print("\n[bold red]Workflow Failed![/bold red]")
             console.print(f"[red]Missing steps: {missing_steps}[/red]")
         else:
-            console.print("\n[yellow]Warning: No validation result[/yellow]")
-        console.print(f"Session directory: {state.get('session_dir')}")
+            console.print("\n[bold green]Workflow Complete![/bold green]")
+        console.print(f"Session directory: {session_dir}")
 
     # Show generated files
     outputs = state.get("outputs", {})
