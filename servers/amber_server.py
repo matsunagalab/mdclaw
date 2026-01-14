@@ -398,6 +398,79 @@ def detect_water_type(pdb_path: Path) -> dict:
     return result
 
 
+def _add_pdb_info(
+    parm7_path: Path,
+    pdb_path: Path,
+    output_path: Path | None = None,
+) -> dict:
+    """Add PDB info (residue numbers, chain IDs) to Amber topology.
+
+    Uses ParmEd's addPDB action to embed original PDB metadata into the topology.
+    This preserves original PDB residue numbering so that output PDBs from
+    simulations match the initial PDB file.
+
+    Reference: https://github.com/callumjd/AMBER-Membrane_protein_tutorial
+
+    Args:
+        parm7_path: Input Amber topology file
+        pdb_path: Reference PDB with original numbering
+        output_path: Output path (overwrites input if None)
+
+    Returns:
+        dict with:
+            - success: bool - True if PDB info was added successfully
+            - flags_added: list[str] - List of flags added to topology
+            - warnings: list[str] - Non-critical issues
+            - errors: list[str] - Error messages
+    """
+    result = {
+        "success": False,
+        "flags_added": [],
+        "warnings": [],
+        "errors": [],
+    }
+
+    try:
+        from parmed.amber import AmberParm
+        from parmed.tools import addPDB
+
+        # Load topology
+        parm = AmberParm(str(parm7_path))
+
+        # Add PDB info (residue numbers, chain IDs, insertion codes, etc.)
+        # Using ParmEd's addPDB action class
+        action = addPDB(parm, str(pdb_path))
+        action.execute()
+
+        # Check which flags were added
+        expected_flags = [
+            "RESIDUE_CHAINID",
+            "RESIDUE_NUMBER",
+            "RESIDUE_ICODE",
+            "ATOM_NUMBER",
+            "ATOM_ELEMENT",
+        ]
+        for flag in expected_flags:
+            if flag in parm.parm_data:
+                result["flags_added"].append(flag)
+
+        # Save (overwrite or new file)
+        out_path = output_path or parm7_path
+        parm.save(str(out_path), overwrite=True)
+
+        result["success"] = True
+        logger.info(f"Added PDB info to topology: {result['flags_added']}")
+
+    except ImportError:
+        result["errors"].append("ParmEd not installed - cannot add PDB info")
+        logger.warning("ParmEd not available, skipping PDB info addition")
+    except Exception as e:
+        result["errors"].append(f"ParmEd addPDB failed: {str(e)}")
+        logger.warning(f"Could not add PDB info: {e}")
+
+    return result
+
+
 @mcp.tool()
 def build_amber_system(
     pdb_file: str,
@@ -536,7 +609,9 @@ def build_amber_system(
         },
         "statistics": {},
         "errors": [],
-        "warnings": []
+        "warnings": [],
+        "pdb_info_added": False,
+        "pdb_flags_added": [],
     }
 
     # Add box_dimensions validation warning to result
@@ -853,6 +928,24 @@ def build_amber_system(
             logger.info(f"  Coordinates: {rst7_file}")
             if result["statistics"]["num_atoms"]:
                 logger.info(f"  Atoms: {result['statistics']['num_atoms']}")
+
+            # Add PDB information to preserve original residue numbering
+            # Reference: https://github.com/callumjd/AMBER-Membrane_protein_tutorial
+            pdb_info_result = _add_pdb_info(
+                parm7_path=parm7_file,
+                pdb_path=pdb_path,
+            )
+
+            if pdb_info_result["success"]:
+                result["pdb_info_added"] = True
+                result["pdb_flags_added"] = pdb_info_result["flags_added"]
+            else:
+                # Non-fatal: original topology is still valid, just with sequential numbering
+                result["warnings"].append(
+                    "PDB info not added - topology uses sequential residue numbering"
+                )
+                if pdb_info_result["errors"]:
+                    result["warnings"].extend(pdb_info_result["errors"])
         else:
             result["errors"].append("tleap completed but output files not created")
             
