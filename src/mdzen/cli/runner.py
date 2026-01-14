@@ -140,17 +140,45 @@ def display_results(state: dict, console: Console) -> None:
         state: Session state dictionary
         console: Rich console for output
     """
+    import json
+
+    # Check if workflow completed all steps
+    completed_steps_raw = state.get("completed_steps", [])
+    if isinstance(completed_steps_raw, str):
+        try:
+            completed_steps = json.loads(completed_steps_raw)
+        except json.JSONDecodeError:
+            completed_steps = []
+    else:
+        completed_steps = completed_steps_raw or []
+
+    required_steps = ["prepare_complex", "solvate", "build_topology", "run_simulation"]
+    missing_steps = [s for s in required_steps if s not in completed_steps]
+    workflow_complete = len(missing_steps) == 0
+
     if state.get("validation_result"):
         validation = state["validation_result"]
         if isinstance(validation, dict) and "final_report" in validation:
-            console.print("\n[bold green]Workflow Complete![/bold green]")
+            if workflow_complete:
+                console.print("\n[bold green]Workflow Complete![/bold green]")
+            else:
+                console.print("\n[bold red]Workflow Failed![/bold red]")
+                console.print(f"[red]Missing steps: {missing_steps}[/red]")
             console.print(validation["final_report"])
         else:
-            console.print("\n[bold green]Complete![/bold green]")
+            if workflow_complete:
+                console.print("\n[bold green]Complete![/bold green]")
+            else:
+                console.print("\n[bold red]Workflow Incomplete![/bold red]")
+                console.print(f"[red]Missing steps: {missing_steps}[/red]")
             console.print(f"Validation result type: {type(validation)}")
             console.print(f"Session directory: {state.get('session_dir')}")
     else:
-        console.print("\n[yellow]Warning: No validation result[/yellow]")
+        if not workflow_complete:
+            console.print("\n[bold red]Workflow Failed![/bold red]")
+            console.print(f"[red]Missing steps: {missing_steps}[/red]")
+        else:
+            console.print("\n[yellow]Warning: No validation result[/yellow]")
         console.print(f"Session directory: {state.get('session_dir')}")
 
     # Show generated files

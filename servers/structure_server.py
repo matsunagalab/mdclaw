@@ -80,6 +80,17 @@ KNOWN_LIGAND_SMILES = {
     # Add more as needed
 }
 
+# Elements supported by GAFF/GAFF2 for parameterization
+GAFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"}
+
+# Metal elements (not supported by GAFF)
+METAL_ELEMENTS = {
+    "Li", "Be", "Na", "Mg", "Al", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn",
+    "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Rb", "Sr", "Y", "Zr", "Nb", "Mo",
+    "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs", "Ba", "La", "Hf", "Ta",
+    "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
+}
+
 
 # =============================================================================
 # Ligand Preparation Helper Functions
@@ -677,6 +688,46 @@ def _extract_histidine_states(pdb_file: Path) -> dict:
     return his_states
 
 
+def _apply_histidine_states(pdb_file: Path, histidine_states: dict) -> None:
+    """Apply user-specified histidine protonation states to a PDB file.
+
+    Renames HIS/HID/HIE/HIP residues to the user-specified state.
+    Modifies the file in place.
+
+    Args:
+        pdb_file: Path to PDB file to modify
+        histidine_states: Dict mapping "chain:resnum" to state ("HID", "HIE", "HIP")
+                         e.g., {"A:126": "HIE", "A:152": "HID"}
+    """
+    if not histidine_states:
+        return
+
+    try:
+        with open(pdb_file) as f:
+            lines = f.readlines()
+
+        modified_lines = []
+        for line in lines:
+            if line.startswith(("ATOM", "HETATM")):
+                resname = line[17:20].strip()
+                if resname in ("HIS", "HID", "HIE", "HIP"):
+                    chain = line[21].strip() or "A"
+                    resnum = line[22:26].strip()
+                    key = f"{chain}:{resnum}"
+                    if key in histidine_states:
+                        new_state = histidine_states[key]
+                        # Replace residue name (columns 18-20, 1-indexed)
+                        line = line[:17] + f"{new_state:>3}" + line[20:]
+            modified_lines.append(line)
+
+        with open(pdb_file, 'w') as f:
+            f.writelines(modified_lines)
+
+        logger.info(f"Applied {len(histidine_states)} histidine state(s) to {pdb_file}")
+    except Exception as e:
+        logger.warning(f"Could not apply histidine states: {e}")
+
+
 # Define standard amino acids and water (module-level constants for reuse)
 AMINO_ACIDS = {
     'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 
@@ -939,18 +990,24 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 author_chain = chain_id  # Fallback
             
             # Classify chain type
+            # Use author_chain (auth_asym_id like "A", "B") for chain ID lists
+            # This matches what split_molecules expects with use_author_chains=True
             if has_protein:
                 chain_type = "protein"
-                protein_chain_ids.append(chain_id)
+                if author_chain not in protein_chain_ids:
+                    protein_chain_ids.append(author_chain)
             elif has_water:
                 chain_type = "water"
-                water_chain_ids.append(chain_id)
+                if author_chain not in water_chain_ids:
+                    water_chain_ids.append(author_chain)
             elif has_ion:
                 chain_type = "ion"
-                ion_chain_ids.append(chain_id)
+                if author_chain not in ion_chain_ids:
+                    ion_chain_ids.append(author_chain)
             else:
                 chain_type = "ligand"
-                ligand_chain_ids.append(chain_id)
+                if author_chain not in ligand_chain_ids:
+                    ligand_chain_ids.append(author_chain)
             
             # Get entity information for this chain
             entity_info = entity_name_map.get(chain_id, {})
@@ -964,6 +1021,18 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "truncated": len(unique_residues) > 10
             }
 
+            # Get residue number for unique identification (first residue)
+            first_res = res_list[0]
+            first_resnum = first_res.seqid.num
+            first_resname = first_res.name.strip()
+
+            # Create unique ID for ligands/ions (format: chain:resname:resnum)
+            # For proteins, use chain:PROTEIN:start-end format
+            if chain_type in ("ligand", "ion"):
+                unique_id = f"{author_chain}:{first_resname}:{first_resnum}"
+            else:
+                unique_id = None  # Proteins use chain ID only
+
             chain_info = {
                 "chain_id": chain_id,
                 "author_chain": author_chain,
@@ -975,7 +1044,9 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
                 "residue_names": residue_summary,
-                "sequence_length": len(sequence_parts) if has_protein else 0
+                "sequence_length": len(sequence_parts) if has_protein else 0,
+                "resnum": first_resnum,
+                "unique_id": unique_id,
             }
             chains_info.append(chain_info)
         
@@ -1020,6 +1091,8 @@ def split_molecules(
     select_chains: Optional[List[str]] = None,
     include_types: Optional[List[str]] = None,
     use_author_chains: bool = True,
+    include_ligand_ids: Optional[List[str]] = None,
+    exclude_ligand_ids: Optional[List[str]] = None,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
     
@@ -1070,6 +1143,12 @@ def split_molecules(
                           If False, select_chains matches label_asym_id (mmCIF internal
                           unique identifiers). Use this when you need to select specific
                           molecular entities in structures with many chains.
+        include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
+                           e.g., ["A:ACP:501"]). If specified, only these ligands are extracted.
+                           Use inspect_molecules to get available ligand unique IDs.
+        exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
+                           e.g., ["A:ACT:401", "A:ACT:402"]). If specified, these ligands are
+                           skipped. Takes precedence if a ligand is in both include and exclude.
 
     Returns:
         Dict with:
@@ -1222,10 +1301,23 @@ def split_molecules(
             
             info = chain_info.get(chain_id, {})
             chain_type = info.get("chain_type", "ligand")
-            
+
             # Skip if chain_type not in include_types
             if chain_type not in include_types:
                 continue
+
+            # Apply ligand-specific filtering by unique_id
+            if chain_type == "ligand":
+                unique_id = info.get("unique_id")
+                if unique_id:
+                    # Check exclude filter first (takes precedence)
+                    if exclude_ligand_ids is not None and unique_id in exclude_ligand_ids:
+                        logger.info(f"Excluding ligand {unique_id} (in exclude_ligand_ids)")
+                        continue
+                    # Check include filter
+                    if include_ligand_ids is not None and unique_id not in include_ligand_ids:
+                        logger.info(f"Skipping ligand {unique_id} (not in include_ligand_ids)")
+                        continue
             
             # Build new structure with this chain's residues
             new_structure = gemmi.Structure()
@@ -1270,16 +1362,36 @@ def split_molecules(
                 new_structure.add_model(new_model)
                 
                 # Determine output file based on chain type
+                author_chain_id = info.get("author_chain", chain_id)
+                resnum = info.get("resnum")
+                # residue_names is a dict with "unique_residues" list
+                residue_names_data = info.get("residue_names", {})
+                if isinstance(residue_names_data, dict):
+                    unique_res = residue_names_data.get("unique_residues", ["UNK"])
+                    res_name = unique_res[0] if unique_res else "UNK"
+                elif isinstance(residue_names_data, list):
+                    res_name = residue_names_data[0] if residue_names_data else "UNK"
+                else:
+                    res_name = "UNK"
+
                 if chain_type == "protein":
                     out_file = out_dir / f"protein_{protein_idx}.pdb"
                     protein_files.append(str(out_file))
                     protein_idx += 1
                 elif chain_type == "ligand":
-                    out_file = out_dir / f"ligand_{ligand_idx}.pdb"
+                    # Use descriptive naming: ligand_{resname}_{chain}{resnum}.pdb
+                    if resnum is not None:
+                        out_file = out_dir / f"ligand_{res_name}_{author_chain_id}{resnum}.pdb"
+                    else:
+                        out_file = out_dir / f"ligand_{res_name}_{ligand_idx}.pdb"
                     ligand_files.append(str(out_file))
                     ligand_idx += 1
                 elif chain_type == "ion":
-                    out_file = out_dir / f"ion_{ion_idx}.pdb"
+                    # Use descriptive naming: ion_{resname}_{chain}{resnum}.pdb
+                    if resnum is not None:
+                        out_file = out_dir / f"ion_{res_name}_{author_chain_id}{resnum}.pdb"
+                    else:
+                        out_file = out_dir / f"ion_{res_name}_{ion_idx}.pdb"
                     ion_files.append(str(out_file))
                     ion_idx += 1
                 elif chain_type == "water":
@@ -1298,6 +1410,8 @@ def split_molecules(
                     "chain_id": chain_id,
                     "author_chain": info.get("author_chain", chain_id),
                     "chain_type": chain_type,
+                    "resnum": resnum,
+                    "unique_id": info.get("unique_id"),
                     "file": str(out_file),
                     "residue_count": residue_count
                 })
@@ -1345,17 +1459,19 @@ def clean_protein(
     keep_water: bool = False,
     add_missing_atoms: bool = True,
     add_hydrogens: bool = True,
-    ph: float = 7.4
+    ph: float = 7.4,
+    disulfide_pairs: list[dict] | None = None,
+    histidine_states: dict[str, str] | None = None,
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
-    
+
     This tool processes a single-chain protein structure (from split_molecules output)
     and prepares it for MD simulation by fixing missing residues, atoms, and adding
     proper protonation.
-    
+
     Args:
         pdb_file: Input protein PDB or mmCIF file path (single chain from split_molecules)
-        ignore_terminal_missing_residues: Ignore missing residues at chain termini 
+        ignore_terminal_missing_residues: Ignore missing residues at chain termini
                                           instead of modeling them (default: True)
         cap_termini: Flag to indicate that ACE/NME caps should be added to termini.
                      Note: PDBFixer cannot add caps directly. When True, the return dict
@@ -1367,7 +1483,13 @@ def clean_protein(
         add_missing_atoms: Add missing heavy atoms (default: True)
         add_hydrogens: Add hydrogen atoms at specified pH (default: True)
         ph: pH for protonation state assignment (default: 7.4)
-    
+        disulfide_pairs: Pre-defined disulfide bond pairs from Phase 1 analysis.
+                        List of dicts with chain1, resnum1, chain2, resnum2, form_bond.
+                        If provided, skips auto-detection and uses these pairs instead.
+        histidine_states: Pre-defined histidine protonation states from Phase 1 analysis.
+                         Dict mapping "chain:resnum" to state ("HID", "HIE", "HIP").
+                         If provided, skips propka and applies these states directly.
+
     Returns:
         Dict with:
             - success: bool - True if cleaning completed without critical errors
@@ -1585,70 +1707,123 @@ def clean_protein(
         try:
             # Collect CYS residues before creating disulfide bonds
             cys_residues = set()
+            cys_by_chain_resnum = {}  # Map (chain, resnum) -> residue for pre-defined pairs
             for residue in fixer.topology.residues():
                 if residue.name == 'CYS':
                     cys_residues.add(residue)
-            
-            # createDisulfideBonds() modifies topology in place and returns None
-            # It adds bonds between SG atoms of CYS residues that are close enough
-            fixer.topology.createDisulfideBonds(fixer.positions)
-            
-            # Find disulfide bonds by scanning topology bonds for S-S bonds between CYS
+                    cys_by_chain_resnum[(residue.chain.id, residue.index)] = residue
+
             disulfide_info = []
             cyx_residues = set()  # Track residues to rename
-            
-            for bond in fixer.topology.bonds():
-                atom1, atom2 = bond
-                # Check if this is an S-S bond between two CYS residues
-                if (atom1.element.symbol == 'S' and atom2.element.symbol == 'S' and
-                    atom1.residue in cys_residues and atom2.residue in cys_residues):
-                    
-                    res1 = atom1.residue
-                    res2 = atom2.residue
-                    
-                    # Avoid duplicate entries (bond may be listed once)
-                    bond_key = tuple(sorted([res1.index, res2.index]))
-                    if any(tuple(sorted([d["residue1"]["index"], d["residue2"]["index"]])) == bond_key 
-                           for d in disulfide_info):
+
+            if disulfide_pairs is not None:
+                # Use pre-defined disulfide pairs from Phase 1 analysis
+                logger.info(f"Using {len(disulfide_pairs)} pre-defined disulfide pair(s) from Phase 1")
+                for pair in disulfide_pairs:
+                    # Skip pairs marked as "don't form bond"
+                    if not pair.get("form_bond", True):
+                        logger.info(f"Skipping user-excluded disulfide: {pair}")
                         continue
-                    
-                    # Record bond information before renaming
-                    bond_info = {
-                        "residue1": {
-                            "name": res1.name,
-                            "chain": res1.chain.id,
-                            "index": res1.index
-                        },
-                        "residue2": {
-                            "name": res2.name,
-                            "chain": res2.chain.id,
-                            "index": res2.index
+
+                    chain1 = pair.get("chain1")
+                    resnum1 = pair.get("resnum1")
+                    chain2 = pair.get("chain2")
+                    resnum2 = pair.get("resnum2")
+
+                    # Find the residues by chain and resnum
+                    res1 = cys_by_chain_resnum.get((chain1, resnum1))
+                    res2 = cys_by_chain_resnum.get((chain2, resnum2))
+
+                    if res1 and res2:
+                        bond_info = {
+                            "residue1": {
+                                "name": res1.name,
+                                "chain": res1.chain.id,
+                                "index": res1.index
+                            },
+                            "residue2": {
+                                "name": res2.name,
+                                "chain": res2.chain.id,
+                                "index": res2.index
+                            },
+                            "source": "user_specified"
                         }
-                    }
-                    disulfide_info.append(bond_info)
-                    cyx_residues.add(res1)
-                    cyx_residues.add(res2)
-            
+                        disulfide_info.append(bond_info)
+                        cyx_residues.add(res1)
+                        cyx_residues.add(res2)
+                    else:
+                        result["warnings"].append(
+                            f"Could not find CYS pair: {chain1}:{resnum1} - {chain2}:{resnum2}"
+                        )
+
+                result["operations"].append({
+                    "step": "disulfide_bonds",
+                    "status": "user_specified",
+                    "details": f"Applied {len(disulfide_info)} user-specified disulfide bond(s)"
+                })
+            else:
+                # Auto-detect disulfide bonds using PDBFixer
+                # createDisulfideBonds() modifies topology in place and returns None
+                # It adds bonds between SG atoms of CYS residues that are close enough
+                fixer.topology.createDisulfideBonds(fixer.positions)
+
+                # Find disulfide bonds by scanning topology bonds for S-S bonds between CYS
+                for bond in fixer.topology.bonds():
+                    atom1, atom2 = bond
+                    # Check if this is an S-S bond between two CYS residues
+                    if (atom1.element.symbol == 'S' and atom2.element.symbol == 'S' and
+                        atom1.residue in cys_residues and atom2.residue in cys_residues):
+
+                        res1 = atom1.residue
+                        res2 = atom2.residue
+
+                        # Avoid duplicate entries (bond may be listed once)
+                        bond_key = tuple(sorted([res1.index, res2.index]))
+                        if any(tuple(sorted([d["residue1"]["index"], d["residue2"]["index"]])) == bond_key
+                               for d in disulfide_info):
+                            continue
+
+                        # Record bond information before renaming
+                        bond_info = {
+                            "residue1": {
+                                "name": res1.name,
+                                "chain": res1.chain.id,
+                                "index": res1.index
+                            },
+                            "residue2": {
+                                "name": res2.name,
+                                "chain": res2.chain.id,
+                                "index": res2.index
+                            },
+                            "source": "auto_detected"
+                        }
+                        disulfide_info.append(bond_info)
+                        cyx_residues.add(res1)
+                        cyx_residues.add(res2)
+
+                if disulfide_info:
+                    result["operations"].append({
+                        "step": "disulfide_bonds",
+                        "status": "detected",
+                        "details": f"Auto-detected {len(disulfide_info)} disulfide bond(s)"
+                    })
+                else:
+                    result["operations"].append({
+                        "step": "disulfide_bonds",
+                        "status": "none_found",
+                        "details": "No disulfide bonds detected"
+                    })
+
             # Rename CYS -> CYX for Amber compatibility
             for res in cyx_residues:
                 res.name = 'CYX'
-            
+
             if disulfide_info:
                 result["disulfide_bonds"] = disulfide_info
-                result["operations"].append({
-                    "step": "disulfide_bonds",
-                    "status": "detected",
-                    "details": f"Found {len(disulfide_info)} disulfide bond(s), renamed {len(cyx_residues)} CYS -> CYX for Amber"
-                })
-                logger.info(f"Detected {len(disulfide_info)} disulfide bonds, renamed {len(cyx_residues)} residues to CYX")
+                logger.info(f"Applied {len(disulfide_info)} disulfide bonds, renamed {len(cyx_residues)} residues to CYX")
             else:
-                result["operations"].append({
-                    "step": "disulfide_bonds",
-                    "status": "none_found",
-                    "details": "No disulfide bonds detected"
-                })
-                logger.info("No disulfide bonds detected")
-                
+                logger.info("No disulfide bonds to apply")
+
         except Exception as e:
             result["warnings"].append(f"Disulfide bond detection failed: {str(e)}")
             result["operations"].append({
@@ -1705,47 +1880,81 @@ def clean_protein(
         # Step 9: pH-dependent protonation + Amber naming conversion
         # Primary: pdb2pqr + propka (pH-aware, proper Amber naming)
         # Fallback: pdb4amber --reduce (pH ignored, geometry-based)
+        # If histidine_states provided: skip propka and apply user-specified states
         logger.info(f"Applying pH-dependent protonation (pH {ph})")
         amber_output_file = input_path.parent / f"{stem}.amber.pdb"
         pdb2pqr_success = False
 
+        # Check if we have user-specified histidine states
+        use_predefined_his = histidine_states is not None and len(histidine_states) > 0
+
         try:
             # Primary method: pdb2pqr + propka (pH-aware protonation with Amber naming)
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
-                logger.info(f"Using pdb2pqr with propka for pH {ph}")
-                pqr_output = input_path.parent / f"{stem}.pqr"
-                propka_output = input_path.parent / f"{stem}.propka"
+                if use_predefined_his:
+                    # Skip propka, use pdb2pqr without titration (user specified states)
+                    logger.info(f"Using pdb2pqr without propka (user-specified HIS states)")
+                    pqr_output = input_path.parent / f"{stem}.pqr"
 
-                pdb2pqr_args = [
-                    str(output_file),
-                    str(pqr_output),
-                    "--ff", "AMBER",
-                    "--ffout", "AMBER",
-                    "--titration-state-method", "propka",
-                    "--with-ph", str(ph),
-                    "--pdb-output", str(amber_output_file),
-                    "--keep-chain",
-                    "--drop-water",
-                ]
+                    pdb2pqr_args = [
+                        str(output_file),
+                        str(pqr_output),
+                        "--ff", "AMBER",
+                        "--ffout", "AMBER",
+                        "--pdb-output", str(amber_output_file),
+                        "--keep-chain",
+                        "--drop-water",
+                    ]
+                else:
+                    logger.info(f"Using pdb2pqr with propka for pH {ph}")
+                    pqr_output = input_path.parent / f"{stem}.pqr"
+                    propka_output = input_path.parent / f"{stem}.propka"
+
+                    pdb2pqr_args = [
+                        str(output_file),
+                        str(pqr_output),
+                        "--ff", "AMBER",
+                        "--ffout", "AMBER",
+                        "--titration-state-method", "propka",
+                        "--with-ph", str(ph),
+                        "--pdb-output", str(amber_output_file),
+                        "--keep-chain",
+                        "--drop-water",
+                    ]
 
                 try:
                     pdb2pqr_wrapper.run(pdb2pqr_args)
 
                     if amber_output_file.exists():
-                        his_states = _extract_histidine_states(amber_output_file)
-                        result["operations"].append({
-                            "step": "protonation",
-                            "status": "success",
-                            "method": "pdb2pqr+propka",
-                            "ph": ph,
-                            "histidine_states": his_states,
-                        })
+                        # Apply user-specified histidine states if provided
+                        if use_predefined_his:
+                            _apply_histidine_states(amber_output_file, histidine_states)
+                            his_states = histidine_states.copy()
+                            result["operations"].append({
+                                "step": "protonation",
+                                "status": "success",
+                                "method": "pdb2pqr+user_specified",
+                                "ph": ph,
+                                "histidine_states": his_states,
+                            })
+                            result["protonation_method"] = "pdb2pqr+user_specified"
+                            logger.info(f"Applied {len(his_states)} user-specified histidine states")
+                        else:
+                            his_states = _extract_histidine_states(amber_output_file)
+                            result["operations"].append({
+                                "step": "protonation",
+                                "status": "success",
+                                "method": "pdb2pqr+propka",
+                                "ph": ph,
+                                "histidine_states": his_states,
+                            })
+                            result["protonation_method"] = "pdb2pqr+propka"
+                            logger.info(f"pH-aware protonation complete: {len(his_states)} histidine states determined")
+
                         result["output_file"] = str(amber_output_file)
                         result["pdbfixer_output"] = str(output_file)
-                        result["protonation_method"] = "pdb2pqr+propka"
                         result["histidine_states"] = his_states
                         pdb2pqr_success = True
-                        logger.info(f"pH-aware protonation complete: {len(his_states)} histidine states determined")
                         if his_states:
                             logger.info(f"Histidine states: {his_states}")
                     else:
@@ -2311,7 +2520,42 @@ def run_antechamber_robust(
         result["errors"].append(f"Ligand file not found: {ligand_file}")
         logger.error(f"Ligand file not found: {ligand_file}")
         return result
-    
+
+    # Pre-check for metal atoms (GAFF cannot parameterize metals)
+    try:
+        from rdkit import Chem
+        mol = None
+        suffix = ligand_path.suffix.lower()
+        if suffix == ".mol2":
+            mol = Chem.MolFromMol2File(str(ligand_path), removeHs=False)
+        elif suffix == ".pdb":
+            mol = Chem.MolFromPDBFile(str(ligand_path), removeHs=False)
+        elif suffix == ".sdf":
+            mol = Chem.MolFromMolFile(str(ligand_path), removeHs=False)
+
+        if mol:
+            detected_metals = []
+            for atom in mol.GetAtoms():
+                symbol = atom.GetSymbol()
+                if symbol in METAL_ELEMENTS:
+                    detected_metals.append(symbol)
+            if detected_metals:
+                unique_metals = sorted(set(detected_metals))
+                result["errors"].append(
+                    f"Metal atoms detected: {unique_metals}. "
+                    "GAFF cannot parameterize metal-containing ligands."
+                )
+                result["errors"].append(
+                    "Hint: Exclude this ligand from parameterization, or use "
+                    "specialized tools like MCPB.py for metal coordination."
+                )
+                logger.error(f"Metal atoms {unique_metals} detected in {ligand_file}")
+                return result
+    except ImportError:
+        logger.debug("RDKit not available for metal pre-check, continuing to antechamber")
+    except Exception as e:
+        logger.debug(f"Metal pre-check failed ({e}), continuing to antechamber")
+
     if output_dir is None:
         out_dir = ligand_path.parent
     else:
@@ -2558,12 +2802,16 @@ def _fix_amino_acid_hetatm_records(pdb_file: Path) -> None:
     gemmi doesn't recognize Amber residue naming (HIE, NALA, etc.) and
     writes them as HETATM. Detect amino acids by backbone atoms (N, CA, C)
     instead of maintaining a residue name list.
+
+    Also removes HET header records for amino acid residues, which confuse
+    external tools like MEMEMBED (used by packmol-memgen for membrane embedding).
     """
     import gemmi
 
     # Read structure to identify amino acid residues
     st = gemmi.read_pdb(str(pdb_file))
     amino_acid_residues = set()  # (chain_id, resnum, resname)
+    amino_acid_resnames = set()  # Just resnames for HET record filtering
 
     for model in st:
         for chain in model:
@@ -2572,25 +2820,40 @@ def _fix_amino_acid_hetatm_records(pdb_file: Path) -> None:
                 # Check for backbone atoms (N, CA, C)
                 if {"N", "CA", "C"}.issubset(atom_names):
                     amino_acid_residues.add((chain.name, res.seqid.num, res.name))
+                    amino_acid_resnames.add(res.name)
 
     if not amino_acid_residues:
         return  # No amino acids to fix
 
-    # Fix HETATM records in the PDB file
+    # Fix HETATM records and remove HET header records for amino acids
     with open(pdb_file) as f:
         lines = f.readlines()
 
-    fixed_count = 0
+    fixed_hetatm_count = 0
+    removed_het_count = 0
     fixed_lines = []
     for line in lines:
-        if line.startswith("HETATM"):
+        # Remove HET header records for amino acid residues
+        # Format: HET    resname chain resnum  natoms
+        if line.startswith("HET ") or line.startswith("HET\t"):
+            try:
+                parts = line.split()
+                if len(parts) >= 2:
+                    het_resname = parts[1].strip()
+                    if het_resname in amino_acid_resnames:
+                        removed_het_count += 1
+                        continue  # Skip this HET record
+            except (IndexError, ValueError):
+                pass
+        # Convert HETATM to ATOM for amino acid residues
+        elif line.startswith("HETATM"):
             chain_id = line[21].strip() or line[21]
             try:
                 resnum = int(line[22:26])
                 resname = line[17:20].strip()
                 if (chain_id, resnum, resname) in amino_acid_residues:
                     line = "ATOM  " + line[6:]
-                    fixed_count += 1
+                    fixed_hetatm_count += 1
             except ValueError:
                 pass
         fixed_lines.append(line)
@@ -2598,8 +2861,10 @@ def _fix_amino_acid_hetatm_records(pdb_file: Path) -> None:
     with open(pdb_file, 'w') as f:
         f.writelines(fixed_lines)
 
-    if fixed_count > 0:
-        logger.info(f"Fixed {fixed_count} HETATM records to ATOM for amino acid residues")
+    if fixed_hetatm_count > 0:
+        logger.info(f"Fixed {fixed_hetatm_count} HETATM records to ATOM for amino acid residues")
+    if removed_het_count > 0:
+        logger.info(f"Removed {removed_het_count} HET header records for amino acid residues")
 
 
 @mcp.tool()
@@ -2821,12 +3086,15 @@ def prepare_complex(
     run_parameterization: bool = True,
     ligand_smiles: Optional[Dict[str, str]] = None,
     include_types: Optional[List[str]] = None,
+    include_ligand_ids: Optional[List[str]] = None,
+    exclude_ligand_ids: Optional[List[str]] = None,
     optimize_ligands: bool = True,
     charge_method: str = "bcc",
-    atom_type: str = "gaff2"
+    atom_type: str = "gaff2",
+    structure_analysis: Optional[dict] = None,
 ) -> dict:
     """Prepare a protein-ligand complex for MD simulation (complete workflow).
-    
+
     This tool combines multiple steps into a single workflow:
     1. Inspect the structure to identify chains
     2. Split the structure into individual chain files
@@ -2834,11 +3102,11 @@ def prepare_complex(
     4. Clean ligand chains (SMILES template matching)
     5. Parameterize ligands with antechamber (GAFF2 + AM1-BCC)
     6. Merge all prepared structures into a single PDB file
-    
+
     This is the recommended one-step workflow for preparing structures from
     PDB or Boltz-2 predictions for MD simulation. The output merged_pdb can be
     directly passed to solvate_structure or build_amber_system.
-    
+
     Args:
         structure_file: Path to mmCIF (.cif) or PDB (.pdb/.ent) file
         output_dir: Output directory (auto-generated if None)
@@ -2852,9 +3120,17 @@ def prepare_complex(
                        If not provided, SMILES will be fetched from PDB CCD
         include_types: List of molecular types to include: "protein", "ligand", "ion", "water".
                        Default (None) includes ["protein", "ligand", "ion"] (no water).
+        include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
+                           e.g., ["A:ACP:501"]). If specified, only these ligands are processed.
+        exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
+                           e.g., ["A:ACT:401", "A:ACT:402"]). These ligands are skipped.
         optimize_ligands: Run MMFF94 optimization on ligands (default: True)
         charge_method: Antechamber charge method ('bcc' or 'gas') (default: 'bcc')
         atom_type: Antechamber atom type ('gaff' or 'gaff2') (default: 'gaff2')
+        structure_analysis: Pre-computed structure analysis from Phase 1. Contains
+                           user-approved settings for disulfide bonds, histidine states,
+                           missing residue handling, and ligand processing. If provided,
+                           these settings are used instead of auto-detection.
     
     Returns:
         Dict with:
@@ -2958,7 +3234,9 @@ def prepare_complex(
             str(structure_file),
             output_dir=str(out_dir.parent),  # Will create job_id subdirectory
             select_chains=select_chains,
-            include_types=include_types
+            include_types=include_types,
+            include_ligand_ids=include_ligand_ids,
+            exclude_ligand_ids=exclude_ligand_ids
         )
         
         # Update output_dir to match split_molecules output
@@ -2994,7 +3272,40 @@ def prepare_complex(
         # Step 3: Process proteins
         if process_proteins and split_result.get("protein_files"):
             logger.info(f"Step 3: Processing {len(split_result['protein_files'])} protein(s)...")
-            
+
+            # Extract pre-defined structure analysis settings if provided
+            sa_disulfide_pairs = None
+            sa_histidine_states = None
+            if structure_analysis:
+                # Extract disulfide bonds
+                sa_disulfide_bonds = structure_analysis.get("disulfide_bonds", [])
+                if sa_disulfide_bonds:
+                    # Filter to only form_bond=True and convert to expected format
+                    sa_disulfide_pairs = [
+                        {
+                            "chain1": bond.get("chain1"),
+                            "resnum1": bond.get("resnum1"),
+                            "chain2": bond.get("chain2"),
+                            "resnum2": bond.get("resnum2"),
+                            "form_bond": bond.get("form_bond", True),
+                        }
+                        for bond in sa_disulfide_bonds
+                        if bond.get("form_bond", True)
+                    ]
+                    logger.info(f"Using {len(sa_disulfide_pairs)} pre-defined disulfide pair(s)")
+
+                # Extract histidine states as dict
+                sa_histidine_list = structure_analysis.get("histidine_states", [])
+                if sa_histidine_list:
+                    sa_histidine_states = {}
+                    for his in sa_histidine_list:
+                        chain = his.get("chain")
+                        resnum = his.get("resnum")
+                        state = his.get("state")
+                        if chain and resnum and state:
+                            sa_histidine_states[f"{chain}:{resnum}"] = state
+                    logger.info(f"Using {len(sa_histidine_states)} pre-defined histidine state(s)")
+
             for protein_file in split_result["protein_files"]:
                 # Find chain info for this file
                 chain_id = None
@@ -3002,7 +3313,7 @@ def prepare_complex(
                     if cinfo.get("file") == protein_file:
                         chain_id = cid
                         break
-                
+
                 protein_result = {
                     "chain_id": chain_id,
                     "input_file": protein_file,
@@ -3011,15 +3322,17 @@ def prepare_complex(
                     "statistics": {},
                     "errors": []
                 }
-                
+
                 try:
                     clean_result = clean_protein.fn(
                         pdb_file=protein_file,
                         ph=ph,
                         cap_termini=cap_termini,
-                        ignore_terminal_missing_residues=not cap_termini
+                        ignore_terminal_missing_residues=not cap_termini,
+                        disulfide_pairs=sa_disulfide_pairs,
+                        histidine_states=sa_histidine_states,
                     )
-                    
+
                     if clean_result["success"]:
                         protein_result["output_file"] = clean_result["output_file"]
                         protein_result["statistics"] = clean_result.get("statistics", {})
@@ -3029,12 +3342,12 @@ def prepare_complex(
                         protein_result["errors"] = clean_result.get("errors", [])
                         result["warnings"].append(f"Protein {chain_id} cleaning failed: {clean_result['errors']}")
                         logger.warning(f"  ✗ Protein {chain_id} failed: {clean_result['errors']}")
-                        
+
                 except Exception as e:
                     protein_result["errors"].append(str(e))
                     result["warnings"].append(f"Protein {chain_id} error: {str(e)}")
                     logger.error(f"  ✗ Protein {chain_id} error: {e}")
-                
+
                 result["proteins"].append(protein_result)
         
         # Step 4: Process ligands
@@ -3085,13 +3398,37 @@ def prepare_complex(
                     "success": False,
                     "errors": []
                 }
-                
+
+                # Check if this ligand is excluded in structure_analysis
+                sa_ligand_spec = None
+                if structure_analysis:
+                    sa_ligands = structure_analysis.get("ligands", [])
+                    for lig_spec in sa_ligands:
+                        if lig_spec.get("resname") == ligand_id or lig_spec.get("chain") == chain_id:
+                            sa_ligand_spec = lig_spec
+                            break
+
+                    if sa_ligand_spec and not sa_ligand_spec.get("include", True):
+                        logger.info(f"  Skipping ligand {ligand_id} (user excluded)")
+                        continue
+
                 try:
-                    # Get SMILES (user-provided or fetch)
+                    # Get SMILES (user-provided or from structure_analysis or fetch)
                     user_smiles = None
+                    user_charge = None
+
+                    # First check direct ligand_smiles parameter
                     if ligand_smiles and ligand_id in ligand_smiles:
                         user_smiles = ligand_smiles[ligand_id]
-                    
+
+                    # Then check structure_analysis for overrides
+                    if sa_ligand_spec:
+                        if sa_ligand_spec.get("smiles"):
+                            user_smiles = sa_ligand_spec["smiles"]
+                        if sa_ligand_spec.get("net_charge") is not None:
+                            user_charge = sa_ligand_spec["net_charge"]
+                            logger.info(f"  Using user-specified charge {user_charge} for {ligand_id}")
+
                     # Clean ligand
                     clean_result = clean_ligand.fn(
                         ligand_pdb=ligand_file,
@@ -3100,6 +3437,10 @@ def prepare_complex(
                         target_ph=ph,
                         optimize=optimize_ligands
                     )
+
+                    # Override charge if user specified
+                    if user_charge is not None and clean_result["success"]:
+                        clean_result["net_charge"] = user_charge
                     
                     if clean_result["success"]:
                         ligand_result["sdf_file"] = clean_result["sdf_file"]
