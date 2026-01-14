@@ -82,6 +82,7 @@ class Settings(BaseSettings):
     default_timeout: int = 300
     structure_timeout: int = 600  # antechamber can take several minutes for complex ligands
     solvation_timeout: int = 600
+    amber_timeout: int = 900  # tleap needs time for large systems (100k+ waters)
     membrane_timeout: int = 3600  # Large membrane systems (e.g., SERCA) need more time
     md_simulation_timeout: int = 3600
 
@@ -93,6 +94,7 @@ class Settings(BaseSettings):
 
     # Server paths (relative to project root)
     research_server_path: str = "servers/research_server.py"
+    literature_server_path: str = "servers/literature_server.py"
     structure_server_path: str = "servers/structure_server.py"
     genesis_server_path: str = "servers/genesis_server.py"
     solvation_server_path: str = "servers/solvation_server.py"
@@ -128,13 +130,15 @@ def get_server_path(server_name: str) -> str:
     """Get the path to a server script.
 
     Args:
-        server_name: Server name ("research", "structure", "genesis", "solvation", "amber", "md_simulation", "metal")
+        server_name: Server name ("research", "literature", "structure", "genesis",
+                     "solvation", "amber", "md_simulation", "metal")
 
     Returns:
         Relative path to server script
     """
     server_map = {
         "research": settings.research_server_path,
+        "literature": settings.literature_server_path,
         "structure": settings.structure_server_path,
         "genesis": settings.genesis_server_path,
         "solvation": settings.solvation_server_path,
@@ -194,7 +198,7 @@ def get_timeout(timeout_type: str) -> int:
         # to ensure MCP connection doesn't timeout during long membrane builds
         "solvation": settings.membrane_timeout,
         "membrane": settings.membrane_timeout,
-        "amber": settings.default_timeout,
+        "amber": settings.amber_timeout,  # tleap needs time for large systems
         "md_simulation": settings.md_simulation_timeout,
     }
     return timeout_map.get(timeout_type, settings.default_timeout)

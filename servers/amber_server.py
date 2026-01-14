@@ -813,7 +813,7 @@ def build_amber_system(
         
         # Run tleap
         logger.info("Running tleap...")
-        tleap_timeout = get_timeout("default")
+        tleap_timeout = get_timeout("amber")
         proc_result = tleap_wrapper.run(
             ['-f', str(leap_script_file)],
             cwd=out_dir,

@@ -507,6 +507,7 @@ def list_servers():
 
     servers = [
         ("research_server", "PDB/AlphaFold/UniProt retrieval and structure inspection"),
+        ("literature_server", "PubMed literature search via NCBI E-utilities"),
         ("structure_server", "Structure repair, ligand GAFF2 parameterization"),
         ("genesis_server", "Boltz-2 structure prediction from FASTA sequences"),
         ("solvation_server", "Solvation (water box) and membrane embedding via packmol-memgen"),

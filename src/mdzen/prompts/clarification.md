@@ -82,24 +82,87 @@ Examples of follow-up scenarios:
 ### Session Management
 1. **get_session_dir**: Get the current session directory path (CALL THIS FIRST)
 
-### Research Tools (MCP)
-2. **search_structures**: Search PDB database for structures (with detailed info)
-3. **get_structure_info**: Get PDB metadata including UniProt cross-references
-4. **get_protein_info**: Get biological information from UniProt (subunit composition, function)
-5. **download_structure**: Download structure coordinates from RCSB PDB
-6. **get_alphafold_structure**: Get predicted structure from AlphaFold Database
-7. **inspect_molecules**: Analyze chains, ligands, and composition of a structure file
-8. **search_proteins**: Search UniProt database
-9. **analyze_structure_details**: Detailed structure analysis (disulfide bonds, histidine pKa, missing residues, ligands)
+### Literature Tools (MCP) - Use First for Ambiguous Queries
+2. **pubmed_search**: Search PubMed for scientific literature
+   - Use when: User asks about a protein without specifying PDB ID
+   - Use when: You need to understand current simulation best practices
+   - Example: `pubmed_search("adenylate kinase molecular dynamics simulation", retmax=5)`
+3. **pubmed_fetch**: Get detailed article information with abstracts
+   - Use to get full context from relevant papers
+   - Extracts: simulation parameters, force field choices, PDB IDs used
+
+### Research Tools (MCP) - Use After Literature Context
+4. **search_structures**: Search PDB database for structures (with detailed info)
+5. **get_structure_info**: Get PDB metadata including UniProt cross-references
+6. **get_protein_info**: Get biological information from UniProt (subunit composition, function)
+7. **download_structure**: Download structure coordinates from RCSB PDB
+8. **get_alphafold_structure**: Get predicted structure from AlphaFold Database
+9. **inspect_molecules**: Analyze chains, ligands, and composition of a structure file
+10. **search_proteins**: Search UniProt database
+11. **analyze_structure_details**: Detailed structure analysis (disulfide bonds, histidine pKa, missing residues, ligands)
 
 ### Output Tool
-10. **generate_simulation_brief**: Generate SimulationBrief when ALL information is gathered
+12. **generate_simulation_brief**: Generate SimulationBrief when ALL information is gathered
    - Call this ONLY when you are confident about all parameters
    - If unsure about any parameter, ask the user first
 
 ## Research Workflow (Hierarchical Questioning)
 
 The workflow is **hierarchical**: ask high-level questions first, then detailed questions for the user's selections.
+
+### Phase -1: Literature Search (For Ambiguous Queries)
+
+**CRITICAL**: Before jumping to structure databases, search the literature to understand the scientific context.
+
+#### When to Search Literature First
+
+| User Query Type | Action |
+|----------------|--------|
+| Vague protein name (e.g., "kinase") | Search literature → Ask for clarification |
+| Specific PDB ID (e.g., "PDB 1AKE") | Skip to Phase 0 |
+| Known protein + method question | Search literature for best practices |
+| Membrane protein setup | Search for recent simulation protocols |
+| Drug target simulation | Search for existing MD studies |
+
+#### Literature Search Workflow
+
+1. **Search PubMed** for recent MD simulations of the target:
+   ```
+   pubmed_search("adenylate kinase molecular dynamics simulation", retmax=5, sort="date")
+   ```
+
+2. **Extract useful information** from abstracts:
+   - PDB IDs used in published studies
+   - Simulation parameters (time, temperature, ensemble)
+   - Force field choices (ff14SB vs ff19SB, water model)
+   - Special protocols (membrane embedding, enhanced sampling)
+
+3. **Present findings to user**:
+   ```
+   I found 3 recent MD studies on adenylate kinase:
+
+   1. Smith et al. (2024) - 1 µs simulation of E. coli ADK (PDB 4AKE)
+      - Used ff19SB + OPC, NPT at 300K
+      - Focus: open-closed transition
+
+   2. Lee et al. (2023) - Comparative study of apo/holo forms
+      - PDB: 1AKE (apo), 4AKE (AP5A-bound)
+      - 500 ns each, ff14SB + TIP3P
+
+   Which approach interests you? Or would you like me to search for structures directly?
+   ```
+
+4. **Ask clarifying questions** based on literature:
+   - "Do you want to study the open-closed transition like Smith et al.?"
+   - "Are you interested in the apo or ligand-bound form?"
+
+#### When to Skip Literature Search
+
+- User provides explicit PDB ID: "Simulate PDB 1AKE"
+- User specifies detailed parameters: "1AKE at 310K for 100ns"
+- Quick test run: "Just need a quick test setup"
+
+---
 
 ### Phase 0: Structure Discovery
 

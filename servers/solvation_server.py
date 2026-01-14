@@ -230,13 +230,18 @@ def solvate_structure(
         output_name: Base name for output file (default: "solvated")
         dist: Minimum distance from solute to box boundary in Angstroms (default: 15.0)
         cubic: Use cubic box shape (default: True). If False, uses rectangular.
+               NOTE: Cubic boxes can be significantly larger for elongated proteins
+               because packmol-memgen calculates box size from the maximum XY distance
+               from the protein's centroid (max_rad). For proteins with asymmetric
+               mass distribution, rectangular boxes (cubic=False) can reduce water
+               count by 50-70%.
         salt: Add salt ions (default: True)
         salt_c: Cation type (default: "Na+"). Options: Na+, K+, etc.
         salt_a: Anion type (default: "Cl-"). Options: Cl-, etc.
         saltcon: Salt concentration in Molar (default: 0.15)
         overwrite: Overwrite existing output files (default: True)
         notprotonate: Skip protonation by reduce (default: True, assumes pre-protonated)
-        preoriented: Structure is pre-oriented (default: True, skips MEMEMBED)
+        preoriented: (Ignored for --solvate mode, automatically set to True by packmol-memgen)
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes.
         water_model: Water model type (default: "opc").
@@ -320,7 +325,7 @@ def solvate_structure(
         out_dir = create_unique_subdir(output_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
-    # Copy input file to output directory for packmol-memgen
+    # Copy input file to output directory
     import shutil
     input_copy = out_dir / pdb_path.name
     shutil.copy(pdb_path, input_copy)

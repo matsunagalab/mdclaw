@@ -151,8 +151,9 @@ mdzen/
 │   ├── workflow.py                 # Workflow step definitions (single source of truth)
 │   └── utils.py                    # Utilities
 │
-├── servers/               # FastMCP servers (6 servers)
+├── servers/               # FastMCP servers (7 servers)
 │   ├── research_server.py          # PDB/AlphaFold/UniProt retrieval, structure inspection
+│   ├── literature_server.py        # PubMed literature search via NCBI E-utilities
 │   ├── structure_server.py         # Structure cleaning, ligand parameterization
 │   ├── genesis_server.py           # Boltz-2 structure prediction
 │   ├── solvation_server.py         # Solvent/membrane embedding
@@ -177,7 +178,7 @@ mdzen/
 
 ### FastMCP Servers
 
-The system uses **6 independent FastMCP servers**, each providing specialized MD preparation tools:
+The system uses **7 independent FastMCP servers**, each providing specialized MD preparation tools:
 
 1. **research_server.py** - External database integration (mirrors Augmented-Nature MCP servers)
    - `download_structure()`: Download from RCSB PDB
@@ -186,22 +187,26 @@ The system uses **6 independent FastMCP servers**, each providing specialized MD
    - `search_proteins()`: Search UniProt database
    - `get_protein_info()`: Get protein details from UniProt
 
-2. **structure_server.py** - Structure preparation and parameterization
+2. **literature_server.py** - PubMed literature search via NCBI E-utilities
+   - `pubmed_search()`: Search PubMed with Boolean queries
+   - `pubmed_fetch()`: Get detailed article info with abstracts
+
+3. **structure_server.py** - Structure preparation and parameterization
    - `clean_protein()`: PDBFixer + pdb2pqr/propka (pH-aware protonation)
    - `clean_ligand()`: Template matching + geometry optimization
    - `run_antechamber_robust()`: GAFF2 + AM1-BCC parameterization
    - `prepare_complex()`: All-in-one preparation pipeline
 
-3. **genesis_server.py** - AI structure prediction
+4. **genesis_server.py** - AI structure prediction
    - Boltz-2 integration for FASTA → PDB conversion
 
-4. **solvation_server.py** - Solvation and membrane setup
+5. **solvation_server.py** - Solvation and membrane setup
    - packmol-memgen for solvent/membrane embedding
 
-5. **amber_server.py** - Topology generation
+6. **amber_server.py** - Topology generation
    - tleap for prmtop and inpcrd file generation
 
-6. **md_simulation_server.py** - MD execution
+7. **md_simulation_server.py** - MD execution
    - OpenMM simulation and trajectory analysis
 
 Each server is **independently testable** using `mcp dev servers/<server_name>.py`.

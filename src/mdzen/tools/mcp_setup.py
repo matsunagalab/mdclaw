@@ -1,6 +1,6 @@
 """MCP Toolset configuration for MDZen.
 
-This module configures McpToolset instances for all 6 MCP servers
+This module configures McpToolset instances for all 7 MCP servers
 using ADK's native MCP integration.
 
 Supports two transport modes:
@@ -41,6 +41,7 @@ SSE_PORT_MAP = {
     "amber": 8005,
     "md_simulation": 8006,
     "metal": 8007,
+    "literature": 8008,
 }
 
 # Cache for project root
@@ -119,14 +120,17 @@ def _create_toolset(server_name: str, tool_filter: list[str] | None = None) -> M
 
 
 def create_mcp_toolsets() -> dict[str, McpToolset]:
-    """Create McpToolset instances for all 6 MCP servers.
+    """Create McpToolset instances for all 7 MCP servers.
 
     Each server is configured with stdio transport for local execution.
 
     Returns:
         Dictionary mapping server names to McpToolset instances
     """
-    server_names = ["research", "structure", "genesis", "solvation", "amber", "md_simulation"]
+    server_names = [
+        "research", "structure", "genesis", "solvation",
+        "amber", "md_simulation", "literature"
+    ]
     return {name: _create_toolset(name) for name in server_names}
 
 
@@ -175,12 +179,23 @@ def get_step_tools(step: str) -> list[McpToolset]:
 def get_clarification_tools() -> list[McpToolset]:
     """Get tools for clarification phase.
 
-    Returns research tools for Phase 1 (PDB/AlphaFold/UniProt retrieval and inspection).
+    Returns literature and research tools for Phase 1.
+    Literature tools are listed first to encourage literature-first workflow
+    for ambiguous queries (search papers before jumping to structure databases).
 
     Returns:
         List of McpToolset instances with filtered tools
     """
     return [
+        # Literature search first - use for ambiguous queries
+        create_filtered_toolset(
+            "literature",
+            tool_filter=[
+                "pubmed_search",  # Search PubMed for relevant papers
+                "pubmed_fetch",  # Get detailed article info with abstracts
+            ],
+        ),
+        # Structure database tools
         create_filtered_toolset(
             "research",
             tool_filter=[
@@ -193,7 +208,7 @@ def get_clarification_tools() -> list[McpToolset]:
                 "search_proteins",
                 "analyze_structure_details",  # Disulfide, HIS pKa, missing residues
             ],
-        )
+        ),
     ]
 
 
@@ -299,8 +314,9 @@ def create_sse_toolset(
 def get_clarification_tools_sse(host: str = "localhost") -> list[McpToolset]:
     """Get clarification tools using HTTP transport (for Colab/Jupyter).
 
-    Returns research tools for Phase 1 (PDB/AlphaFold/UniProt retrieval).
-    Requires research_server to be running with --http --port 8001.
+    Returns literature and research tools for Phase 1.
+    Literature tools are listed first for literature-first workflow.
+    Requires literature_server (--http --port 8008) and research_server (--http --port 8001).
 
     Note: Function name kept for backwards compatibility. Uses Streamable HTTP
     transport (/mcp endpoint) by default, which is the current MCP standard.
@@ -312,6 +328,17 @@ def get_clarification_tools_sse(host: str = "localhost") -> list[McpToolset]:
         List of McpToolset instances with filtered tools
     """
     return [
+        # Literature search first
+        create_http_toolset(
+            "literature",
+            tool_filter=[
+                "pubmed_search",
+                "pubmed_fetch",
+            ],
+            host=host,
+            use_streamable_http=True,
+        ),
+        # Structure database tools
         create_http_toolset(
             "research",
             tool_filter=[
@@ -326,7 +353,7 @@ def get_clarification_tools_sse(host: str = "localhost") -> list[McpToolset]:
             ],
             host=host,
             use_streamable_http=True,
-        )
+        ),
     ]
 
 
@@ -345,7 +372,10 @@ def get_setup_tools_sse(host: str = "localhost") -> list[McpToolset]:
     Returns:
         List of all McpToolset instances using HTTP transport
     """
-    server_names = ["research", "structure", "genesis", "solvation", "amber", "md_simulation"]
+    server_names = [
+        "research", "structure", "genesis", "solvation",
+        "amber", "md_simulation", "literature"
+    ]
     return [create_http_toolset(name, host=host, use_streamable_http=True) for name in server_names]
 
 
