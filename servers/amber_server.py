@@ -46,7 +46,7 @@ tleap_wrapper = BaseToolWrapper("tleap")
 
 
 # =============================================================================
-# Force Field Mappings
+# Force Field Mappings (based on Amber Manual 2024 recommendations)
 # =============================================================================
 
 PROTEIN_FORCEFIELDS = {
@@ -54,21 +54,88 @@ PROTEIN_FORCEFIELDS = {
     "ff19SB": "leaprc.protein.ff19SB",
     "ff14sb": "leaprc.protein.ff14SB",
     "ff19sb": "leaprc.protein.ff19SB",
+    # Implicit solvent specific
+    "ff14SBonlysc": "leaprc.protein.ff14SBonlysc",
+    "ff14sbonlysc": "leaprc.protein.ff14SBonlysc",
 }
 
 WATER_FORCEFIELDS = {
     "tip3p": "leaprc.water.tip3p",
     "opc": "leaprc.water.opc",
+    "opc3": "leaprc.water.opc3",
     "tip4pew": "leaprc.water.tip4pew",
+    "spce": "leaprc.water.spce",
+    # Case-insensitive aliases
     "TIP3P": "leaprc.water.tip3p",
     "OPC": "leaprc.water.opc",
+    "OPC3": "leaprc.water.opc3",
     "TIP4PEW": "leaprc.water.tip4pew",
+    "SPCE": "leaprc.water.spce",
+    "SPC/E": "leaprc.water.spce",
 }
 
+# Ion parameters per water model (Amber Manual recommendations)
+# - TIP3P, TIP4PEW: Joung-Cheatham parameters
+# - OPC: Li-Merz 12-6 HFE set (best for OPC)
+# - OPC3: Li-Merz 12-6 normal usage set
+# - SPC/E: Joung-Cheatham parameters
 WATER_ION_PARAMS = {
     "tip3p": "frcmod.ionsjc_tip3p",
-    "opc": "frcmod.ionslm_126_opc",
+    "opc": "frcmod.ionslm_hfe_opc",  # Li-Merz HFE set recommended for OPC
+    "opc3": "frcmod.ionslm_126_opc3",
     "tip4pew": "frcmod.ionsjc_tip4pew",
+    "spce": "frcmod.ionsjc_spce",
+}
+
+# =============================================================================
+# Force Field Compatibility (based on Amber Manual 2024)
+# =============================================================================
+# ff19SB was developed with OPC water and is strongly recommended to use with OPC.
+# The Amber manual explicitly warns against using ff19SB with TIP3P.
+
+FORCEFIELD_WATER_COMPATIBILITY = {
+    "ff19SB": {
+        "recommended": ["opc"],  # Amber manual: "strongly recommend using ff19SB with OPC"
+        "acceptable": ["opc3", "tip4pew"],
+        "not_recommended": ["tip3p"],  # Amber manual: "TIP3P has serious limitations with ff19SB"
+    },
+    "ff14SB": {
+        "recommended": ["tip3p", "opc", "tip4pew"],
+        "acceptable": ["opc3", "spce"],
+        "not_recommended": [],
+    },
+    "ff14SBonlysc": {
+        # For implicit solvent (GB), ff14SBonlysc with igb=8 is recommended
+        "recommended": [],  # Typically used with implicit solvent
+        "acceptable": ["tip3p", "opc", "tip4pew"],
+        "not_recommended": [],
+    },
+}
+
+# Recommended combinations for different simulation types
+RECOMMENDED_COMBINATIONS = {
+    "explicit_protein": {
+        "forcefield": "ff19SB",
+        "water_model": "opc",
+        "reason": "Amber manual strongly recommends ff19SB with OPC water"
+    },
+    "explicit_legacy": {
+        "forcefield": "ff14SB",
+        "water_model": "tip3p",
+        "reason": "Well-tested combination for backward compatibility"
+    },
+    "implicit_protein": {
+        "forcefield": "ff14SBonlysc",
+        "gb_model": "igb=8",
+        "radii": "mbondi3",
+        "reason": "Best GB results with GBneck2 model"
+    },
+    "membrane": {
+        "forcefield": "ff19SB",
+        "water_model": "opc",
+        "lipid_ff": "lipid21",
+        "reason": "lipid21 is the recommended lipid force field"
+    },
 }
 
 
@@ -232,6 +299,7 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
 def build_amber_system(
     pdb_file: str,
     ligand_params: Optional[List[Dict[str, str]]] = None,
+    metal_params: Optional[List[Dict[str, str]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
     forcefield: str = "ff14SB",
     water_model: str = "tip3p",
@@ -270,6 +338,12 @@ def build_amber_system(
                        - frcmod: Path to force field modification file
                        - residue_name: 3-letter residue name (e.g., "LIG")
                        Example: [{"mol2": "lig.mol2", "frcmod": "lig.frcmod", "residue_name": "LIG"}]
+        metal_params: List of metal parameter dicts from parameterize_metal_ion.
+                      Each dict should have:
+                      - mol2: Path to metal mol2 file (from metalpdb2mol2.py)
+                      - frcmod: Path to frcmod file (optional, from MCPB.py)
+                      - residue_name: Metal residue name (e.g., "ZN")
+                      Example: [{"mol2": "zn.mol2", "residue_name": "ZN"}]
         box_dimensions: PBC box dimensions from solvate_structure output.
                         Required keys: box_a, box_b, box_c (in Angstroms).
                         If None, builds implicit solvent system (no PBC).
@@ -335,7 +409,8 @@ def build_amber_system(
             "water_model": water_model if box_dimensions else None,
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
-            "ligand_count": len(ligand_params) if ligand_params else 0
+            "ligand_count": len(ligand_params) if ligand_params else 0,
+            "metal_count": len(metal_params) if metal_params else 0
         },
         "statistics": {},
         "errors": [],
@@ -366,6 +441,27 @@ def build_amber_system(
             expected=f"One of: {list(PROTEIN_FORCEFIELDS.keys())}",
             actual=forcefield
         )
+
+    # Check force field + water model compatibility (Amber Manual 2024 recommendations)
+    if box_dimensions:
+        ff_upper = forcefield.upper()
+        wm_lower = water_model.lower()
+        compat = FORCEFIELD_WATER_COMPATIBILITY.get(ff_upper, {})
+
+        if wm_lower in compat.get("not_recommended", []):
+            logger.warning(
+                f"WARNING: {forcefield} with {water_model} is NOT recommended. "
+                f"The Amber manual strongly recommends using OPC water with ff19SB. "
+                f"Consider using water_model='opc' for better accuracy."
+            )
+            result["warnings"].append(
+                f"Force field compatibility warning: {forcefield} + {water_model} is not recommended. "
+                f"Recommended: {', '.join(compat.get('recommended', ['opc']))}"
+            )
+        elif wm_lower not in compat.get("recommended", []) and compat.get("recommended"):
+            result["warnings"].append(
+                f"Note: Recommended water models for {forcefield}: {', '.join(compat['recommended'])}"
+            )
 
     # Validate water model (for explicit solvent)
     water_ff = None
@@ -446,7 +542,25 @@ def build_amber_system(
             for lig in valid_ligands:
                 script_lines.append(f"{lig['residue_name']} = loadmol2 {lig['mol2']}")
             script_lines.append("")
-        
+
+        # Load metal parameters (from MCPB.py or metalpdb2mol2.py)
+        if metal_params:
+            script_lines.append("# Load metal ion parameters")
+            # Load frcmod files first (if any)
+            for metal in metal_params:
+                if metal.get("frcmod"):
+                    frcmod_path = Path(metal["frcmod"])
+                    if frcmod_path.exists():
+                        script_lines.append(f"loadamberparams {metal['frcmod']}")
+            # Load mol2 files
+            for metal in metal_params:
+                if metal.get("mol2"):
+                    mol2_path = Path(metal["mol2"])
+                    if mol2_path.exists():
+                        resname = metal.get("residue_name", "MET")
+                        script_lines.append(f"{resname} = loadmol2 {metal['mol2']}")
+            script_lines.append("")
+
         # Load structure
         script_lines.append("# Load structure")
         script_lines.append(f"mol = loadpdb {pdb_path}")

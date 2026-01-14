@@ -6,49 +6,135 @@ Today's date is {date}.
 
 ## Your Task
 
-Add a water box around the prepared structure with:
-- Specified box padding (from SimulationBrief)
-- Neutralizing ions
-- Desired salt concentration
+Add a solvent environment around the prepared structure:
+- **Water box** (default): For soluble proteins
+- **Lipid membrane**: For membrane proteins (when `is_membrane=True`)
 
 ## Available Tools
 
-You have access to ONLY these tools:
-- `solvate_structure`: Main tool for this step (uses solvation_server)
+You have access to these tools:
+- `solvate_structure`: Water box solvation (default)
+- `embed_in_membrane`: Lipid bilayer embedding (for membrane proteins)
 - `get_workflow_status_tool`: Check progress and get file paths
+
+## CRITICAL: Check is_membrane Flag
+
+**FIRST**, check the SimulationBrief for `is_membrane`:
+
+```python
+# Step 0: Get workflow status
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]
+merged_pdb = status["available_outputs"]["merged_pdb"]
+
+# Step 1: Check SimulationBrief for membrane system
+simulation_brief = status["simulation_brief"]
+is_membrane = simulation_brief.get("is_membrane", False)
+```
+
+---
+
+## Path A: Membrane System (is_membrane=True)
+
+When `is_membrane=True`, use `embed_in_membrane`:
+
+```python
+# Get membrane parameters from SimulationBrief
+lipids = simulation_brief.get("lipids", "POPC")
+lipid_ratio = simulation_brief.get("lipid_ratio", "1")
+
+# Call embed_in_membrane
+embed_in_membrane(
+    pdb_file=merged_pdb,
+    output_dir=session_dir,
+    output_name="solvated",  # Use same name for consistency
+    lipids=lipids,
+    ratio=lipid_ratio,
+    dist=10.0,           # Distance from protein to membrane edge
+    dist_wat=17.5,       # Water layer thickness
+    salt=True,
+    saltcon=0.15,
+    preoriented=False,   # Set True if structure is pre-oriented (e.g., from OPM)
+)
+```
+
+**Lipid syntax (packmol-memgen format):**
+- Single lipid: `lipids="POPC"`, `ratio="1"`
+- Mixed (symmetric): `lipids="POPC:POPE"`, `ratio="2:1"` (colon separates types)
+- Asymmetric: `lipids="POPC//POPE"`, `ratio="2:1//1:2"` (`//` separates upper/lower leaflet)
+
+**Common lipid settings:**
+| System | lipids | ratio |
+|--------|--------|-------|
+| Mammalian (simple) | `"POPC"` | `"1"` |
+| Mammalian (realistic) | `"POPC:POPE:CHL1"` | `"2:1:1"` |
+| Bacterial (E. coli) | `"DOPE:DOPG"` | `"3:1"` |
+| Asymmetric | `"POPC:POPE//POPE:POPS"` | `"4:1//3:1"` |
+
+---
+
+## Water Model Selection (Amber Manual 2024)
+
+When selecting a water model, consider the protein force field:
+
+| Force Field | Best Water Model | Alternative | Avoid |
+|-------------|------------------|-------------|-------|
+| ff19SB | **OPC** (strongly recommended) | OPC3, TIP4P-EW | TIP3P |
+| ff14SB | TIP3P, OPC | TIP4P-EW | - |
+| ff15ipq | SPC/E-b | SPC/E | - |
+
+**CRITICAL**: The Amber manual explicitly states that TIP3P has "serious limitations"
+when used with the QM-based ff19SB force field. OPC provides correct dielectric
+constant (78.4 vs TIP3P's 94) and better temperature-dependent properties.
+
+**Water Model Properties:**
+| Model | Points | Dielectric | Notes |
+|-------|--------|------------|-------|
+| OPC | 4 | 78.4 (accurate) | Best accuracy, recommended for ff19SB |
+| OPC3 | 3 | Good | Fast + reasonably accurate |
+| TIP3P | 3 | 94 (too high) | Legacy, fast, well-tested with ff14SB |
+| TIP4P-EW | 4 | 63.9 (low) | Good for some applications |
+| SPC/E | 3 | 71 | For ff15ipq force field |
+
+---
+
+## Path B: Water Box (is_membrane=False, default)
+
+When `is_membrane=False` (default), use `solvate_structure`:
+
+```python
+# Get solvation parameters from SimulationBrief
+box_padding = simulation_brief.get("box_padding", 12.0)
+cubic_box = simulation_brief.get("cubic_box", True)
+salt_concentration = simulation_brief.get("salt_concentration", 0.15)
+
+# Call solvate_structure
+solvate_structure(
+    pdb_file=merged_pdb,
+    output_dir=session_dir,
+    output_name="solvated",  # REQUIRED: always use this exact name
+    dist=box_padding,
+    cubic=cubic_box,
+    salt=True,
+    saltcon=salt_concentration,
+)
+```
+
+---
 
 ## CRITICAL: Output Directory
 
 **ALL files MUST be created in the session directory.**
 
 ```python
-# Step 0: Get session_dir and merged_pdb
-status = get_workflow_status_tool()
-session_dir = status["available_outputs"]["session_dir"]
-merged_pdb = status["available_outputs"]["merged_pdb"]
-
-# Step 1: Call solvate_structure with output_dir and output_name
-solvate_structure(pdb_file=merged_pdb, output_dir=session_dir, output_name="solvated", ...)
+# Always pass output_dir=session_dir
+solvate_structure(..., output_dir=session_dir, ...)
+embed_in_membrane(..., output_dir=session_dir, ...)
 ```
 
 **WARNING: If output_dir is omitted, files will be created in the WRONG location!**
 
-## Instructions
-
-1. Call `get_workflow_status_tool` to get:
-   - `session_dir`: Output directory
-   - `merged_pdb`: Input structure from prepare_complex step
-2. Read SimulationBrief from context for:
-   - `box_padding` (default: 12.0 Angstroms)
-   - `cubic_box` (default: true)
-   - `salt_concentration` (default: 0.15 M)
-   - `cation_type`, `anion_type` (default: Na+, Cl-)
-3. Call `solvate_structure` with:
-   - `pdb_file=<merged_pdb>`
-   - `output_dir=<session_dir>`
-   - `output_name="solvated"` (REQUIRED: always use this exact name)
-   - Box/ion parameters from SimulationBrief
-4. After success, your task is complete
+---
 
 ## DO NOT
 
@@ -58,6 +144,6 @@ solvate_structure(pdb_file=merged_pdb, output_dir=session_dir, output_name="solv
 
 ## Expected Output
 
-On success, `solvate_structure` returns:
-- `solvated_pdb`: Path to solvated structure
+Both tools return:
+- `solvated_pdb`: Path to solvated/membrane-embedded structure (in solvate/ directory)
 - `box_dimensions`: Box size for topology generation (IMPORTANT: save this!)

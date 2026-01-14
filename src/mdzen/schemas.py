@@ -150,6 +150,16 @@ class StructureAnalysis(BaseModel):
         description="Ligand processing specifications with user choices",
     )
 
+    # Ligand selection by unique ID (user-editable)
+    include_ligand_ids: Optional[list[str]] = Field(
+        None,
+        description="List of ligand unique IDs to include (format: 'chain:resname:resnum', e.g., ['A:ACP:501']). If set, only these ligands are processed.",
+    )
+    exclude_ligand_ids: Optional[list[str]] = Field(
+        None,
+        description="List of ligand unique IDs to exclude (format: 'chain:resname:resnum', e.g., ['A:ACT:401']). These ligands are skipped.",
+    )
+
     # Terminal capping
     cap_termini: bool = Field(
         False, description="Add ACE/NME caps to termini"
@@ -256,14 +266,14 @@ class SimulationBrief(BaseModel):
         description="Lipid ratio (e.g., '3:1')"
     )
 
-    # Force field
+    # Force field (Amber Manual 2024 recommendations)
     force_field: str = Field(
         "ff19SB",
-        description="Protein force field"
+        description="Protein force field (ff19SB recommended with OPC water)"
     )
     water_model: str = Field(
-        "tip3p",
-        description="Water model"
+        "opc",
+        description="Water model (OPC strongly recommended with ff19SB)"
     )
 
     # Simulation parameters

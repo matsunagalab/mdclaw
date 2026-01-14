@@ -82,7 +82,7 @@ class Settings(BaseSettings):
     default_timeout: int = 300
     structure_timeout: int = 600  # antechamber can take several minutes for complex ligands
     solvation_timeout: int = 600
-    membrane_timeout: int = 1800
+    membrane_timeout: int = 3600  # Large membrane systems (e.g., SERCA) need more time
     md_simulation_timeout: int = 3600
 
     # Logging settings
@@ -98,6 +98,7 @@ class Settings(BaseSettings):
     solvation_server_path: str = "servers/solvation_server.py"
     amber_server_path: str = "servers/amber_server.py"
     md_simulation_server_path: str = "servers/md_simulation_server.py"
+    metal_server_path: str = "servers/metal_server.py"
 
     class Config:
         env_prefix = "MDZEN_"
@@ -127,7 +128,7 @@ def get_server_path(server_name: str) -> str:
     """Get the path to a server script.
 
     Args:
-        server_name: Server name ("research", "structure", "genesis", "solvation", "amber", "md_simulation")
+        server_name: Server name ("research", "structure", "genesis", "solvation", "amber", "md_simulation", "metal")
 
     Returns:
         Relative path to server script
@@ -139,6 +140,7 @@ def get_server_path(server_name: str) -> str:
         "solvation": settings.solvation_server_path,
         "amber": settings.amber_server_path,
         "md_simulation": settings.md_simulation_server_path,
+        "metal": settings.metal_server_path,
     }
     return server_map.get(server_name, f"servers/{server_name}_server.py")
 
@@ -188,7 +190,9 @@ def get_timeout(timeout_type: str) -> int:
         "research": settings.default_timeout,
         "structure": settings.structure_timeout,  # antechamber needs more time
         "genesis": settings.default_timeout,
-        "solvation": settings.solvation_timeout,
+        # solvation server handles both water box and membrane - use membrane timeout
+        # to ensure MCP connection doesn't timeout during long membrane builds
+        "solvation": settings.membrane_timeout,
         "membrane": settings.membrane_timeout,
         "amber": settings.default_timeout,
         "md_simulation": settings.md_simulation_timeout,
