@@ -1834,16 +1834,16 @@ def clean_protein(
             logger.warning(f"Disulfide bond detection failed: {e}")
         
         # Step 6: Add hydrogens (protonation)
-        # NOTE: We skip PDBFixer hydrogen addition here and let pdb4amber --reduce
-        # handle it instead. This prevents duplicate/conflicting hydrogens,
-        # especially at N-termini of internal chain breaks (e.g., NALA, NVAL, NGLN)
-        # which can cause tleap "does not have a type" errors.
+        # NOTE: We skip PDBFixer hydrogen addition here and let pdb2pqr + propka
+        # handle it instead (with pdb4amber --reduce as fallback). This prevents
+        # duplicate/conflicting hydrogens, especially at N-termini of internal
+        # chain breaks (e.g., NALA, NVAL, NGLN) which can cause tleap errors.
         if add_hydrogens:
-            logger.info(f"Skipping PDBFixer hydrogen addition (pH {ph}) - pdb4amber --reduce will handle it")
+            logger.info(f"Skipping PDBFixer hydrogen addition (pH {ph}) - pdb2pqr/propka will handle it")
             result["operations"].append({
                 "step": "protonation",
                 "status": "deferred",
-                "details": f"Hydrogen addition deferred to pdb4amber --reduce (pH {ph} requested)"
+                "details": f"Hydrogen addition deferred to pdb2pqr+propka (pH {ph} requested)"
             })
             # Store pH for potential future use
             result["requested_ph"] = ph

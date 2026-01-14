@@ -98,3 +98,23 @@ simulation_brief["include_types"] = ["protein", "ion"]
 On success, `prepare_complex` returns:
 - `merged_pdb`: Path to cleaned/merged structure
 - `ligand_params`: Dictionary of ligand frcmod/mol2 paths (if ligands present)
+
+## CRITICAL: Mark Step Complete with merged_pdb!
+
+**After `prepare_complex` succeeds, you MUST call `mark_step_complete` with the merged_pdb path!**
+
+```python
+# Call prepare_complex
+result = prepare_complex(pdb_id="1AKE", output_dir=session_dir, ...)
+
+# CRITICAL: Save merged_pdb path for the next step!
+mark_step_complete("prepare_complex", {
+    "merged_pdb": result["merged_pdb"],    # REQUIRED - solvate step needs this!
+    "ligand_params": result.get("ligand_params", {})  # Optional
+})
+```
+
+**Why this matters:**
+- The next step (solvate) retrieves `merged_pdb` from `get_workflow_status_tool()`
+- If you don't call `mark_step_complete`, the solvate step won't know which file to use!
+- This can cause the agent to use the WRONG file (original PDB instead of processed one)

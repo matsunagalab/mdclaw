@@ -83,10 +83,11 @@ Force fields must be loaded in this order in the generated tleap script:
    - `ligand_params`: Ligand frcmod/mol2 paths (if present)
 2. Read SimulationBrief from context for:
    - `force_field` (default: "ff19SB")
-   - `water_model` (default: "opc" - strongly recommended with ff19SB)
+   - `water_model` (default: "opc" - MUST match solvate step!)
 3. Call `build_amber_system` with:
    - `pdb_file=<solvated_pdb>`
    - `box_dimensions=<box_dimensions>` (CRITICAL!)
+   - `water_model=<water_model>` (CRITICAL: must match solvate step!)
    - `ligand_params=<ligand_params>` (if present)
    - `output_dir=<session_dir>`
    - `output_name="system"` (REQUIRED: always use this exact name)
@@ -98,6 +99,29 @@ Force fields must be loaded in this order in the generated tleap script:
 - Call structure preparation tools (already done)
 - Call solvation tools (already done)
 - Call simulation tools (next step)
+
+## CRITICAL: water_model Consistency
+
+The `water_model` parameter **MUST MATCH** the water model used in the solvate step!
+
+```python
+# Default: OPC water (recommended for ff19SB)
+solvate_structure(..., water_model="opc")     # Creates 4-atom waters (O, H1, H2, EPW)
+build_amber_system(..., water_model="opc")    # Loads OPC leaprc
+
+# Alternative: TIP3P water (for ff14SB or legacy compatibility)
+solvate_structure(..., water_model="tip3p")   # Creates 3-atom waters (O, H1, H2)
+build_amber_system(..., water_model="tip3p")  # Loads TIP3P leaprc
+```
+
+**Mismatched water models cause catastrophic failure:**
+- solvate with `tip3p` + build_topology with `opc` → tleap adds 1 extra atom per water → massive clashes
+- Initial energy ~10^13 kJ/mol (instead of ~10^5) → simulation fails immediately
+
+**Note**: The build_amber_system tool now auto-detects water type in the input PDB and
+will override mismatched water_model with a warning, but always pass the correct value.
+
+---
 
 ## CRITICAL: box_dimensions
 

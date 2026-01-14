@@ -17,15 +17,37 @@ You have access to these tools:
 - `embed_in_membrane`: Lipid bilayer embedding (for membrane proteins)
 - `get_workflow_status_tool`: Check progress and get file paths
 
-## CRITICAL: Check is_membrane Flag
+## CRITICAL: Use the correct input file!
 
-**FIRST**, check the SimulationBrief for `is_membrane`:
+**YOU MUST GET THE INPUT FILE FROM `get_workflow_status_tool()`!**
+
+The input file for solvation is `merged_pdb` from the previous step (prepare_complex).
+- **CORRECT**: Use `status["available_outputs"]["merged_pdb"]`
+- **WRONG**: Use the original PDB file (e.g., "1AKE.pdb")
+
+**Why this matters:**
+- The original PDB may contain components you want to exclude (ligands, extra chains, crystallographic waters)
+- The `prepare_complex` step creates `merged.pdb` with ONLY the components the user requested
+- Using the wrong file will cause topology generation to FAIL with missing parameter errors
+
+## Step 0: Get workflow status (REQUIRED FIRST STEP)
+
+**FIRST**, call `get_workflow_status_tool()` to get the correct file paths:
 
 ```python
-# Step 0: Get workflow status
+# REQUIRED: Get workflow status to retrieve correct file paths
 status = get_workflow_status_tool()
 session_dir = status["available_outputs"]["session_dir"]
+
+# CRITICAL: Get merged_pdb from previous step output
 merged_pdb = status["available_outputs"]["merged_pdb"]
+#            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+#            This is the ONLY correct input file!
+#            NEVER use the original PDB file!
+
+# Check prerequisites - if merged_pdb is missing, DO NOT proceed!
+if "merged_pdb" not in status["available_outputs"]:
+    raise ValueError("merged_pdb not found! prepare_complex step may have failed.")
 
 # Step 1: Check SimulationBrief for membrane system
 simulation_brief = status["simulation_brief"]
@@ -42,6 +64,7 @@ When `is_membrane=True`, use `embed_in_membrane`:
 # Get membrane parameters from SimulationBrief
 lipids = simulation_brief.get("lipids", "POPC")
 lipid_ratio = simulation_brief.get("lipid_ratio", "1")
+water_model = simulation_brief.get("water_model", "opc")  # MUST match build_topology!
 
 # Call embed_in_membrane
 embed_in_membrane(
@@ -55,6 +78,7 @@ embed_in_membrane(
     salt=True,
     saltcon=0.15,
     preoriented=False,   # Set True if structure is pre-oriented (e.g., from OPM)
+    water_model=water_model,  # CRITICAL: Must match build_topology water_model!
 )
 ```
 
@@ -96,6 +120,19 @@ constant (78.4 vs TIP3P's 94) and better temperature-dependent properties.
 | TIP4P-EW | 4 | 63.9 (low) | Good for some applications |
 | SPC/E | 3 | 71 | For ff15ipq force field |
 
+**CRITICAL: Water Model Consistency**
+
+The `water_model` parameter MUST match between solvation and topology steps:
+- `solvate_structure(water_model="tip3p")` → `build_amber_system(water_model="tip3p")`
+- `solvate_structure(water_model="opc")` → `build_amber_system(water_model="opc")`
+
+**Mismatched water models cause severe atom clashes and simulation failure!**
+
+Example of catastrophic failure:
+- solvate with `water_model="tip3p"` (3 atoms/water: O, H1, H2)
+- build_topology with `water_model="opc"` (4 atoms/water: O, H1, H2, EPW)
+- tleap adds 1 extra atom per water → massive steric clashes → energy ~10^13 kJ/mol
+
 ---
 
 ## Path B: Water Box (is_membrane=False, default)
@@ -107,6 +144,7 @@ When `is_membrane=False` (default), use `solvate_structure`:
 box_padding = simulation_brief.get("box_padding", 12.0)
 cubic_box = simulation_brief.get("cubic_box", True)
 salt_concentration = simulation_brief.get("salt_concentration", 0.15)
+water_model = simulation_brief.get("water_model", "opc")  # MUST match build_topology!
 
 # Call solvate_structure
 solvate_structure(
@@ -117,6 +155,7 @@ solvate_structure(
     cubic=cubic_box,
     salt=True,
     saltcon=salt_concentration,
+    water_model=water_model,  # CRITICAL: Must match build_topology water_model!
 )
 ```
 

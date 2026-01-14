@@ -671,9 +671,22 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
     if simulation_brief:
         result["simulation_brief"] = simulation_brief
 
-    # CRITICAL: Warn if build_topology is next but box_dimensions is missing
-    # This helps catch the bug where solvate step output wasn't passed correctly
+    # CRITICAL: Warn if required outputs are missing for the current step
+    # This helps catch bugs where previous step outputs weren't passed correctly
     current_step = result.get("current_step")
+
+    # Solvate step requires merged_pdb from prepare_complex
+    if current_step == "solvate":
+        merged_pdb = outputs.get("merged_pdb")
+        if not merged_pdb:
+            result["critical_warning"] = (
+                "CRITICAL: merged_pdb is MISSING from outputs! "
+                "The prepare_complex step should have stored merged_pdb via mark_step_complete. "
+                "Without merged_pdb, you CANNOT proceed with solvation. "
+                "DO NOT use the original PDB file - it may contain components you want to exclude!"
+            )
+
+    # Build_topology step requires box_dimensions from solvate
     if current_step == "build_topology":
         box_dims = outputs.get("box_dimensions")
         if not box_dims:
