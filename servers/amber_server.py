@@ -393,9 +393,9 @@ def build_amber_system(
     
     # Setup output directory with human-readable name
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "amber")
+        out_dir = create_unique_subdir(WORKING_DIR, "topology")
     else:
-        out_dir = create_unique_subdir(output_dir, "amber")
+        out_dir = create_unique_subdir(output_dir, "topology")
     result["output_dir"] = str(out_dir)
     
     # Output files

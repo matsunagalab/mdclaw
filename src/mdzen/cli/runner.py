@@ -162,24 +162,6 @@ def display_results(state: dict, console: Console) -> None:
                 console.print(f"  {key}: {value}")
 
 
-def display_simulation_brief(brief: dict, console: Console) -> None:
-    """Display SimulationBrief in a readable format.
-
-    Args:
-        brief: SimulationBrief dictionary
-        console: Rich console for output
-    """
-    console.print("\n[bold green]SimulationBrief Generated:[/bold green]")
-    console.print(f"  PDB ID: {brief.get('pdb_id', 'N/A')}")
-    console.print(f"  Chains: {brief.get('select_chains', 'All')}")
-    console.print(f"  Temperature: {brief.get('temperature', 300)} K")
-    console.print(f"  Simulation time: {brief.get('simulation_time_ns', 1)} ns")
-    console.print(f"  Force field: {brief.get('force_field', 'ff19SB')}")
-    console.print(f"  Water model: {brief.get('water_model', 'tip3p')}")
-    if brief.get("is_membrane"):
-        console.print(f"  Membrane: {brief.get('lipids', 'Yes')}")
-
-
 def display_debug_state(state: dict, console: Console) -> None:
     """Display debug information about session state.
 
@@ -206,6 +188,5 @@ __all__ = [
     "run_agent_with_events",
     # Display helpers
     "display_results",
-    "display_simulation_brief",
     "display_debug_state",
 ]

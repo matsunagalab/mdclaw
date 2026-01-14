@@ -8,7 +8,7 @@ from typing import Optional
 
 from google.adk.tools import ToolContext
 
-from mdzen.schemas import SimulationBrief
+from mdzen.schemas import SimulationBrief, StructureAnalysis
 from mdzen.utils import safe_dict, safe_list
 from mdzen.workflow import (
     SETUP_STEPS,
@@ -82,6 +82,7 @@ def generate_simulation_brief(
     use_msa: bool = True,
     num_models: int = 5,
     output_formats: Optional[list[str]] = None,
+    structure_analysis: Optional[dict] = None,
     tool_context: ToolContext = None,  # ADK injects this automatically
 ) -> dict:
     """Generate a structured SimulationBrief from gathered requirements.
@@ -121,7 +122,11 @@ def generate_simulation_brief(
         use_boltz2_docking: Use Boltz-2 for docking
         use_msa: Use MSA server for Boltz-2 predictions
         num_models: Number of Boltz-2 models to generate
-        output_formats: Output formats (default: ["amber"])
+        output_formats: Output formats (default: ["topology"])
+        structure_analysis: Detailed structure analysis from Phase 1. Contains
+            user-approved settings for disulfide bonds, histidine protonation,
+            missing residue handling, and ligand processing. This is passed to
+            Phase 2 for execution.
         tool_context: ADK ToolContext (automatically injected)
 
     Returns:
@@ -134,6 +139,15 @@ def generate_simulation_brief(
     lipids = _normalize_null(lipids)
     lipid_ratio = _normalize_null(lipid_ratio)
     pressure_bar = _normalize_null(pressure_bar)
+
+    # Parse structure_analysis if provided
+    parsed_analysis = None
+    if structure_analysis and isinstance(structure_analysis, dict):
+        try:
+            parsed_analysis = StructureAnalysis(**structure_analysis)
+        except Exception:
+            # If parsing fails, pass None and let Phase 2 auto-detect
+            pass
 
     brief = SimulationBrief(
         pdb_id=pdb_id,
@@ -166,7 +180,8 @@ def generate_simulation_brief(
         use_boltz2_docking=use_boltz2_docking,
         use_msa=use_msa,
         num_models=num_models,
-        output_formats=output_formats or ["amber"],
+        output_formats=output_formats or ["topology"],
+        structure_analysis=parsed_analysis,
     )
 
     brief_dict = brief.model_dump()
@@ -175,7 +190,160 @@ def generate_simulation_brief(
     if tool_context is not None:
         tool_context.state["simulation_brief"] = brief_dict
 
-    return brief_dict
+    # Generate user-friendly summary with all parameters and descriptions
+    summary = _format_simulation_brief_summary(brief)
+
+    return {
+        "success": True,
+        "brief": brief_dict,
+        "summary": summary,
+    }
+
+
+def _format_simulation_brief_summary(brief: SimulationBrief) -> str:
+    """Format SimulationBrief as a user-friendly summary with all parameters.
+
+    Groups parameters into logical categories and includes descriptions
+    for each parameter to help users understand the simulation setup.
+    """
+    lines = []
+    lines.append("=" * 60)
+    lines.append("SIMULATION BRIEF - All Parameters")
+    lines.append("=" * 60)
+
+    # 1. Structure Source
+    lines.append("\n## 1. Structure Source")
+    lines.append("-" * 40)
+    if brief.pdb_id:
+        lines.append(f"  pdb_id: {brief.pdb_id}")
+        lines.append("    → Fetch structure from PDB")
+    elif brief.fasta_sequence:
+        seq_preview = brief.fasta_sequence[:50] + "..." if len(brief.fasta_sequence) > 50 else brief.fasta_sequence
+        lines.append(f"  fasta_sequence: {seq_preview}")
+        lines.append("    → Predict structure from FASTA using Boltz-2")
+    elif brief.structure_file:
+        lines.append(f"  structure_file: {brief.structure_file}")
+        lines.append("    → Load structure from local file")
+    else:
+        lines.append("  (No structure source specified)")
+
+    # 2. Chain Selection
+    lines.append("\n## 2. Chain Selection")
+    lines.append("-" * 40)
+    chains = brief.select_chains if brief.select_chains else ["all chains"]
+    lines.append(f"  select_chains: {chains}")
+    lines.append("    → Chains to include in simulation")
+
+    # 3. Component Selection
+    lines.append("\n## 3. Component Selection")
+    lines.append("-" * 40)
+    include = brief.include_types if brief.include_types else ["protein", "ligand", "ion"]
+    lines.append(f"  include_types: {include}")
+    lines.append("    → protein, ligand, ion, water (crystal waters)")
+    lines.append(f"  ph: {brief.ph}")
+    lines.append("    → pH for protonation state determination")
+    lines.append(f"  cap_termini: {brief.cap_termini}")
+    lines.append("    → True = add ACE/NME caps to termini")
+
+    # 4. Ligand Parameters
+    lines.append("\n## 4. Ligand Parameters")
+    lines.append("-" * 40)
+    if brief.ligand_smiles:
+        lines.append(f"  ligand_smiles: {brief.ligand_smiles}")
+        lines.append("    → Manually specified SMILES")
+    else:
+        lines.append("  ligand_smiles: (auto-detect)")
+    lines.append(f"  charge_method: {brief.charge_method}")
+    lines.append("    → Charge method (bcc=AM1-BCC, gas=Gasteiger)")
+    lines.append(f"  atom_type: {brief.atom_type}")
+    lines.append("    → Atom type (gaff2 recommended)")
+
+    # 5. Solvation Parameters
+    lines.append("\n## 5. Solvation Parameters")
+    lines.append("-" * 40)
+    lines.append(f"  box_padding: {brief.box_padding} Å")
+    lines.append("    → Distance from protein surface to box edge")
+    lines.append(f"  cubic_box: {brief.cubic_box}")
+    lines.append("    → True = cubic box, False = rectangular")
+    lines.append(f"  salt_concentration: {brief.salt_concentration} M")
+    lines.append("    → Salt concentration (physiological: 0.15M)")
+    lines.append(f"  cation_type: {brief.cation_type}")
+    lines.append("    → Cation species (Na+, K+, etc.)")
+    lines.append(f"  anion_type: {brief.anion_type}")
+    lines.append("    → Anion species (Cl-, etc.)")
+
+    # 6. Membrane Settings (if applicable)
+    if brief.is_membrane:
+        lines.append("\n## 6. Membrane Parameters")
+        lines.append("-" * 40)
+        lines.append(f"  is_membrane: {brief.is_membrane}")
+        lines.append("    → Membrane protein system")
+        lines.append(f"  lipids: {brief.lipids or 'not specified'}")
+        lines.append("    → Lipid type (POPC, DPPC, etc.)")
+        lines.append(f"  lipid_ratio: {brief.lipid_ratio or 'not specified'}")
+        lines.append("    → Lipid ratio")
+
+    # 7. Force Field
+    lines.append("\n## 7. Force Field")
+    lines.append("-" * 40)
+    lines.append(f"  force_field: {brief.force_field}")
+    lines.append("    → Protein force field (ff19SB recommended)")
+    lines.append(f"  water_model: {brief.water_model}")
+    lines.append("    → Water model (tip3p, opc, spce, etc.)")
+
+    # 8. Simulation Parameters
+    lines.append("\n## 8. Simulation Parameters")
+    lines.append("-" * 40)
+    lines.append(f"  temperature: {brief.temperature} K")
+    lines.append("    → Temperature (300K=room temp, 310K=body temp)")
+    if brief.pressure_bar is not None:
+        lines.append(f"  pressure_bar: {brief.pressure_bar} bar")
+        lines.append("    → Pressure (NPT ensemble)")
+    else:
+        lines.append("  pressure_bar: None")
+        lines.append("    → NVT ensemble (constant volume)")
+    lines.append(f"  timestep: {brief.timestep} fs")
+    lines.append("    → Integration timestep (2fs standard)")
+    lines.append(f"  simulation_time_ns: {brief.simulation_time_ns} ns")
+    lines.append("    → Simulation time")
+    lines.append(f"  minimize_steps: {brief.minimize_steps}")
+    lines.append("    → Energy minimization steps")
+    lines.append(f"  nonbonded_cutoff: {brief.nonbonded_cutoff} Å")
+    lines.append("    → Nonbonded interaction cutoff")
+    lines.append(f"  constraints: {brief.constraints}")
+    lines.append("    → Constraints (HBonds=hydrogen bonds, AllBonds=all bonds)")
+    lines.append(f"  output_frequency_ps: {brief.output_frequency_ps} ps")
+    lines.append("    → Trajectory output interval")
+
+    # 9. Output Settings
+    lines.append("\n## 9. Output Settings")
+    lines.append("-" * 40)
+    formats = brief.output_formats if brief.output_formats else ["topology"]
+    lines.append(f"  output_formats: {formats}")
+    lines.append("    → Output format")
+
+    # 10. Structure Analysis (if present)
+    if brief.structure_analysis and brief.structure_analysis.analysis_performed:
+        sa = brief.structure_analysis
+        lines.append("\n## 10. Structure Analysis Results")
+        lines.append("-" * 40)
+        lines.append(f"  analysis_ph: {sa.analysis_ph}")
+
+        if sa.disulfide_bonds:
+            lines.append(f"  disulfide_bonds: {len(sa.disulfide_bonds)} bonds")
+            for ds in sa.disulfide_bonds:
+                status = "form" if ds.form_bond else "skip"
+                lines.append(f"    - {ds.chain1}:{ds.resnum1} - {ds.chain2}:{ds.resnum2} ({status})")
+
+        if sa.histidine_states:
+            lines.append(f"  histidine_states: {len(sa.histidine_states)} residues")
+            for his in sa.histidine_states:
+                user = " (user-specified)" if his.user_specified else ""
+                lines.append(f"    - {his.chain}:{his.resnum} → {his.state}{user}")
+
+    lines.append("\n" + "=" * 60)
+
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -301,8 +469,8 @@ def run_validation(
     # Standard file locations (fallback if not in outputs dictionary)
     session_path = Path(session_dir) if session_dir else None
     standard_paths = {
-        "parm7": session_path / "amber" / "system.parm7" if session_path else None,
-        "rst7": session_path / "amber" / "system.rst7" if session_path else None,
+        "parm7": session_path / "topology" / "system.parm7" if session_path else None,
+        "rst7": session_path / "topology" / "system.rst7" if session_path else None,
         "trajectory": session_path / "md_simulation" / "trajectory.dcd" if session_path else None,
         "merged_pdb": session_path / "merge" / "merged.pdb" if session_path else None,
         "solvated_pdb": session_path / "solvate" / "solvated.pdb" if session_path else None,
@@ -348,72 +516,127 @@ def run_validation(
                 "exists": True,
             }
 
-    # Generate report
+    # Collect all important output files (*.parm7, *.rst7, *.pdb, *.dcd)
+    important_files = {}
+
+    # Check standard locations for important files
+    if session_path and session_path.exists():
+        # Find all important files recursively
+        for pattern, label in [
+            ("**/*.parm7", "topology"),
+            ("**/*.rst7", "coordinates"),
+            ("**/*.pdb", "structure"),
+            ("**/*.dcd", "trajectory"),
+        ]:
+            for f in session_path.glob(pattern):
+                # Use relative path from session_dir for cleaner output
+                rel_path = f.relative_to(session_path)
+                key = f"{label}:{rel_path}"
+                important_files[str(rel_path)] = {
+                    "path": str(f),
+                    "type": label,
+                    "size_mb": round(f.stat().st_size / (1024 * 1024), 2),
+                }
+
+    # Generate comprehensive summary report
     report_lines = [
-        "# MD Simulation Setup Report",
-        "",
-        "## Configuration Summary",
+        "=" * 60,
+        "MD SIMULATION WORKFLOW - COMPLETE SUMMARY",
+        "=" * 60,
         "",
     ]
 
-    # Add brief summary
+    # 1. Input Summary
+    report_lines.append("## 1. Input")
+    report_lines.append("-" * 40)
     if simulation_brief:
-        report_lines.append(f"- **PDB ID**: {simulation_brief.get('pdb_id', 'N/A')}")
-        report_lines.append(f"- **Temperature**: {simulation_brief.get('temperature', 300)} K")
-        report_lines.append(f"- **Simulation Time**: {simulation_brief.get('simulation_time_ns', 1)} ns")
-        report_lines.append(f"- **Force Field**: {simulation_brief.get('force_field', 'ff19SB')}")
-        report_lines.append("")
-
-    # Add generated files
-    report_lines.append("## Generated Files")
+        pdb_id = simulation_brief.get('pdb_id', 'N/A')
+        fasta = simulation_brief.get('fasta_sequence')
+        if pdb_id and pdb_id != 'N/A':
+            report_lines.append(f"  Structure: PDB {pdb_id}")
+        elif fasta:
+            report_lines.append(f"  Structure: FASTA sequence ({len(fasta)} residues)")
+        chains = simulation_brief.get('select_chains', ['all'])
+        report_lines.append(f"  Chains: {chains}")
+        include = simulation_brief.get('include_types', ['protein', 'ligand', 'ion'])
+        report_lines.append(f"  Components: {include}")
     report_lines.append("")
 
-    for key, info in validation_results["required_files"].items():
-        status = "OK" if info["exists"] else "MISSING"
-        path = info.get("path", "N/A")
-        report_lines.append(f"- **{key}**: {path} [{status}]")
+    # 2. Simulation Parameters
+    report_lines.append("## 2. Simulation Parameters")
+    report_lines.append("-" * 40)
+    if simulation_brief:
+        report_lines.append(f"  Temperature: {simulation_brief.get('temperature', 300)} K")
+        pressure = simulation_brief.get('pressure_bar')
+        if pressure is not None:
+            report_lines.append(f"  Pressure: {pressure} bar (NPT)")
+        else:
+            report_lines.append("  Ensemble: NVT (constant volume)")
+        report_lines.append(f"  Simulation time: {simulation_brief.get('simulation_time_ns', 1)} ns")
+        report_lines.append(f"  Timestep: {simulation_brief.get('timestep', 2)} fs")
+        report_lines.append(f"  Force field: {simulation_brief.get('force_field', 'ff19SB')}")
+        report_lines.append(f"  Water model: {simulation_brief.get('water_model', 'tip3p')}")
+    report_lines.append("")
 
-    for key, info in validation_results["optional_files"].items():
-        path = info.get("path", "N/A")
-        report_lines.append(f"- **{key}**: {path}")
+    # 3. Output Files (only important ones)
+    report_lines.append("## 3. Output Files")
+    report_lines.append("-" * 40)
+
+    # Group by type
+    file_types = {"topology": [], "coordinates": [], "structure": [], "trajectory": []}
+    for rel_path, info in important_files.items():
+        file_types[info["type"]].append((rel_path, info))
+
+    # Show files by type
+    type_labels = {
+        "topology": "Topology (*.parm7)",
+        "coordinates": "Coordinates (*.rst7)",
+        "structure": "Structures (*.pdb)",
+        "trajectory": "Trajectories (*.dcd)",
+    }
+
+    for ftype, label in type_labels.items():
+        files = file_types.get(ftype, [])
+        if files:
+            report_lines.append(f"\n  ### {label}")
+            for rel_path, info in files:
+                size = info["size_mb"]
+                report_lines.append(f"    - {rel_path} ({size} MB)")
 
     report_lines.append("")
 
-    # Add status
-    report_lines.append("## Status")
-    report_lines.append("")
+    # 4. Status
+    report_lines.append("## 4. Status")
+    report_lines.append("-" * 40)
     if validation_results["success"]:
-        report_lines.append("Setup completed successfully. Ready for production MD simulation.")
+        report_lines.append("  ✓ Workflow completed successfully")
+        report_lines.append("  ✓ All required files generated")
     else:
-        report_lines.append("Setup incomplete. Please check the errors above.")
+        report_lines.append("  ✗ Workflow incomplete")
         for error in validation_results["errors"]:
-            report_lines.append(f"- {error}")
+            report_lines.append(f"  ✗ {error}")
+
+    if validation_results["warnings"]:
+        for warning in validation_results["warnings"]:
+            report_lines.append(f"  ⚠ {warning}")
 
     report_lines.append("")
-    report_lines.append(f"Session directory: `{session_dir}`")
 
-    # Add clarification log reference if available
-    if clarification_log:
-        report_lines.append("")
-        report_lines.append("## Clarification Log")
-        report_lines.append("")
-        report_lines.append(f"Full clarification history saved to: `{clarification_log_path}`")
-        # Include a brief excerpt (first 500 chars) to avoid bloating the report
-        excerpt = clarification_log[:500]
-        if len(clarification_log) > 500:
-            excerpt += "\n... (truncated, see full log file)"
-        report_lines.append("")
-        report_lines.append("### Excerpt")
-        report_lines.append("```")
-        report_lines.append(excerpt)
-        report_lines.append("```")
+    # 5. Session Info
+    report_lines.append("## 5. Session Info")
+    report_lines.append("-" * 40)
+    report_lines.append(f"  Directory: {session_dir}")
+
+    report_lines.append("")
+    report_lines.append("=" * 60)
 
     final_report = "\n".join(report_lines)
 
     return {
-        "validation_results": validation_results,
+        "success": validation_results["success"],
         "final_report": final_report,
-        "clarification_log_available": bool(clarification_log),
+        "important_files": important_files,
+        "validation_results": validation_results,
     }
 
 
@@ -426,17 +649,22 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
     """Get current workflow progress and validate prerequisites. Call this before each step.
 
     Returns:
-        dict: Current step info, completed steps, validation status, and session_dir
+        dict: Current step info, completed steps, validation status, session_dir, and simulation_brief
     """
     completed_steps = safe_list(tool_context.state.get("completed_steps"))
     outputs = safe_dict(tool_context.state.get("outputs"))
     session_dir = str(tool_context.state.get("session_dir", ""))
+    simulation_brief = safe_dict(tool_context.state.get("simulation_brief"))
 
     result = get_workflow_status(completed_steps, outputs)
 
     # Add session_dir to available_outputs for agent access
     if session_dir:
         result["available_outputs"]["session_dir"] = session_dir
+
+    # Add simulation_brief for agent to access user's choices (include_types, etc.)
+    if simulation_brief:
+        result["simulation_brief"] = simulation_brief
 
     return result
 

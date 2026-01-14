@@ -7,7 +7,6 @@ from mdzen.cli.runner import (
     create_message,
     extract_text_from_content,
     display_results,
-    display_simulation_brief,
     display_debug_state,
 )
 
@@ -18,6 +17,5 @@ __all__ = [
     "create_message",
     "extract_text_from_content",
     "display_results",
-    "display_simulation_brief",
     "display_debug_state",
 ]

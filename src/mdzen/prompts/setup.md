@@ -35,17 +35,38 @@ Pattern for each step:
 
 **ALL files MUST be created in the session directory.**
 
-When you call `get_workflow_status_tool`, it returns `available_outputs` which contains:
-- `session_dir`: The session-specific output directory (e.g., "/path/to/outputs/session_XXXXXXXX")
+### Step 0: Get session_dir FIRST (REQUIRED)
 
-**You MUST pass `output_dir=<session_dir>` to EVERY MCP tool call.**
+Before calling ANY MCP tool, you MUST:
+1. Call `get_workflow_status_tool()`
+2. Extract `session_dir` from `available_outputs["session_dir"]`
+3. Use this EXACT value for ALL subsequent MCP tool calls
+
+```python
+# FIRST: Get session_dir
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]  # e.g., "/path/to/job_abc12345"
+
+# THEN: Pass output_dir to EVERY MCP tool
+prepare_complex(..., output_dir=session_dir)       # ← REQUIRED
+solvate_structure(..., output_dir=session_dir)     # ← REQUIRED
+build_amber_system(..., output_dir=session_dir)    # ← REQUIRED
+run_md_simulation(..., output_dir=session_dir)     # ← REQUIRED
+```
+
+**WARNING: If you omit `output_dir`, files will be created in a WRONG location!**
+- ❌ WRONG: Files in `/outputs/solvate_3/` (default location)
+- ✅ CORRECT: Files in `/job_abc12345/` (session directory)
 
 ## Workflow Steps (Execute in EXACT Order: 1 → 2 → 3 → 4)
 
 ### Step 1: prepare_complex (structure_server)
 - Input: PDB ID and chain selection from SimulationBrief
 - **REQUIRED: output_dir=session_dir**
-- Output produces: merged_pdb path, ligand_params (if ligands)
+- **REQUIRED: Check include_types and set process_ligands accordingly!**
+  - If "ligand" NOT in include_types → `process_ligands=false`
+  - If "ligand" in include_types → `process_ligands=true`
+- Output produces: merged_pdb path, ligand_params (only if process_ligands=true)
 - **After success: call mark_step_complete("prepare_complex", {"merged_pdb": "<actual_path>"})**
 
 ### Step 2: solvate_structure (solvation_server)
@@ -73,26 +94,57 @@ When you call `get_workflow_status_tool`, it returns `available_outputs` which c
 
 ## Instructions
 
-1. FIRST: Call `get_workflow_status_tool` to get session_dir and current step
+1. FIRST: Call `get_workflow_status_tool` to get session_dir, current step, AND **simulation_brief**
 2. SAVE the session_dir value - you will use it for ALL subsequent tool calls
-3. Call the next required MCP tool with:
+3. **CHECK simulation_brief["include_types"]** to determine what to process:
+   - If "ligand" NOT in include_types → set `process_ligands=false` in prepare_complex
+   - If "ligand" IS in include_types → set `process_ligands=true` (default)
+4. Call the next required MCP tool with:
    - ACTUAL file paths from previous results
    - output_dir=session_dir (ALWAYS include this!)
-4. **IMMEDIATELY call `mark_step_complete` with the step name and output files**
-5. Repeat for each step until all 4 steps complete (is_complete=true)
+   - process_ligands based on include_types (for prepare_complex)
+5. **IMMEDIATELY call `mark_step_complete` with the step name and output files**
+6. Repeat for each step until all 4 steps complete (is_complete=true)
+
+## CRITICAL: Respect User's Ligand Choice
+
+The `simulation_brief["include_types"]` field determines what components to process:
+- `["protein", "ligand", "ion"]` → Process ligands (default)
+- `["protein", "ion"]` → **DO NOT process ligands** (user said "no ligand")
+- `["protein"]` → Protein only
+
+**When calling prepare_complex:**
+```python
+# Check include_types from simulation_brief
+include_types = simulation_brief.get("include_types", ["protein", "ligand", "ion"])
+process_ligands = "ligand" in include_types
+
+prepare_complex(
+    pdb_id="...",
+    output_dir=session_dir,
+    process_ligands=process_ligands,  # FALSE if user excluded ligands!
+    ...
+)
+```
 
 ## Example Workflow
 
 1. Call get_workflow_status_tool
-   → Returns: available_outputs={"session_dir": "/outputs/session_abc123"}, current_step="prepare_complex"
+   → Returns:
+     - available_outputs={"session_dir": "/outputs/session_abc123"}
+     - current_step="prepare_complex"
+     - simulation_brief={"pdb_id": "1AKE", "include_types": ["protein", "ion"], ...}
 
-2. Call prepare_complex(pdb_id="1AKE", output_dir="/outputs/session_abc123")
+2. **Check include_types**: simulation_brief["include_types"] = ["protein", "ion"]
+   → "ligand" NOT in include_types → process_ligands=FALSE
+
+3. Call prepare_complex(pdb_id="1AKE", output_dir="/outputs/session_abc123", process_ligands=false)
    → Returns: success=true, merged_pdb="/outputs/session_abc123/merge/merged.pdb"
 
 3. **Call mark_step_complete(step_name="prepare_complex", output_files={"merged_pdb": "/outputs/session_abc123/merge/merged.pdb"})**
    → Returns: success=true, completed_steps=["prepare_complex"]
 
-4. Call solvate_structure(pdb_file="/outputs/session_abc123/merge/merged.pdb", output_dir="/outputs/session_abc123")
+4. Call solvate_structure(pdb_file="/outputs/session_abc123/merge/merged.pdb", output_dir="/outputs/session_abc123", output_name="solvated")
    → Returns: success=true, output_file="/outputs/session_abc123/solvate/solvated.pdb", box_dimensions={"box_a": 77.66, "box_b": 77.66, "box_c": 77.66}
 
 5. **Call mark_step_complete(step_name="solvate", output_files={"solvated_pdb": "/outputs/session_abc123/solvate/solvated.pdb", "box_dimensions": {"box_a": 77.66, ...}})**
@@ -101,9 +153,10 @@ When you call `get_workflow_status_tool`, it returns `available_outputs` which c
 6. Call build_amber_system(
      pdb_file="/outputs/session_abc123/solvate/solvated.pdb",  ← from step 4
      box_dimensions={"box_a": 77.66, "box_b": 77.66, "box_c": 77.66},  ← from step 4 (REQUIRED!)
-     output_dir="/outputs/session_abc123"
+     output_dir="/outputs/session_abc123",
+     output_name="system"  ← REQUIRED: always use this exact name
    )
-   → Returns: success=true, parm7="/outputs/session_abc123/amber/system.parm7", rst7="/outputs/session_abc123/amber/system.rst7"
+   → Returns: success=true, parm7="/outputs/session_abc123/topology/system.parm7", rst7="/outputs/session_abc123/topology/system.rst7"
 
 7. **Call mark_step_complete(step_name="build_topology", output_files={"parm7": "...", "rst7": "..."})**
    → Returns: success=true, completed_steps=["prepare_complex", "solvate", "build_topology"]

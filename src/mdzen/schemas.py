@@ -7,6 +7,164 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 
+# =============================================================================
+# Structure Analysis Models (Phase 1 detailed analysis)
+# =============================================================================
+
+
+class DisulfideBondSpec(BaseModel):
+    """User-editable disulfide bond specification.
+
+    Detected in Phase 1, can be modified by user before Phase 2 execution.
+    """
+
+    chain1: str = Field(..., description="Chain ID of first cysteine")
+    resnum1: int = Field(..., description="Residue number of first cysteine")
+    chain2: str = Field(..., description="Chain ID of second cysteine")
+    resnum2: int = Field(..., description="Residue number of second cysteine")
+    distance_angstrom: Optional[float] = Field(
+        None, description="S-S distance in Angstroms"
+    )
+    form_bond: bool = Field(
+        True, description="Whether to form this disulfide bond (user can set to False)"
+    )
+
+
+class HistidineStateSpec(BaseModel):
+    """User-editable histidine protonation state specification.
+
+    Detected in Phase 1 with pKa estimation, can be modified by user.
+    States: HID (δ-protonated), HIE (ε-protonated), HIP (doubly protonated)
+    """
+
+    chain: str = Field(..., description="Chain ID")
+    resnum: int = Field(..., description="Residue number")
+    state: str = Field(
+        ...,
+        description="Protonation state: 'HID', 'HIE', 'HIP', or 'HIS' (auto)",
+    )
+    estimated_pka: Optional[float] = Field(
+        None, description="Estimated pKa from propka"
+    )
+    user_specified: bool = Field(
+        False, description="True if user manually changed this state"
+    )
+
+
+class MissingResidueHandling(BaseModel):
+    """User-editable missing residue handling specification."""
+
+    chain: str = Field(..., description="Chain ID")
+    start_resnum: int = Field(..., description="Start residue number")
+    end_resnum: int = Field(..., description="End residue number")
+    location: str = Field(
+        ..., description="Location: 'N-terminal', 'C-terminal', 'internal'"
+    )
+    action: str = Field(
+        "ignore",
+        description="Action: 'ignore', 'model' (add missing), 'cap' (add caps)",
+    )
+
+
+class LigandSpec(BaseModel):
+    """User-editable ligand processing specification."""
+
+    chain: str = Field(..., description="Chain ID containing the ligand")
+    resname: str = Field(..., description="Residue name (e.g., 'ATP', 'LIG')")
+    include: bool = Field(True, description="Include this ligand in simulation")
+    smiles: Optional[str] = Field(
+        None, description="User-specified SMILES (overrides auto-detection)"
+    )
+    net_charge: Optional[int] = Field(
+        None, description="User-specified net charge (overrides estimation)"
+    )
+    estimated_charge: Optional[int] = Field(
+        None, description="Auto-estimated charge at simulation pH"
+    )
+    charge_method: str = Field("bcc", description="Charge method: 'bcc' or 'gas'")
+    atom_type: str = Field("gaff2", description="Atom type: 'gaff' or 'gaff2'")
+
+
+class NonstandardResidueSpec(BaseModel):
+    """Non-standard residue handling specification."""
+
+    chain: str = Field(..., description="Chain ID")
+    resnum: int = Field(..., description="Residue number")
+    resname: str = Field(..., description="Non-standard residue name (e.g., 'MSE')")
+    standard_equivalent: Optional[str] = Field(
+        None, description="Standard equivalent (e.g., 'MET' for MSE)"
+    )
+    action: str = Field(
+        "replace", description="Action: 'replace', 'keep', 'remove'"
+    )
+
+
+class StructureAnalysis(BaseModel):
+    """Structure analysis results from Phase 1.
+
+    Contains detailed structural information detected during Phase 1,
+    with user-editable recommendations that are passed to Phase 2.
+    """
+
+    # Analysis metadata
+    analysis_performed: bool = Field(
+        False, description="Whether detailed analysis was performed"
+    )
+    analysis_ph: float = Field(
+        7.4, description="pH used for protonation analysis"
+    )
+    structure_file: Optional[str] = Field(
+        None, description="Structure file that was analyzed"
+    )
+
+    # Disulfide bonds (user-editable)
+    disulfide_bonds: list[DisulfideBondSpec] = Field(
+        default_factory=list,
+        description="Detected disulfide bond candidates with user choices",
+    )
+
+    # Histidine states (user-editable)
+    histidine_states: list[HistidineStateSpec] = Field(
+        default_factory=list,
+        description="Histidine protonation states with user choices",
+    )
+
+    # Missing residue handling (user-editable)
+    missing_residue_handling: list[MissingResidueHandling] = Field(
+        default_factory=list,
+        description="Missing residue segments with handling choices",
+    )
+
+    # Non-standard residue handling
+    nonstandard_residues: list[NonstandardResidueSpec] = Field(
+        default_factory=list,
+        description="Non-standard residues with handling choices",
+    )
+    replace_nonstandard: bool = Field(
+        True, description="Replace non-standard residues with standard equivalents"
+    )
+
+    # Ligand specifications (user-editable)
+    ligands: list[LigandSpec] = Field(
+        default_factory=list,
+        description="Ligand processing specifications with user choices",
+    )
+
+    # Terminal capping
+    cap_termini: bool = Field(
+        False, description="Add ACE/NME caps to termini"
+    )
+    cap_termini_chains: list[str] = Field(
+        default_factory=list,
+        description="Specific chains to cap (empty = all chains)",
+    )
+
+
+# =============================================================================
+# Simulation Brief (main workflow schema)
+# =============================================================================
+
+
 class SimulationBrief(BaseModel):
     """Structured MD simulation setup parameters.
 
@@ -159,10 +317,22 @@ class SimulationBrief(BaseModel):
     # Output settings
     output_formats: Optional[list[str]] = Field(
         None,
-        description="Output formats (default: ['amber'])"
+        description="Output formats (default: ['topology'])"
+    )
+
+    # Structure analysis from Phase 1 (detailed structural information)
+    structure_analysis: Optional[StructureAnalysis] = Field(
+        None,
+        description="Detailed structure analysis with user-approved choices",
     )
 
 
 __all__ = [
+    "DisulfideBondSpec",
+    "HistidineStateSpec",
+    "MissingResidueHandling",
+    "LigandSpec",
+    "NonstandardResidueSpec",
+    "StructureAnalysis",
     "SimulationBrief",
 ]

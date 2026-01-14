@@ -22,7 +22,6 @@ from mdzen.cli.runner import (  # noqa: E402
     create_message,
     extract_text_from_content,
     display_results,
-    display_simulation_brief,
     display_debug_state,
     run_agent_with_events,
 )
@@ -393,11 +392,8 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
             simulation_brief = state.get("simulation_brief")
 
             if simulation_brief:
-                if isinstance(simulation_brief, dict):
-                    display_simulation_brief(simulation_brief, console)
-                # Note: If simulation_brief is a string (agent's response), don't print it again
-                # as it was already printed by run_agent_with_events
-
+                # The detailed version is already printed by the LLM agent via
+                # _format_simulation_brief_summary() in custom_tools.py
                 console.print("\n[yellow]Options:[/yellow]")
                 console.print("  - Type 'continue' or 'yes' to proceed to Setup phase")
                 console.print("  - Type 'quit' to exit")

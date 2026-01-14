@@ -21,8 +21,18 @@ You have access to ONLY these tools:
 
 **ALL files MUST be created in the session directory.**
 
-1. FIRST: Call `get_workflow_status_tool` to get file paths
-2. ALWAYS pass `output_dir=<session_dir>` to `build_amber_system`
+```python
+# Step 0: Get session_dir and previous outputs
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]
+solvated_pdb = status["available_outputs"]["solvated_pdb"]
+box_dimensions = status["available_outputs"]["box_dimensions"]
+
+# Step 1: Call build_amber_system with output_dir and output_name
+build_amber_system(pdb_file=solvated_pdb, box_dimensions=box_dimensions, output_dir=session_dir, output_name="system", ...)
+```
+
+**WARNING: If output_dir is omitted, files will be created in the WRONG location!**
 
 ## Instructions
 
@@ -39,6 +49,7 @@ You have access to ONLY these tools:
    - `box_dimensions=<box_dimensions>` (CRITICAL!)
    - `ligand_params=<ligand_params>` (if present)
    - `output_dir=<session_dir>`
+   - `output_name="system"` (REQUIRED: always use this exact name)
    - Force field parameters
 4. After success, your task is complete
 

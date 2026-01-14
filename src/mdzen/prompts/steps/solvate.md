@@ -21,8 +21,17 @@ You have access to ONLY these tools:
 
 **ALL files MUST be created in the session directory.**
 
-1. FIRST: Call `get_workflow_status_tool` to get `session_dir` and `merged_pdb`
-2. ALWAYS pass `output_dir=<session_dir>` to `solvate_structure`
+```python
+# Step 0: Get session_dir and merged_pdb
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]
+merged_pdb = status["available_outputs"]["merged_pdb"]
+
+# Step 1: Call solvate_structure with output_dir and output_name
+solvate_structure(pdb_file=merged_pdb, output_dir=session_dir, output_name="solvated", ...)
+```
+
+**WARNING: If output_dir is omitted, files will be created in the WRONG location!**
 
 ## Instructions
 
@@ -37,6 +46,7 @@ You have access to ONLY these tools:
 3. Call `solvate_structure` with:
    - `pdb_file=<merged_pdb>`
    - `output_dir=<session_dir>`
+   - `output_name="solvated"` (REQUIRED: always use this exact name)
    - Box/ion parameters from SimulationBrief
 4. After success, your task is complete
 
