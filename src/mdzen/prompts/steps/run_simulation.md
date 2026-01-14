@@ -21,8 +21,18 @@ You have access to ONLY these tools:
 
 **ALL files MUST be created in the session directory.**
 
-1. FIRST: Call `get_workflow_status_tool` to get file paths
-2. ALWAYS pass `output_dir=<session_dir>` to `run_md_simulation`
+```python
+# Step 0: Get session_dir and previous outputs
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]
+parm7 = status["available_outputs"]["parm7"]
+rst7 = status["available_outputs"]["rst7"]
+
+# Step 1: Call run_md_simulation with output_dir
+run_md_simulation(prmtop_file=parm7, inpcrd_file=rst7, output_dir=session_dir, ...)
+```
+
+**WARNING: If output_dir is omitted, files will be created in the WRONG location!**
 
 ## Instructions
 

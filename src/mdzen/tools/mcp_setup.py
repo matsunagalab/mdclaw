@@ -40,6 +40,7 @@ SSE_PORT_MAP = {
     "solvation": 8004,
     "amber": 8005,
     "md_simulation": 8006,
+    "metal": 8007,
 }
 
 # Cache for project root
@@ -183,12 +184,14 @@ def get_clarification_tools() -> list[McpToolset]:
         create_filtered_toolset(
             "research",
             tool_filter=[
+                "search_structures",  # Search PDB with detailed info
                 "get_structure_info",  # PDB metadata with UniProt cross-refs
                 "get_protein_info",  # UniProt biological info (subunit, function)
                 "download_structure",
                 "get_alphafold_structure",
                 "inspect_molecules",
                 "search_proteins",
+                "analyze_structure_details",  # Disulfide, HIS pKa, missing residues
             ],
         )
     ]
@@ -312,12 +315,14 @@ def get_clarification_tools_sse(host: str = "localhost") -> list[McpToolset]:
         create_http_toolset(
             "research",
             tool_filter=[
+                "search_structures",  # Search PDB with detailed info
                 "get_structure_info",
                 "get_protein_info",
                 "download_structure",
                 "get_alphafold_structure",
                 "inspect_molecules",
                 "search_proteins",
+                "analyze_structure_details",  # Detailed structure analysis
             ],
             host=host,
             use_streamable_http=True,

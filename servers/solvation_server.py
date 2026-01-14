@@ -587,11 +587,11 @@ def embed_in_membrane(
         logger.error("packmol-memgen not available")
         return result
 
-    # Setup output directory with human-readable name
+    # Setup output directory with human-readable name (unified with solvate)
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "membrane")
+        out_dir = create_unique_subdir(WORKING_DIR, "solvate")
     else:
-        out_dir = create_unique_subdir(output_dir, "membrane")
+        out_dir = create_unique_subdir(output_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory for packmol-memgen
@@ -620,7 +620,7 @@ def embed_in_membrane(
         
         if preoriented:
             args.append('--preoriented')
-        
+
         if salt:
             args.extend([
                 '--salt',
@@ -630,8 +630,13 @@ def embed_in_membrane(
             ])
             if salt_override:
                 args.append('--salt_override')
-        
-        if overwrite:
+
+        # WORKAROUND: packmol-memgen has a bug where --overwrite causes MEMEMBED to be
+        # skipped when preoriented=False. The condition in memembed_align() is:
+        #   if not os.path.exists(output) and not overwrite:
+        # This means with overwrite=True, memembed is never run even if output doesn't exist.
+        # Fix: only pass --overwrite when preoriented=True (MEMEMBED is skipped anyway).
+        if overwrite and preoriented:
             args.append('--overwrite')
         
         if notprotonate:
@@ -640,12 +645,22 @@ def embed_in_membrane(
         if keepligs:
             args.append('--keepligs')
 
-        # Add packmol path as command-line argument (packmol-memgen doesn't read PACKMOL_PATH env var)
+        # Add packmol and memembed paths explicitly
         import shutil
         packmol_path = shutil.which("packmol")
         if packmol_path:
             args.extend(['--packmol', packmol_path])
             logger.info(f"Using packmol: {packmol_path}")
+
+        # Add memembed path for membrane orientation (when preoriented=False)
+        if not preoriented:
+            memembed_path = shutil.which("memembed")
+            if memembed_path:
+                args.extend(['--memembed', memembed_path])
+                logger.info(f"Using memembed: {memembed_path}")
+            else:
+                result["warnings"].append("memembed not found - membrane orientation may fail")
+                logger.warning("memembed not found in PATH")
 
         logger.info(f"Running packmol-memgen with args: {' '.join(args)}")
 

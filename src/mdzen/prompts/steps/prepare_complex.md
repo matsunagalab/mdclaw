@@ -23,30 +23,68 @@ You have access to ONLY these tools:
 
 **ALL files MUST be created in the session directory.**
 
-1. FIRST: Call `get_workflow_status_tool` to get `session_dir`
-2. ALWAYS pass `output_dir=<session_dir>` to `prepare_complex`
+1. FIRST: Call `get_workflow_status_tool` to get `session_dir` from `available_outputs`
+2. ALWAYS pass `output_dir=session_dir` to `prepare_complex`
+
+```python
+# Step 0: Get session_dir
+status = get_workflow_status_tool()
+session_dir = status["available_outputs"]["session_dir"]
+
+# Step 1: Call prepare_complex with output_dir
+prepare_complex(pdb_id="1AKE", output_dir=session_dir, ...)
+```
+
+**WARNING: If output_dir is omitted, files will be created in the WRONG location!**
 
 ## Instructions
 
-1. Call `get_workflow_status_tool` to get session_dir
-2. Read SimulationBrief from context for:
+1. Call `get_workflow_status_tool` to get:
+   - `session_dir` from available_outputs
+   - **`simulation_brief`** - contains user's choices from Phase 1
+2. Extract from simulation_brief:
    - `pdb_id` or `fasta_sequence`
    - `select_chains` (if specified)
-   - `include_types` (determines what to process - CRITICAL!)
+   - **`include_types`** - CRITICAL for determining ligand processing!
    - `ligand_smiles` (for manual ligand SMILES)
    - `charge_method`, `atom_type` (for ligand params)
-3. Call `prepare_complex` with:
+3. **Check if user wants ligands processed:**
+   ```python
+   include_types = simulation_brief.get("include_types", ["protein", "ligand", "ion"])
+   process_ligands = "ligand" in include_types  # FALSE if user said "no ligand"
+   ```
+4. **Check for ligand filtering by unique ID** (from structure_analysis):
+   ```python
+   structure_analysis = simulation_brief.get("structure_analysis", {})
+   include_ligand_ids = structure_analysis.get("include_ligand_ids")  # e.g., ["A:ACP:501"]
+   exclude_ligand_ids = structure_analysis.get("exclude_ligand_ids")  # e.g., ["A:ACT:401"]
+   ```
+5. Call `prepare_complex` with:
    - `output_dir=<session_dir>` (REQUIRED)
-   - `process_ligands=true` ONLY if "ligand" in include_types
-   - `process_ligands=false` if include_types is ["protein"] only
-4. After success, your task is complete
+   - `process_ligands=process_ligands` (TRUE only if "ligand" in include_types!)
+   - `include_ligand_ids=include_ligand_ids` (if specified - filters to only these ligands)
+   - `exclude_ligand_ids=exclude_ligand_ids` (if specified - excludes these ligands)
+6. After success, your task is complete
 
 ## CRITICAL: include_types Handling
 
-The `include_types` field in SimulationBrief controls what components to include:
-- `["protein"]` → Set `process_ligands=false` (skip ligand parameterization)
-- `["protein", "ligand"]` → Set `process_ligands=true` (parameterize ligands)
-- `["protein", "water"]` → Set `process_ligands=false` (water handled later in solvation)
+The `include_types` field in simulation_brief controls what components to include.
+
+**RULE: If "ligand" is NOT in include_types, you MUST set process_ligands=false!**
+
+| include_types value | process_ligands | Meaning |
+|---------------------|-----------------|---------|
+| `["protein", "ligand", "ion"]` | `true` | Process ligands (default) |
+| `["protein", "ion"]` | **`false`** | User said "no ligand" - SKIP ligand processing! |
+| `["protein"]` | **`false`** | Protein only - SKIP ligand processing! |
+
+**Example - user excluded ligand:**
+```
+simulation_brief["include_types"] = ["protein", "ion"]
+→ "ligand" NOT in include_types
+→ process_ligands = false
+→ Call prepare_complex(..., process_ligands=false)
+```
 
 ## DO NOT
 
