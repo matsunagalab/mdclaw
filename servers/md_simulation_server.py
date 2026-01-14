@@ -45,7 +45,8 @@ def run_md_simulation(
     trajectory_format: str = "dcd",
     restraint_file: Optional[str] = None,
     name: Optional[str] = None,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    is_membrane: bool = False
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -64,6 +65,9 @@ def run_md_simulation(
         restraint_file: Optional file with restraint definitions
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
+        is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
+                     with semi-isotropic pressure coupling (XY coupled, Z independent).
+                     Uses surface tension = 0 bar*nm for NPγT ensemble. (default: False)
 
     Returns:
         Dict with:
@@ -124,7 +128,7 @@ def run_md_simulation(
 
     try:
         from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter
-        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat
+        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, MonteCarloMembraneBarostat
         from openmm.app import Simulation, PME, HBonds
         from openmm.unit import (
             nanometer, kelvin, picosecond, femtoseconds, bar
@@ -150,15 +154,32 @@ def run_md_simulation(
 
         # Add barostat if NPT
         if pressure_bar is not None:
-            barostat = MonteCarloBarostat(
-                pressure_bar * bar,
-                temperature_kelvin * kelvin
-            )
+            if is_membrane:
+                # Membrane systems: MonteCarloMembraneBarostat with semi-isotropic coupling
+                # XYIsotropic: X and Y axes scale together (membrane plane)
+                # ZFree: Z axis scales independently (membrane thickness)
+                # Surface tension = 0 bar*nm for NPγT ensemble
+                barostat = MonteCarloMembraneBarostat(
+                    pressure_bar * bar,
+                    0.0 * bar * nanometer,  # Surface tension = 0 (NPγT)
+                    temperature_kelvin * kelvin,
+                    MonteCarloMembraneBarostat.XYIsotropic,
+                    MonteCarloMembraneBarostat.ZFree,
+                    25  # Frequency (default)
+                )
+                logger.info("Using MonteCarloMembraneBarostat (XYIsotropic, ZFree, γ=0)")
+            else:
+                # Non-membrane systems: standard MonteCarloBarostat
+                barostat = MonteCarloBarostat(
+                    pressure_bar * bar,
+                    temperature_kelvin * kelvin
+                )
             system.addForce(barostat)
             ensemble = "NPT"
         else:
             ensemble = "NVT"
         result["ensemble"] = ensemble
+        result["is_membrane"] = is_membrane
 
         # Create integrator
         integrator = LangevinMiddleIntegrator(
@@ -215,9 +236,9 @@ def run_md_simulation(
         result["initial_energy_kj_mol"] = float(initial_energy._value)
         logger.info(f"Initial energy: {initial_energy}")
 
-        # Minimize energy
+        # Minimize energy (increased maxIterations to handle high-energy systems)
         logger.info("Minimizing energy...")
-        simulation.minimizeEnergy()
+        simulation.minimizeEnergy(maxIterations=5000)
 
         # Run simulation
         simulation_steps = int(simulation_time_ns * 1000000 / timestep_fs)

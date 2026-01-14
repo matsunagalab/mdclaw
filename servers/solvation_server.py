@@ -109,13 +109,13 @@ def extract_box_size_from_cryst1(pdb_file: str) -> Optional[dict]:
 
 def extract_box_size_from_packmol_inp(inp_file: str) -> Optional[dict]:
     """Extract box dimensions from packmol input file.
-    
+
     Parses 'inside box' lines like:
     inside box -35.7 -35.7 -35.7 35.7 35.7 35.7
-    
+
     Args:
         inp_file: Path to packmol .inp file
-        
+
     Returns:
         Dict with box dimensions, or None if not found
     """
@@ -123,7 +123,7 @@ def extract_box_size_from_packmol_inp(inp_file: str) -> Optional[dict]:
     try:
         with open(inp_file, 'r') as f:
             content = f.read()
-            
+
         # Match 'inside box xmin ymin zmin xmax ymax zmax'
         match = re.search(
             r'inside\s+box\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)',
@@ -132,16 +132,16 @@ def extract_box_size_from_packmol_inp(inp_file: str) -> Optional[dict]:
         if match:
             xmin, ymin, zmin = float(match.group(1)), float(match.group(2)), float(match.group(3))
             xmax, ymax, zmax = float(match.group(4)), float(match.group(5)), float(match.group(6))
-            
+
             a = xmax - xmin
             b = ymax - ymin
             c = zmax - zmin
-            
+
             is_cubic = (
-                abs(a - b) < 0.01 and 
+                abs(a - b) < 0.01 and
                 abs(b - c) < 0.01
             )
-            
+
             return {
                 "box_a": a,
                 "box_b": b,
@@ -212,7 +212,8 @@ def solvate_structure(
     overwrite: bool = True,
     notprotonate: bool = True,
     preoriented: bool = True,
-    keepligs: bool = True
+    keepligs: bool = True,
+    water_model: str = "opc"
 ) -> dict:
     """Solvate a protein-ligand complex in a water box using packmol-memgen.
     
@@ -238,6 +239,11 @@ def solvate_structure(
         preoriented: Structure is pre-oriented (default: True, skips MEMEMBED)
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes.
+        water_model: Water model type (default: "opc").
+                     Options: "tip3p", "tip4pd", "tip4pew", "opc3", "opc", "spce", "spceb", "fb3".
+                     IMPORTANT: Must match the water model used in build_amber_system for
+                     topology generation. Using mismatched models causes severe atom clashes.
+                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
     
     Returns:
         Dict with:
@@ -330,12 +336,14 @@ def solvate_structure(
             '--dist', str(dist),
             '--pdb', str(input_copy),
             '-o', str(output_file),
-            '--packlog', str(packlog)
+            '--packlog', str(packlog),
+            '--ffwat', water_model.lower(),  # Water model for solvation
+            '--tolerance', '2.0'  # Default packmol tolerance
         ]
-        
+
         if cubic:
             args.append('--cubic')
-        
+
         if salt:
             args.extend([
                 '--salt',
@@ -400,18 +408,18 @@ def solvate_structure(
         if output_file.exists():
             result["output_file"] = str(output_file)
             result["success"] = True
-            
+
             # Get statistics
             try:
                 atom_count = count_atoms_in_pdb(output_file)
                 result["statistics"]["total_atoms"] = atom_count
             except Exception as e:
                 result["warnings"].append(f"Could not count atoms: {e}")
-            
+
             # Extract box dimensions from CRYST1 record or packmol input
             packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
             box_info = extract_box_size(
-                str(output_file), 
+                str(output_file),
                 str(packmol_inp_file) if packmol_inp_file.exists() else None
             )
             if box_info:
@@ -419,12 +427,12 @@ def solvate_structure(
                 logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
             else:
                 result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
-            
+
             # Find packmol log
             log_file = out_dir / f"{output_name}_packmol.log"
             if log_file.exists():
                 result["packmol_log"] = str(log_file)
-            
+
             logger.info(f"Successfully solvated structure: {output_file}")
         else:
             result["errors"].append("packmol-memgen completed but output file not created")
@@ -471,7 +479,8 @@ def embed_in_membrane(
     notprotonate: bool = True,
     keepligs: bool = True,
     nloop: int = 50,
-    nloop_all: int = 200
+    nloop_all: int = 200,
+    water_model: str = "opc"
 ) -> dict:
     """Embed a protein in a lipid bilayer membrane using packmol-memgen.
     
@@ -513,6 +522,10 @@ def embed_in_membrane(
                   processing protein-ligand complexes with MEMEMBED.
         nloop: PACKMOL GENCAN loops for individual packing (default: 50)
         nloop_all: PACKMOL GENCAN loops for final packing (default: 200)
+        water_model: Water model type (default: "opc").
+                     Options: "tip3p", "tip4pd", "tip4pew", "opc3", "opc", "spce", "spceb", "fb3".
+                     Must match the water model used in build_amber_system.
+                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
     
     Returns:
         Dict with:
@@ -615,9 +628,11 @@ def embed_in_membrane(
             '-o', str(output_file),
             '--packlog', str(packlog),
             '--nloop', str(nloop),
-            '--nloop_all', str(nloop_all)
+            '--nloop_all', str(nloop_all),
+            '--ffwat', water_model.lower(),  # Water model for solvation
+            '--tolerance', '2.0'  # Default packmol tolerance
         ]
-        
+
         if preoriented:
             args.append('--preoriented')
 
@@ -699,18 +714,18 @@ def embed_in_membrane(
         if output_file.exists():
             result["output_file"] = str(output_file)
             result["success"] = True
-            
+
             # Get statistics
             try:
                 atom_count = count_atoms_in_pdb(output_file)
                 result["statistics"]["total_atoms"] = atom_count
             except Exception as e:
                 result["warnings"].append(f"Could not count atoms: {e}")
-            
+
             # Extract box dimensions from CRYST1 record or packmol input
             packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
             box_info = extract_box_size(
-                str(output_file), 
+                str(output_file),
                 str(packmol_inp_file) if packmol_inp_file.exists() else None
             )
             if box_info:
@@ -718,12 +733,12 @@ def embed_in_membrane(
                 logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
             else:
                 result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
-            
+
             # Find packmol log
             log_file = out_dir / f"{output_name}_packmol.log"
             if log_file.exists():
                 result["packmol_log"] = str(log_file)
-            
+
             logger.info(f"Successfully embedded structure in membrane: {output_file}")
         else:
             result["errors"].append("packmol-memgen completed but output file not created")

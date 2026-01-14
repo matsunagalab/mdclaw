@@ -291,7 +291,110 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
     if result["unl_count"] > 0:
         result["replacements"].append(f"Replaced {result['unl_count']} UNL atoms with {target_residue}")
         logger.info(f"Fixed {result['unl_count']} UNL residue atoms -> {target_residue}")
-    
+
+    return result
+
+
+def get_coordinate_range(pdb_path: Path) -> dict:
+    """Calculate coordinate range from PDB file.
+
+    Args:
+        pdb_path: Path to PDB file
+
+    Returns:
+        Dict with min/max coordinates and ranges for each dimension
+    """
+    x_coords, y_coords, z_coords = [], [], []
+
+    try:
+        with open(pdb_path, 'r') as f:
+            for line in f:
+                if line.startswith(('ATOM', 'HETATM')):
+                    x = float(line[30:38])
+                    y = float(line[38:46])
+                    z = float(line[46:54])
+                    x_coords.append(x)
+                    y_coords.append(y)
+                    z_coords.append(z)
+    except Exception as e:
+        logger.warning(f"Could not read coordinates from PDB: {e}")
+        return {"success": False}
+
+    if not x_coords:
+        return {"success": False}
+
+    return {
+        "success": True,
+        "x_min": min(x_coords), "x_max": max(x_coords), "x_range": max(x_coords) - min(x_coords),
+        "y_min": min(y_coords), "y_max": max(y_coords), "y_range": max(y_coords) - min(y_coords),
+        "z_min": min(z_coords), "z_max": max(z_coords), "z_range": max(z_coords) - min(z_coords),
+    }
+
+
+def detect_water_type(pdb_path: Path) -> dict:
+    """Detect water model type from PDB file by counting atoms per water.
+
+    packmol-memgen always produces TIP3P waters (3 atoms: O, H1, H2).
+    OPC water has 4 atoms (O, H1, H2, EPW).
+    TIP4P has 4 atoms (O, H1, H2, M).
+    TIP5P has 5 atoms (O, H1, H2, LP1, LP2).
+
+    Args:
+        pdb_path: Path to PDB file
+
+    Returns:
+        Dict with:
+        - water_count: Number of water residues found
+        - atoms_per_water: Average atoms per water (3=TIP3P, 4=OPC/TIP4P, 5=TIP5P)
+        - detected_type: "tip3p", "opc", "tip4p", "tip5p", or "unknown"
+        - has_waters: Whether waters were found
+    """
+    result = {
+        "water_count": 0,
+        "atoms_per_water": 0,
+        "detected_type": "unknown",
+        "has_waters": False
+    }
+
+    # Water residue names (different naming conventions)
+    water_names = {"WAT", "HOH", "SOL", "TP3", "OPC", "T4P", "T5P"}
+
+    water_atoms_count = 0
+    water_residues = set()  # Track unique water residue numbers
+
+    try:
+        with open(pdb_path, 'r') as f:
+            for line in f:
+                if line.startswith(('ATOM', 'HETATM')):
+                    res_name = line[17:20].strip()
+                    if res_name in water_names:
+                        # Get residue number (columns 22-26)
+                        res_num = line[22:26].strip()
+                        # Get chain ID (column 21)
+                        chain = line[21:22]
+                        water_key = f"{chain}:{res_num}"
+                        water_residues.add(water_key)
+                        water_atoms_count += 1
+    except Exception as e:
+        logger.warning(f"Could not detect water type: {e}")
+        return result
+
+    if water_residues:
+        result["has_waters"] = True
+        result["water_count"] = len(water_residues)
+        result["atoms_per_water"] = round(water_atoms_count / len(water_residues), 1)
+
+        # Determine water type based on atoms per residue
+        atoms = result["atoms_per_water"]
+        if 2.5 <= atoms <= 3.5:
+            result["detected_type"] = "tip3p"
+        elif 3.5 < atoms <= 4.5:
+            result["detected_type"] = "opc"  # or tip4p
+        elif 4.5 < atoms <= 5.5:
+            result["detected_type"] = "tip5p"
+
+        logger.info(f"Detected {result['water_count']} waters with {atoms} atoms each -> {result['detected_type']}")
+
     return result
 
 
@@ -301,8 +404,8 @@ def build_amber_system(
     ligand_params: Optional[List[Dict[str, str]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
-    forcefield: str = "ff14SB",
-    water_model: str = "tip3p",
+    forcefield: str = "ff19SB",
+    water_model: str = "opc",
     is_membrane: bool = False,
     output_name: str = "system",
     output_dir: Optional[str] = None
@@ -347,11 +450,12 @@ def build_amber_system(
         box_dimensions: PBC box dimensions from solvate_structure output.
                         Required keys: box_a, box_b, box_c (in Angstroms).
                         If None, builds implicit solvent system (no PBC).
-        forcefield: Protein force field name (default: "ff14SB").
+        forcefield: Protein force field name (default: "ff19SB").
                     Options: "ff14SB", "ff19SB"
-        water_model: Water model for explicit solvent (default: "tip3p").
+        water_model: Water model for explicit solvent (default: "opc").
                      Options: "tip3p", "opc", "tip4pew"
                      Only used when box_dimensions is provided.
+                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
         is_membrane: Set True for membrane systems to load lipid21 force field.
                      Only used when box_dimensions is provided. (default: False)
         output_name: Base name for output files (default: "system").
@@ -488,18 +592,60 @@ def build_amber_system(
     # Validate water model (for explicit solvent)
     water_ff = None
     ion_params = None
+    actual_water_model = water_model  # May be overridden by detection
     if box_dimensions:
-        water_ff = WATER_FORCEFIELDS.get(water_model.lower())
+        # Detect water type in input PDB to prevent mismatch
+        # (e.g., packmol-memgen produces TIP3P, but user requests OPC)
+        detected = detect_water_type(pdb_path)
+        if detected["has_waters"]:
+            detected_type = detected["detected_type"]
+            requested_type = water_model.lower()
+
+            # Map water models to their atom counts
+            # TIP3P: 3 atoms (O, H1, H2)
+            # OPC: 4 atoms (O, H1, H2, EPW)
+            # TIP4P: 4 atoms (O, H1, H2, M)
+            three_site = {"tip3p", "spc", "spce"}
+            four_site = {"opc", "opc3", "tip4p", "tip4pew"}
+
+            # Check for mismatch - NOTE: tleap can add missing atoms (e.g., EPW for OPC)
+            # packmol-memgen always produces TIP3P-format waters, but tleap will convert
+            # them to the target water model by adding virtual sites (EPW, etc.)
+            if detected_type == "tip3p" and requested_type in four_site:
+                logger.info(
+                    f"Input PDB has TIP3P-format waters ({detected['atoms_per_water']:.1f} atoms/water). "
+                    f"tleap will add missing atoms for '{water_model}' model (e.g., EPW for OPC)."
+                )
+                result["warnings"].append(
+                    f"Note: Input has 3-atom waters, tleap will add virtual sites for {water_model}."
+                )
+                # Do NOT override - let tleap handle the conversion
+            elif detected_type in ["opc", "tip4p"] and requested_type in three_site:
+                logger.warning(
+                    f"Water model mismatch! Input has 4-site waters but '{water_model}' requested. "
+                    f"Using detected type '{detected_type}'."
+                )
+                result["warnings"].append(
+                    f"Auto-corrected water model: Input has 4-site waters but '{water_model}' requested."
+                )
+                actual_water_model = detected_type
+
+        water_ff = WATER_FORCEFIELDS.get(actual_water_model.lower())
         if not water_ff:
-            logger.error(f"Unknown water model: {water_model}")
+            logger.error(f"Unknown water model: {actual_water_model}")
             return create_validation_error(
                 "water_model",
-                f"Unknown water model: {water_model}",
+                f"Unknown water model: {actual_water_model}",
                 expected=f"One of: {list(WATER_FORCEFIELDS.keys())}",
-                actual=water_model
+                actual=actual_water_model
             )
-        ion_params = WATER_ION_PARAMS.get(water_model.lower(), "frcmod.ionsjc_tip3p")
-    
+        ion_params = WATER_ION_PARAMS.get(actual_water_model.lower(), "frcmod.ionsjc_tip3p")
+
+        # Update metadata with actual water model (may differ from requested)
+        result["parameters"]["water_model"] = actual_water_model
+        if actual_water_model != water_model:
+            result["parameters"]["requested_water_model"] = water_model
+
     # Validate ligand parameters
     valid_ligands = []
     if ligand_params:
@@ -593,9 +739,53 @@ def build_amber_system(
             box_a = box_dimensions.get("box_a", 0)
             box_b = box_dimensions.get("box_b", 0)
             box_c = box_dimensions.get("box_c", 0)
-            
+
             if box_a > 0 and box_b > 0 and box_c > 0:
-                script_lines.append("# Set periodic box")
+                # Check actual coordinate range and adjust box if needed
+                # packmol-memgen can produce coordinates slightly outside the box,
+                # which causes severe clashes at periodic boundaries
+                coord_range = get_coordinate_range(pdb_path)
+                if coord_range.get("success"):
+                    # Add 0.1 Å buffer to avoid boundary clashes
+                    buffer = 0.1
+                    actual_a = coord_range["x_range"] + buffer
+                    actual_b = coord_range["y_range"] + buffer
+                    actual_c = coord_range["z_range"] + buffer
+
+                    # Use the larger of specified or actual dimensions
+                    if actual_a > box_a or actual_b > box_b or actual_c > box_c:
+                        old_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
+                        box_a = max(box_a, actual_a)
+                        box_b = max(box_b, actual_b)
+                        box_c = max(box_c, actual_c)
+                        new_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
+                        logger.warning(
+                            f"Coordinates exceed specified box! Adjusting: {old_box} -> {new_box}"
+                        )
+                        result["warnings"].append(
+                            f"Box size adjusted to fit coordinates: {old_box} -> {new_box}. "
+                            "This prevents periodic boundary clashes."
+                        )
+
+                # Add PBC-safe margin to prevent atom clashes across periodic boundaries
+                # packmol doesn't consider PBC during packing, so atoms at opposite edges
+                # of the box can be very close when the periodic image wraps around.
+                # Adding tolerance (2.0 Å) to the box creates a gap between packed atoms
+                # and the periodic boundary, ensuring at least tolerance distance across PBC.
+                # This is the recommended workaround from packmol documentation.
+                pbc_margin = 2.0  # Same as packmol tolerance
+                old_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
+                box_a += pbc_margin
+                box_b += pbc_margin
+                box_c += pbc_margin
+                new_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
+                logger.info(f"Added PBC margin ({pbc_margin} Å): {old_box} -> {new_box}")
+                result["warnings"].append(
+                    f"PBC-safe margin applied: box expanded by {pbc_margin} Å to prevent "
+                    f"periodic boundary clashes ({old_box} -> {new_box})"
+                )
+
+                script_lines.append("# Set periodic box (with PBC-safe margin)")
                 script_lines.append(f"set mol box {{{box_a:.3f} {box_b:.3f} {box_c:.3f}}}")
                 script_lines.append("")
             else:
