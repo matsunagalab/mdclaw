@@ -789,10 +789,11 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 - num_water_chains: int
                 - num_ion_chains: int
                 - total_chains: int
-                - protein_chain_ids: list[str]
-                - ligand_chain_ids: list[str]
-                - water_chain_ids: list[str]
-                - ion_chain_ids: list[str]
+                - protein_chain_ids: list[str] - Author chain IDs (auth_asym_id like "A", "B")
+                - ligand_chain_ids: list[str] - Author chain IDs
+                - water_chain_ids: list[str] - Author chain IDs
+                - ion_chain_ids: list[str] - Author chain IDs
+              Note: Use these IDs with split_molecules(select_chains=..., use_author_chains=True)
             - errors: list[str] - Error messages (empty if success=True)
             - warnings: list[str] - Non-critical issues encountered
     """
@@ -1051,16 +1052,19 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             chains_info.append(chain_info)
         
         result["chains"] = chains_info
+        # Summary uses author_chain IDs (auth_asym_id like "A", "B") for user display
+        # For internal use, access chains[*]["chain_id"] which is label_asym_id
         result["summary"] = {
             "num_protein_chains": len(protein_chain_ids),
             "num_ligand_chains": len(ligand_chain_ids),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
+            # These are author_chain IDs (auth_asym_id) - use for display and select_chains
             "protein_chain_ids": protein_chain_ids,
             "ligand_chain_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
-            "ion_chain_ids": ion_chain_ids
+            "ion_chain_ids": ion_chain_ids,
         }
         
         # Check if any chains were found
@@ -1246,8 +1250,7 @@ def split_molecules(
         # Determine which chains to select
         available_chain_ids = [c["chain_id"] for c in analysis["chains"]]
         available_author_chains = list(set(c["author_chain"] for c in analysis["chains"]))
-        summary = analysis["summary"]
-        
+
         if select_chains is not None:
             if use_author_chains:
                 # Match by author_chain (auth_asym_id) - useful for PDB files
@@ -1274,12 +1277,9 @@ def split_molecules(
                 selected_chain_ids = set(select_chains)
         else:
             # Default: select all chains (type filtering happens later)
-            selected_chain_ids = set(
-                summary["protein_chain_ids"] + 
-                summary["ligand_chain_ids"] +
-                summary["ion_chain_ids"] +
-                summary["water_chain_ids"]
-            )
+            # Use chain_id (label_asym_id) from analysis["chains"], not summary
+            # because summary contains author_chain IDs for user display
+            selected_chain_ids = set(c["chain_id"] for c in analysis["chains"])
         
         logger.info(f"Chains to export: {sorted(selected_chain_ids)}")
         
