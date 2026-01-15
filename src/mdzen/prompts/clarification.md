@@ -539,16 +539,15 @@ After structure analysis is approved, ask about simulation parameters.
 | Solvation Type | Ensemble Options | Default |
 |----------------|------------------|---------|
 | **Explicit** | NVT, NPT, NVE | NPT (Recommended) |
-| **Implicit** | NVT, NVE only | NVT (FIXED - no choice!) |
+| **Implicit** | NVT, NVE only | NVT (Recommended) |
 
 **For IMPLICIT solvent:**
-- **DO NOT ask about ensemble** - always NVT (no periodic box = no pressure control)
-- **DO NOT offer NPT** - it's physically impossible
-- Just inform user: "Using NVT ensemble (standard for implicit solvent)"
+- **DO NOT offer NPT** - it's physically impossible (no periodic box = no pressure control)
+- Only offer NVT or NVE options
 
 **For EXPLICIT solvent:**
-- Ask about ensemble if user hasn't specified
 - NPT recommended for production runs
+- All three ensembles (NVT, NPT, NVE) are valid
 
 ```
 Structure settings confirmed. Now for simulation parameters:
@@ -564,11 +563,16 @@ Structure settings confirmed. Now for simulation parameters:
   2. 310 K (physiological)
   3. Other (please specify)
 
-# For EXPLICIT solvent only - skip for implicit!
+# For EXPLICIT solvent:
 **Question e: Ensemble**
   1. NPT (constant pressure, 1 bar) (Recommended for production)
   2. NVT (constant volume)
-  3. Other (please specify)
+  3. NVE (constant energy)
+
+# For IMPLICIT solvent (NO NPT option!):
+**Question e: Ensemble**
+  1. NVT (constant volume, with thermostat) (Recommended)
+  2. NVE (constant energy, microcanonical)
 ```
 
 ## When to Ask Questions
@@ -598,8 +602,8 @@ If ANY of these is unclear, ask the user first.
 **IMPORTANT for Implicit Solvent:**
 - If user requested "implicit water", set `solvation_type="implicit"`
 - Set `implicit_solvent_model="OBC2"` (default) or user-specified model
-- **ALWAYS use NVT** - set `pressure_bar=None` (NOT NPT!)
-- **DO NOT ask user about ensemble** - implicit solvent = NVT is fixed (no periodic box = no pressure control)
+- **NPT is NOT available** - set `pressure_bar=None` (no periodic box = no pressure control)
+- Only NVT or NVE ensembles are valid for implicit solvent
 
 **CRITICAL**: You MUST actually CALL the `generate_simulation_brief` tool with all parameters including `structure_analysis`. Display the returned `summary` to the user. Do NOT just say "generated" without calling the tool.
 
