@@ -11,9 +11,9 @@ from google.adk.tools import ToolContext
 from mdzen.schemas import SimulationBrief, StructureAnalysis
 from mdzen.utils import safe_dict, safe_list
 from mdzen.workflow import (
-    SETUP_STEPS,
     STEP_CONFIG,
     get_current_step_info,
+    get_steps_for_solvation_type,
     validate_step_prerequisites,
 )
 
@@ -70,6 +70,8 @@ def generate_simulation_brief(
     lipid_ratio: Optional[str] = None,
     force_field: str = "ff19SB",
     water_model: str = "tip3p",
+    solvation_type: str = "explicit",
+    implicit_solvent_model: str = "OBC2",
     temperature: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
     timestep: float = 2.0,
@@ -110,7 +112,9 @@ def generate_simulation_brief(
         lipids: Lipid composition for membrane (e.g., "POPC")
         lipid_ratio: Lipid ratio (e.g., "3:1")
         force_field: Protein force field (e.g., "ff19SB")
-        water_model: Water model (e.g., "tip3p")
+        water_model: Water model (e.g., "tip3p", "opc")
+        solvation_type: "explicit" (water box) or "implicit" (GB continuum)
+        implicit_solvent_model: GB model for implicit solvent (OBC2, GBn2, etc.)
         temperature: Simulation temperature in K
         pressure_bar: Pressure in bar (None for NVT)
         timestep: Integration timestep in fs
@@ -174,6 +178,8 @@ def generate_simulation_brief(
         lipid_ratio=lipid_ratio,
         force_field=force_field,
         water_model=water_model,
+        solvation_type=solvation_type,
+        implicit_solvent_model=implicit_solvent_model,
         temperature=temperature,
         pressure_bar=pressure_bar,
         timestep=timestep,
@@ -266,16 +272,23 @@ def _format_simulation_brief_summary(brief: SimulationBrief) -> str:
     # 5. Solvation Parameters
     lines.append("\n## 5. Solvation Parameters")
     lines.append("-" * 40)
-    lines.append(f"  box_padding: {brief.box_padding} Å")
-    lines.append("    → Distance from protein surface to box edge")
-    lines.append(f"  cubic_box: {brief.cubic_box}")
-    lines.append("    → True = cubic box, False = rectangular")
-    lines.append(f"  salt_concentration: {brief.salt_concentration} M")
-    lines.append("    → Salt concentration (physiological: 0.15M)")
-    lines.append(f"  cation_type: {brief.cation_type}")
-    lines.append("    → Cation species (Na+, K+, etc.)")
-    lines.append(f"  anion_type: {brief.anion_type}")
-    lines.append("    → Anion species (Cl-, etc.)")
+    lines.append(f"  solvation_type: {brief.solvation_type}")
+    if brief.solvation_type == "implicit":
+        lines.append("    → Using Generalized Born implicit solvent (no water box)")
+        lines.append(f"  implicit_solvent_model: {brief.implicit_solvent_model}")
+        lines.append("    → GB model (OBC2=igb5, GBn2=igb8 recommended)")
+    else:
+        lines.append("    → Explicit water box with periodic boundaries")
+        lines.append(f"  box_padding: {brief.box_padding} Å")
+        lines.append("    → Distance from protein surface to box edge")
+        lines.append(f"  cubic_box: {brief.cubic_box}")
+        lines.append("    → True = cubic box, False = rectangular")
+        lines.append(f"  salt_concentration: {brief.salt_concentration} M")
+        lines.append("    → Salt concentration (physiological: 0.15M)")
+        lines.append(f"  cation_type: {brief.cation_type}")
+        lines.append("    → Cation species (Na+, K+, etc.)")
+        lines.append(f"  anion_type: {brief.anion_type}")
+        lines.append("    → Anion species (Cl-, etc.)")
 
     # 6. Membrane Settings (if applicable)
     if brief.is_membrane:
@@ -359,6 +372,7 @@ def _format_simulation_brief_summary(brief: SimulationBrief) -> str:
 def get_workflow_status(
     completed_steps: list[str],
     outputs: dict,
+    solvation_type: str = "explicit",
 ) -> dict:
     """Get current workflow progress and validate prerequisites.
 
@@ -367,6 +381,7 @@ def get_workflow_status(
     Args:
         completed_steps: List of completed step names
         outputs: Dictionary of output file paths from previous steps
+        solvation_type: "explicit" (default) or "implicit" - determines workflow steps
 
     Returns:
         Dictionary with workflow status including:
@@ -374,7 +389,7 @@ def get_workflow_status(
         - current_step: Name of current step to execute
         - next_tool: Name of MCP tool to call
         - step_index: Current step number (1-based)
-        - total_steps: Total number of steps (4)
+        - total_steps: Total number of steps (3 for implicit, 4 for explicit)
         - prerequisites_met: Whether prerequisites are satisfied
         - prerequisite_errors: List of missing prerequisites
         - is_complete: Whether all steps are done
@@ -382,14 +397,18 @@ def get_workflow_status(
         - remaining_steps: List of steps not yet completed
         - estimated_time: Time estimate for current step
         - allowed_tools: List of tool names allowed for current step
+        - solvation_type: "explicit" or "implicit"
     """
-    step_info = get_current_step_info(completed_steps)
+    step_info = get_current_step_info(completed_steps, solvation_type)
     current_step = step_info["current_step"]
+
+    # Get steps for this solvation type
+    workflow_steps = get_steps_for_solvation_type(solvation_type)
 
     # Calculate progress metrics
     unique_completed = list(set(completed_steps))
     progress_count = len(unique_completed)
-    remaining = [s for s in SETUP_STEPS if s not in unique_completed]
+    remaining = [s for s in workflow_steps if s not in unique_completed]
 
     result = {
         # Core status
@@ -400,8 +419,9 @@ def get_workflow_status(
         "total_steps": step_info["total_steps"],
         "is_complete": step_info["is_complete"],
         "available_outputs": outputs,
-        # Progress visualization (Best Practice #3 enhancement)
-        "progress": f"[{progress_count}/4]",
+        "solvation_type": solvation_type,
+        # Progress visualization
+        "progress": f"[{progress_count}/{len(workflow_steps)}]",
         "remaining_steps": remaining,
         "estimated_time": STEP_CONFIG.get(current_step, {}).get("estimate", "unknown") if current_step else "N/A",
         "allowed_tools": STEP_CONFIG.get(current_step, {}).get("allowed_tools", []) if current_step else [],
@@ -412,6 +432,7 @@ def get_workflow_status(
         is_valid, errors = validate_step_prerequisites(
             current_step,
             outputs,
+            solvation_type,
         )
         result["prerequisites_met"] = is_valid
         result["prerequisite_errors"] = errors
@@ -661,7 +682,10 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
     session_dir = str(tool_context.state.get("session_dir", ""))
     simulation_brief = safe_dict(tool_context.state.get("simulation_brief"))
 
-    result = get_workflow_status(completed_steps, outputs)
+    # Get solvation_type from simulation_brief (default: explicit)
+    solvation_type = simulation_brief.get("solvation_type", "explicit")
+
+    result = get_workflow_status(completed_steps, outputs, solvation_type)
 
     # Add session_dir to available_outputs for agent access
     if session_dir:
@@ -675,8 +699,8 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
     # This helps catch bugs where previous step outputs weren't passed correctly
     current_step = result.get("current_step")
 
-    # Solvate step requires merged_pdb from prepare_complex
-    if current_step == "solvate":
+    # Solvate step requires merged_pdb from prepare_complex (EXPLICIT SOLVENT ONLY)
+    if current_step == "solvate" and solvation_type == "explicit":
         merged_pdb = outputs.get("merged_pdb")
         if not merged_pdb:
             result["critical_warning"] = (
@@ -686,23 +710,34 @@ def get_workflow_status_tool(tool_context: ToolContext) -> dict:
                 "DO NOT use the original PDB file - it may contain components you want to exclude!"
             )
 
-    # Build_topology step requires box_dimensions from solvate
+    # Build_topology step requirements depend on solvation type
     if current_step == "build_topology":
-        box_dims = outputs.get("box_dimensions")
-        if not box_dims:
-            result["critical_warning"] = (
-                "CRITICAL: box_dimensions is MISSING from outputs! "
-                "The solvate step should have stored box_dimensions via mark_step_complete. "
-                "Without box_dimensions, build_amber_system will create an IMPLICIT solvent system. "
-                "Check that mark_step_complete was called with box_dimensions after solvate_structure."
-            )
-        elif isinstance(box_dims, dict) and not all(
-            box_dims.get(k, 0) > 0 for k in ["box_a", "box_b", "box_c"]
-        ):
-            result["critical_warning"] = (
-                f"CRITICAL: box_dimensions has invalid values: {box_dims}. "
-                "Ensure the solvate step returned valid box dimensions."
-            )
+        if solvation_type == "implicit":
+            # Implicit solvent: needs merged_pdb (no solvate step)
+            merged_pdb = outputs.get("merged_pdb")
+            if not merged_pdb:
+                result["critical_warning"] = (
+                    "CRITICAL: merged_pdb is MISSING from outputs! "
+                    "For implicit solvent, build_topology uses merged_pdb directly. "
+                    "Ensure prepare_complex completed successfully with merged_pdb output."
+                )
+        else:
+            # Explicit solvent: needs box_dimensions from solvate
+            box_dims = outputs.get("box_dimensions")
+            if not box_dims:
+                result["critical_warning"] = (
+                    "CRITICAL: box_dimensions is MISSING from outputs! "
+                    "The solvate step should have stored box_dimensions via mark_step_complete. "
+                    "Without box_dimensions, build_amber_system will create an IMPLICIT solvent system. "
+                    "Check that mark_step_complete was called with box_dimensions after solvate_structure."
+                )
+            elif isinstance(box_dims, dict) and not all(
+                box_dims.get(k, 0) > 0 for k in ["box_a", "box_b", "box_c"]
+            ):
+                result["critical_warning"] = (
+                    f"CRITICAL: box_dimensions has invalid values: {box_dims}. "
+                    "Ensure the solvate step returned valid box dimensions."
+                )
 
     return result
 

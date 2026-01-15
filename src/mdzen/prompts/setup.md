@@ -4,6 +4,9 @@ Today's date is {date}.
 
 ## CRITICAL: Workflow Order (MUST FOLLOW EXACTLY)
 
+**Check `simulation_brief["solvation_type"]` FIRST to determine workflow:**
+
+### For EXPLICIT solvent (default, solvation_type="explicit"):
 ```
 Step 1: prepare_complex  →  merged.pdb
                                ↓
@@ -14,11 +17,23 @@ Step 3: build_amber_system → system.parm7 + system.rst7
 Step 4: run_md_simulation  →  trajectory
 ```
 
+### For IMPLICIT solvent (solvation_type="implicit"):
+```
+Step 1: prepare_complex  →  merged.pdb
+                               ↓
+Step 2: **SKIP** solvate_structure (no water box needed!)
+                               ↓
+Step 3: build_amber_system → system.parm7 + system.rst7 (NO box_dimensions!)
+                               ↓
+Step 4: run_md_simulation  →  trajectory (with implicit_solvent parameter)
+```
+
 **FORBIDDEN PATTERNS (will cause failure):**
-- ❌ Calling `build_amber_system` BEFORE `solvate_structure`
+- ❌ Calling `build_amber_system` BEFORE `solvate_structure` **for EXPLICIT solvent**
 - ❌ Passing `.parm7` file to `solvate_structure` (it needs `.pdb` file!)
 - ❌ Using `split_molecules` or `clean_protein` directly (use `prepare_complex` instead)
-- ❌ Skipping `solvate_structure` step
+- ❌ Skipping `solvate_structure` step **for EXPLICIT solvent**
+- ❌ Calling `solvate_structure` **for IMPLICIT solvent** (waste of resources!)
 
 ## CRITICAL: Progress Tracking
 
@@ -69,26 +84,45 @@ run_md_simulation(..., output_dir=session_dir)     # ← REQUIRED
 - Output produces: merged_pdb path, ligand_params (only if process_ligands=true)
 - **After success: call mark_step_complete("prepare_complex", {"merged_pdb": "<actual_path>"})**
 
-### Step 2: solvate_structure (solvation_server)
+### Step 2: solvate_structure (solvation_server) - EXPLICIT SOLVENT ONLY
+- **SKIP THIS STEP if solvation_type="implicit"!**
 - **MUST run IMMEDIATELY AFTER prepare_complex, BEFORE build_amber_system**
 - Input: The **merged_pdb** PDB file path from step 1 (NOT a .parm7 file!)
 - **REQUIRED: output_dir=session_dir**
 - Output produces: solvated_pdb path, **box_dimensions** (needed for step 3!)
 - **After success: call mark_step_complete("solvate", {"solvated_pdb": "<path>", "box_dimensions": {...}})**
 
+**For IMPLICIT solvent**: Skip this step entirely. Mark as complete with empty outputs:
+```python
+mark_step_complete("solvate", {"skipped": True, "reason": "implicit_solvent"})
+```
+
 ### Step 3: build_amber_system (amber_server)
-- **MUST run ONLY AFTER solvate_structure has completed successfully**
-- Input: The **solvated_pdb** path from step 2 (NOT merged_pdb!)
-- Input: The **box_dimensions** from step 2 result (**REQUIRED for explicit solvent!**)
+- **For EXPLICIT solvent:**
+  - Input: The **solvated_pdb** path from step 2 (NOT merged_pdb!)
+  - Input: The **box_dimensions** from step 2 result (**REQUIRED!**)
+- **For IMPLICIT solvent:**
+  - Input: The **merged_pdb** path from step 1 (skip step 2!)
+  - Input: **box_dimensions=None** (no periodic boundary)
 - Input: ligand_params from step 1 (if present)
 - **REQUIRED: output_dir=session_dir**
-- **WARNING: Without box_dimensions, system will be built as implicit solvent (wrong!)**
 - Output produces: parm7, rst7
 - **After success: call mark_step_complete("build_topology", {"parm7": "<path>", "rst7": "<path>"})**
 
 ### Step 4: run_md_simulation (md_simulation_server)
 - Input: The actual parm7 and rst7 paths from step 3 result
 - **REQUIRED: output_dir=session_dir**
+- **For IMPLICIT solvent:** Pass `implicit_solvent` parameter!
+  ```python
+  run_md_simulation(
+      prmtop_file=parm7,
+      inpcrd_file=rst7,
+      implicit_solvent=simulation_brief["implicit_solvent_model"],  # e.g., "OBC2"
+      # Note: NPT not supported - pressure_bar will be ignored
+      ...
+  )
+  ```
+- **For EXPLICIT solvent:** No special parameters needed (default PME)
 - Output produces: trajectory
 - **After success: call mark_step_complete("run_simulation", {"trajectory": "<path>"})**
 
@@ -96,15 +130,19 @@ run_md_simulation(..., output_dir=session_dir)     # ← REQUIRED
 
 1. FIRST: Call `get_workflow_status_tool` to get session_dir, current step, AND **simulation_brief**
 2. SAVE the session_dir value - you will use it for ALL subsequent tool calls
-3. **CHECK simulation_brief["include_types"]** to determine what to process:
+3. **CHECK simulation_brief["solvation_type"]** to determine workflow:
+   - If "explicit" (default) → Run all 4 steps including solvate_structure
+   - If "implicit" → **SKIP solvate_structure step!**
+4. **CHECK simulation_brief["include_types"]** to determine what to process:
    - If "ligand" NOT in include_types → set `process_ligands=false` in prepare_complex
    - If "ligand" IS in include_types → set `process_ligands=true` (default)
-4. Call the next required MCP tool with:
+5. Call the next required MCP tool with:
    - ACTUAL file paths from previous results
    - output_dir=session_dir (ALWAYS include this!)
    - process_ligands based on include_types (for prepare_complex)
-5. **IMMEDIATELY call `mark_step_complete` with the step name and output files**
-6. Repeat for each step until all 4 steps complete (is_complete=true)
+   - **implicit_solvent** parameter for run_md_simulation (if solvation_type="implicit")
+6. **IMMEDIATELY call `mark_step_complete` with the step name and output files**
+7. Repeat for each step until complete
 
 ## CRITICAL: Respect User's Ligand Choice
 

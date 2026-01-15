@@ -46,7 +46,8 @@ def run_md_simulation(
     restraint_file: Optional[str] = None,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
-    is_membrane: bool = False
+    is_membrane: bool = False,
+    implicit_solvent: Optional[str] = None
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -68,6 +69,14 @@ def run_md_simulation(
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
                      with semi-isotropic pressure coupling (XY coupled, Z independent).
                      Uses surface tension = 0 bar*nm for NPγT ensemble. (default: False)
+        implicit_solvent: Generalized Born implicit solvent model. Options:
+                     - None (default): Use explicit solvent with PME
+                     - "HCT": Hawkins-Cramer-Truhlar (igb=1)
+                     - "OBC1": Onufriev-Bashford-Case I (igb=2)
+                     - "OBC2": Onufriev-Bashford-Case II (igb=5, recommended)
+                     - "GBn": GBn model (igb=7)
+                     - "GBn2": GBn2 model (igb=8, Amber recommended)
+                     Note: NPT not supported with implicit solvent - uses NVT.
 
     Returns:
         Dict with:
@@ -129,7 +138,9 @@ def run_md_simulation(
     try:
         from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter
         from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, MonteCarloMembraneBarostat
-        from openmm.app import Simulation, PME, HBonds
+        from openmm.app import Simulation, PME, NoCutoff, HBonds
+        # Implicit solvent models (Generalized Born)
+        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2
         from openmm.unit import (
             nanometer, kelvin, picosecond, femtoseconds, bar
         )
@@ -137,6 +148,15 @@ def run_md_simulation(
         result["errors"].append("OpenMM not installed")
         result["errors"].append("Hint: Install with: conda install -c conda-forge openmm")
         return result
+
+    # Map implicit solvent model names to OpenMM objects
+    IMPLICIT_MODELS = {
+        "HCT": HCT,      # igb=1
+        "OBC1": OBC1,    # igb=2
+        "OBC2": OBC2,    # igb=5 (default, well-tested)
+        "GBN": GBn,      # igb=7
+        "GBN2": GBn2,    # igb=8 (recommended by Amber manual)
+    }
     
     try:
         # Load system
@@ -144,16 +164,43 @@ def run_md_simulation(
         prmtop = AmberPrmtopFile(str(prmtop_path))
         inpcrd = AmberInpcrdFile(str(inpcrd_path))
 
-        # Create system
-        logger.info("Creating OpenMM system")
-        system = prmtop.createSystem(
-            nonbondedMethod=PME,
-            nonbondedCutoff=1.0*nanometer,
-            constraints=HBonds
-        )
+        # Detect if system is periodic (has box vectors)
+        is_periodic = inpcrd.boxVectors is not None
 
-        # Add barostat if NPT
-        if pressure_bar is not None:
+        # Create system - handle implicit vs explicit solvent
+        logger.info("Creating OpenMM system")
+        if implicit_solvent:
+            # Implicit solvent mode (Generalized Born)
+            gb_model = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            system = prmtop.createSystem(
+                implicitSolvent=gb_model,
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds,
+                soluteDielectric=1.0,
+                solventDielectric=78.5,
+            )
+            logger.info(f"Using implicit solvent ({implicit_solvent}) with NoCutoff")
+            result["solvent_type"] = "implicit"
+            result["implicit_model"] = implicit_solvent
+        elif is_periodic:
+            # Explicit solvent with periodic boundaries
+            system = prmtop.createSystem(
+                nonbondedMethod=PME,
+                nonbondedCutoff=1.0*nanometer,
+                constraints=HBonds
+            )
+            result["solvent_type"] = "explicit"
+        else:
+            # Non-periodic without implicit model - use NoCutoff (vacuum)
+            system = prmtop.createSystem(
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds
+            )
+            logger.warning("Non-periodic system without implicit solvent specified - using NoCutoff (vacuum)")
+            result["solvent_type"] = "vacuum"
+
+        # Add barostat if NPT (only for periodic explicit solvent systems)
+        if pressure_bar is not None and is_periodic and not implicit_solvent:
             if is_membrane:
                 # Membrane systems: MonteCarloMembraneBarostat with semi-isotropic coupling
                 # XYIsotropic: X and Y axes scale together (membrane plane)
@@ -176,6 +223,11 @@ def run_md_simulation(
                 )
             system.addForce(barostat)
             ensemble = "NPT"
+        elif implicit_solvent and pressure_bar is not None:
+            # Warn user that NPT is not supported with implicit solvent
+            logger.warning("Implicit solvent simulations use NVT ensemble - ignoring pressure setting")
+            result["warnings"].append("NPT not supported with implicit solvent, using NVT")
+            ensemble = "NVT"
         else:
             ensemble = "NVT"
         result["ensemble"] = ensemble
@@ -192,9 +244,10 @@ def run_md_simulation(
         simulation = Simulation(prmtop.topology, system, integrator)
         simulation.context.setPositions(inpcrd.positions)
 
-        # Set box vectors for periodic systems (required for PME)
-        if inpcrd.boxVectors is not None:
-            simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+        # Set box vectors for periodic explicit solvent systems (required for PME)
+        if is_periodic and not implicit_solvent:
+            if inpcrd.boxVectors is not None:
+                simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
         # Apply restraints if provided
         if restraint_file and Path(restraint_file).is_file():

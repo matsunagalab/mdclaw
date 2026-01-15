@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     structure_timeout: int = 600  # antechamber can take several minutes for complex ligands
     solvation_timeout: int = 600
     amber_timeout: int = 900  # tleap needs time for large systems (100k+ waters)
-    membrane_timeout: int = 3600  # Large membrane systems (e.g., SERCA) need more time
+    membrane_timeout: int = 7200  # Large membrane systems (e.g., SERCA) need 2+ hours
     md_simulation_timeout: int = 3600
 
     # Logging settings

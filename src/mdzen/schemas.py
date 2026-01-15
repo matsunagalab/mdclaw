@@ -3,7 +3,7 @@
 Defines the core data models used throughout the MD setup workflow.
 """
 
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import BaseModel, Field
 
 
@@ -274,6 +274,14 @@ class SimulationBrief(BaseModel):
     water_model: str = Field(
         "opc",
         description="Water model (OPC strongly recommended with ff19SB)"
+    )
+    solvation_type: Literal["explicit", "implicit"] = Field(
+        "explicit",
+        description="Solvation type: 'explicit' (water box) or 'implicit' (GB continuum)"
+    )
+    implicit_solvent_model: str = Field(
+        "OBC2",
+        description="Implicit solvent model: HCT (igb=1), OBC1 (igb=2), OBC2 (igb=5), GBn (igb=7), GBn2 (igb=8)"
     )
 
     # Simulation parameters

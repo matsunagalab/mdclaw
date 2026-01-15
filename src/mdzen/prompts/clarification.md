@@ -488,6 +488,8 @@ If user accepts → proceed to SimulationBrief. If changes requested → update 
 
 **For Implicit Solvent (GB):**
 - Use ff14SBonlysc with igb=8 (GBneck2) for best results
+- **solvation_type**: Set to "implicit" in SimulationBrief
+- **implicit_solvent_model**: "OBC2" (default) or "GBn2" (recommended by Amber)
 
 **Water Model Properties:**
 | Model | Points | Dielectric | Best Use |
@@ -500,10 +502,53 @@ If user accepts → proceed to SimulationBrief. If changes requested → update 
 **Default values:**
 - force_field: "ff19SB" (latest QM-based, amino acid-specific CMAP)
 - water_model: "opc" (accurate dielectric, recommended for ff19SB)
+- solvation_type: "explicit" (default, use water box)
+
+#### Step 6b: Solvation Type Detection
+
+**CRITICAL**: Detect solvation type from user's request BEFORE asking simulation questions.
+
+**Auto-detect implicit solvent** if user mentions:
+- "implicit water", "implicit solvent"
+- "GB", "generalized born", "GBSA"
+- "no water box", "vacuum-like"
+
+**Auto-detect explicit solvent** if user mentions:
+- "explicit water", "water box"
+- Specific water model: "TIP3P", "OPC", "SPC/E"
+- "solvated", "periodic"
+
+**If unclear**, ask:
+```
+**Question e: Solvation Type**
+  1. Explicit water (water box with TIP3P/OPC) (Recommended for accuracy)
+  2. Implicit solvent (Generalized Born, faster but less accurate)
+```
+
+**When setting implicit solvent:**
+- Set `solvation_type="implicit"` in SimulationBrief
+- Set `implicit_solvent_model="OBC2"` (default) or user-specified model
+- Note: NPT ensemble not supported with implicit - will use NVT automatically
 
 #### Step 7: Ask About Simulation Conditions
 
-After structure analysis is approved, ask about simulation parameters:
+After structure analysis is approved, ask about simulation parameters.
+
+**IMPORTANT: Ensemble Selection Logic**
+
+| Solvation Type | Ensemble Options | Default |
+|----------------|------------------|---------|
+| **Explicit** | NVT, NPT, NVE | NPT (Recommended) |
+| **Implicit** | NVT, NVE only | NVT (FIXED - no choice!) |
+
+**For IMPLICIT solvent:**
+- **DO NOT ask about ensemble** - always NVT (no periodic box = no pressure control)
+- **DO NOT offer NPT** - it's physically impossible
+- Just inform user: "Using NVT ensemble (standard for implicit solvent)"
+
+**For EXPLICIT solvent:**
+- Ask about ensemble if user hasn't specified
+- NPT recommended for production runs
 
 ```
 Structure settings confirmed. Now for simulation parameters:
@@ -517,6 +562,12 @@ Structure settings confirmed. Now for simulation parameters:
 **Question d: Temperature**
   1. 300 K (room temperature) (Recommended)
   2. 310 K (physiological)
+  3. Other (please specify)
+
+# For EXPLICIT solvent only - skip for implicit!
+**Question e: Ensemble**
+  1. NPT (constant pressure, 1 bar) (Recommended for production)
+  2. NVT (constant volume)
   3. Other (please specify)
 ```
 
@@ -537,11 +588,18 @@ Structure settings confirmed. Now for simulation parameters:
 Generate SimulationBrief when you are confident about:
 - Which chains to include
 - What to do with ligands/ions
+- **Solvation type** (explicit water box or implicit GB solvent)
 - Simulation conditions (temperature, time, ensemble)
 - Force field and water model
 - **Structure analysis settings** (disulfide bonds, histidine states, missing residues)
 
 If ANY of these is unclear, ask the user first.
+
+**IMPORTANT for Implicit Solvent:**
+- If user requested "implicit water", set `solvation_type="implicit"`
+- Set `implicit_solvent_model="OBC2"` (default) or user-specified model
+- **ALWAYS use NVT** - set `pressure_bar=None` (NOT NPT!)
+- **DO NOT ask user about ensemble** - implicit solvent = NVT is fixed (no periodic box = no pressure control)
 
 **CRITICAL**: You MUST actually CALL the `generate_simulation_brief` tool with all parameters including `structure_analysis`. Display the returned `summary` to the user. Do NOT just say "generated" without calling the tool.
 
