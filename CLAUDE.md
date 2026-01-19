@@ -455,11 +455,11 @@ ANTHROPIC_API_KEY=...
 
 Models are **auto-detected** based on available API keys (in order of priority):
 
-| API Key | Clarification | Setup |
-|---------|---------------|-------|
-| `ANTHROPIC_API_KEY` | claude-haiku | claude-sonnet |
-| `OPENAI_API_KEY` | gpt-4o-mini | gpt-4o-mini |
-| `GOOGLE_API_KEY` | gemini-2.0-flash | gemini-2.0-flash |
+| API Key | Clarification | Setup | Compress |
+|---------|---------------|-------|----------|
+| `ANTHROPIC_API_KEY` | claude-haiku-4-5 | claude-haiku-4-5 | claude-haiku-4-5 |
+| `OPENAI_API_KEY` | gpt-4o-mini | gpt-4o-mini | gpt-4o-mini |
+| `GOOGLE_API_KEY` | gemini-2.0-flash | gemini-2.0-flash | gemini-2.0-flash |
 
 **Override via CLI:**
 ```bash

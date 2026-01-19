@@ -29,7 +29,7 @@ def _detect_default_models() -> tuple[str, str, str]:
     if os.environ.get("ANTHROPIC_API_KEY"):
         return (
             "anthropic:claude-haiku-4-5-20251001",
-            "anthropic:claude-sonnet-4-20250514",
+            "anthropic:claude-haiku-4-5-20251001",
             "anthropic:claude-haiku-4-5-20251001",
         )
     elif os.environ.get("OPENAI_API_KEY"):
@@ -48,7 +48,7 @@ def _detect_default_models() -> tuple[str, str, str]:
         # Default to Anthropic (will fail if no key, but provides clear error message)
         return (
             "anthropic:claude-haiku-4-5-20251001",
-            "anthropic:claude-sonnet-4-20250514",
+            "anthropic:claude-haiku-4-5-20251001",
             "anthropic:claude-haiku-4-5-20251001",
         )
 
