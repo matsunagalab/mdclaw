@@ -60,7 +60,7 @@ Before calling ANY MCP tool, you MUST:
 ```python
 # FIRST: Get session_dir
 status = get_workflow_status_tool()
-session_dir = status["available_outputs"]["session_dir"]  # e.g., "/path/to/job_abc12345"
+session_dir = status["available_outputs"]["session_dir"]  # e.g., "job_abc12345"
 
 # THEN: Pass output_dir to EVERY MCP tool
 prepare_complex(..., output_dir=session_dir)       # ← REQUIRED
@@ -70,8 +70,8 @@ run_md_simulation(..., output_dir=session_dir)     # ← REQUIRED
 ```
 
 **WARNING: If you omit `output_dir`, files will be created in a WRONG location!**
-- ❌ WRONG: Files in `/outputs/solvate_3/` (default location)
-- ✅ CORRECT: Files in `/job_abc12345/` (session directory)
+- ❌ WRONG: Files in random subdirectory (default location)
+- ✅ CORRECT: Files in session directory (e.g., "job_abc12345/")
 
 ## Workflow Steps (Execute in EXACT Order: 1 → 2 → 3 → 4)
 
@@ -167,39 +167,41 @@ prepare_complex(
 
 ## Example Workflow
 
+**WARNING: These paths are EXAMPLES ONLY! You MUST use the ACTUAL `session_dir` returned by `get_workflow_status_tool()`!**
+
 1. Call get_workflow_status_tool
    → Returns:
-     - available_outputs={"session_dir": "/outputs/session_abc123"}
+     - available_outputs={"session_dir": "job_abc12345"}  ← USE THIS ACTUAL VALUE!
      - current_step="prepare_complex"
      - simulation_brief={"pdb_id": "1AKE", "include_types": ["protein", "ion"], ...}
 
 2. **Check include_types**: simulation_brief["include_types"] = ["protein", "ion"]
    → "ligand" NOT in include_types → process_ligands=FALSE
 
-3. Call prepare_complex(pdb_id="1AKE", output_dir="/outputs/session_abc123", process_ligands=false)
-   → Returns: success=true, merged_pdb="/outputs/session_abc123/merge/merged.pdb"
+3. Call prepare_complex(pdb_id="1AKE", output_dir="job_abc12345", process_ligands=false)
+   → Returns: success=true, merged_pdb="job_abc12345/merge/merged.pdb"
 
-3. **Call mark_step_complete(step_name="prepare_complex", output_files={"merged_pdb": "/outputs/session_abc123/merge/merged.pdb"})**
+3. **Call mark_step_complete(step_name="prepare_complex", output_files={"merged_pdb": "job_abc12345/merge/merged.pdb"})**
    → Returns: success=true, completed_steps=["prepare_complex"]
 
-4. Call solvate_structure(pdb_file="/outputs/session_abc123/merge/merged.pdb", output_dir="/outputs/session_abc123", output_name="solvated")
-   → Returns: success=true, output_file="/outputs/session_abc123/solvate/solvated.pdb", box_dimensions={"box_a": 77.66, "box_b": 77.66, "box_c": 77.66}
+4. Call solvate_structure(pdb_file="job_abc12345/merge/merged.pdb", output_dir="job_abc12345", output_name="solvated")
+   → Returns: success=true, output_file="job_abc12345/solvate/solvated.pdb", box_dimensions={"box_a": 77.66, "box_b": 77.66, "box_c": 77.66}
 
-5. **Call mark_step_complete(step_name="solvate", output_files={"solvated_pdb": "/outputs/session_abc123/solvate/solvated.pdb", "box_dimensions": {"box_a": 77.66, ...}})**
+5. **Call mark_step_complete(step_name="solvate", output_files={"solvated_pdb": "job_abc12345/solvate/solvated.pdb", "box_dimensions": {"box_a": 77.66, ...}})**
    → Returns: success=true, completed_steps=["prepare_complex", "solvate"]
 
 6. Call build_amber_system(
-     pdb_file="/outputs/session_abc123/solvate/solvated.pdb",  ← from step 4
+     pdb_file="job_abc12345/solvate/solvated.pdb",  ← from step 4
      box_dimensions={"box_a": 77.66, "box_b": 77.66, "box_c": 77.66},  ← from step 4 (REQUIRED!)
-     output_dir="/outputs/session_abc123",
+     output_dir="job_abc12345",
      output_name="system"  ← REQUIRED: always use this exact name
    )
-   → Returns: success=true, parm7="/outputs/session_abc123/topology/system.parm7", rst7="/outputs/session_abc123/topology/system.rst7"
+   → Returns: success=true, parm7="job_abc12345/topology/system.parm7", rst7="job_abc12345/topology/system.rst7"
 
 7. **Call mark_step_complete(step_name="build_topology", output_files={"parm7": "...", "rst7": "..."})**
    → Returns: success=true, completed_steps=["prepare_complex", "solvate", "build_topology"]
 
-8. Call run_md_simulation(prmtop_file=state["parm7"], inpcrd_file=state["rst7"], output_dir="/outputs/session_abc123")
+8. Call run_md_simulation(prmtop_file=state["parm7"], inpcrd_file=state["rst7"], output_dir="job_abc12345")
    → Returns: success=true, trajectory="..."
 
 9. **Call mark_step_complete(step_name="run_simulation", output_files={"trajectory": "..."})**

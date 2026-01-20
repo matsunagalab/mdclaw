@@ -13,6 +13,9 @@ Provides MCP tools for:
 
 import os
 import sys
+import hashlib
+import json
+import shutil
 from pathlib import Path
 from typing import Optional
 
@@ -31,6 +34,30 @@ mcp = FastMCP("Research Server")
 # Initialize working directory
 WORKING_DIR = Path("outputs")
 ensure_directory(WORKING_DIR)
+
+
+def _get_cache_dir() -> Path:
+    """Return cache directory for pinned downloads.
+
+    Controlled by MDZEN_CACHE_DIR. Defaults to .mdzen_cache in current working dir.
+    """
+    cache_root = Path(os.environ.get("MDZEN_CACHE_DIR", ".mdzen_cache")).expanduser()
+    ensure_directory(cache_root)
+    return cache_root
+
+
+def _sha256_bytes(data: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(data)
+    return h.hexdigest()
+
+
+def _copy_if_exists(src: Path, dst: Path) -> bool:
+    if not src.exists():
+        return False
+    ensure_directory(dst.parent)
+    shutil.copy2(src, dst)
+    return True
 
 
 
@@ -99,6 +126,9 @@ async def download_structure(
         "chains": [],
         "errors": [],
         "warnings": [],
+        "cache_hit": False,
+        "cache_path": None,
+        "sha256": None,
     }
 
     pdb_id = pdb_id.upper()
@@ -117,35 +147,89 @@ async def download_structure(
         ext = "pdb"
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.get(url)
-            if r.status_code != 200:
-                # Try fallback format
-                fallback_format = "cif" if format == "pdb" else "pdb"
-                fallback_url = f"https://files.rcsb.org/download/{pdb_id}.{fallback_format}"
-                result["warnings"].append(f"{format.upper()} not available, trying {fallback_format.upper()}")
-                r = await client.get(fallback_url)
-                if r.status_code != 200:
-                    result["errors"].append(f"Structure not found: {pdb_id} (HTTP {r.status_code})")
-                    result["errors"].append("Hint: Verify the PDB ID at https://www.rcsb.org/")
-                    return result
-                ext = fallback_format
-                result["file_format"] = fallback_format
-
-            content = r.content
-
-        # Save file
+        # Resolve output file path first
         if output_dir:
             save_dir = Path(output_dir)
             ensure_directory(save_dir)
         else:
             save_dir = WORKING_DIR
         output_file = save_dir / f"{pdb_id}.{ext}"
-        with open(output_file, "wb") as f:
-            f.write(content)
-        logger.info(f"Downloaded {pdb_id} to {output_file}")
 
-        result["file_path"] = str(output_file)
+        # Cache locations (pinned by checksum, reused across attempts)
+        cache_root = _get_cache_dir()
+        cache_entry_dir = cache_root / "pdb" / pdb_id
+        cache_file = cache_entry_dir / f"{pdb_id}.{ext}"
+        cache_meta = cache_entry_dir / "metadata.json"
+
+        # Cache hit: copy cached file to output_dir without network call
+        if _copy_if_exists(cache_file, output_file):
+            result["file_path"] = str(output_file)
+            result["cache_hit"] = True
+            result["cache_path"] = str(cache_file)
+            if cache_meta.exists():
+                try:
+                    meta = json.loads(cache_meta.read_text(encoding="utf-8"))
+                    result["sha256"] = meta.get("sha256")
+                except Exception:
+                    pass
+            logger.info(f"Cache hit for {pdb_id}: {cache_file} -> {output_file}")
+        else:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                r = await client.get(url)
+                if r.status_code != 200:
+                    # Try fallback format
+                    fallback_format = "cif" if format == "pdb" else "pdb"
+                    fallback_url = f"https://files.rcsb.org/download/{pdb_id}.{fallback_format}"
+                    result["warnings"].append(
+                        f"{format.upper()} not available, trying {fallback_format.upper()}"
+                    )
+                    r = await client.get(fallback_url)
+                    if r.status_code != 200:
+                        result["errors"].append(f"Structure not found: {pdb_id} (HTTP {r.status_code})")
+                        result["errors"].append("Hint: Verify the PDB ID at https://www.rcsb.org/")
+                        return result
+                    ext = fallback_format
+                    result["file_format"] = fallback_format
+
+                content = r.content
+
+                # If we fell back to a different extension, recompute paths
+                if ext != output_file.suffix.lstrip("."):
+                    output_file = save_dir / f"{pdb_id}.{ext}"
+                    cache_file = cache_entry_dir / f"{pdb_id}.{ext}"
+
+                # Save to output_dir
+                with open(output_file, "wb") as f:
+                    f.write(content)
+
+                # Save to cache and write metadata
+                ensure_directory(cache_entry_dir)
+                sha256 = _sha256_bytes(content)
+                result["sha256"] = sha256
+                with open(cache_file, "wb") as f:
+                    f.write(content)
+                cache_meta.write_text(
+                    json.dumps(
+                        {
+                            "pdb_id": pdb_id,
+                            "file_format": ext,
+                            "source_url": url,
+                            "downloaded_at": __import__("datetime").datetime.now().isoformat(),
+                            "sha256": sha256,
+                        },
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                result["file_path"] = str(output_file)
+                result["cache_hit"] = False
+                result["cache_path"] = str(cache_file)
+                logger.info(f"Downloaded {pdb_id} to {output_file} (cached: {cache_file})")
+
+        # Ensure file_path is set even on cache hit
+        if result["file_path"] is None:
+            result["file_path"] = str(output_file)
 
         # Get structure statistics using gemmi
         try:
@@ -1714,8 +1798,10 @@ def inspect_molecules(structure_file: str) -> dict:
         model = structure[0]
 
         chains_info = []
-        protein_chain_ids = []
+        protein_chain_ids = []  # label_asym_id (internal use)
+        protein_author_chains = []  # auth_asym_id (user-facing)
         ligand_chain_ids = []
+        ligand_author_chains = []
         water_chain_ids = []
         ion_chain_ids = []
 
@@ -1762,6 +1848,8 @@ def inspect_molecules(structure_file: str) -> dict:
             if has_protein:
                 chain_type = "protein"
                 protein_chain_ids.append(chain_id)
+                if author_chain not in protein_author_chains:
+                    protein_author_chains.append(author_chain)
             elif has_water:
                 chain_type = "water"
                 water_chain_ids.append(chain_id)
@@ -1771,6 +1859,8 @@ def inspect_molecules(structure_file: str) -> dict:
             else:
                 chain_type = "ligand"
                 ligand_chain_ids.append(chain_id)
+                if author_chain not in ligand_author_chains:
+                    ligand_author_chains.append(author_chain)
 
             entity_info = entity_name_map.get(chain_id, {})
 
@@ -1799,13 +1889,17 @@ def inspect_molecules(structure_file: str) -> dict:
 
         result["chains"] = chains_info
         result["summary"] = {
-            "num_protein_chains": len(protein_chain_ids),
-            "num_ligand_chains": len(ligand_chain_ids),
+            "num_protein_chains": len(protein_author_chains),
+            "num_ligand_chains": len(ligand_author_chains),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
-            "protein_chain_ids": protein_chain_ids,
-            "ligand_chain_ids": ligand_chain_ids,
+            # User-facing chain IDs (auth_asym_id) - use these for select_chains
+            "protein_chain_ids": protein_author_chains,
+            "ligand_chain_ids": ligand_author_chains,
+            # Internal chain IDs (label_asym_id) - for internal processing
+            "protein_label_ids": protein_chain_ids,
+            "ligand_label_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
         }
