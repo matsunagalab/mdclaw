@@ -11,6 +11,8 @@ from typing import Any
 from google.genai import types
 from rich.console import Console
 
+from mdzen.utils import safe_dict
+
 # Import shared generate_job_id from common
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))))
 from common.utils import generate_job_id as _generate_job_id  # noqa: E402
@@ -194,7 +196,7 @@ def display_results(state: dict, console: Console) -> None:
         console.print(f"Session directory: {session_dir}")
 
     # Show generated files
-    outputs = state.get("outputs", {})
+    outputs = safe_dict(state.get("outputs", {}))
     if outputs:
         console.print("\n[bold]Generated Files:[/bold]")
         for key, value in outputs.items():
