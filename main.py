@@ -261,6 +261,10 @@ async def _run_async(
     # Create session directory (or use existing for resume)
     session_dir = create_session_directory(job_id)
 
+    # Set current session for MCP servers to use
+    from common.utils import set_current_session
+    set_current_session(session_dir)
+
     # Create session service with DB inside job directory
     db_path = Path(session_dir) / "session.db"
     session_service = create_session_service(

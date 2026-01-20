@@ -25,7 +25,7 @@ from typing import List, Optional, Dict, Any  # noqa: E402
 
 from fastmcp import FastMCP  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id  # noqa: E402
+from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
 from common.base import BaseToolWrapper  # noqa: E402
 from mdzen.config import get_timeout  # noqa: E402
 from common.errors import (  # noqa: E402
@@ -805,8 +805,11 @@ def build_amber_system(
             logger.warning(f"Ligand validation warnings: {ligand_errors}")
     
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "topology")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "topology")
     else:
         out_dir = create_unique_subdir(output_dir, "topology")
     result["output_dir"] = str(out_dir)

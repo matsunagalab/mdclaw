@@ -31,7 +31,7 @@ from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id  # noqa: E402
+from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
 from common.base import BaseToolWrapper  # noqa: E402
 
 # Create FastMCP server
@@ -1225,8 +1225,11 @@ def split_molecules(
     suffix = structure_path.suffix.lower()
     
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "split")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "split")
     else:
         out_dir = create_unique_subdir(output_dir, "split")
     result["output_dir"] = str(out_dir)
@@ -2962,8 +2965,11 @@ def merge_structures(
         return result
 
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "merge")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "merge")
     else:
         out_dir = create_unique_subdir(output_dir, "merge")
     result["output_dir"] = str(out_dir)
@@ -3198,8 +3204,11 @@ def prepare_complex(
         return result
 
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "prepare_complex")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "prepare_complex")
     else:
         out_dir = create_unique_subdir(output_dir, "prepare_complex")
     result["output_dir"] = str(out_dir)

@@ -70,4 +70,4 @@ test_plan.md
 *.tmp
 *.bak
 job_*/
-job_*/
+.mdzen_session

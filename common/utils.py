@@ -206,6 +206,52 @@ def check_external_tool(tool_name: str) -> bool:
         return False
 
 
+# Session directory sharing for MCP servers
+# This allows MCP tools to know the current session directory without
+# relying on the LLM to pass output_dir correctly
+SESSION_FILE = ".mdzen_session"
+
+
+def set_current_session(session_dir: Union[str, Path]) -> None:
+    """Set the current session directory for MCP servers to use.
+
+    Creates a .mdzen_session file in the current working directory
+    that MCP tools can read to determine the default output directory.
+
+    Args:
+        session_dir: Absolute path to the session directory
+    """
+    session_path = Path(session_dir).resolve()
+    session_file = Path.cwd() / SESSION_FILE
+    session_file.write_text(str(session_path))
+    logger.debug(f"Set current session: {session_path}")
+
+
+def get_current_session() -> Optional[Path]:
+    """Get the current session directory from .mdzen_session file.
+
+    MCP servers call this to get the default output directory when
+    output_dir is not explicitly provided.
+
+    Returns:
+        Path to session directory, or None if not set or file doesn't exist
+    """
+    session_file = Path.cwd() / SESSION_FILE
+    if session_file.exists():
+        session_dir = session_file.read_text().strip()
+        if session_dir and Path(session_dir).exists():
+            return Path(session_dir)
+    return None
+
+
+def clear_current_session() -> None:
+    """Clear the current session file."""
+    session_file = Path.cwd() / SESSION_FILE
+    if session_file.exists():
+        session_file.unlink()
+        logger.debug("Cleared current session file")
+
+
 def create_unique_subdir(base_dir: Union[str, Path], name: str) -> Path:
     """Create a uniquely-named subdirectory within base_dir.
 

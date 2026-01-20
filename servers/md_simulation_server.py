@@ -23,7 +23,7 @@ from typing import Optional  # noqa: E402
 import numpy as np  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id  # noqa: E402
+from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
 
 # Create FastMCP server
 mcp = FastMCP("MD Simulation Server")
@@ -118,8 +118,11 @@ def run_md_simulation(
     }
 
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "md_simulation")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "md_simulation")
     else:
         out_dir = create_unique_subdir(output_dir, "md_simulation")
     result["output_dir"] = str(out_dir)
@@ -979,8 +982,11 @@ def compute_q_value(
     }
 
     # Setup output directory with human-readable name
+    # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        out_dir = create_unique_subdir(WORKING_DIR, "q_value")
+        session_dir = get_current_session()
+        base_dir = session_dir if session_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "q_value")
     else:
         out_dir = create_unique_subdir(output_dir, "q_value")
     result["output_dir"] = str(out_dir)
