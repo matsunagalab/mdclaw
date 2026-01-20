@@ -295,6 +295,80 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
     return result
 
 
+def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> dict:
+    """Fix inconsistent HIS residue names vs present hydrogen atom names.
+
+    tleap will fail if, for example, a residue is named HIE but contains atom HD1.
+    This can happen when upstream tools label residues but keep hydrogen names.
+
+    Rules (Amber):
+    - HID: delta-protonated -> has HD1 (and typically no HE2)
+    - HIE: epsilon-protonated -> has HE2 (and typically no HD1)
+    - HIP: doubly protonated -> has both HD1 and HE2
+
+    This function rewrites residue names to match present atom names.
+    It does NOT add/remove atoms; it only changes residue name columns.
+    """
+    result = {"changed": 0, "changes": []}
+
+    # First pass: collect per-residue whether HD1/HE2 are present
+    residues: dict[tuple[str, str, str], dict[str, bool]] = {}
+    lines = pdb_path.read_text().splitlines(keepends=True)
+    for line in lines:
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        resname = line[17:20].strip().upper()
+        if resname not in {"HIS", "HID", "HIE", "HIP"}:
+            continue
+        chain = line[21:22]
+        resnum = line[22:26]
+        icode = line[26:27]
+        key = (chain, resnum, icode)
+        atom = line[12:16].strip().upper()
+        flags = residues.setdefault(key, {"hd1": False, "he2": False, "resname": resname})
+        if atom == "HD1":
+            flags["hd1"] = True
+        elif atom == "HE2":
+            flags["he2"] = True
+
+    # Determine desired residue names
+    desired: dict[tuple[str, str, str], str] = {}
+    for key, flags in residues.items():
+        hd1 = bool(flags.get("hd1"))
+        he2 = bool(flags.get("he2"))
+        current = str(flags.get("resname", "HIS")).upper()
+        target = current
+        if hd1 and he2:
+            target = "HIP"
+        elif hd1 and not he2:
+            target = "HID"
+        elif he2 and not hd1:
+            target = "HIE"
+        # If neither hydrogen present, leave as-is (HIS/HID/HIE from upstream)
+        if target != current:
+            desired[key] = target
+
+    # Second pass: rewrite residue name field for matching residues
+    out_lines: list[str] = []
+    for line in lines:
+        if line.startswith(("ATOM", "HETATM")):
+            chain = line[21:22]
+            resnum = line[22:26]
+            icode = line[26:27]
+            key = (chain, resnum, icode)
+            if key in desired:
+                old = line[17:20]
+                new = f"{desired[key]:>3}"
+                if old != new:
+                    result["changed"] += 1
+                    result["changes"].append(f"{chain.strip() or '_'}:{resnum.strip()}{icode.strip() or ''} {old.strip()} -> {new.strip()}")
+                    line = line[:17] + new + line[20:]
+        out_lines.append(line)
+
+    output_path.write_text("".join(out_lines))
+    return result
+
+
 def get_coordinate_range(pdb_path: Path) -> dict:
     """Calculate coordinate range from PDB file.
 
@@ -752,6 +826,19 @@ def build_amber_system(
     fix_lig_result = fix_ligand_residue_names(pdb_path, working_pdb, ligand_res_names)
     if fix_lig_result["unl_count"] > 0:
         result["warnings"].extend(fix_lig_result["replacements"])
+
+    # Fix histidine residue name consistency (HID/HIE/HIP vs HD1/HE2)
+    try:
+        his_fix = fix_histidine_protonation_consistency(working_pdb, working_pdb)
+        if his_fix.get("changed", 0) > 0:
+            # Keep concise: only show first few changes
+            preview = his_fix.get("changes", [])[:5]
+            result["warnings"].append(
+                f"Histidine residue name fix applied ({his_fix['changed']} atoms updated): {preview}"
+            )
+            logger.info(f"Applied histidine residue name fix: {his_fix['changed']} atom lines updated")
+    except Exception as e:
+        result["warnings"].append(f"Histidine residue name fix failed (continuing): {type(e).__name__}: {e}")
     
     # Use fixed PDB for tleap
     pdb_path = working_pdb
@@ -774,7 +861,23 @@ def build_amber_system(
             if is_membrane:
                 script_lines.append("source leaprc.lipid21")
             script_lines.append(f"loadamberparams {ion_params}")
-        
+        else:
+            # Implicit solvent: check if input PDB has crystallographic waters
+            # These need water force field for tleap to process them
+            detected_water = detect_water_type(pdb_path)
+            if detected_water["has_waters"]:
+                logger.warning(
+                    f"Input PDB contains {detected_water['water_count']} crystal waters but "
+                    f"building implicit solvent system. Loading tip3p for water parameters. "
+                    f"Consider using prepare_complex to remove crystal waters first."
+                )
+                result["warnings"].append(
+                    f"Crystal waters detected in implicit solvent system. "
+                    f"Loaded tip3p parameters for {detected_water['water_count']} waters. "
+                    f"Tip: Use prepare_complex to remove crystal waters for cleaner setup."
+                )
+                script_lines.append("source leaprc.water.tip3p  # For crystal waters")
+
         script_lines.append("")
         
         # Load ligand parameters (frcmod BEFORE mol2)
