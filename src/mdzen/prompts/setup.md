@@ -206,6 +206,52 @@ prepare_complex(
 
 9. **Call mark_step_complete(step_name="run_simulation", output_files={"trajectory": "..."})**
 
+---
+
+## Example Workflow: IMPLICIT Solvent
+
+**For simulation_brief with `solvation_type="implicit"`:**
+
+1. Call get_workflow_status_tool
+   → Returns:
+     - simulation_brief={"pdb_id": "2RJX", "solvation_type": "implicit", "implicit_solvent_model": "OBC2", ...}
+
+2. Call prepare_complex(pdb_id="2RJX", output_dir="job_abc12345")
+   → Returns: merged_pdb="job_abc12345/merge/merged.pdb"
+
+3. mark_step_complete("prepare_complex", {"merged_pdb": "job_abc12345/merge/merged.pdb"})
+
+4. **SKIP solvate_structure** - mark as skipped:
+   mark_step_complete("solvate", {"skipped": True, "reason": "implicit_solvent"})
+
+5. Call build_amber_system(
+     pdb_file="job_abc12345/merge/merged.pdb",  ← Use merged_pdb (NOT solvated!)
+     solvent_type="implicit",                    ← REQUIRED for implicit solvent
+     output_dir="job_abc12345"
+   )
+   → Returns: parm7="...", rst7="..."
+
+6. mark_step_complete("build_topology", {"parm7": "...", "rst7": "..."})
+
+7. **Call run_md_simulation WITH implicit_solvent parameter:**
+   ```python
+   run_md_simulation(
+       prmtop_file="job_abc12345/topology/system.parm7",
+       inpcrd_file="job_abc12345/topology/system.rst7",
+       implicit_solvent="OBC2",  # ← CRITICAL: Must match simulation_brief["implicit_solvent_model"]
+       output_dir="job_abc12345"
+   )
+   ```
+   → Returns: trajectory="..."
+
+8. mark_step_complete("run_simulation", {"trajectory": "..."})
+
+**CRITICAL for implicit solvent:**
+- ❌ WITHOUT `implicit_solvent` parameter → OpenMM uses vacuum (NoCutoff) - WRONG!
+- ✅ WITH `implicit_solvent="OBC2"` → OpenMM uses Generalized Born model - CORRECT!
+
+---
+
 ## Important Notes
 
 - DO NOT use placeholder strings like "outputs[merged_pdb]" or "session.state[...]"
