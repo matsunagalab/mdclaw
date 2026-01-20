@@ -69,7 +69,7 @@ def generate_simulation_brief(
     lipids: Optional[str] = None,
     lipid_ratio: Optional[str] = None,
     force_field: str = "ff19SB",
-    water_model: str = "tip3p",
+    water_model: str = "opc",
     solvation_type: str = "explicit",
     implicit_solvent_model: str = "OBC2",
     temperature: float = 300.0,
@@ -474,6 +474,7 @@ def run_validation(
         Dictionary with validation_results and final_report
     """
     from pathlib import Path
+    import json
 
     # Read clarification log if available
     clarification_log = ""
@@ -513,11 +514,16 @@ def run_validation(
                 path = str(fallback)
 
         if path and Path(path).exists():
+            size = Path(path).stat().st_size
             validation_results["required_files"][key] = {
                 "path": path,
                 "exists": True,
-                "size": Path(path).stat().st_size,
+                "size": size,
             }
+            # Guard against false positives: empty files should be treated as failure.
+            if size == 0:
+                validation_results["success"] = False
+                validation_results["errors"].append(f"Required file is empty: {key}")
         else:
             validation_results["required_files"][key] = {
                 "path": path,
@@ -541,6 +547,198 @@ def run_validation(
                 "path": path,
                 "exists": True,
             }
+
+    # -------------------------------------------------------------------------
+    # QC v1: topology/coordinate sanity + composition summary
+    # -------------------------------------------------------------------------
+    qc_v1: dict = {"performed": False, "errors": [], "warnings": []}
+
+    def _qc_v1_from_amber(parm7_path: str, rst7_path: str) -> dict:
+        """Compute fast QC metrics from Amber topology/coords.
+
+        This is designed to be robust and fast (seconds). It should never raise.
+        """
+        qc: dict = {
+            "performed": False,
+            "errors": [],
+            "warnings": [],
+            "atom_count": None,
+            "residue_count": None,
+            "net_charge_e": None,
+            "composition": {},
+        }
+        try:
+            import parmed as pmd
+
+            struct = pmd.load_file(parm7_path, xyz=rst7_path)
+            qc["performed"] = True
+
+            atom_count = len(getattr(struct, "atoms", []))
+            residue_count = len(getattr(struct, "residues", []))
+            qc["atom_count"] = atom_count
+            qc["residue_count"] = residue_count
+
+            # Net charge (e)
+            try:
+                net_q = float(sum(float(a.charge) for a in struct.atoms))
+                qc["net_charge_e"] = round(net_q, 6)
+            except Exception:
+                qc["warnings"].append("Could not compute net charge from topology.")
+
+            # Composition summary by residue name
+            aa3 = {
+                "ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS","ILE","LEU","LYS",
+                "MET","PHE","PRO","SER","THR","TRP","TYR","VAL",
+            }
+            water = {"WAT", "HOH", "TIP3", "SOL", "OPC", "TP3", "H2O"}
+            lipids = {"POPC", "POPE", "DOPC", "DOPE", "DOPG", "DPPC", "CHL1", "CHL"}
+            ions = {
+                "NA", "Na+", "K", "K+", "CL", "Cl-", "MG", "CA", "ZN", "FE", "MN", "CO", "NI", "CU",
+            }
+
+            comp_counts = {
+                "protein_residues": 0,
+                "water_residues": 0,
+                "ion_residues": 0,
+                "lipid_residues": 0,
+                "other_residues": 0,
+                "other_resnames": {},
+            }
+            for res in struct.residues:
+                rn = str(getattr(res, "name", "")).strip()
+                rnu = rn.upper()
+                if rnu in aa3:
+                    comp_counts["protein_residues"] += 1
+                elif rnu in water:
+                    comp_counts["water_residues"] += 1
+                elif rnu in lipids:
+                    comp_counts["lipid_residues"] += 1
+                elif rnu in ions:
+                    comp_counts["ion_residues"] += 1
+                else:
+                    comp_counts["other_residues"] += 1
+                    comp_counts["other_resnames"][rnu] = comp_counts["other_resnames"].get(rnu, 0) + 1
+
+            qc["composition"] = comp_counts
+
+            # Basic sanity checks
+            if atom_count == 0:
+                qc["errors"].append("Topology contains zero atoms.")
+            if residue_count == 0:
+                qc["errors"].append("Topology contains zero residues.")
+
+        except ImportError:
+            qc["warnings"].append("ParmEd not installed; will try OpenMM fallback for QC v1.")
+        except Exception as e:
+            # ParmEd can fail on some prmtop variants; fall back to OpenMM + minimal parsing.
+            qc["warnings"].append(f"ParmEd QC failed: {type(e).__name__}: {e}")
+
+        # Fallback path (or to enrich missing fields): OpenMM Amber readers + minimal prmtop parsing
+        if not qc["performed"]:
+            try:
+                from openmm.app import AmberInpcrdFile, AmberPrmtopFile
+
+                prmtop = AmberPrmtopFile(parm7_path)
+                inpcrd = AmberInpcrdFile(rst7_path)
+
+                atoms = list(prmtop.topology.atoms())
+                residues = list(prmtop.topology.residues())
+                qc["atom_count"] = len(atoms)
+                qc["residue_count"] = len(residues)
+                qc["performed"] = True
+
+                # Coordinate consistency check
+                try:
+                    pos = inpcrd.positions
+                    if pos is not None and len(pos) != len(atoms):
+                        qc["errors"].append(
+                            f"Atom/coord mismatch: topology atoms={len(atoms)} vs positions={len(pos)}"
+                        )
+                except Exception:
+                    qc["warnings"].append("Could not validate coordinates vs topology atom count.")
+
+                # Composition summary by residue name (from Topology)
+                aa3 = {
+                    "ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS","ILE","LEU","LYS",
+                    "MET","PHE","PRO","SER","THR","TRP","TYR","VAL",
+                }
+                water = {"WAT", "HOH", "TIP3", "SOL", "OPC", "TP3", "H2O"}
+                lipids = {"POPC", "POPE", "DOPC", "DOPE", "DOPG", "DPPC", "CHL1", "CHL"}
+                ions = {
+                    "NA", "Na+", "K", "K+", "CL", "Cl-", "MG", "CA", "ZN", "FE", "MN", "CO", "NI", "CU",
+                }
+                comp_counts = {
+                    "protein_residues": 0,
+                    "water_residues": 0,
+                    "ion_residues": 0,
+                    "lipid_residues": 0,
+                    "other_residues": 0,
+                    "other_resnames": {},
+                }
+                for res in residues:
+                    rn = str(getattr(res, "name", "")).strip()
+                    rnu = rn.upper()
+                    if rnu in aa3:
+                        comp_counts["protein_residues"] += 1
+                    elif rnu in water:
+                        comp_counts["water_residues"] += 1
+                    elif rnu in lipids:
+                        comp_counts["lipid_residues"] += 1
+                    elif rnu in ions:
+                        comp_counts["ion_residues"] += 1
+                    else:
+                        comp_counts["other_residues"] += 1
+                        comp_counts["other_resnames"][rnu] = comp_counts["other_resnames"].get(rnu, 0) + 1
+                qc["composition"] = comp_counts
+
+                # Net charge parsing from prmtop (%FLAG CHARGE, units: e*18.2223)
+                try:
+                    charges: list[float] = []
+                    in_charge = False
+                    with open(parm7_path, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            if line.startswith("%FLAG "):
+                                in_charge = line.strip().endswith("CHARGE")
+                                continue
+                            if in_charge:
+                                if line.startswith("%FORMAT") or line.startswith("%COMMENT"):
+                                    continue
+                                if line.startswith("%FLAG "):
+                                    in_charge = False
+                                    continue
+                                for tok in line.split():
+                                    try:
+                                        charges.append(float(tok))
+                                    except Exception:
+                                        pass
+                    if charges:
+                        net_q = sum(charges) / 18.2223
+                        qc["net_charge_e"] = round(float(net_q), 6)
+                    else:
+                        qc["warnings"].append("Could not parse %FLAG CHARGE from prmtop for net charge.")
+                except Exception:
+                    qc["warnings"].append("Could not parse net charge from prmtop.")
+
+            except Exception as e:
+                qc["errors"].append(f"QC v1 fallback failed: {type(e).__name__}: {e}")
+
+        return qc
+
+    parm7_path = validation_results["required_files"].get("parm7", {}).get("path")
+    rst7_path = validation_results["required_files"].get("rst7", {}).get("path")
+    if validation_results["success"] and parm7_path and rst7_path:
+        qc_v1 = _qc_v1_from_amber(parm7_path, rst7_path)
+        validation_results["qc_v1"] = qc_v1
+        # Treat QC errors as validation failure ONLY if QC couldn't be performed at all,
+        # or if we detect a hard mismatch (e.g., atom/coord mismatch).
+        if qc_v1.get("errors"):
+            hard = any("Atom/coord mismatch" in str(e) for e in qc_v1["errors"])
+            if hard or not qc_v1.get("performed"):
+                validation_results["success"] = False
+                for e in qc_v1["errors"]:
+                    validation_results["errors"].append(f"QC v1: {e}")
+    else:
+        validation_results["qc_v1"] = qc_v1
 
     # Collect all important output files (*.parm7, *.rst7, *.pdb, *.dcd)
     important_files = {}
@@ -648,8 +846,32 @@ def run_validation(
 
     report_lines.append("")
 
+    # 5. QC (v1)
+    report_lines.append("## 5. QC (v1)")
+    report_lines.append("-" * 40)
+    qc = validation_results.get("qc_v1", {}) if isinstance(validation_results, dict) else {}
+    if qc and qc.get("performed"):
+        report_lines.append(f"  Atoms: {qc.get('atom_count')}")
+        report_lines.append(f"  Residues: {qc.get('residue_count')}")
+        report_lines.append(f"  Net charge (e): {qc.get('net_charge_e')}")
+        comp = qc.get("composition", {}) or {}
+        report_lines.append("  Composition (residues):")
+        report_lines.append(f"    - protein: {comp.get('protein_residues')}")
+        report_lines.append(f"    - water: {comp.get('water_residues')}")
+        report_lines.append(f"    - ions: {comp.get('ion_residues')}")
+        report_lines.append(f"    - lipids: {comp.get('lipid_residues')}")
+        report_lines.append(f"    - other: {comp.get('other_residues')}")
+        if comp.get('other_resnames'):
+            report_lines.append(f"  Other resnames: {comp.get('other_resnames')}")
+    else:
+        report_lines.append("  QC v1 not performed.")
+        if qc and qc.get("warnings"):
+            for w in qc["warnings"]:
+                report_lines.append(f"  ⚠ {w}")
+    report_lines.append("")
+
     # 5. Session Info
-    report_lines.append("## 5. Session Info")
+    report_lines.append("## 6. Session Info")
     report_lines.append("-" * 40)
     report_lines.append(f"  Directory: {session_dir}")
 
@@ -658,12 +880,24 @@ def run_validation(
 
     final_report = "\n".join(report_lines)
 
-    return {
+    result = {
         "success": validation_results["success"],
         "final_report": final_report,
         "important_files": important_files,
         "validation_results": validation_results,
     }
+
+    # Write machine-readable validation result for benchmark tooling
+    try:
+        if session_path:
+            (session_path / "validation_result.json").write_text(
+                json.dumps(result, indent=2, default=str),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
+
+    return result
 
 
 # =============================================================================

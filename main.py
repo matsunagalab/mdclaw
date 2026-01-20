@@ -29,6 +29,15 @@ from mdzen.cli.runner import (  # noqa: E402
 app = typer.Typer(help="MDZen - AI Agent for Molecular Dynamics Setup")
 console = Console()
 
+# Subcommands
+try:
+    from mdzen.cli.benchmark import benchmark_app
+
+    app.add_typer(benchmark_app, name="benchmark")
+except Exception:
+    # Benchmark CLI is optional at runtime; main MD workflow should still work.
+    pass
+
 
 def _normalize_model_name(model: str) -> str:
     """Normalize short model names to full provider:model format.
@@ -130,12 +139,23 @@ def _run_with_suppressed_cleanup(coro):
 
     loop.set_exception_handler(ignore_asyncgen_errors)
 
+    exit_code = 0
     try:
         return loop.run_until_complete(coro)
+    except Exception:
+        # Print traceback for real failures. Note that when MDZEN_HARD_EXIT=1 (default),
+        # we will terminate the process after cleanup; this ensures users/benchmarks
+        # can still see the error and get a non-zero exit code.
+        import traceback
+
+        exit_code = 1
+        traceback.print_exc()
+        raise
     finally:
         # Suppress stderr before cleanup to hide any async generator errors
         # that might bypass our hooks
-        sys.stderr = open(os.devnull, "w")
+        hard_exit = os.environ.get("MDZEN_HARD_EXIT", "1") not in {"0", "false", "False"}
+        sys.stderr = open(os.devnull, "w") if hard_exit else sys.stderr
         try:
             loop.run_until_complete(loop.shutdown_asyncgens())
         except Exception:
@@ -145,11 +165,12 @@ def _run_with_suppressed_cleanup(coro):
                 loop.close()
             except Exception:
                 pass
-            # Force exit to prevent any remaining cleanup errors.
-            # This avoids "Attempted to exit cancel scope in a different task" errors
-            # that occur when Python's garbage collector cleans up remaining
-            # async generators from a different task context.
-            os._exit(0)
+            if hard_exit:
+                # Force exit to prevent any remaining cleanup errors.
+                # This avoids "Attempted to exit cancel scope in a different task" errors
+                # that occur when Python's garbage collector cleans up remaining
+                # async generators from a different task context.
+                os._exit(exit_code)
 
 
 @app.command()
