@@ -226,10 +226,10 @@ prepare_complex(
 
 5. Call build_amber_system(
      pdb_file="job_abc12345/merge/merged.pdb",  ← Use merged_pdb (NOT solvated!)
-     solvent_type="implicit",                    ← REQUIRED for implicit solvent
      output_dir="job_abc12345"
+     # NO box_dimensions! → This makes it build implicit solvent system
    )
-   → Returns: parm7="...", rst7="..."
+   → Returns: parm7="...", rst7="...", solvent_type="implicit"
 
 6. mark_step_complete("build_topology", {"parm7": "...", "rst7": "..."})
 
