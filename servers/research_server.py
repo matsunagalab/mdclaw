@@ -508,7 +508,9 @@ async def get_structure_info(pdb_id: str) -> dict:
 
                             # Get assembly details
                             pdbx_struct = assembly_data.get("pdbx_struct_assembly", {})
-                            rcsb_assembly = assembly_data.get("rcsb_struct_symmetry", {})
+                            # rcsb_struct_symmetry can be a list or dict
+                            rcsb_symmetry_raw = assembly_data.get("rcsb_struct_symmetry")
+                            rcsb_assembly = rcsb_symmetry_raw[0] if isinstance(rcsb_symmetry_raw, list) and rcsb_symmetry_raw else (rcsb_symmetry_raw or {})
 
                             assembly_info = {
                                 "assembly_id": str(assembly_id),
