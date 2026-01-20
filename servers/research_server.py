@@ -2002,14 +2002,6 @@ def inspect_molecules(structure_file: str) -> dict:
 
             entity_info = entity_name_map.get(chain_id, {})
 
-            unique_residues = sorted(list(residue_names))
-            truncated_residues = unique_residues[:10] if len(unique_residues) > 10 else unique_residues
-            residue_summary = {
-                "unique_residues": truncated_residues,
-                "total_unique_count": len(unique_residues),
-                "truncated": len(unique_residues) > 10,
-            }
-
             chain_info = {
                 "chain_id": chain_id,
                 "author_chain": author_chain,
@@ -2020,7 +2012,6 @@ def inspect_molecules(structure_file: str) -> dict:
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
-                "residue_names": residue_summary,
                 "sequence_length": len(sequence_parts) if has_protein else 0,
             }
             chains_info.append(chain_info)
