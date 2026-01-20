@@ -47,6 +47,11 @@ class StructureAnalysis:
     chains_are_crystallographic: bool = False  # True if UniProt says monomer but PDB has multiple chains
     has_ligands: bool = False
 
+    # Variant/wild-type information (from PDB title analysis)
+    is_likely_variant: bool = False  # True if title suggests mutant/variant
+    variant_indicators: list[str] = field(default_factory=list)  # Detected mutations, e.g., ["K127A", "mutant"]
+    is_wild_type: bool = False  # True if title explicitly mentions wild-type
+
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -68,6 +73,9 @@ class StructureAnalysis:
             "has_multiple_chains": self.has_multiple_chains,
             "chains_are_crystallographic": self.chains_are_crystallographic,
             "has_ligands": self.has_ligands,
+            "is_likely_variant": self.is_likely_variant,
+            "variant_indicators": self.variant_indicators,
+            "is_wild_type": self.is_wild_type,
             "errors": self.errors,
             "warnings": self.warnings,
         }
@@ -91,6 +99,9 @@ class StructureAnalysis:
             has_multiple_chains=data.get("has_multiple_chains", False),
             chains_are_crystallographic=data.get("chains_are_crystallographic", False),
             has_ligands=data.get("has_ligands", False),
+            is_likely_variant=data.get("is_likely_variant", False),
+            variant_indicators=data.get("variant_indicators", []),
+            is_wild_type=data.get("is_wild_type", False),
             errors=data.get("errors", []),
             warnings=data.get("warnings", []),
         )
