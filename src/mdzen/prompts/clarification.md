@@ -385,7 +385,7 @@ all_chains = chain_rec.get("all_protein_chains") # e.g., ["A", "B"]
 **Present the recommendation with the reason:**
 ```
 **Question a: Chain Selection**
-  1. Chain A only (Recommended) - {reason}
+  1. Chain A only (Recommended) - [insert reason from chain_recommendation]
   2. All chains (A, B)
   3. Other (please specify)
 ```
