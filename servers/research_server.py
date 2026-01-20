@@ -419,6 +419,61 @@ async def get_structure_info(pdb_id: str) -> dict:
             if is_membrane_protein:
                 logger.info(f"Membrane protein detected for {pdb_id}: {membrane_indicators}")
 
+            # Fetch biological assembly information
+            assembly_count = data.get("rcsb_entry_info", {}).get("assembly_count", 0)
+            if assembly_count > 0:
+                assemblies = []
+                for assembly_id in range(1, min(assembly_count + 1, 4)):  # Limit to first 3 assemblies
+                    assembly_url = f"https://data.rcsb.org/rest/v1/core/assembly/{pdb_id}/{assembly_id}"
+                    try:
+                        assembly_r = await client.get(assembly_url)
+                        if assembly_r.status_code == 200:
+                            assembly_data = assembly_r.json()
+
+                            # Get assembly details
+                            pdbx_struct = assembly_data.get("pdbx_struct_assembly", {})
+                            rcsb_assembly = assembly_data.get("rcsb_struct_symmetry", {})
+
+                            assembly_info = {
+                                "assembly_id": str(assembly_id),
+                                "oligomeric_details": pdbx_struct.get("oligomeric_details"),
+                                "oligomeric_count": pdbx_struct.get("oligomeric_count"),
+                                "method_details": pdbx_struct.get("method_details"),
+                            }
+
+                            # Get chains in this assembly (auth_asym_ids)
+                            gen_list = assembly_data.get("pdbx_struct_assembly_gen", [])
+                            assembly_chains = []
+                            for gen in gen_list:
+                                asym_ids = gen.get("asym_id_list", [])
+                                if asym_ids:
+                                    assembly_chains.extend(asym_ids)
+                            if assembly_chains:
+                                assembly_info["chains"] = list(set(assembly_chains))
+
+                            # Get symmetry info if available
+                            if rcsb_assembly:
+                                assembly_info["symmetry"] = rcsb_assembly.get("symbol")
+                                assembly_info["stoichiometry"] = rcsb_assembly.get("stoichiometry")
+
+                            assemblies.append(assembly_info)
+                    except Exception as e:
+                        result["warnings"].append(f"Could not fetch assembly {assembly_id}: {str(e)}")
+
+                if assemblies:
+                    info["biological_assemblies"] = assemblies
+                    # Mark the first assembly as the preferred biological unit
+                    preferred = assemblies[0]
+                    info["preferred_biological_unit"] = {
+                        "assembly_id": preferred.get("assembly_id"),
+                        "oligomeric_details": preferred.get("oligomeric_details"),
+                        "chains": preferred.get("chains", []),
+                    }
+                    logger.info(
+                        f"Biological assembly for {pdb_id}: {preferred.get('oligomeric_details')} "
+                        f"(chains: {preferred.get('chains', [])})"
+                    )
+
             result["info"] = info
             result["success"] = True
             logger.info(f"Retrieved info for {pdb_id}: {info.get('title', 'N/A')[:50]}...")

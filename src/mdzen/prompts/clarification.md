@@ -363,6 +363,54 @@ Present ALL questions (a, b, c, d) in a SINGLE message.
 
 ---
 
+**Biological Assembly for Chain Selection:**
+
+When `get_structure_info` returns `preferred_biological_unit`, use it to recommend chain selection:
+
+```
+# Check biological assembly from get_structure_info result
+preferred_unit = info.get("preferred_biological_unit", {})
+bio_chains = preferred_unit.get("chains", [])
+oligomeric_details = preferred_unit.get("oligomeric_details")  # e.g., "monomeric", "dimeric"
+```
+
+**Recommendation rules:**
+1. If user has NOT specified chain preference → **recommend biological assembly chains**
+2. If biological assembly is "monomeric" but PDB has chains A, B → recommend single chain (crystallographic copies)
+3. If biological assembly is "dimeric" with chains A, B → recommend both chains (functional dimer)
+4. If biological assembly info unavailable → fall back to UniProt subunit composition
+
+**Example question format:**
+
+```
+**Question a: Chain Selection**
+The structure contains chains A and B.
+
+📋 **Biological Assembly:** Homodimer (chains A, B)
+   This protein functions as a dimer - both chains form the biological unit.
+
+  1. Both chains A and B (biological assembly) (Recommended)
+  2. Chain A only (single monomer)
+  3. Chain B only (single monomer)
+  4. Other (please specify)
+```
+
+```
+**Question a: Chain Selection**
+The structure contains chains A and B.
+
+📋 **Biological Assembly:** Monomeric (chain A)
+   This protein functions as a monomer - chains are crystallographic copies.
+
+  1. Chain A only (biological unit) (Recommended)
+  2. Both chains A and B (crystallographic copies)
+  3. Other (please specify)
+```
+
+**IMPORTANT:** Always explain WHY you recommend the biological assembly - users should understand the biological context.
+
+---
+
 **Membrane Protein Detection:** Check `is_membrane_protein` from API, PDB keywords (GPCR, ION CHANNEL, TRANSPORTER), or your knowledge (GPCRs, ion channels, transporters, pumps like SERCA, porins).
 
 ---

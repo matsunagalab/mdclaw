@@ -52,6 +52,9 @@ class StructureAnalysis:
     variant_indicators: list[str] = field(default_factory=list)  # Detected mutations, e.g., ["K127A", "mutant"]
     is_wild_type: bool = False  # True if title explicitly mentions wild-type
 
+    # Biological assembly information (from RCSB PDB)
+    biological_assembly: dict = field(default_factory=dict)  # e.g., {"chains": ["A", "B"], "oligomeric_details": "dimeric"}
+
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -76,6 +79,7 @@ class StructureAnalysis:
             "is_likely_variant": self.is_likely_variant,
             "variant_indicators": self.variant_indicators,
             "is_wild_type": self.is_wild_type,
+            "biological_assembly": self.biological_assembly,
             "errors": self.errors,
             "warnings": self.warnings,
         }
@@ -102,6 +106,7 @@ class StructureAnalysis:
             is_likely_variant=data.get("is_likely_variant", False),
             variant_indicators=data.get("variant_indicators", []),
             is_wild_type=data.get("is_wild_type", False),
+            biological_assembly=data.get("biological_assembly", {}),
             errors=data.get("errors", []),
             warnings=data.get("warnings", []),
         )
