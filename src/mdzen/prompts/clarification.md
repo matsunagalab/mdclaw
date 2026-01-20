@@ -352,66 +352,49 @@ session_dir = get_session_dir()
 
 **IMPORTANT**: Ask about chain selection, ligand handling, and environment (for membrane proteins) TOGETHER in a single response. Do NOT split questions into multiple messages.
 
+---
+
+⛔ **FORBIDDEN:**
+- **NEVER ask about crystallographic waters (HOH/WAT)** - Always removed automatically
+- **NEVER ask about ligands if there are none** - Skip Question b entirely
+
+---
+
 **Question template:**
-- **Question a: Chain Selection** - which chains to include
-- **Question b: Ligand Handling** - keep/remove ligands
+- **Question a: Chain Selection** - Use `chain_recommendation` from `get_structure_info`
+- **Question b: Ligand Handling** - keep/remove ligands (SKIP if no ligands)
 - For membrane proteins, add:
   - **Question c: Simulation Environment** - membrane or water box
   - **Question d: Lipid Composition** - POPC, POPC:POPE:CHL1, DOPE:DOPG, custom
 
-Present ALL questions (a, b, c, d) in a SINGLE message.
+Present ALL applicable questions in a SINGLE message.
 
 ---
 
-**Biological Assembly for Chain Selection:**
+**Chain Selection (IMPORTANT):**
 
-When `get_structure_info` returns `preferred_biological_unit`, use it to recommend chain selection:
+`get_structure_info` returns `chain_recommendation` with pre-computed recommendations. Use it directly:
 
 ```
-# Check biological assembly from get_structure_info result
-preferred_unit = info.get("preferred_biological_unit", {})
-bio_chains = preferred_unit.get("chains", [])
-oligomeric_details = preferred_unit.get("oligomeric_details")  # e.g., "monomeric", "dimeric"
+chain_rec = info.get("chain_recommendation", {})
+recommended = chain_rec.get("recommended")      # e.g., ["A"]
+reason = chain_rec.get("reason")                # e.g., "Biological assembly is monomeric..."
+all_chains = chain_rec.get("all_protein_chains") # e.g., ["A", "B"]
 ```
 
-**Recommendation rules:**
-1. If user has NOT specified chain preference → **recommend biological assembly chains**
-2. If biological assembly is "monomeric" but PDB has chains A, B → recommend single chain (crystallographic copies)
-3. If biological assembly is "dimeric" with chains A, B → recommend both chains (functional dimer)
-4. If biological assembly info unavailable → fall back to UniProt subunit composition
-
-**Example question format:**
-
+**Present the recommendation with the reason:**
 ```
 **Question a: Chain Selection**
-The structure contains chains A and B.
-
-📋 **Biological Assembly:** Homodimer (chains A, B)
-   This protein functions as a dimer - both chains form the biological unit.
-
-  1. Both chains A and B (biological assembly) (Recommended)
-  2. Chain A only (single monomer)
-  3. Chain B only (single monomer)
-  4. Other (please specify)
-```
-
-```
-**Question a: Chain Selection**
-The structure contains chains A and B.
-
-📋 **Biological Assembly:** Monomeric (chain A)
-   This protein functions as a monomer - chains are crystallographic copies.
-
-  1. Chain A only (biological unit) (Recommended)
-  2. Both chains A and B (crystallographic copies)
+  1. Chain A only (Recommended) - {reason}
+  2. All chains (A, B)
   3. Other (please specify)
 ```
 
-**IMPORTANT:** Always explain WHY you recommend the biological assembly - users should understand the biological context.
+**DO NOT re-analyze biological assembly yourself** - the recommendation is pre-computed.
 
 ---
 
-**Membrane Protein Detection:** Check `is_membrane_protein` from API, PDB keywords (GPCR, ION CHANNEL, TRANSPORTER), or your knowledge (GPCRs, ion channels, transporters, pumps like SERCA, porins).
+**Membrane Protein Detection:** Check `is_membrane_protein` from `get_structure_info`.
 
 ---
 

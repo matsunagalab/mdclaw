@@ -267,6 +267,82 @@ async def download_structure(
     return result
 
 
+def _generate_chain_recommendation(info: dict) -> dict | None:
+    """Generate chain recommendation based on biological assembly.
+
+    Args:
+        info: Structure info dict with polymer_entities and preferred_biological_unit
+
+    Returns:
+        Chain recommendation dict or None if not applicable
+    """
+    # Get all protein chains from polymer entities
+    all_protein_chains = []
+    for entity in info.get("polymer_entities", []):
+        entity_type = entity.get("type", "")
+        if "polypeptide" in entity_type.lower():
+            chain_ids = entity.get("chain_ids", [])
+            all_protein_chains.extend(chain_ids)
+
+    # Remove duplicates and sort
+    all_protein_chains = sorted(set(all_protein_chains))
+
+    if not all_protein_chains:
+        return None
+
+    # Single chain - no recommendation needed
+    if len(all_protein_chains) == 1:
+        return {
+            "recommended": all_protein_chains,
+            "reason": "Single protein chain in structure",
+            "all_protein_chains": all_protein_chains,
+            "is_crystallographic_copy": False,
+        }
+
+    # Multiple chains - check biological assembly
+    bio_unit = info.get("preferred_biological_unit", {})
+    oligomeric_details = (bio_unit.get("oligomeric_details") or "").lower()
+    bio_chains = bio_unit.get("chains", [])
+
+    # Filter bio_chains to only include protein chains
+    bio_protein_chains = [c for c in bio_chains if c in all_protein_chains]
+
+    # Monomeric biological assembly with multiple chains = crystallographic copies
+    if oligomeric_details == "monomeric" or oligomeric_details == "monomer":
+        first_chain = all_protein_chains[0]
+        other_chains = [c for c in all_protein_chains if c != first_chain]
+        return {
+            "recommended": [first_chain],
+            "reason": f"Biological assembly is monomeric. Chain(s) {', '.join(other_chains)} are crystallographic copies.",
+            "all_protein_chains": all_protein_chains,
+            "is_crystallographic_copy": True,
+            "oligomeric_state": "monomeric",
+        }
+
+    # Dimeric, trimeric, etc. - recommend all chains in biological assembly
+    if bio_protein_chains and len(bio_protein_chains) > 1:
+        # Check if it's a known oligomeric state
+        oligomeric_state = oligomeric_details if oligomeric_details else "oligomeric"
+        return {
+            "recommended": bio_protein_chains,
+            "reason": f"Biological assembly is {oligomeric_state}. All chains form the functional unit.",
+            "all_protein_chains": all_protein_chains,
+            "is_crystallographic_copy": False,
+            "oligomeric_state": oligomeric_state,
+        }
+
+    # Fallback: no clear biological assembly info
+    # Recommend first chain with warning
+    first_chain = all_protein_chains[0]
+    return {
+        "recommended": [first_chain],
+        "reason": "No clear biological assembly information. Recommending single chain. Check UniProt for oligomeric state if needed.",
+        "all_protein_chains": all_protein_chains,
+        "is_crystallographic_copy": None,  # Unknown
+        "oligomeric_state": "unknown",
+    }
+
+
 @mcp.tool()
 async def get_structure_info(pdb_id: str) -> dict:
     """Get detailed information for a specific PDB structure.
@@ -473,6 +549,11 @@ async def get_structure_info(pdb_id: str) -> dict:
                         f"Biological assembly for {pdb_id}: {preferred.get('oligomeric_details')} "
                         f"(chains: {preferred.get('chains', [])})"
                     )
+
+            # Generate chain recommendation based on biological assembly
+            chain_recommendation = _generate_chain_recommendation(info)
+            if chain_recommendation:
+                info["chain_recommendation"] = chain_recommendation
 
             result["info"] = info
             result["success"] = True
