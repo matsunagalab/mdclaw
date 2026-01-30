@@ -1097,6 +1097,7 @@ def split_molecules(
     use_author_chains: bool = True,
     include_ligand_ids: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
+    keep_crystal_waters: bool = False,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
     
@@ -1139,8 +1140,11 @@ def split_molecules(
                        If None, extracts all chains.
         include_types: List of molecular types to include. Valid values:
                        "protein", "ligand", "ion", "water".
-                       If None (default), includes ["protein", "ligand", "ion"] (no water).
-                       To include water, explicitly add "water" to the list.
+                       If None (default), includes ["protein", "ligand", "ion"].
+        keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
+                            Default is False (crystal waters are excluded even if "water"
+                            is in include_types). For most MD simulations, crystal waters
+                            should be excluded and bulk solvent added via solvate_structure.
         use_author_chains: If True (default), select_chains matches author chain IDs
                           (PDB chain ID / mmCIF auth_asym_id). This is the intuitive
                           behavior for most use cases.
@@ -1176,13 +1180,20 @@ def split_molecules(
     # Set default include_types (exclude water by default)
     if include_types is None:
         include_types = ["protein", "ligand", "ion"]
-    
+
     # Validate include_types
     valid_types = {"protein", "ligand", "ion", "water"}
     invalid_types = set(include_types) - valid_types
     if invalid_types:
         logger.warning(f"Invalid include_types ignored: {invalid_types}. Valid: {valid_types}")
         include_types = [t for t in include_types if t in valid_types]
+
+    # Remove crystal waters by default (can be overridden with keep_crystal_waters=True)
+    # Crystal waters are typically removed for both implicit and explicit solvent simulations
+    # (explicit solvent will add bulk water later via solvate_structure)
+    if "water" in include_types and not keep_crystal_waters:
+        logger.info("Crystal waters excluded (default behavior, use keep_crystal_waters=True to retain)")
+        include_types = [t for t in include_types if t != "water"]
     
     # Initialize result structure for LLM error handling
     job_id = generate_job_id()
@@ -1225,13 +1236,15 @@ def split_molecules(
     suffix = structure_path.suffix.lower()
     
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "split")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "split")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "split")
     result["output_dir"] = str(out_dir)
 
     try:
@@ -1333,10 +1346,13 @@ def split_molecules(
             new_chain = gemmi.Chain(pdb_chain_name)
             residue_count = 0
             
+            waters_skipped = 0
             for residue in subchain:
                 res_name = residue.name.strip()
-                # Skip water residues if water not in include_types
-                if "water" not in include_types and res_name in WATER_NAMES:
+                # Skip water residues unless explicitly keeping them
+                # This ensures crystal waters are removed regardless of chain type
+                if res_name in WATER_NAMES and not keep_crystal_waters:
+                    waters_skipped += 1
                     continue
                 
                 new_residue = gemmi.Residue()
@@ -1359,7 +1375,10 @@ def split_molecules(
                 if len(list(new_residue)) > 0:
                     new_chain.add_residue(new_residue)
                     residue_count += 1
-            
+
+            if waters_skipped > 0:
+                logger.info(f"Skipped {waters_skipped} water residue(s) in chain {chain_id}")
+
             if len(list(new_chain)):
                 new_model.add_chain(new_chain)
                 new_structure.add_model(new_model)
@@ -2965,13 +2984,15 @@ def merge_structures(
         return result
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "merge")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "merge")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "merge")
     result["output_dir"] = str(out_dir)
 
     # Chain ID pool for renaming
@@ -3098,6 +3119,7 @@ def prepare_complex(
     charge_method: str = "bcc",
     atom_type: str = "gaff2",
     structure_analysis: Optional[dict] = None,
+    keep_crystal_waters: bool = False,
 ) -> dict:
     """Prepare a protein-ligand complex for MD simulation (complete workflow).
 
@@ -3125,7 +3147,9 @@ def prepare_complex(
         ligand_smiles: Dict mapping ligand_id to SMILES (e.g., {"SAH": "Nc1ncnc..."})
                        If not provided, SMILES will be fetched from PDB CCD
         include_types: List of molecular types to include: "protein", "ligand", "ion", "water".
-                       Default (None) includes ["protein", "ligand", "ion"] (no water).
+                       Default (None) includes ["protein", "ligand", "ion"].
+        keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
+                            Default is False (crystal waters excluded for MD simulations).
         include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
                            e.g., ["A:ACP:501"]). If specified, only these ligands are processed.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
@@ -3204,13 +3228,15 @@ def prepare_complex(
         return result
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "prepare_complex")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "prepare_complex")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "prepare_complex")
     result["output_dir"] = str(out_dir)
 
     try:
@@ -3245,7 +3271,8 @@ def prepare_complex(
             select_chains=select_chains,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
-            exclude_ligand_ids=exclude_ligand_ids
+            exclude_ligand_ids=exclude_ligand_ids,
+            keep_crystal_waters=keep_crystal_waters,
         )
         
         # Update output_dir to match split_molecules output

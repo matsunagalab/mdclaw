@@ -1,0 +1,165 @@
+{
+  "eval_set_id": "mdzen_step14_1ake_evalset",
+  "name": "MDZen Step1-4 fixed evalset (1AKE)",
+  "description": "Evalset: 1AKE, chain A, no ligand, explicit water. Prefer tool trajectory evaluation.",
+  "eval_cases": [
+    {
+      "eval_id": "step14_1ake",
+      "conversation": [
+        {
+          "invocation_id": "turn1_acquire_structure",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "Setup MD for PDB ID 1AKE"
+              }
+            ]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "OK"
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "download_structure",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "turn2_select_prepare_ask",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "continue"
+              }
+            ]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "OK"
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "inspect_molecules",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "turn3_select_prepare_answer",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "A no"
+              }
+            ]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "OK"
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "prepare_complex",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "turn4_structure_decisions",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "default"
+              }
+            ]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "OK"
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "analyze_structure_details",
+                "args": {}
+              },
+              {
+                "name": "prepare_complex",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        },
+        {
+          "invocation_id": "turn5_solvate_or_membrane",
+          "user_content": {
+            "role": "user",
+            "parts": [
+              {
+                "text": "continue"
+              }
+            ]
+          },
+          "final_response": {
+            "role": "model",
+            "parts": [
+              {
+                "text": "MDZen eval: Step1-4 complete."
+              }
+            ]
+          },
+          "intermediate_data": {
+            "tool_uses": [
+              {
+                "name": "solvate_structure",
+                "args": {}
+              }
+            ],
+            "intermediate_responses": []
+          }
+        }
+      ],
+      "session_input": {
+        "app_name": "mdzen_eval",
+        "user_id": "test_user",
+        "state": {
+          "adk_eval_case_id": "mdzen_step14_1ake",
+          "mdzen_output_root": "outputs/adk_eval"
+        }
+      }
+    }
+  ]
+}
+

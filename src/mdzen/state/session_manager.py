@@ -66,12 +66,35 @@ async def initialize_session_state(
     # Initialize state with required fields
     # IMPORTANT: State must be passed during create_session, not modified after
     # InMemorySessionService doesn't persist modifications to session.state
+    # Workflow v2 shared state (stored both in ADK state and as a file in session_dir)
+    workflow_state = {
+        "current_step": "acquire_structure",
+        "completed_steps": [],
+        "awaiting_user_input": False,
+        "pending_questions": [],
+        "last_step_summary": "",
+        "structure_file": "",
+        "merged_pdb": "",
+        "structure_analysis": {},
+        "solvation_type": "",
+        "solvated_pdb": "",
+        "membrane_pdb": "",
+        "box_dimensions": {},
+        "parm7": "",
+        "rst7": "",
+        "trajectory": "",
+        "validation_result": {},
+    }
+
     initial_state = {
         "session_dir": session_dir,
         "completed_steps": [],
         "outputs": {"session_dir": session_dir},
         "simulation_brief": None,
         "validation_result": None,
+        # v2 workflow state
+        "workflow_state": json.dumps(workflow_state, ensure_ascii=False, default=str),
+        "workflow_current_step": "acquire_structure",
     }
 
     # Create session with initial state (async method)
@@ -94,6 +117,16 @@ async def initialize_session_state(
     }
     session_info_file = Path(session_dir) / "session_info.json"
     session_info_file.write_text(json.dumps(session_info, indent=2))
+
+    # Also write the workflow_state.json file so recovery logic can work even if
+    # the model forgets to call update_workflow_state().
+    try:
+        (Path(session_dir) / "workflow_state.json").write_text(
+            json.dumps(workflow_state, indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def create_session_directory(job_id: Optional[str] = None) -> str:

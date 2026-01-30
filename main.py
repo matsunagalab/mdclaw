@@ -20,7 +20,6 @@ from mdzen.cli.runner import (  # noqa: E402
     DEFAULT_USER,
     generate_job_id,
     create_message,
-    extract_text_from_content,
     display_results,
     display_debug_state,
     run_agent_with_events,
@@ -197,6 +196,11 @@ def run(
         "-m",
         help="Model to use (e.g., 'gpt-4o', 'claude-sonnet', 'gemini-flash'). Overrides auto-detection.",
     ),
+    auto_answer: bool = typer.Option(
+        False,
+        "--auto-answer",
+        help="(Tests) Enable auto-answer for pending questions (external/LLM/default).",
+    ),
 ):
     """Run MD setup using Google ADK.
 
@@ -224,6 +228,11 @@ def run(
         # Reload settings to pick up the new env vars
         from mdzen import config
         config.settings = config.Settings()
+
+    if auto_answer:
+        import os
+
+        os.environ["MDZEN_AUTO_ANSWER"] = "true"
 
     _run_with_suppressed_cleanup(_run_async(request, print_mode, resume))
 
@@ -297,11 +306,15 @@ async def _run_async(
 async def _run_batch(session_service, session_id: str, session_dir: str, request: str):
     """Run in batch mode (no interrupts)."""
     from google.adk.runners import Runner
-    from mdzen.agents.full_agent import create_full_agent
     from mdzen.state.session_manager import (
         initialize_session_state,
         get_session_state,
+        update_session_state,
     )
+    from mdzen.utils import suppress_adk_unknown_agent_warnings
+    import json
+    from pathlib import Path
+    from mdzen.workflow import get_next_workflow_v2_step
 
     # Initialize session
     await initialize_session_state(
@@ -314,35 +327,230 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
 
     console.print(f"[dim]Session dir: {session_dir}[/dim]\n")
 
-    # Create full agent and runner
-    agent, toolsets = create_full_agent()
-    runner = Runner(
-        app_name=APP_NAME,
-        agent=agent,
-        session_service=session_service,
-    )
+    console.print("[dim]Running stepwise workflow (batch)...[/dim]\n")
+    from mdzen.agents.workflow_step_agent import create_workflow_step_agent
 
-    console.print("[dim]Running full workflow...[/dim]\n")
+    def _load_disk_workflow_state() -> dict:
+        path = Path(session_dir) / "workflow_state.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_disk_workflow_state(wf: dict) -> None:
+        path = Path(session_dir) / "workflow_state.json"
+        try:
+            path.write_text(json.dumps(wf, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _newest_match(patterns: list[str]) -> str:
+        base = Path(session_dir)
+        matches: list[Path] = []
+        for pat in patterns:
+            matches.extend(list(base.glob(pat)))
+        matches = [p for p in matches if p.exists()]
+        if not matches:
+            return ""
+        matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return str(matches[0])
+
+    async def _recover_state_after_step() -> None:
+        wf = _load_disk_workflow_state()
+        if not wf:
+            return
+        current = wf.get("current_step") or ""
+        completed = list(wf.get("completed_steps") or [])
+        changed = False
+
+        # Step (1): acquire_structure - infer downloaded structure file
+        if current == "acquire_structure" and not wf.get("structure_file"):
+            struct = _newest_match(["*.pdb", "*.cif", "*.ent", "**/AF-*.pdb", "**/AF-*.cif"])
+            if struct:
+                wf["structure_file"] = struct
+                if "acquire_structure" not in completed:
+                    completed.append("acquire_structure")
+                wf["completed_steps"] = completed
+                nxt = get_next_workflow_v2_step("acquire_structure")
+                if nxt:
+                    wf["current_step"] = nxt
+                changed = True
+
+        # If LLM forgot to persist merged_pdb after prepare_complex, infer it.
+        if current == "select_prepare" and not wf.get("merged_pdb"):
+            merged = _newest_match(["**/merged.pdb", "**/merged*.pdb"])
+            if merged:
+                wf["merged_pdb"] = merged
+                if "select_prepare" not in completed:
+                    completed.append("select_prepare")
+                wf["completed_steps"] = completed
+                nxt = get_next_workflow_v2_step("select_prepare")
+                if nxt:
+                    wf["current_step"] = nxt
+                changed = True
+
+        if changed:
+            _save_disk_workflow_state(wf)
+            await update_session_state(
+                session_service,
+                APP_NAME,
+                DEFAULT_USER,
+                session_id,
+                {
+                    "workflow_state": json.dumps(wf, ensure_ascii=False, default=str),
+                    "workflow_current_step": str(wf.get("current_step") or ""),
+                },
+            )
 
     try:
-        # Run agent with event processing
-        event_count = 0
-        async for event in runner.run_async(
-            user_id=DEFAULT_USER,
-            session_id=session_id,
-            new_message=create_message(request),
-        ):
-            event_count += 1
-            if hasattr(event, "author") and event.author:
-                if event.is_final_response():
-                    console.print(f"[green]Final response from {event.author}[/green]")
-                elif hasattr(event, "content") and event.content:
-                    text = extract_text_from_content(event.content)
-                    if text:
-                        first_line = text.split("\n")[0][:80]
-                        console.print(f"[dim][{event.author}] {first_line}...[/dim]")
+        initial_request = request
 
-        console.print(f"[dim]Total events: {event_count}[/dim]")
+        while True:
+            state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
+            wf_raw = state.get("workflow_state", "")
+            wf_state = {}
+            if isinstance(wf_raw, str) and wf_raw:
+                try:
+                    wf_state = json.loads(wf_raw)
+                except Exception:
+                    wf_state = {}
+            elif isinstance(wf_raw, dict):
+                wf_state = wf_raw
+
+            current_step = wf_state.get("current_step") or "acquire_structure"
+            awaiting = bool(wf_state.get("awaiting_user_input"))
+            questions = wf_state.get("pending_questions") or []
+
+            # -----------------------------------------------------------------
+            # Hard guard (batch): deterministically set chain/ligand choices
+            # so we never proceed without explicit selection in v2.
+            # -----------------------------------------------------------------
+            if current_step == "select_prepare" and not wf_state.get("selection_chains"):
+                structure_file = wf_state.get("structure_file") or ""
+                if structure_file:
+                    try:
+                        import gemmi
+                        import re
+
+                        AMINO_ACIDS = {
+                            "ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS",
+                            "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP",
+                            "TYR","VAL","SEC","PYL",
+                        }
+                        WATER = {"HOH","WAT","H2O","DOD","D2O","TIP3","SOL","OPC"}
+                        IONS = {"NA","CL","K","MG","CA","ZN","FE","MN","CU","CO","NI","CD","HG"}
+
+                        st = gemmi.read_structure(structure_file)
+                        st.setup_entities()
+                        model = st[0]
+
+                        protein_chains: list[str] = []
+                        ligand_resnames: set[str] = set()
+                        for chain in model:
+                            has_protein = False
+                            for res in chain:
+                                rn = res.name.strip().upper()
+                                if rn in AMINO_ACIDS:
+                                    has_protein = True
+                                elif rn in WATER or rn in IONS:
+                                    continue
+                                else:
+                                    if len(list(res)) >= 3:
+                                        ligand_resnames.add(rn)
+                            if has_protein and chain.name:
+                                protein_chains.append(chain.name)
+
+                        protein_chains = list(dict.fromkeys(protein_chains))
+                        ligands = sorted(ligand_resnames)
+
+                        # Parse intent from initial request (best-effort)
+                        req_low = initial_request.lower()
+                        include_ligands = True
+                        if any(tok in req_low for tok in ["no ligand", "without ligand", "exclude ligand", "remove ligand", "no ligands"]):
+                            include_ligands = False
+
+                        # Chains: if request mentions a chain explicitly (A/B/...), use it; else default A if present.
+                        selected_chains: list[str] = []
+                        letters = re.findall(r"\b(chain\s*)?([A-Za-z0-9])\b", initial_request, flags=re.IGNORECASE)
+                        mentioned = {m[1].upper() for m in letters if m and m[1]}
+                        if mentioned:
+                            selected_chains = [c for c in protein_chains if c.upper() in mentioned]
+                        if not selected_chains and protein_chains:
+                            # Prefer chain A if present
+                            selected_chains = ["A"] if "A" in {c.upper() for c in protein_chains} else [protein_chains[0]]
+
+                        wf_state["selection_chains"] = selected_chains
+                        wf_state["include_types"] = ["protein", "ion"] + (["ligand"] if include_ligands else [])
+                        wf_state["last_step_summary"] = (
+                            f"(batch default) chains={selected_chains}, include_ligands={include_ligands}, detected_ligands={ligands}"
+                        )
+
+                        # Persist for the step agent to use
+                        (Path(session_dir) / "workflow_state.json").write_text(
+                            json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                            encoding="utf-8",
+                        )
+                        await update_session_state(
+                            session_service,
+                            APP_NAME,
+                            DEFAULT_USER,
+                            session_id,
+                            {
+                                "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                                "workflow_current_step": "select_prepare",
+                            },
+                        )
+                    except Exception:
+                        pass
+
+            completed = wf_state.get("completed_steps") or []
+            if "validation" in completed and not awaiting:
+                break
+
+            if awaiting:
+                # Write questions for external drivers, then auto-accept defaults.
+                try:
+                    from mdzen.cli.auto_answer import write_questions_json, resolve_answer
+
+                    write_questions_json(session_dir, session_id=session_id, wf_state=wf_state)
+                    next_message_text = await resolve_answer(
+                        session_dir,
+                        wf_state,
+                        questions,
+                        mode="default",
+                        expected_step=current_step,
+                    )
+                except Exception:
+                    next_message_text = None
+
+                if not next_message_text:
+                    console.print(
+                        "[red]Batch mode could not auto-answer pending questions; stopping.[/red]"
+                    )
+                    break
+            else:
+                # Normal progression between steps
+                next_message_text = initial_request if current_step == "acquire_structure" else "continue"
+
+            with suppress_adk_unknown_agent_warnings():
+                step_agent, step_toolsets = create_workflow_step_agent(current_step)
+                runner = Runner(
+                    app_name=APP_NAME,
+                    agent=step_agent,
+                    session_service=session_service,
+                )
+                await run_agent_with_events(
+                    runner=runner,
+                    session_id=session_id,
+                    message=create_message(next_message_text),
+                    console=console,
+                    show_progress=True,
+                    known_agents={step_agent.name},
+                )
+                await _recover_state_after_step()
 
         # Show results
         state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
@@ -355,12 +563,8 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
 
 
 async def _run_interactive(session_service, session_id: str, session_dir: str, request: str):
-    """Run in interactive mode with human-in-the-loop."""
+    """Run in interactive mode with stepwise workflow v2."""
     from google.adk.runners import Runner
-    from mdzen.agents.full_agent import (
-        create_clarification_only_agent,
-        create_setup_validation_agent,
-    )
     from mdzen.state.session_manager import (
         initialize_session_state,
         get_session_state,
@@ -368,16 +572,37 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
         update_session_state,
     )
     from mdzen.utils import suppress_adk_unknown_agent_warnings
-    from prompt_toolkit import PromptSession
+    import json
+    import os
+    import sys
+    from pathlib import Path
+    from mdzen.workflow import get_next_workflow_v2_step
 
     # Track all toolsets for cleanup
     all_toolsets = []
 
-    # Create async prompt session
-    prompt_session = PromptSession()
+    auto_answer_enabled = (os.environ.get("MDZEN_AUTO_ANSWER", "") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    is_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
 
-    async def async_prompt(message: str) -> str:
-        return await prompt_session.prompt_async(message)
+    # Create async prompt function (TTY only). In non-TTY environments, require auto-answer.
+    async_prompt = None
+    if is_tty:
+        from prompt_toolkit import PromptSession
+
+        prompt_session = PromptSession()
+
+        async def async_prompt(message: str) -> str:
+            return await prompt_session.prompt_async(message)
+    elif not auto_answer_enabled:
+        console.print(
+            "[red]Input is not a terminal. Use --print (-p) or --auto-answer with answers.json injection.[/red]"
+        )
+        return
 
     # Initialize session
     await initialize_session_state(
@@ -389,132 +614,485 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
     )
 
     try:
-        # Phase 1: Clarification
-        console.print("\n[bold]Phase 1: Clarification[/bold]")
-        console.print("[dim]Analyzing your request...[/dim]\n")
+        initial_request = request
+        console.print("\n[bold]Workflow v2: (1)→(2)→(3)→(4)→(quick_md)→(validation)[/bold]")
+        console.print("[dim]Running stepwise workflow...[/dim]\n")
 
-        clarification_agent, clarification_toolsets = create_clarification_only_agent()
-        all_toolsets.extend(clarification_toolsets)
-        runner = Runner(
-            app_name=APP_NAME,
-            agent=clarification_agent,
-            session_service=session_service,
-        )
+        from mdzen.agents.workflow_step_agent import create_workflow_step_agent
 
-        # Run clarification
-        await run_agent_with_events(
-            runner=runner,
-            session_id=session_id,
-            message=create_message(request),
-            console=console,
-            show_progress=False,
-        )
+        next_message_text = request
 
-        # Interactive clarification loop
-        state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
+        def _load_disk_workflow_state() -> dict:
+            path = Path(session_dir) / "workflow_state.json"
+            if not path.exists():
+                return {}
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                return data if isinstance(data, dict) else {}
+            except Exception:
+                return {}
 
+        def _save_disk_workflow_state(wf: dict) -> None:
+            path = Path(session_dir) / "workflow_state.json"
+            try:
+                path.write_text(json.dumps(wf, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+            except Exception:
+                pass
+
+        def _newest_match(patterns: list[str]) -> str:
+            base = Path(session_dir)
+            matches: list[Path] = []
+            for pat in patterns:
+                matches.extend(list(base.glob(pat)))
+            matches = [p for p in matches if p.exists()]
+            if not matches:
+                return ""
+            matches.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return str(matches[0])
+
+        async def _recover_state_after_step() -> None:
+            """Best-effort recovery when the model forgets to call update_workflow_state()."""
+            wf = _load_disk_workflow_state()
+            if not wf:
+                return
+            current = wf.get("current_step") or ""
+            completed = list(wf.get("completed_steps") or [])
+            changed = False
+
+            if current == "acquire_structure" and not wf.get("structure_file"):
+                struct = _newest_match(["*.pdb", "*.cif", "*.ent", "**/AF-*.pdb", "**/AF-*.cif"])
+                if struct:
+                    wf["structure_file"] = struct
+                    if "acquire_structure" not in completed:
+                        completed.append("acquire_structure")
+                    wf["completed_steps"] = completed
+                    nxt = get_next_workflow_v2_step("acquire_structure")
+                    if nxt:
+                        wf["current_step"] = nxt
+                    changed = True
+
+            if current == "select_prepare" and not wf.get("merged_pdb"):
+                merged = _newest_match(["**/merged.pdb", "**/merged*.pdb"])
+                if merged:
+                    wf["merged_pdb"] = merged
+                    if "select_prepare" not in completed:
+                        completed.append("select_prepare")
+                    wf["completed_steps"] = completed
+                    nxt = get_next_workflow_v2_step("select_prepare")
+                    if nxt:
+                        wf["current_step"] = nxt
+                    changed = True
+
+            if current == "solvate_or_membrane" and not (wf.get("solvated_pdb") or wf.get("membrane_pdb")):
+                solv = _newest_match(["**/solvated.pdb", "**/solvate/**/*.pdb"])
+                mem = _newest_match(["**/membrane.pdb", "**/membrane/**/*.pdb"])
+                if solv:
+                    wf["solvated_pdb"] = solv
+                    wf["solvation_type"] = wf.get("solvation_type") or "explicit"
+                    changed = True
+                elif mem:
+                    wf["membrane_pdb"] = mem
+                    wf["solvation_type"] = wf.get("solvation_type") or "membrane"
+                    changed = True
+
+            if current == "quick_md" and not (wf.get("parm7") and wf.get("rst7")):
+                parm7 = _newest_match(["**/*.parm7"])
+                rst7 = _newest_match(["**/*.rst7"])
+                traj = _newest_match(["**/trajectory.dcd", "**/*.dcd"])
+                if parm7 and rst7:
+                    wf["parm7"] = parm7
+                    wf["rst7"] = rst7
+                    if traj:
+                        wf["trajectory"] = traj
+                    if "quick_md" not in completed:
+                        completed.append("quick_md")
+                    wf["completed_steps"] = completed
+                    nxt = get_next_workflow_v2_step("quick_md")
+                    if nxt:
+                        wf["current_step"] = nxt
+                    changed = True
+
+            if current == "validation" and not wf.get("validation_result"):
+                val = _newest_match(["**/validation_result.json"])
+                if val:
+                    try:
+                        wf["validation_result"] = json.loads(Path(val).read_text(encoding="utf-8"))
+                        if "validation" not in completed:
+                            completed.append("validation")
+                        wf["completed_steps"] = completed
+                        wf["current_step"] = wf.get("current_step") or "validation"
+                        changed = True
+                    except Exception:
+                        pass
+
+            if changed:
+                _save_disk_workflow_state(wf)
+                await update_session_state(
+                    session_service,
+                    APP_NAME,
+                    DEFAULT_USER,
+                    session_id,
+                    {
+                        "workflow_state": json.dumps(wf, ensure_ascii=False, default=str),
+                        "workflow_current_step": str(wf.get("current_step") or ""),
+                    },
+                )
+
+        # Step loop
         while True:
-            simulation_brief = state.get("simulation_brief")
+            state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
+            wf_raw = state.get("workflow_state", "")
+            wf_state = {}
+            if isinstance(wf_raw, str) and wf_raw:
+                try:
+                    wf_state = json.loads(wf_raw)
+                except Exception:
+                    wf_state = {}
+            elif isinstance(wf_raw, dict):
+                wf_state = wf_raw
 
-            if simulation_brief:
-                # The detailed version is already printed by the LLM agent via
-                # _format_simulation_brief_summary() in custom_tools.py
-                console.print("\n[yellow]Options:[/yellow]")
-                console.print("  - Type 'continue' or 'yes' to proceed to Setup phase")
-                console.print("  - Type 'quit' to exit")
-                console.print("  - Or provide feedback to modify the brief\n")
+            current_step = wf_state.get("current_step") or "acquire_structure"
+            awaiting = bool(wf_state.get("awaiting_user_input"))
+            questions = wf_state.get("pending_questions") or []
 
-                user_input = (await async_prompt(">> ")).strip()
+            # -----------------------------------------------------------------
+            # Hard guard: ensure chain/ligand selection is not skipped.
+            # - If initial prompt contains sufficient instruction (e.g., "chain A", "no ligand"),
+            #   apply deterministically without asking.
+            # - Otherwise ask only when needed (multiple protein chains or ligands detected).
+            # -----------------------------------------------------------------
+            if current_step == "select_prepare" and not awaiting and not wf_state.get("selection_chains"):
+                structure_file = wf_state.get("structure_file") or ""
+                if structure_file:
+                    # Detect chain/ligand options directly (do not rely on LLM).
+                    try:
+                        import gemmi
+                        import re
 
-                if user_input.lower() in ["quit", "exit", "q"]:
-                    console.print("[yellow]Session ended.[/yellow]")
-                    return
-                elif user_input.lower() in ["continue", "yes", "y", "ok", "proceed"]:
-                    # Save clarification chat history for validation review
-                    clarification_log = await save_chat_history(
-                        session_service, APP_NAME, DEFAULT_USER, session_id, session_dir
-                    )
-                    if clarification_log:
-                        await update_session_state(
-                            session_service, APP_NAME, DEFAULT_USER, session_id,
-                            {"clarification_log_path": clarification_log}
+                        AMINO_ACIDS = {
+                            "ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS",
+                            "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP",
+                            "TYR","VAL","SEC","PYL",
+                        }
+                        WATER = {"HOH","WAT","H2O","DOD","D2O","TIP3","SOL","OPC"}
+                        IONS = {"NA","CL","K","MG","CA","ZN","FE","MN","CU","CO","NI","CD","HG"}
+
+                        st = gemmi.read_structure(structure_file)
+                        st.setup_entities()
+                        model = st[0]
+
+                        protein_chains: list[str] = []
+                        ligand_resnames: set[str] = set()
+
+                        for chain in model:
+                            has_protein = False
+                            for res in chain:
+                                rn = res.name.strip().upper()
+                                if rn in AMINO_ACIDS:
+                                    has_protein = True
+                                elif rn in WATER or rn in IONS:
+                                    continue
+                                else:
+                                    # Ligand-like residue
+                                    if len(list(res)) >= 3:
+                                        ligand_resnames.add(rn)
+                            if has_protein:
+                                protein_chains.append(chain.name)
+
+                        protein_chains = list(dict.fromkeys([c for c in protein_chains if c]))
+                        ligands = sorted(ligand_resnames)
+
+                        req_low = (initial_request or "").lower()
+
+                        # Determine if user already specified chains explicitly (prefer "chain A" forms).
+                        mentioned = set(re.findall(r"\bchains?\s*([a-z0-9])\b", req_low))
+                        mentioned |= set(re.findall(r"\bchain\s*([a-z0-9])\b", req_low))
+                        mentioned = {m.upper() for m in mentioned if m}
+                        selected_chains: list[str] = []
+                        if mentioned:
+                            selected_chains = [c for c in protein_chains if c.upper() in mentioned]
+
+                        # Ligand handling from initial request
+                        include_ligands: bool | None = None
+                        if any(tok in req_low for tok in ["no ligand", "no ligands", "without ligand", "exclude ligand", "remove ligand", "protein only", "apo"]):
+                            include_ligands = False
+                        elif any(tok in req_low for tok in ["with ligand", "include ligand", "keep ligand", "holo"]):
+                            include_ligands = True
+
+                        pending = []
+                        if len(protein_chains) > 1 and not selected_chains:
+                            pending.append(
+                                f"Which protein chains to simulate? Options: {', '.join(protein_chains)} "
+                                f"(default: {protein_chains[0]})"
+                            )
+                        if ligands and include_ligands is None:
+                            pending.append(
+                                f"Ligands detected: {', '.join(ligands)}. Include ligands? (yes/no, default: yes)"
+                            )
+
+                        # If no questions needed, deterministically set selection and continue.
+                        if not pending:
+                            if not selected_chains:
+                                # Default: single chain -> that chain; else prefer A if present.
+                                if len(protein_chains) == 1:
+                                    selected_chains = [protein_chains[0]]
+                                elif "A" in {c.upper() for c in protein_chains}:
+                                    selected_chains = ["A"]
+                                elif protein_chains:
+                                    selected_chains = [protein_chains[0]]
+
+                            if include_ligands is None:
+                                include_ligands = False if not ligands else True
+
+                            wf_state["selection_chains"] = selected_chains
+                            wf_state["include_types"] = ["protein", "ion"] + (["ligand"] if include_ligands else [])
+                            wf_state["last_step_summary"] = (
+                                f"(deterministic) chains={selected_chains}, include_ligands={include_ligands}"
+                            )
+                            (Path(session_dir) / "workflow_state.json").write_text(
+                                json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                                encoding="utf-8",
+                            )
+                            await update_session_state(
+                                session_service,
+                                APP_NAME,
+                                DEFAULT_USER,
+                                session_id,
+                                {
+                                    "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                                    "workflow_current_step": "select_prepare",
+                                },
+                            )
+                            # Continue loop; next iteration will run the step agent with selections in state.
+                            continue
+
+                        if pending:
+                            wf_state["awaiting_user_input"] = True
+                            wf_state["pending_questions"] = pending
+                            wf_state["detected_protein_chains"] = protein_chains
+                            wf_state["detected_ligands"] = ligands
+                            # Persist for UI + next turn parsing
+                            (Path(session_dir) / "workflow_state.json").write_text(
+                                json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                                encoding="utf-8",
+                            )
+                            await update_session_state(
+                                session_service,
+                                APP_NAME,
+                                DEFAULT_USER,
+                                session_id,
+                                {
+                                    "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                                    "workflow_current_step": "select_prepare",
+                                },
+                            )
+                            # Loop will prompt user next
+                            awaiting = True
+                            questions = pending
+                    except Exception:
+                        # If local parsing fails, fall back to LLM behavior.
+                        pass
+
+            # Completion condition
+            completed = wf_state.get("completed_steps") or []
+            if "validation" in completed and not awaiting:
+                break
+
+            # If waiting for user input, prompt and re-run same step
+            if awaiting:
+                # Write machine-readable questions for external drivers (Cursor/Claude Code/CI).
+                try:
+                    from mdzen.cli.auto_answer import write_questions_json
+
+                    write_questions_json(session_dir, session_id=session_id, wf_state=wf_state)
+                except Exception:
+                    pass
+
+                if questions:
+                    console.print("\n[yellow]Questions:[/yellow]")
+                    for q in questions:
+                        console.print(f"  - {q}")
+                user_input = ""
+                if auto_answer_enabled:
+                    # Prefer external injection, then optional LLM, then defaults.
+                    try:
+                        from mdzen.cli.auto_answer import resolve_answer
+
+                        seq = (
+                            os.environ.get("MDZEN_AUTO_ANSWER_SEQUENCE", "external,llm,default")
+                            .strip()
+                            .split(",")
                         )
-                        console.print(f"[dim]Clarification log saved: {clarification_log}[/dim]")
-                    break
-                else:
-                    # User wants to modify - send feedback
-                    await run_agent_with_events(
-                        runner=runner,
-                        session_id=session_id,
-                        message=create_message(user_input),
-                        console=console,
-                        show_progress=False,
-                    )
-                    state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
-            else:
-                # No brief yet, ask for more info
-                user_input = (await async_prompt(">> ")).strip()
+                        for mode in [m.strip() for m in seq if m.strip()]:
+                            ans = await resolve_answer(
+                                session_dir,
+                                wf_state,
+                                questions,
+                                mode=mode,
+                                expected_step=current_step,
+                            )
+                            if ans:
+                                user_input = ans
+                                break
+                    except Exception:
+                        user_input = ""
+
+                # If still empty, fall back to human TTY prompt (interactive use).
+                if not user_input and async_prompt is not None:
+                    user_input = (await async_prompt(">> ")).strip()
+
+                if not user_input:
+                    console.print("[red]No answer available (auto-answer/human input). Stopping.[/red]")
+                    return
 
                 if user_input.lower() in ["quit", "exit", "q"]:
                     console.print("[yellow]Session ended.[/yellow]")
                     return
+
+                # Parse user answers for select_prepare (deterministic)
+                if current_step == "select_prepare":
+                    detected_chains = wf_state.get("detected_protein_chains") or []
+                    detected_ligands = wf_state.get("detected_ligands") or []
+
+                    # If the LLM produced the questions (without our deterministic pre-detection),
+                    # `detected_*` may be missing. Re-detect from the actual structure file so that
+                    # answers like "A, no" reliably disable ligand inclusion.
+                    if (not detected_chains) or (detected_ligands is None) or (detected_ligands == []):
+                        try:
+                            import gemmi
+
+                            structure_file = str(wf_state.get("structure_file") or "")
+                            if structure_file:
+                                AMINO_ACIDS = {
+                                    "ALA","ARG","ASN","ASP","CYS","GLN","GLU","GLY","HIS",
+                                    "ILE","LEU","LYS","MET","PHE","PRO","SER","THR","TRP",
+                                    "TYR","VAL","SEC","PYL",
+                                    # Amber/protonation variants (common)
+                                    "HID","HIE","HIP","CYX","CYM","ASH","GLH","LYN",
+                                }
+                                WATER = {"HOH","WAT","H2O","DOD","D2O","TIP3","SOL","OPC"}
+                                IONS = {"NA","CL","K","MG","CA","ZN","FE","MN","CU","CO","NI","CD","HG"}
+
+                                st = gemmi.read_structure(structure_file)
+                                st.setup_entities()
+                                model = st[0]
+
+                                protein_chains: list[str] = []
+                                ligand_resnames: set[str] = set()
+                                for chain in model:
+                                    has_protein = False
+                                    for res in chain:
+                                        rn = res.name.strip().upper()
+                                        if rn in AMINO_ACIDS:
+                                            has_protein = True
+                                        elif rn in WATER or rn in IONS:
+                                            continue
+                                        else:
+                                            if len(list(res)) >= 3:
+                                                ligand_resnames.add(rn)
+                                    if has_protein and chain.name:
+                                        protein_chains.append(chain.name)
+
+                                detected_chains = list(dict.fromkeys(protein_chains))
+                                detected_ligands = sorted(ligand_resnames)
+                        except Exception:
+                            pass
+
+                    # Chains
+                    selected_chains: list[str] = []
+                    text = user_input.strip()
+                    if any(tok in text.lower() for tok in ["all", "both", "全部"]):
+                        selected_chains = list(detected_chains)
+                    else:
+                        # Extract single-letter chain IDs (A,B,...) that appear in input
+                        import re
+
+                        letters = re.findall(r"\b([A-Za-z0-9])\b", text)
+                        if letters:
+                            # Preserve order of detected_chains if possible
+                            wanted = {c.upper() for c in letters}
+                            selected_chains = [c for c in detected_chains if c.upper() in wanted]
+
+                    if not selected_chains and detected_chains:
+                        selected_chains = [detected_chains[0]]
+
+                    # Ligand include/exclude
+                    include_ligands = True
+                    low = text.lower()
+                    if detected_ligands:
+                        if any(tok in low for tok in ["no", "exclude", "remove", "なし", "除外", "外す"]):
+                            include_ligands = False
+                    else:
+                        # Even if we couldn't detect ligands, treat an explicit "no ligands" answer as exclusion.
+                        if any(tok in low for tok in ["no ligand", "no ligands", "no", "なし", "除外", "外す"]):
+                            include_ligands = False
+
+                    include_types = ["protein", "ion"] + (["ligand"] if include_ligands else [])
+
+                    wf_state["selection_chains"] = selected_chains
+                    wf_state["include_types"] = include_types
+                    wf_state["awaiting_user_input"] = False
+                    wf_state["pending_questions"] = []
+                    wf_state["last_step_summary"] = (
+                        f"User selected chains={selected_chains}, include_ligands={include_ligands}"
+                    )
+
+                    (Path(session_dir) / "workflow_state.json").write_text(
+                        json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                        encoding="utf-8",
+                    )
+                    await update_session_state(
+                        session_service,
+                        APP_NAME,
+                        DEFAULT_USER,
+                        session_id,
+                        {
+                            "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                            "workflow_current_step": "select_prepare",
+                        },
+                    )
+                    next_message_text = "continue"
+                else:
+                    next_message_text = user_input
+            else:
+                # Normal progression between steps
+                # Step 1 uses the original request; others can proceed with "continue"
+                if current_step != "acquire_structure":
+                    next_message_text = "continue"
+
+            # Run current step agent
+            with suppress_adk_unknown_agent_warnings():
+                step_agent, step_toolsets = create_workflow_step_agent(current_step)
+                all_toolsets.extend(step_toolsets)
+                runner = Runner(
+                    app_name=APP_NAME,
+                    agent=step_agent,
+                    session_service=session_service,
+                )
 
                 await run_agent_with_events(
                     runner=runner,
                     session_id=session_id,
-                    message=create_message(user_input),
+                    message=create_message(next_message_text),
                     console=console,
-                    show_progress=False,
+                    show_progress=True,
+                    known_agents={step_agent.name},
                 )
-                state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
+                await _recover_state_after_step()
 
-        # Phase 2-3: Setup and Validation
-        console.print("\n[bold]Phase 2-3: Setup & Validation[/bold]")
-        console.print("[dim]Executing MD setup workflow... This may take a few minutes.[/dim]\n")
-
-        # Suppress ADK warnings using context manager
-        with suppress_adk_unknown_agent_warnings():
-            setup_agent, setup_toolsets = create_setup_validation_agent()
-            all_toolsets.extend(setup_toolsets)
-            runner = Runner(
-                app_name=APP_NAME,
-                agent=setup_agent,
-                session_service=session_service,
-            )
-
-            # Known agents in setup_validation_agent hierarchy
-            known_agents = {"setup_validation_agent", "setup_agent", "validation_agent"}
-
-            await run_agent_with_events(
-                runner=runner,
-                session_id=session_id,
-                message=create_message("continue"),
-                console=console,
-                show_progress=True,
-                known_agents=known_agents,
-            )
-
-        # Show results
-        state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
-
-        if state.get("validation_result"):
-            validation = state["validation_result"]
-            if "final_report" in validation:
-                console.print("\n[bold green]Setup Complete![/bold green]")
-                console.print(validation["final_report"])
-
-        # Show generated files
-        display_results(state, console)
-
-        # Save chat history to job directory
-        session_dir = state.get("session_dir", "")
-        if session_dir:
+        # Save chat history
+        try:
             chat_file = await save_chat_history(
                 session_service, APP_NAME, DEFAULT_USER, session_id, session_dir
             )
             if chat_file:
                 console.print(f"[dim]Chat history saved: {chat_file}[/dim]")
+        except Exception:
+            pass
 
+        # Show results (validation report + generated files)
+        state = await get_session_state(session_service, APP_NAME, DEFAULT_USER, session_id)
+        display_results(state, console)
         console.print(f"\n[green]Session complete! Session ID: {session_id}[/green]")
         console.print(f"[dim]Session directory: {session_dir}[/dim]")
     finally:

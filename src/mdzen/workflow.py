@@ -78,6 +78,142 @@ STEP_CONFIG: dict[str, StepConfig] = {
     },
 }
 
+# =============================================================================
+# Workflow v2: (1)→(2)→(3)→(4)→(quick_md)→(validation)
+# =============================================================================
+
+
+class WorkflowV2StepConfig(TypedDict):
+    """Configuration for a single step in the v2 stepwise workflow.
+
+    Notes:
+    - This workflow is designed for stepwise prompts + shared scratchpad state.
+    - `tool` is informational only; some steps can call multiple tools.
+    """
+
+    tool: str
+    inputs: str
+    required_state: list[str]  # Required keys in workflow_state/scratchpad
+    outputs: list[str]  # Keys expected to be produced by this step
+    servers: list[str]  # MCP servers needed for this step
+    allowed_tools: list[str]  # All tool names allowed during this step
+    estimate: str
+
+
+# Primary workflow steps for MDZen (new default)
+WORKFLOW_STEPS: list[str] = [
+    "acquire_structure",
+    "select_prepare",
+    "structure_decisions",
+    "solvate_or_membrane",
+    "quick_md",
+    "validation",
+]
+
+
+WORKFLOW_STEP_CONFIG: dict[str, WorkflowV2StepConfig] = {
+    "acquire_structure": {
+        "tool": "multi",
+        "inputs": "Requires: user request (PDB/UniProt/FASTA/SMILES)",
+        "required_state": [],
+        "outputs": ["structure_file"],
+        "servers": ["research", "genesis"],
+        "allowed_tools": [
+            # research
+            "search_structures",
+            "get_structure_info",
+            "download_structure",
+            "get_alphafold_structure",
+            "search_proteins",
+            "get_protein_info",
+            # genesis
+            "boltz2_protein_from_seq",
+            "rdkit_validate_smiles",
+            "pubchem_get_smiles_from_name",
+        ],
+        "estimate": "10-60 seconds (Boltz: minutes)",
+    },
+    "select_prepare": {
+        "tool": "prepare_complex",
+        "inputs": "Requires: structure_file from acquire_structure",
+        "required_state": ["structure_file"],
+        "outputs": ["merged_pdb"],
+        "servers": ["research", "structure"],
+        "allowed_tools": [
+            # research
+            "inspect_molecules",
+            # structure
+            "split_molecules",
+            "merge_structures",
+            "prepare_complex",
+        ],
+        "estimate": "1-5 minutes",
+    },
+    "structure_decisions": {
+        "tool": "multi",
+        "inputs": "Requires: merged_pdb from select_prepare",
+        "required_state": ["merged_pdb"],
+        "outputs": ["structure_analysis", "merged_pdb"],
+        "servers": ["research", "structure"],
+        "allowed_tools": [
+            # research
+            "analyze_structure_details",
+            # structure
+            "prepare_complex",
+        ],
+        "estimate": "30-120 seconds (+ optional re-prepare)",
+    },
+    "solvate_or_membrane": {
+        "tool": "solvate_structure",
+        "inputs": "Requires: merged_pdb and solvation_type decision",
+        "required_state": ["merged_pdb"],
+        "outputs": ["solvated_pdb", "box_dimensions"],
+        "servers": ["solvation"],
+        "allowed_tools": [
+            "solvate_structure",
+            "embed_in_membrane",
+            "list_available_lipids",
+        ],
+        "estimate": "2-10 minutes (membrane: 10-30 minutes)",
+    },
+    "quick_md": {
+        "tool": "run_md_simulation",
+        "inputs": "Requires: solvated_pdb (or membrane_pdb) and box_dimensions (explicit solvent)",
+        "required_state": ["solvated_pdb"],
+        "outputs": ["parm7", "rst7", "trajectory"],
+        "servers": ["amber", "md_simulation"],
+        "allowed_tools": [
+            "build_amber_system",
+            "run_md_simulation",
+        ],
+        "estimate": "5-20 minutes (quick)",
+    },
+    "validation": {
+        "tool": "run_validation_tool",
+        "inputs": "Requires: outputs from quick_md",
+        "required_state": ["parm7", "rst7"],
+        "outputs": ["validation_result"],
+        "servers": [],
+        "allowed_tools": [
+            # FunctionTool (not MCP)
+            "run_validation_tool",
+        ],
+        "estimate": "5-30 seconds",
+    },
+}
+
+# Default parameters for Step (5) quick_md.
+QUICK_MD_DEFAULTS: dict[str, object] = {
+    "forcefield": "ff19SB",
+    "water_model": "opc",
+    "simulation_time_ns": 0.1,
+    "temperature_kelvin": 300.0,
+    "pressure_bar": 1.0,
+    "timestep_fs": 2.0,
+    "output_frequency_ps": 10.0,
+    "trajectory_format": "dcd",
+}
+
 
 # =============================================================================
 # Helper functions
@@ -100,6 +236,34 @@ def get_step_config(step: str) -> StepConfig:
         valid_steps = list(STEP_CONFIG.keys())
         raise ValueError(f"Unknown step '{step}'. Valid steps: {valid_steps}")
     return STEP_CONFIG[step]
+
+
+def get_workflow_v2_step_config(step: str) -> WorkflowV2StepConfig:
+    """Get configuration for a v2 workflow step."""
+    if step not in WORKFLOW_STEP_CONFIG:
+        valid_steps = list(WORKFLOW_STEP_CONFIG.keys())
+        raise ValueError(f"Unknown v2 step '{step}'. Valid steps: {valid_steps}")
+    return WORKFLOW_STEP_CONFIG[step]
+
+
+def get_next_workflow_v2_step(current_step: str | None) -> str | None:
+    """Return the next step name in WORKFLOW_STEPS, or None if finished."""
+    if current_step is None:
+        return WORKFLOW_STEPS[0] if WORKFLOW_STEPS else None
+    try:
+        idx = WORKFLOW_STEPS.index(current_step)
+    except ValueError:
+        return None
+    if idx + 1 >= len(WORKFLOW_STEPS):
+        return None
+    return WORKFLOW_STEPS[idx + 1]
+
+
+def validate_workflow_v2_state(step: str, workflow_state: dict) -> tuple[bool, list[str]]:
+    """Validate that required state keys for the given v2 step exist."""
+    cfg = get_workflow_v2_step_config(step)
+    missing = [k for k in cfg["required_state"] if not workflow_state.get(k)]
+    return (len(missing) == 0), missing
 
 
 # Prerequisites for each step (output keys required from previous steps)
@@ -149,6 +313,18 @@ def validate_step_prerequisites(
     Returns:
         Tuple of (is_valid, list of missing requirements)
     """
+    # Compatibility aliases:
+    # - Historically tests and some callers use "prmtop" key for Amber topology.
+    # - Internally MDZen often uses "parm7".
+    # Treat either as satisfying the topology prerequisite.
+    if step == "run_simulation":
+        missing: list[str] = []
+        if not (outputs.get("parm7") or outputs.get("prmtop")):
+            missing.append("prmtop (or parm7)")
+        if not outputs.get("rst7"):
+            missing.append("rst7")
+        return (len(missing) == 0), missing
+
     prereqs = get_prerequisites(step, solvation_type)
     missing = [key for key in prereqs if key not in outputs]
     return len(missing) == 0, missing
@@ -207,10 +383,18 @@ __all__ = [
     "STEP_PREREQUISITES",
     "STEP_PREREQUISITES_IMPLICIT",
     "StepConfig",
+    # Workflow v2 configuration
+    "WORKFLOW_STEPS",
+    "WORKFLOW_STEP_CONFIG",
+    "WorkflowV2StepConfig",
+    "QUICK_MD_DEFAULTS",
     # Helper functions
     "get_step_config",
     "get_steps_for_solvation_type",
     "get_prerequisites",
     "validate_step_prerequisites",
     "get_current_step_info",
+    "get_workflow_v2_step_config",
+    "get_next_workflow_v2_step",
+    "validate_workflow_v2_state",
 ]

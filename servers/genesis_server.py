@@ -108,13 +108,15 @@ def boltz2_protein_from_seq(
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "boltz")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "boltz")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "boltz")
 
     result = {
         "success": False,

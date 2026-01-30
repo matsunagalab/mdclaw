@@ -89,6 +89,15 @@ class Settings(BaseSettings):
     # Logging settings
     log_level: str = "WARNING"  # DEBUG, INFO, WARNING, ERROR
 
+    # Scratchpad mode for smaller models (qwen2.5:14b, etc.)
+    # When enabled, uses markdown scratchpad file for explicit state tracking
+    use_scratchpad: bool = False
+
+    # Simple prompt mode for clarification agent
+    # When enabled, uses simplified ~200 line prompt instead of full ~800+ line prompt
+    # This reduces excessive reasoning and improves PDB ID detection
+    use_simple_prompt: bool = False
+
     # Message history limit
     max_message_history: int = 6
 
@@ -149,17 +158,16 @@ def get_server_path(server_name: str) -> str:
     return server_map.get(server_name, f"servers/{server_name}_server.py")
 
 
-def get_litellm_model(model_type: str) -> str:
-    """Convert mdzen model string to LiteLLM format.
+def get_litellm_model(model_or_type: str) -> str:
+    """Convert an MDZen model string to LiteLLM format.
 
-    MDZen uses "anthropic:claude-xxx" format
-    LiteLLM uses "anthropic/claude-xxx" format
-
-    Args:
-        model_type: Type of model ("clarification", "setup", or "compress")
-
-    Returns:
-        LiteLLM-compatible model string
+    Supported inputs:
+    - A concrete model string:
+      - "anthropic:claude-xxx" -> "anthropic/claude-xxx"
+      - "anthropic/claude-xxx" -> unchanged
+    - A model type key:
+      - "clarification" | "setup" | "compress" -> uses settings.<type>_model
+        and then applies the same ":" -> "/" conversion.
     """
     model_map = {
         "clarification": settings.clarification_model,
@@ -167,9 +175,9 @@ def get_litellm_model(model_type: str) -> str:
         "compress": settings.compress_model,
     }
 
-    model_str = model_map.get(model_type, settings.setup_model)
+    model_str = model_map.get(model_or_type, model_or_type)
 
-    # Convert "anthropic:model" to "anthropic/model" for LiteLLM
+    # Convert "provider:model" to "provider/model" for LiteLLM
     if ":" in model_str:
         provider, model_name = model_str.split(":", 1)
         return f"{provider}/{model_name}"

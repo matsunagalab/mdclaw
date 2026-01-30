@@ -24,7 +24,7 @@ from fastmcp import FastMCP
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from common.utils import setup_logger, ensure_directory  # noqa: E402
+from common.utils import setup_logger, ensure_directory, get_current_session  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -73,6 +73,23 @@ AMINO_ACIDS = {
 }
 WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "D2O"}
 COMMON_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
+
+# Amber/protonation/terminal residue name variants that should still count as "protein"
+# for chain classification and for excluding them from ligand detection.
+AMBER_PROTEIN_RESIDUES = {
+    # Histidine protonation variants (Amber/PDB2PQR)
+    "HID", "HIE", "HIP", "HSD", "HSE", "HSP",
+    # Cysteine disulfide / deprotonated variants
+    "CYX", "CYM",
+    # Common protonation variants used by some tools
+    "ASH", "GLH", "LYN",
+    # Common terminal caps (treat as part of protein context for decisions)
+    "ACE", "NME",
+}
+
+# Terminal residue renaming used by pdb2pqr/propka for internal chain breaks.
+PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
+PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}
 
 # Elements supported by GAFF/GAFF2 for parameterization
 GAFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"}
@@ -148,11 +165,15 @@ async def download_structure(
 
     try:
         # Resolve output file path first
-        if output_dir:
+        # Always prefer session directory to ensure files go to the correct location
+        session_dir = get_current_session()
+        if session_dir:
+            save_dir = session_dir
+        elif output_dir:
             save_dir = Path(output_dir)
-            ensure_directory(save_dir)
         else:
             save_dir = WORKING_DIR
+        ensure_directory(save_dir)
         output_file = save_dir / f"{pdb_id}.{ext}"
 
         # Cache locations (pinned by checksum, reused across attempts)
@@ -1540,11 +1561,15 @@ async def get_alphafold_structure(
             content = r.content
 
         # Save file
-        if output_dir:
+        # Always prefer session directory to ensure files go to the correct location
+        session_dir = get_current_session()
+        if session_dir:
+            save_dir = session_dir
+        elif output_dir:
             save_dir = Path(output_dir)
-            ensure_directory(save_dir)
         else:
             save_dir = WORKING_DIR
+        ensure_directory(save_dir)
         output_file = save_dir / f"AF-{uniprot_id}.{ext}"
         with open(output_file, "wb") as f:
             f.write(content)
@@ -1924,7 +1949,7 @@ def inspect_molecules(structure_file: str) -> dict:
 
         result["entities"] = entities_info
 
-        # One-letter amino acid code mapping
+        # One-letter amino acid code mapping (canonical residues)
         AA_CODE = {
             "ALA": "A", "ARG": "R", "ASN": "N", "ASP": "D", "CYS": "C",
             "GLN": "Q", "GLU": "E", "GLY": "G", "HIS": "H", "ILE": "I",
@@ -1962,9 +1987,22 @@ def inspect_molecules(structure_file: str) -> dict:
                 residue_names.add(res_name)
                 num_atoms += len(list(res))
 
-                if res_name in AMINO_ACIDS:
+                if res_name in PROTEIN_RESNAMES:
                     has_protein = True
-                    sequence_parts.append(AA_CODE.get(res_name, "X"))
+                    base = res_name
+                    # Map terminal variants (Nxxx/Cxxx) to canonical three-letter codes
+                    if (
+                        len(base) == 4
+                        and base[0] in ("N", "C")
+                        and base[1:] in AA_CODE
+                    ):
+                        base = base[1:]
+                    # Map protonation variants to canonical residues for 1-letter output
+                    if base in ("HID", "HIE", "HIP", "HSD", "HSE", "HSP"):
+                        base = "HIS"
+                    elif base in ("CYX", "CYM"):
+                        base = "CYS"
+                    sequence_parts.append(AA_CODE.get(base, "X"))
                 elif res_name in WATER_NAMES:
                     has_water = True
                 elif res_name in COMMON_IONS:
@@ -2379,8 +2417,8 @@ def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
             for res in chain:
                 resname = res.name.strip()
 
-                # Skip standard amino acids, water, and ions
-                if resname in AMINO_ACIDS:
+                # Skip protein residues (including Amber/protonation variants), water, and ions
+                if resname in PROTEIN_RESNAMES:
                     continue
                 if resname in WATER_NAMES:
                     continue

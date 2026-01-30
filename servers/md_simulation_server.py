@@ -23,7 +23,7 @@ from typing import Optional  # noqa: E402
 import numpy as np  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
+from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, get_simulation_brief  # noqa: E402
 
 # Create FastMCP server
 mcp = FastMCP("MD Simulation Server")
@@ -118,24 +118,47 @@ def run_md_simulation(
     }
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "md_simulation")
+    # Always prefer session directory to ensure files go to the correct location
+    # (LLM may pass incorrect output_dir values)
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "md_simulation")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "md_simulation")
     result["output_dir"] = str(out_dir)
 
-    # Validate input files
+    # Validate input files - also search in topology subdirectory if not found
     prmtop_path = Path(prmtop_file)
     inpcrd_path = Path(inpcrd_file)
 
+    # If file not found, try searching in topology subdirectory
+    # This handles cases where LLM passes session_dir/file instead of session_dir/topology/file
+    session_dir = get_current_session()
+
+    if not prmtop_path.is_file() and session_dir:
+        # Search for .parm7 files in session directory
+        candidates = list(session_dir.glob("**/system.parm7")) + list(session_dir.glob("**/*.parm7"))
+        if candidates:
+            prmtop_path = candidates[0]
+            logger.info(f"Found topology file: {prmtop_path}")
+
+    if not inpcrd_path.is_file() and session_dir:
+        # Search for .rst7 files in session directory
+        candidates = list(session_dir.glob("**/system.rst7")) + list(session_dir.glob("**/*.rst7"))
+        if candidates:
+            inpcrd_path = candidates[0]
+            logger.info(f"Found coordinate file: {inpcrd_path}")
+
     if not prmtop_path.is_file():
         result["errors"].append(f"Topology file not found: {prmtop_file}")
+        result["errors"].append("Hint: Run build_amber_system first to create topology files")
         return result
     if not inpcrd_path.is_file():
         result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
+        result["errors"].append("Hint: Run build_amber_system first to create topology files")
         return result
 
     try:
@@ -169,6 +192,14 @@ def run_md_simulation(
 
         # Detect if system is periodic (has box vectors)
         is_periodic = inpcrd.boxVectors is not None
+
+        # Auto-detect implicit solvent from simulation_brief if not specified
+        # This fixes the issue where LLM doesn't pass implicit_solvent parameter
+        if implicit_solvent is None and not is_periodic:
+            brief = get_simulation_brief()
+            if brief and brief.get("solvation_type") == "implicit":
+                implicit_solvent = brief.get("implicit_solvent_model", "OBC2")
+                logger.info(f"Auto-detected implicit solvent from simulation_brief: {implicit_solvent}")
 
         # Create system - handle implicit vs explicit solvent
         logger.info("Creating OpenMM system")

@@ -50,6 +50,58 @@ def get_session_dir(tool_context: ToolContext) -> str:
     return str(session_dir) if session_dir else ""
 
 
+def save_context(
+    key: str,
+    value: str | list | dict,
+    tool_context: ToolContext,
+) -> dict:
+    """Save key information to session context file for later use.
+
+    Call this to store important information gathered during clarification.
+    This ensures information is preserved for generate_simulation_brief,
+    even if you forget to pass it explicitly.
+
+    Keys to save:
+    - pdb_id: The PDB ID (e.g., "1AKE")
+    - structure_file: Path to downloaded structure
+    - chains: Selected chains (e.g., ["A"])
+    - ligand_handling: "include" or "exclude"
+    - histidine_states: Dict of residue -> state (e.g., {"A:126": "HIE"})
+
+    Args:
+        key: Context key name
+        value: Value to store (string, list, or dict)
+        tool_context: ADK ToolContext (auto-injected)
+
+    Returns:
+        Success status and current context
+    """
+    import json
+    from pathlib import Path
+
+    session_dir = tool_context.state.get("session_dir", "")
+    if not session_dir:
+        return {"success": False, "error": "session_dir not set"}
+
+    context_path = Path(session_dir) / "clarification_context.json"
+
+    # Load existing context
+    context = {}
+    if context_path.exists():
+        try:
+            context = json.loads(context_path.read_text())
+        except Exception:
+            pass
+
+    # Update context
+    context[key] = value
+
+    # Save back
+    context_path.write_text(json.dumps(context, indent=2))
+
+    return {"success": True, "context": context}
+
+
 def generate_simulation_brief(
     pdb_id: Optional[str] = None,
     fasta_sequence: Optional[str] = None,
@@ -136,6 +188,9 @@ def generate_simulation_brief(
     Returns:
         Dictionary representation of SimulationBrief
     """
+    import json
+    from pathlib import Path
+
     # Normalize "null" strings from LLM to Python None
     pdb_id = _normalize_null(pdb_id)
     fasta_sequence = _normalize_null(fasta_sequence)
@@ -143,6 +198,32 @@ def generate_simulation_brief(
     lipids = _normalize_null(lipids)
     lipid_ratio = _normalize_null(lipid_ratio)
     pressure_bar = _normalize_null(pressure_bar)
+
+    # Read saved clarification context to fill in missing parameters
+    # This ensures we don't lose important info like pdb_id when the LLM forgets to pass it
+    if tool_context is not None:
+        session_dir = tool_context.state.get("session_dir", "")
+        if session_dir:
+            context_path = Path(session_dir) / "clarification_context.json"
+            if context_path.exists():
+                try:
+                    saved = json.loads(context_path.read_text())
+                    # Fill in missing parameters from saved context
+                    if pdb_id is None:
+                        pdb_id = saved.get("pdb_id")
+                    if select_chains is None:
+                        select_chains = saved.get("chains")
+                    if structure_analysis is None:
+                        structure_analysis = {}
+                    # Apply ligand handling preference
+                    if "ligand_handling" in saved:
+                        if saved["ligand_handling"] == "exclude":
+                            structure_analysis["exclude_all_ligands"] = True
+                    # Apply histidine states
+                    if "histidine_states" in saved:
+                        structure_analysis["histidine_states"] = saved["histidine_states"]
+                except Exception:
+                    pass  # Ignore errors reading context file
 
     # Default lipid composition for membrane systems
     if is_membrane and not lipids:
@@ -201,14 +282,41 @@ def generate_simulation_brief(
     if tool_context is not None:
         tool_context.state["simulation_brief"] = brief_dict
 
+    # Also save to session directory for MCP servers to access
+    # (MCP servers don't have access to ADK session state)
+    try:
+        from common.utils import save_simulation_brief
+        save_simulation_brief(brief_dict)
+    except Exception:
+        pass  # Ignore errors if session not set
+
+    # Initialize scratchpad if scratchpad mode is enabled
+    scratchpad_path = None
+    try:
+        from mdzen.config import settings
+        if settings.use_scratchpad and tool_context is not None:
+            session_dir = tool_context.state.get("session_dir", "")
+            if session_dir:
+                scratchpad_path = initialize_scratchpad(brief_dict, session_dir)
+    except Exception:
+        pass  # Ignore errors if scratchpad initialization fails
+
     # Generate user-friendly summary with all parameters and descriptions
     summary = _format_simulation_brief_summary(brief)
 
-    return {
+    result = {
         "success": True,
         "brief": brief_dict,
         "summary": summary,
     }
+
+    if scratchpad_path:
+        result["scratchpad_path"] = scratchpad_path
+        result["scratchpad_message"] = (
+            "Scratchpad initialized. In Phase 2, call read_scratchpad() first to see the next command."
+        )
+
+    return result
 
 
 def _format_simulation_brief_summary(brief: SimulationBrief) -> str:
@@ -476,11 +584,10 @@ def run_validation(
     from pathlib import Path
     import json
 
-    # Read clarification log if available
-    clarification_log = ""
+    # Read clarification log if available (best-effort; validation can proceed without it)
     if clarification_log_path and Path(clarification_log_path).exists():
         try:
-            clarification_log = Path(clarification_log_path).read_text()
+            _ = Path(clarification_log_path).read_text()
         except Exception:
             pass  # Ignore read errors
 
@@ -1060,3 +1167,701 @@ def run_validation_tool(tool_context: ToolContext) -> dict:
         compressed_setup=compressed_setup,
         clarification_log_path=clarification_log_path,
     )
+
+
+# =============================================================================
+# SCRATCHPAD TOOLS (for smaller models)
+# =============================================================================
+
+
+def read_scratchpad(tool_context: ToolContext) -> str:
+    """Read the current workflow state from scratchpad.
+
+    ALWAYS call this FIRST in every turn to see:
+    - What command to run next (CURRENT TASK section)
+    - What outputs are available (OUTPUTS section)
+    - Overall progress (COMPLETED section)
+
+    Returns:
+        Scratchpad contents (markdown) or error message
+    """
+    session_dir = tool_context.state.get("session_dir", "")
+    if not session_dir:
+        return "ERROR: session_dir not set. Cannot read scratchpad."
+
+    from pathlib import Path
+    path = Path(session_dir) / "scratchpad.md"
+    if not path.exists():
+        return "ERROR: Scratchpad not found. Run Phase 1 (clarification) first."
+
+    return path.read_text()
+
+
+def update_scratchpad(
+    step: str,
+    outputs: dict,
+    tool_context: ToolContext,
+) -> dict:
+    """Update scratchpad after completing a step.
+
+    This automatically:
+    1. Marks the step as complete
+    2. Stores output paths
+    3. Generates the NEXT command to run
+
+    Args:
+        step: Completed step name (prepare_complex, solvate, build_topology, run_simulation)
+        outputs: Dict of output paths from the tool result. Include all relevant paths:
+            - After prepare_complex: {"merged_pdb": "/path/to/merged.pdb"}
+            - After solvate: {"solvated_pdb": "/path/to/solvated.pdb", "box_dimensions": {...}}
+            - After build_topology: {"parm7": "/path/to/system.parm7", "rst7": "/path/to/system.rst7"}
+            - After run_simulation: {"trajectory": "/path/to/traj.dcd"}
+        tool_context: ADK ToolContext (automatically injected)
+
+    Returns:
+        Updated scratchpad preview and next step info
+    """
+    import json
+    from pathlib import Path
+
+    session_dir = tool_context.state.get("session_dir", "")
+    if not session_dir:
+        return {"success": False, "error": "session_dir not set"}
+
+    scratchpad_path = Path(session_dir) / "scratchpad.md"
+    brief_path = Path(session_dir) / "simulation_brief.json"
+
+    # Load simulation brief for context
+    brief = {}
+    if brief_path.exists():
+        try:
+            brief = json.loads(brief_path.read_text())
+        except Exception:
+            pass
+    solvation_type = brief.get("solvation_type", "explicit")
+
+    # Load current scratchpad state
+    state = _load_scratchpad_state(scratchpad_path)
+    if step not in state["completed"]:
+        state["completed"].append(step)
+    state["outputs"].update(outputs or {})
+
+    # Also update ADK session state for compatibility
+    completed_steps = safe_list(tool_context.state.get("completed_steps"))
+    if step not in completed_steps:
+        completed_steps.append(step)
+    tool_context.state["completed_steps"] = json.dumps(completed_steps)
+
+    current_outputs = safe_dict(tool_context.state.get("outputs"))
+    current_outputs.update(outputs or {})
+    tool_context.state["outputs"] = json.dumps(current_outputs)
+
+    # Determine next step and generate command
+    next_step, next_command = _generate_next_command(
+        completed=state["completed"],
+        outputs=state["outputs"],
+        brief=brief,
+        session_dir=session_dir,
+    )
+
+    # Write updated scratchpad
+    new_content = _render_scratchpad(
+        current_step=next_step,
+        current_command=next_command,
+        context=state["context"],
+        outputs=state["outputs"],
+        completed=state["completed"],
+        solvation_type=solvation_type,
+        brief=brief,
+    )
+    scratchpad_path.write_text(new_content)
+
+    return {
+        "success": True,
+        "step_completed": step,
+        "next_step": next_step,
+        "message": f"Scratchpad updated. Next: {next_step}" if next_step else "WORKFLOW COMPLETE!",
+    }
+
+
+def _load_scratchpad_state(scratchpad_path) -> dict:
+    """Load current state from scratchpad file."""
+    from pathlib import Path
+    import re
+
+    state = {
+        "completed": [],
+        "outputs": {},
+        "context": {},
+    }
+
+    path = Path(scratchpad_path)
+    if not path.exists():
+        return state
+
+    content = path.read_text()
+
+    # Parse completed steps from checklist
+    completed_pattern = r'\d+\.\s*\[x\]\s*(\w+)'
+    for match in re.finditer(completed_pattern, content):
+        step = match.group(1)
+        if step not in state["completed"]:
+            state["completed"].append(step)
+
+    # Parse outputs section
+    outputs_section = re.search(r'## 📦 OUTPUTS.*?(?=━━━|$)', content, re.DOTALL)
+    if outputs_section:
+        output_text = outputs_section.group(0)
+        output_pattern = r'-\s*(\w+):\s*(.+)$'
+        for match in re.finditer(output_pattern, output_text, re.MULTILINE):
+            key = match.group(1).strip()
+            value = match.group(2).strip()
+            if value and value != "(none yet)":
+                state["outputs"][key] = value
+
+    # Parse context section
+    context_section = re.search(r'## 📋 CONTEXT.*?(?=━━━|$)', content, re.DOTALL)
+    if context_section:
+        context_text = context_section.group(0)
+        context_pattern = r'-\s*([^:]+):\s*(.+)$'
+        for match in re.finditer(context_pattern, context_text, re.MULTILINE):
+            key = match.group(1).strip().lower().replace(" ", "_")
+            value = match.group(2).strip()
+            state["context"][key] = value
+
+    return state
+
+
+def _generate_next_command(
+    completed: list,
+    outputs: dict,
+    brief: dict,
+    session_dir: str
+) -> tuple:
+    """Generate the exact command for the next step."""
+    import json
+
+    solvation_type = brief.get("solvation_type", "explicit")
+
+    # Define workflow based on solvation type
+    if solvation_type == "implicit":
+        workflow = ["prepare_complex", "build_topology", "run_simulation"]
+    else:
+        workflow = ["prepare_complex", "solvate", "build_topology", "run_simulation"]
+
+    # Find next step
+    next_step = None
+    for step in workflow:
+        if step not in completed:
+            next_step = step
+            break
+
+    if next_step is None:
+        return None, "WORKFLOW COMPLETE"
+
+    # Generate command based on step
+    pdb_id = brief.get("pdb_id", "")
+    include_types = brief.get("include_types", ["protein", "ligand", "ion"])
+    process_ligands = "true" if "ligand" in include_types else "false"
+
+    if next_step == "prepare_complex":
+        cmd = f'''prepare_complex(
+    pdb_id="{pdb_id}",
+    output_dir="{session_dir}",
+    process_ligands={process_ligands}
+)'''
+
+    elif next_step == "solvate":
+        merged_pdb = outputs.get("merged_pdb", f"{session_dir}/merge/merged.pdb")
+        is_membrane = brief.get("is_membrane", False)
+        if is_membrane:
+            lipids = brief.get("lipids", "POPC")
+            cmd = f'''embed_in_membrane(
+    pdb_file="{merged_pdb}",
+    lipid_type="{lipids}",
+    output_dir="{session_dir}",
+    output_name="membrane"
+)'''
+        else:
+            cmd = f'''solvate_structure(
+    pdb_file="{merged_pdb}",
+    output_dir="{session_dir}",
+    output_name="solvated"
+)'''
+
+    elif next_step == "build_topology":
+        if solvation_type == "implicit":
+            merged_pdb = outputs.get("merged_pdb", f"{session_dir}/merge/merged.pdb")
+            cmd = f'''build_amber_system(
+    pdb_file="{merged_pdb}",
+    output_dir="{session_dir}",
+    output_name="system"
+)'''
+        else:
+            solvated_pdb = outputs.get("solvated_pdb", f"{session_dir}/solvate/solvated.pdb")
+            box = outputs.get("box_dimensions", {})
+            box_json = json.dumps(box) if isinstance(box, dict) else str(box)
+            cmd = f'''build_amber_system(
+    pdb_file="{solvated_pdb}",
+    box_dimensions={box_json},
+    output_dir="{session_dir}",
+    output_name="system"
+)'''
+
+    elif next_step == "run_simulation":
+        parm7 = outputs.get("parm7", f"{session_dir}/topology/system.parm7")
+        rst7 = outputs.get("rst7", f"{session_dir}/topology/system.rst7")
+        if solvation_type == "implicit":
+            implicit_model = brief.get("implicit_solvent_model", "OBC2")
+            cmd = f'''run_md_simulation(
+    prmtop_file="{parm7}",
+    inpcrd_file="{rst7}",
+    implicit_solvent="{implicit_model}",
+    output_dir="{session_dir}"
+)'''
+        else:
+            cmd = f'''run_md_simulation(
+    prmtop_file="{parm7}",
+    inpcrd_file="{rst7}",
+    output_dir="{session_dir}"
+)'''
+    else:
+        cmd = f"# Unknown step: {next_step}"
+
+    return next_step, cmd
+
+
+def _render_scratchpad(
+    current_step: str | None,
+    current_command: str,
+    context: dict,
+    outputs: dict,
+    completed: list,
+    solvation_type: str,
+    brief: dict,
+) -> str:
+    """Render the scratchpad markdown content."""
+    from datetime import datetime
+
+    # Determine workflow steps
+    if solvation_type == "implicit":
+        workflow = ["prepare_complex", "build_topology", "run_simulation"]
+    else:
+        workflow = ["prepare_complex", "solvate", "build_topology", "run_simulation"]
+
+    total_steps = len(workflow)
+    current_index = len(completed) + 1 if current_step else total_steps
+
+    # Build completed checklist
+    checklist_lines = []
+    for i, step in enumerate(workflow):
+        if step in completed:
+            output_info = ""
+            if step == "prepare_complex" and outputs.get("merged_pdb"):
+                output_info = f" → {outputs['merged_pdb']}"
+            elif step == "solvate" and outputs.get("solvated_pdb"):
+                output_info = f" → {outputs['solvated_pdb']}"
+            elif step == "build_topology" and outputs.get("parm7"):
+                output_info = f" → {outputs['parm7']}"
+            elif step == "run_simulation" and outputs.get("trajectory"):
+                output_info = f" → {outputs['trajectory']}"
+            checklist_lines.append(f"{i+1}. [x] {step}{output_info}")
+        elif step == current_step:
+            checklist_lines.append(f"{i+1}. [ ] {step} ← YOU ARE HERE")
+        else:
+            checklist_lines.append(f"{i+1}. [ ] {step}")
+    checklist = "\n".join(checklist_lines)
+
+    # Build outputs section
+    if outputs:
+        outputs_lines = [f"- {k}: {v}" for k, v in outputs.items() if v]
+        outputs_text = "\n".join(outputs_lines) if outputs_lines else "(none yet)"
+    else:
+        outputs_text = "(none yet)"
+
+    # Build after success section
+    if current_step:
+        after_success = _get_after_success_text(current_step)
+    else:
+        after_success = "No more tasks. Workflow is complete!"
+
+    # Get context from brief
+    session_dir = context.get("session_directory", brief.get("session_dir", ""))
+    pdb_id = brief.get("pdb_id", "N/A")
+    chains = brief.get("select_chains", ["all"])
+    include = brief.get("include_types", ["protein", "ligand", "ion"])
+
+    content = f'''# MDZen Scratchpad
+Updated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 🎯 CURRENT TASK (Step {current_index} of {total_steps})
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+**Run this command:**
+
+{current_command}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## ✅ AFTER SUCCESS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{after_success}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 📋 CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Session directory: {session_dir}
+- Solvation type: {solvation_type}
+- PDB: {pdb_id}
+- Chains: {chains}
+- Include: {include}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## 📦 OUTPUTS (use these paths)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{outputs_text}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+## ✓ COMPLETED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{checklist}
+'''
+    return content
+
+
+def _get_after_success_text(step: str) -> str:
+    """Get the 'after success' instruction text for a step."""
+    if step == "prepare_complex":
+        return '''**Update scratchpad with:**
+
+update_scratchpad(
+    step="prepare_complex",
+    outputs={"merged_pdb": "<result.merged_pdb>"}
+)'''
+    elif step == "solvate":
+        return '''**Update scratchpad with:**
+
+update_scratchpad(
+    step="solvate",
+    outputs={
+        "solvated_pdb": "<result.output_file>",
+        "box_dimensions": <result.box_dimensions>
+    }
+)'''
+    elif step == "build_topology":
+        return '''**Update scratchpad with:**
+
+update_scratchpad(
+    step="build_topology",
+    outputs={
+        "parm7": "<result.parm7>",
+        "rst7": "<result.rst7>"
+    }
+)'''
+    elif step == "run_simulation":
+        return '''**Update scratchpad with:**
+
+update_scratchpad(
+    step="run_simulation",
+    outputs={"trajectory": "<result.trajectory>"}
+)'''
+    else:
+        return "No after-success action needed."
+
+
+def initialize_scratchpad(brief_dict: dict, session_dir: str) -> str:
+    """Initialize scratchpad at the end of Phase 1.
+
+    Called from generate_simulation_brief when scratchpad mode is enabled.
+
+    Args:
+        brief_dict: SimulationBrief dictionary
+        session_dir: Path to session directory
+
+    Returns:
+        Path to the created scratchpad file
+    """
+    from pathlib import Path
+
+    solvation_type = brief_dict.get("solvation_type", "explicit")
+
+    # First command is always prepare_complex
+    pdb_id = brief_dict.get("pdb_id", "")
+    include_types = brief_dict.get("include_types", ["protein", "ligand", "ion"])
+    process_ligands = "true" if "ligand" in include_types else "false"
+
+    first_cmd = f'''prepare_complex(
+    pdb_id="{pdb_id}",
+    output_dir="{session_dir}",
+    process_ligands={process_ligands}
+)'''
+
+    # Generate initial scratchpad
+    content = _render_scratchpad(
+        current_step="prepare_complex",
+        current_command=first_cmd,
+        context={"session_directory": session_dir},
+        outputs={},
+        completed=[],
+        solvation_type=solvation_type,
+        brief=brief_dict,
+    )
+
+    scratchpad_path = Path(session_dir) / "scratchpad.md"
+    scratchpad_path.write_text(content)
+
+    return str(scratchpad_path)
+
+
+# =============================================================================
+# WORKFLOW v2: SHARED SCRATCHPAD/STATE TOOLS
+# =============================================================================
+
+
+def _workflow_v2_default_state() -> dict:
+    """Return default workflow v2 state.
+
+    This state is intentionally flat (top-level keys) so smaller models can
+    reliably read/write it. Nested dicts are used only when unavoidable.
+    """
+
+    return {
+        "current_step": "acquire_structure",
+        "completed_steps": [],
+        "awaiting_user_input": False,
+        "pending_questions": [],
+        "last_step_summary": "",
+        # Common artifacts (filled across steps)
+        "structure_file": "",
+        "merged_pdb": "",
+        "structure_analysis": {},
+        "solvation_type": "",  # "explicit" or "membrane"
+        "solvated_pdb": "",
+        "membrane_pdb": "",
+        "box_dimensions": {},
+        "parm7": "",
+        "rst7": "",
+        "trajectory": "",
+        "validation_result": {},
+    }
+
+
+def _workflow_v2_paths(session_dir: str):
+    from pathlib import Path
+
+    base = Path(session_dir)
+    return (base / "workflow_state.json", base / "workflow_scratchpad.md")
+
+
+def _render_workflow_v2_scratchpad(state: dict) -> str:
+    """Render human-readable scratchpad for the v2 workflow."""
+    from datetime import datetime
+
+    def _s(v):
+        return v if v else "(unset)"
+
+    completed = state.get("completed_steps") or []
+    pending_questions = state.get("pending_questions") or []
+
+    lines: list[str] = []
+    lines.append("# MDZen Workflow Scratchpad (v2)")
+    lines.append(f"Updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    lines.append("")
+    lines.append("## Status")
+    lines.append(f"- current_step: {_s(state.get('current_step'))}")
+    lines.append(f"- completed_steps: {completed if completed else '[]'}")
+    lines.append(f"- awaiting_user_input: {bool(state.get('awaiting_user_input'))}")
+    if pending_questions:
+        lines.append("- pending_questions:")
+        for q in pending_questions:
+            lines.append(f"  - {q}")
+    lines.append("")
+    lines.append("## Key files")
+    lines.append(f"- structure_file: {_s(state.get('structure_file'))}")
+    lines.append(f"- merged_pdb: {_s(state.get('merged_pdb'))}")
+    lines.append(f"- solvated_pdb: {_s(state.get('solvated_pdb'))}")
+    lines.append(f"- membrane_pdb: {_s(state.get('membrane_pdb'))}")
+    lines.append(f"- parm7: {_s(state.get('parm7'))}")
+    lines.append(f"- rst7: {_s(state.get('rst7'))}")
+    lines.append(f"- trajectory: {_s(state.get('trajectory'))}")
+    lines.append("")
+    lines.append("## Decisions")
+    lines.append(f"- solvation_type: {_s(state.get('solvation_type'))}")
+    lines.append(f"- box_dimensions: {state.get('box_dimensions') or {}}")
+    lines.append("")
+    lines.append("## Last summary")
+    last = (state.get("last_step_summary") or "").strip()
+    lines.append(last if last else "(none)")
+    lines.append("")
+    lines.append("---")
+    lines.append("## Machine-readable state (JSON)")
+    lines.append("```json")
+    try:
+        import json
+
+        lines.append(json.dumps(state, indent=2, ensure_ascii=False, default=str))
+    except Exception:
+        # Best-effort; never fail rendering.
+        lines.append("{}")
+    lines.append("```")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _load_workflow_v2_state(session_dir: str) -> dict:
+    import json
+
+    json_path, _ = _workflow_v2_paths(session_dir)
+    if not json_path.exists():
+        return _workflow_v2_default_state()
+    try:
+        loaded = json.loads(json_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            state = _workflow_v2_default_state()
+            state.update(loaded)
+            return state
+    except Exception:
+        pass
+    return _workflow_v2_default_state()
+
+
+def _save_workflow_v2_state(session_dir: str, state: dict) -> None:
+    import json
+
+    json_path, md_path = _workflow_v2_paths(session_dir)
+    json_path.write_text(json.dumps(state, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    md_path.write_text(_render_workflow_v2_scratchpad(state), encoding="utf-8")
+
+
+def read_workflow_state(tool_context: ToolContext) -> dict:
+    """Read shared workflow v2 state.
+
+    Always call this first in every step. If the state doesn't exist yet,
+    it is initialized with defaults.
+    """
+    import json
+
+    session_dir = str(tool_context.state.get("session_dir", "") or "")
+    if not session_dir:
+        return {"success": False, "error": "session_dir not set"}
+
+    state = _load_workflow_v2_state(session_dir)
+
+    # Mirror into ADK session state for CLI to read without filesystem access.
+    tool_context.state["workflow_state"] = json.dumps(state, ensure_ascii=False, default=str)
+    tool_context.state["workflow_current_step"] = str(state.get("current_step") or "")
+
+    return {"success": True, "state": state}
+
+
+def update_workflow_state(
+    step: str | None = None,
+    updates: dict | None = None,
+    mark_step_complete: bool = False,
+    awaiting_user_input: bool = False,
+    pending_questions: list[str] | None = None,
+    last_step_summary: str = "",
+    tool_context: ToolContext = None,  # ADK injects this automatically
+) -> dict:
+    """Update shared workflow v2 state and write scratchpad.
+
+    Typical usage in prompts:
+    - At the start: read_workflow_state()
+    - Before asking user questions: update_workflow_state(awaiting_user_input=True, pending_questions=[...])
+    - After completing step: update_workflow_state(step=\"select_prepare\", updates={...}, mark_step_complete=True)
+    """
+    import json
+
+    if tool_context is None:
+        return {"success": False, "error": "tool_context missing"}
+
+    session_dir = str(tool_context.state.get("session_dir", "") or "")
+    if not session_dir:
+        return {"success": False, "error": "session_dir not set"}
+
+    state = _load_workflow_v2_state(session_dir)
+
+    # Apply updates
+    if updates and isinstance(updates, dict):
+        for k, v in updates.items():
+            state[k] = v
+
+    # Update UI flags/questions
+    state["awaiting_user_input"] = bool(awaiting_user_input)
+    if pending_questions is not None:
+        state["pending_questions"] = pending_questions
+
+    if last_step_summary:
+        state["last_step_summary"] = last_step_summary
+
+    # Step completion / advancement
+    if step:
+        state["current_step"] = step
+    current_step = state.get("current_step")
+
+    if mark_step_complete and current_step:
+        completed = state.get("completed_steps") or []
+        if current_step not in completed:
+            completed.append(current_step)
+        state["completed_steps"] = completed
+
+        # Advance current_step unless we are awaiting input.
+        if not state.get("awaiting_user_input"):
+            try:
+                from mdzen.workflow import get_next_workflow_v2_step
+
+                nxt = get_next_workflow_v2_step(current_step)
+                if nxt:
+                    state["current_step"] = nxt
+            except Exception:
+                pass
+
+    # Persist to disk + mirror into session state
+    _save_workflow_v2_state(session_dir, state)
+    tool_context.state["workflow_state"] = json.dumps(state, ensure_ascii=False, default=str)
+    tool_context.state["workflow_current_step"] = str(state.get("current_step") or "")
+
+    # Write machine-readable questions for external drivers (best-effort).
+    if state.get("awaiting_user_input"):
+        try:
+            from mdzen.cli.auto_answer import write_questions_json
+
+            write_questions_json(session_dir, wf_state=state)
+        except Exception:
+            pass
+
+    # Compatibility: also sync to the legacy Phase2 keys so existing reporting/QC works.
+    # - completed_steps / outputs are JSON strings in ADK state.
+    try:
+        legacy_completed = state.get("completed_steps") or []
+        tool_context.state["completed_steps"] = json.dumps(legacy_completed, ensure_ascii=False)
+
+        legacy_outputs = safe_dict(tool_context.state.get("outputs")) or {}
+        # Map v2 keys → legacy outputs keys
+        for k in ["merged_pdb", "solvated_pdb", "membrane_pdb", "parm7", "rst7", "trajectory"]:
+            if state.get(k):
+                legacy_outputs[k] = state.get(k)
+        if isinstance(state.get("box_dimensions"), dict) and state.get("box_dimensions"):
+            legacy_outputs["box_dimensions"] = state.get("box_dimensions")
+
+        tool_context.state["outputs"] = json.dumps(legacy_outputs, ensure_ascii=False, default=str)
+    except Exception:
+        pass
+
+    return {"success": True, "state": state}
+
+
+def get_quick_md_defaults() -> dict:
+    """Return default parameters for the quick_md step."""
+    try:
+        from mdzen.workflow import QUICK_MD_DEFAULTS
+
+        # Shallow copy to avoid accidental mutation by callers
+        return {"success": True, "defaults": dict(QUICK_MD_DEFAULTS)}
+    except Exception as e:
+        return {"success": False, "error": str(e), "defaults": {}}
+

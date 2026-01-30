@@ -319,13 +319,15 @@ def solvate_structure(
         return result
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "solvate")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "solvate")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory
@@ -609,13 +611,15 @@ def embed_in_membrane(
         return result
 
     # Setup output directory with human-readable name (unified with solvate)
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "solvate")
+    # Always prefer session directory to ensure files go to the correct location
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "solvate")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory for packmol-memgen

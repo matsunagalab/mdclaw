@@ -84,6 +84,15 @@ dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.7.0",
+    # ADK evaluation (optional, but required for `tests/adk_eval/**`)
+    "google-adk[eval]>=0.5.0",
+    "rouge-score>=0.1.2",
+]
+
+# Optional: install only evaluation dependencies (without full dev set)
+eval = [
+    "google-adk[eval]>=0.5.0",
+    "rouge-score>=0.1.2",
 ]
 
 [project.scripts]

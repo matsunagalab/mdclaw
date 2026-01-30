@@ -176,6 +176,99 @@ def get_step_tools(step: str) -> list[McpToolset]:
     return toolsets
 
 
+# =============================================================================
+# Workflow v2: stepwise toolsets ((1)→(2)→(3)→(4)→(quick_md)→(validation))
+# =============================================================================
+
+# Tool filters per step. Keep these minimal for small models.
+WORKFLOW_V2_TOOL_FILTERS: dict[str, dict[str, list[str]]] = {
+    "acquire_structure": {
+        "research": [
+            "search_structures",
+            "get_structure_info",
+            "download_structure",
+            "get_alphafold_structure",
+            "search_proteins",
+            "get_protein_info",
+        ],
+        "genesis": [
+            "boltz2_protein_from_seq",
+            "rdkit_validate_smiles",
+            "pubchem_get_smiles_from_name",
+        ],
+    },
+    "select_prepare": {
+        "research": [
+            "inspect_molecules",
+        ],
+        "structure": [
+            "prepare_complex",
+            "split_molecules",
+            "merge_structures",
+        ],
+    },
+    "structure_decisions": {
+        "research": [
+            "analyze_structure_details",
+        ],
+        "structure": [
+            "prepare_complex",
+        ],
+    },
+    "solvate_or_membrane": {
+        "solvation": [
+            "solvate_structure",
+            "embed_in_membrane",
+            "list_available_lipids",
+        ],
+    },
+    "quick_md": {
+        "amber": [
+            "build_amber_system",
+        ],
+        "md_simulation": [
+            "run_md_simulation",
+        ],
+    },
+    # validation step uses FunctionTool only (no MCP servers)
+    "validation": {},
+}
+
+
+def get_workflow_step_tools(step: str) -> list[McpToolset]:
+    """Get MCP toolsets for a v2 workflow step.
+
+    This is designed for small models: each step exposes only the minimum tools.
+    """
+    if step not in WORKFLOW_V2_TOOL_FILTERS:
+        valid = list(WORKFLOW_V2_TOOL_FILTERS.keys())
+        raise ValueError(f"Unknown workflow step '{step}'. Valid steps: {valid}")
+
+    toolsets: list[McpToolset] = []
+    for server_name, tool_filter in WORKFLOW_V2_TOOL_FILTERS[step].items():
+        toolsets.append(create_filtered_toolset(server_name, tool_filter=tool_filter))
+    return toolsets
+
+
+def get_workflow_step_tools_sse(host: str, step: str) -> list[McpToolset]:
+    """Get MCP toolsets for a v2 workflow step using HTTP transport."""
+    if step not in WORKFLOW_V2_TOOL_FILTERS:
+        valid = list(WORKFLOW_V2_TOOL_FILTERS.keys())
+        raise ValueError(f"Unknown workflow step '{step}'. Valid steps: {valid}")
+
+    toolsets: list[McpToolset] = []
+    for server_name, tool_filter in WORKFLOW_V2_TOOL_FILTERS[step].items():
+        toolsets.append(
+            create_http_toolset(
+                server_name,
+                tool_filter=tool_filter,
+                host=host,
+                use_streamable_http=True,
+            )
+        )
+    return toolsets
+
+
 def get_clarification_tools() -> list[McpToolset]:
     """Get tools for clarification phase.
 

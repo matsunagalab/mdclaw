@@ -252,6 +252,52 @@ def clear_current_session() -> None:
         logger.debug("Cleared current session file")
 
 
+# Simulation brief sharing for MCP servers
+# This allows MCP tools to access simulation parameters (e.g., solvation_type)
+# without relying on the LLM to pass them correctly
+BRIEF_FILE = "simulation_brief.json"
+
+
+def save_simulation_brief(brief: dict) -> None:
+    """Save simulation brief to the current session directory.
+
+    Called by generate_simulation_brief (custom_tools.py) after Phase 1.
+    MCP servers can then read this to access simulation parameters.
+
+    Args:
+        brief: SimulationBrief dictionary
+    """
+    import json
+
+    session_dir = get_current_session()
+    if session_dir:
+        brief_path = session_dir / BRIEF_FILE
+        brief_path.write_text(json.dumps(brief, indent=2))
+        logger.debug(f"Saved simulation brief to {brief_path}")
+
+
+def get_simulation_brief() -> Optional[dict]:
+    """Get the simulation brief from the current session directory.
+
+    MCP servers call this to access simulation parameters like solvation_type
+    without relying on the LLM to pass them.
+
+    Returns:
+        SimulationBrief dictionary, or None if not found
+    """
+    import json
+
+    session_dir = get_current_session()
+    if session_dir:
+        brief_path = session_dir / BRIEF_FILE
+        if brief_path.exists():
+            try:
+                return json.loads(brief_path.read_text())
+            except Exception:
+                pass
+    return None
+
+
 def create_unique_subdir(base_dir: Union[str, Path], name: str) -> Path:
     """Create a uniquely-named subdirectory within base_dir.
 

@@ -472,6 +472,67 @@ def detect_water_type(pdb_path: Path) -> dict:
     return result
 
 
+def strip_crystal_waters(input_pdb: Path, output_pdb: Path) -> dict:
+    """Remove crystal water molecules from a PDB file.
+
+    This function removes all water residues (HOH, WAT, SOL, etc.) from the PDB.
+    Crystal waters should be removed for both implicit and explicit solvent simulations:
+    - Implicit: GB models don't support discrete water molecules
+    - Explicit: Bulk water will be added by solvate_structure
+
+    Args:
+        input_pdb: Path to input PDB file
+        output_pdb: Path to output PDB file (can be same as input)
+
+    Returns:
+        dict with:
+            - success: bool
+            - waters_removed: int - Number of water residues removed
+            - atoms_removed: int - Number of water atoms removed
+    """
+    water_names = {"WAT", "HOH", "SOL", "TP3", "OPC", "T4P", "T5P", "H2O", "DOD", "D2O"}
+
+    result = {
+        "success": False,
+        "waters_removed": 0,
+        "atoms_removed": 0,
+    }
+
+    try:
+        lines_to_keep = []
+        water_residues = set()
+        atoms_removed = 0
+
+        with open(input_pdb, 'r') as f:
+            for line in f:
+                if line.startswith(('ATOM', 'HETATM')):
+                    res_name = line[17:20].strip()
+                    if res_name in water_names:
+                        # Track water residue
+                        res_num = line[22:26].strip()
+                        chain = line[21:22]
+                        water_residues.add(f"{chain}:{res_num}")
+                        atoms_removed += 1
+                        continue  # Skip this line
+                lines_to_keep.append(line)
+
+        with open(output_pdb, 'w') as f:
+            f.writelines(lines_to_keep)
+
+        result["success"] = True
+        result["waters_removed"] = len(water_residues)
+        result["atoms_removed"] = atoms_removed
+
+        if len(water_residues) > 0:
+            logger.info(f"Stripped {len(water_residues)} crystal water(s) ({atoms_removed} atoms) from PDB")
+
+    except Exception as e:
+        logger.error(f"Failed to strip crystal waters: {e}")
+        result["errors"] = [str(e)]
+
+    return result
+
+
 def _add_pdb_info(
     parm7_path: Path,
     pdb_path: Path,
@@ -805,13 +866,16 @@ def build_amber_system(
             logger.warning(f"Ligand validation warnings: {ligand_errors}")
     
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
-        out_dir = create_unique_subdir(base_dir, "topology")
+    # Always prefer session directory to ensure files go to the correct location
+    # (LLM may pass incorrect output_dir values)
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        out_dir = create_unique_subdir(output_dir, "topology")
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
     
     # Output files
@@ -860,26 +924,29 @@ def build_amber_system(
         script_lines.append("source leaprc.gaff2")
         
         if box_dimensions:
+            # Explicit solvent: check for crystal waters (shouldn't be here if solvate_structure was used)
+            detected_water = detect_water_type(pdb_path)
+            if detected_water["has_waters"]:
+                # Log but keep waters - they were likely added by solvate_structure
+                logger.info(f"Explicit solvent system with {detected_water['water_count']} waters")
             script_lines.append(f"source {water_ff}")
             if is_membrane:
                 script_lines.append("source leaprc.lipid21")
             script_lines.append(f"loadamberparams {ion_params}")
         else:
-            # Implicit solvent: check if input PDB has crystallographic waters
-            # These need water force field for tleap to process them
+            # Implicit solvent: crystal waters must be removed
+            # GB models don't support discrete water molecules
             detected_water = detect_water_type(pdb_path)
             if detected_water["has_waters"]:
-                logger.warning(
-                    f"Input PDB contains {detected_water['water_count']} crystal waters but "
-                    f"building implicit solvent system. Loading tip3p for water parameters. "
-                    f"Consider using prepare_complex to remove crystal waters first."
+                logger.info(
+                    f"Removing {detected_water['water_count']} crystal waters for implicit solvent system"
                 )
-                result["warnings"].append(
-                    f"Crystal waters detected in implicit solvent system. "
-                    f"Loaded tip3p parameters for {detected_water['water_count']} waters. "
-                    f"Tip: Use prepare_complex to remove crystal waters for cleaner setup."
-                )
-                script_lines.append("source leaprc.water.tip3p  # For crystal waters")
+                strip_result = strip_crystal_waters(pdb_path, pdb_path)
+                if strip_result["success"] and strip_result["waters_removed"] > 0:
+                    result["warnings"].append(
+                        f"Removed {strip_result['waters_removed']} crystal water(s) for implicit solvent. "
+                        f"GB models don't support discrete water molecules."
+                    )
 
         script_lines.append("")
         
