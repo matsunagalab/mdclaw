@@ -68,6 +68,67 @@ ruff check src/mdzen/ --fix # Auto-fix format issues
 pytest tests/                     # Run tests
 ```
 
+### ADK Eval: Reliability Evaluation Harness
+
+The project includes an ADK-based evaluation harness for measuring model reliability across the Step 1-4 workflow.
+
+**Files:**
+- `tests/adk_eval/mdzen_step14_1ake/eval_reliability.py` — Multi-run reliability harness (subprocess-isolated)
+- `tests/adk_eval/mdzen_step14_1ake/test_config.json` — ADK eval criteria (`IN_ORDER` tool trajectory, threshold 0.8)
+- `tests/adk_eval/mdzen_step14_1ake/step14_1ake.evalset.json` — 5-turn fixed scenario (1AKE, chain A, no ligand, explicit water)
+- `tests/adk_eval/mdzen_step14_1ake/test_step14_1ake_artifacts.py` — pytest-based artifact validation
+
+**Running reliability eval:**
+```bash
+# N-run reliability eval (each run in isolated subprocess)
+PYTHONPATH="$(pwd):$(pwd)/src" \
+  python tests/adk_eval/mdzen_step14_1ake/eval_reliability.py --runs 5
+
+# With specific model (e.g. local LLM via ollama)
+PYTHONPATH="$(pwd):$(pwd)/src" \
+  python tests/adk_eval/mdzen_step14_1ake/eval_reliability.py \
+  --runs 3 --model ollama_chat:qwen3:32b
+
+# With deterministic fallback allowed
+PYTHONPATH="$(pwd):$(pwd)/src" \
+  python tests/adk_eval/mdzen_step14_1ake/eval_reliability.py \
+  --runs 2 --allow-fallback
+
+# Results saved to outputs/reliability_eval/summary.json
+```
+
+**Running single ADK eval via pytest:**
+```bash
+# Single run (default)
+PYTHONPATH="$(pwd):$(pwd)/src" pytest tests/adk_eval/mdzen_step14_1ake/test_step14_1ake_artifacts.py -v
+
+# Multiple runs via env var
+MDZEN_EVAL_NUM_RUNS=3 PYTHONPATH="$(pwd):$(pwd)/src" \
+  pytest tests/adk_eval/mdzen_step14_1ake/test_step14_1ake_artifacts.py -v
+```
+
+**Output format** (console summary table):
+```
+=== MDZen Reliability Eval: ollama_chat:qwen3:32b (5 runs) ===
+
+Turn                        | Pass | Fail | Score(avg)
+turn1_acquire_structure     |    5 |    0 |       1.00
+turn2_select_prepare_ask    |    3 |    2 |       0.60
+...
+
+Tool trajectory avg score: 0.74 (threshold: 0.80) -> FAILED
+Artifact presence:
+  structure_file: 5/5 runs (100%)
+  merged_pdb: 3/5 runs (60%)
+  solvated_pdb: 1/5 runs (20%)
+```
+
+**Key design decisions:**
+- Each run executes in an isolated subprocess to avoid MCP stdio cleanup errors between runs
+- Empty `EvalConfig(criteria={})` is passed to `evaluate_eval_set` to prevent `AssertionError`; scoring is done post-hoc
+- `IN_ORDER` match type tolerates extra tool calls (e.g. `read_workflow_state`) between expected tools
+- Artifact existence is checked from `workflow_state.json` independently of ADK's tool trajectory scoring
+
 ## Architecture
 
 ### 3-Phase Workflow

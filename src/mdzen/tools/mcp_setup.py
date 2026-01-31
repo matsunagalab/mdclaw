@@ -184,7 +184,6 @@ def get_step_tools(step: str) -> list[McpToolset]:
 WORKFLOW_V2_TOOL_FILTERS: dict[str, dict[str, list[str]]] = {
     "acquire_structure": {
         "research": [
-            "search_structures",
             "get_structure_info",
             "download_structure",
             "get_alphafold_structure",
@@ -202,7 +201,6 @@ WORKFLOW_V2_TOOL_FILTERS: dict[str, dict[str, list[str]]] = {
             "inspect_molecules",
         ],
         "structure": [
-            "prepare_complex",
             "split_molecules",
             "merge_structures",
         ],

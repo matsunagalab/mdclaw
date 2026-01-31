@@ -97,8 +97,6 @@ async def test_step14_1ake_adk_eval_and_artifacts(tmp_path: Path):
     - If baseline missing or MDZEN_RECORD_BASELINE=1, write baseline.
     """
     # Keep this test model-agnostic: user can pin qwen via env before running pytest.
-    os.environ.setdefault("MDZEN_USE_SCRATCHPAD", "true")
-    os.environ.setdefault("MDZEN_USE_SIMPLE_PROMPT", "true")
     # Strict by default: fallback must NOT be used for a meaningful LLM test.
     os.environ.setdefault("MDZEN_EVAL_ALLOW_FALLBACK", "0")
 
@@ -122,11 +120,12 @@ async def test_step14_1ake_adk_eval_and_artifacts(tmp_path: Path):
             eval_config=eval_config,
             initial_session={},
         )
+        num_runs = int(os.environ.get("MDZEN_EVAL_NUM_RUNS", "1"))
         await AgentEvaluator.evaluate_eval_set(
             agent_module="tests.adk_eval.mdzen_step14_1ake",
             eval_set=eval_set,
             eval_config=eval_config,
-            num_runs=1,
+            num_runs=num_runs,
             print_detailed_results=False,
         )
     except ModuleNotFoundError:
@@ -177,4 +176,43 @@ async def test_step14_1ake_adk_eval_and_artifacts(tmp_path: Path):
         else:
             assert artifacts[key]["size"] == expected[key]["size"], f"Size mismatch for {key}"
             assert artifacts[key]["sha256"] == expected[key]["sha256"], f"Hash mismatch for {key}"
+
+
+def test_tool_trace_order():
+    """Verify key tools were called in the correct order during Step 1-4."""
+    job_dir = Path("outputs") / "adk_eval" / "mdzen_step14_1ake" / "run"
+    wf_path = job_dir / "workflow_state.json"
+    if not wf_path.exists():
+        pytest.skip("workflow_state.json not found; run the eval first")
+
+    wf = json.loads(wf_path.read_text(encoding="utf-8"))
+
+    # Verify completed_steps contains all 4 steps
+    completed = wf.get("completed_steps", [])
+    for step in ["acquire_structure", "select_prepare", "structure_decisions", "solvate_or_membrane"]:
+        assert step in completed, f"Step '{step}' not in completed_steps: {completed}"
+
+    # Verify tool trace order (key tools must appear in this sequence)
+    tool_trace = wf.get("_tool_trace", [])
+    if not tool_trace:
+        pytest.skip("_tool_trace not recorded; agent may not support tracing yet")
+
+    key_tools = ["download_structure", "inspect_molecules", "prepare_complex", "solvate_structure"]
+    # Extract first occurrence index of each key tool
+    indices = {}
+    for tool_name in key_tools:
+        for i, t in enumerate(tool_trace):
+            name = t if isinstance(t, str) else t.get("name", "")
+            if name == tool_name:
+                indices[tool_name] = i
+                break
+
+    for tool_name in key_tools:
+        assert tool_name in indices, f"Key tool '{tool_name}' not found in _tool_trace"
+
+    # Verify ordering
+    for a, b in zip(key_tools, key_tools[1:]):
+        assert indices[a] < indices[b], (
+            f"Tool order violation: '{a}' (idx={indices[a]}) should come before '{b}' (idx={indices[b]})"
+        )
 

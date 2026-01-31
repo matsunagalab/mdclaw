@@ -371,9 +371,25 @@ class WorkflowDriverAgent(BaseAgent):
                 sub_ctx = ctx.model_copy()
                 sub_ctx.user_content = types.Content(role="user", parts=[types.Part(text=attempt_text)])
                 async for event in step_agent.run_async(sub_ctx):
+                    # Collect tool calls for _tool_trace
+                    if event.content and event.content.parts:
+                        for part in event.content.parts:
+                            fc = getattr(part, "function_call", None)
+                            if fc:
+                                tool_name = getattr(fc, "name", None)
+                                if tool_name:
+                                    trace = wf.get("_tool_trace")
+                                    if not isinstance(trace, list):
+                                        trace = []
+                                    trace.append({"name": tool_name, "step": current_step})
+                                    wf["_tool_trace"] = trace
                     yield event
 
+                saved_trace = wf.get("_tool_trace", [])
                 wf = _normalize_workflow_state(session_dir, _load_wf(session_dir))
+                # Merge tool trace (disk version may be stale)
+                disk_trace = wf.get("_tool_trace", [])
+                wf["_tool_trace"] = disk_trace if len(disk_trace) >= len(saved_trace) else saved_trace
                 missing = _missing_required_outputs(current_step, wf)
                 _save_wf(session_dir, wf)
                 ctx.session.state["workflow_state"] = json.dumps(wf, ensure_ascii=False, default=str)
@@ -471,8 +487,11 @@ class WorkflowDriverAgent(BaseAgent):
             _save_wf(session_dir, wf)
             ctx.session.state["workflow_state"] = json.dumps(wf, ensure_ascii=False, default=str)
 
-        # Refresh state after the step.
+        # Refresh state after the step (preserve tool trace across reload).
+        saved_trace = wf.get("_tool_trace", [])
         wf = _normalize_workflow_state(session_dir, _load_wf(session_dir))
+        disk_trace = wf.get("_tool_trace", [])
+        wf["_tool_trace"] = disk_trace if len(disk_trace) >= len(saved_trace) else saved_trace
         wf["_eval_turn_idx"] = turn_idx + 1
         _save_wf(session_dir, wf)
         ctx.session.state["workflow_state"] = json.dumps(wf, ensure_ascii=False, default=str)

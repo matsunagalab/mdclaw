@@ -379,11 +379,18 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
                     wf["current_step"] = nxt
                 changed = True
 
-        # If LLM forgot to persist merged_pdb after prepare_complex, infer it.
-        if current == "select_prepare" and not wf.get("merged_pdb"):
-            merged = _newest_match(["**/merged.pdb", "**/merged*.pdb"])
-            if merged:
-                wf["merged_pdb"] = merged
+        # If the model forgot to persist select_prepare outputs, infer selected_structure_file.
+        # In the updated workflow, select_prepare should produce a protein-only file for checks.
+        if current == "select_prepare" and not wf.get("selected_structure_file"):
+            selected = _newest_match(
+                [
+                    "**/selected_structure*.pdb",
+                    "**/split/**/protein_*.pdb",
+                    "**/split_*/**/protein_*.pdb",
+                ]
+            )
+            if selected:
+                wf["selected_structure_file"] = selected
                 if "select_prepare" not in completed:
                     completed.append("select_prepare")
                 wf["completed_steps"] = completed
@@ -671,10 +678,16 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
                         wf["current_step"] = nxt
                     changed = True
 
-            if current == "select_prepare" and not wf.get("merged_pdb"):
-                merged = _newest_match(["**/merged.pdb", "**/merged*.pdb"])
-                if merged:
-                    wf["merged_pdb"] = merged
+            if current == "select_prepare" and not wf.get("selected_structure_file"):
+                selected = _newest_match(
+                    [
+                        "**/selected_structure*.pdb",
+                        "**/split/**/protein_*.pdb",
+                        "**/split_*/**/protein_*.pdb",
+                    ]
+                )
+                if selected:
+                    wf["selected_structure_file"] = selected
                     if "select_prepare" not in completed:
                         completed.append("select_prepare")
                     wf["completed_steps"] = completed
@@ -754,6 +767,146 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
             current_step = wf_state.get("current_step") or "acquire_structure"
             awaiting = bool(wf_state.get("awaiting_user_input"))
             questions = wf_state.get("pending_questions") or []
+
+            # -----------------------------------------------------------------
+            # Guard: clear stale acquire_structure questions if a structure file
+            # already exists (common when small models incorrectly re-ask).
+            # -----------------------------------------------------------------
+            if current_step == "acquire_structure" and awaiting:
+                # If the model is asking again despite the initial request containing a PDB ID,
+                # re-inject it as a minimal hint on the next turn.
+                # This helps small models that ignored the initial instruction.
+                try:
+                    import re
+
+                    m = re.search(r"\b([0-9][A-Za-z0-9]{3})\b", str(initial_request or ""))
+                    injected_pdb = m.group(1).upper() if m else ""
+                except Exception:
+                    injected_pdb = ""
+
+                struct = wf_state.get("structure_file") or ""
+                if not struct:
+                    struct = _newest_match(["*.pdb", "*.cif", "*.ent", "**/AF-*.pdb", "**/AF-*.cif"])
+                if struct:
+                    wf_state["structure_file"] = struct
+                    wf_state["awaiting_user_input"] = False
+                    wf_state["pending_questions"] = []
+                    completed = list(wf_state.get("completed_steps") or [])
+                    if "acquire_structure" not in completed:
+                        completed.append("acquire_structure")
+                    wf_state["completed_steps"] = completed
+                    nxt = get_next_workflow_v2_step("acquire_structure")
+                    if nxt:
+                        wf_state["current_step"] = nxt
+                    wf_state["last_step_summary"] = "Auto-recovered structure_file; skipping stale acquire_structure questions"
+                    try:
+                        (Path(session_dir) / "workflow_state.json").write_text(
+                            json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+                    await update_session_state(
+                        session_service,
+                        APP_NAME,
+                        DEFAULT_USER,
+                        session_id,
+                        {
+                            "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                            "workflow_current_step": str(wf_state.get("current_step") or ""),
+                        },
+                    )
+                    # Restart loop with the recovered state
+                    continue
+
+                # No structure file yet, but we can still help by re-running acquire_structure
+                # with an explicit minimal message containing the PDB ID.
+                if injected_pdb:
+                    wf_state["awaiting_user_input"] = False
+                    # Keep pending_questions (for UI), but do not block progression on them.
+                    wf_state["last_step_summary"] = f"Re-injecting PDB ID for acquire_structure: {injected_pdb}"
+                    try:
+                        (Path(session_dir) / "workflow_state.json").write_text(
+                            json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                            encoding="utf-8",
+                        )
+                    except Exception:
+                        pass
+                    await update_session_state(
+                        session_service,
+                        APP_NAME,
+                        DEFAULT_USER,
+                        session_id,
+                        {
+                            "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                            "workflow_current_step": "acquire_structure",
+                        },
+                    )
+                    # Run the step again with an explicit hint.
+                    next_message_text = f"PDB ID: {injected_pdb}"
+                    with suppress_adk_unknown_agent_warnings():
+                        step_agent, step_toolsets = create_workflow_step_agent("acquire_structure")
+                        all_toolsets.extend(step_toolsets)
+                        runner = Runner(
+                            app_name=APP_NAME,
+                            agent=step_agent,
+                            session_service=session_service,
+                        )
+                        await run_agent_with_events(
+                            runner=runner,
+                            session_id=session_id,
+                            message=create_message(next_message_text),
+                            console=console,
+                            show_progress=True,
+                            known_agents={step_agent.name},
+                        )
+                        await _recover_state_after_step()
+                    continue
+
+            # -----------------------------------------------------------------
+            # Guard: clear stale select_prepare questions after user already answered.
+            #
+            # Some models may re-trigger awaiting_user_input via update_workflow_state()
+            # even after chain/ligand selections are present. When that happens, the CLI
+            # would keep re-asking. If selections exist, treat those questions as stale
+            # and continue with select_prepare execution instead of prompting again.
+            # -----------------------------------------------------------------
+            if current_step == "select_prepare" and awaiting:
+                answered_select = bool(wf_state.get("selection_chains")) and bool(wf_state.get("include_types"))
+                if answered_select and questions:
+                    blob = " ".join(str(q).lower() for q in questions if str(q).strip())
+                    looks_like_select_q = any(
+                        k in blob
+                        for k in [
+                            "which protein chains",
+                            "protein chains to simulate",
+                            "ligands detected",
+                            "include ligands",
+                        ]
+                    )
+                    if looks_like_select_q:
+                        wf_state["awaiting_user_input"] = False
+                        wf_state["pending_questions"] = []
+                        wf_state["last_step_summary"] = "Cleared stale select_prepare questions (already answered)"
+                        try:
+                            (Path(session_dir) / "workflow_state.json").write_text(
+                                json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                                encoding="utf-8",
+                            )
+                        except Exception:
+                            pass
+                        await update_session_state(
+                            session_service,
+                            APP_NAME,
+                            DEFAULT_USER,
+                            session_id,
+                            {
+                                "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                                "workflow_current_step": "select_prepare",
+                            },
+                        )
+                        awaiting = False
+                        questions = []
 
             # -----------------------------------------------------------------
             # Hard guard: ensure chain/ligand selection is not skipped.
@@ -953,6 +1106,7 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
                 if current_step == "select_prepare":
                     detected_chains = wf_state.get("detected_protein_chains") or []
                     detected_ligands = wf_state.get("detected_ligands") or []
+                    pending_qs = wf_state.get("pending_questions") or []
 
                     # If the LLM produced the questions (without our deterministic pre-detection),
                     # `detected_*` may be missing. Re-detect from the actual structure file so that
@@ -998,34 +1152,160 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
                         except Exception:
                             pass
 
-                    # Chains
-                    selected_chains: list[str] = []
+                    import re
+
                     text = user_input.strip()
-                    if any(tok in text.lower() for tok in ["all", "both", "全部"]):
-                        selected_chains = list(detected_chains)
+                    low = text.lower()
+
+                    # Determine which questions must be answered on this turn.
+                    # We only enforce what we asked (avoids blocking when a question wasn't relevant).
+                    pending_blob = " ".join(str(q).lower() for q in pending_qs if str(q).strip())
+                    require_chain = any(
+                        k in pending_blob
+                        for k in [
+                            "which protein chains",
+                            "protein chains to simulate",
+                            "which protein chains to simulate",
+                        ]
+                    )
+                    require_ligand = any(
+                        k in pending_blob
+                        for k in [
+                            "ligands detected",
+                            "include ligands",
+                            "include ligands?",
+                        ]
+                    )
+
+                    def _looks_like_model_question(t: str) -> bool:
+                        return any(
+                            k in t
+                            for k in [
+                                "which model",
+                                "model?",
+                                "who are you",
+                                "what model",
+                                "あなたは誰",
+                                "どのモデル",
+                                "モデル",
+                            ]
+                        )
+
+                    def _ensure_guidance_questions(qs: list[str]) -> list[str]:
+                        qs = [str(q) for q in (qs or []) if str(q).strip()]
+                        guidance = "Reply examples: `A, no` / `A, yes` / `all, no`"
+                        if not any("reply example" in q.lower() for q in qs):
+                            qs.append(guidance)
+                        return qs
+
+                    async def _reask_without_progress(reason: str) -> None:
+                        wf_state["awaiting_user_input"] = True
+                        wf_state["pending_questions"] = _ensure_guidance_questions(pending_qs or questions or [])
+                        wf_state["last_step_summary"] = reason
+                        (Path(session_dir) / "workflow_state.json").write_text(
+                            json.dumps(wf_state, indent=2, ensure_ascii=False, default=str),
+                            encoding="utf-8",
+                        )
+                        await update_session_state(
+                            session_service,
+                            APP_NAME,
+                            DEFAULT_USER,
+                            session_id,
+                            {
+                                "workflow_state": json.dumps(wf_state, ensure_ascii=False, default=str),
+                                "workflow_current_step": "select_prepare",
+                            },
+                        )
+
+                    # Meta question handling: answer briefly, then guide back to required inputs.
+                    if _looks_like_model_question(low):
+                        try:
+                            from mdzen.config import get_litellm_model
+
+                            console.print(
+                                "[dim]Models (MDZen): "
+                                f"acquire_structure={get_litellm_model('clarification')}, "
+                                f"select_prepare={get_litellm_model('setup')}[/dim]"
+                            )
+                        except Exception:
+                            console.print("[dim]Model info unavailable in this environment.[/dim]")
+
+                        console.print(
+                            "[yellow]To continue, please answer the pending questions (chain + ligand).[/yellow]"
+                        )
+                        await _reask_without_progress("Meta question received; re-asking for chain/ligand selection")
+                        continue
+
+                    # Chains (only accept defaults when chain question wasn't required)
+                    selected_chains: list[str] = []
+                    chain_answered = False
+                    if any(tok in low for tok in ["all", "both", "全部"]):
+                        if detected_chains:
+                            selected_chains = list(detected_chains)
+                            chain_answered = True
                     else:
                         # Extract single-letter chain IDs (A,B,...) that appear in input
-                        import re
-
                         letters = re.findall(r"\b([A-Za-z0-9])\b", text)
                         if letters:
-                            # Preserve order of detected_chains if possible
                             wanted = {c.upper() for c in letters}
                             selected_chains = [c for c in detected_chains if c.upper() in wanted]
+                            chain_answered = bool(selected_chains)
 
+                    if not selected_chains and detected_chains and not require_chain:
+                        selected_chains = [detected_chains[0]]
+
+                    # Ligand include/exclude (only accept defaults when ligand question wasn't required)
+                    include_ligands: bool | None = None
+                    ligand_answered = False
+
+                    yes_pat = re.compile(r"\b(yes|y|include|keep|with|holo)\b", re.IGNORECASE)
+                    no_pat = re.compile(r"\b(no|n|exclude|remove|without|apo)\b", re.IGNORECASE)
+                    yes_jp = any(tok in text for tok in ["はい", "含め", "入れる", "保持", "あり"])
+                    no_jp = any(tok in text for tok in ["いいえ", "除外", "外す", "なし", "無し"])
+
+                    said_yes = bool(yes_pat.search(text)) or yes_jp
+                    said_no = bool(no_pat.search(text)) or no_jp
+                    if said_yes and said_no:
+                        # Ambiguous answer -> ask again
+                        console.print(
+                            "[yellow]I couldn't tell whether you want ligands included or excluded.[/yellow]"
+                        )
+                        await _reask_without_progress("Ambiguous ligand answer; re-asking")
+                        continue
+
+                    if require_ligand:
+                        if said_yes:
+                            include_ligands = True
+                            ligand_answered = True
+                        elif said_no:
+                            include_ligands = False
+                            ligand_answered = True
+                    else:
+                        # If we did not require a ligand answer, fall back to detected ligands.
+                        include_ligands = bool(detected_ligands)
+
+                    # Enforce that required questions were actually answered.
+                    if require_chain and not chain_answered:
+                        console.print(
+                            "[yellow]Please specify which protein chains to simulate (e.g., A / B / all).[/yellow]"
+                        )
+                        await _reask_without_progress("Missing chain selection; re-asking")
+                        continue
+                    if require_ligand and not ligand_answered:
+                        console.print(
+                            "[yellow]Please answer whether to include ligands (yes/no).[/yellow]"
+                        )
+                        await _reask_without_progress("Missing ligand selection; re-asking")
+                        continue
+
+                    # Safety fallback (should be rare): if we still have no chains, default when possible.
                     if not selected_chains and detected_chains:
                         selected_chains = [detected_chains[0]]
 
-                    # Ligand include/exclude
-                    include_ligands = True
-                    low = text.lower()
-                    if detected_ligands:
-                        if any(tok in low for tok in ["no", "exclude", "remove", "なし", "除外", "外す"]):
-                            include_ligands = False
-                    else:
-                        # Even if we couldn't detect ligands, treat an explicit "no ligands" answer as exclusion.
-                        if any(tok in low for tok in ["no ligand", "no ligands", "no", "なし", "除外", "外す"]):
-                            include_ligands = False
+                    # If ligands were detected but user didn't answer (shouldn't happen due to checks),
+                    # default to including ligands.
+                    if include_ligands is None:
+                        include_ligands = True
 
                     include_types = ["protein", "ion"] + (["ligand"] if include_ligands else [])
 

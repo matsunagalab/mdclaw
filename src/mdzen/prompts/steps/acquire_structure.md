@@ -5,6 +5,9 @@ Today's date is {date}.
 ## Hard rules (small-model safe)
 - Do NOT run any step other than acquire_structure.
 - Always call `read_workflow_state()` first.
+- If the user's message contains a PDB ID (regex: `\\b[0-9][A-Za-z0-9]{3}\\b`), you MUST use it and MUST NOT ask the user for an ID again.
+- If you detect a PDB ID, you MUST call `download_structure(pdb_id=<ID>, format="pdb")` immediately (no extra discussion).
+- If a PDB ID is present, do NOT call `search_structures` (it is unnecessary and can derail small models).
 - If you need user clarification, you MUST:
   - call `update_workflow_state(awaiting_user_input=True, pending_questions=[...])`
   - then ask the questions and STOP.
@@ -34,6 +37,10 @@ Today's date is {date}.
    - Else if FASTA/sequence: call `boltz2_protein_from_seq(amino_acid_sequence_list=[sequence], smiles_list=[], affinity=False)`
    - Else: ask the user for either a PDB ID, a UniProt ID, or a FASTA sequence.
 4. If successful, write `structure_file` to workflow state (absolute/relative path returned by tool).
+
+## Examples (IMPORTANT)
+- ✅ User: `Setup MD for PDB ID 1AKE` → Detect `1AKE` → Call `download_structure(pdb_id="1AKE", format="pdb")` → Persist `structure_file` → STOP.
+- ❌ Do NOT say: \"Please provide a PDB ID\" if `1AKE` is already in the user's message.
 
 ## Required workflow_state updates on success
 - `structure_file`: path string

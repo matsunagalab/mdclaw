@@ -22,8 +22,8 @@ Decide and apply structure preparation details (disulfide, termini, protonation)
 
 ## What to do
 1. Call `read_workflow_state()`.
-2. Require `merged_pdb`. If missing, ask the user to run step (2) first.
-3. Call `analyze_structure_details(structure_file=merged_pdb, ph=7.4)` (or user's pH if present).
+2. Require `selected_structure_file`. If missing, ask the user to run step (2) first.
+3. Call `analyze_structure_details(structure_file=selected_structure_file, ph=7.4)` (or user's pH if present).
 4. Determine proposed defaults:
    - Disulfide: form bonds for high-confidence candidates (distance <2.5Å). Otherwise ask.
    - Termini: default `cap_termini=False` unless user explicitly wants caps.
@@ -37,8 +37,12 @@ Decide and apply structure preparation details (disulfide, termini, protonation)
    - `disulfide_bonds`: list of {chain1,resnum1,chain2,resnum2,form_bond}
    - `histidine_states`: list of {chain,resnum,state}
    - `ligands`: optional list (only if user wants to exclude all ligands or specify SMILES/charge)
-8. Call `prepare_complex(structure_file=original_structure_file OR merged_pdb, ph=..., cap_termini=..., structure_analysis=...)` to regenerate.
-   - Use `structure_file` from state if present; fallback to current `merged_pdb`.
+8. Call `prepare_complex(...)` to apply the decisions and generate `merged_pdb`.
+   - Use `structure_file` from state (the original downloaded structure) as the input.
+   - Pass the user's chain/ligand choices:
+     - `select_chains=selection_chains`
+     - `include_types=include_types` (e.g., `["protein","ion"]` if user said no ligand)
+   - Pass `ph` and `cap_termini`, plus `structure_analysis` derived from the analysis + user choices.
 9. Update workflow state with:
    - `structure_analysis`
    - `cap_termini`

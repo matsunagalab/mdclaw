@@ -134,10 +134,10 @@ WORKFLOW_STEP_CONFIG: dict[str, WorkflowV2StepConfig] = {
         "estimate": "10-60 seconds (Boltz: minutes)",
     },
     "select_prepare": {
-        "tool": "prepare_complex",
+        "tool": "split_molecules",
         "inputs": "Requires: structure_file from acquire_structure",
         "required_state": ["structure_file"],
-        "outputs": ["merged_pdb"],
+        "outputs": ["selected_structure_file"],
         "servers": ["research", "structure"],
         "allowed_tools": [
             # research
@@ -145,14 +145,13 @@ WORKFLOW_STEP_CONFIG: dict[str, WorkflowV2StepConfig] = {
             # structure
             "split_molecules",
             "merge_structures",
-            "prepare_complex",
         ],
-        "estimate": "1-5 minutes",
+        "estimate": "10-60 seconds",
     },
     "structure_decisions": {
         "tool": "multi",
-        "inputs": "Requires: merged_pdb from select_prepare",
-        "required_state": ["merged_pdb"],
+        "inputs": "Requires: selected_structure_file from select_prepare",
+        "required_state": ["selected_structure_file"],
         "outputs": ["structure_analysis", "merged_pdb"],
         "servers": ["research", "structure"],
         "allowed_tools": [
