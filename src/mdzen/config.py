@@ -89,15 +89,6 @@ class Settings(BaseSettings):
     # Logging settings
     log_level: str = "WARNING"  # DEBUG, INFO, WARNING, ERROR
 
-    # Scratchpad mode for smaller models (qwen2.5:14b, etc.)
-    # When enabled, uses markdown scratchpad file for explicit state tracking
-    use_scratchpad: bool = False
-
-    # Simple prompt mode for clarification agent
-    # When enabled, uses simplified ~200 line prompt instead of full ~800+ line prompt
-    # This reduces excessive reasoning and improves PDB ID detection
-    use_simple_prompt: bool = False
-
     # Message history limit
     max_message_history: int = 6
 

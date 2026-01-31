@@ -11,8 +11,8 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.mcp_tool import McpToolset
 
-from mdzen.config import get_litellm_model, settings
-from mdzen.prompts import get_clarification_instruction, get_clarification_instruction_simple
+from mdzen.config import get_litellm_model
+from mdzen.prompts import get_clarification_instruction
 from mdzen.tools.mcp_setup import get_clarification_tools, get_clarification_tools_sse
 from mdzen.tools.custom_tools import generate_simulation_brief, get_session_dir, save_context
 
@@ -53,12 +53,7 @@ def create_clarification_agent(
     # Combine all tools
     all_tools = mcp_tools + [get_session_dir_tool, generate_brief_tool, save_context_tool]
 
-    # Choose prompt based on settings
-    instruction = (
-        get_clarification_instruction_simple()
-        if settings.use_simple_prompt
-        else get_clarification_instruction()
-    )
+    instruction = get_clarification_instruction()
 
     agent = LlmAgent(
         model=LiteLlm(model=get_litellm_model("clarification")),

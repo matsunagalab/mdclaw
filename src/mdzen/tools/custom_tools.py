@@ -10,12 +10,6 @@ from google.adk.tools import ToolContext
 
 from mdzen.schemas import SimulationBrief, StructureAnalysis
 from mdzen.utils import safe_dict, safe_list
-from mdzen.workflow import (
-    STEP_CONFIG,
-    get_current_step_info,
-    get_steps_for_solvation_type,
-    validate_step_prerequisites,
-)
 
 
 def _normalize_null(value):
@@ -290,11 +284,10 @@ def generate_simulation_brief(
     except Exception:
         pass  # Ignore errors if session not set
 
-    # Initialize scratchpad if scratchpad mode is enabled
+    # Initialize scratchpad for Phase 2 state tracking
     scratchpad_path = None
     try:
-        from mdzen.config import settings
-        if settings.use_scratchpad and tool_context is not None:
+        if tool_context is not None:
             session_dir = tool_context.state.get("session_dir", "")
             if session_dir:
                 scratchpad_path = initialize_scratchpad(brief_dict, session_dir)
@@ -475,82 +468,6 @@ def _format_simulation_brief_summary(brief: SimulationBrief) -> str:
 # =============================================================================
 # PHASE 2: SETUP TOOLS
 # =============================================================================
-
-
-def get_workflow_status(
-    completed_steps: list[str],
-    outputs: dict,
-    solvation_type: str = "explicit",
-) -> dict:
-    """Get current workflow progress and validate prerequisites.
-
-    Call this before each step to check progress and ensure prerequisites are met.
-
-    Args:
-        completed_steps: List of completed step names
-        outputs: Dictionary of output file paths from previous steps
-        solvation_type: "explicit" (default) or "implicit" - determines workflow steps
-
-    Returns:
-        Dictionary with workflow status including:
-        - completed_steps: List of completed steps
-        - current_step: Name of current step to execute
-        - next_tool: Name of MCP tool to call
-        - step_index: Current step number (1-based)
-        - total_steps: Total number of steps (3 for implicit, 4 for explicit)
-        - prerequisites_met: Whether prerequisites are satisfied
-        - prerequisite_errors: List of missing prerequisites
-        - is_complete: Whether all steps are done
-        - progress: Progress indicator string (e.g., "[2/4]")
-        - remaining_steps: List of steps not yet completed
-        - estimated_time: Time estimate for current step
-        - allowed_tools: List of tool names allowed for current step
-        - solvation_type: "explicit" or "implicit"
-    """
-    step_info = get_current_step_info(completed_steps, solvation_type)
-    current_step = step_info["current_step"]
-
-    # Get steps for this solvation type
-    workflow_steps = get_steps_for_solvation_type(solvation_type)
-
-    # Calculate progress metrics
-    unique_completed = list(set(completed_steps))
-    progress_count = len(unique_completed)
-    remaining = [s for s in workflow_steps if s not in unique_completed]
-
-    result = {
-        # Core status
-        "completed_steps": unique_completed,
-        "current_step": current_step,
-        "next_tool": step_info["next_tool"],
-        "step_index": step_info["step_index"],
-        "total_steps": step_info["total_steps"],
-        "is_complete": step_info["is_complete"],
-        "available_outputs": outputs,
-        "solvation_type": solvation_type,
-        # Progress visualization
-        "progress": f"[{progress_count}/{len(workflow_steps)}]",
-        "remaining_steps": remaining,
-        "estimated_time": STEP_CONFIG.get(current_step, {}).get("estimate", "unknown") if current_step else "N/A",
-        "allowed_tools": STEP_CONFIG.get(current_step, {}).get("allowed_tools", []) if current_step else [],
-    }
-
-    # Validate prerequisites if not complete
-    if not step_info["is_complete"] and current_step:
-        is_valid, errors = validate_step_prerequisites(
-            current_step,
-            outputs,
-            solvation_type,
-        )
-        result["prerequisites_met"] = is_valid
-        result["prerequisite_errors"] = errors
-        result["input_requirements"] = step_info["input_requirements"]
-    else:
-        result["prerequisites_met"] = True
-        result["prerequisite_errors"] = []
-        result["input_requirements"] = ""
-
-    return result
 
 
 # =============================================================================
@@ -1010,77 +927,6 @@ def run_validation(
 # =============================================================================
 # STATE WRAPPER TOOLS (extract from ToolContext.state)
 # =============================================================================
-
-
-def get_workflow_status_tool(tool_context: ToolContext) -> dict:
-    """Get current workflow progress and validate prerequisites. Call this before each step.
-
-    Returns:
-        dict: Current step info, completed steps, validation status, session_dir, and simulation_brief
-    """
-    completed_steps = safe_list(tool_context.state.get("completed_steps"))
-    outputs = safe_dict(tool_context.state.get("outputs"))
-    session_dir = str(tool_context.state.get("session_dir", ""))
-    simulation_brief = safe_dict(tool_context.state.get("simulation_brief"))
-
-    # Get solvation_type from simulation_brief (default: explicit)
-    solvation_type = simulation_brief.get("solvation_type", "explicit")
-
-    result = get_workflow_status(completed_steps, outputs, solvation_type)
-
-    # Add session_dir to available_outputs for agent access
-    if session_dir:
-        result["available_outputs"]["session_dir"] = session_dir
-
-    # Add simulation_brief for agent to access user's choices (include_types, etc.)
-    if simulation_brief:
-        result["simulation_brief"] = simulation_brief
-
-    # CRITICAL: Warn if required outputs are missing for the current step
-    # This helps catch bugs where previous step outputs weren't passed correctly
-    current_step = result.get("current_step")
-
-    # Solvate step requires merged_pdb from prepare_complex (EXPLICIT SOLVENT ONLY)
-    if current_step == "solvate" and solvation_type == "explicit":
-        merged_pdb = outputs.get("merged_pdb")
-        if not merged_pdb:
-            result["critical_warning"] = (
-                "CRITICAL: merged_pdb is MISSING from outputs! "
-                "The prepare_complex step should have stored merged_pdb via mark_step_complete. "
-                "Without merged_pdb, you CANNOT proceed with solvation. "
-                "DO NOT use the original PDB file - it may contain components you want to exclude!"
-            )
-
-    # Build_topology step requirements depend on solvation type
-    if current_step == "build_topology":
-        if solvation_type == "implicit":
-            # Implicit solvent: needs merged_pdb (no solvate step)
-            merged_pdb = outputs.get("merged_pdb")
-            if not merged_pdb:
-                result["critical_warning"] = (
-                    "CRITICAL: merged_pdb is MISSING from outputs! "
-                    "For implicit solvent, build_topology uses merged_pdb directly. "
-                    "Ensure prepare_complex completed successfully with merged_pdb output."
-                )
-        else:
-            # Explicit solvent: needs box_dimensions from solvate
-            box_dims = outputs.get("box_dimensions")
-            if not box_dims:
-                result["critical_warning"] = (
-                    "CRITICAL: box_dimensions is MISSING from outputs! "
-                    "The solvate step should have stored box_dimensions via mark_step_complete. "
-                    "Without box_dimensions, build_amber_system will create an IMPLICIT solvent system. "
-                    "Check that mark_step_complete was called with box_dimensions after solvate_structure."
-                )
-            elif isinstance(box_dims, dict) and not all(
-                box_dims.get(k, 0) > 0 for k in ["box_a", "box_b", "box_c"]
-            ):
-                result["critical_warning"] = (
-                    f"CRITICAL: box_dimensions has invalid values: {box_dims}. "
-                    "Ensure the solvate step returned valid box dimensions."
-                )
-
-    return result
 
 
 def mark_step_complete(
@@ -1785,10 +1631,58 @@ def update_workflow_state(
 
     state = _load_workflow_v2_state(session_dir)
 
+    def _looks_like_select_prepare_questions(qs: list[str] | None) -> bool:
+        """Heuristic: does the question list look like select_prepare chain/ligand prompts?"""
+        if not qs:
+            return False
+        blob = " ".join(str(q).lower() for q in qs if str(q).strip())
+        return any(
+            k in blob
+            for k in [
+                "which protein chains",
+                "protein chains to simulate",
+                "ligands detected",
+                "include ligands",
+            ]
+        )
+
     # Apply updates
     if updates and isinstance(updates, dict):
         for k, v in updates.items():
             state[k] = v
+
+    # -------------------------------------------------------------------------
+    # Guard: prevent redundant chain/ligand re-asking in select_prepare.
+    #
+    # When users already answered chain/ligand selection, some models may still
+    # call update_workflow_state(awaiting_user_input=True, pending_questions=[...]).
+    # This forces the CLI back into question mode even though selections exist.
+    #
+    # If we already have BOTH:
+    # - selection_chains (non-empty)
+    # - include_types (non-empty)
+    #
+    # then we should not go back to awaiting_user_input for chain/ligand prompts.
+    # -------------------------------------------------------------------------
+    answered_select = bool(state.get("selection_chains")) and bool(state.get("include_types"))
+    is_select_prepare = str(state.get("current_step") or "") == "select_prepare"
+    wants_awaiting = bool(awaiting_user_input) or (pending_questions is not None)
+    if is_select_prepare and answered_select and wants_awaiting:
+        if bool(awaiting_user_input) or _looks_like_select_prepare_questions(pending_questions):
+            awaiting_user_input = False
+            pending_questions = []
+            if not last_step_summary:
+                last_step_summary = "Ignored redundant select_prepare questions (already answered)"
+
+    # Guard: prevent redundant re-asking in acquire_structure once structure_file exists.
+    # Small models sometimes set awaiting_user_input=True even after download_structure succeeded.
+    is_acquire = str(state.get("current_step") or "") == "acquire_structure"
+    has_structure = bool(state.get("structure_file"))
+    if is_acquire and has_structure and (bool(awaiting_user_input) or pending_questions is not None):
+        awaiting_user_input = False
+        pending_questions = []
+        if not last_step_summary:
+            last_step_summary = "Ignored redundant acquire_structure questions (structure_file already set)"
 
     # Update UI flags/questions
     state["awaiting_user_input"] = bool(awaiting_user_input)

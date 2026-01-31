@@ -83,7 +83,7 @@ The system follows a **3-phase workflow pattern** using Google ADK's SequentialA
 2. **Phase 2: Setup**
    - Pattern: **LlmAgent** with all MCP tools
    - Fixed workflow: prepare_complex → solvate → build_topology → run_simulation
-   - Tracks progress via `session.state["completed_steps"]`
+   - Tracks progress via scratchpad file (`scratchpad.md` in session directory)
    - Implementation: `src/mdzen/agents/setup_agent.py`
 
 3. **Phase 3: Validation**
@@ -132,13 +132,15 @@ mdzen/
 │   │   └── commands.py             # run, info commands
 │   ├── prompts/                    # Prompt templates (external files)
 │   │   ├── clarification.md        # Phase 1 instruction
-│   │   ├── setup.md                # Phase 2 instruction (full)
+│   │   ├── setup.md                # Phase 2 instruction (scratchpad mode)
 │   │   ├── validation.md           # Phase 3 instruction
-│   │   └── steps/                  # Step-specific prompts
-│   │       ├── prepare_complex.md
-│   │       ├── solvate.md
-│   │       ├── build_topology.md
-│   │       └── run_simulation.md
+│   │   └── steps/                  # Step-specific prompts (v2 workflow)
+│   │       ├── acquire_structure.md
+│   │       ├── select_prepare.md
+│   │       ├── structure_decisions.md
+│   │       ├── solvate_or_membrane.md
+│   │       ├── quick_md.md
+│   │       └── validation.md
 │   ├── state/
 │   │   └── session_manager.py      # SessionService setup
 │   ├── tools/
@@ -371,13 +373,15 @@ Prompts are stored as **external Markdown files** in `src/mdzen/prompts/`:
 ```
 prompts/
 ├── clarification.md   # Phase 1: Requirements gathering
-├── setup.md           # Phase 2: MD workflow execution (full)
+├── setup.md           # Phase 2: MD workflow execution (scratchpad mode)
 ├── validation.md      # Phase 3: QC and report generation
-└── steps/             # Step-specific prompts (Best Practice #3)
-    ├── prepare_complex.md
-    ├── solvate.md
-    ├── build_topology.md
-    └── run_simulation.md
+└── steps/             # Step-specific prompts (v2 workflow)
+    ├── acquire_structure.md
+    ├── select_prepare.md
+    ├── structure_decisions.md
+    ├── solvate_or_membrane.md
+    ├── quick_md.md
+    └── validation.md
 ```
 
 **Benefits of external prompt files:**

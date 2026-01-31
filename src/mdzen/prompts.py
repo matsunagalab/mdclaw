@@ -6,13 +6,15 @@ This allows non-engineers to edit prompts without touching Python code.
 Directory structure:
     prompts/
     ├── clarification.md  # Phase 1: Requirements gathering
-    ├── setup.md          # Phase 2: MD workflow execution (full)
+    ├── setup.md          # Phase 2: MD workflow execution (scratchpad mode)
     ├── validation.md     # Phase 3: QC and report generation
-    └── steps/            # Step-specific prompts (Best Practice #3)
-        ├── prepare_complex.md
-        ├── solvate.md
-        ├── build_topology.md
-        └── run_simulation.md
+    └── steps/            # Step-specific prompts (v2 workflow)
+        ├── acquire_structure.md
+        ├── select_prepare.md
+        ├── structure_decisions.md
+        ├── solvate_or_membrane.md
+        ├── quick_md.md
+        └── validation.md
 """
 
 from functools import lru_cache
@@ -53,19 +55,6 @@ def get_clarification_instruction() -> str:
     return template.replace("{date}", get_today_str())
 
 
-def get_clarification_instruction_simple() -> str:
-    """Get simplified clarification prompt for testing.
-
-    This prompt is optimized for direct action with explicit PDB ID detection.
-    It's ~200 lines vs ~800+ lines in the full prompt, reducing reasoning loops.
-
-    Returns:
-        Formatted instruction string for Phase 1 agent (simple mode)
-    """
-    template = _load_prompt("clarification_simple.md")
-    return template.replace("{date}", get_today_str())
-
-
 def get_setup_instruction() -> str:
     """Get setup agent instruction with current date.
 
@@ -73,19 +62,6 @@ def get_setup_instruction() -> str:
         Formatted instruction string for Phase 2 agent
     """
     template = _load_prompt("setup.md")
-    return template.replace("{date}", get_today_str())
-
-
-def get_setup_simple_instruction() -> str:
-    """Get simplified setup agent instruction for scratchpad mode.
-
-    This prompt is optimized for smaller models (e.g., qwen2.5:14b)
-    that benefit from explicit state tracking via the scratchpad file.
-
-    Returns:
-        Formatted instruction string for Phase 2 agent (scratchpad mode)
-    """
-    template = _load_prompt("setup_simple.md")
     return template.replace("{date}", get_today_str())
 
 

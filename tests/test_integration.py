@@ -17,25 +17,6 @@ import pytest
 class TestAgentImports:
     """Test that agent modules can be imported correctly."""
 
-    def test_clarification_agent_import(self):
-        """Clarification agent can be imported."""
-        from mdzen.agents.clarification_agent import create_clarification_agent
-
-        # Verify function exists
-        assert callable(create_clarification_agent)
-
-    def test_setup_agent_import(self):
-        """Setup agent can be imported."""
-        from mdzen.agents.setup_agent import create_setup_agent
-
-        assert callable(create_setup_agent)
-
-    def test_validation_agent_import(self):
-        """Validation agent can be imported."""
-        from mdzen.agents.validation_agent import create_validation_agent
-
-        assert callable(create_validation_agent)
-
     def test_full_agent_import(self):
         """Full agent (SequentialAgent) can be imported."""
         from mdzen.agents.full_agent import create_full_agent
@@ -158,12 +139,6 @@ class TestCustomTools:
         from mdzen.tools.custom_tools import generate_simulation_brief
 
         assert callable(generate_simulation_brief)
-
-    def test_get_workflow_status_import(self):
-        """get_workflow_status function can be imported."""
-        from mdzen.tools.custom_tools import get_workflow_status
-
-        assert callable(get_workflow_status)
 
     def test_run_validation_import(self):
         """run_validation function can be imported."""
