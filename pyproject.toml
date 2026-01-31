@@ -8,7 +8,7 @@ dependencies = [
     # MCP Server (FastMCP)
     # Note: fastmcp 2.x is required for Streamable HTTP transport (used in Jupyter/Colab)
     # The opentelemetry version conflict with google-adk is harmless (just warnings)
-    "fastmcp>=2.0.0",
+    "fastmcp>=2.0.0,<3.0.0",
     "mcp[cli]>=1.18.0",
 
     # Google Agent Development Kit (ADK)
@@ -25,6 +25,11 @@ dependencies = [
     "opentelemetry-api==1.37.0",  # google-adk pins this version
     "opentelemetry-sdk==1.37.0",
     "opentelemetry-semantic-conventions==0.58b0",
+    "opentelemetry-exporter-prometheus==0.58b0",  # match otel 1.37.0
+    "opentelemetry-instrumentation==0.58b0",  # match otel 1.37.0
+    "opentelemetry-exporter-otlp-proto-http==1.37.0",  # match otel 1.37.0
+    "opentelemetry-exporter-otlp-proto-common==1.37.0",
+    "opentelemetry-proto==1.37.0",
 
     # Structure prediction & modeling
     # Note: Install openmm, rdkit, mdanalysis, biopython, pandas, numpy, scipy, pdbfixer via conda first
@@ -37,13 +42,11 @@ dependencies = [
     "gemmi>=0.6.0",  # mmCIF parsing for Boltz-2 output
     "dimorphite-dl>=1.3.2",  # pH-dependent protonation state generation
     "pubchempy>=1.0.4",  # PubChem compound search (used by genesis_server)
-    "tavily-python>=0.3.0",  # Web search (used by research_server)
 
     # Topology manipulation
     "parmed>=4.3.0",
 
     # LLM integration
-    "anthropic>=0.40.0",
     "prompt-toolkit>=3.0.0",
 
     # Data models & validation
@@ -58,13 +61,9 @@ dependencies = [
     "requests>=2.31.0",
     "pyyaml>=6.0",
 
-    # Notebook development
-    "jupyter>=1.0.0",
-    "ipykernel>=6.29.0",
     "python-dotenv>=1.0.0",
 
-    # Visualization & analysis (for test notebooks)
-    "py3Dmol>=2.0.0",
+    # Visualization & analysis
     "mdtraj>=1.9.0",
 ]
 
