@@ -19,6 +19,7 @@ from google.genai import types
 
 from common.utils import set_current_session
 from mdzen.agents.workflow_step_agent import create_workflow_step_agent
+from mdzen.tools.mcp_setup import close_active_toolsets
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MAX_RETRIES_PER_STEP = 2
@@ -366,6 +367,7 @@ class WorkflowDriverAgent(BaseAgent):
         attempt_text = user_text or "continue"
         try:
             for attempt in range(3):
+                await close_active_toolsets()
                 step_agent, _ = create_workflow_step_agent(current_step)
                 # Do not mutate ctx.user_content in-place (ADK eval expects the original user_content).
                 sub_ctx = ctx.model_copy()

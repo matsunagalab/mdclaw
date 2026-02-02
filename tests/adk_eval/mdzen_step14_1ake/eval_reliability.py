@@ -116,7 +116,7 @@ async def _run_single_eval(run_idx: int, num_runs_total: int) -> dict:
     # Parse results: dict[eval_set_id, list[EvalCaseResult]]
     run_result: dict = {"run_idx": run_idx, "turns": {}, "overall_score": None}
 
-    for _eval_set_id, case_results in results.items():
+    for _eval_set_id, case_results in (results or {}).items():
         for case_result in case_results:
             overall = getattr(case_result, "overall_eval_metric_results", None)
             if overall:

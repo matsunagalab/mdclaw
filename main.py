@@ -329,6 +329,7 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
 
     console.print("[dim]Running stepwise workflow (batch)...[/dim]\n")
     from mdzen.agents.workflow_step_agent import create_workflow_step_agent
+    from mdzen.tools.mcp_setup import close_active_toolsets, clear_toolset_cache
 
     def _load_disk_workflow_state() -> dict:
         path = Path(session_dir) / "workflow_state.json"
@@ -542,6 +543,9 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
                 # Normal progression between steps
                 next_message_text = initial_request if current_step == "acquire_structure" else "continue"
 
+            # Close previous step's MCP sessions before creating new ones
+            await close_active_toolsets()
+
             with suppress_adk_unknown_agent_warnings():
                 step_agent, step_toolsets = create_workflow_step_agent(current_step)
                 runner = Runner(
@@ -564,9 +568,7 @@ async def _run_batch(session_service, session_id: str, session_dir: str, request
         display_debug_state(state, console)
         display_results(state, console)
     finally:
-        # Note: We skip explicit MCP cleanup because it causes anyio task context
-        # errors. The OS cleans up resources when the process exits.
-        pass
+        await close_active_toolsets()
 
 
 async def _run_interactive(session_service, session_id: str, session_dir: str, request: str):
@@ -584,9 +586,6 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
     import sys
     from pathlib import Path
     from mdzen.workflow import get_next_workflow_v2_step
-
-    # Track all toolsets for cleanup
-    all_toolsets = []
 
     auto_answer_enabled = (os.environ.get("MDZEN_AUTO_ANSWER", "") or "").strip().lower() in {
         "1",
@@ -626,6 +625,7 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
         console.print("[dim]Running stepwise workflow...[/dim]\n")
 
         from mdzen.agents.workflow_step_agent import create_workflow_step_agent
+        from mdzen.tools.mcp_setup import close_active_toolsets
 
         next_message_text = request
 
@@ -844,9 +844,9 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
                     )
                     # Run the step again with an explicit hint.
                     next_message_text = f"PDB ID: {injected_pdb}"
+                    await close_active_toolsets()
                     with suppress_adk_unknown_agent_warnings():
                         step_agent, step_toolsets = create_workflow_step_agent("acquire_structure")
-                        all_toolsets.extend(step_toolsets)
                         runner = Runner(
                             app_name=APP_NAME,
                             agent=step_agent,
@@ -1340,10 +1340,12 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
                 if current_step != "acquire_structure":
                     next_message_text = "continue"
 
+            # Close previous step's MCP sessions before creating new ones
+            await close_active_toolsets()
+
             # Run current step agent
             with suppress_adk_unknown_agent_warnings():
                 step_agent, step_toolsets = create_workflow_step_agent(current_step)
-                all_toolsets.extend(step_toolsets)
                 runner = Runner(
                     app_name=APP_NAME,
                     agent=step_agent,
@@ -1376,9 +1378,7 @@ async def _run_interactive(session_service, session_id: str, session_dir: str, r
         console.print(f"\n[green]Session complete! Session ID: {session_id}[/green]")
         console.print(f"[dim]Session directory: {session_dir}[/dim]")
     finally:
-        # Note: We skip explicit MCP cleanup because it causes anyio task context
-        # errors. The OS cleans up resources when the process exits.
-        pass
+        await close_active_toolsets()
 
 
 @app.command()

@@ -47,6 +47,9 @@ SSE_PORT_MAP = {
 # Cache for project root
 _project_root: Path | None = None
 
+# Track active toolsets so we can close sessions between workflow steps
+_active_toolsets: list[McpToolset] = []
+
 
 def get_project_root() -> Path:
     """Get the project root directory by looking for pyproject.toml.
@@ -233,10 +236,61 @@ WORKFLOW_V2_TOOL_FILTERS: dict[str, dict[str, list[str]]] = {
 }
 
 
+async def close_active_toolsets() -> None:
+    """Evict stale MCP sessions from all active toolsets.
+
+    Between workflow steps, old SessionContext background tasks may linger in a
+    different async-task context.  Calling ``McpToolset.close()`` or
+    ``MCPSessionManager.close()`` triggers ``exit_stack.aclose()`` which invokes
+    ``SessionContext.__aexit__`` — this in turn exits the ``stdio_client``'s
+    anyio CancelScope from a *different* task than it was entered in, raising
+    ``RuntimeError("Attempted to exit cancel scope …")``.
+
+    The safe workaround is to **not** call close at all.  Instead we:
+
+    1. Signal each ``SessionContext._run()`` task to stop via its
+       ``_close_event`` (cheap, no cross-task scope exit).
+    2. Forcibly clear the ``_sessions`` dict so the next ``create_session()``
+       starts fresh.
+    3. Drop all references so the OS can reap subprocesses on exit.
+    """
+    for ts in _active_toolsets:
+        try:
+            mgr = ts._mcp_session_manager
+            for _key, (session, exit_stack) in list(mgr._sessions.items()):
+                # Best-effort: signal the SessionContext._run task to stop.
+                # SessionContext stores its events on the *session* wrapper kept
+                # by the exit_stack.  We cannot safely call exit_stack.aclose()
+                # (that triggers the cancel-scope error), but we CAN look for
+                # the SessionContext's _close_event on the exit_stack callbacks.
+                for cb in getattr(exit_stack, "_exit_callbacks", []):
+                    ctx = getattr(cb, "__self__", None) if callable(cb) else None
+                    if ctx is None:
+                        # exit_stack stores (is_sync, callback) tuples
+                        if isinstance(cb, tuple) and len(cb) >= 2:
+                            ctx = getattr(cb[1], "__self__", None)
+                    if hasattr(ctx, "_close_event"):
+                        ctx._close_event.set()
+            mgr._sessions.clear()
+        except Exception:
+            pass
+    _active_toolsets.clear()
+
+
+def clear_toolset_cache() -> None:
+    """Synchronous cleanup — clears tracking list without closing sessions.
+
+    Prefer close_active_toolsets() when an event loop is available.
+    """
+    _active_toolsets.clear()
+
+
 def get_workflow_step_tools(step: str) -> list[McpToolset]:
     """Get MCP toolsets for a v2 workflow step.
 
     This is designed for small models: each step exposes only the minimum tools.
+    Creates fresh toolsets each time. Call close_active_toolsets() between steps
+    to cleanly terminate previous sessions.
     """
     if step not in WORKFLOW_V2_TOOL_FILTERS:
         valid = list(WORKFLOW_V2_TOOL_FILTERS.keys())
@@ -245,6 +299,7 @@ def get_workflow_step_tools(step: str) -> list[McpToolset]:
     toolsets: list[McpToolset] = []
     for server_name, tool_filter in WORKFLOW_V2_TOOL_FILTERS[step].items():
         toolsets.append(create_filtered_toolset(server_name, tool_filter=tool_filter))
+    _active_toolsets.extend(toolsets)
     return toolsets
 
 
