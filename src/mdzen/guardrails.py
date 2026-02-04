@@ -170,8 +170,8 @@ def mdzen_before_tool_guardrail(tool, args: dict[str, Any], tool_context) -> Opt
                 if _is_missing(wf_after.get("structure_file")):
                     missing.append("structure_file")
             elif current_step == "select_prepare":
-                if _is_missing(wf_after.get("merged_pdb")):
-                    missing.append("merged_pdb")
+                if _is_missing(wf_after.get("selected_structure_file")):
+                    missing.append("selected_structure_file")
             elif current_step == "structure_decisions":
                 if _is_missing(wf_after.get("merged_pdb")):
                     missing.append("merged_pdb")

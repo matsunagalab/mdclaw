@@ -10,7 +10,6 @@ Today's date is {date}.
 - If you need user clarification, you MUST:
   - call `update_workflow_state(awaiting_user_input=True, pending_questions=[...])`
   - then ask and STOP.
-- If the user asks a meta question (e.g., \"which model are you using?\") while you are waiting for chain/ligand choices, answer briefly (1-2 sentences) and then re-ask the required chain/ligand questions. Do NOT proceed until the user has clearly answered those choices.
 
 ## Allowed tools in this step
 - `read_workflow_state`
@@ -20,47 +19,47 @@ Today's date is {date}.
 - `merge_structures` (only if needed: multiple protein files)
 
 ## What to do
+
+### Phase A: Read state and check if choices are already made
 1. Call `read_workflow_state()`.
-2. Require `structure_file`. If missing, ask user to run step (1) or provide a structure file path.
+2. Check `structure_file`. If missing, ask user to run step (1) first.
+3. Check if `selection_chains` AND `include_types` already exist in state:
+   - **If BOTH exist** → skip to Phase C (do NOT ask questions, do NOT call inspect_molecules).
+   - **If either is missing** → continue to Phase B.
 
-### CRITICAL: Do NOT re-ask answered questions
-This workflow has a deterministic pre-guard that may already have stored the user's answers in `workflow_state`:
-- `selection_chains`: e.g., `["A"]`
-- `include_types`: e.g., `["protein","ion"]` (user said "no ligand")
+### Phase B: Inspect and ask user (only if choices not yet made)
+4. Call `inspect_molecules(structure_file)` to identify chains and ligands.
+5. If exactly one protein chain and no ligands:
+   - Set `selection_chains=["<chain_id>"]` and `include_types=["protein","ion"]`
+   - Skip to Phase C (no questions needed).
+6. Otherwise, ask the user:
+   - Which protein chain(s) to include
+   - Whether to include or exclude ligands
+   - Call `update_workflow_state(awaiting_user_input=True, pending_questions=[...])`
+   - STOP and wait for the next turn.
 
-**RULES (must follow):**
-- If `selection_chains` is already present and non-empty: **DO NOT ask again about chains.** Use it.
-- If `include_types` is already present and non-empty: **DO NOT ask again about ligands.** Use it even if ligands are detected.
-- Only ask chain/ligand questions if the corresponding field is missing/empty in state.
+### Phase C: Extract structure (when choices are known)
+When you have `selection_chains` and `include_types` (either from state or from user's answer):
+7. Call `split_molecules(structure_file=<structure_file>, select_chains=<selection_chains>, include_types=["protein"], use_author_chains=True)`
+8. Check the result:
+   - If multiple `protein_files` → call `merge_structures(pdb_files=<protein_files>, output_name="selected_structure")`
+   - If exactly one protein file → use it as `selected_structure_file`
+9. Call `update_workflow_state(step="select_prepare", updates={"selection_chains": [...], "include_types": [...], "selected_structure_file": "<path>"}, mark_step_complete=True, awaiting_user_input=False, pending_questions=[], last_step_summary="...")`
+10. STOP.
 
-3. Call `inspect_molecules(structure_file)` to identify protein chains and ligand chains (for validation / defaults only).
+### CRITICAL: Interpreting user answers
+When the user says something like "Select protein chains: A. Exclude all ligands.":
+- `selection_chains` = `["A"]`
+- `include_types` = `["protein", "ion"]`  (no "ligand" because user excluded them)
+- Proceed directly to Phase C. Do NOT ask again. Do NOT set awaiting_user_input=True.
 
-4. Decide selections:
-   - **Chain selection**:
-     - If `selection_chains` exists in state → use it.
-     - Else if exactly one protein chain exists → default to that chain.
-     - Else ask user which protein chains to include (show options).
-   - **Ligand handling**:
-     - If `include_types` exists in state → use it (do NOT ask).
-     - Else if no ligands → proceed with `include_types=["protein","ion"]` (or omit ligand).
-     - Else ask user whether to include ligands or exclude all ligands.
-
-5. Create a **protein-only selected structure file** for read-only checks in the next step:
-   - Call `split_molecules(structure_file=..., select_chains=[...], include_types=["protein"], use_author_chains=True)`
-   - If it returns multiple `protein_files`, call `merge_structures(pdb_files=<protein_files>, output_name="selected_structure")`
-     - Use the merge output as `selected_structure_file`
-   - If it returns exactly one protein file, use that as `selected_structure_file`
-
-6. Update workflow state and STOP:
-   - `selection_chains` (list)
-   - `include_types` (list)  # user's ligand choice recorded here; will be applied later
-   - `structure_file` (keep)
-   - `selected_structure_file` (new)
-   - Call `update_workflow_state(step="select_prepare", updates={...}, mark_step_complete=True, awaiting_user_input=False, pending_questions=[], last_step_summary=...)`
+When the user says "A no" or "chain A, no ligands":
+- `selection_chains` = `["A"]`
+- `include_types` = `["protein", "ion"]`
+- Proceed directly to Phase C.
 
 ## Output format
 After success, output a short summary:
 - selected chains
 - ligand handling (included/excluded)
 - selected_structure_file path
-

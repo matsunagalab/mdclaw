@@ -198,6 +198,97 @@ ensure_directory(WORKING_DIR)
 packmol_memgen_wrapper = BaseToolWrapper("packmol-memgen")
 
 
+def _solvate_with_openmm(
+    pdb_path: Path,
+    result: dict,
+    output_dir: Optional[str],
+    output_name: str,
+    dist: float,
+    cubic: bool,
+    salt: bool,
+    saltcon: float,
+    water_model: str,
+) -> dict:
+    """Fallback solvation using OpenMM/PDBFixer when packmol-memgen is unavailable.
+
+    Uses OpenMM Modeller.addSolvent() with a padding-based box.
+    """
+    logger.info("Using OpenMM/PDBFixer fallback for solvation")
+    try:
+        from openmm.app import PDBFile, Modeller, ForceField
+        from openmm import unit
+    except ImportError:
+        result["errors"].append("OpenMM not available for fallback solvation")
+        return result
+
+    # Setup output directory
+    session_dir = get_current_session()
+    if session_dir:
+        base_dir = session_dir
+    elif output_dir:
+        base_dir = Path(output_dir)
+    else:
+        base_dir = WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "solvate")
+    result["output_dir"] = str(out_dir)
+    output_file = out_dir / f"{output_name}.pdb"
+
+    try:
+        # Load structure
+        pdb = PDBFile(str(pdb_path))
+        modeller = Modeller(pdb.topology, pdb.positions)
+
+        # Select force field and water model
+        # Map water_model to OpenMM water XML
+        water_map = {
+            "tip3p": "tip3p.xml",
+            "tip4pew": "tip4pew.xml",
+            "spce": "spce.xml",
+            "opc": "opc.xml",  # OPC requires amber14 ff
+        }
+        water_xml = water_map.get(water_model.lower(), "tip3p.xml")
+
+        # Use amber14 force field (compatible with most water models)
+        ff = ForceField("amber14-all.xml", water_xml)
+
+        # Add solvent with padding
+        padding_nm = dist / 10.0  # Convert Angstrom to nm
+        modeller.addSolvent(
+            ff,
+            model=water_model.lower() if water_model.lower() in ["tip3p", "tip4pew", "spce"] else "tip3p",
+            padding=padding_nm * unit.nanometer,
+            ionicStrength=(saltcon if salt else 0.0) * unit.molar,
+            positiveIon="Na+",
+            negativeIon="Cl-",
+        )
+
+        # Write output
+        with open(output_file, "w") as f:
+            PDBFile.writeFile(modeller.topology, modeller.positions, f)
+
+        # Extract box size from PDB
+        box_dims = extract_box_size_from_cryst1(str(output_file))
+
+        # Count atoms
+        atom_count = count_atoms_in_pdb(str(output_file))
+
+        result["success"] = True
+        result["output_file"] = str(output_file)
+        result["box_dimensions"] = box_dims or {}
+        result["statistics"] = {
+            "total_atoms": atom_count,
+            "method": "openmm_fallback",
+        }
+        result["warnings"].append("Used OpenMM fallback (packmol-memgen not available)")
+        logger.info(f"OpenMM solvation complete: {output_file}")
+
+    except Exception as e:
+        result["errors"].append(f"OpenMM solvation failed: {type(e).__name__}: {e}")
+        logger.error(f"OpenMM solvation error: {e}")
+
+    return result
+
+
 @mcp.tool()
 def solvate_structure(
     pdb_file: str,
@@ -311,12 +402,20 @@ def solvate_structure(
         logger.error(f"Input PDB file not found: {pdb_file}")
         return result
     
-    # Check packmol-memgen availability
+    # Check packmol-memgen availability; fall back to OpenMM if not available
     if not packmol_memgen_wrapper.is_available():
-        result["errors"].append("packmol-memgen not found in PATH")
-        result["errors"].append("Hint: Install AmberTools or activate the mcp-md conda environment")
-        logger.error("packmol-memgen not available")
-        return result
+        logger.warning("packmol-memgen not available, trying OpenMM fallback")
+        return _solvate_with_openmm(
+            pdb_path=pdb_path,
+            result=result,
+            output_dir=output_dir,
+            output_name=output_name,
+            dist=dist,
+            cubic=cubic,
+            salt=salt,
+            saltcon=saltcon,
+            water_model=water_model,
+        )
 
     # Setup output directory with human-readable name
     # Always prefer session directory to ensure files go to the correct location

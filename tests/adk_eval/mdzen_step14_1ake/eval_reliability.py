@@ -20,7 +20,11 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Load .env file to ensure API keys are available
+from dotenv import load_dotenv
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
+load_dotenv(REPO_ROOT / ".env")
 CASE_DIR = Path(__file__).resolve().parent
 EVALSET_FILE = CASE_DIR / "step14_1ake.evalset.json"
 OUTPUT_ROOT = REPO_ROOT / "outputs" / "reliability_eval"

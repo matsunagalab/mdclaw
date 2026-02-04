@@ -8,47 +8,42 @@ Today's date is {date}.
 - If you need user clarification, you MUST:
   - call `update_workflow_state(awaiting_user_input=True, pending_questions=[...])`
   - then ask and STOP.
-- If user accepts defaults, apply them and proceed (do not ask extra questions).
+- If user accepts defaults (says "default", "ok", "yes", "recommend", "continue"), apply defaults and proceed immediately without asking extra questions.
 
 ## Allowed tools in this step
 - `read_workflow_state`
 - `update_workflow_state`
-- `analyze_structure_details`
+- `analyze_structure_details` (optional, for disulfide/HIS analysis)
 - `prepare_complex`
 
 ## Goal
-Decide and apply structure preparation details (disulfide, termini, protonation) using:
-1) analysis → 2) user decision (or defaults) → 3) re-run `prepare_complex` with `structure_analysis` to regenerate `merged_pdb`.
+Run `prepare_complex` to produce `merged_pdb` with proper protonation and chain selection.
 
 ## What to do
+
+### If user says "default" or accepts defaults:
+1. Call `read_workflow_state()` to get `structure_file`, `selection_chains`, `include_types`.
+2. Call `prepare_complex` with:
+   - `structure_file` = the `structure_file` from state
+   - `output_dir` = the directory containing `structure_file`
+   - `select_chains` = `selection_chains` from state (e.g., `["A"]`)
+   - `include_types` = `include_types` from state (e.g., `["protein","ion"]`)
+   - `process_ligands` = False (if include_types has no "ligand")
+   - `ph` = 7.4
+   - `cap_termini` = False
+3. From the result, extract `merged_pdb` path.
+4. Call `update_workflow_state(step="structure_decisions", updates={"merged_pdb": "<path>"}, mark_step_complete=True, awaiting_user_input=False, pending_questions=[], last_step_summary="...")`
+5. STOP.
+
+### If user wants custom settings:
 1. Call `read_workflow_state()`.
-2. Require `selected_structure_file`. If missing, ask the user to run step (2) first.
-3. Call `analyze_structure_details(structure_file=selected_structure_file, ph=7.4)` (or user's pH if present).
-4. Determine proposed defaults:
-   - Disulfide: form bonds for high-confidence candidates (distance <2.5Å). Otherwise ask.
-   - Termini: default `cap_termini=False` unless user explicitly wants caps.
-   - Histidines: accept recommended_state for each HIS (from analysis).
-5. If the user message indicates acceptance (e.g., \"ok\", \"default\", \"recommend\"), do NOT ask; apply defaults.
-6. Otherwise ask only the minimum questions needed:
-   - cap termini? (yes/no)
-   - accept disulfide bonds? (yes/no, or list which to skip)
-   - accept HIS states? (yes/no, or specify overrides)
-7. Build `structure_analysis` dict for `prepare_complex`:
-   - `disulfide_bonds`: list of {chain1,resnum1,chain2,resnum2,form_bond}
-   - `histidine_states`: list of {chain,resnum,state}
-   - `ligands`: optional list (only if user wants to exclude all ligands or specify SMILES/charge)
-8. Call `prepare_complex(...)` to apply the decisions and generate `merged_pdb`.
-   - Use `structure_file` from state (the original downloaded structure) as the input.
-   - Pass the user's chain/ligand choices:
-     - `select_chains=selection_chains`
-     - `include_types=include_types` (e.g., `["protein","ion"]` if user said no ligand)
-   - Pass `ph` and `cap_termini`, plus `structure_analysis` derived from the analysis + user choices.
-9. Update workflow state with:
-   - `structure_analysis`
-   - `cap_termini`
-   - `ph`
-   - updated `merged_pdb`
+2. Optionally call `analyze_structure_details(structure_file=<selected_structure_file>, ph=7.4)` for disulfide/HIS details.
+3. Ask user about specific decisions needed.
+4. Then call `prepare_complex` with user's choices and complete as above.
+
+## Important
+- The `output_dir` for `prepare_complex` should be the directory where `structure_file` is located (use the parent directory of structure_file path).
+- After `prepare_complex` succeeds, the `merged_pdb` field in the result contains the path to the merged PDB file. Store this in workflow state.
 
 ## Output on success
 Short summary of what was applied and the new merged_pdb path.
-
