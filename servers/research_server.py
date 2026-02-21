@@ -24,7 +24,7 @@ from fastmcp import FastMCP
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from common.utils import setup_logger, ensure_directory, get_current_session  # noqa: E402
+from servers._common import setup_logger, ensure_directory, get_current_session  # noqa: E402
 
 logger = setup_logger(__name__)
 

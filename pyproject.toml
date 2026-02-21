@@ -59,7 +59,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["servers", "common", "src/mdzen"]
+packages = ["servers", "src/mdzen"]
 
 [tool.pytest.ini_options]
 markers = [

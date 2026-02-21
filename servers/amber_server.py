@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from common.utils import setup_logger  # noqa: E402
+from servers._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -25,14 +25,12 @@ from typing import List, Optional, Dict, Any  # noqa: E402
 
 from fastmcp import FastMCP  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
-from common.base import BaseToolWrapper  # noqa: E402
-from mdzen.config import get_timeout  # noqa: E402
-from common.errors import (  # noqa: E402
-    create_file_not_found_error,
-    create_tool_not_available_error,
+from servers._common import (  # noqa: E402
+    ensure_directory, create_unique_subdir, generate_job_id, get_current_session,
+    BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
 )
+from mdzen.config import get_timeout  # noqa: E402
 
 # Create FastMCP server
 mcp = FastMCP("Amber Server")

@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from common.utils import setup_logger  # noqa: E402
+from servers._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -32,8 +32,7 @@ from fastmcp import FastMCP  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from rdkit.Chem import Descriptors  # noqa: E402
 
-from common.utils import ensure_directory, create_unique_subdir, generate_job_id, get_current_session  # noqa: E402
-from common.base import BaseToolWrapper  # noqa: E402
+from servers._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
 
 # Create FastMCP server
 mcp = FastMCP("Genesis Server")

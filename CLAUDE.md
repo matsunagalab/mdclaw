@@ -31,6 +31,7 @@ src/mdzen/
   config.py                 # Timeout & server path settings
 
 servers/                    # FastMCP servers (8 independent tools)
+  _common.py                # Shared utilities (logging, BaseToolWrapper, errors)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -39,11 +40,6 @@ servers/                    # FastMCP servers (8 independent tools)
   md_simulation_server.py   # OpenMM MD execution
   literature_server.py      # PubMed search
   metal_server.py           # Metal ion parameterization
-
-common/                     # Shared utilities for servers
-  base.py                   # BaseToolWrapper
-  errors.py                 # Error handling
-  utils.py                  # Common utilities
 
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
