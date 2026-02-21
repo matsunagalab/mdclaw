@@ -1,0 +1,18 @@
+{
+  "name": "mdclaw",
+  "version": "0.4.0",
+  "description": "AI-powered Molecular Dynamics Setup Skills for the Amber/OpenMM ecosystem",
+  "author": {
+    "name": "matsunagalab"
+  },
+  "repository": "https://github.com/matsunagalab/mdclaw",
+  "license": "MIT",
+  "keywords": [
+    "molecular-dynamics",
+    "amber",
+    "openmm",
+    "md-simulation",
+    "computational-biology"
+  ],
+  "skills": "./skills/"
+}

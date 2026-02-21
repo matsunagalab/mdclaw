@@ -6,6 +6,42 @@ MDClaw transforms any PDB structure, FASTA sequence, or ligand-SMILES into a pro
 
 **Architecture**: MCP servers (tools) + Skills (domain knowledge prompts) - works with Claude Code, Cursor, Windsurf, or any MCP-compatible AI assistant.
 
+## Installation as Claude Code Plugin
+
+Install MDClaw skills directly via the Claude Code plugin marketplace:
+
+```
+/plugin marketplace add matsunagalab/mdclaw
+/plugin install mdclaw@mdclaw
+```
+
+After installation, the following skills become available:
+- `/mdclaw:md-prepare` — MD simulation preparation
+- `/mdclaw:md-run` — Production MD execution
+- `/mdclaw:md-analyze` — Trajectory analysis
+
+### MCP Server Setup (Optional)
+
+To use MCP tools (structure retrieval, parameterization, simulation execution), set up the environment separately:
+
+```bash
+conda env create -f environment.yml
+conda activate mdclaw
+pip install -e .
+```
+
+Then add to your project's `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "mdclaw": {
+      "command": "mdclaw-mcp"
+    }
+  }
+}
+```
+
 ## Quick Start
 
 ### 1. Install

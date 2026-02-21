@@ -1,0 +1,22 @@
+{
+  "name": "mdclaw",
+  "owner": {
+    "name": "matsunagalab"
+  },
+  "metadata": {
+    "description": "AI-powered Molecular Dynamics tools and skills for Claude Code",
+    "version": "0.4.0"
+  },
+  "plugins": [
+    {
+      "name": "mdclaw",
+      "source": "./",
+      "description": "MD preparation, simulation, and analysis skills with MCP tools for the Amber/OpenMM ecosystem",
+      "version": "0.4.0",
+      "license": "MIT",
+      "keywords": ["molecular-dynamics", "amber", "openmm"],
+      "category": "science",
+      "tags": ["molecular-dynamics", "computational-biology", "structural-biology"]
+    }
+  ]
+}
