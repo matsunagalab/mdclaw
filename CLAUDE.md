@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-**MDClaw** (MD + 膳/禅) is an AI-powered system for generating molecular dynamics (MD) input files optimized for the Amber/OpenMM ecosystem. It uses:
+**MDClaw** is an AI-powered system for generating molecular dynamics (MD) input files optimized for the Amber/OpenMM ecosystem. It uses:
 - **MCP Servers** (FastMCP) for specialized MD tools
 - **Skills** (domain knowledge prompts) for workflow guidance
 - **Boltz-2** for AI-driven structure prediction
