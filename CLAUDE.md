@@ -26,6 +26,10 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 
 .mcp.json                   # MCP server config for Claude Code
 
+.claude-plugin/              # Plugin marketplace metadata
+  plugin.json
+  marketplace.json
+
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
@@ -46,6 +50,8 @@ tests/                      # 4-level test suite
   test_cli.py               # Level 1: CLI unit tests
   test_server_smoke.py      # Level 2: Server smoke tests
   test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
+  test_literature_server.py  # PubMed server tests
+  test_research_server_structure_analysis.py  # Structure analysis tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -139,6 +145,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ### research_server.py
 - `download_structure(pdb_id, format)` - Download from RCSB PDB
+- `get_structure_info(pdb_id)` - Get PDB entry metadata
 - `get_alphafold_structure(uniprot_id, format)` - AlphaFold DB
 - `inspect_molecules(structure_file)` - Analyze chains, ligands, ions
 - `search_structures(query)` - Search PDB database
@@ -152,11 +159,14 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components
 - `merge_structures(pdb_files, output_name)` - Merge PDB files
 - `run_antechamber_robust(mol2_file, ...)` - GAFF2 + AM1-BCC
+- `create_mutated_structutre(input_pdb, mutation_indices, mutation_residues, name)` - In-silico mutagenesis
 
 ### genesis_server.py
 - `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity)` - Boltz-2
 - `rdkit_validate_smiles(smiles)` - SMILES validation
-- `pubchem_get_smiles_from_name(name)` - PubChem lookup
+- `pubchem_get_smiles_from_name(chemical_name)` - PubChem lookup
+- `pubchem_search_similar(smiles, n_results, threshold)` - Similar compound search
+- `rdkit_calc_druglikeness(smiles)` - Drug-likeness assessment
 
 ### solvation_server.py
 - `solvate_structure(pdb_file, output_dir, water_model, dist, salt, saltcon)` - Water box
@@ -164,13 +174,13 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `list_available_lipids()` - Available lipid types
 
 ### amber_server.py
-- `build_amber_system(pdb_file, box_dimensions, forcefield, water_model, is_membrane)` - tleap
+- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane)` - tleap
 
 ### md_simulation_server.py
 - `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, ...)` - OpenMM
 
 ### literature_server.py
-- `pubmed_search(query, max_results)` - Search PubMed
+- `pubmed_search(query, retmax, sort)` - Search PubMed
 - `pubmed_fetch(pmids)` - Fetch article details
 
 ### metal_server.py
@@ -179,7 +189,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ## CLI Interface
 
-`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37+ tools from `SERVER_REGISTRY` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37 tools from `SERVER_REGISTRY` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 
