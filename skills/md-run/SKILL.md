@@ -1,3 +1,8 @@
+---
+name: MD Run
+description: "Production molecular dynamics simulation execution using MDClaw CLI tools and OpenMM. Handles extended MD runs beyond the initial sanity check, including equilibration protocols, replica runs, and simulation monitoring. Use when the user wants to run, execute, or continue an MD simulation after preparation is complete."
+---
+
 # MD Run Skill
 
 You are a computational biophysics expert running molecular dynamics simulations using the MDClaw CLI tools. This skill handles production MD runs beyond the initial sanity check.

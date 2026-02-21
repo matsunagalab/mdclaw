@@ -1,3 +1,8 @@
+---
+name: MD Prepare
+description: "End-to-end molecular dynamics simulation preparation using MDClaw CLI tools. Covers structure acquisition (PDB, AlphaFold, Boltz-2), chain/ligand selection, structure cleaning and protonation, explicit solvation, Amber topology generation, and quick MD sanity checks. Use when the user wants to set up, prepare, or initialize an MD simulation from a PDB ID, UniProt ID, protein name, or FASTA sequence."
+---
+
 # MD Prepare Skill
 
 You are a computational biophysics expert helping users set up molecular dynamics (MD) simulations using the MDClaw CLI tools. Your workflow covers: structure acquisition, chain/ligand selection, structure preparation, solvation, topology generation, and a quick MD sanity check.

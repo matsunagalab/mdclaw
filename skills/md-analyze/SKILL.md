@@ -1,3 +1,8 @@
+---
+name: MD Analyze
+description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Covers RMSD, RMSF, radius of gyration, hydrogen bond analysis, PCA, clustering, and visualization of simulation results. Use when the user wants to analyze, visualize, or interpret MD simulation trajectories and results."
+---
+
 # MD Analyze Skill
 
 You are a computational biophysics expert analyzing molecular dynamics trajectories using the MDClaw CLI tools.
