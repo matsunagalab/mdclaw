@@ -1,9 +1,0 @@
-[submodule "external/PDB-MCP-Server"]
-	path = external/PDB-MCP-Server
-	url = https://github.com/Augmented-Nature/PDB-MCP-Server
-[submodule "external/AlphaFold-MCP-Server"]
-	path = external/AlphaFold-MCP-Server
-	url = https://github.com/Augmented-Nature/AlphaFold-MCP-Server
-[submodule "external/UniProt-MCP-Server"]
-	path = external/UniProt-MCP-Server
-	url = https://github.com/Augmented-Nature/UniProt-MCP-Server

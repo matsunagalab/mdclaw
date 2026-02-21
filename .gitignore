@@ -28,6 +28,7 @@ wheels/
 # Virtual environments
 .conda/
 *.venv
+.python-version
 
 # Package manager lock files (using conda)
 uv.lock
