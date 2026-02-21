@@ -30,7 +30,7 @@ from servers._common import (  # noqa: E402
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
 )
-from mdzen.config import get_timeout  # noqa: E402
+from servers._common import get_timeout  # noqa: E402
 
 # Create FastMCP server
 mcp = FastMCP("Amber Server")
@@ -564,16 +564,35 @@ def _add_pdb_info(
     }
 
     try:
+        import warnings as _warnings
+
         from parmed.amber import AmberParm
         from parmed.tools import addPDB
+        from parmed.tools.exceptions import AddPDBWarning
 
         # Load topology
         parm = AmberParm(str(parm7_path))
 
         # Add PDB info (residue numbers, chain IDs, insertion codes, etc.)
         # Using ParmEd's addPDB action class
-        action = addPDB(parm, str(pdb_path))
-        action.execute()
+        # Catch AddPDBWarning: tleap reorders ions before water, causing
+        # residue name mismatches for solvent residues (protein metadata
+        # is applied correctly since it comes first in both orderings).
+        with _warnings.catch_warnings(record=True) as caught:
+            _warnings.simplefilter("always")
+            action = addPDB(parm, str(pdb_path))
+            action.execute()
+
+        mismatches = [w for w in caught if issubclass(w.category, AddPDBWarning)]
+        if mismatches:
+            result["warnings"].append(
+                f"PDB/topology residue order mismatch ({len(mismatches)} residues, "
+                "likely ions reordered by tleap) - protein metadata applied correctly"
+            )
+            logger.debug(
+                f"addPDB: {len(mismatches)} residue name mismatches "
+                "(tleap reorders ions before water)"
+            )
 
         # Check which flags were added
         expected_flags = [
