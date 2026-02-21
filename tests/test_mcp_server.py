@@ -18,15 +18,15 @@ import pytest
 
 
 class TestServerRegistry:
-    """Test the SERVER_REGISTRY dict in mcp_server.py."""
+    """Test the SERVER_REGISTRY dict in _mcp_main.py."""
 
     def test_registry_has_all_servers(self):
-        from mdzen.mcp_server import SERVER_REGISTRY
+        from servers._mcp_main import SERVER_REGISTRY
 
         assert len(SERVER_REGISTRY) == 8
 
     def test_registry_keys(self):
-        from mdzen.mcp_server import SERVER_REGISTRY
+        from servers._mcp_main import SERVER_REGISTRY
 
         expected = {
             "research",
@@ -41,7 +41,7 @@ class TestServerRegistry:
         assert set(SERVER_REGISTRY.keys()) == expected
 
     def test_registry_module_paths(self):
-        from mdzen.mcp_server import SERVER_REGISTRY
+        from servers._mcp_main import SERVER_REGISTRY
 
         for name, module_path in SERVER_REGISTRY.items():
             assert module_path == f"servers.{name}_server"
@@ -57,7 +57,7 @@ class TestImportServers:
 
     def test_import_all_servers(self):
         """_import_servers(None) should attempt to import all 8 servers."""
-        from mdzen.mcp_server import SERVER_REGISTRY, _import_servers
+        from servers._mcp_main import SERVER_REGISTRY, _import_servers
 
         # We patch importlib.import_module to track which modules are imported
         imported = []
@@ -83,7 +83,7 @@ class TestImportServers:
             return original_import(name)
 
         with patch("importlib.import_module", side_effect=mock_import):
-            from mdzen.mcp_server import _import_servers
+            from servers._mcp_main import _import_servers
 
             _import_servers(["research"])
 
@@ -92,7 +92,7 @@ class TestImportServers:
 
     def test_import_unknown_server(self, capsys):
         """Unknown name prints warning, doesn't crash."""
-        from mdzen.mcp_server import _import_servers
+        from servers._mcp_main import _import_servers
 
         _import_servers(["nonexistent_server"])
         captured = capsys.readouterr()
@@ -101,7 +101,7 @@ class TestImportServers:
 
     def test_each_server_has_mcp_attribute(self):
         """Each server module exposes a `mcp` FastMCP instance."""
-        from mdzen.mcp_server import SERVER_REGISTRY
+        from servers._mcp_main import SERVER_REGISTRY
 
         for name, module_path in SERVER_REGISTRY.items():
             try:
@@ -112,73 +112,35 @@ class TestImportServers:
 
 
 # ---------------------------------------------------------------------------
-# Config
+# Config (get_timeout in servers/_common.py)
 # ---------------------------------------------------------------------------
 
 
 class TestConfig:
-    """Test config.py settings and helper functions."""
-
-    def test_default_settings(self):
-        from mdzen.config import Settings
-
-        s = Settings()
-        assert s.output_dir == "."
-        assert s.log_level == "WARNING"
-        assert s.default_timeout == 300
+    """Test get_timeout() in servers/_common.py."""
 
     def test_timeout_defaults(self):
-        from mdzen.config import get_timeout
+        from servers._common import get_timeout
 
         assert get_timeout("default") == 300
-        assert get_timeout("solvation") == 7200  # membrane_timeout
+        assert get_timeout("solvation") == 7200
         assert get_timeout("membrane") == 7200
         assert get_timeout("amber") == 900
         assert get_timeout("md_simulation") == 3600
         assert get_timeout("structure") == 600
 
     def test_timeout_unknown_type(self):
-        from mdzen.config import get_timeout
+        from servers._common import get_timeout
 
-        # Unknown type falls back to default_timeout
+        # Unknown type falls back to default
         assert get_timeout("unknown_thing") == 300
 
-    def test_get_server_path(self):
-        from mdzen.config import get_server_path
+    def test_env_override(self, monkeypatch):
+        """MDZEN_AMBER_TIMEOUT=999 overrides the default."""
+        monkeypatch.setenv("MDZEN_AMBER_TIMEOUT", "999")
+        from servers._common import get_timeout
 
-        assert get_server_path("research") == "servers/research_server.py"
-        assert get_server_path("structure") == "servers/structure_server.py"
-        assert get_server_path("amber") == "servers/amber_server.py"
-
-    def test_get_server_path_unknown(self):
-        from mdzen.config import get_server_path
-
-        # Falls back to "servers/<name>_server.py"
-        assert get_server_path("unknown") == "servers/unknown_server.py"
-
-    def test_get_output_dir_creates(self, tmp_path):
-        from mdzen.config import Settings
-
-        new_dir = tmp_path / "output" / "subdir"
-        assert not new_dir.exists()
-
-        with patch("mdzen.config.settings") as mock_settings:
-            mock_settings.output_dir = str(new_dir)
-            from mdzen.config import get_output_dir
-
-            # Re-import to use patched settings
-            result = get_output_dir()
-
-        assert new_dir.exists()
-        assert result == new_dir
-
-    def test_env_prefix(self, monkeypatch):
-        """MDZEN_DEFAULT_TIMEOUT=999 overrides the default."""
-        monkeypatch.setenv("MDZEN_DEFAULT_TIMEOUT", "999")
-        from mdzen.config import Settings
-
-        s = Settings()
-        assert s.default_timeout == 999
+        assert get_timeout("amber") == 999
 
 
 # ---------------------------------------------------------------------------
@@ -187,12 +149,12 @@ class TestConfig:
 
 
 class TestPackageInit:
-    """Test mdzen package __init__.py."""
+    """Test servers package __init__.py."""
 
     def test_version(self):
-        from mdzen import __version__
+        from servers import __version__
 
-        assert __version__ == "0.3.0"
+        assert __version__ == "0.4.0"
 
 
 if __name__ == "__main__":

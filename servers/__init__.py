@@ -1,13 +1,9 @@
-"""
-MCP-MD Servers - FastMCP-based MCP servers for MD workflow.
+"""MDZen - AI-powered molecular dynamics setup.
 
-Available servers:
-- structure_server: PDB retrieval, structure cleaning, and ligand GAFF2 parameterization
-- genesis_server: Boltz-2 structure generation from FASTA
-- solvation_server: Solvation and membrane embedding with packmol-memgen
-- amber_server: Amber topology (parm7) and coordinate (rst7) generation with tleap
-- md_simulation_server: MD simulation with OpenMM and trajectory analysis with MDTraj
+MCP servers + skills architecture for MD simulation preparation.
 """
+
+__version__ = "0.4.0"
 
 __all__ = [
     "structure_server",

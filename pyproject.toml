@@ -1,6 +1,6 @@
 [project]
 name = "mdzen"
-version = "0.3.0"
+version = "0.4.0"
 description = "MDZen - AI-powered Molecular Dynamics Setup (MD + 膳/禅)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -9,9 +9,9 @@ dependencies = [
     "fastmcp>=2.0.0,<3.0.0",
     "mcp[cli]>=1.18.0",
 
-    # Structure prediction & modeling
-    # Note: Install openmm, rdkit, mdanalysis, biopython, pandas, numpy, scipy, pdbfixer via conda first
-    # conda install -c conda-forge openmm rdkit mdanalysis biopython pandas numpy scipy openblas pdbfixer
+    # Structure preparation
+    # Note: openmm, pdbfixer, rdkit, ambertools, smina are conda-only.
+    # See environment.yml for full setup.
     "pdb2pqr>=3.1.0",
     "propka>=3.5.0",
     "gemmi>=0.6.0",
@@ -23,7 +23,6 @@ dependencies = [
 
     # Data models & validation
     "pydantic>=2.12.3",
-    "pydantic-settings>=2.0.0",
 
     # HTTP & networking
     "httpx>=0.28.1",
@@ -31,20 +30,16 @@ dependencies = [
 
     # Utilities
     "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
 
     # Visualization & analysis
     "mdtraj>=1.9.0",
+
+    # Numerical
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
-heavy = [
-    "openmm>=8.3.1",
-    "mdanalysis>=2.10.0",
-    "rdkit>=2023.9.1",
-    "biopython>=1.83",
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
@@ -52,14 +47,14 @@ dev = [
 ]
 
 [project.scripts]
-mdzen-mcp = "mdzen.mcp_server:main"
+mdzen-mcp = "servers._mcp_main:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["servers", "src/mdzen"]
+packages = ["servers"]
 
 [tool.pytest.ini_options]
 markers = [

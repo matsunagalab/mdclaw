@@ -224,6 +224,31 @@ class BaseToolWrapper:
 
 
 # ---------------------------------------------------------------------------
+# Timeout configuration
+# ---------------------------------------------------------------------------
+
+_TIMEOUT_DEFAULTS = {
+    "default": 300,
+    "research": 300,
+    "structure": 600,
+    "genesis": 300,
+    "solvation": 7200,
+    "membrane": 7200,
+    "amber": 900,
+    "md_simulation": 3600,
+}
+
+
+def get_timeout(timeout_type: str) -> int:
+    """Get timeout value. Override via MDZEN_<TYPE>_TIMEOUT env var."""
+    env_key = f"MDZEN_{timeout_type.upper()}_TIMEOUT"
+    env_val = os.getenv(env_key)
+    if env_val is not None:
+        return int(env_val)
+    return _TIMEOUT_DEFAULTS.get(timeout_type, _TIMEOUT_DEFAULTS["default"])
+
+
+# ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
 

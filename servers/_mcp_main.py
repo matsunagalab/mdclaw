@@ -13,7 +13,7 @@ Usage:
     mdzen-mcp --http --port 8080
 
     # Test with MCP Inspector
-    mcp dev src/mdzen/mcp_server.py
+    mcp dev servers/_mcp_main.py
 """
 
 import argparse

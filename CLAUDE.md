@@ -26,12 +26,10 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 
 .mcp.json                   # MCP server config for Claude Code
 
-src/mdzen/
-  mcp_server.py             # Unified MCP entry point (mdzen-mcp)
-  config.py                 # Timeout & server path settings
-
-servers/                    # FastMCP servers (8 independent tools)
-  _common.py                # Shared utilities (logging, BaseToolWrapper, errors)
+servers/                    # All Python code consolidated here
+  __init__.py               # __version__ + package marker
+  _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
+  _mcp_main.py              # Unified MCP entry point (mdzen-mcp)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -54,11 +52,8 @@ tests/                      # 4-level test suite
 ### Environment Setup
 
 ```bash
-conda create -n mdzen python=3.11
+conda env create -f environment.yml
 conda activate mdzen
-conda install -c conda-forge openmm rdkit mdanalysis biopython pandas numpy scipy openblas pdbfixer
-conda install -c conda-forge ambertools packmol smina
-pip install -e .
 ```
 
 ### MCP Server Testing
@@ -80,9 +75,8 @@ mcp dev servers/md_simulation_server.py
 ### Code Quality
 
 ```bash
-ruff check src/mdzen/
-ruff check src/mdzen/ --fix
 ruff check servers/
+ruff check servers/ --fix
 ```
 
 ### Testing
@@ -178,7 +172,7 @@ if __name__ == "__main__":
 
 ### Unified MCP Server
 
-`src/mdzen/mcp_server.py` imports all servers via `FastMCP.import_server()`:
+`servers/_mcp_main.py` imports all servers via `FastMCP.import_server()`:
 ```python
 mcp = FastMCP("mdzen")
 mcp.import_server("research", research_mcp)
@@ -195,10 +189,10 @@ result = split_molecules.fn(file, output_dir=out_dir)  # NOT split_molecules(...
 
 ### Timeout Configuration
 
-Centralized in `src/mdzen/config.py`:
+Centralized in `servers/_common.py`:
 ```python
-from mdzen.config import get_timeout
-timeout = get_timeout("solvation")  # MDZEN_SOLVATION_TIMEOUT (600s)
+from servers._common import get_timeout
+timeout = get_timeout("solvation")  # MDZEN_SOLVATION_TIMEOUT (7200s)
 ```
 
 ## Configuration

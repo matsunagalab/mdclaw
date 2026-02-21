@@ -27,7 +27,7 @@ from typing import Optional  # noqa: E402
 from fastmcp import FastMCP  # noqa: E402
 
 from servers._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
-from mdzen.config import get_timeout  # noqa: E402
+from servers._common import get_timeout  # noqa: E402
 
 
 # =============================================================================

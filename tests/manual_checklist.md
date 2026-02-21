@@ -10,7 +10,7 @@ Run these manually after all automated tests pass.
 
 ## MCP Server
 
-- [ ] `mcp dev src/mdzen/mcp_server.py` opens Inspector
+- [ ] `mcp dev servers/_mcp_main.py` opens Inspector
 - [ ] Inspector shows tools from all 8 servers
 - [ ] Can call `list_available_lipids` in Inspector (simple smoke test)
 
