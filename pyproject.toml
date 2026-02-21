@@ -48,6 +48,7 @@ dev = [
 
 [project.scripts]
 mdclaw-mcp = "servers._mcp_main:main"
+mdclaw = "servers._cli:main"
 
 [build-system]
 requires = ["hatchling"]

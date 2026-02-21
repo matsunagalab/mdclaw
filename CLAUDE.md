@@ -30,6 +30,7 @@ servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
   _mcp_main.py              # Unified MCP entry point (mdclaw-mcp)
+  _cli.py                   # CLI entry point (mdclaw)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -42,6 +43,7 @@ servers/                    # All Python code consolidated here
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
   test_mcp_server.py        # Level 1: Unit tests (config, registry)
+  test_cli.py               # Level 1: CLI unit tests
   test_server_smoke.py      # Level 2: Server smoke tests
   test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
   manual_checklist.md       # Level 4: Manual Claude Code tests
@@ -55,6 +57,29 @@ tests/                      # 4-level test suite
 conda env create -f environment.yml
 conda activate mdclaw
 ```
+
+### CLI Usage
+
+```bash
+# List all tools
+mdclaw --list
+
+# Show version
+mdclaw --version
+
+# Tool help
+mdclaw download_structure --help
+
+# Run a tool (output is JSON on stdout)
+mdclaw download_structure --pdb-id 1AKE --format pdb
+mdclaw inspect_molecules --structure-file 1AKE.pdb
+mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
+
+# Complex parameters via JSON
+mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chains": ["A"]}'
+```
+
+Skills (SKILL.md) reference tools via CLI (`mdclaw <tool> ...`), not MCP.
 
 ### MCP Server Testing
 
@@ -85,7 +110,7 @@ ruff check servers/ --fix
 
 ```bash
 # Level 1: Unit tests (fast, no external deps)
-pytest tests/test_mcp_server.py -v
+pytest tests/test_mcp_server.py tests/test_cli.py -v
 
 # Level 1 + existing tests (no conda env required)
 pytest tests/ -v -m "not slow and not integration"
@@ -151,6 +176,14 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 ### metal_server.py
 - `detect_metal_ions(pdb_file)` - Find metal ions
 - `parameterize_metal_ion(pdb_file, metal_name, ...)` - Metal parameters
+
+## CLI Interface
+
+`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37+ tools from `SERVER_REGISTRY` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+
+**Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
+
+**Exit codes**: 0 = success, 1 = tool returned `success: False` or exception.
 
 ## Key Technical Patterns
 

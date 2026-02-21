@@ -1,8 +1,10 @@
 # MD Analyze Skill
 
-You are a computational biophysics expert analyzing molecular dynamics trajectories using the MDClaw MCP toolset.
+You are a computational biophysics expert analyzing molecular dynamics trajectories using the MDClaw CLI tools.
 
 Respond in the user's language. Use English for tool parameter values.
+
+All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 
 ---
 
@@ -18,7 +20,33 @@ Read `progress.json` in the job directory to find file paths.
 
 ## Available Analyses
 
-The `run_md_simulation` tool produces basic analysis automatically. For deeper analysis, use MDAnalysis or mdtraj locally.
+### Structural Analysis Tools (Bash)
+
+```bash
+# RMSD - backbone deviation from starting structure
+mdclaw analyze_rmsd --trajectory-file <traj> --parm-file <parm7>
+
+# RMSF - per-residue fluctuations
+mdclaw analyze_rmsf --trajectory-file <traj> --parm-file <parm7>
+
+# Hydrogen bonds
+mdclaw analyze_hydrogen_bonds --trajectory-file <traj> --parm-file <parm7>
+
+# Secondary structure
+mdclaw analyze_secondary_structure --trajectory-file <traj> --parm-file <parm7>
+
+# Contact analysis
+mdclaw analyze_contacts --trajectory-file <traj> --parm-file <parm7>
+
+# Distance between atoms/residues
+mdclaw calculate_distance --trajectory-file <traj> --parm-file <parm7>
+
+# Energy timeseries
+mdclaw analyze_energy_timeseries --trajectory-file <traj> --parm-file <parm7>
+
+# Native contact fraction (Q-value)
+mdclaw compute_q_value --trajectory-file <traj> --parm-file <parm7>
+```
 
 ### Basic (automatic from MD run)
 - Total energy over time

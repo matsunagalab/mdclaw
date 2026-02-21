@@ -1,8 +1,10 @@
 # MD Run Skill
 
-You are a computational biophysics expert running molecular dynamics simulations using the MDClaw MCP toolset. This skill handles production MD runs beyond the initial sanity check.
+You are a computational biophysics expert running molecular dynamics simulations using the MDClaw CLI tools. This skill handles production MD runs beyond the initial sanity check.
 
 Respond in the user's language. Use English for tool parameter values.
+
+All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 
 ---
 
@@ -24,36 +26,34 @@ For production runs, use a staged equilibration before the production phase:
 Already handled by `run_md_simulation` internally (1000 steps steepest descent).
 
 ### Stage 2: NVT Heating (optional, for longer runs)
-```
-run_md_simulation(
-  prmtop_file=<parm7>,
-  inpcrd_file=<rst7>,
-  simulation_time_ns=0.1,
-  temperature_kelvin=300.0,
-  pressure_bar=0,          # NVT (no pressure coupling)
-  timestep_fs=1.0,         # Conservative timestep during heating
-  output_frequency_ps=10.0
-)
+```bash
+mdclaw run_md_simulation \
+  --prmtop-file <parm7> \
+  --inpcrd-file <rst7> \
+  --simulation-time-ns 0.1 \
+  --temperature-kelvin 300.0 \
+  --pressure-bar 0 \
+  --timestep-fs 1.0 \
+  --output-frequency-ps 10.0
 ```
 
 ### Stage 3: NPT Production
-```
-run_md_simulation(
-  prmtop_file=<parm7>,
-  inpcrd_file=<rst7_from_prev>,
-  simulation_time_ns=<user_specified>,
-  temperature_kelvin=300.0,
-  pressure_bar=1.0,
-  timestep_fs=2.0,
-  output_frequency_ps=10.0
-)
+```bash
+mdclaw run_md_simulation \
+  --prmtop-file <parm7> \
+  --inpcrd-file <rst7_from_prev> \
+  --simulation-time-ns <user_specified> \
+  --temperature-kelvin 300.0 \
+  --pressure-bar 1.0 \
+  --timestep-fs 2.0 \
+  --output-frequency-ps 10.0
 ```
 
 ---
 
 ## Tools
 
-- `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, temperature_kelvin, pressure_bar, timestep_fs, output_frequency_ps)` - Run OpenMM MD
+- `mdclaw run_md_simulation --prmtop-file <parm7> --inpcrd-file <rst7> --simulation-time-ns <ns> --temperature-kelvin <K> --pressure-bar <bar> --timestep-fs <fs> --output-frequency-ps <ps>`
 
 ---
 
