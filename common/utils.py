@@ -206,27 +206,6 @@ def check_external_tool(tool_name: str) -> bool:
         return False
 
 
-# Session directory sharing for MCP servers
-# This allows MCP tools to know the current session directory without
-# relying on the LLM to pass output_dir correctly
-SESSION_FILE = ".mdzen_session"
-
-
-def set_current_session(session_dir: Union[str, Path]) -> None:
-    """Set the current session directory for MCP servers to use.
-
-    Creates a .mdzen_session file in the current working directory
-    that MCP tools can read to determine the default output directory.
-
-    Args:
-        session_dir: Absolute path to the session directory
-    """
-    session_path = Path(session_dir).resolve()
-    session_file = Path.cwd() / SESSION_FILE
-    session_file.write_text(str(session_path))
-    logger.debug(f"Set current session: {session_path}")
-
-
 def get_current_session() -> Optional[Path]:
     """Get the current session directory from .mdzen_session file.
 
@@ -236,7 +215,7 @@ def get_current_session() -> Optional[Path]:
     Returns:
         Path to session directory, or None if not set or file doesn't exist
     """
-    session_file = Path.cwd() / SESSION_FILE
+    session_file = Path.cwd() / ".mdzen_session"
     if session_file.exists():
         session_dir = session_file.read_text().strip()
         if session_dir and Path(session_dir).exists():
@@ -244,43 +223,8 @@ def get_current_session() -> Optional[Path]:
     return None
 
 
-def clear_current_session() -> None:
-    """Clear the current session file."""
-    session_file = Path.cwd() / SESSION_FILE
-    if session_file.exists():
-        session_file.unlink()
-        logger.debug("Cleared current session file")
-
-
-# Simulation brief sharing for MCP servers
-# This allows MCP tools to access simulation parameters (e.g., solvation_type)
-# without relying on the LLM to pass them correctly
-BRIEF_FILE = "simulation_brief.json"
-
-
-def save_simulation_brief(brief: dict) -> None:
-    """Save simulation brief to the current session directory.
-
-    Called by generate_simulation_brief (custom_tools.py) after Phase 1.
-    MCP servers can then read this to access simulation parameters.
-
-    Args:
-        brief: SimulationBrief dictionary
-    """
-    import json
-
-    session_dir = get_current_session()
-    if session_dir:
-        brief_path = session_dir / BRIEF_FILE
-        brief_path.write_text(json.dumps(brief, indent=2))
-        logger.debug(f"Saved simulation brief to {brief_path}")
-
-
 def get_simulation_brief() -> Optional[dict]:
     """Get the simulation brief from the current session directory.
-
-    MCP servers call this to access simulation parameters like solvation_type
-    without relying on the LLM to pass them.
 
     Returns:
         SimulationBrief dictionary, or None if not found
@@ -289,7 +233,7 @@ def get_simulation_brief() -> Optional[dict]:
 
     session_dir = get_current_session()
     if session_dir:
-        brief_path = session_dir / BRIEF_FILE
+        brief_path = session_dir / "simulation_brief.json"
         if brief_path.exists():
             try:
                 return json.loads(brief_path.read_text())
