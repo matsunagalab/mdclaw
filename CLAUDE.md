@@ -44,6 +44,13 @@ common/                     # Shared utilities for servers
   base.py                   # BaseToolWrapper
   errors.py                 # Error handling
   utils.py                  # Common utilities
+
+tests/                      # 4-level test suite
+  conftest.py               # Shared fixtures (small_pdb, etc.)
+  test_mcp_server.py        # Level 1: Unit tests (config, registry)
+  test_server_smoke.py      # Level 2: Server smoke tests
+  test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
+  manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
 ## Development Commands
@@ -80,8 +87,38 @@ mcp dev servers/md_simulation_server.py
 ruff check src/mdzen/
 ruff check src/mdzen/ --fix
 ruff check servers/
-pytest tests/
 ```
+
+### Testing
+
+4-level test suite: unit -> smoke -> pipeline -> manual.
+
+```bash
+# Level 1: Unit tests (fast, no external deps)
+pytest tests/test_mcp_server.py -v
+
+# Level 1 + existing tests (no conda env required)
+pytest tests/ -v -m "not slow and not integration"
+
+# Level 2: Server smoke tests (requires conda env with scientific packages)
+pytest tests/test_server_smoke.py -v
+
+# Level 3: Full 1AKE pipeline integration (network + full conda env, ~1-2 min)
+pytest tests/test_pipeline_1ake.py -v
+
+# All tests
+pytest tests/ -v
+
+# Keep pipeline artifacts for inspection
+pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
+```
+
+**Markers**: `slow` (Level 2+), `integration` (Level 3). Configured in `pyproject.toml`.
+
+**Test patterns**:
+- Server tools are called via `.fn` attribute: `tool_name.fn(param=value)`
+- Shared fixtures (`small_pdb`, `alanine_dipeptide_pdb`) in `tests/conftest.py`
+- Pipeline tests use `self.__class__` attributes to pass state between ordered steps
 
 ## MCP Servers
 

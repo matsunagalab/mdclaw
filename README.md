@@ -81,6 +81,13 @@ servers/                    # FastMCP servers (8 independent tools)
   metal_server.py           # Metal ion parameterization
 
 common/                     # Shared utilities for servers
+
+tests/                      # 4-level test suite
+  conftest.py               # Shared fixtures
+  test_mcp_server.py        # Level 1: Unit tests
+  test_server_smoke.py      # Level 2: Server smoke tests
+  test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline
+  manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
 ## MCP Servers
@@ -105,6 +112,37 @@ mcp dev servers/solvation_server.py
 mcp dev servers/amber_server.py
 mcp dev servers/md_simulation_server.py
 ```
+
+## Testing
+
+4-level test suite covering unit tests through full pipeline integration.
+
+```bash
+# Level 1: Unit tests (fast, no external deps)
+pytest tests/test_mcp_server.py -v
+
+# Level 1 + existing tests
+pytest tests/ -v -m "not slow and not integration"
+
+# Level 2: Server smoke tests (requires conda env)
+pytest tests/test_server_smoke.py -v
+
+# Level 3: Full 1AKE pipeline (requires network + all tools, ~1-2 min)
+pytest tests/test_pipeline_1ake.py -v
+
+# All tests
+pytest tests/ -v
+
+# Keep pipeline artifacts for inspection
+pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
+```
+
+| Level | File | Tests | Requirements |
+|-------|------|-------|-------------|
+| 1 | `test_mcp_server.py` | 15 | None (pure Python) |
+| 2 | `test_server_smoke.py` | 15 | conda env (ambertools, openmm, rdkit) |
+| 3 | `test_pipeline_1ake.py` | 7 | Network + full conda env |
+| 4 | `manual_checklist.md` | - | Claude Code interactive |
 
 ## Configuration
 
