@@ -10,17 +10,28 @@ MDZen transforms any PDB structure, FASTA sequence, or ligand-SMILES into a prod
 
 ### 1. Install
 
-```bash
-# Conda environment (scientific packages)
-conda create -n mdzen python=3.11
-conda activate mdzen
-conda install -c conda-forge openmm rdkit mdanalysis biopython pandas numpy scipy openblas pdbfixer
-conda install -c conda-forge ambertools packmol smina
+#### Local / PC Cluster (Recommended)
 
-# Install mdzen
+```bash
+git clone https://github.com/matsunagalab/mdzen.git
+cd mdzen
+conda env create -f environment.yml
+conda activate mdzen
+```
+
+#### HPC (Singularity Container)
+
+Build the conda environment locally, then create a `.sif` image using a Singularity definition file and transfer it to the cluster.
+(Definition file will be provided in a future release.)
+
+#### pip Only (No AmberTools/OpenMM)
+
+```bash
 git clone https://github.com/matsunagalab/mdzen.git
 cd mdzen && pip install -e .
 ```
+
+Only the research, literature, and genesis servers will work. The conda environment is required for structure preparation and MD execution.
 
 ### 2. Use with Claude Code
 
@@ -50,7 +61,7 @@ Any MCP-compatible tool can use the unified MCP server:
 mdzen-mcp
 
 # Or test with MCP Inspector
-mcp dev src/mdzen/mcp_server.py
+mcp dev servers/_mcp_main.py
 ```
 
 ## Architecture
@@ -66,12 +77,10 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-run.md                 # /md-run
   md-analyze.md             # /md-analyze
 
-src/mdzen/
-  mcp_server.py             # Unified MCP entry point (mdzen-mcp)
-  config.py                 # Timeout & server path settings
-
-servers/                    # FastMCP servers (8 independent tools)
-  _common.py                # Shared utilities (logging, tool wrappers, errors)
+servers/                    # All Python code consolidated here
+  __init__.py               # __version__ + package marker
+  _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
+  _mcp_main.py              # Unified MCP entry point (mdzen-mcp)
   research_server.py        # PDB/AlphaFold/UniProt retrieval
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
