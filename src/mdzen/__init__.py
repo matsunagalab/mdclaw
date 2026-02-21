@@ -1,7 +1,6 @@
-"""MCP-MD ADK - Google Agent Development Kit implementation.
+"""MDZen - AI-powered molecular dynamics setup.
 
-This module provides a complete re-implementation of the MCP-MD workflow
-using Google's Agent Development Kit (ADK) instead of LangChain/LangGraph.
+MCP servers + skills architecture for MD simulation preparation.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"

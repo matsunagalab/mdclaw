@@ -1,66 +1,35 @@
 [project]
 name = "mdzen"
-version = "0.2.0"
-description = "MDZen - AI Agent for Molecular Dynamics Setup (MD + 膳/禅)"
+version = "0.3.0"
+description = "MDZen - AI-powered Molecular Dynamics Setup (MD + 膳/禅)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    # MCP Server (FastMCP)
-    # Note: fastmcp 2.x is required for Streamable HTTP transport (used in Jupyter/Colab)
-    # The opentelemetry version conflict with google-adk is harmless (just warnings)
+    # MCP Server
     "fastmcp>=2.0.0,<3.0.0",
     "mcp[cli]>=1.18.0",
-
-    # Google Agent Development Kit (ADK)
-    "google-adk>=0.5.0",
-    "litellm>=1.50.0,<2.0.0",
-
-    # Constrain transitive dependencies to help pip resolution
-    # These prevent "resolution-too-deep" errors
-    "pyasn1>=0.6.0",
-    "pyasn1-modules>=0.4.0",
-    "google-auth>=2.30.0",
-    "grpcio>=1.67.0,<1.68.0",  # litellm requires <1.68.0
-    "grpcio-status>=1.67.0,<1.68.0",
-    "opentelemetry-api==1.37.0",  # google-adk pins this version
-    "opentelemetry-sdk==1.37.0",
-    "opentelemetry-semantic-conventions==0.58b0",
-    "opentelemetry-exporter-prometheus==0.58b0",  # match otel 1.37.0
-    "opentelemetry-instrumentation==0.58b0",  # match otel 1.37.0
-    "opentelemetry-exporter-otlp-proto-http==1.37.0",  # match otel 1.37.0
-    "opentelemetry-exporter-otlp-proto-common==1.37.0",
-    "opentelemetry-proto==1.37.0",
 
     # Structure prediction & modeling
     # Note: Install openmm, rdkit, mdanalysis, biopython, pandas, numpy, scipy, pdbfixer via conda first
     # conda install -c conda-forge openmm rdkit mdanalysis biopython pandas numpy scipy openblas pdbfixer
-    # Boltz-2: Install manually when needed (Phase 2-3)
-    #   pip install 'boltz[cuda]' --no-deps
-    #   Then install missing dependencies individually if needed
     "pdb2pqr>=3.1.0",
     "propka>=3.5.0",
-    "gemmi>=0.6.0",  # mmCIF parsing for Boltz-2 output
-    "dimorphite-dl>=1.3.2",  # pH-dependent protonation state generation
-    "pubchempy>=1.0.4",  # PubChem compound search (used by genesis_server)
+    "gemmi>=0.6.0",
+    "dimorphite-dl>=1.3.2",
+    "pubchempy>=1.0.4",
 
     # Topology manipulation
     "parmed>=4.3.0",
 
-    # LLM integration
-    "prompt-toolkit>=3.0.0",
-
     # Data models & validation
     "pydantic>=2.12.3",
+    "pydantic-settings>=2.0.0",
 
-    # CLI & UI
-    "typer>=0.19.2",
-    "rich>=14.2.0",
-
-    # Utilities
+    # HTTP & networking
     "httpx>=0.28.1",
     "requests>=2.31.0",
-    "pyyaml>=6.0",
 
+    # Utilities
     "python-dotenv>=1.0.0",
 
     # Visualization & analysis
@@ -68,7 +37,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Heavy dependencies (install via conda)
 heavy = [
     "openmm>=8.3.1",
     "mdanalysis>=2.10.0",
@@ -80,22 +48,11 @@ heavy = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
-    "black>=23.0.0",
     "ruff>=0.1.0",
-    "mypy>=1.7.0",
-    # ADK evaluation (optional, but required for `tests/adk_eval/**`)
-    "google-adk[eval]>=0.5.0",
-    "rouge-score>=0.1.2",
-]
-
-# Optional: install only evaluation dependencies (without full dev set)
-eval = [
-    "google-adk[eval]>=0.5.0",
-    "rouge-score>=0.1.2",
 ]
 
 [project.scripts]
-mdzen = "main:app"
+mdzen-mcp = "mdzen.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -104,16 +61,13 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["servers", "common", "src/mdzen"]
 
-[tool.black]
-line-length = 100
-target-version = ['py311']
+[tool.pytest.ini_options]
+markers = [
+    "slow: tests requiring conda scientific packages (deselect with '-m not slow')",
+    "integration: full pipeline tests (deselect with '-m not integration')",
+]
+asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = false

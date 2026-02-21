@@ -1,5 +1,4 @@
 # Python
-colab.ipynb
 .env
 __pycache__/
 *.py[cod]
@@ -46,8 +45,10 @@ uv.lock
 htmlcov/
 .tox/
 
-# MCP-MD specific
+# MDZen specific
 output/
+outputs/
+.mdzen_cache/
 *.pdb
 *.mol2
 *.prmtop
