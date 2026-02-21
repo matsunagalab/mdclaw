@@ -1,16 +1,16 @@
 [project]
-name = "mdzen"
+name = "mdclaw"
 version = "0.4.0"
-description = "MDZen - AI-powered Molecular Dynamics Setup (MD + 膳/禅)"
+description = "MDClaw - AI-powered Molecular Dynamics Setup"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     # MCP Server
     "fastmcp>=2.0.0,<3.0.0",
     "mcp[cli]>=1.18.0",
 
     # Structure preparation
-    # Note: openmm, pdbfixer, rdkit, ambertools, smina are conda-only.
+    # Note: openmm, pdbfixer, rdkit, ambertools are conda-only.
     # See environment.yml for full setup.
     "pdb2pqr>=3.1.0",
     "propka>=3.5.0",
@@ -47,7 +47,7 @@ dev = [
 ]
 
 [project.scripts]
-mdzen-mcp = "servers._mcp_main:main"
+mdclaw-mcp = "servers._mcp_main:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -65,4 +65,4 @@ asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"

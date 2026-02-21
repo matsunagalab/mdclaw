@@ -1,7 +1,7 @@
 {
   "mcpServers": {
-    "mdzen": {
-      "command": "mdzen-mcp",
+    "mdclaw": {
+      "command": "mdclaw-mcp",
       "args": [],
       "env": {}
     }

@@ -1,11 +1,10 @@
-name: mdzen
+name: mdclaw
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python=3.12
   # --- conda-only or conda-preferred ---
   - ambertools>=24.0
-  - smina
   - openmm>=8.3.1
   - pdbfixer>=1.9
   - rdkit>=2023.9.1

@@ -1,4 +1,4 @@
-"""MDZen - AI-powered molecular dynamics setup.
+"""MDClaw - AI-powered molecular dynamics setup.
 
 MCP servers + skills architecture for MD simulation preparation.
 """

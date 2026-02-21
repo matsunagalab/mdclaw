@@ -8,7 +8,7 @@ Provides MCP tools for:
 - PDB structure retrieval and search (mirrors PDB-MCP-Server)
 - AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
 - UniProt protein search and info (mirrors UniProt-MCP-Server)
-- Structure file inspection (mdzen-specific gemmi-based analysis)
+- Structure file inspection (mdclaw-specific gemmi-based analysis)
 """
 
 import os
@@ -39,9 +39,9 @@ ensure_directory(WORKING_DIR)
 def _get_cache_dir() -> Path:
     """Return cache directory for pinned downloads.
 
-    Controlled by MDZEN_CACHE_DIR. Defaults to .mdzen_cache in current working dir.
+    Controlled by MDCLAW_CACHE_DIR. Defaults to .mdclaw_cache in current working dir.
     """
-    cache_root = Path(os.environ.get("MDZEN_CACHE_DIR", ".mdzen_cache")).expanduser()
+    cache_root = Path(os.environ.get("MDCLAW_CACHE_DIR", ".mdclaw_cache")).expanduser()
     ensure_directory(cache_root)
     return cache_root
 
@@ -1800,7 +1800,7 @@ async def get_protein_info(accession: str) -> dict:
 
 
 # =============================================================================
-# Structure Inspection (mdzen-specific)
+# Structure Inspection (mdclaw-specific)
 # =============================================================================
 
 

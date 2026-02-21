@@ -1,16 +1,16 @@
-"""MDZen unified MCP server.
+"""MDClaw unified MCP server.
 
 Combines all individual MCP servers into a single entry point.
 
 Usage:
     # Start with all servers (default)
-    mdzen-mcp
+    mdclaw-mcp
 
     # Select specific servers
-    mdzen-mcp --servers research,structure
+    mdclaw-mcp --servers research,structure
 
     # HTTP transport (for Jupyter/Colab)
-    mdzen-mcp --http --port 8080
+    mdclaw-mcp --http --port 8080
 
     # Test with MCP Inspector
     mcp dev servers/_mcp_main.py
@@ -21,7 +21,7 @@ import sys
 
 from fastmcp import FastMCP
 
-mcp = FastMCP("mdzen")
+mcp = FastMCP("mdclaw")
 
 # Server registry: name -> module path and FastMCP instance attribute
 SERVER_REGISTRY = {
@@ -63,7 +63,7 @@ def _import_servers(selected: list[str] | None = None) -> None:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="MDZen unified MCP server")
+    parser = argparse.ArgumentParser(description="MDClaw unified MCP server")
     parser.add_argument(
         "--servers",
         type=str,

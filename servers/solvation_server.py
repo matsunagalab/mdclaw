@@ -41,7 +41,7 @@ def _setup_amber_environment():
         return  # Already set
 
     # Detect conda environment prefix from Python executable path
-    # e.g., /path/to/miniconda3/envs/mdzen/bin/python -> /path/to/miniconda3/envs/mdzen
+    # e.g., /path/to/miniconda3/envs/mdclaw/bin/python -> /path/to/miniconda3/envs/mdclaw
     python_exe = sys.executable
     if "envs" in python_exe:
         # Conda environment detected

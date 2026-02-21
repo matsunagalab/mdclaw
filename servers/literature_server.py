@@ -18,8 +18,8 @@ Usage:
     mcp dev servers/literature_server.py
 
 Environment variables:
-    MDZEN_NCBI_API_KEY: NCBI API key for higher rate limits (optional)
-    MDZEN_NCBI_EMAIL: Email for NCBI identification (recommended)
+    MDCLAW_NCBI_API_KEY: NCBI API key for higher rate limits (optional)
+    MDCLAW_NCBI_EMAIL: Email for NCBI identification (recommended)
 """
 
 from __future__ import annotations
@@ -74,8 +74,8 @@ async def _ncbi_request(
     url = f"{EUTILS_BASE}/{endpoint}"
 
     # Add API key and email if available
-    api_key = os.environ.get("MDZEN_NCBI_API_KEY")
-    email = os.environ.get("MDZEN_NCBI_EMAIL")
+    api_key = os.environ.get("MDCLAW_NCBI_API_KEY")
+    email = os.environ.get("MDCLAW_NCBI_EMAIL")
 
     if api_key:
         params["api_key"] = api_key

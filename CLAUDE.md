@@ -4,7 +4,7 @@ This file provides guidance to Claude Code when working with this repository.
 
 ## Project Overview
 
-**MDZen** (MD + 膳/禅) is an AI-powered system for generating molecular dynamics (MD) input files optimized for the Amber/OpenMM ecosystem. It uses:
+**MDClaw** (MD + 膳/禅) is an AI-powered system for generating molecular dynamics (MD) input files optimized for the Amber/OpenMM ecosystem. It uses:
 - **MCP Servers** (FastMCP) for specialized MD tools
 - **Skills** (domain knowledge prompts) for workflow guidance
 - **Boltz-2** for AI-driven structure prediction
@@ -29,7 +29,7 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
-  _mcp_main.py              # Unified MCP entry point (mdzen-mcp)
+  _mcp_main.py              # Unified MCP entry point (mdclaw-mcp)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -53,16 +53,16 @@ tests/                      # 4-level test suite
 
 ```bash
 conda env create -f environment.yml
-conda activate mdzen
+conda activate mdclaw
 ```
 
 ### MCP Server Testing
 
 ```bash
 # Unified server
-mdzen-mcp                              # Start all servers via stdio
-mdzen-mcp --servers research,structure  # Selective
-mdzen-mcp --http --port 8080           # HTTP transport
+mdclaw-mcp                              # Start all servers via stdio
+mdclaw-mcp --servers research,structure  # Selective
+mdclaw-mcp --http --port 8080           # HTTP transport
 
 # Individual servers with MCP Inspector
 mcp dev servers/structure_server.py
@@ -174,7 +174,7 @@ if __name__ == "__main__":
 
 `servers/_mcp_main.py` imports all servers via `FastMCP.import_server()`:
 ```python
-mcp = FastMCP("mdzen")
+mcp = FastMCP("mdclaw")
 mcp.import_server("research", research_mcp)
 mcp.import_server("structure", structure_mcp)
 # ...
@@ -192,7 +192,7 @@ result = split_molecules.fn(file, output_dir=out_dir)  # NOT split_molecules(...
 Centralized in `servers/_common.py`:
 ```python
 from servers._common import get_timeout
-timeout = get_timeout("solvation")  # MDZEN_SOLVATION_TIMEOUT (7200s)
+timeout = get_timeout("solvation")  # MDCLAW_SOLVATION_TIMEOUT (7200s)
 ```
 
 ## Configuration
@@ -200,12 +200,12 @@ timeout = get_timeout("solvation")  # MDZEN_SOLVATION_TIMEOUT (7200s)
 ### Environment Variables
 
 ```bash
-export MDZEN_OUTPUT_DIR="."
-export MDZEN_DEFAULT_TIMEOUT=300
-export MDZEN_SOLVATION_TIMEOUT=600
-export MDZEN_MEMBRANE_TIMEOUT=7200
-export MDZEN_MD_SIMULATION_TIMEOUT=3600
-export MDZEN_LOG_LEVEL=WARNING
+export MDCLAW_OUTPUT_DIR="."
+export MDCLAW_DEFAULT_TIMEOUT=300
+export MDCLAW_SOLVATION_TIMEOUT=600
+export MDCLAW_MEMBRANE_TIMEOUT=7200
+export MDCLAW_MD_SIMULATION_TIMEOUT=3600
+export MDCLAW_LOG_LEVEL=WARNING
 ```
 
 ## Known Issues

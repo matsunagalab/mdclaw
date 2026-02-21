@@ -1,1 +1,1 @@
-"""Test package for MDZen."""
+"""Test package for MDClaw."""

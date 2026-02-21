@@ -136,8 +136,8 @@ class TestConfig:
         assert get_timeout("unknown_thing") == 300
 
     def test_env_override(self, monkeypatch):
-        """MDZEN_AMBER_TIMEOUT=999 overrides the default."""
-        monkeypatch.setenv("MDZEN_AMBER_TIMEOUT", "999")
+        """MDCLAW_AMBER_TIMEOUT=999 overrides the default."""
+        monkeypatch.setenv("MDCLAW_AMBER_TIMEOUT", "999")
         from servers._common import get_timeout
 
         assert get_timeout("amber") == 999

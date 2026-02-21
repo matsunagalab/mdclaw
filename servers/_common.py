@@ -40,7 +40,7 @@ def setup_logger(name: str, level: int | None = None) -> logging.Logger:
     _quiet_noisy_loggers()
 
     if level is None:
-        env_level = os.getenv("MDZEN_LOG_LEVEL", "").upper()
+        env_level = os.getenv("MDCLAW_LOG_LEVEL", "").upper()
         if env_level:
             level = getattr(logging, env_level, logging.INFO)
         elif name.startswith((
@@ -120,8 +120,8 @@ def count_atoms_in_pdb(pdb_path: Union[str, Path]) -> int:
 
 
 def get_current_session() -> Optional[Path]:
-    """Get current session directory from .mdzen_session file."""
-    session_file = Path.cwd() / ".mdzen_session"
+    """Get current session directory from .mdclaw_session file."""
+    session_file = Path.cwd() / ".mdclaw_session"
     if session_file.exists():
         session_dir = session_file.read_text().strip()
         if session_dir and Path(session_dir).exists():
@@ -240,8 +240,8 @@ _TIMEOUT_DEFAULTS = {
 
 
 def get_timeout(timeout_type: str) -> int:
-    """Get timeout value. Override via MDZEN_<TYPE>_TIMEOUT env var."""
-    env_key = f"MDZEN_{timeout_type.upper()}_TIMEOUT"
+    """Get timeout value. Override via MDCLAW_<TYPE>_TIMEOUT env var."""
+    env_key = f"MDCLAW_{timeout_type.upper()}_TIMEOUT"
     env_val = os.getenv(env_key)
     if env_val is not None:
         return int(env_val)

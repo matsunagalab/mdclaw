@@ -1,8 +1,8 @@
-# MDZen: End-to-End Molecular Dynamics Setup in Minutes
+# MDClaw: End-to-End Molecular Dynamics Setup in Minutes
 
 **From PDB ID to Production-Ready Simulation - Automated**
 
-MDZen transforms any PDB structure, FASTA sequence, or ligand-SMILES into a production-ready Amber/OpenMM simulation setup through AI-powered tools and domain knowledge.
+MDClaw transforms any PDB structure, FASTA sequence, or ligand-SMILES into a production-ready Amber/OpenMM simulation setup through AI-powered tools and domain knowledge.
 
 **Architecture**: MCP servers (tools) + Skills (domain knowledge prompts) - works with Claude Code, Cursor, Windsurf, or any MCP-compatible AI assistant.
 
@@ -13,10 +13,10 @@ MDZen transforms any PDB structure, FASTA sequence, or ligand-SMILES into a prod
 #### Local / PC Cluster (Recommended)
 
 ```bash
-git clone https://github.com/matsunagalab/mdzen.git
-cd mdzen
+git clone https://github.com/matsunagalab/mdclaw.git
+cd mdclaw
 conda env create -f environment.yml
-conda activate mdzen
+conda activate mdclaw
 ```
 
 #### HPC (Singularity Container)
@@ -27,8 +27,8 @@ Build the conda environment locally, then create a `.sif` image using a Singular
 #### pip Only (No AmberTools/OpenMM)
 
 ```bash
-git clone https://github.com/matsunagalab/mdzen.git
-cd mdzen && pip install -e .
+git clone https://github.com/matsunagalab/mdclaw.git
+cd mdclaw && pip install -e .
 ```
 
 Only the research, literature, and genesis servers will work. The conda environment is required for structure preparation and MD execution.
@@ -36,7 +36,7 @@ Only the research, literature, and genesis servers will work. The conda environm
 ### 2. Use with Claude Code
 
 ```bash
-# Start Claude Code in the mdzen directory
+# Start Claude Code in the mdclaw directory
 claude
 
 # Run MD preparation (interactive)
@@ -58,7 +58,7 @@ Any MCP-compatible tool can use the unified MCP server:
 
 ```bash
 # Start the MCP server
-mdzen-mcp
+mdclaw-mcp
 
 # Or test with MCP Inspector
 mcp dev servers/_mcp_main.py
@@ -80,7 +80,7 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
-  _mcp_main.py              # Unified MCP entry point (mdzen-mcp)
+  _mcp_main.py              # Unified MCP entry point (mdclaw-mcp)
   research_server.py        # PDB/AlphaFold/UniProt retrieval
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -154,15 +154,15 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ## Configuration
 
-Settings via `MDZEN_` environment variables:
+Settings via `MDCLAW_` environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MDZEN_OUTPUT_DIR` | `.` | Output directory |
-| `MDZEN_DEFAULT_TIMEOUT` | `300` | Default timeout (seconds) |
-| `MDZEN_SOLVATION_TIMEOUT` | `600` | Solvation timeout |
-| `MDZEN_MEMBRANE_TIMEOUT` | `7200` | Membrane building timeout |
-| `MDZEN_MD_SIMULATION_TIMEOUT` | `3600` | MD execution timeout |
+| `MDCLAW_OUTPUT_DIR` | `.` | Output directory |
+| `MDCLAW_DEFAULT_TIMEOUT` | `300` | Default timeout (seconds) |
+| `MDCLAW_SOLVATION_TIMEOUT` | `600` | Solvation timeout |
+| `MDCLAW_MEMBRANE_TIMEOUT` | `7200` | Membrane building timeout |
+| `MDCLAW_MD_SIMULATION_TIMEOUT` | `3600` | MD execution timeout |
 
 ## Troubleshooting
 

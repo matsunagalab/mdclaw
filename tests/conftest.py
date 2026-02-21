@@ -1,4 +1,4 @@
-"""Shared test fixtures for MDZen test suite."""
+"""Shared test fixtures for MDClaw test suite."""
 
 import sys
 import textwrap

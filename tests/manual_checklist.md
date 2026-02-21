@@ -5,8 +5,8 @@ Run these manually after all automated tests pass.
 
 ## Prerequisite
 
-- [ ] `pip install -e .` in mdzen conda env
-- [ ] `mdzen-mcp` starts without errors (Ctrl+C to exit)
+- [ ] `pip install -e .` in mdclaw conda env
+- [ ] `mdclaw-mcp` starts without errors (Ctrl+C to exit)
 
 ## MCP Server
 
@@ -16,7 +16,7 @@ Run these manually after all automated tests pass.
 
 ## Claude Code Interactive Mode
 
-- [ ] Start `claude` in mdzen directory
+- [ ] Start `claude` in mdclaw directory
 - [ ] Run: `/md-prepare PDB 1AKE`
 - [ ] Claude asks about chain selection (A, B detected)
 - [ ] Claude asks about ligand inclusion (AP5 detected)

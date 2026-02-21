@@ -47,10 +47,10 @@ htmlcov/
 .tox/
 test_output/
 
-# MDZen specific
+# MDClaw specific
 output/
 outputs/
-.mdzen_cache/
+.mdclaw_cache/
 *.pdb
 *.mol2
 *.prmtop
@@ -73,4 +73,4 @@ test_plan.md
 *.tmp
 *.bak
 job_*/
-.mdzen_session
+.mdclaw_session
