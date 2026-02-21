@@ -1,7 +1,7 @@
 """
-Metal Server - Metal ion parameterization with FastMCP.
+Metal Server - Metal ion parameterization tools.
 
-Provides MCP tools for:
+Provides tools for:
 - Parameterizing metal ions using MCPB.py step 4n2 (nonbonded model)
 - Converting metal ion PDB to mol2 format using metalpdb2mol2.py
 - Generating LEaP input files for metal-containing systems
@@ -21,8 +21,6 @@ logger = setup_logger(__name__)
 
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
-
-from fastmcp import FastMCP  # noqa: E402
 
 from servers._common import ensure_directory  # noqa: E402
 
@@ -52,13 +50,6 @@ METAL_ELEMENTS: set[str] = {
     "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",  # Second-row transition
     "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",  # Third-row transition
 }
-
-
-# =============================================================================
-# MCP Server Setup
-# =============================================================================
-
-mcp = FastMCP("metal_server")
 
 
 # =============================================================================
@@ -178,11 +169,10 @@ def _get_ion_frcmod(water_model: str = "tip3p") -> str:
 
 
 # =============================================================================
-# MCP Tools
+# Tools
 # =============================================================================
 
 
-@mcp.tool()
 def detect_metal_ions(pdb_file: str) -> dict:
     """Detect metal ions in a PDB structure.
 
@@ -214,7 +204,6 @@ def detect_metal_ions(pdb_file: str) -> dict:
     }
 
 
-@mcp.tool()
 def parameterize_metal_ion(
     pdb_file: str,
     output_dir: str,
@@ -334,18 +323,10 @@ def parameterize_metal_ion(
 
 
 # =============================================================================
-# Server Entry Point
+# Tool Registry
 # =============================================================================
 
-if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Metal parameterization MCP server")
-    parser.add_argument("--http", action="store_true", help="Use HTTP transport")
-    parser.add_argument("--port", type=int, default=8004, help="HTTP port")
-    args = parser.parse_args()
-
-    if args.http:
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "detect_metal_ions": detect_metal_ions,
+    "parameterize_metal_ion": parameterize_metal_ion,
+}

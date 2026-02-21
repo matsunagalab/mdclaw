@@ -166,25 +166,25 @@ class TestToolImport:
         """pubmed_search function exists."""
         from literature_server import pubmed_search
 
-        # Check it's a FastMCP tool (has .fn attribute)
-        assert hasattr(pubmed_search, "fn") or callable(pubmed_search)
+        assert callable(pubmed_search)
 
     def test_pubmed_fetch_exists(self):
         """pubmed_fetch function exists."""
         from literature_server import pubmed_fetch
 
-        assert hasattr(pubmed_fetch, "fn") or callable(pubmed_fetch)
+        assert callable(pubmed_fetch)
 
 
 class TestServerSetup:
     """Test server configuration."""
 
-    def test_mcp_server_exists(self):
-        """FastMCP server is configured."""
-        from literature_server import mcp
+    def test_tools_dict_exists(self):
+        """TOOLS dict is configured."""
+        from literature_server import TOOLS
 
-        assert mcp is not None
-        assert mcp.name == "Literature Server"
+        assert TOOLS is not None
+        assert "pubmed_search" in TOOLS
+        assert "pubmed_fetch" in TOOLS
 
 
 @pytest.mark.slow

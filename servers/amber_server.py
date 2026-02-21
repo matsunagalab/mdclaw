@@ -1,7 +1,7 @@
 """
-Amber Server - Amber topology and coordinate file generation with FastMCP.
+Amber Server - Amber topology and coordinate file generation tools.
 
-Provides MCP tools for:
+Provides tools for:
 - Building Amber topology (parm7) and coordinate (rst7) files using tleap
 - Supporting both implicit solvent (no PBC) and explicit solvent (with PBC) systems
 - Handling protein-ligand complexes with custom GAFF2 parameters
@@ -23,17 +23,12 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
-from fastmcp import FastMCP  # noqa: E402
-
 from servers._common import (  # noqa: E402
     ensure_directory, create_unique_subdir, generate_job_id, get_current_session,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
 )
 from servers._common import get_timeout  # noqa: E402
-
-# Create FastMCP server
-mcp = FastMCP("Amber Server")
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -623,7 +618,6 @@ def _add_pdb_info(
     return result
 
 
-@mcp.tool()
 def build_amber_system(
     pdb_file: str,
     ligand_params: Optional[List[Dict[str, str]]] = None,
@@ -1172,24 +1166,12 @@ def build_amber_system(
     return result
 
 
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Amber MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8005, help="Port for HTTP mode")
-    return parser.parse_args()
 
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "build_amber_system": build_amber_system,
+}
 

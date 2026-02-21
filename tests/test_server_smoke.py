@@ -29,7 +29,7 @@ class TestResearchServer:
     def test_inspect_molecules(self, small_pdb):
         from research_server import inspect_molecules
 
-        result = inspect_molecules.fn(structure_file=small_pdb)
+        result = inspect_molecules(structure_file=small_pdb)
         assert result["success"] is True
         assert "chains" in result
 
@@ -37,7 +37,7 @@ class TestResearchServer:
     async def test_download_structure(self, tmp_path):
         from research_server import download_structure
 
-        result = await download_structure.fn(
+        result = await download_structure(
             pdb_id="1AKE",
             format="pdb",
             output_dir=str(tmp_path),
@@ -48,7 +48,7 @@ class TestResearchServer:
     def test_analyze_structure_details(self, small_pdb):
         from research_server import analyze_structure_details
 
-        result = analyze_structure_details.fn(
+        result = analyze_structure_details(
             structure_file=small_pdb,
             ph=7.4,
             detect_disulfides=False,
@@ -70,7 +70,7 @@ class TestStructureServer:
     def test_split_molecules(self, small_pdb):
         from structure_server import split_molecules
 
-        result = split_molecules.fn(
+        result = split_molecules(
             structure_file=small_pdb,
             select_chains=["A"],
             include_types=["protein"],
@@ -81,7 +81,7 @@ class TestStructureServer:
     def test_clean_protein(self, small_pdb):
         from structure_server import clean_protein
 
-        result = clean_protein.fn(
+        result = clean_protein(
             pdb_file=small_pdb,
             ignore_terminal_missing_residues=True,
         )
@@ -92,7 +92,7 @@ class TestStructureServer:
         from structure_server import merge_structures
 
         # Merge the same file with itself (valid operation)
-        result = merge_structures.fn(
+        result = merge_structures(
             pdb_files=[small_pdb],
             output_dir=str(tmp_path),
             output_name="merged",
@@ -103,7 +103,7 @@ class TestStructureServer:
     def test_prepare_complex(self, small_pdb, tmp_path):
         from structure_server import prepare_complex
 
-        result = prepare_complex.fn(
+        result = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path),
             select_chains=["A"],
@@ -127,7 +127,7 @@ class TestSolvationServer:
     def test_list_available_lipids(self):
         from solvation_server import list_available_lipids
 
-        result = list_available_lipids.fn()
+        result = list_available_lipids()
         assert result["success"] is True
         assert "common_lipids" in result
 
@@ -141,7 +141,7 @@ class TestSolvationServer:
         from solvation_server import solvate_structure
 
         # First prepare the structure
-        prep = prepare_complex.fn(
+        prep = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path / "prep"),
             select_chains=["A"],
@@ -153,7 +153,7 @@ class TestSolvationServer:
         assert prep["success"] is True
 
         # Then solvate
-        result = solvate_structure.fn(
+        result = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
             water_model="opc",
@@ -183,7 +183,7 @@ class TestAmberServer:
         from amber_server import build_amber_system
 
         # Step 1: Prepare
-        prep = prepare_complex.fn(
+        prep = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path / "prep"),
             select_chains=["A"],
@@ -195,7 +195,7 @@ class TestAmberServer:
         assert prep["success"] is True
 
         # Step 2: Solvate
-        solv = solvate_structure.fn(
+        solv = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
             water_model="opc",
@@ -206,7 +206,7 @@ class TestAmberServer:
         assert solv["success"] is True
 
         # Step 3: Build topology
-        result = build_amber_system.fn(
+        result = build_amber_system(
             pdb_file=solv["output_file"],
             box_dimensions=solv.get("box_dimensions"),
             forcefield="ff19SB",
@@ -237,7 +237,7 @@ class TestMDSimulationServer:
         from md_simulation_server import run_md_simulation
 
         # Step 1: Prepare
-        prep = prepare_complex.fn(
+        prep = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path / "prep"),
             select_chains=["A"],
@@ -249,7 +249,7 @@ class TestMDSimulationServer:
         assert prep["success"] is True
 
         # Step 2: Solvate
-        solv = solvate_structure.fn(
+        solv = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
             water_model="opc",
@@ -260,7 +260,7 @@ class TestMDSimulationServer:
         assert solv["success"] is True
 
         # Step 3: Build topology
-        amber = build_amber_system.fn(
+        amber = build_amber_system(
             pdb_file=solv["output_file"],
             box_dimensions=solv.get("box_dimensions"),
             forcefield="ff19SB",
@@ -270,7 +270,7 @@ class TestMDSimulationServer:
         assert amber["success"] is True
 
         # Step 4: Quick MD (1 ps)
-        result = run_md_simulation.fn(
+        result = run_md_simulation(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -294,20 +294,20 @@ class TestGenesisServer:
     def test_rdkit_validate_smiles(self):
         from genesis_server import rdkit_validate_smiles
 
-        result = rdkit_validate_smiles.fn(smiles="CCO")
+        result = rdkit_validate_smiles(smiles="CCO")
         assert result["success"] is True
         assert "canonical_smiles" in result
 
     def test_rdkit_validate_smiles_invalid(self):
         from genesis_server import rdkit_validate_smiles
 
-        result = rdkit_validate_smiles.fn(smiles="not_a_smiles_XYZ")
+        result = rdkit_validate_smiles(smiles="not_a_smiles_XYZ")
         assert result["success"] is False
 
     def test_pubchem_get_smiles_from_name(self):
         from genesis_server import pubchem_get_smiles_from_name
 
-        result = pubchem_get_smiles_from_name.fn(chemical_name="aspirin")
+        result = pubchem_get_smiles_from_name(chemical_name="aspirin")
         assert result["success"] is True
         assert "smiles" in result
 
@@ -323,7 +323,7 @@ class TestMetalServer:
     def test_detect_metal_ions(self, small_pdb):
         from metal_server import detect_metal_ions
 
-        result = detect_metal_ions.fn(pdb_file=small_pdb)
+        result = detect_metal_ions(pdb_file=small_pdb)
         assert result["metal_count"] == 0
         assert result["metals"] == []
 

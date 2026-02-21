@@ -5,7 +5,7 @@ This file provides guidance to Claude Code when working with this repository.
 ## Project Overview
 
 **MDClaw** is an AI-powered system for generating molecular dynamics (MD) input files optimized for the Amber/OpenMM ecosystem. It uses:
-- **MCP Servers** (FastMCP) for specialized MD tools
+- **CLI Tools** (`mdclaw <tool>`) for specialized MD operations
 - **Skills** (domain knowledge prompts) for workflow guidance
 - **Boltz-2** for AI-driven structure prediction
 - **AmberTools** for topology generation and parameterization
@@ -24,8 +24,6 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-run.md                 # /md-run
   md-analyze.md             # /md-analyze
 
-.mcp.json                   # MCP server config for Claude Code
-
 .claude-plugin/              # Plugin marketplace metadata
   plugin.json
   marketplace.json
@@ -33,7 +31,7 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
-  _mcp_main.py              # Unified MCP entry point (mdclaw-mcp)
+  _registry.py              # Tool registry (SERVER_REGISTRY dict)
   _cli.py                   # CLI entry point (mdclaw)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
@@ -53,6 +51,47 @@ tests/                      # 4-level test suite
   test_literature_server.py  # PubMed server tests
   test_research_server_structure_analysis.py  # Structure analysis tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
+```
+
+## Development Workflow
+
+### Daily Development Cycle
+
+```
+1. Edit code in servers/
+2. Lint:    ruff check servers/
+3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
+4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
+5. Commit
+```
+
+### Adding a New Tool
+
+1. Add the function in the appropriate `servers/*_server.py` as a plain Python function
+2. Add the function to the `TOOLS` dict at the bottom of that server file
+3. Add unit test in `tests/test_mcp_server.py` (tool registration check)
+4. Add smoke test in `tests/test_server_smoke.py` (actual execution)
+5. Run `mdclaw --list` to verify CLI auto-discovery
+6. Update CLAUDE.md server section with the new tool signature
+
+### Adding a New Server
+
+1. Create `servers/new_server.py` with tool functions and a `TOOLS` dict
+2. Register in `servers/_registry.py` (`SERVER_REGISTRY`)
+3. Add to `servers/__init__.py` `__all__`
+4. Add smoke tests in `tests/test_server_smoke.py`
+5. Update CLAUDE.md architecture diagram and server section
+
+### Modifying Skills
+
+Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). When changing tool signatures, update the corresponding SKILL.md examples.
+
+### Pre-commit Checklist
+
+```bash
+ruff check servers/                                      # lint
+pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
+pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
 ```
 
 ## Development Commands
@@ -85,23 +124,7 @@ mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chains": ["A"]}'
 ```
 
-Skills (SKILL.md) reference tools via CLI (`mdclaw <tool> ...`), not MCP.
-
-### MCP Server Testing
-
-```bash
-# Unified server
-mdclaw-mcp                              # Start all servers via stdio
-mdclaw-mcp --servers research,structure  # Selective
-mdclaw-mcp --http --port 8080           # HTTP transport
-
-# Individual servers with MCP Inspector
-mcp dev servers/structure_server.py
-mcp dev servers/research_server.py
-mcp dev servers/solvation_server.py
-mcp dev servers/amber_server.py
-mcp dev servers/md_simulation_server.py
-```
+Skills (SKILL.md) reference tools via CLI (`mdclaw <tool> ...`).
 
 ### Code Quality
 
@@ -137,11 +160,11 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 **Markers**: `slow` (Level 2+), `integration` (Level 3). Configured in `pyproject.toml`.
 
 **Test patterns**:
-- Server tools are called via `.fn` attribute: `tool_name.fn(param=value)`
+- Tool functions are called directly: `tool_name(param=value)`
 - Shared fixtures (`small_pdb`, `alanine_dipeptide_pdb`) in `tests/conftest.py`
 - Pipeline tests use `self.__class__` attributes to pass state between ordered steps
 
-## MCP Servers
+## Tool Modules
 
 ### research_server.py
 - `download_structure(pdb_id, format)` - Download from RCSB PDB
@@ -189,7 +212,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ## CLI Interface
 
-`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37 tools from `SERVER_REGISTRY` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 
@@ -197,38 +220,31 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ## Key Technical Patterns
 
-### FastMCP Server Pattern
+### Tool Module Pattern
 
-All servers follow this pattern:
+All server files follow this pattern:
 ```python
-from fastmcp import FastMCP
-mcp = FastMCP("Server Name")
-
-@mcp.tool()
 def my_tool(param: str) -> dict:
     """Tool description."""
     return {"result": "..."}
 
-if __name__ == "__main__":
-    mcp.run(transport="stdio")  # or "http"
+TOOLS = {
+    "my_tool": my_tool,
+}
 ```
 
-### Unified MCP Server
+### Tool Registry
 
-`servers/_mcp_main.py` imports all servers via `FastMCP.import_server()`:
+`servers/_registry.py` maps server names to module paths:
 ```python
-mcp = FastMCP("mdclaw")
-mcp.import_server("research", research_mcp)
-mcp.import_server("structure", structure_mcp)
-# ...
+SERVER_REGISTRY = {
+    "research": "servers.research_server",
+    "structure": "servers.structure_server",
+    # ...
+}
 ```
 
-### Calling Decorated Functions Internally
-
-In FastMCP 2.x, `@mcp.tool()` returns a FunctionTool object. Call `.fn` for internal use:
-```python
-result = split_molecules.fn(file, output_dir=out_dir)  # NOT split_molecules(...)
-```
+`_cli.py` imports each module and collects its `TOOLS` dict for CLI exposure.
 
 ### Timeout Configuration
 

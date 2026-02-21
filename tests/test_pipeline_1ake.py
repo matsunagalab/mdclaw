@@ -37,7 +37,7 @@ class TestPipeline1AKE:
     async def test_step1_download(self, job_dir):
         from research_server import download_structure
 
-        result = await download_structure.fn(
+        result = await download_structure(
             pdb_id="1AKE",
             format="pdb",
             output_dir=str(job_dir),
@@ -50,7 +50,7 @@ class TestPipeline1AKE:
     def test_step2a_inspect(self):
         from research_server import inspect_molecules
 
-        result = inspect_molecules.fn(structure_file=self.structure_file)
+        result = inspect_molecules(structure_file=self.structure_file)
         assert result["success"]
         assert any(c.get("chain_type") == "protein" for c in result["chains"])
         self.__class__.inspection = result
@@ -59,7 +59,7 @@ class TestPipeline1AKE:
     def test_step2b_split(self, job_dir):
         from structure_server import split_molecules
 
-        result = split_molecules.fn(
+        result = split_molecules(
             structure_file=self.structure_file,
             select_chains=["A"],
             include_types=["protein", "ion"],
@@ -72,7 +72,7 @@ class TestPipeline1AKE:
     def test_step3_prepare(self, job_dir):
         from structure_server import prepare_complex
 
-        result = prepare_complex.fn(
+        result = prepare_complex(
             structure_file=self.structure_file,
             output_dir=str(job_dir / "prepared"),
             select_chains=["A"],
@@ -89,7 +89,7 @@ class TestPipeline1AKE:
     def test_step4_solvate(self, job_dir):
         from solvation_server import solvate_structure
 
-        result = solvate_structure.fn(
+        result = solvate_structure(
             pdb_file=self.merged_pdb,
             output_dir=str(job_dir / "solvated"),
             water_model="opc",
@@ -106,7 +106,7 @@ class TestPipeline1AKE:
     def test_step5a_build_topology(self, job_dir):
         from amber_server import build_amber_system
 
-        result = build_amber_system.fn(
+        result = build_amber_system(
             pdb_file=self.solvated_pdb,
             box_dimensions=self.box_dims,
             forcefield="ff19SB",
@@ -123,7 +123,7 @@ class TestPipeline1AKE:
     def test_step5b_quick_md(self, job_dir):
         from md_simulation_server import run_md_simulation
 
-        result = run_md_simulation.fn(
+        result = run_md_simulation(
             prmtop_file=self.parm7,
             inpcrd_file=self.rst7,
             simulation_time_ns=0.001,

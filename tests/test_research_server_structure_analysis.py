@@ -19,7 +19,7 @@ def test_analyze_structure_details_does_not_treat_hie_as_ligand(tmp_path):
     p.write_text(pdb)
 
     # Force identify_ligands=True; should still return no ligand_analysis.
-    result = analyze_structure_details.fn(
+    result = analyze_structure_details(
         structure_file=str(p),
         ph=7.4,
         detect_disulfides=False,

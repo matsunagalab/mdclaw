@@ -1,7 +1,7 @@
 """
-Solvation Server - Solvation and membrane embedding with FastMCP.
+Solvation Server - Solvation and membrane embedding tools.
 
-Provides MCP tools for:
+Provides tools for:
 - Solvating protein-ligand complexes in water boxes using packmol-memgen
 - Embedding proteins in lipid bilayer membranes with packmol-memgen
 - Adding ions and salt for physiological conditions
@@ -23,8 +23,6 @@ import logging  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
-
-from fastmcp import FastMCP  # noqa: E402
 
 from servers._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
 from servers._common import get_timeout  # noqa: E402
@@ -186,9 +184,6 @@ def extract_box_size(pdb_file: str, packmol_inp: Optional[str] = None) -> Option
 
 logger = setup_logger(__name__)
 
-# Create FastMCP server
-mcp = FastMCP("Solvation Server")
-
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
@@ -288,7 +283,6 @@ def _solvate_with_openmm(
     return result
 
 
-@mcp.tool()
 def solvate_structure(
     pdb_file: str,
     output_dir: Optional[str] = None,
@@ -567,7 +561,6 @@ def solvate_structure(
     return result
 
 
-@mcp.tool()
 def embed_in_membrane(
     pdb_file: str,
     output_dir: Optional[str] = None,
@@ -878,7 +871,6 @@ def embed_in_membrane(
     return result
 
 
-@mcp.tool()
 def list_available_lipids() -> dict:
     """List available lipid types supported by packmol-memgen.
     
@@ -939,24 +931,14 @@ def list_available_lipids() -> dict:
     return result
 
 
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Solvation MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8004, help="Port for HTTP mode")
-    return parser.parse_args()
 
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "solvate_structure": solvate_structure,
+    "embed_in_membrane": embed_in_membrane,
+    "list_available_lipids": list_available_lipids,
+}
 

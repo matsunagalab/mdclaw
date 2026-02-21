@@ -1,5 +1,5 @@
 """
-MD Simulation Server - Molecular dynamics simulation & analysis with OpenMM and MDTraj.
+MD Simulation Server - Molecular dynamics simulation & analysis tools.
 
 Provides MCP tools for:
 - OpenMM MD simulation (NVT/NPT equilibration, production)
@@ -21,19 +21,13 @@ from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
-from fastmcp import FastMCP  # noqa: E402
-
 from servers._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, get_simulation_brief  # noqa: E402
-
-# Create FastMCP server
-mcp = FastMCP("MD Simulation Server")
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 
-@mcp.tool()
 def run_md_simulation(
     prmtop_file: str,
     inpcrd_file: str,
@@ -361,7 +355,6 @@ def run_md_simulation(
     return result
 
 
-@mcp.tool()
 def analyze_rmsd(
     trajectory_file: str,
     topology_file: str,
@@ -443,7 +436,6 @@ def analyze_rmsd(
     }
 
 
-@mcp.tool()
 def analyze_rmsf(
     trajectory_file: str,
     topology_file: str,
@@ -518,7 +510,6 @@ def analyze_rmsf(
     }
 
 
-@mcp.tool()
 def calculate_distance(
     trajectory_file: str,
     topology_file: str,
@@ -612,7 +603,6 @@ def calculate_distance(
     }
 
 
-@mcp.tool()
 def analyze_hydrogen_bonds(
     trajectory_file: str,
     topology_file: str,
@@ -718,7 +708,6 @@ def analyze_hydrogen_bonds(
     }
 
 
-@mcp.tool()
 def analyze_secondary_structure(
     trajectory_file: str,
     topology_file: str,
@@ -790,7 +779,6 @@ def analyze_secondary_structure(
     }
 
 
-@mcp.tool()
 def analyze_contacts(
     trajectory_file: str,
     topology_file: str,
@@ -886,7 +874,6 @@ def analyze_contacts(
     }
 
 
-@mcp.tool()
 def analyze_energy_timeseries(
     energy_file: str
 ) -> dict:
@@ -960,7 +947,6 @@ def analyze_energy_timeseries(
     
     return results
 
-@mcp.tool()
 def compute_q_value(
     trajectory_file: str,
     topology: Optional[str] = None,
@@ -1218,24 +1204,20 @@ def plot_q_value(q_list, native_contacts_with_indices, n_residue, output_contact
     plt.show()
 
 
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="MD Simulation MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8006, help="Port for HTTP mode")
-    return parser.parse_args()
 
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "run_md_simulation": run_md_simulation,
+    "analyze_rmsd": analyze_rmsd,
+    "analyze_rmsf": analyze_rmsf,
+    "calculate_distance": calculate_distance,
+    "analyze_hydrogen_bonds": analyze_hydrogen_bonds,
+    "analyze_secondary_structure": analyze_secondary_structure,
+    "analyze_contacts": analyze_contacts,
+    "analyze_energy_timeseries": analyze_energy_timeseries,
+    "compute_q_value": compute_q_value,
+}
 

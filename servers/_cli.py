@@ -1,4 +1,4 @@
-"""MDClaw CLI — invoke any MCP tool directly from the command line.
+"""MDClaw CLI — invoke any tool directly from the command line.
 
 Usage:
     mdclaw --list                          # List all tools
@@ -19,7 +19,7 @@ import sys
 from typing import Union, get_args, get_origin
 
 from servers import __version__
-from servers._mcp_main import SERVER_REGISTRY
+from servers._registry import SERVER_REGISTRY
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +39,10 @@ def _configure_logging():
 # ---------------------------------------------------------------------------
 
 def _discover_tools() -> dict[str, dict]:
-    """Import all servers and collect FunctionTool objects.
+    """Import all servers and collect tool functions from TOOLS dicts.
 
     Returns:
         dict mapping tool_name -> {
-            "tool": FunctionTool,
             "fn": callable,
             "is_async": bool,
             "server": str,
@@ -59,17 +58,13 @@ def _discover_tools() -> dict[str, dict]:
         except ImportError as e:
             print(f"Warning: cannot import {module_path}: {e}", file=sys.stderr)
             continue
-        mcp_inst = getattr(mod, "mcp", None)
-        if mcp_inst is None:
-            continue
-        # Access internal tool registry
-        for tool_name, func_tool in mcp_inst._tool_manager._tools.items():
+        module_tools = getattr(mod, "TOOLS", {})
+        for tool_name, fn in module_tools.items():
             tools[tool_name] = {
-                "tool": func_tool,
-                "fn": func_tool.fn,
-                "is_async": inspect.iscoroutinefunction(func_tool.fn),
+                "fn": fn,
+                "is_async": inspect.iscoroutinefunction(fn),
                 "server": server_name,
-                "description": func_tool.description or "",
+                "description": inspect.getdoc(fn) or "",
             }
     return tools
 

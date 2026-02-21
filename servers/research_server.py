@@ -1,10 +1,10 @@
 """
-Research Server - External database retrieval and structure inspection with FastMCP.
+Research Server - External database retrieval and structure inspection tools.
 
 This server integrates with external MCP servers (PDB-MCP-Server, AlphaFold-MCP-Server,
 UniProt-MCP-Server) from Augmented-Nature by implementing the same REST API calls.
 
-Provides MCP tools for:
+Provides tools for:
 - PDB structure retrieval and search (mirrors PDB-MCP-Server)
 - AlphaFold structure retrieval (mirrors AlphaFold-MCP-Server)
 - UniProt protein search and info (mirrors UniProt-MCP-Server)
@@ -20,16 +20,12 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastmcp import FastMCP
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from servers._common import setup_logger, ensure_directory, get_current_session  # noqa: E402
 
 logger = setup_logger(__name__)
-
-# Create FastMCP server
-mcp = FastMCP("Research Server")
 
 # Initialize working directory
 WORKING_DIR = Path("outputs")
@@ -108,7 +104,6 @@ METAL_ELEMENTS = {
 # =============================================================================
 
 
-@mcp.tool()
 async def download_structure(
     pdb_id: str,
     format: str = "pdb",
@@ -364,7 +359,6 @@ def _generate_chain_recommendation(info: dict) -> dict | None:
     }
 
 
-@mcp.tool()
 async def get_structure_info(pdb_id: str) -> dict:
     """Get detailed information for a specific PDB structure.
 
@@ -752,7 +746,6 @@ def _build_advanced_query(
         }
 
 
-@mcp.tool()
 async def search_structures(
     query: str,
     limit: int = 10,
@@ -1505,7 +1498,6 @@ def _calculate_md_suitability_score(
 # =============================================================================
 
 
-@mcp.tool()
 async def get_alphafold_structure(
     uniprot_id: str,
     format: str = "pdb",
@@ -1608,7 +1600,6 @@ async def get_alphafold_structure(
 # =============================================================================
 
 
-@mcp.tool()
 async def search_proteins(
     query: str,
     organism: Optional[str] = None,
@@ -1688,7 +1679,6 @@ async def search_proteins(
     return result
 
 
-@mcp.tool()
 async def get_protein_info(accession: str) -> dict:
     """Get detailed protein information from UniProt.
 
@@ -1804,7 +1794,6 @@ async def get_protein_info(accession: str) -> dict:
 # =============================================================================
 
 
-@mcp.tool()
 def inspect_molecules(structure_file: str) -> dict:
     """Inspect an mmCIF or PDB structure file and return detailed molecular information.
 
@@ -2524,7 +2513,6 @@ def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
     return ligands
 
 
-@mcp.tool()
 def analyze_structure_details(
     structure_file: str,
     ph: float = 7.4,
@@ -2669,23 +2657,17 @@ def analyze_structure_details(
     return result
 
 
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Research MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8001, help="Port for HTTP mode")
-    return parser.parse_args()
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "download_structure": download_structure,
+    "get_structure_info": get_structure_info,
+    "search_structures": search_structures,
+    "get_alphafold_structure": get_alphafold_structure,
+    "search_proteins": search_proteins,
+    "get_protein_info": get_protein_info,
+    "inspect_molecules": inspect_molecules,
+    "analyze_structure_details": analyze_structure_details,
+}

@@ -1,21 +1,8 @@
 #!/usr/bin/env python3
 """Literature Server - PubMed search and retrieval via NCBI E-utilities.
 
-This server provides tools for searching and fetching scientific literature
+Provides tools for searching and fetching scientific literature
 from PubMed to support evidence-based clarification in MD simulation setup.
-
-Usage:
-    # Stdio transport (default)
-    python literature_server.py
-
-    # HTTP transport (for Colab)
-    python literature_server.py --http --port 8008
-
-    # SSE transport
-    python literature_server.py --sse --port 8008
-
-    # Test with MCP Inspector
-    mcp dev servers/literature_server.py
 
 Environment variables:
     MDCLAW_NCBI_API_KEY: NCBI API key for higher rate limits (optional)
@@ -31,7 +18,6 @@ import xml.etree.ElementTree as ET
 from typing import Any
 
 import httpx
-from fastmcp import FastMCP
 
 # Configure logging
 logging.basicConfig(
@@ -41,11 +27,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Suppress noisy loggers
-for noisy_logger in ["httpx", "httpcore", "mcp.server"]:
+for noisy_logger in ["httpx", "httpcore"]:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
-
-# Create FastMCP server
-mcp = FastMCP("Literature Server")
 
 # NCBI E-utilities base URL
 EUTILS_BASE = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
@@ -278,7 +261,6 @@ def _parse_efetch(xml_text: str) -> list[dict[str, Any]]:
     return articles
 
 
-@mcp.tool()
 async def pubmed_search(
     query: str,
     retmax: int = 10,
@@ -381,7 +363,6 @@ async def pubmed_search(
     return result
 
 
-@mcp.tool()
 async def pubmed_fetch(
     pmids: str | list[str],
     include_abstract: bool = True,
@@ -480,41 +461,12 @@ async def pubmed_fetch(
     return result
 
 
-def _parse_args():
-    """Parse command line arguments."""
-    import argparse
 
-    parser = argparse.ArgumentParser(
-        description="Literature Server - PubMed search via NCBI E-utilities"
-    )
-    parser.add_argument(
-        "--http",
-        action="store_true",
-        help="Use HTTP transport (for Colab/remote)",
-    )
-    parser.add_argument(
-        "--sse",
-        action="store_true",
-        help="Use SSE transport",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8008,
-        help="Port for HTTP/SSE transport (default: 8008)",
-    )
-    return parser.parse_args()
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-
-if __name__ == "__main__":
-    args = _parse_args()
-
-    if args.http:
-        logger.info(f"Starting Literature Server with HTTP transport on port {args.port}")
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        logger.info(f"Starting Literature Server with SSE transport on port {args.port}")
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        logger.info("Starting Literature Server with stdio transport")
-        mcp.run()
+TOOLS = {
+    "pubmed_search": pubmed_search,
+    "pubmed_fetch": pubmed_fetch,
+}

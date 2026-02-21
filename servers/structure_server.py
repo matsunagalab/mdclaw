@@ -1,7 +1,7 @@
 """
-Structure Server - PDB retrieval and structure cleaning with FastMCP.
+Structure Server - PDB retrieval and structure cleaning tools.
 
-Provides MCP tools for:
+Provides tools for:
 - Automatic retrieval of structure files from PDB/AlphaFold/PDB-REDO (prefers mmCIF)
 - Chain separation and classification using gemmi
 - Structure cleaning, missing residue modeling, water/heterogen removal, and protonation using PDBFixer
@@ -29,12 +29,7 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
-from fastmcp import FastMCP  # noqa: E402
-
 from servers._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
-
-# Create FastMCP server
-mcp = FastMCP("Structure Server")
 
 # Initialize working directory
 WORKING_DIR = Path("outputs")
@@ -1087,7 +1082,6 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
     return result
 
 
-@mcp.tool()
 def split_molecules(
     structure_file: str,
     output_dir: Optional[str] = None,
@@ -1470,7 +1464,6 @@ def split_molecules(
     return result
 
 
-@mcp.tool()
 def clean_protein(
     pdb_file: str,
     ignore_terminal_missing_residues: bool = True,
@@ -2201,7 +2194,6 @@ def estimate_net_charge(
     return result
 
 
-@mcp.tool()
 def clean_ligand(
     ligand_pdb: str,
     ligand_id: str,
@@ -2471,7 +2463,6 @@ def clean_ligand(
     return result
 
 
-@mcp.tool()
 def run_antechamber_robust(
     ligand_file: str,
     output_dir: Optional[str] = None,
@@ -2888,7 +2879,6 @@ def _fix_amino_acid_hetatm_records(pdb_file: Path) -> None:
         logger.info(f"Removed {removed_het_count} HET header records for amino acid residues")
 
 
-@mcp.tool()
 def merge_structures(
     pdb_files: List[str],
     output_dir: Optional[str] = None,
@@ -3100,7 +3090,6 @@ def merge_structures(
     return result
 
 
-@mcp.tool()
 def prepare_complex(
     structure_file: str,
     output_dir: Optional[str] = None,
@@ -3263,8 +3252,7 @@ def prepare_complex(
         
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
-        # Note: In FastMCP 2.x, @mcp.tool() returns FunctionTool object, use .fn to call
-        split_result = split_molecules.fn(
+        split_result = split_molecules(
             str(structure_file),
             output_dir=str(out_dir.parent),  # Will create job_id subdirectory
             select_chains=select_chains,
@@ -3359,7 +3347,7 @@ def prepare_complex(
                 }
 
                 try:
-                    clean_result = clean_protein.fn(
+                    clean_result = clean_protein(
                         pdb_file=protein_file,
                         ph=ph,
                         cap_termini=cap_termini,
@@ -3465,7 +3453,7 @@ def prepare_complex(
                             logger.info(f"  Using user-specified charge {user_charge} for {ligand_id}")
 
                     # Clean ligand
-                    clean_result = clean_ligand.fn(
+                    clean_result = clean_ligand(
                         ligand_pdb=ligand_file,
                         ligand_id=ligand_id,
                         smiles=user_smiles,
@@ -3484,7 +3472,7 @@ def prepare_complex(
                         
                         # Run parameterization if requested
                         if run_parameterization:
-                            param_result = run_antechamber_robust.fn(
+                            param_result = run_antechamber_robust(
                                 ligand_file=clean_result["sdf_file"],
                                 net_charge=clean_result["net_charge"],
                                 residue_name=ligand_id[:3].upper(),  # 3-letter residue name
@@ -3555,7 +3543,7 @@ def prepare_complex(
                                 result["warnings"].append(f"No amber.pdb found for ligand {lig.get('ligand_id')}")
             
             if pdb_files_to_merge:
-                merge_result = merge_structures.fn(
+                merge_result = merge_structures(
                     pdb_files=pdb_files_to_merge,
                     output_dir=str(out_dir.parent),  # Will create subdirectory
                     output_name="merged"
@@ -3598,7 +3586,6 @@ def prepare_complex(
     return result
 
 
-@mcp.tool()
 def create_mutated_structutre(input_pdb: str, mutation_indices: str, mutation_residues: str, name: str = 'mutated') -> dict:
     """Create a mutated protein structure using FASPR.
     
@@ -3834,23 +3821,17 @@ def generate_structure(sequence: list, mutated_sequence: list, input_pdb: str) -
     
     return pdb_output
 
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Structure MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8002, help="Port for HTTP mode")
-    return parser.parse_args()
 
+# =============================================================================
+# Tool Registry
+# =============================================================================
 
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "split_molecules": split_molecules,
+    "clean_protein": clean_protein,
+    "clean_ligand": clean_ligand,
+    "run_antechamber_robust": run_antechamber_robust,
+    "merge_structures": merge_structures,
+    "prepare_complex": prepare_complex,
+    "create_mutated_structutre": create_mutated_structutre,
+}

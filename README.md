@@ -4,7 +4,7 @@
 
 MDClaw transforms any PDB structure, FASTA sequence, or ligand-SMILES into a production-ready Amber/OpenMM simulation setup through AI-powered tools and domain knowledge.
 
-**Architecture**: MCP servers (tools) + Skills (domain knowledge prompts) - works with Claude Code, Cursor, Windsurf, or any MCP-compatible AI assistant.
+**Architecture**: CLI tools + Skills (domain knowledge prompts) - works with Claude Code, Cursor, Windsurf, or any AI coding assistant.
 
 ## Installation as Claude Code Plugin
 
@@ -20,26 +20,14 @@ After installation, the following skills become available:
 - `/mdclaw:md-run` — Production MD execution
 - `/mdclaw:md-analyze` — Trajectory analysis
 
-### MCP Server Setup (Optional)
+### Tool Setup
 
-To use MCP tools (structure retrieval, parameterization, simulation execution), set up the environment separately:
+To use CLI tools (structure retrieval, parameterization, simulation execution), set up the environment:
 
 ```bash
 conda env create -f environment.yml
 conda activate mdclaw
 pip install -e .
-```
-
-Then add to your project's `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "mdclaw": {
-      "command": "mdclaw-mcp"
-    }
-  }
-}
 ```
 
 ## Quick Start
@@ -67,7 +55,7 @@ git clone https://github.com/matsunagalab/mdclaw.git
 cd mdclaw && pip install -e .
 ```
 
-Only the research, literature, and genesis servers will work. The conda environment is required for structure preparation and MD execution.
+Only the research, literature, and genesis tools will work. The conda environment is required for structure preparation and MD execution.
 
 ### 2. Use with Claude Code
 
@@ -88,16 +76,16 @@ claude
 > /md-analyze job_XXXXXXXX
 ```
 
-### 3. Use with Other AI Assistants
-
-Any MCP-compatible tool can use the unified MCP server:
+### 3. CLI Usage
 
 ```bash
-# Start the MCP server
-mdclaw-mcp
+# List all tools
+mdclaw --list
 
-# Or test with MCP Inspector
-mcp dev servers/_mcp_main.py
+# Run a tool (output is JSON on stdout)
+mdclaw download_structure --pdb-id 1AKE --format pdb
+mdclaw inspect_molecules --structure-file 1AKE.pdb
+mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 ```
 
 ## Architecture
@@ -116,7 +104,8 @@ skills/                    # Domain knowledge (platform-agnostic .md)
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
-  _mcp_main.py              # Unified MCP entry point (mdclaw-mcp)
+  _registry.py              # Tool registry (SERVER_REGISTRY dict)
+  _cli.py                   # CLI entry point (mdclaw)
   research_server.py        # PDB/AlphaFold/UniProt retrieval
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -134,9 +123,9 @@ tests/                      # 4-level test suite
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
-## MCP Servers
+## Tools
 
-| Server | Tools | Description |
+| Module | Tools | Description |
 |--------|-------|-------------|
 | research | `download_structure`, `get_alphafold_structure`, `inspect_molecules`, `search_proteins` | Structure retrieval and inspection |
 | structure | `prepare_complex`, `clean_protein`, `clean_ligand`, `split_molecules` | Structure cleaning and preparation |
@@ -146,16 +135,6 @@ tests/                      # 4-level test suite
 | md_simulation | `run_md_simulation` | OpenMM MD execution |
 | literature | `pubmed_search`, `pubmed_fetch` | Literature search |
 | metal | `parameterize_metal_ion`, `detect_metal_ions` | Metal ion handling |
-
-### Testing Individual Servers
-
-```bash
-mcp dev servers/research_server.py
-mcp dev servers/structure_server.py
-mcp dev servers/solvation_server.py
-mcp dev servers/amber_server.py
-mcp dev servers/md_simulation_server.py
-```
 
 ## Testing
 
@@ -187,6 +166,43 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 | 2 | `test_server_smoke.py` | 15 | conda env (ambertools, openmm, rdkit) |
 | 3 | `test_pipeline_1ake.py` | 7 | Network + full conda env |
 | 4 | `manual_checklist.md` | - | Claude Code interactive |
+
+## Development Workflow
+
+### Daily Development Cycle
+
+```
+1. Edit code in servers/
+2. Lint:    ruff check servers/
+3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
+4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
+5. Commit
+```
+
+### Adding a New Tool
+
+1. Add the function in the appropriate `servers/*_server.py` as a plain Python function
+2. Add the function to the `TOOLS` dict at the bottom of that server file
+3. Add unit test in `tests/test_mcp_server.py` (tool registration check)
+4. Add smoke test in `tests/test_server_smoke.py` (actual execution)
+5. Run `mdclaw --list` to verify CLI auto-discovery
+6. Update `CLAUDE.md` server section with the new tool signature
+
+### Adding a New Server
+
+1. Create `servers/new_server.py` with tool functions and a `TOOLS` dict
+2. Register in `servers/_registry.py` (`SERVER_REGISTRY`)
+3. Add to `servers/__init__.py` `__all__`
+4. Add smoke tests in `tests/test_server_smoke.py`
+5. Update `CLAUDE.md` architecture diagram and server section
+
+### Pre-commit Checklist
+
+```bash
+ruff check servers/                                      # lint
+pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
+pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
+```
 
 ## Configuration
 

@@ -11,7 +11,7 @@
     {
       "name": "mdclaw",
       "source": "./",
-      "description": "MD preparation, simulation, and analysis skills with MCP tools for the Amber/OpenMM ecosystem",
+      "description": "MD preparation, simulation, and analysis skills with CLI tools for the Amber/OpenMM ecosystem",
       "version": "0.4.0",
       "license": "MIT",
       "keywords": ["molecular-dynamics", "amber", "openmm"],

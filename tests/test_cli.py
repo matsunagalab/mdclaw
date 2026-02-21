@@ -30,7 +30,6 @@ class TestToolDiscovery:
 
         tools = _discover_tools()
         for name, info in tools.items():
-            assert "tool" in info, f"{name} missing 'tool'"
             assert "fn" in info, f"{name} missing 'fn'"
             assert "is_async" in info, f"{name} missing 'is_async'"
             assert "server" in info, f"{name} missing 'server'"
@@ -48,7 +47,7 @@ class TestToolDiscovery:
 
     def test_all_servers_represented(self):
         from servers._cli import _discover_tools
-        from servers._mcp_main import SERVER_REGISTRY
+        from servers._registry import SERVER_REGISTRY
 
         tools = _discover_tools()
         servers_found = {info["server"] for info in tools.values()}

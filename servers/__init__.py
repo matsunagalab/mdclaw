@@ -1,6 +1,6 @@
 """MDClaw - AI-powered molecular dynamics setup.
 
-MCP servers + skills architecture for MD simulation preparation.
+CLI tools + skills architecture for MD simulation preparation.
 """
 
 __version__ = "0.4.0"

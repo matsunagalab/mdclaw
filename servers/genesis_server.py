@@ -1,7 +1,7 @@
 """
-Genesis Server - Boltz-2 structure generation from sequence with FastMCP.
+Genesis Server - Boltz-2 structure generation from sequence.
 
-Provides MCP tools for:
+Provides tools for:
 - AI-driven protein structure prediction using Boltz-2
 - Protein-ligand complex structure prediction with binding affinity
 - SMILES validation and canonicalization using RDKit
@@ -28,14 +28,10 @@ from typing import Dict, Any, Optional  # noqa: E402
 
 import pubchempy as pcp  # noqa: E402
 import yaml  # noqa: E402
-from fastmcp import FastMCP  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from rdkit.Chem import Descriptors  # noqa: E402
 
 from servers._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
-
-# Create FastMCP server
-mcp = FastMCP("Genesis Server")
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -51,7 +47,6 @@ boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV)
 # =============================================================================
 
 
-@mcp.tool()
 def boltz2_protein_from_seq(
     amino_acid_sequence_list: list[str],
     smiles_list: list[str],
@@ -322,7 +317,6 @@ def _parse_boltz_results(output_dir: Path) -> Dict[str, Any]:
 
 
 
-@mcp.tool()
 def rdkit_validate_smiles(smiles: str) -> dict:
     """Validate a SMILES string and convert to canonical form.
 
@@ -369,7 +363,6 @@ def rdkit_validate_smiles(smiles: str) -> dict:
 
 
 
-@mcp.tool()
 def pubchem_get_smiles_from_name(chemical_name: str) -> dict:
     """Get SMILES string from a chemical compound name using PubChem.
 
@@ -423,7 +416,6 @@ def pubchem_get_smiles_from_name(chemical_name: str) -> dict:
 
 
 
-@mcp.tool()
 def pubchem_search_similar(smiles: str, n_results: int = 5, threshold: int = 80) -> dict:
     """Search PubChem for molecules similar to the input SMILES.
 
@@ -487,7 +479,6 @@ def pubchem_search_similar(smiles: str, n_results: int = 5, threshold: int = 80)
         return result
 
 
-@mcp.tool()
 def rdkit_calc_druglikeness(smiles: str) -> dict:
     """Calculate drug-likeness properties using Lipinski's Rule of Five.
 
@@ -566,48 +557,15 @@ def rdkit_calc_druglikeness(smiles: str) -> dict:
     logger.info(f"Drug-likeness: {'PASS' if result['passes_lipinski_rule'] else 'FAIL'}")
     return result
 
+
 # =============================================================================
-# Resources
+# Tool Registry
 # =============================================================================
 
-
-@mcp.resource("genesis://structures")
-def list_generated_structures() -> str:
-    """List all generated structures in the output directory.
-
-    Returns:
-        Newline-separated list of PDB file paths relative to output directory,
-        or a message if no structures have been generated yet.
-    """
-    structures = []
-
-    if WORKING_DIR.exists():
-        for pdb_file in WORKING_DIR.glob("**/*.pdb"):
-            try:
-                structures.append(str(pdb_file.relative_to(WORKING_DIR)))
-            except ValueError:
-                structures.append(str(pdb_file))
-
-    return "\n".join(sorted(structures)) if structures else "No structures generated yet"
-
-
-def _parse_args():
-    """Parse command line arguments for server mode."""
-    import argparse
-    parser = argparse.ArgumentParser(description="Genesis MCP Server")
-    parser.add_argument("--http", action="store_true", help="Run in Streamable HTTP mode")
-    parser.add_argument("--sse", action="store_true", help="Run in SSE mode (deprecated)")
-    parser.add_argument("--port", type=int, default=8003, help="Port for HTTP mode")
-    return parser.parse_args()
-
-
-if __name__ == "__main__":
-    args = _parse_args()
-    if args.http:
-        # Streamable HTTP transport (recommended) - endpoint at /mcp
-        mcp.run(transport="http", host="0.0.0.0", port=args.port)
-    elif args.sse:
-        # SSE transport (deprecated) - endpoint at /sse
-        mcp.run(transport="sse", host="0.0.0.0", port=args.port)
-    else:
-        mcp.run()
+TOOLS = {
+    "boltz2_protein_from_seq": boltz2_protein_from_seq,
+    "rdkit_validate_smiles": rdkit_validate_smiles,
+    "pubchem_get_smiles_from_name": pubchem_get_smiles_from_name,
+    "pubchem_search_similar": pubchem_search_similar,
+    "rdkit_calc_druglikeness": rdkit_calc_druglikeness,
+}

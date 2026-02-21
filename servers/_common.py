@@ -1,4 +1,4 @@
-"""Shared utilities for MCP servers.
+"""Shared utilities for tool modules.
 
 Provides: logging, directory management, external tool wrappers, error helpers.
 """
@@ -29,7 +29,6 @@ def _quiet_noisy_loggers():
     _noisy_loggers_quieted = True
 
     for name in (
-        "mcp", "mcp.server", "mcp.server.lowlevel", "mcp.server.stdio",
         "httpx", "httpcore", "urllib3", "asyncio", "openai", "anthropic",
     ):
         logging.getLogger(name).setLevel(logging.WARNING)
@@ -115,7 +114,7 @@ def count_atoms_in_pdb(pdb_path: Union[str, Path]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Session / brief (read-only helpers for MCP servers)
+# Session / brief (read-only helpers for tool modules)
 # ---------------------------------------------------------------------------
 
 

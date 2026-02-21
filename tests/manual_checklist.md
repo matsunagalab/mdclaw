@@ -6,13 +6,12 @@ Run these manually after all automated tests pass.
 ## Prerequisite
 
 - [ ] `pip install -e .` in mdclaw conda env
-- [ ] `mdclaw-mcp` starts without errors (Ctrl+C to exit)
 
-## MCP Server
+## CLI Tools
 
-- [ ] `mcp dev servers/_mcp_main.py` opens Inspector
-- [ ] Inspector shows tools from all 8 servers
-- [ ] Can call `list_available_lipids` in Inspector (simple smoke test)
+- [ ] `mdclaw --list` shows all 37 tools grouped by server
+- [ ] `mdclaw --version` shows version
+- [ ] `mdclaw download_structure --help` shows tool-specific help
 
 ## Claude Code Interactive Mode
 

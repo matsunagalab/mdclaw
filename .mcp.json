@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "mdclaw": {
-      "command": "mdclaw-mcp",
-      "args": [],
-      "env": {}
-    }
-  }
-}
