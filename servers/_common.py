@@ -249,7 +249,7 @@ class BaseToolWrapper:
                 exe_path = result.stdout.strip()
                 if exe_path:
                     return exe_path
-            except subprocess.CalledProcessError:
+            except (subprocess.CalledProcessError, FileNotFoundError):
                 pass
         return None
 

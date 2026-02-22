@@ -24,15 +24,21 @@ FROM condaforge/mambaforge:latest AS build
 WORKDIR /build
 
 # Copy environment definition and project files
-COPY environment.yml pyproject.toml ./
+COPY environment.yml pyproject.toml README.md ./
 COPY servers/ servers/
 
-# Create the conda environment
-RUN mamba env create -f environment.yml -n mdclaw && \
+# Create conda environment (strip editable install from environment.yml;
+# the package is installed separately in the next step)
+RUN sed '/- -e \./d' environment.yml > environment-docker.yml && \
+    mamba env create -f environment-docker.yml -n mdclaw && \
     mamba clean -afy
 
+# Install PyTorch with CUDA support (via pip to avoid conda solver conflicts)
+RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu124 && \
+    mamba run -n mdclaw pip cache purge
+
 # Install mdclaw package into the environment
-RUN mamba run -n mdclaw pip install --no-deps . && \
+RUN mamba run -n mdclaw pip install . && \
     mamba run -n mdclaw pip cache purge
 
 # Apply packmol-memgen numpy compatibility patch
@@ -51,7 +57,7 @@ RUN mamba install -n base -y conda-pack && \
 # =============================================================================
 # Stage 2: Slim runtime
 # =============================================================================
-FROM ubuntu:22.04
+FROM nvidia/cuda:12.6.3-runtime-ubuntu22.04
 
 # Minimal runtime dependencies
 RUN apt-get update && \
@@ -68,7 +74,7 @@ RUN mkdir -p /opt/mdclaw
 COPY --from=build /build/mdclaw_env.tar.gz /tmp/mdclaw_env.tar.gz
 RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
     rm /tmp/mdclaw_env.tar.gz && \
-    /opt/mdclaw/bin/conda-unpack
+    /opt/mdclaw/bin/python /opt/mdclaw/bin/conda-unpack
 
 # Set environment variables
 ENV PATH="/opt/mdclaw/bin:$PATH"
