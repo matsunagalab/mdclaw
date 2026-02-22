@@ -1,4 +1,4 @@
-# MDClaw: End-to-End Molecular Dynamics Setup in Minutes
+# MDClaw: A personal MD assistant
 
 **From PDB ID to Production-Ready Simulation - Automated**
 
