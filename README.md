@@ -1,4 +1,4 @@
-# MDClaw: A personal MD assistant
+# MDClaw: Your personal MD assistant
 
 **From PDB ID to Production-Ready Simulation - Automated**
 
