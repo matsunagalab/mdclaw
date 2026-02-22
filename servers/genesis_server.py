@@ -38,7 +38,7 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 # Initialize Boltz-2 wrapper
-CORRECT_CONDA_ENV = "mcp-md"
+CORRECT_CONDA_ENV = "mdclaw"
 boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV)
 
 
@@ -197,7 +197,7 @@ def boltz2_protein_from_seq(
     boltz_executable_path = boltz_wrapper.executable
     if not boltz_executable_path:
         result["errors"].append("Boltz executable not found")
-        result["errors"].append("Hint: Install Boltz-2 or activate the mcp-md conda environment")
+        result["errors"].append("Hint: Install Boltz-2 or activate the mdclaw conda environment")
         return result
 
     # Run Boltz-2

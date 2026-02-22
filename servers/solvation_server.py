@@ -697,7 +697,7 @@ def embed_in_membrane(
     # Check packmol-memgen availability
     if not packmol_memgen_wrapper.is_available():
         result["errors"].append("packmol-memgen not found in PATH")
-        result["errors"].append("Hint: Install AmberTools or activate the mcp-md conda environment")
+        result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
         logger.error("packmol-memgen not available")
         return result
 

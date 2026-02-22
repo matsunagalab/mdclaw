@@ -775,7 +775,7 @@ def build_amber_system(
         logger.error("tleap not available")
         return create_tool_not_available_error(
             "tleap",
-            "Install AmberTools or activate the mcp-md conda environment"
+            "Install AmberTools or activate the mdclaw conda environment"
         )
 
     # Validate force field

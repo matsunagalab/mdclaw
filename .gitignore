@@ -48,6 +48,7 @@ htmlcov/
 test_output/
 
 # MDClaw specific
+*.sif
 output/
 outputs/
 .mdclaw_cache/

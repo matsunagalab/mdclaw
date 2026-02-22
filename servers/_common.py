@@ -161,6 +161,11 @@ def get_module_loads() -> list[str]:
     return s.split() if s else []
 
 
+def is_containerized() -> bool:
+    """Detect if running inside a Singularity or Docker container."""
+    return Path("/.singularity.d").exists() or Path("/.dockerenv").exists()
+
+
 def run_command(
     cmd: list[str],
     cwd: Optional[Union[str, Path]] = None,

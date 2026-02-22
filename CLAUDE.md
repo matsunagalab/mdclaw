@@ -45,6 +45,11 @@ servers/                    # All Python code consolidated here
   metal_server.py           # Metal ion parameterization
   slurm_server.py           # SLURM job submission & management
 
+container/                  # Docker/Singularity containerization
+  Dockerfile                # Multi-stage build (mambaforge -> conda-pack -> slim)
+  scripts/entrypoint.sh     # Container entrypoint (conda activate + exec)
+  scripts/test-container.sh # Container verification script
+
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
   test_mcp_server.py        # Level 1: Unit tests (config, registry)
@@ -223,6 +228,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `check_job_log(job_id, log_type, tail_lines)` - Read job log files
 - `set_policy(allowed_partitions, denied_partitions, max_gpus_per_job, max_cpus_per_task, max_nodes, max_time_limit, max_memory, default_partition, default_account, default_qos)` - Set resource policy
 - `show_policy()` - Show current resource policy
+- `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ## CLI Interface
 

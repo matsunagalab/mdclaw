@@ -46,8 +46,39 @@ conda activate mdclaw
 
 #### HPC (Singularity Container)
 
-Build the conda environment locally, then create a `.sif` image using a Singularity definition file and transfer it to the cluster.
-(Definition file will be provided in a future release.)
+Pull the pre-built Docker image and convert to Singularity SIF:
+
+```bash
+# On a machine with Singularity installed
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+
+# Transfer to your cluster
+scp mdclaw.sif user@cluster:/opt/containers/
+
+# Run with GPU
+singularity exec --nv mdclaw.sif mdclaw --list
+```
+
+Or build the Docker image locally and convert:
+
+```bash
+# Build Docker image
+docker build -f container/Dockerfile -t mdclaw:latest .
+
+# Convert to Singularity SIF
+singularity pull mdclaw.sif docker-daemon://mdclaw:latest
+```
+
+Configure MDClaw to use the container for SLURM jobs:
+
+```bash
+mdclaw configure_container \
+  --image /opt/containers/mdclaw.sif \
+  --bind-paths /scratch /data \
+  --extra-flags "--nv"
+```
+
+After configuration, `submit_job` automatically wraps commands with `singularity exec`.
 
 #### pip Only (No AmberTools/OpenMM)
 
@@ -212,7 +243,7 @@ tests/                      # 4-level test suite
 | md_simulation | `run_md_simulation` | OpenMM MD execution |
 | literature | `pubmed_search`, `pubmed_fetch` | Literature search |
 | metal | `parameterize_metal_ion`, `detect_metal_ions` | Metal ion handling |
-| slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy` | SLURM job management |
+| slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy`, `configure_container` | SLURM job management |
 
 ## Testing
 

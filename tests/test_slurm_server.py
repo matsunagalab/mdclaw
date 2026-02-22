@@ -11,6 +11,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from servers.slurm_server import (
+    _build_singularity_command,
+    _extract_bind_paths,
     _is_partition_allowed,
     _parse_memory_bytes,
     _parse_time_limit_seconds,
@@ -18,6 +20,7 @@ from servers.slurm_server import (
     cancel_job,
     check_job,
     check_job_log,
+    configure_container,
     inspect_cluster,
     list_jobs,
     set_policy,
@@ -896,6 +899,249 @@ class TestSubmitJobPolicy:
             nodes=4, cpus_per_task=64, output_dir=str(tmp_path),
         )
         assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Container helpers
+# ---------------------------------------------------------------------------
+
+
+class TestExtractBindPaths:
+    """Test _extract_bind_paths helper."""
+
+    def test_file_args(self, tmp_path):
+        cmd = f"mdclaw run_md --prmtop-file {tmp_path}/sys.parm7 --inpcrd-file {tmp_path}/sys.rst7"
+        paths = _extract_bind_paths(cmd)
+        assert str(tmp_path) in paths
+
+    def test_dir_args(self, tmp_path):
+        cmd = f"mdclaw run_md --output-dir {tmp_path}/output"
+        paths = _extract_bind_paths(cmd)
+        assert any("output" in p for p in paths)
+
+    def test_no_file_args(self):
+        paths = _extract_bind_paths("echo hello world")
+        assert paths == []
+
+
+class TestBuildSingularityCommand:
+    """Test _build_singularity_command helper."""
+
+    def test_basic_wrap(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        container = {"image": "/opt/mdclaw.sif"}
+        result = _build_singularity_command("mdclaw --list", container, str(tmp_path))
+        assert result.startswith("singularity exec")
+        assert "/opt/mdclaw.sif" in result
+        assert "mdclaw --list" in result
+
+    def test_nv_flag(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        container = {"image": "/opt/mdclaw.sif", "extra_flags": "--nv"}
+        result = _build_singularity_command("mdclaw --list", container, str(tmp_path))
+        assert "--nv" in result
+
+    def test_bind_paths(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        container = {
+            "image": "/opt/mdclaw.sif",
+            "bind_paths": ["/scratch", "/data"],
+        }
+        result = _build_singularity_command("mdclaw --list", container, str(tmp_path))
+        assert "/scratch" in result
+        assert "/data" in result
+        assert "--bind" in result
+
+    def test_auto_extracts_file_args(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        container = {"image": "/opt/mdclaw.sif"}
+        cmd = f"mdclaw run_md --prmtop-file {tmp_path}/sys.parm7"
+        result = _build_singularity_command(cmd, container, str(tmp_path))
+        assert str(tmp_path) in result
+
+
+# ---------------------------------------------------------------------------
+# configure_container
+# ---------------------------------------------------------------------------
+
+
+class TestConfigureContainer:
+    """Test configure_container tool."""
+
+    def test_set_image(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({}))
+
+        result = configure_container(image="/opt/mdclaw.sif")
+        assert result["success"] is True
+        assert result["container"]["image"] == "/opt/mdclaw.sif"
+
+        saved = json.loads((tmp_path / ".mdclaw_cluster.json").read_text())
+        assert saved["container"]["image"] == "/opt/mdclaw.sif"
+
+    def test_set_with_binds_and_flags(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({}))
+
+        result = configure_container(
+            image="/opt/mdclaw.sif",
+            bind_paths=["/scratch", "/data"],
+            extra_flags="--nv",
+        )
+        assert result["success"] is True
+        assert result["container"]["bind_paths"] == ["/scratch", "/data"]
+        assert result["container"]["extra_flags"] == "--nv"
+
+    def test_disable(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = {"container": {"image": "/opt/mdclaw.sif"}}
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+
+        result = configure_container(disable=True)
+        assert result["success"] is True
+
+        saved = json.loads((tmp_path / ".mdclaw_cluster.json").read_text())
+        assert "container" not in saved
+
+    def test_no_image_error(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps({}))
+
+        result = configure_container(bind_paths=["/scratch"])
+        assert result["success"] is False
+        assert "image" in str(result["errors"]).lower()
+
+    def test_merge_update(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = {
+            "container": {
+                "image": "/opt/mdclaw.sif",
+                "extra_flags": "--nv",
+            }
+        }
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+
+        result = configure_container(bind_paths=["/scratch"])
+        assert result["success"] is True
+        assert result["container"]["image"] == "/opt/mdclaw.sif"
+        assert result["container"]["extra_flags"] == "--nv"
+        assert result["container"]["bind_paths"] == ["/scratch"]
+
+    def test_no_config_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = configure_container(image="/opt/mdclaw.sif")
+        assert result["success"] is True
+        assert (tmp_path / ".mdclaw_cluster.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Container execution in submit_job
+# ---------------------------------------------------------------------------
+
+
+class TestContainerExecution:
+    """Test that submit_job wraps commands with singularity when configured."""
+
+    @patch("servers.slurm_server.check_external_tool", return_value=True)
+    @patch("servers.slurm_server.run_command")
+    def test_container_wrap(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        config = {
+            "partitions": [{"name": "gpu", "gpus_per_node": 4}],
+            "container": {
+                "image": "/opt/containers/mdclaw.sif",
+                "extra_flags": "--nv",
+                "bind_paths": ["/scratch"],
+            },
+        }
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10001\n")
+
+        result = submit_job(
+            script="mdclaw run_md_simulation --prmtop-file /data/sys.parm7",
+            partition="gpu",
+            gpus=1,
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+
+        content = Path(result["script_file"]).read_text()
+        assert "singularity exec" in content
+        assert "--nv" in content
+        assert "/opt/containers/mdclaw.sif" in content
+        assert "/scratch" in content
+
+    @patch("servers.slurm_server.check_external_tool", return_value=True)
+    @patch("servers.slurm_server.run_command")
+    def test_environment_overrides_container(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """When environment is explicitly set, container wrapping is skipped."""
+        monkeypatch.chdir(tmp_path)
+        config = {
+            "partitions": [{"name": "gpu", "gpus_per_node": 4}],
+            "container": {
+                "image": "/opt/containers/mdclaw.sif",
+                "extra_flags": "--nv",
+            },
+        }
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10002\n")
+
+        result = submit_job(
+            script="echo test",
+            partition="gpu",
+            environment="module load cuda/12.0\nmodule load amber/24",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+
+        content = Path(result["script_file"]).read_text()
+        assert "singularity exec" not in content
+        assert "module load cuda/12.0" in content
+
+    @patch("servers.slurm_server.check_external_tool", return_value=True)
+    @patch("servers.slurm_server.run_command")
+    def test_no_container_no_wrap(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """Without container config, commands are not wrapped."""
+        monkeypatch.chdir(tmp_path)
+        config = {"partitions": [{"name": "gpu", "gpus_per_node": 4}]}
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10003\n")
+
+        result = submit_job(
+            script="echo test",
+            partition="gpu",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+
+        content = Path(result["script_file"]).read_text()
+        assert "singularity" not in content
+
+    @patch("servers.slurm_server.check_external_tool", return_value=True)
+    @patch("servers.slurm_server.run_command")
+    def test_inspect_preserves_container(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """inspect_cluster should preserve existing container config."""
+        monkeypatch.chdir(tmp_path)
+        existing = {
+            "partitions": [],
+            "container": {
+                "image": "/opt/mdclaw.sif",
+                "extra_flags": "--nv",
+            },
+        }
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(existing))
+
+        sinfo_json = {
+            "sinfo": [{"partition": {"name": "gpu"}, "nodes": {"total": 4}, "gres": "gpu:a100:4"}]
+        }
+        mock_run.return_value = _mock_run_command(stdout=json.dumps(sinfo_json))
+
+        result = inspect_cluster()
+        assert result["success"] is True
+
+        saved = json.loads((tmp_path / ".mdclaw_cluster.json").read_text())
+        assert saved["container"]["image"] == "/opt/mdclaw.sif"
+        assert saved["container"]["extra_flags"] == "--nv"
 
 
 if __name__ == "__main__":

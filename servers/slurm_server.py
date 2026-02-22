@@ -29,6 +29,10 @@ from servers._common import (
     run_command,
 )
 
+# File-argument flags used to auto-extract bind paths for Singularity
+_FILE_ARG_PATTERN = re.compile(r"--[\w-]*file\s+(\S+)")
+_DIR_ARG_PATTERN = re.compile(r"--[\w-]*dir\s+(\S+)")
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -206,6 +210,73 @@ def _find_job_metadata(job_id: str) -> Optional[dict]:
     return None
 
 
+def _get_container_config(config: Optional[dict] = None) -> Optional[dict]:
+    """Get the container section from cluster config (None if absent or disabled)."""
+    if config is None:
+        config = _load_cluster_config()
+    if config is None:
+        return None
+    container = config.get("container")
+    if container and not container.get("disabled", False):
+        return container
+    return None
+
+
+def _extract_bind_paths(command: str) -> list[str]:
+    """Extract directories from --*-file and --*-dir arguments in a command.
+
+    Returns unique, resolved parent directories of referenced files/dirs.
+    """
+    paths: set[str] = set()
+    for m in _FILE_ARG_PATTERN.finditer(command):
+        p = Path(m.group(1)).resolve()
+        paths.add(str(p.parent))
+    for m in _DIR_ARG_PATTERN.finditer(command):
+        p = Path(m.group(1)).resolve()
+        paths.add(str(p))
+    return sorted(paths)
+
+
+def _build_singularity_command(
+    command: str,
+    container: dict,
+    output_dir: str,
+) -> str:
+    """Wrap a command with singularity exec.
+
+    Args:
+        command: The original command to run.
+        container: Container config dict with image, bind_paths, extra_flags.
+        output_dir: The job output directory (always bound).
+
+    Returns:
+        The singularity exec ... command string.
+    """
+    image = container["image"]
+    extra_flags = container.get("extra_flags", "")
+    user_binds = container.get("bind_paths", [])
+
+    # Collect all bind paths: output_dir + auto-extracted + user-configured
+    bind_set: set[str] = {str(Path(output_dir).resolve())}
+    bind_set.update(_extract_bind_paths(command))
+    bind_set.update(user_binds)
+    # Add cwd
+    bind_set.add(str(Path.cwd().resolve()))
+
+    # Remove empty strings
+    bind_set.discard("")
+
+    bind_arg = ",".join(sorted(bind_set))
+    parts = ["singularity exec"]
+    if extra_flags:
+        parts.append(extra_flags)
+    parts.append(f"--bind {bind_arg}")
+    parts.append(image)
+    parts.append(command.strip())
+
+    return " ".join(parts)
+
+
 def _generate_sbatch_script(
     command: str,
     job_name: str,
@@ -223,8 +294,16 @@ def _generate_sbatch_script(
     environment: Optional[str],
     stdout_log: str,
     stderr_log: str,
+    container: Optional[dict] = None,
 ) -> str:
-    """Generate a complete sbatch script string."""
+    """Generate a complete sbatch script string.
+
+    Args:
+        container: If provided and ``environment`` is None, the job command is
+            wrapped with ``singularity exec``.  When ``environment`` is
+            explicitly set, module-load based setup takes precedence over
+            container execution.
+    """
     lines = ["#!/bin/bash"]
 
     # SBATCH directives
@@ -256,7 +335,7 @@ def _generate_sbatch_script(
 
     lines.append("")
 
-    # Environment setup
+    # Environment setup — explicit `environment` takes precedence over container
     env_lines = environment
     if not env_lines:
         modules = get_module_loads()
@@ -271,9 +350,16 @@ def _generate_sbatch_script(
         lines.append(env_lines.strip())
         lines.append("")
 
-    # Command
+    # Command — wrap with singularity if container is configured and no
+    # explicit environment was provided (environment takes precedence)
+    actual_command = command.strip()
+    if container and not environment:
+        actual_command = _build_singularity_command(
+            actual_command, container, output_dir,
+        )
+
     lines.append("# Job command")
-    lines.append(command.strip())
+    lines.append(actual_command)
     lines.append("")
 
     return "\n".join(lines)
@@ -447,11 +533,12 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
     result["total_nodes"] = total_nodes
     result["total_gpus"] = total_gpus
 
-    # Save config (preserve existing policy section)
+    # Save config (preserve existing policy and container sections)
     out_path = Path(output_file) if output_file else Path.cwd() / ".mdclaw_cluster.json"
     try:
         existing_config = _load_cluster_config(str(out_path))
         existing_policy = existing_config.get("policy", {}) if existing_config else {}
+        existing_container = existing_config.get("container") if existing_config else None
 
         config = {
             "partitions": partitions,
@@ -461,6 +548,8 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
         }
         if existing_policy:
             config["policy"] = existing_policy
+        if existing_container:
+            config["container"] = existing_container
 
         out_path.write_text(json.dumps(config, indent=2))
         result["config_file"] = str(out_path)
@@ -639,6 +728,9 @@ def submit_job(
         # Treat as a command string
         command = script
 
+    # Container config — used when environment is not explicitly provided
+    container = _get_container_config(config)
+
     sbatch_content = _generate_sbatch_script(
         command=command,
         job_name=job_name,
@@ -656,6 +748,7 @@ def submit_job(
         environment=environment,
         stdout_log=stdout_log,
         stderr_log=stderr_log,
+        container=container,
     )
 
     # Write the sbatch script
@@ -1208,6 +1301,86 @@ def show_policy() -> dict:
     return result
 
 
+def configure_container(
+    image: Optional[str] = None,
+    bind_paths: Optional[list[str]] = None,
+    extra_flags: Optional[str] = None,
+    disable: bool = False,
+) -> dict:
+    """Configure Singularity container execution for SLURM jobs.
+
+    When configured, ``submit_job`` will wrap commands with
+    ``singularity exec`` automatically (unless ``environment`` is
+    explicitly provided, which takes precedence).
+
+    Args:
+        image: Path to the Singularity .sif image file.
+        bind_paths: Additional host directories to bind-mount into the
+            container.  Output directories and file arguments are
+            auto-detected.
+        extra_flags: Extra flags for singularity exec (e.g., ``--nv``
+            for GPU support).
+        disable: Set True to disable container execution (removes the
+            container section from config).
+
+    Returns:
+        dict with:
+          - success: bool
+          - container: dict - The current container config (after update)
+          - config_file: str
+          - errors: list[str]
+    """
+    result: dict[str, Any] = {
+        "success": False,
+        "container": {},
+        "config_file": None,
+        "errors": [],
+    }
+
+    config_path = Path.cwd() / ".mdclaw_cluster.json"
+    config = _load_cluster_config(str(config_path))
+    if config is None:
+        config = {}
+
+    if disable:
+        config.pop("container", None)
+        try:
+            _save_cluster_config(config, str(config_path))
+            result["success"] = True
+            result["config_file"] = str(config_path)
+        except OSError as e:
+            result["errors"].append(f"Failed to save config: {e}")
+        return result
+
+    container = config.get("container", {})
+
+    if image is not None:
+        container["image"] = image
+    if bind_paths is not None:
+        container["bind_paths"] = bind_paths
+    if extra_flags is not None:
+        container["extra_flags"] = extra_flags
+
+    if not container.get("image"):
+        result["errors"].append(
+            "Container image path is required. "
+            "Provide --image /path/to/mdclaw.sif"
+        )
+        return result
+
+    config["container"] = container
+
+    try:
+        _save_cluster_config(config, str(config_path))
+        result["success"] = True
+        result["container"] = container
+        result["config_file"] = str(config_path)
+    except OSError as e:
+        result["errors"].append(f"Failed to save config: {e}")
+
+    return result
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
@@ -1221,4 +1394,5 @@ TOOLS = {
     "check_job_log": check_job_log,
     "set_policy": set_policy,
     "show_policy": show_policy,
+    "configure_container": configure_container,
 }

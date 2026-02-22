@@ -22,6 +22,30 @@ Before submitting jobs, verify:
 
 ---
 
+## Container Setup (Optional)
+
+If the cluster uses a Singularity container instead of module-loaded environments:
+
+```bash
+# Configure the container image
+mdclaw configure_container \
+  --image /opt/containers/mdclaw.sif \
+  --bind-paths /scratch /data \
+  --extra-flags "--nv"
+```
+
+Once configured, `submit_job` automatically wraps commands with `singularity exec --nv --bind ... mdclaw.sif`.
+
+To disable container execution (revert to module-load based):
+
+```bash
+mdclaw configure_container --disable
+```
+
+**Note**: If `--environment` is explicitly passed to `submit_job`, it takes precedence over container execution. This allows mixing container and module-based workflows.
+
+---
+
 ## Step 1: Cluster Discovery
 
 Inspect the cluster to discover partitions, GPUs, and time limits:
