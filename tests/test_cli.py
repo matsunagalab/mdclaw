@@ -253,6 +253,82 @@ class TestSubprocessCLI:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# HPC Parameters
+# ---------------------------------------------------------------------------
+
+
+class TestHPCParameters:
+    """Test new HPC-related CLI parameters for run_md_simulation."""
+
+    def test_platform_param(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_md_simulation",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+            "--platform", "CUDA",
+            "--device-index", "0",
+        ])
+        assert args.platform == "CUDA"
+        assert args.device_index == "0"
+
+    def test_restart_params(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_md_simulation",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+            "--restart-from", "checkpoint.chk",
+        ])
+        assert args.restart_from == "checkpoint.chk"
+
+    def test_hmr_params(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_md_simulation",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+            "--hmr",
+            "--timestep-fs", "4.0",
+        ])
+        assert args.hmr is True
+        assert args.timestep_fs == 4.0
+
+    def test_hmr_default_false(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_md_simulation",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+        ])
+        assert args.hmr is False
+        assert args.platform == "auto"
+        assert args.device_index is None
+        assert args.restart_from is None
+
+
+# ---------------------------------------------------------------------------
+# Tool List Output
+# ---------------------------------------------------------------------------
+
+
 class TestToolListOutput:
     """Test _print_tool_list formatting."""
 

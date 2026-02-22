@@ -83,6 +83,49 @@ For membrane-embedded systems:
 
 ---
 
+## HPC / SLURM Usage
+
+### GPU Selection
+```bash
+mdclaw run_md_simulation --platform CUDA --device-index "0" \
+  --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --simulation-time-ns 100.0
+```
+
+### Hydrogen Mass Repartitioning (HMR) - ~2x Throughput
+HMR redistributes hydrogen mass to allow 4 fs timestep (vs standard 2 fs):
+```bash
+mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --hmr --timestep-fs 4.0 --simulation-time-ns 100.0
+```
+
+### Checkpoint / Restart
+Initial run creates checkpoint.chk automatically. On SLURM timeout, restart from the last checkpoint:
+```bash
+# Initial run
+mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --simulation-time-ns 100.0 --platform CUDA
+
+# Restart (appends to DCD, runs only remaining steps)
+mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --simulation-time-ns 100.0 --platform CUDA \
+  --restart-from /path/to/checkpoint.chk
+```
+
+### Environment Variables for HPC
+```bash
+export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # module load commands
+export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script
+export MDCLAW_MD_SIMULATION_TIMEOUT=172800  # 48h for long runs
+```
+
+**Notes:**
+- OpenMM checkpoints are platform-specific (CUDA checkpoint cannot be loaded on CPU)
+- On restart, the same DCD file path must be used for trajectory append
+- CheckpointReporter saves periodically; SLURM kill restarts from the last save
+
+---
+
 ## Troubleshooting
 
 - **SHAKE constraint failure**: Reduce timestep to 1 fs, or check for bad geometry in input structure

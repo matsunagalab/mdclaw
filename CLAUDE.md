@@ -200,7 +200,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane)` - tleap
 
 ### md_simulation_server.py
-- `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, ...)` - OpenMM
+- `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr)` - OpenMM
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed
@@ -265,6 +265,8 @@ export MDCLAW_SOLVATION_TIMEOUT=600
 export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_LOG_LEVEL=WARNING
+export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # HPC module load commands
+export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ```
 
 ## Known Issues

@@ -155,18 +155,63 @@ def check_external_tool(tool_name: str) -> bool:
         return False
 
 
+def get_module_loads() -> list[str]:
+    """Get module names from MDCLAW_MODULE_LOADS environment variable."""
+    s = os.getenv("MDCLAW_MODULE_LOADS", "").strip()
+    return s.split() if s else []
+
+
 def run_command(
     cmd: list[str],
     cwd: Optional[Union[str, Path]] = None,
     timeout: Optional[int] = None,
     capture_output: bool = True,
+    env: Optional[dict] = None,
+    use_modules: bool = False,
 ) -> subprocess.CompletedProcess:
-    """Run external command with error handling."""
+    """Run external command with error handling.
+
+    Args:
+        cmd: Command and arguments.
+        cwd: Working directory.
+        timeout: Timeout in seconds.
+        capture_output: Capture stdout/stderr.
+        env: Extra environment variables merged into os.environ.
+        use_modules: If True, prepend ``module load`` commands from
+            MDCLAW_MODULE_LOADS before running *cmd* (requires shell=True).
+    """
+    run_env = None
+    if env:
+        run_env = {**os.environ, **env}
+
+    if use_modules:
+        modules = get_module_loads()
+        if modules:
+            module_init = os.getenv("MDCLAW_MODULE_INIT", "/etc/profile.d/modules.sh")
+            load_cmds = " && ".join(f"module load {m}" for m in modules)
+            shell_cmd = f"source {module_init} && {load_cmds} && {' '.join(cmd)}"
+            logger.debug(f"Running with modules: {shell_cmd}")
+            try:
+                result = subprocess.run(
+                    shell_cmd, shell=True, cwd=cwd,
+                    capture_output=capture_output, text=True,
+                    timeout=timeout, check=True,
+                    env=run_env or None,
+                )
+                return result
+            except subprocess.CalledProcessError as e:
+                logger.error(f"Command failed: {e.stderr}")
+                raise
+            except subprocess.TimeoutExpired:
+                logger.error(f"Command timed out after {timeout}s")
+                raise
+
     logger.debug(f"Running command: {' '.join(cmd)}")
     try:
         result = subprocess.run(
             cmd, cwd=cwd, capture_output=capture_output,
             text=True, timeout=timeout, check=True,
+            env=run_env or None,
         )
         return result
     except subprocess.CalledProcessError as e:
@@ -219,7 +264,7 @@ class BaseToolWrapper:
         else:
             cmd = [self.executable] + args
         logger.debug(f"Running: {' '.join(cmd)}")
-        return run_command(cmd, cwd=cwd, timeout=timeout)
+        return run_command(cmd, cwd=cwd, timeout=timeout, env=env_vars)
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,11 @@ def run_md_simulation(
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
     is_membrane: bool = False,
-    implicit_solvent: Optional[str] = None
+    implicit_solvent: Optional[str] = None,
+    platform: str = "auto",
+    device_index: Optional[str] = None,
+    restart_from: Optional[str] = None,
+    hmr: bool = False,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -71,6 +75,15 @@ def run_md_simulation(
                      - "GBn": GBn model (igb=7)
                      - "GBn2": GBn2 model (igb=8, Amber recommended)
                      Note: NPT not supported with implicit solvent - uses NVT.
+        platform: OpenMM platform - "CUDA", "OpenCL", "CPU", "Reference", or
+                     "auto" (default). "auto" lets OpenMM choose the fastest.
+        device_index: GPU device index (e.g. "0", "0,1"). Only used with
+                     CUDA or OpenCL platforms.
+        restart_from: Path to checkpoint file (.chk) to restart from.
+                     Skips minimization, appends to existing DCD, and runs
+                     only the remaining steps.
+        hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=2 amu).
+                     Allows 4 fs timestep for ~2x throughput improvement.
 
     Returns:
         Dict with:
@@ -107,6 +120,12 @@ def run_md_simulation(
         "initial_energy_kj_mol": None,
         "final_energy_kj_mol": None,
         "num_steps": None,
+        "platform": None,
+        "device_index": None,
+        "checkpoint_file": None,
+        "restarted_from": None,
+        "steps_completed": None,
+        "hmr": False,
         "errors": [],
         "warnings": []
     }
@@ -156,13 +175,13 @@ def run_md_simulation(
         return result
 
     try:
-        from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter
-        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, MonteCarloMembraneBarostat
+        from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter, CheckpointReporter
+        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, MonteCarloMembraneBarostat, Platform
         from openmm.app import Simulation, PME, NoCutoff, HBonds
         # Implicit solvent models (Generalized Born)
         from openmm.app import HCT, OBC1, OBC2, GBn, GBn2
         from openmm.unit import (
-            nanometer, kelvin, picosecond, femtoseconds, bar
+            nanometer, kelvin, picosecond, femtoseconds, bar, amu
         )
     except ImportError:
         result["errors"].append("OpenMM not installed")
@@ -195,6 +214,18 @@ def run_md_simulation(
                 implicit_solvent = brief.get("implicit_solvent_model", "OBC2")
                 logger.info(f"Auto-detected implicit solvent from simulation_brief: {implicit_solvent}")
 
+        # HMR (Hydrogen Mass Repartitioning)
+        hmr_kwargs = {}
+        if hmr:
+            hmr_kwargs["hydrogenMass"] = 2.0 * amu
+            logger.info(f"HMR enabled: hydrogenMass=2.0 amu (timestep={timestep_fs}fs)")
+            if timestep_fs <= 2.0:
+                result["warnings"].append(
+                    f"HMR enabled but timestep is {timestep_fs}fs. "
+                    f"Consider using --timestep-fs 4.0 for better throughput."
+                )
+            result["hmr"] = True
+
         # Create system - handle implicit vs explicit solvent
         logger.info("Creating OpenMM system")
         if implicit_solvent:
@@ -206,6 +237,7 @@ def run_md_simulation(
                 constraints=HBonds,
                 soluteDielectric=1.0,
                 solventDielectric=78.5,
+                **hmr_kwargs,
             )
             logger.info(f"Using implicit solvent ({implicit_solvent}) with NoCutoff")
             result["solvent_type"] = "implicit"
@@ -215,14 +247,16 @@ def run_md_simulation(
             system = prmtop.createSystem(
                 nonbondedMethod=PME,
                 nonbondedCutoff=1.0*nanometer,
-                constraints=HBonds
+                constraints=HBonds,
+                **hmr_kwargs,
             )
             result["solvent_type"] = "explicit"
         else:
             # Non-periodic without implicit model - use NoCutoff (vacuum)
             system = prmtop.createSystem(
                 nonbondedMethod=NoCutoff,
-                constraints=HBonds
+                constraints=HBonds,
+                **hmr_kwargs,
             )
             logger.warning("Non-periodic system without implicit solvent specified - using NoCutoff (vacuum)")
             result["solvent_type"] = "vacuum"
@@ -268,31 +302,73 @@ def run_md_simulation(
             timestep_fs * femtoseconds
         )
 
-        # Create simulation
-        simulation = Simulation(prmtop.topology, system, integrator)
-        simulation.context.setPositions(inpcrd.positions)
+        # Platform selection
+        PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
+        platform_obj = None
+        platform_properties = {}
+        if platform.lower() != "auto":
+            plat_key = platform.lower()
+            if plat_key not in PLATFORM_MAP:
+                result["errors"].append(
+                    f"Unknown platform '{platform}'. "
+                    f"Valid options: auto, CUDA, OpenCL, CPU, Reference"
+                )
+                return result
+            platform_obj = Platform.getPlatformByName(PLATFORM_MAP[plat_key])
+            if device_index and plat_key in ("cuda", "opencl"):
+                platform_properties["DeviceIndex"] = device_index
 
-        # Set box vectors for periodic explicit solvent systems (required for PME)
-        if is_periodic and not implicit_solvent:
-            if inpcrd.boxVectors is not None:
-                simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+        # Create simulation
+        if platform_obj:
+            simulation = Simulation(
+                prmtop.topology, system, integrator,
+                platform=platform_obj, platformProperties=platform_properties,
+            )
+        else:
+            simulation = Simulation(prmtop.topology, system, integrator)
+
+        result["platform"] = simulation.context.getPlatform().getName()
+        if device_index:
+            result["device_index"] = device_index
+
+        # File name prefix
+        pref = f"{name}_" if name else ""
+        checkpoint_file = out_dir / f"{pref}checkpoint.chk"
+
+        # Load checkpoint or set initial positions
+        if restart_from:
+            restart_path = Path(restart_from)
+            if not restart_path.is_file():
+                result["errors"].append(f"Checkpoint file not found: {restart_from}")
+                return result
+            simulation.loadCheckpoint(str(restart_path))
+            append_dcd = True
+            result["restarted_from"] = restart_from
+            logger.info(f"Restarted from checkpoint (step {simulation.currentStep})")
+        else:
+            append_dcd = False
+            simulation.context.setPositions(inpcrd.positions)
+            # Set box vectors for periodic explicit solvent systems (required for PME)
+            if is_periodic and not implicit_solvent:
+                if inpcrd.boxVectors is not None:
+                    simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
         # Apply restraints if provided
         if restraint_file and Path(restraint_file).is_file():
             logger.info(f"Applying restraints from {restraint_file}")
             result["warnings"].append("Restraint file parsing not yet implemented")
 
-        # File name prefix
-        pref = f"{name}_" if name else ""
-
         # Setup output file paths
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
         energy_file = out_dir / f"{pref}energy.dat"
 
+        # Only append if restarting AND the file already exists
+        do_append = append_dcd and trajectory_file.exists()
+
         # Setup trajectory reporter
         report_interval = int(output_frequency_ps / timestep_fs * 1000)
         if trajectory_format.lower() == "dcd":
-            simulation.reporters.append(DCDReporter(str(trajectory_file), report_interval))
+            simulation.reporters.append(DCDReporter(str(trajectory_file), report_interval, append=do_append))
         else:
             from openmm.app import PDBReporter
             simulation.reporters.append(PDBReporter(str(trajectory_file), report_interval))
@@ -308,8 +384,14 @@ def run_md_simulation(
             totalEnergy=True,
             temperature=True,
             volume=(ensemble == "NPT"),
-            density=(ensemble == "NPT")
+            density=(ensemble == "NPT"),
+            append=(append_dcd and energy_file.exists()),
         ))
+
+        # Checkpoint reporter - periodic checkpoint saves
+        checkpoint_interval = max(report_interval * 10, 5000)
+        simulation.reporters.append(CheckpointReporter(str(checkpoint_file), checkpoint_interval))
+        result["checkpoint_file"] = str(checkpoint_file)
 
         # Get initial energy
         state = simulation.context.getState(getEnergy=True)
@@ -317,16 +399,34 @@ def run_md_simulation(
         result["initial_energy_kj_mol"] = float(initial_energy._value)
         logger.info(f"Initial energy: {initial_energy}")
 
-        # Minimize energy (increased maxIterations to handle high-energy systems)
-        logger.info("Minimizing energy...")
-        simulation.minimizeEnergy(maxIterations=5000)
+        # Minimize energy (skip on restart)
+        if not restart_from:
+            logger.info("Minimizing energy...")
+            simulation.minimizeEnergy(maxIterations=5000)
 
         # Run simulation
         simulation_steps = int(simulation_time_ns * 1000000 / timestep_fs)
         result["num_steps"] = simulation_steps
-        logger.info(f"Running {simulation_steps} steps ({simulation_time_ns}ns)")
 
-        simulation.step(simulation_steps)
+        # On restart, compute remaining steps
+        steps_to_run = simulation_steps - simulation.currentStep
+        if steps_to_run <= 0:
+            result["warnings"].append(
+                f"Already completed ({simulation.currentStep} steps done, "
+                f"{simulation_steps} requested)"
+            )
+            steps_to_run = 0
+
+        logger.info(f"Running {steps_to_run} steps (total: {simulation_steps}, current: {simulation.currentStep})")
+
+        if steps_to_run > 0:
+            simulation.step(steps_to_run)
+
+        # Save final checkpoint (periodic reporter may not have fired for short runs)
+        simulation.saveCheckpoint(str(checkpoint_file))
+        logger.info(f"Final checkpoint saved: {checkpoint_file}")
+
+        result["steps_completed"] = simulation.currentStep
 
         # Get final energy and positions
         state = simulation.context.getState(getEnergy=True, getPositions=True)

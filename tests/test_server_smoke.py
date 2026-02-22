@@ -226,17 +226,13 @@ class TestAmberServer:
 class TestMDSimulationServer:
     """Smoke tests for md_simulation_server.py tools."""
 
-    def test_run_md_simulation(self, small_pdb, tmp_path):
-        """Run a very short MD simulation (0.001 ns = 1 ps).
-
-        Full dependency chain: prepare -> solvate -> build -> simulate.
-        """
+    @staticmethod
+    def _build_topology(small_pdb, tmp_path):
+        """Helper: prepare -> solvate -> build topology (shared setup)."""
         from structure_server import prepare_complex
         from solvation_server import solvate_structure
         from amber_server import build_amber_system
-        from md_simulation_server import run_md_simulation
 
-        # Step 1: Prepare
         prep = prepare_complex(
             structure_file=small_pdb,
             output_dir=str(tmp_path / "prep"),
@@ -248,7 +244,6 @@ class TestMDSimulationServer:
         )
         assert prep["success"] is True
 
-        # Step 2: Solvate
         solv = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
@@ -259,7 +254,6 @@ class TestMDSimulationServer:
         )
         assert solv["success"] is True
 
-        # Step 3: Build topology
         amber = build_amber_system(
             pdb_file=solv["output_file"],
             box_dimensions=solv.get("box_dimensions"),
@@ -268,8 +262,18 @@ class TestMDSimulationServer:
             output_dir=str(tmp_path / "amber"),
         )
         assert amber["success"] is True
+        return amber
 
-        # Step 4: Quick MD (1 ps)
+    def test_run_md_simulation(self, small_pdb, tmp_path):
+        """Run a very short MD simulation (0.001 ns = 1 ps).
+
+        Full dependency chain: prepare -> solvate -> build -> simulate.
+        """
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        # Quick MD (1 ps)
         result = run_md_simulation(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
@@ -281,6 +285,125 @@ class TestMDSimulationServer:
             output_dir=str(tmp_path / "md"),
         )
         assert result["success"] is True
+        assert result["checkpoint_file"] is not None
+        assert result["steps_completed"] is not None
+        assert result["platform"] is not None
+
+    def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
+        """Run MD with explicit CPU platform selection."""
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        result = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_cpu"),
+            platform="CPU",
+        )
+        assert result["success"] is True
+        assert result["platform"] == "CPU"
+
+    def test_run_md_with_checkpoint(self, small_pdb, tmp_path):
+        """Verify CheckpointReporter creates a checkpoint file."""
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        result = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_chk"),
+            platform="CPU",
+        )
+        assert result["success"] is True
+        assert result["checkpoint_file"] is not None
+        assert Path(result["checkpoint_file"]).exists()
+
+    def test_run_md_restart(self, small_pdb, tmp_path):
+        """Run MD, then restart from checkpoint and verify DCD append."""
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        # First run
+        r1 = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_r1"),
+            platform="CPU",
+        )
+        assert r1["success"] is True
+        chk = r1["checkpoint_file"]
+        assert Path(chk).exists()
+
+        # Restart: request same total time (should complete quickly)
+        r2 = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.002,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_r2"),
+            platform="CPU",
+            restart_from=chk,
+        )
+        assert r2["success"] is True
+        assert r2["restarted_from"] == chk
+
+    def test_run_md_with_hmr(self, small_pdb, tmp_path):
+        """Run MD with HMR enabled and 4fs timestep."""
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        result = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=4.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_hmr"),
+            platform="CPU",
+            hmr=True,
+        )
+        assert result["success"] is True
+        assert result["hmr"] is True
+
+    def test_run_md_invalid_platform(self, small_pdb, tmp_path):
+        """Invalid platform name returns error."""
+        from md_simulation_server import run_md_simulation
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        result = run_md_simulation(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            output_dir=str(tmp_path / "md_bad"),
+            platform="INVALID_PLATFORM",
+        )
+        assert result["success"] is False
+        assert any("Unknown platform" in e for e in result["errors"])
 
 
 # ---------------------------------------------------------------------------

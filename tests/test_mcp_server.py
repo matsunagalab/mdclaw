@@ -103,6 +103,33 @@ class TestConfig:
 
 
 # ---------------------------------------------------------------------------
+# HPC Utilities (get_module_loads)
+# ---------------------------------------------------------------------------
+
+
+class TestHPCUtilities:
+    """Test HPC utility functions in servers/_common.py."""
+
+    def test_get_module_loads_empty(self, monkeypatch):
+        monkeypatch.delenv("MDCLAW_MODULE_LOADS", raising=False)
+        from servers._common import get_module_loads
+
+        assert get_module_loads() == []
+
+    def test_get_module_loads_set(self, monkeypatch):
+        monkeypatch.setenv("MDCLAW_MODULE_LOADS", "cuda/12.0 amber/24")
+        from servers._common import get_module_loads
+
+        assert get_module_loads() == ["cuda/12.0", "amber/24"]
+
+    def test_get_module_loads_whitespace_only(self, monkeypatch):
+        monkeypatch.setenv("MDCLAW_MODULE_LOADS", "   ")
+        from servers._common import get_module_loads
+
+        assert get_module_loads() == []
+
+
+# ---------------------------------------------------------------------------
 # Package Init
 # ---------------------------------------------------------------------------
 
