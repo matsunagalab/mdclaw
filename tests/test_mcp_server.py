@@ -70,6 +70,16 @@ class TestImportServers:
             for tool_name, fn in mod.TOOLS.items():
                 assert callable(fn), f"{module_path}.TOOLS['{tool_name}'] is not callable"
 
+    def test_run_md_simulation_has_random_seed_param(self):
+        """run_md_simulation accepts a random_seed parameter."""
+        import inspect
+        from servers.md_simulation_server import run_md_simulation
+
+        sig = inspect.signature(run_md_simulation)
+        assert "random_seed" in sig.parameters, "run_md_simulation missing 'random_seed' param"
+        param = sig.parameters["random_seed"]
+        assert param.default is None, "random_seed default should be None"
+
 
 # ---------------------------------------------------------------------------
 # Config (get_timeout in servers/_common.py)

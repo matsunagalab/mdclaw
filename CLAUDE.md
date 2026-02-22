@@ -204,7 +204,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane)` - tleap
 
 ### md_simulation_server.py
-- `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr)` - OpenMM
+- `run_md_simulation(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed)` - OpenMM
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed

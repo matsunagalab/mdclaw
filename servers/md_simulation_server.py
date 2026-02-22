@@ -46,6 +46,7 @@ def run_md_simulation(
     device_index: Optional[str] = None,
     restart_from: Optional[str] = None,
     hmr: bool = False,
+    random_seed: Optional[int] = None,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -84,6 +85,11 @@ def run_md_simulation(
                      only the remaining steps.
         hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=2 amu).
                      Allows 4 fs timestep for ~2x throughput improvement.
+        random_seed: Random number seed for reproducible simulations.
+                     Controls integrator and initial velocity randomization.
+                     If None (default), OpenMM uses system entropy.
+                     Different seeds produce independent trajectories from
+                     the same initial configuration.
 
     Returns:
         Dict with:
@@ -126,6 +132,7 @@ def run_md_simulation(
         "restarted_from": None,
         "steps_completed": None,
         "hmr": False,
+        "random_seed": None,
         "errors": [],
         "warnings": []
     }
@@ -283,6 +290,8 @@ def run_md_simulation(
                     pressure_bar * bar,
                     temperature_kelvin * kelvin
                 )
+            if random_seed is not None:
+                barostat.setRandomNumberSeed(random_seed)
             system.addForce(barostat)
             ensemble = "NPT"
         elif implicit_solvent and pressure_bar is not None:
@@ -301,6 +310,9 @@ def run_md_simulation(
             1.0 / picosecond,
             timestep_fs * femtoseconds
         )
+        if random_seed is not None:
+            integrator.setRandomNumberSeed(random_seed)
+            result["random_seed"] = random_seed
 
         # Platform selection
         PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
@@ -403,6 +415,15 @@ def run_md_simulation(
         if not restart_from:
             logger.info("Minimizing energy...")
             simulation.minimizeEnergy(maxIterations=5000)
+            # Set initial velocities from Maxwell-Boltzmann distribution
+            if random_seed is not None:
+                simulation.context.setVelocitiesToTemperature(
+                    temperature_kelvin * kelvin, random_seed
+                )
+            else:
+                simulation.context.setVelocitiesToTemperature(
+                    temperature_kelvin * kelvin
+                )
 
         # Run simulation
         simulation_steps = int(simulation_time_ns * 1000000 / timestep_fs)
