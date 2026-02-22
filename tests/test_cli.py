@@ -23,7 +23,7 @@ class TestToolDiscovery:
         from servers._cli import _discover_tools
 
         tools = _discover_tools()
-        assert len(tools) >= 37, f"Expected >=37 tools, got {len(tools)}"
+        assert len(tools) >= 45, f"Expected >=45 tools, got {len(tools)}"
 
     def test_each_tool_has_required_keys(self):
         from servers._cli import _discover_tools
@@ -327,6 +327,89 @@ class TestHPCParameters:
 # ---------------------------------------------------------------------------
 # Tool List Output
 # ---------------------------------------------------------------------------
+
+
+class TestSlurmCLIParameters:
+    """Test SLURM tool CLI parameter mapping."""
+
+    def test_submit_job_params(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "submit_job",
+            "--script", "echo hello",
+            "--partition", "gpu",
+            "--gpus", "1",
+            "--time-limit", "12:00:00",
+        ])
+        assert args.script == "echo hello"
+        assert args.partition == "gpu"
+        assert args.gpus == 1
+        assert args.time_limit == "12:00:00"
+
+    def test_check_job_params(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args(["check_job", "--job-id", "12345"])
+        assert args.job_id == "12345"
+
+    def test_inspect_cluster_no_required(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        # inspect_cluster has no required params
+        args = parser.parse_args(["inspect_cluster"])
+        assert hasattr(args, "tool_name")
+
+    def test_slurm_tools_in_list(self, capsys):
+        from servers._cli import _discover_tools, _print_tool_list
+
+        tools = _discover_tools()
+        _print_tool_list(tools)
+        captured = capsys.readouterr()
+        assert "[slurm]" in captured.out
+        assert "submit_job" in captured.out
+        assert "check_job" in captured.out
+        assert "inspect_cluster" in captured.out
+
+
+class TestPolicyCLIParameters:
+    """Test policy tool CLI parameter mapping."""
+
+    def test_set_policy_params(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "set_policy",
+            "--allowed-partitions", "gpu", "cpu",
+            "--max-gpus-per-job", "2",
+            "--max-nodes", "1",
+            "--default-account", "myproject",
+        ])
+        assert args.allowed_partitions == ["gpu", "cpu"]
+        assert args.max_gpus_per_job == 2
+        assert args.max_nodes == 1
+        assert args.default_account == "myproject"
+
+    def test_show_policy_no_required(self):
+        from servers._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args(["show_policy"])
+        assert hasattr(args, "tool_name")
 
 
 class TestToolListOutput:

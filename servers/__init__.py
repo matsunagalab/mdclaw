@@ -11,4 +11,5 @@ __all__ = [
     "solvation_server",
     "amber_server",
     "md_simulation_server",
+    "slurm_server",
 ]

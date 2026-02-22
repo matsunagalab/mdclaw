@@ -19,6 +19,7 @@ After installation, the following skills become available:
 - `/mdclaw:md-prepare` — MD simulation preparation
 - `/mdclaw:md-run` — Production MD execution
 - `/mdclaw:md-analyze` — Trajectory analysis
+- `/mdclaw:hpc-run` — HPC/SLURM job submission and management
 
 ### Tool Setup
 
@@ -74,6 +75,12 @@ claude
 
 # Analyze trajectory
 > /md-analyze job_XXXXXXXX
+
+# Submit MD simulation to HPC cluster via SLURM
+> /hpc-run submit 100ns MD simulation of 1AKE to GPU partition
+
+# Check job status / recover from errors
+> /hpc-run check job 12345 and restart if timed out
 ```
 
 ### 3. CLI Usage
@@ -88,6 +95,73 @@ mdclaw inspect_molecules --structure-file 1AKE.pdb
 mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 ```
 
+### 4. HPC/SLURM Usage
+
+MDClaw provides generic SLURM tools for submitting and managing batch jobs on HPC clusters.
+
+```bash
+# Discover cluster partitions, GPUs, and time limits
+mdclaw inspect_cluster
+
+# Submit a job (command string or script file)
+mdclaw submit_job \
+  --script "mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 --platform CUDA --hmr --timestep-fs 4.0" \
+  --partition gpu --gpus 1 --time-limit "24:00:00" --memory "64G"
+
+# Submit an existing script file
+mdclaw submit_job --script run_md.sh --partition gpu --gpus 1 --time-limit "24:00:00"
+
+# Check job status
+mdclaw check_job --job-id 12345
+
+# List your jobs
+mdclaw list_jobs
+
+# Read job logs (stderr/stdout)
+mdclaw check_job_log --job-id 12345 --log-type stderr --tail-lines 100
+
+# Cancel a job
+mdclaw cancel_job --job-id 12345
+```
+
+#### Resource Policy
+
+On shared clusters, set resource limits to avoid overuse:
+
+```bash
+# Set allowed partitions and resource limits
+mdclaw set_policy \
+  --allowed-partitions gpu cpu-small \
+  --max-gpus-per-job 2 \
+  --max-cpus-per-task 16 \
+  --max-nodes 1 \
+  --max-time-limit "24:00:00" \
+  --max-memory "128G" \
+  --default-account myproject \
+  --default-qos normal
+
+# View current policy
+mdclaw show_policy
+```
+
+Policy is stored in the `policy` section of `.mdclaw_cluster.json`.
+When set, `submit_job` rejects requests that exceed the limits.
+All fields are optional — omitted fields have no restriction.
+
+| Field | Example | Description |
+|-------|---------|-------------|
+| `--allowed-partitions` | `gpu cpu-small` | Only these partitions can be used |
+| `--max-gpus-per-job` | `2` | Maximum GPUs per job |
+| `--max-cpus-per-task` | `16` | Maximum CPUs per task |
+| `--max-nodes` | `1` | Maximum nodes per job |
+| `--max-time-limit` | `"24:00:00"` | Maximum wall time (HH:MM:SS or D-HH:MM:SS) |
+| `--max-memory` | `"128G"` | Maximum memory per node |
+| `--default-account` | `myproject` | Default SLURM account |
+| `--default-qos` | `normal` | Default quality of service |
+| `--default-partition` | `gpu` | Default partition |
+
+The SLURM tools are workload-agnostic: use them for MD simulations, Boltz-2 structure predictions, or any other batch computation. The `/hpc-run` skill provides domain-specific guidance for resource estimation, error recovery, and checkpoint restarts.
+
 ## Architecture
 
 ```
@@ -95,11 +169,13 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-prepare/SKILL.md      # Structure -> Solvation -> Topology -> Quick MD
   md-run/SKILL.md           # Production MD runs
   md-analyze/SKILL.md       # Trajectory analysis
+  hpc-run/SKILL.md          # HPC/SLURM job management
 
 .claude/commands/           # Claude Code slash commands
   md-prepare.md             # /md-prepare
   md-run.md                 # /md-run
   md-analyze.md             # /md-analyze
+  hpc-run.md                # /hpc-run
 
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
@@ -114,6 +190,7 @@ servers/                    # All Python code consolidated here
   md_simulation_server.py   # OpenMM MD execution
   literature_server.py      # PubMed search
   metal_server.py           # Metal ion parameterization
+  slurm_server.py           # SLURM job submission & management
 
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures
@@ -135,6 +212,7 @@ tests/                      # 4-level test suite
 | md_simulation | `run_md_simulation` | OpenMM MD execution |
 | literature | `pubmed_search`, `pubmed_fetch` | Literature search |
 | metal | `parameterize_metal_ion`, `detect_metal_ions` | Metal ion handling |
+| slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy` | SLURM job management |
 
 ## Testing
 
@@ -215,6 +293,9 @@ Settings via `MDCLAW_` environment variables:
 | `MDCLAW_SOLVATION_TIMEOUT` | `600` | Solvation timeout |
 | `MDCLAW_MEMBRANE_TIMEOUT` | `7200` | Membrane building timeout |
 | `MDCLAW_MD_SIMULATION_TIMEOUT` | `3600` | MD execution timeout |
+| `MDCLAW_SLURM_TIMEOUT` | `120` | SLURM command timeout |
+| `MDCLAW_MODULE_LOADS` | _(unset)_ | HPC module load commands (e.g., `cuda/12.0 amber/24`) |
+| `MDCLAW_MODULE_INIT` | `/etc/profile.d/modules.sh` | Module system init script path |
 
 ## Troubleshooting
 

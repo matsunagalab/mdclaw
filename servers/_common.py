@@ -280,6 +280,7 @@ _TIMEOUT_DEFAULTS = {
     "membrane": 7200,
     "amber": 900,
     "md_simulation": 3600,
+    "slurm": 120,
 }
 
 

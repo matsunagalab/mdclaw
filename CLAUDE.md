@@ -18,11 +18,13 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-prepare/SKILL.md      # Full MD preparation workflow
   md-run/SKILL.md           # Production MD runs
   md-analyze/SKILL.md       # Trajectory analysis
+  hpc-run/SKILL.md          # HPC/SLURM job management
 
 .claude/commands/           # Claude Code slash commands
   md-prepare.md             # /md-prepare -> reads SKILL.md
   md-run.md                 # /md-run
   md-analyze.md             # /md-analyze
+  hpc-run.md                # /hpc-run
 
 .claude-plugin/              # Plugin marketplace metadata
   plugin.json
@@ -41,6 +43,7 @@ servers/                    # All Python code consolidated here
   md_simulation_server.py   # OpenMM MD execution
   literature_server.py      # PubMed search
   metal_server.py           # Metal ion parameterization
+  slurm_server.py           # SLURM job submission & management
 
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
@@ -50,6 +53,7 @@ tests/                      # 4-level test suite
   test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
   test_literature_server.py  # PubMed server tests
   test_research_server_structure_analysis.py  # Structure analysis tests
+  test_slurm_server.py      # SLURM server mock tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -210,9 +214,19 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `detect_metal_ions(pdb_file)` - Find metal ions
 - `parameterize_metal_ion(pdb_file, metal_name, ...)` - Metal parameters
 
+### slurm_server.py
+- `inspect_cluster(output_file)` - Discover partitions, GPUs, save config (preserves existing policy)
+- `submit_job(script, job_name, partition, nodes, ntasks, cpus_per_task, gpus, time_limit, memory, output_dir, account, qos, extra_sbatch, environment)` - Submit SLURM batch job (validates against policy)
+- `check_job(job_id)` - Check job status (squeue/sacct)
+- `list_jobs(all_users)` - List user's SLURM jobs
+- `cancel_job(job_id)` - Cancel a SLURM job
+- `check_job_log(job_id, log_type, tail_lines)` - Read job log files
+- `set_policy(allowed_partitions, denied_partitions, max_gpus_per_job, max_cpus_per_task, max_nodes, max_time_limit, max_memory, default_partition, default_account, default_qos)` - Set resource policy
+- `show_policy()` - Show current resource policy
+
 ## CLI Interface
 
-`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 37 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 45 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 
@@ -265,6 +279,7 @@ export MDCLAW_SOLVATION_TIMEOUT=600
 export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_LOG_LEVEL=WARNING
+export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # HPC module load commands
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ```

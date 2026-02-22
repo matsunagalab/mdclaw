@@ -22,7 +22,7 @@ class TestServerRegistry:
     def test_registry_has_all_servers(self):
         from servers._registry import SERVER_REGISTRY
 
-        assert len(SERVER_REGISTRY) == 8
+        assert len(SERVER_REGISTRY) == 9
 
     def test_registry_keys(self):
         from servers._registry import SERVER_REGISTRY
@@ -36,6 +36,7 @@ class TestServerRegistry:
             "genesis",
             "literature",
             "metal",
+            "slurm",
         }
         assert set(SERVER_REGISTRY.keys()) == expected
 

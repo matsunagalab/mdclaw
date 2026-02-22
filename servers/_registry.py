@@ -9,4 +9,5 @@ SERVER_REGISTRY = {
     "genesis": "servers.genesis_server",
     "literature": "servers.literature_server",
     "metal": "servers.metal_server",
+    "slurm": "servers.slurm_server",
 }
