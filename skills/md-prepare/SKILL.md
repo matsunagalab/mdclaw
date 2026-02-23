@@ -65,7 +65,6 @@ After each step, update `progress.json` in the job directory:
   },
   "artifacts": {
     "structure_file": "",
-    "selected_structure_file": "",
     "merged_pdb": "",
     "solvated_pdb": "",
     "parm7": "",
@@ -103,25 +102,25 @@ Create the job directory with a unique ID (e.g., `job_<8-hex-chars>/`) at the st
 
 ---
 
-### Step 2: Select & Prepare
+### Step 2: Inspect & Decide
 
-**Goal**: Inspect the structure, select chains and decide on ligand inclusion.
+**Goal**: Inspect the structure and decide on chain/ligand selection for Step 3.
 
 **Tools** (Bash):
 - `mdclaw inspect_molecules --structure-file <file>`
-- `mdclaw split_molecules --structure-file <file> --select-chains A B --include-types protein ligand ion --use-author-chains`
-- `mdclaw merge_structures --pdb-files file1.pdb file2.pdb --output-name merged`
 
 **Logic**:
-1. Call `mdclaw inspect_molecules` to identify chains and ligands
+1. Call `mdclaw inspect_molecules` to identify chains, ligands, and ions
 2. **Checkpoint: Chain selection** - If multiple chains found and user hasn't specified, ask which chains to simulate
 3. **Checkpoint: Ligand inclusion** - If ligands found and user hasn't specified, ask whether to include them
-4. Call `mdclaw split_molecules` with the selected chains and include_types:
-   - With ligands: `--include-types protein ligand ion`
-   - Without ligands: `--include-types protein ion`
-5. If multiple protein files returned, call `mdclaw merge_structures`
+4. Determine the `include_types` list for Step 3:
+   - With ligands and ions: `protein ligand ion`
+   - With ligands, no ions: `protein ligand`
+   - No ligands, with ions: `protein ion`
+   - No ligands, no ions: `protein`
+5. Record the chosen chains and include_types in `progress.json` — no splitting or merging here (Step 3's `prepare_complex` handles that internally)
 
-**Output artifacts**: `selected_structure_file`
+**Output**: Decisions recorded in `progress.json` params (no file artifacts)
 
 ---
 
@@ -140,7 +139,7 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 
 **Logic**:
 1. Call `mdclaw prepare_complex` with:
-   - `--structure-file` = the original `structure_file` (NOT selected_structure_file)
+   - `--structure-file` = the original `structure_file` from Step 1
    - `--output-dir` = job directory
    - `--select-chains` = chosen chains
    - `--include-types` = chosen types
@@ -148,7 +147,7 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
    - `--ph` = 7.4 (or user-specified)
    - `--no-cap-termini` (default)
 
-   > **Note**: `prepare_complex` internally uses author chain IDs for chain selection. Do NOT add `--use-author-chains` (that flag belongs to `split_molecules` only).
+   > **Note**: `prepare_complex` internally uses author chain IDs for chain selection. Do NOT add `--use-author-chains`.
 
 2. Extract `merged_pdb` from the result
 
@@ -188,14 +187,15 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 **Goal**: Build Amber topology and run a short MD for sanity checking.
 
 **Tools** (Bash):
-- `mdclaw build_amber_system --pdb-file <file> --box-dimensions '<box_dimensions JSON from Step 4>' --forcefield ff19SB --water-model opc --no-is-membrane`
-- `mdclaw run_md_simulation --prmtop-file <parm7> --inpcrd-file <rst7> --simulation-time-ns 0.1 --temperature-kelvin 300.0 --pressure-bar 1.0 --timestep-fs 2.0 --output-frequency-ps 10.0`
+- `mdclaw build_amber_system --pdb-file <file> --output-dir <job_dir> --box-dimensions '<box_dimensions JSON from Step 4>' --forcefield ff19SB --water-model opc --no-is-membrane`
+- `mdclaw run_md_simulation --prmtop-file <parm7> --inpcrd-file <rst7> --output-dir <job_dir> --simulation-time-ns 0.1 --temperature-kelvin 300.0 --pressure-bar 1.0 --timestep-fs 2.0 --output-frequency-ps 10.0`
 
 **Logic**:
 1. Build topology:
    ```bash
    mdclaw build_amber_system \
      --pdb-file <solvated_pdb> \
+     --output-dir <job_dir> \
      --box-dimensions '<paste box_dimensions from solvate_structure output as-is>' \
      --forcefield ff19SB \
      --water-model opc \
@@ -207,6 +207,7 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
    mdclaw run_md_simulation \
      --prmtop-file <parm7> \
      --inpcrd-file <rst7> \
+     --output-dir <job_dir> \
      --simulation-time-ns 0.1 \
      --temperature-kelvin 300.0 \
      --pressure-bar 1.0 \
