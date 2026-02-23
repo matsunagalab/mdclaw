@@ -147,6 +147,9 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
    - `--process-ligands` if ligands are included
    - `--ph` = 7.4 (or user-specified)
    - `--no-cap-termini` (default)
+
+   > **Note**: `prepare_complex` internally uses author chain IDs for chain selection. Do NOT add `--use-author-chains` (that flag belongs to `split_molecules` only).
+
 2. Extract `merged_pdb` from the result
 
 **Output artifacts**: `merged_pdb`
@@ -185,7 +188,7 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 **Goal**: Build Amber topology and run a short MD for sanity checking.
 
 **Tools** (Bash):
-- `mdclaw build_amber_system --pdb-file <file> --box-dimensions '{"x":..., "y":..., "z":...}' --forcefield ff19SB --water-model opc --no-is-membrane`
+- `mdclaw build_amber_system --pdb-file <file> --box-dimensions '<box_dimensions JSON from Step 4>' --forcefield ff19SB --water-model opc --no-is-membrane`
 - `mdclaw run_md_simulation --prmtop-file <parm7> --inpcrd-file <rst7> --simulation-time-ns 0.1 --temperature-kelvin 300.0 --pressure-bar 1.0 --timestep-fs 2.0 --output-frequency-ps 10.0`
 
 **Logic**:
@@ -193,11 +196,12 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
    ```bash
    mdclaw build_amber_system \
      --pdb-file <solvated_pdb> \
-     --box-dimensions '<box_dimensions JSON>' \
+     --box-dimensions '<paste box_dimensions from solvate_structure output as-is>' \
      --forcefield ff19SB \
      --water-model opc \
      --no-is-membrane
    ```
+   > **Note**: `box_dimensions` must be copied verbatim from the `solvate_structure` output JSON. The keys are `box_a`, `box_b`, `box_c` (NOT `x`, `y`, `z`).
 2. Run quick MD:
    ```bash
    mdclaw run_md_simulation \
