@@ -290,6 +290,49 @@ export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # HPC module load commands
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ```
 
+## Container Build, Test & Publish
+
+### Full Workflow (Docker build -> test -> GHCR push -> SIF conversion)
+
+```bash
+# 1. Build Docker image (multi-stage: mambaforge -> conda-pack -> nvidia/cuda slim)
+docker build -f container/Dockerfile -t mdclaw:latest .
+
+# 2. Test the container (CPU)
+docker run --rm mdclaw:latest bash container/scripts/test-container.sh
+
+# 3. Test the container (GPU, if available)
+docker run --rm --gpus all mdclaw:latest bash container/scripts/test-container.sh
+
+# 4. Authenticate to GHCR
+gh auth refresh --hostname github.com --scopes write:packages   # if token lacks write:packages
+gh auth token | docker login ghcr.io -u <github-username> --password-stdin
+
+# 5. Tag and push to GHCR
+docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
+docker push ghcr.io/matsunagalab/mdclaw:latest
+
+# 6. (First time only) Set package visibility to public
+#    Go to: https://github.com/orgs/matsunagalab/packages/container/mdclaw/settings
+#    -> Danger Zone -> Change package visibility -> Public
+
+# 7. Convert to Singularity SIF (on HPC or local machine)
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
+
+# 8. Test SIF
+singularity exec --nv mdclaw.sif mdclaw --list
+singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
+```
+
+### Key Notes
+
+- **Image size**: ~14.6 GB (Docker), includes CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2
+- **GHCR registry**: `ghcr.io/matsunagalab/mdclaw:latest`
+- **GPU support**: Runtime stage uses `nvidia/cuda:12.6.3-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
+- **CUDA forward-compat**: `LD_LIBRARY_PATH` includes `/usr/local/cuda/compat` so older host drivers can run newer CUDA toolkit
+- **`write:packages` scope**: Required for `docker push` to GHCR; add via `gh auth refresh --scopes write:packages`
+- **Singularity pull** requires the GHCR package to be **public** (or `SINGULARITY_DOCKER_USERNAME`/`PASSWORD` to be set)
+
 ## Known Issues
 
 ### packmol-memgen numpy compatibility (NumPy 1.24+)
