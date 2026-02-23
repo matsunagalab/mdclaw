@@ -76,6 +76,22 @@ After each step, update `progress.json` in the job directory:
 
 Create the job directory with a unique ID (e.g., `job_<8-hex-chars>/`) at the start. Write `progress.json` after each step completes.
 
+### Job Directory Structure
+
+Each tool creates subdirectories automatically inside the job directory:
+
+```
+job_XXXXXXXX/
+  progress.json          ← Updated after each step
+  split/                 ← Step 3: prepare_complex (individual chain/ligand PDBs)
+  merge/                 ← Step 3: prepare_complex (merged.pdb)
+  solvate/               ← Step 4: solvate_structure (solvated.pdb, box_dimensions.json)
+  topology/              ← Step 5: build_amber_system (system.parm7, system.rst7)
+  md_simulation/         ← Step 5: run_md_simulation (trajectory.dcd, energy.dat)
+```
+
+Always read file paths from each tool's JSON output rather than guessing paths.
+
 ---
 
 ## Workflow Steps
@@ -111,14 +127,17 @@ Create the job directory with a unique ID (e.g., `job_<8-hex-chars>/`) at the st
 
 **Logic**:
 1. Call `mdclaw inspect_molecules` to identify chains, ligands, and ions
-2. **Checkpoint: Chain selection** - If multiple chains found and user hasn't specified, ask which chains to simulate
-3. **Checkpoint: Ligand inclusion** - If ligands found and user hasn't specified, ask whether to include them
-4. Determine the `include_types` list for Step 3:
+2. **Chain ID mapping**: The output contains two chain ID formats:
+   - `author_chain` (e.g., `"A"`, `"B"`) — **use this for `--select-chains` in Step 3**
+   - `chain_id` (e.g., `"Axp"`, `"Bx1"`) — internal label, do NOT use for chain selection
+3. **Checkpoint: Chain selection** - If multiple chains found and user hasn't specified, ask which chains to simulate (present `author_chain` values)
+4. **Checkpoint: Ligand inclusion** - If ligands found and user hasn't specified, ask whether to include them
+5. Determine the `include_types` list for Step 3:
    - With ligands and ions: `protein ligand ion`
    - With ligands, no ions: `protein ligand`
    - No ligands, with ions: `protein ion`
    - No ligands, no ions: `protein`
-5. Record the chosen chains and include_types in `progress.json` — no splitting or merging here (Step 3's `prepare_complex` handles that internally)
+6. Record the chosen chains and include_types in `progress.json` — no splitting or merging here (Step 3's `prepare_complex` handles that internally)
 
 **Output**: Decisions recorded in `progress.json` params (no file artifacts)
 
@@ -129,8 +148,31 @@ Create the job directory with a unique ID (e.g., `job_<8-hex-chars>/`) at the st
 **Goal**: Clean, protonate, and prepare the structure for simulation.
 
 **Tools** (Bash):
-- `mdclaw prepare_complex --structure-file <file> --output-dir <dir> --select-chains A B --include-types protein ligand ion --process-ligands --ph 7.4 --no-cap-termini`
-- `mdclaw analyze_structure_details --structure-file <file> --ph 7.4`
+- `mdclaw prepare_complex` — clean, protonate, and merge structure
+- `mdclaw analyze_structure_details --structure-file <file> --ph 7.4` — optional HIS/SS-bond analysis
+
+**Without ligands** (protein only):
+```bash
+mdclaw prepare_complex \
+  --structure-file <file> \
+  --output-dir <job_dir> \
+  --select-chains A \
+  --include-types protein \
+  --ph 7.4 \
+  --no-cap-termini
+```
+
+**With ligands** (add `--process-ligands`):
+```bash
+mdclaw prepare_complex \
+  --structure-file <file> \
+  --output-dir <job_dir> \
+  --select-chains A B \
+  --include-types protein ligand ion \
+  --process-ligands \
+  --ph 7.4 \
+  --no-cap-termini
+```
 
 For complex parameters like `--ligand-smiles`, use `--json-input`:
 ```bash
@@ -141,9 +183,9 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 1. Call `mdclaw prepare_complex` with:
    - `--structure-file` = the original `structure_file` from Step 1
    - `--output-dir` = job directory
-   - `--select-chains` = chosen chains
-   - `--include-types` = chosen types
-   - `--process-ligands` if ligands are included
+   - `--select-chains` = chosen chains (use `author_chain` values from Step 2, e.g., `A B`)
+   - `--include-types` = chosen types (space-separated: `protein`, `protein ligand ion`, etc.)
+   - `--process-ligands` **only if** ligands are included in `include_types`; **omit** for protein-only systems
    - `--ph` = 7.4 (or user-specified)
    - `--no-cap-termini` (default)
 
@@ -177,8 +219,13 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
    ```
 2. If user requested membrane: use `mdclaw embed_in_membrane` instead
 3. Extract `solvated_pdb` and `box_dimensions` from result
+4. **Save `box_dimensions` for Step 5**: Write the `box_dimensions` object from the solvation output to `<job_dir>/solvate/box_dimensions.json` so Step 5 can reference it reliably:
+   ```bash
+   # Extract box_dimensions from solvation JSON output and save to file
+   python3 -c "import json,sys; d=json.load(sys.stdin); json.dump(d['box_dimensions'],open('<job_dir>/solvate/box_dimensions.json','w'))" <<< '<solvation_output>'
+   ```
 
-**Output artifacts**: `solvated_pdb`, `box_dimensions`
+**Output artifacts**: `solvated_pdb`, `box_dimensions` (also saved as `solvate/box_dimensions.json`)
 
 ---
 
@@ -191,17 +238,17 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 - `mdclaw run_md_simulation --prmtop-file <parm7> --inpcrd-file <rst7> --output-dir <job_dir> --simulation-time-ns 0.1 --temperature-kelvin 300.0 --pressure-bar 1.0 --timestep-fs 2.0 --output-frequency-ps 10.0`
 
 **Logic**:
-1. Build topology:
+1. Build topology (read `box_dimensions` from the file saved in Step 4):
    ```bash
    mdclaw build_amber_system \
      --pdb-file <solvated_pdb> \
      --output-dir <job_dir> \
-     --box-dimensions '<paste box_dimensions from solvate_structure output as-is>' \
+     --box-dimensions "$(cat <job_dir>/solvate/box_dimensions.json)" \
      --forcefield ff19SB \
      --water-model opc \
      --no-is-membrane
    ```
-   > **Note**: `box_dimensions` must be copied verbatim from the `solvate_structure` output JSON. The keys are `box_a`, `box_b`, `box_c` (NOT `x`, `y`, `z`).
+   > **Note**: The `box_dimensions` keys are `box_a`, `box_b`, `box_c` (NOT `x`, `y`, `z`). Using `$(cat .../box_dimensions.json)` avoids manual copy errors. If the file is unavailable, copy the `box_dimensions` object verbatim from the Step 4 solvation output.
 2. Run quick MD:
    ```bash
    mdclaw run_md_simulation \
