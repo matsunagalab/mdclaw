@@ -80,6 +80,8 @@ RUN tar -xzf /tmp/mdclaw_env.tar.gz -C /opt/mdclaw && \
 ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
+ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
+ENV LD_LIBRARY_PATH="/usr/local/cuda/compat:${LD_LIBRARY_PATH}"
 
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh
