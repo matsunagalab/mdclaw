@@ -716,6 +716,17 @@ def build_amber_system(
     """
     logger.info(f"Building Amber system from: {pdb_file}")
 
+    # Auto-detect box_dimensions.json if not provided
+    if box_dimensions is None:
+        pdb_path = Path(pdb_file)
+        box_json = pdb_path.parent / "box_dimensions.json"
+        if box_json.exists():
+            try:
+                box_dimensions = json.loads(box_json.read_text())
+                logger.info(f"Auto-loaded box_dimensions from {box_json}")
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(f"Found {box_json} but could not read: {e}")
+
     # Validate box_dimensions: empty dict {} should be treated as None
     # This prevents the bug where solvent_type="explicit" but no PBC is set
     box_dim_warning = None

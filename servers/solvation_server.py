@@ -527,6 +527,14 @@ def solvate_structure(
             if box_info:
                 result["box_dimensions"] = box_info
                 logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
+                # Auto-save box_dimensions.json next to solvated PDB
+                box_json_path = out_dir / "box_dimensions.json"
+                try:
+                    box_json_path.write_text(json.dumps(box_info, indent=2))
+                    result["box_dimensions_file"] = str(box_json_path)
+                    logger.info(f"Saved box dimensions to {box_json_path}")
+                except OSError as e:
+                    result["warnings"].append(f"Could not save box_dimensions.json: {e}")
             else:
                 result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
 
@@ -837,6 +845,14 @@ def embed_in_membrane(
             if box_info:
                 result["box_dimensions"] = box_info
                 logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
+                # Auto-save box_dimensions.json next to output PDB
+                box_json_path = out_dir / "box_dimensions.json"
+                try:
+                    box_json_path.write_text(json.dumps(box_info, indent=2))
+                    result["box_dimensions_file"] = str(box_json_path)
+                    logger.info(f"Saved box dimensions to {box_json_path}")
+                except OSError as e:
+                    result["warnings"].append(f"Could not save box_dimensions.json: {e}")
             else:
                 result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
 

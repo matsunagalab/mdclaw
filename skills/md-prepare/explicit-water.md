@@ -27,10 +27,11 @@ mdclaw solvate_structure \
   --saltcon 0.15
 ```
 
-After solvation, **save `box_dimensions`** for Step 5:
-```bash
-python3 -c "import json,sys; d=json.load(sys.stdin); json.dump(d['box_dimensions'],open('<job_dir>/solvate/box_dimensions.json','w'))" <<< '<solvation_output>'
-```
+### box_dimensions
+
+`solvate_structure` automatically saves `box_dimensions.json` next to the solvated PDB.
+`build_amber_system` automatically loads it when `--box-dimensions` is omitted.
+**No manual passing is needed.**
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images
@@ -43,19 +44,18 @@ python3 -c "import json,sys; d=json.load(sys.stdin); json.dump(d['box_dimensions
 
 ### Build Topology
 
-Read `box_dimensions` from the file saved in Step 4:
+`box_dimensions.json` is auto-detected from the solvated PDB directory. No need to pass `--box-dimensions`:
 
 ```bash
 mdclaw build_amber_system \
   --pdb-file <solvated_pdb> \
   --output-dir <job_dir> \
-  --box-dimensions "$(cat <job_dir>/solvate/box_dimensions.json)" \
   --forcefield ff19SB \
   --water-model opc \
   --no-is-membrane
 ```
 
-> The `box_dimensions` keys are `box_a`, `box_b`, `box_c` (NOT `x`, `y`, `z`). Using `$(cat .../box_dimensions.json)` avoids manual copy errors.
+> `build_amber_system` looks for `box_dimensions.json` in the same directory as the input PDB. If not found, it builds an implicit solvent system (no PBC).
 
 ### Quick MD (sanity check)
 
