@@ -33,15 +33,15 @@ class TestPipeline1AKE:
         return tmp_path_factory.mktemp("job_1ake")
 
     # Step 1: Acquire Structure
-    @pytest.mark.asyncio
-    async def test_step1_download(self, job_dir):
+    def test_step1_download(self, job_dir):
+        import asyncio
         from research_server import download_structure
 
-        result = await download_structure(
+        result = asyncio.run(download_structure(
             pdb_id="1AKE",
             format="pdb",
             output_dir=str(job_dir),
-        )
+        ))
         assert result["success"], f"Download failed: {result.get('error')}"
         assert Path(result["file_path"]).exists()
         self.__class__.structure_file = result["file_path"]
@@ -102,13 +102,12 @@ class TestPipeline1AKE:
         self.__class__.solvated_pdb = result["output_file"]
         self.__class__.box_dims = result.get("box_dimensions")
 
-    # Step 5a: Build Topology
+    # Step 5a: Build Topology (box_dimensions auto-loaded from solvate dir)
     def test_step5a_build_topology(self, job_dir):
         from amber_server import build_amber_system
 
         result = build_amber_system(
             pdb_file=self.solvated_pdb,
-            box_dimensions=self.box_dims,
             forcefield="ff19SB",
             water_model="opc",
             output_dir=str(job_dir / "topology"),
