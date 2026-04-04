@@ -10,6 +10,16 @@ You are a computational biophysics expert running production MD simulations usin
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 
+## Prerequisites
+
+Ensure these files exist (from md-prepare):
+- `parm7` — Amber topology file
+- `rst7` — Amber coordinate/restart file
+
+Read `progress.json` in the job directory to find file paths and determine the solvent type.
+
 ## Workflow
 
-Read and follow **`skills/md-run/production.md`** for equilibration protocols, production runs, HPC/GPU usage, and troubleshooting.
+Based on the solvent type (from `progress.json` or user request):
+- Explicit water → **Read and follow `skills/md-run/explicit-water.md`**
+- Implicit solvent → **Read and follow `skills/md-run/implicit-water.md`**

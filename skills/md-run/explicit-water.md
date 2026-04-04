@@ -1,14 +1,4 @@
-# Production MD
-
-## Prerequisites
-
-Ensure these files exist (from md-prepare):
-- `parm7` — Amber topology file
-- `rst7` — Amber coordinate/restart file
-
-Read `progress.json` in the job directory to find file paths.
-
----
+# Production MD: Explicit Water
 
 ## Equilibration Protocol
 
