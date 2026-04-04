@@ -47,6 +47,7 @@ htmlcov/
 .tox/
 test_output/
 test_output_sif/
+test_output_1ake/
 
 # MDClaw specific
 *.sif
