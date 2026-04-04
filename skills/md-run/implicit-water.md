@@ -1,5 +1,38 @@
 # Production MD: Implicit Solvent
 
+## System Configuration
+
+| Parameter | Value | Notes |
+|---|---|---|
+| Electrostatics | **NoCutoff** or **CutoffNonPeriodic** | NoCutoff for small systems; CutoffNonPeriodic (cutoff ~2 nm) for large systems |
+| Force field | ff14SB | ff19SB was optimized for explicit OPC water |
+| GB model | GBn2 (igb=8, default) | `implicit/gbn2.xml` in OpenMM |
+| Integrator | LangevinMiddleIntegrator | Friction 1/ps |
+| Thermostat | Langevin (built into integrator) | |
+| Barostat | **None** | No periodic box → no pressure coupling |
+| Constraints | HBonds | Allows up to 4 fs with LangevinMiddle |
+| Ensemble | NVT (300K) | No NPT for implicit solvent |
+
+### Implicit Solvent Models (fastest → most accurate)
+
+| Model | OpenMM XML | igb | Notes |
+|---|---|---|---|
+| HCT | `implicit/hct.xml` | 1 | Fastest, least accurate |
+| OBC1 | `implicit/obc1.xml` | 2 | Good balance |
+| OBC2 | `implicit/obc2.xml` | 5 | Better than OBC1 |
+| GBn | `implicit/gbn.xml` | 7 | Improved neck correction |
+| GBn2 | `implicit/gbn2.xml` | 8 | **Recommended** |
+
+### Timestep Guide
+
+| Constraints | HMR | Max Timestep | Recommended |
+|---|---|---|---|
+| HBonds | No | 4 fs | 2 fs (conservative) or 4 fs |
+| AllBonds | Yes | 4 fs | 4 fs |
+| None | No | 1 fs | Not recommended |
+
+---
+
 ## Equilibration Protocol
 
 ### Stage 1: Energy Minimization
@@ -13,7 +46,7 @@ mdclaw run_md_simulation \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 1.0 \
+  --timestep-fs 2.0 \
   --output-frequency-ps 10.0
 ```
 
@@ -25,11 +58,11 @@ mdclaw run_md_simulation \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 2.0 \
+  --timestep-fs 4.0 \
   --output-frequency-ps 10.0
 ```
 
-> **No barostat** (`--pressure-bar 0`): implicit solvent has no periodic box, so NPT is not applicable. All production runs use NVT.
+> `--pressure-bar 0` disables the barostat. All implicit solvent runs use NVT.
 
 ---
 
@@ -50,10 +83,10 @@ mdclaw run_md_simulation \
 ```bash
 mdclaw run_md_simulation --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --pressure-bar 0
+  --simulation-time-ns 100.0 --pressure-bar 0 --timestep-fs 4.0
 ```
 
-### HMR — ~2x Throughput
+### HMR — additional stability at 4 fs
 ```bash
 mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --hmr --timestep-fs 4.0 --simulation-time-ns 100.0 --pressure-bar 0
@@ -64,12 +97,20 @@ Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
 
 ---
 
-## Implicit Solvent Considerations
+## When to Use Implicit Solvent
 
-- **No density or box volume to monitor** — focus on RMSD and energy convergence
-- **Faster per-step** than explicit water (~5-10x) due to fewer atoms
-- **Salt bridges may be overstabilized** — compare with explicit water for key interactions
-- **GB model choice matters**: GBn2 (igb=8) is most accurate, set during md-prepare
+**Good for:**
+- Rapid conformational sampling (folding studies)
+- Large systems where explicit water is too expensive
+- Screening many mutants or ligands quickly
+- Systems where water-mediated interactions are not critical
+
+**Limitations:**
+- No explicit water-mediated interactions
+- Salt bridges may be overstabilized
+- Less accurate for surface-exposed residues
+- Membrane systems not supported
+- Solvation free energies less accurate than explicit water
 
 ---
 
@@ -77,7 +118,7 @@ Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
 
 | Problem | Cause | Fix |
 |---|---|---|
-| SHAKE constraint failure | Bad geometry | Reduce timestep to 1 fs |
+| SHAKE constraint failure | Bad geometry | Reduce to 2 fs, or re-prepare structure |
 | Unrealistic compaction | GB artifacts | Consider explicit water for this system |
 | Salt bridges too stable | GB dielectric overestimation | Validate with explicit water run |
 | Slow performance | GPU not detected | Check `--platform CUDA` and `nvidia-smi` |
