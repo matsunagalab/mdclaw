@@ -193,6 +193,26 @@ Interpret states:
 - **FAILED** — Job crashed. Proceed to Step 5.
 - **TIMEOUT** — Hit wall time limit. Proceed to Step 6.
 
+### Automatic Monitoring with /loop
+
+For jobs that will take more than a few minutes, suggest `/loop` for periodic polling. **Estimate the check interval from the expected runtime**, not a fixed frequency:
+
+| Expected Runtime | Check Interval | Example |
+|---|---|---|
+| < 10 min | 2m | Boltz-2 small protein |
+| 10 min – 1 h | 5m | Boltz-2 large complex, short MD |
+| 1 – 6 h | 15m | MD 50k atoms, 100ns |
+| 6 – 24 h | 30m | MD 200k atoms, 100ns |
+| > 24 h | 1h | Long production runs |
+
+Suggest the `/loop` command with the estimated interval:
+
+```
+/loop <interval> /hpc-run check job <job_id> and report when done
+```
+
+When the job completes or fails, instruct the user to stop the loop and proceed to the next step (or error recovery).
+
 ---
 
 ## Step 5: Error Recovery
