@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,7 +34,64 @@ from servers._common import (
 _FILE_ARG_PATTERN = re.compile(r"--[\w-]*file\s+(\S+)")
 _DIR_ARG_PATTERN = re.compile(r"--[\w-]*dir\s+(\S+)")
 
+# Job tracking file
+_JOBS_JSONL = ".mdclaw_jobs.jsonl"
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Job tracking (JSONL)
+# ---------------------------------------------------------------------------
+
+
+def _get_jobs_path() -> Path:
+    """Return the path to the JSONL job tracker file."""
+    return Path.cwd() / _JOBS_JSONL
+
+
+def _append_job_record(record: dict) -> None:
+    """Append a job record to the JSONL tracker."""
+    try:
+        with open(_get_jobs_path(), "a") as f:
+            f.write(json.dumps(record, default=str) + "\n")
+    except OSError as e:
+        logger.warning("Could not write to job tracker: %s", e)
+
+
+def _read_job_records() -> list[dict]:
+    """Read all job records from the JSONL tracker."""
+    path = _get_jobs_path()
+    if not path.exists():
+        return []
+    records = []
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return records
+
+
+def _update_job_record(job_id: str, updates: dict) -> None:
+    """Update fields of a tracked job in-place."""
+    path = _get_jobs_path()
+    if not path.exists():
+        return
+    lines = path.read_text().splitlines()
+    updated = []
+    for line in lines:
+        try:
+            rec = json.loads(line)
+            if str(rec.get("job_id")) == str(job_id):
+                rec.update(updates)
+                rec["checked_at"] = datetime.now(timezone.utc).isoformat()
+            updated.append(json.dumps(rec, default=str))
+        except json.JSONDecodeError:
+            updated.append(line)
+    path.write_text("\n".join(updated) + "\n")
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -789,6 +847,19 @@ def submit_job(
             except OSError as e:
                 result["warnings"].append(f"Could not save metadata: {e}")
 
+            # Track in JSONL
+            _append_job_record({
+                "job_id": slurm_job_id,
+                "job_name": job_name,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "status": "SUBMITTED",
+                "partition": partition,
+                "gpus": gpus,
+                "time_limit": time_limit,
+                "script": script,
+                "output_dir": str(out_dir),
+            })
+
             result["success"] = True
         else:
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
@@ -959,6 +1030,17 @@ def check_job(job_id: str) -> dict:
                     except OSError:
                         pass
                     break
+
+    # Update job tracker
+    if result.get("success") and result.get("state"):
+        updates = {"status": result["state"]}
+        if result.get("node"):
+            updates["node"] = result["node"]
+        if result.get("elapsed"):
+            updates["elapsed"] = result["elapsed"]
+        if result.get("exit_code"):
+            updates["exit_code"] = result["exit_code"]
+        _update_job_record(job_id, updates)
 
     return result
 
@@ -1381,6 +1463,56 @@ def configure_container(
     return result
 
 
+def list_tracked_jobs(sync: bool = False) -> dict:
+    """List all tracked jobs from the local JSONL job log.
+
+    Reads .mdclaw_jobs.jsonl which is automatically maintained by submit_job
+    and check_job. Unlike list_jobs (which queries SLURM directly),
+    this shows the full history including completed and old jobs.
+
+    Args:
+        sync: If True, query SLURM for current status of non-terminal jobs
+            and update the tracker. Default: False.
+
+    Returns:
+        dict with:
+          - success: bool
+          - jobs: list[dict] - All tracked jobs (newest first)
+          - total: int - Total number of tracked jobs
+          - tracker_file: str - Path to the JSONL file
+          - errors: list[str]
+    """
+    result: dict[str, Any] = {
+        "success": False,
+        "jobs": [],
+        "total": 0,
+        "tracker_file": str(_get_jobs_path()),
+        "errors": [],
+    }
+
+    records = _read_job_records()
+    if not records:
+        result["success"] = True
+        return result
+
+    # Optionally sync status with SLURM (check_job updates the JSONL)
+    if sync:
+        terminal = {"COMPLETED", "FAILED", "CANCELLED", "TIMEOUT", "OUT_OF_MEMORY"}
+        for rec in records:
+            if rec.get("status") not in terminal and rec.get("job_id"):
+                try:
+                    check_job(rec["job_id"])
+                except Exception:
+                    pass
+        # Re-read after sync
+        records = _read_job_records()
+
+    result["jobs"] = list(reversed(records))  # newest first
+    result["total"] = len(records)
+    result["success"] = True
+    return result
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
@@ -1390,6 +1522,7 @@ TOOLS = {
     "submit_job": submit_job,
     "check_job": check_job,
     "list_jobs": list_jobs,
+    "list_tracked_jobs": list_tracked_jobs,
     "cancel_job": cancel_job,
     "check_job_log": check_job_log,
     "set_policy": set_policy,

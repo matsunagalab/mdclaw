@@ -174,13 +174,25 @@ Record the returned `slurm_job_id` for monitoring.
 
 ## Step 4: Job Monitoring
 
-Check job status:
+Check job status (also updates the local job tracker with node, elapsed time, etc.):
 
 ```bash
 mdclaw check_job --job-id <slurm_job_id>
 ```
 
-List all user jobs:
+List all tracked jobs (full history from `.mdclaw_jobs.jsonl`):
+
+```bash
+mdclaw list_tracked_jobs
+```
+
+To sync status of all non-terminal jobs with SLURM:
+
+```bash
+mdclaw list_tracked_jobs --sync
+```
+
+List active SLURM jobs (live query, current user only):
 
 ```bash
 mdclaw list_jobs

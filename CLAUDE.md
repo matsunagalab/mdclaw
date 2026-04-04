@@ -287,6 +287,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `check_job_log(job_id, log_type, tail_lines)` - Read job log files
 - `set_policy(allowed_partitions, denied_partitions, max_gpus_per_job, max_cpus_per_task, max_nodes, max_time_limit, max_memory, default_partition, default_account, default_qos)` - Set resource policy
 - `show_policy()` - Show current resource policy
+- `list_tracked_jobs(sync)` - List all tracked jobs from `.mdclaw_jobs.jsonl` (full history); `--sync` updates status from SLURM
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ## CLI Interface
