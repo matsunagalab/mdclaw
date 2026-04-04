@@ -151,7 +151,7 @@ class TestPackageInit:
     def test_version(self):
         from servers import __version__
 
-        assert __version__ == "0.4.0"
+        assert __version__ == "0.5.0"
 
 
 if __name__ == "__main__":
