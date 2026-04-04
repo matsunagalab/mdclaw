@@ -20,11 +20,11 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-analyze/SKILL.md       # Trajectory analysis
   hpc-run/SKILL.md          # HPC/SLURM job management
 
-.claude/commands/           # Claude Code slash commands
-  md-prepare.md             # /md-prepare -> reads SKILL.md
-  md-run.md                 # /md-run
-  md-analyze.md             # /md-analyze
-  hpc-run.md                # /hpc-run
+.claude/commands/           # Dev-only: local slash commands (/md-prepare etc.)
+  md-prepare.md             #   Thin wrappers that read skills/*/SKILL.md
+  md-run.md                 #   Not needed when installed as plugin
+  md-analyze.md             #   (plugin users get /mdclaw:md-prepare etc.)
+  hpc-run.md
 
 .claude-plugin/              # Plugin marketplace metadata
   plugin.json
