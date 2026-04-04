@@ -88,6 +88,8 @@ When a policy is set, `submit_job` rejects requests exceeding the limits. All fi
 
 ## Step 2: Write the Job Script
 
+Currently, the primary mdclaw tool that benefits from SLURM submission is **`run_md_simulation`** (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node, not as SLURM jobs.
+
 Based on the user's request, write an appropriate job script. The script content depends on the workload type.
 
 ### MD Simulation Example

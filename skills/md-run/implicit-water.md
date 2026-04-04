@@ -95,6 +95,8 @@ mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 ### Checkpoint / Restart
 Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
 
+For long runs on HPC, use `/hpc-run` skill to submit `run_md_simulation` as a SLURM job. Currently, `run_md_simulation` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
+
 ---
 
 ## When to Use Implicit Solvent

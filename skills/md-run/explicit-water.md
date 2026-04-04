@@ -98,7 +98,7 @@ mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 - Binary format: platform-specific (CUDA checkpoint cannot load on CPU)
 - For portable saves, use State (XML) — but mdclaw currently uses checkpoint
 - Same DCD file path must be used for trajectory append
-- Use `/hpc-run` skill for SLURM job submission and monitoring
+- For long runs on HPC, use `/hpc-run` skill to submit `run_md_simulation` as a SLURM job. Currently, `run_md_simulation` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---
 
