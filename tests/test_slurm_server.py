@@ -11,11 +11,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from servers.slurm_server import (
+    _append_job_record,
     _build_singularity_command,
     _extract_bind_paths,
+    _get_jobs_path,
     _is_partition_allowed,
     _parse_memory_bytes,
     _parse_time_limit_seconds,
+    _read_job_records,
+    _update_job_record,
     _validate_against_policy,
     cancel_job,
     check_job,
@@ -23,6 +27,7 @@ from servers.slurm_server import (
     configure_container,
     inspect_cluster,
     list_jobs,
+    list_tracked_jobs,
     set_policy,
     show_policy,
     submit_job,
@@ -1142,6 +1147,92 @@ class TestContainerExecution:
         saved = json.loads((tmp_path / ".mdclaw_cluster.json").read_text())
         assert saved["container"]["image"] == "/opt/mdclaw.sif"
         assert saved["container"]["extra_flags"] == "--nv"
+
+
+# ---------------------------------------------------------------------------
+# Job Tracker (JSONL)
+# ---------------------------------------------------------------------------
+
+
+class TestJobTracker:
+    """Test JSONL job tracking helpers."""
+
+    def test_append_and_read(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _append_job_record({"job_id": "111", "status": "SUBMITTED"})
+        _append_job_record({"job_id": "222", "status": "SUBMITTED"})
+
+        records = _read_job_records()
+        assert len(records) == 2
+        assert records[0]["job_id"] == "111"
+        assert records[1]["job_id"] == "222"
+
+    def test_update_record(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _append_job_record({"job_id": "111", "status": "SUBMITTED"})
+        _append_job_record({"job_id": "222", "status": "SUBMITTED"})
+
+        _update_job_record("111", {"status": "RUNNING", "node": "gpu-01", "elapsed": "00:05:00"})
+
+        records = _read_job_records()
+        assert records[0]["status"] == "RUNNING"
+        assert records[0]["node"] == "gpu-01"
+        assert records[0]["elapsed"] == "00:05:00"
+        assert "checked_at" in records[0]
+        # Other record unchanged
+        assert records[1]["status"] == "SUBMITTED"
+
+    def test_update_preserves_fields(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _append_job_record({"job_id": "111", "status": "RUNNING", "node": "gpu-01"})
+        _update_job_record("111", {"status": "COMPLETED", "exit_code": "0:0"})
+
+        rec = _read_job_records()[0]
+        assert rec["status"] == "COMPLETED"
+        assert rec["node"] == "gpu-01"  # preserved
+        assert rec["exit_code"] == "0:0"
+
+    def test_read_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert _read_job_records() == []
+
+    def test_read_no_file(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        assert _read_job_records() == []
+
+    def test_list_tracked_jobs_empty(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = list_tracked_jobs()
+        assert result["success"] is True
+        assert result["total"] == 0
+        assert result["jobs"] == []
+
+    def test_list_tracked_jobs_with_records(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        _append_job_record({"job_id": "111", "status": "COMPLETED"})
+        _append_job_record({"job_id": "222", "status": "RUNNING"})
+
+        result = list_tracked_jobs()
+        assert result["success"] is True
+        assert result["total"] == 2
+        # Newest first
+        assert result["jobs"][0]["job_id"] == "222"
+        assert result["jobs"][1]["job_id"] == "111"
+
+    @patch("servers.slurm_server.run_command")
+    def test_submit_job_writes_tracker(self, mock_run, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 99999")
+
+        with patch("servers.slurm_server.check_external_tool", return_value=True), \
+             patch("servers.slurm_server._load_cluster_config", return_value=None):
+            result = submit_job(script="echo hello", output_dir=str(tmp_path))
+
+        assert result["success"] is True
+        records = _read_job_records()
+        assert len(records) == 1
+        assert records[0]["job_id"] == "99999"
+        assert records[0]["status"] == "SUBMITTED"
 
 
 if __name__ == "__main__":
