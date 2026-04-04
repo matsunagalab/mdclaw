@@ -165,10 +165,24 @@ mdclaw submit_job \
 ```
 
 Optional parameters:
+- `--nodelist "gpu01"` — Run on specific node(s) (maps to sbatch -w)
+- `--gres "gpu:a100:1"` — GRES specification (overrides --gpus). Use for GPU type selection
 - `--account <project>` — SLURM account/allocation
 - `--qos <level>` — Quality of service
 - `--extra-sbatch "--constraint=a100"` — Additional SBATCH directives
 - `--environment "module load cuda/12.0"` — Environment setup commands
+
+**Node/GPU selection examples:**
+```bash
+# Run on a specific node
+mdclaw submit_job --script run_md.sh --partition gpu --nodelist "gpu01" --gpus 1
+
+# Request a specific GPU type via GRES
+mdclaw submit_job --script run_md.sh --partition gpu --gres "gpu:a100:1"
+
+# Request multiple GPUs of a specific type
+mdclaw submit_job --script run_md.sh --partition gpu --gres "gpu:v100:2"
+```
 
 Record the returned `slurm_job_id` for monitoring.
 

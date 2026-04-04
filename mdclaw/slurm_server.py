@@ -343,8 +343,10 @@ def _generate_sbatch_script(
     ntasks: int,
     cpus_per_task: int,
     gpus: int,
+    gres: Optional[str],
     time_limit: str,
     memory: Optional[str],
+    nodelist: Optional[str],
     output_dir: str,
     account: Optional[str],
     qos: Optional[str],
@@ -371,11 +373,15 @@ def _generate_sbatch_script(
     lines.append(f"#SBATCH --nodes={nodes}")
     lines.append(f"#SBATCH --ntasks={ntasks}")
     lines.append(f"#SBATCH --cpus-per-task={cpus_per_task}")
-    if gpus > 0:
+    if gres:
+        lines.append(f"#SBATCH --gres={gres}")
+    elif gpus > 0:
         lines.append(f"#SBATCH --gpus-per-node={gpus}")
     lines.append(f"#SBATCH --time={time_limit}")
     if memory:
         lines.append(f"#SBATCH --mem={memory}")
+    if nodelist:
+        lines.append(f"#SBATCH --nodelist={nodelist}")
     lines.append(f"#SBATCH --output={stdout_log}")
     lines.append(f"#SBATCH --error={stderr_log}")
     if account:
@@ -524,6 +530,7 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
                     "name": pname,
                     "state": "up",
                     "nodes": 0,
+                    "node_list": [],
                     "gpus_per_node": 0,
                     "gpu_type": None,
                     "max_time": None,
@@ -532,6 +539,11 @@ def inspect_cluster(output_file: Optional[str] = None) -> dict:
 
             part_map[pname]["nodes"] = entry.get("nodes", {}).get("total", 0) or \
                 part_map[pname]["nodes"] + 1
+
+            # Collect node names
+            node_name = entry.get("name", "") or entry.get("hostname", "")
+            if node_name and node_name not in part_map[pname]["node_list"]:
+                part_map[pname]["node_list"].append(node_name)
 
             # Parse GRES for GPUs
             gres = entry.get("gres", "") or entry.get("tres", "")
@@ -633,8 +645,10 @@ def submit_job(
     ntasks: int = 1,
     cpus_per_task: int = 1,
     gpus: int = 0,
+    gres: Optional[str] = None,
     time_limit: str = "24:00:00",
     memory: Optional[str] = None,
+    nodelist: Optional[str] = None,
     output_dir: Optional[str] = None,
     account: Optional[str] = None,
     qos: Optional[str] = None,
@@ -656,9 +670,13 @@ def submit_job(
         nodes: Number of nodes (default: 1).
         ntasks: Number of tasks (default: 1).
         cpus_per_task: CPUs per task (default: 1).
-        gpus: GPUs per node (default: 0 = no GPU).
+        gpus: GPUs per node via --gpus-per-node (default: 0 = no GPU).
+        gres: GRES specification (e.g., "gpu:a100:1", "gpu:2"). Overrides
+            gpus if both are set. Maps to --gres in sbatch.
         time_limit: Wall time in HH:MM:SS or D-HH:MM:SS (default: 24:00:00).
         memory: Memory per node (e.g., "64G"). None = SLURM default.
+        nodelist: Specific node(s) to run on (e.g., "gpu01", "gpu[01-03]").
+            Maps to -w/--nodelist in sbatch.
         output_dir: Directory for logs and generated script. Default: cwd.
         account: SLURM account/project.
         qos: Quality of service.
@@ -797,8 +815,10 @@ def submit_job(
         ntasks=ntasks,
         cpus_per_task=cpus_per_task,
         gpus=gpus,
+        gres=gres,
         time_limit=time_limit,
         memory=memory,
+        nodelist=nodelist,
         output_dir=str(out_dir),
         account=account,
         qos=qos,
