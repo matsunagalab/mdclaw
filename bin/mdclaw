@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# MDClaw CLI wrapper — delegates to Singularity SIF or local install.
+#
+# Resolution order:
+#   1. MDCLAW_SIF env var (explicit path)
+#   2. ${CLAUDE_PLUGIN_DATA}/mdclaw.sif (plugin auto-download)
+#   3. Local 'mdclaw' on PATH (conda env / pip install)
+set -euo pipefail
+
+# --- Locate SIF ---
+if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
+    SIF="$MDCLAW_SIF"
+elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -f "${CLAUDE_PLUGIN_DATA}/mdclaw.sif" ]; then
+    SIF="${CLAUDE_PLUGIN_DATA}/mdclaw.sif"
+else
+    SIF=""
+fi
+
+# --- Run via SIF or local ---
+if [ -n "$SIF" ]; then
+    # Detect GPU flag
+    NV_FLAG=""
+    if command -v nvidia-smi &>/dev/null; then
+        NV_FLAG="--nv"
+    fi
+    exec singularity exec $NV_FLAG --bind "$(pwd):/work" "$SIF" mdclaw "$@"
+else
+    # Fallback: try local mdclaw (conda env / pip install)
+    LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
+    if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
+        exec "$LOCAL_MDCLAW" "$@"
+    else
+        echo "Error: MDClaw container not found." >&2
+        echo "Run the setup: ${CLAUDE_PLUGIN_ROOT:-./scripts}/scripts/setup-container.sh" >&2
+        echo "Or set MDCLAW_SIF=/path/to/mdclaw.sif" >&2
+        exit 1
+    fi
+fi

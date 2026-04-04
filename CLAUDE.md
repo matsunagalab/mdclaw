@@ -30,6 +30,15 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   plugin.json
   marketplace.json
 
+bin/                         # Plugin CLI wrapper (auto-added to PATH)
+  mdclaw                     # Delegates to SIF or local install
+
+hooks/                       # Plugin lifecycle hooks
+  hooks.json                 # SessionStart -> auto-download SIF
+
+scripts/                     # Setup & maintenance scripts
+  setup-container.sh         # Download versioned SIF from GHCR
+
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
@@ -102,6 +111,56 @@ ruff check servers/                                      # lint
 pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
 pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
 ```
+
+### Release Workflow (Version Tag Sync)
+
+Skills (plugin) and tools (SIF) are distributed through separate channels but must stay in sync via version tags.
+
+```
+Plugin (GitHub repo)              SIF (GHCR)
+├── skills/SKILL.md               ├── servers/*.py (baked in)
+├── bin/mdclaw (wrapper)          ├── mdclaw CLI
+├── hooks/ (auto-downloads SIF)   └── AmberTools, OpenMM, PyTorch
+└── .claude-plugin/plugin.json
+         ↕ version tag keeps them in sync ↕
+```
+
+**Release steps:**
+
+```bash
+# 1. Update version in all 4 locations (must match)
+#    - servers/__init__.py         __version__ = "X.Y.Z"
+#    - pyproject.toml              version = "X.Y.Z"
+#    - .claude-plugin/plugin.json  "version": "X.Y.Z"
+#    - .claude-plugin/marketplace.json  "version": "X.Y.Z"
+
+# 2. Commit, tag, push
+git add -A && git commit -m "release: vX.Y.Z"
+git tag vX.Y.Z
+git push origin main --tags
+
+# 3. Build, test, and push Docker image with version tag
+docker build -f container/Dockerfile -t mdclaw:latest .
+docker run --rm --gpus all -v $(pwd)/container/scripts/test-container.sh:/work/test.sh:ro \
+    mdclaw:latest bash /work/test.sh
+docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
+docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
+docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z
+docker push ghcr.io/matsunagalab/mdclaw:latest
+
+# 4. Users update via:
+#    /plugin update mdclaw@mdclaw          (skills + bin/mdclaw wrapper)
+#    SessionStart hook auto-pulls new SIF  (on next session start)
+```
+
+**Version locations** (keep in sync):
+
+| File | Field |
+|------|-------|
+| `servers/__init__.py` | `__version__` |
+| `pyproject.toml` | `version` |
+| `.claude-plugin/plugin.json` | `version` |
+| `.claude-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
 
 ## Development Commands
 

@@ -8,22 +8,25 @@ MDClaw transforms any PDB structure, FASTA sequence, or ligand-SMILES into a pro
 
 ## Installation as Claude Code Plugin
 
-Install MDClaw skills directly via the Claude Code plugin marketplace:
+Install MDClaw skills and tools via the Claude Code plugin marketplace:
 
 ```
 /plugin marketplace add matsunagalab/mdclaw
 /plugin install mdclaw@mdclaw
 ```
 
-After installation, the following skills become available:
+On first session start, the Singularity container (~4.6 GB) is automatically downloaded. After that, skills and CLI tools are ready:
+
 - `/mdclaw:md-prepare` — MD simulation preparation
 - `/mdclaw:md-run` — Production MD execution
 - `/mdclaw:md-analyze` — Trajectory analysis
 - `/mdclaw:hpc-run` — HPC/SLURM job submission and management
 
-### Tool Setup
+**Requirements**: [Singularity](https://docs.sylabs.io/guides/latest/user-guide/quick_start.html) (or Apptainer) must be installed on the host. GPU requires NVIDIA driver 550+.
 
-To use CLI tools (structure retrieval, parameterization, simulation execution), set up the environment:
+### Alternative: Local Conda Environment
+
+For development or systems without Singularity:
 
 ```bash
 conda env create -f environment.yml
@@ -208,6 +211,15 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-analyze.md             # /md-analyze
   hpc-run.md                # /hpc-run
 
+bin/                        # Plugin CLI wrapper (auto-added to PATH)
+  mdclaw                    # Delegates to SIF or local install
+
+hooks/                      # Plugin lifecycle hooks
+  hooks.json                # SessionStart -> auto-download SIF
+
+scripts/                    # Setup & maintenance
+  setup-container.sh        # Download versioned SIF from GHCR
+
 servers/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
@@ -281,29 +293,36 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 ### Daily Development Cycle
 
 ```
-1. Edit code in servers/
+1. Edit code in servers/ or skills/
 2. Lint:    ruff check servers/
 3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
 4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
-5. Commit
+5. Test skills:  /md-prepare (in Claude Code, new conversation)
+6. Commit
 ```
 
-### Adding a New Tool
+### Release (Version Tag Sync)
 
-1. Add the function in the appropriate `servers/*_server.py` as a plain Python function
-2. Add the function to the `TOOLS` dict at the bottom of that server file
-3. Add unit test in `tests/test_mcp_server.py` (tool registration check)
-4. Add smoke test in `tests/test_server_smoke.py` (actual execution)
-5. Run `mdclaw --list` to verify CLI auto-discovery
-6. Update `CLAUDE.md` server section with the new tool signature
+Skills (plugin) and tools (SIF container) are distributed through separate channels, kept in sync via version tags:
 
-### Adding a New Server
+```bash
+# 1. Bump version in all 4 files (must match):
+#    servers/__init__.py, pyproject.toml,
+#    .claude-plugin/plugin.json, .claude-plugin/marketplace.json
 
-1. Create `servers/new_server.py` with tool functions and a `TOOLS` dict
-2. Register in `servers/_registry.py` (`SERVER_REGISTRY`)
-3. Add to `servers/__init__.py` `__all__`
-4. Add smoke tests in `tests/test_server_smoke.py`
-5. Update `CLAUDE.md` architecture diagram and server section
+# 2. Commit and tag
+git add -A && git commit -m "release: vX.Y.Z"
+git tag vX.Y.Z && git push origin main --tags
+
+# 3. Build, test, and push container
+docker build -f container/Dockerfile -t mdclaw:latest .
+docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
+docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
+docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z
+docker push ghcr.io/matsunagalab/mdclaw:latest
+```
+
+Users receive updates via `/plugin update` (skills) + automatic SIF re-download on session start (tools).
 
 ### Pre-commit Checklist
 
