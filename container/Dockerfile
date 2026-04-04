@@ -30,7 +30,7 @@ WORKDIR /build
 
 # Copy environment definition and project files
 COPY environment.yml pyproject.toml README.md ./
-COPY servers/ servers/
+COPY mdclaw/ mdclaw/
 
 # Create conda environment (strip editable install from environment.yml;
 # the package is installed separately in the next step)

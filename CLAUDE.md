@@ -39,7 +39,7 @@ hooks/                       # Plugin lifecycle hooks
 scripts/                     # Setup & maintenance scripts
   setup-container.sh         # Download versioned SIF from GHCR
 
-servers/                    # All Python code consolidated here
+mdclaw/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
   _registry.py              # Tool registry (SERVER_REGISTRY dict)
@@ -76,8 +76,8 @@ tests/                      # 4-level test suite
 ### Daily Development Cycle
 
 ```
-1. Edit code in servers/
-2. Lint:    ruff check servers/
+1. Edit code in mdclaw/
+2. Lint:    ruff check mdclaw/
 3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
 4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
 5. Commit
@@ -85,7 +85,7 @@ tests/                      # 4-level test suite
 
 ### Adding a New Tool
 
-1. Add the function in the appropriate `servers/*_server.py` as a plain Python function
+1. Add the function in the appropriate `mdclaw/*_server.py` as a plain Python function
 2. Add the function to the `TOOLS` dict at the bottom of that server file
 3. Add unit test in `tests/test_mcp_server.py` (tool registration check)
 4. Add smoke test in `tests/test_server_smoke.py` (actual execution)
@@ -94,9 +94,9 @@ tests/                      # 4-level test suite
 
 ### Adding a New Server
 
-1. Create `servers/new_server.py` with tool functions and a `TOOLS` dict
-2. Register in `servers/_registry.py` (`SERVER_REGISTRY`)
-3. Add to `servers/__init__.py` `__all__`
+1. Create `mdclaw/new_server.py` with tool functions and a `TOOLS` dict
+2. Register in `mdclaw/_registry.py` (`SERVER_REGISTRY`)
+3. Add to `mdclaw/__init__.py` `__all__`
 4. Add smoke tests in `tests/test_server_smoke.py`
 5. Update CLAUDE.md architecture diagram and server section
 
@@ -107,7 +107,7 @@ Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). Whe
 ### Pre-commit Checklist
 
 ```bash
-ruff check servers/                                      # lint
+ruff check mdclaw/                                      # lint
 pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
 pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
 ```
@@ -118,7 +118,7 @@ Skills (plugin) and tools (SIF) are distributed through separate channels but mu
 
 ```
 Plugin (GitHub repo)              SIF (GHCR)
-├── skills/SKILL.md               ├── servers/*.py (baked in)
+├── skills/SKILL.md               ├── mdclaw/*.py (baked in)
 ├── bin/mdclaw (wrapper)          ├── mdclaw CLI
 ├── hooks/ (auto-downloads SIF)   └── AmberTools, OpenMM, PyTorch
 └── .claude-plugin/plugin.json
@@ -129,7 +129,7 @@ Plugin (GitHub repo)              SIF (GHCR)
 
 ```bash
 # 1. Update version in all 4 locations (must match)
-#    - servers/__init__.py         __version__ = "X.Y.Z"
+#    - mdclaw/__init__.py         __version__ = "X.Y.Z"
 #    - pyproject.toml              version = "X.Y.Z"
 #    - .claude-plugin/plugin.json  "version": "X.Y.Z"
 #    - .claude-plugin/marketplace.json  "version": "X.Y.Z"
@@ -157,7 +157,7 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 
 | File | Field |
 |------|-------|
-| `servers/__init__.py` | `__version__` |
+| `mdclaw/__init__.py` | `__version__` |
 | `pyproject.toml` | `version` |
 | `.claude-plugin/plugin.json` | `version` |
 | `.claude-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
@@ -197,8 +197,8 @@ Skills (SKILL.md) reference tools via CLI (`mdclaw <tool> ...`).
 ### Code Quality
 
 ```bash
-ruff check servers/
-ruff check servers/ --fix
+ruff check mdclaw/
+ruff check mdclaw/ --fix
 ```
 
 ### Testing
@@ -292,7 +292,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ## CLI Interface
 
-`servers/_cli.py` provides `mdclaw` CLI that auto-discovers all 45 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+`mdclaw/_cli.py` provides `mdclaw` CLI that auto-discovers all 45 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 
@@ -315,11 +315,11 @@ TOOLS = {
 
 ### Tool Registry
 
-`servers/_registry.py` maps server names to module paths:
+`mdclaw/_registry.py` maps server names to module paths:
 ```python
 SERVER_REGISTRY = {
-    "research": "servers.research_server",
-    "structure": "servers.structure_server",
+    "research": "mdclaw.research_server",
+    "structure": "mdclaw.structure_server",
     # ...
 }
 ```
@@ -328,9 +328,9 @@ SERVER_REGISTRY = {
 
 ### Timeout Configuration
 
-Centralized in `servers/_common.py`:
+Centralized in `mdclaw/_common.py`:
 ```python
-from servers._common import get_timeout
+from mdclaw._common import get_timeout
 timeout = get_timeout("solvation")  # MDCLAW_SOLVATION_TIMEOUT (7200s)
 ```
 

@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 # Add servers directory to path for direct import
-servers_dir = Path(__file__).parent.parent / "servers"
+servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
 
 

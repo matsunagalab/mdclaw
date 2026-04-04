@@ -3,7 +3,7 @@ import textwrap
 
 def test_analyze_structure_details_does_not_treat_hie_as_ligand(tmp_path):
     """HIE/HID/HIP are protein residues (Amber naming), not ligands."""
-    from servers.research_server import analyze_structure_details
+    from mdclaw.research_server import analyze_structure_details
 
     pdb = textwrap.dedent(
         """\

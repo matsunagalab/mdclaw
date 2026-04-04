@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from servers._common import setup_logger  # noqa: E402
+from mdclaw._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -23,12 +23,12 @@ import re  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
-from servers._common import (  # noqa: E402
+from mdclaw._common import (  # noqa: E402
     ensure_directory, create_unique_subdir, generate_job_id, get_current_session,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
 )
-from servers._common import get_timeout  # noqa: E402
+from mdclaw._common import get_timeout  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()

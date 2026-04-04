@@ -220,7 +220,7 @@ hooks/                      # Plugin lifecycle hooks
 scripts/                    # Setup & maintenance
   setup-container.sh        # Download versioned SIF from GHCR
 
-servers/                    # All Python code consolidated here
+mdclaw/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
   _registry.py              # Tool registry (SERVER_REGISTRY dict)
@@ -293,8 +293,8 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 ### Daily Development Cycle
 
 ```
-1. Edit code in servers/ or skills/
-2. Lint:    ruff check servers/
+1. Edit code in mdclaw/ or skills/
+2. Lint:    ruff check mdclaw/
 3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
 4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
 5. Test skills:  /md-prepare (in Claude Code, new conversation)
@@ -307,7 +307,7 @@ Skills (plugin) and tools (SIF container) are distributed through separate chann
 
 ```bash
 # 1. Bump version in all 4 files (must match):
-#    servers/__init__.py, pyproject.toml,
+#    mdclaw/__init__.py, pyproject.toml,
 #    .claude-plugin/plugin.json, .claude-plugin/marketplace.json
 
 # 2. Commit and tag
@@ -327,7 +327,7 @@ Users receive updates via `/plugin update` (skills) + automatic SIF re-download 
 ### Pre-commit Checklist
 
 ```bash
-ruff check servers/                                      # lint
+ruff check mdclaw/                                      # lint
 pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
 pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
 ```

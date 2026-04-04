@@ -43,7 +43,7 @@ def setup_logger(name: str, level: int | None = None) -> logging.Logger:
         if env_level:
             level = getattr(logging, env_level, logging.INFO)
         elif name.startswith((
-            "servers.", "__main__", "structure_server", "amber_server",
+            "mdclaw.", "__main__", "structure_server", "amber_server",
             "solvation_server", "genesis_server", "md_simulation_server",
         )):
             level = logging.INFO

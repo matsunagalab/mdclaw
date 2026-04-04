@@ -14,7 +14,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from servers._common import setup_logger  # noqa: E402
+from mdclaw._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -24,8 +24,8 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
-from servers._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
-from servers._common import get_timeout  # noqa: E402
+from mdclaw._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
+from mdclaw._common import get_timeout  # noqa: E402
 
 
 # =============================================================================

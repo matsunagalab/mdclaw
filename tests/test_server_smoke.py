@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 # Add servers directory to path for direct imports
-servers_dir = Path(__file__).parent.parent / "servers"
+servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
 
 pytestmark = pytest.mark.slow

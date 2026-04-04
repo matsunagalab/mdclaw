@@ -15,7 +15,7 @@ import os
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from servers._common import setup_logger  # noqa: E402
+from mdclaw._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -31,7 +31,7 @@ import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from rdkit.Chem import Descriptors  # noqa: E402
 
-from servers._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()

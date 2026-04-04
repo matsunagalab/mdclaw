@@ -18,8 +18,8 @@ import logging
 import sys
 from typing import Union, get_args, get_origin
 
-from servers import __version__
-from servers._registry import SERVER_REGISTRY
+from mdclaw import __version__
+from mdclaw._registry import SERVER_REGISTRY
 
 
 # ---------------------------------------------------------------------------

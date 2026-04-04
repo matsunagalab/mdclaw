@@ -20,14 +20,14 @@ class TestToolDiscovery:
     """Test _discover_tools() finds all registered tools."""
 
     def test_discovers_all_tools(self):
-        from servers._cli import _discover_tools
+        from mdclaw._cli import _discover_tools
 
         tools = _discover_tools()
         # >= 40: some servers (genesis) may not import if optional deps are missing
         assert len(tools) >= 40, f"Expected >=40 tools, got {len(tools)}"
 
     def test_each_tool_has_required_keys(self):
-        from servers._cli import _discover_tools
+        from mdclaw._cli import _discover_tools
 
         tools = _discover_tools()
         for name, info in tools.items():
@@ -38,7 +38,7 @@ class TestToolDiscovery:
             assert callable(info["fn"]), f"{name} fn is not callable"
 
     def test_async_detection(self):
-        from servers._cli import _discover_tools
+        from mdclaw._cli import _discover_tools
 
         tools = _discover_tools()
         # download_structure is async
@@ -47,8 +47,8 @@ class TestToolDiscovery:
         assert tools["inspect_molecules"]["is_async"] is False
 
     def test_all_servers_represented(self):
-        from servers._cli import _discover_tools
-        from servers._registry import SERVER_REGISTRY
+        from mdclaw._cli import _discover_tools
+        from mdclaw._registry import SERVER_REGISTRY
         import importlib
 
         tools = _discover_tools()
@@ -71,7 +71,7 @@ class TestArgparseConstruction:
     """Test _build_parser() creates correct subcommands and args."""
 
     def test_subcommands_created(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -84,7 +84,7 @@ class TestArgparseConstruction:
 
     def test_required_params(self):
         """Missing required params causes non-zero exit via main()."""
-        from servers._cli import main
+        from mdclaw._cli import main
 
         # download_structure requires --pdb-id; omitting it should exit non-zero
         with pytest.raises(SystemExit) as exc_info:
@@ -92,7 +92,7 @@ class TestArgparseConstruction:
         assert exc_info.value.code != 0
 
     def test_optional_params_have_defaults(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -102,7 +102,7 @@ class TestArgparseConstruction:
         assert args.format == "pdb"  # default
 
     def test_bool_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -123,7 +123,7 @@ class TestArgparseConstruction:
         assert args.salt is False
 
     def test_list_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -136,7 +136,7 @@ class TestArgparseConstruction:
         assert args.select_chains == ["A", "B"]
 
     def test_json_input(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -146,7 +146,7 @@ class TestArgparseConstruction:
         assert args.json_input == json_str
 
     def test_list_flag(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -165,14 +165,14 @@ class TestParameterCoercion:
 
     def test_unwrap_optional_str(self):
         from typing import Optional
-        from servers._cli import _unwrap_optional
+        from mdclaw._cli import _unwrap_optional
 
         inner, is_opt = _unwrap_optional(Optional[str])
         assert inner is str
         assert is_opt is True
 
     def test_unwrap_non_optional(self):
-        from servers._cli import _unwrap_optional
+        from mdclaw._cli import _unwrap_optional
 
         inner, is_opt = _unwrap_optional(str)
         assert inner is str
@@ -180,7 +180,7 @@ class TestParameterCoercion:
 
     def test_is_list_of_str(self):
         from typing import List
-        from servers._cli import _is_list_of_str
+        from mdclaw._cli import _is_list_of_str
 
         assert _is_list_of_str(List[str]) is True
         assert _is_list_of_str(list[str]) is True
@@ -189,25 +189,25 @@ class TestParameterCoercion:
 
     def test_is_dict_type(self):
         from typing import Dict
-        from servers._cli import _is_dict_type
+        from mdclaw._cli import _is_dict_type
 
         assert _is_dict_type(dict) is True
         assert _is_dict_type(Dict[str, str]) is True
         assert _is_dict_type(str) is False
 
     def test_coerce_json_to_dict(self):
-        from servers._cli import _coerce_value
+        from mdclaw._cli import _coerce_value
 
         result = _coerce_value('{"key": "val"}', dict)
         assert result == {"key": "val"}
 
     def test_coerce_int(self):
-        from servers._cli import _coerce_value
+        from mdclaw._cli import _coerce_value
 
         assert _coerce_value("42", int) == 42
 
     def test_coerce_float(self):
-        from servers._cli import _coerce_value
+        from mdclaw._cli import _coerce_value
 
         assert _coerce_value("3.14", float) == 3.14
 
@@ -222,7 +222,7 @@ class TestSubprocessCLI:
 
     def test_version(self):
         result = subprocess.run(
-            [sys.executable, "-m", "servers._cli", "--version"],
+            [sys.executable, "-m", "mdclaw._cli", "--version"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -230,7 +230,7 @@ class TestSubprocessCLI:
 
     def test_list(self):
         result = subprocess.run(
-            [sys.executable, "-m", "servers._cli", "--list"],
+            [sys.executable, "-m", "mdclaw._cli", "--list"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -239,7 +239,7 @@ class TestSubprocessCLI:
 
     def test_tool_help(self):
         result = subprocess.run(
-            [sys.executable, "-m", "servers._cli", "download_structure", "--help"],
+            [sys.executable, "-m", "mdclaw._cli", "download_structure", "--help"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -247,7 +247,7 @@ class TestSubprocessCLI:
 
     def test_no_args_shows_help(self):
         result = subprocess.run(
-            [sys.executable, "-m", "servers._cli"],
+            [sys.executable, "-m", "mdclaw._cli"],
             capture_output=True, text=True,
         )
         assert result.returncode == 0
@@ -269,7 +269,7 @@ class TestHPCParameters:
     """Test new HPC-related CLI parameters for run_md_simulation."""
 
     def test_platform_param(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -285,7 +285,7 @@ class TestHPCParameters:
         assert args.device_index == "0"
 
     def test_restart_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -299,7 +299,7 @@ class TestHPCParameters:
         assert args.restart_from == "checkpoint.chk"
 
     def test_hmr_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -315,7 +315,7 @@ class TestHPCParameters:
         assert args.timestep_fs == 4.0
 
     def test_hmr_default_false(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -340,7 +340,7 @@ class TestSlurmCLIParameters:
     """Test SLURM tool CLI parameter mapping."""
 
     def test_submit_job_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -358,7 +358,7 @@ class TestSlurmCLIParameters:
         assert args.time_limit == "12:00:00"
 
     def test_check_job_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -367,7 +367,7 @@ class TestSlurmCLIParameters:
         assert args.job_id == "12345"
 
     def test_inspect_cluster_no_required(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -377,7 +377,7 @@ class TestSlurmCLIParameters:
         assert hasattr(args, "tool_name")
 
     def test_slurm_tools_in_list(self, capsys):
-        from servers._cli import _discover_tools, _print_tool_list
+        from mdclaw._cli import _discover_tools, _print_tool_list
 
         tools = _discover_tools()
         _print_tool_list(tools)
@@ -392,7 +392,7 @@ class TestPolicyCLIParameters:
     """Test policy tool CLI parameter mapping."""
 
     def test_set_policy_params(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -410,7 +410,7 @@ class TestPolicyCLIParameters:
         assert args.default_account == "myproject"
 
     def test_show_policy_no_required(self):
-        from servers._cli import _build_parser, _discover_tools
+        from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
@@ -423,7 +423,7 @@ class TestToolListOutput:
     """Test _print_tool_list formatting."""
 
     def test_tool_list_grouped_by_server(self, capsys):
-        from servers._cli import _discover_tools, _print_tool_list
+        from mdclaw._cli import _discover_tools, _print_tool_list
 
         tools = _discover_tools()
         _print_tool_list(tools)

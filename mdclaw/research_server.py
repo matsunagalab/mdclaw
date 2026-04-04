@@ -23,7 +23,7 @@ import httpx
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from servers._common import setup_logger, ensure_directory, get_current_session  # noqa: E402
+from mdclaw._common import setup_logger, ensure_directory, get_current_session  # noqa: E402
 
 logger = setup_logger(__name__)
 
