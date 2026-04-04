@@ -16,10 +16,14 @@ Ensure these files exist (from md-prepare):
 - `parm7` — Amber topology file
 - `rst7` — Amber coordinate/restart file
 
-Read `progress.json` in the job directory to find file paths and determine the solvent type.
+Read `progress.json` (single) or `batch_progress.json` (batch) to find file paths and determine the solvent type.
 
 ## Workflow
 
-Based on the solvent type (from `progress.json` or user request):
-- Explicit water → **Read and follow `skills/md-run/explicit-water.md`**
-- Implicit solvent → **Read and follow `skills/md-run/implicit-water.md`**
+1. If user provides a **batch directory** (`batch_<id>/`):
+   → **Read and follow `skills/md-run/batch.md`**
+
+2. If single system:
+   Based on the solvent type (from `progress.json` or user request):
+   - Explicit water → **Read and follow `skills/md-run/explicit-water.md`**
+   - Implicit solvent → **Read and follow `skills/md-run/implicit-water.md`**

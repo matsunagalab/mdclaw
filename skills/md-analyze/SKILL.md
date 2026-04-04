@@ -12,4 +12,8 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 ## Workflow
 
-Read and follow **`skills/md-analyze/analysis.md`** for available analyses, interpretation guidelines, and reporting format.
+1. If user provides a **batch directory** (`batch_<id>/`):
+   → **Read and follow `skills/md-analyze/batch.md`**
+
+2. If single trajectory:
+   → **Read and follow `skills/md-analyze/analysis.md`**

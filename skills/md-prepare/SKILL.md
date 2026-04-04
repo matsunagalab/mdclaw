@@ -12,11 +12,14 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 ## Workflow
 
-1. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition, inspection, chain selection, cleaning, and protonation.
+1. If user provides **multiple targets** (list of PDB IDs, sequences, or files):
+   → **Read and follow `skills/md-prepare/batch.md`**
 
-2. **Based on the solvation type**, read the appropriate file:
-   - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
-   - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
+2. If single target:
+   a. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition, inspection, chain selection, cleaning, and protonation.
+   b. **Based on the solvation type**, read the appropriate file:
+      - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
+      - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
 
 ## Interaction Mode
 
