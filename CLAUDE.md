@@ -295,7 +295,7 @@ export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ### Full Workflow (Docker build -> test -> GHCR push -> SIF conversion)
 
 ```bash
-# 1. Build Docker image (multi-stage: mambaforge -> conda-pack -> nvidia/cuda slim)
+# 1. Build Docker image (3-stage: mambaforge -> OpenMM source build -> nvidia/cuda slim)
 docker build -f container/Dockerfile -t mdclaw:latest .
 
 # 2. Test the container (CPU)
@@ -326,9 +326,10 @@ singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
 
 ### Key Notes
 
-- **Image size**: ~14.6 GB (Docker), includes CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2
+- **Image size**: ~14.5 GB (Docker), includes CUDA runtime, PyTorch, AmberTools, OpenMM (source-built), Boltz-2
 - **GHCR registry**: `ghcr.io/matsunagalab/mdclaw:latest`
-- **GPU support**: Runtime stage uses `nvidia/cuda:12.6.3-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
+- **GPU support**: Requires **NVIDIA driver 550+** (CUDA 12.4). Runtime stage uses `nvidia/cuda:12.4.1-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
+- **OpenMM source build**: OpenMM is built from source against CUDA 12.4 toolkit in Stage 2, avoiding the driver 560+ requirement of pre-built pip/conda packages. NVRTC from CUDA 12.4 is bundled in the image.
 - **CUDA forward-compat**: `LD_LIBRARY_PATH` includes `/usr/local/cuda/compat` so older host drivers can run newer CUDA toolkit
 - **`write:packages` scope**: Required for `docker push` to GHCR; add via `gh auth refresh --scopes write:packages`
 - **Singularity pull** requires the GHCR package to be **public** (or `SINGULARITY_DOCKER_USERNAME`/`PASSWORD` to be set)

@@ -48,7 +48,7 @@ echo ""
 echo "[AmberTools]"
 check "tleap" bash -c "echo 'quit' | tleap -f -"
 check "antechamber" antechamber -h
-check "parmchk2" parmchk2 -h
+check "parmchk2" which parmchk2
 
 # --- GPU detection ---
 echo ""
