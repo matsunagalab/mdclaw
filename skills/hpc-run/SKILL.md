@@ -57,10 +57,37 @@ mdclaw inspect_cluster
 This saves `.mdclaw_cluster.json` in the current directory. Review the output:
 - Available partitions and their state
 - GPU types and counts per node
+- Node list per partition
 - Maximum wall time limits
 - Memory per node
 
 If `.mdclaw_cluster.json` already exists, read it instead of re-running.
+
+### Detailed Node Information
+
+For more detailed node/GPU information, use `sinfo` directly:
+
+```bash
+# Node list with GPU types and memory
+sinfo -N -o "%N %P %G %m %f"
+
+# Node availability
+sinfo -N -o "%N %T %G"
+```
+
+**Important — CUDA Driver Compatibility:**
+The MDClaw SIF container is built with CUDA 12.4 and requires **NVIDIA driver 550+**.
+Nodes with older drivers will fail with `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH`.
+
+Before targeting a specific node with `--nodelist`, verify its GPU type is compatible:
+- **A6000, A100, RTX 3090** (Ampere) with driver 550+ → OK
+- **Older nodes** (GTX 1080, RTX 2080) may have older drivers → check first
+
+Use `--gres` to target specific GPU types:
+```bash
+# Target A6000 GPUs specifically
+mdclaw submit_job --script run_md.sh --gres "gpu:a6000:1"
+```
 
 ### Resource Policy (Optional)
 

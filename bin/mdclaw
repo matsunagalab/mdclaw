@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
-# MDClaw CLI wrapper — delegates to Singularity SIF or local install.
+# MDClaw CLI wrapper — routes SLURM tools to host, everything else to SIF.
 #
-# Resolution order:
-#   1. MDCLAW_SIF env var (explicit path)
-#   2. ${CLAUDE_PLUGIN_DATA}/mdclaw.sif (plugin auto-download)
-#   3. Local 'mdclaw' on PATH (conda env / pip install)
+# SLURM tools (submit_job, check_job, etc.) run natively on the host using
+# python3 + the mdclaw package from the plugin/repo directory. This gives
+# them access to host SLURM commands (sbatch, squeue, sinfo, sacct, scancel).
+#
+# Computation tools (solvate, MD, etc.) run inside the Singularity container
+# where AmberTools, OpenMM, and other scientific packages are available.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Package root: plugin install or repo checkout
+PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
+
+# Tools that run natively on the host (need sbatch/squeue/sinfo/sacct/scancel)
+NATIVE_TOOLS="submit_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
 
 # --- Locate SIF ---
 if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
@@ -16,23 +27,37 @@ else
     SIF=""
 fi
 
-# --- Run via SIF or local ---
+TOOL="${1:-}"
+
+# --- Flags (--list, --version, --help) run natively ---
+case "$TOOL" in
+    --list|--version|--help|-h)
+        PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
+            exec python3 -m mdclaw._cli "$@"
+        ;;
+esac
+
+# --- SLURM tools run natively (host python3 + host sbatch/squeue) ---
+if echo " $NATIVE_TOOLS " | grep -q " $TOOL "; then
+    PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
+        exec python3 -m mdclaw._cli "$@"
+fi
+
+# --- Everything else runs via SIF ---
 if [ -n "$SIF" ]; then
-    # Detect GPU flag
     NV_FLAG=""
     if command -v nvidia-smi &>/dev/null; then
         NV_FLAG="--nv"
     fi
     exec singularity exec $NV_FLAG --bind "$(pwd):/work" "$SIF" mdclaw "$@"
-else
-    # Fallback: try local mdclaw (conda env / pip install)
-    LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
-    if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
-        exec "$LOCAL_MDCLAW" "$@"
-    else
-        echo "Error: MDClaw container not found." >&2
-        echo "Run the setup: ${CLAUDE_PLUGIN_ROOT:-./scripts}/scripts/setup-container.sh" >&2
-        echo "Or set MDCLAW_SIF=/path/to/mdclaw.sif" >&2
-        exit 1
-    fi
 fi
+
+# --- Fallback: local mdclaw (conda env / pip install) ---
+LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
+if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
+    exec "$LOCAL_MDCLAW" "$@"
+fi
+
+echo "Error: MDClaw container not found." >&2
+echo "Set MDCLAW_SIF=/path/to/mdclaw.sif or run scripts/setup-container.sh" >&2
+exit 1
