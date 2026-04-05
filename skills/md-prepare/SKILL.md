@@ -46,5 +46,5 @@ This confirmation step applies to all interaction modes including autonomous. Mi
 ## Error Handling
 
 - If a tool fails, read the error message carefully
-- Do NOT retry the same failed command with identical parameters
+- Retrying the same failed command with identical parameters will produce the same error
 - If stuck, report the error and ask the user for guidance

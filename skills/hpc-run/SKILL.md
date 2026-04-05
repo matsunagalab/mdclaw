@@ -195,7 +195,7 @@ mdclaw submit_job \
   --memory "64G"
 ```
 
-For a simple command string (no script file — **use absolute paths**):
+For a simple command string (no script file):
 
 ```bash
 mdclaw submit_job \
@@ -381,7 +381,7 @@ mdclaw cancel_job --job-id <slurm_job_id>
 
 ### General HPC Tips
 
-- Always use **absolute paths** in job scripts.
+- Use absolute paths in job scripts (compute nodes have a different working directory from the login node).
 - Set `MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"` environment variable for automatic module loading.
 - Use `--memory` to request adequate RAM (MD typically needs 2-4x the system size in memory).
 - For long-running jobs, use checkpoint/restart rather than requesting excessive wall time.

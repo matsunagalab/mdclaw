@@ -9,7 +9,7 @@
 | Water model | OPC (default) | Also: TIP3P-FB, SPC/E, TIP4P-Ew |
 | Integrator | LangevinMiddleIntegrator | More accurate configurational sampling than standard Langevin |
 | Thermostat | Langevin (built into integrator) | Friction 1/ps |
-| Barostat | MonteCarloBarostat | **Temperature must match integrator** |
+| Barostat | MonteCarloBarostat | Temperature should match integrator (OpenMM requirement) |
 | Constraints | HBonds | Allows up to 4 fs timestep with LangevinMiddle |
 | Ensemble | NPT (300K, 1 bar) | NVT heating → NPT production |
 
@@ -134,7 +134,7 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 **Checkpoint notes:**
 - Binary format: platform-specific (CUDA checkpoint cannot load on CPU)
 - For portable saves, use State (XML) — but mdclaw currently uses checkpoint
-- Same DCD file path must be used for trajectory append
+- Restarted simulations append to the existing DCD, so the trajectory path should match the original
 - For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM job. Currently, `run_production` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---

@@ -109,7 +109,7 @@ For complex parameters like `--ligand-smiles`, use `--json-input`:
 mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir": "job_xxx", "select_chains": ["A"], "include_types": ["protein","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
 ```
 
-> **Note**: `prepare_complex` uses author chain IDs internally. Do NOT add `--use-author-chains`.
+> `prepare_complex` uses author chain IDs internally, so `--use-author-chains` is unnecessary and would cause double-mapping.
 
 Extract `merged_pdb` from the result.
 
