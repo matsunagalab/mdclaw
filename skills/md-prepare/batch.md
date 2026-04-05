@@ -4,6 +4,10 @@ Prepare multiple systems for MD simulation. Each target goes through the full
 setup.md → explicit-water.md (or implicit-water.md) pipeline, but **Quick MD
 (Step 5b) is skipped** — production runs are handled by `/md-run`.
 
+Before starting, present the parsed target list to the user for confirmation.
+Copy identifiers exactly from the user's message — do not rely on conversation
+history, because earlier parts of the conversation may mention different systems.
+
 ## Input Parsing
 
 Classify each target the user provides:
