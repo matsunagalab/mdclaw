@@ -106,8 +106,26 @@ After completing all steps, update progress.json with metadata collected from
 tool outputs. The `commands` array is already populated by the CLI automatically.
 Fill in these sections using information from the tool outputs during this workflow:
 
-- **system**: num_residues, num_atoms_protein, num_atoms_total, num_waters, ions, ligands (from prepare_complex and solvate_structure output)
-- **preparation**: protonation_method, ph, histidine_states, disulfide_bonds (from prepare_complex output)
-- **solvation**: type, water_model, box_shape, box_size_angstrom, buffer_distance_angstrom, salt_type, salt_concentration_M (from solvate_structure output)
-- **forcefield**: protein, water, lipid, ligand_method (from build_amber_system parameters)
+- **system**: (from prepare_complex + solvate_structure output)
+  - `pdb_id`, `chains`, `num_residues`, `num_atoms_protein`
+  - `num_atoms_total`, `num_waters`, `ions` (e.g., `{"Na+": 42, "Cl-": 36}`)
+  - `ligands` (list of ligand names if any)
+
+- **preparation**: (from prepare_complex output → `proteins[0]`)
+  - `protonation_method`: from `proteins[0].protonation_method` (e.g., "pdb2pqr+propka")
+  - `ph`: pH value used
+  - `histidine_states`: from `proteins[0].histidine_states` (e.g., `{"A:126": "HIE"}`)
+  - `disulfide_bonds`: from `proteins[0].disulfide_bonds` (list of residue pairs)
+  - `missing_residues_modeled`: check `proteins[0].operations[]` for step="missing_residues"
+  - `operations_log`: copy of `proteins[0].operations[]` for full provenance
+
+- **solvation**: (from solvate_structure output)
+  - `type`: "explicit"
+  - `water_model`, `box_shape`, `box_size_angstrom` (from `box_dimensions`)
+  - `buffer_distance_angstrom`, `salt_type`, `salt_concentration_M`
+
+- **forcefield**: (from build_amber_system parameters)
+  - `protein`, `water`, `lipid`, `ligand_method`
+
 - **artifacts**: file paths for each output file (from each tool's output)
+  - `structure_file`, `merged_pdb`, `solvated_pdb`, `parm7`, `rst7`, etc.
