@@ -3371,6 +3371,7 @@ def prepare_complex(
                     if clean_result["success"]:
                         protein_result["output_file"] = clean_result["output_file"]
                         protein_result["statistics"] = clean_result.get("statistics", {})
+                        protein_result["provenance"] = clean_result.get("provenance", {})
                         protein_result["success"] = True
                         logger.info(f"  ✓ Protein {chain_id}: {clean_result['output_file']}")
                     else:
