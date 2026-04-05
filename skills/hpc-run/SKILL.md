@@ -147,9 +147,26 @@ mdclaw boltz2_protein_from_seq \
 
 The user may specify any command. Write it as a bash script.
 
-**Important**: Always use absolute paths in job scripts. The compute node working directory may differ from the login node.
-
 Save the script file (e.g., `run_md.sh`), then submit it in Step 3.
+
+### CRITICAL: Absolute Paths
+
+**ALL file paths in job scripts MUST be absolute.** SLURM compute nodes do not
+inherit the login node's working directory. Relative paths WILL fail silently
+or cause "No such file or directory" errors.
+
+Before writing any job script or `--script` command string:
+1. Convert every file path to absolute using `realpath` or `$(pwd)/`
+2. This applies to: `--prmtop-file`, `--inpcrd-file`, `--output-dir`, SIF path, bind paths
+3. Double-check: no path in the script should start without `/`
+
+```bash
+# WRONG — will fail on compute node
+mdclaw run_md_simulation --prmtop-file job_xxx/topology/system.parm7 ...
+
+# CORRECT — absolute paths
+mdclaw run_md_simulation --prmtop-file /home/user/work/job_xxx/topology/system.parm7 ...
+```
 
 ---
 
@@ -180,11 +197,11 @@ mdclaw submit_job \
   --memory "64G"
 ```
 
-For a simple command string (no script file):
+For a simple command string (no script file — **use absolute paths**):
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 --platform CUDA" \
+  --script "mdclaw run_md_simulation --prmtop-file /absolute/path/to/system.parm7 --inpcrd-file /absolute/path/to/system.rst7 --platform CUDA" \
   --partition gpu \
   --gpus 1 \
   --time-limit "12:00:00"
