@@ -47,11 +47,14 @@ def run_equilibration(
 ) -> dict:
     """Run equilibration protocol with positional restraints.
 
-    Two-stage protocol:
-      Stage 1 (NVT): Heat the system with positional restraints on selected
-                      atoms. Uses 1 fs timestep without HMR for stability.
-      Stage 2 (NPT): Equilibrate density with restraints still active.
-                      Uses 2 fs timestep for gradual transition to production.
+    The protocol depends on the production ensemble:
+      - Explicit water + NPT production (pressure_bar > 0):
+          Stage 1 (NVT): Heat with restraints, 1 fs
+          Stage 2 (NPT): Equilibrate density with restraints, 2 fs
+      - Explicit water + NVT production (pressure_bar = 0 or None):
+          Stage 1 (NVT) only
+      - Implicit solvent:
+          Stage 1 (NVT) only (NPT not applicable)
 
     The restraint is a harmonic potential on the initial positions using
     OpenMM's CustomExternalForce with periodicdistance.
@@ -63,10 +66,13 @@ def run_equilibration(
         prmtop_file: Amber topology file (.parm7 or .prmtop)
         inpcrd_file: Amber coordinate file (.rst7 or .inpcrd)
         temperature_kelvin: Temperature in Kelvin (default: 300.0)
-        pressure_bar: Pressure in bar for NPT stage. None skips NPT stage
-            and runs NVT only (for implicit solvent). Default: 1.0
+        pressure_bar: Pressure in bar. Controls whether NPT stage runs:
+            - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
+            - 0 or None: NVT only (for NVT production or implicit solvent)
+            Default: 1.0
         nvt_steps: Number of NVT heating steps (default: 10000 = 10 ps at 1 fs)
-        npt_steps: Number of NPT equilibration steps (default: 10000 = 20 ps at 2 fs)
+        npt_steps: Number of NPT equilibration steps (default: 10000 = 20 ps at 2 fs).
+            Only used when pressure_bar > 0. Ignored otherwise.
         restraint_atoms: Atom selection for restraints. Options:
             - "CA": alpha carbons only (default, recommended)
             - "backbone": backbone heavy atoms (N, CA, C, O)
@@ -94,7 +100,7 @@ def run_equilibration(
           - errors: list[str]
           - warnings: list[str]
     """
-    logger.info(f"Starting equilibration: NVT({nvt_steps} steps) + NPT({npt_steps} steps) at {temperature_kelvin}K")
+    logger.info(f"Starting equilibration at {temperature_kelvin}K")
 
     job_id = generate_job_id()
     result = {
@@ -166,11 +172,16 @@ def run_equilibration(
 
         is_periodic = inpcrd.boxVectors is not None
 
-        # If implicit solvent specified, skip NPT
-        if implicit_solvent:
+        # Determine whether to run NPT stage
+        # NPT equilibration only when production will use NPT (pressure_bar > 0)
+        run_npt = (pressure_bar is not None and pressure_bar > 0
+                   and not implicit_solvent and is_periodic)
+        if not run_npt:
             npt_steps = 0
-            if pressure_bar is not None:
-                result["warnings"].append("Implicit solvent: skipping NPT stage (no periodic box)")
+            if implicit_solvent:
+                logger.info("Implicit solvent: NVT equilibration only")
+            elif not pressure_bar or pressure_bar == 0:
+                logger.info("NVT production planned: NVT equilibration only")
 
         # --- Stage 1: NVT heating (1 fs, no HMR) ---
         logger.info(f"Stage 1: NVT heating ({nvt_steps} steps, 1 fs, restraints on {restraint_atoms})")

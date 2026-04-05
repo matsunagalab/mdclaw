@@ -60,11 +60,14 @@ mdclaw build_amber_system \
 
 ### Equilibration + Quick MD (sanity check)
 
-Run equilibration (NVT heating + NPT with positional restraints on CA atoms),
-then a short production run to verify stability:
+Run equilibration then a short production run to verify stability.
+When `--pressure-bar` > 0, equilibration runs NVT heating followed by NPT
+density equilibration (both with CA positional restraints). When pressure
+is 0 or omitted, only NVT heating runs.
 
 ```bash
 # Equilibration: NVT (10ps, 1fs) → NPT (20ps, 2fs) with CA restraints
+# NPT stage runs because --pressure-bar 1.0 (matching production ensemble)
 mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \

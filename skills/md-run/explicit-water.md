@@ -30,7 +30,9 @@
 ### Stage 1: Equilibration (run_equilibration)
 
 `run_equilibration` handles energy minimization, NVT heating (1 fs), and NPT
-density equilibration (2 fs) with positional restraints on CA atoms:
+density equilibration (2 fs) with positional restraints on CA atoms.
+Pass `--pressure-bar 1.0` to match the NPT production ensemble — this tells
+`run_equilibration` to include the NPT stage:
 
 ```bash
 mdclaw run_equilibration \
@@ -41,8 +43,9 @@ mdclaw run_equilibration \
   --pressure-bar 1.0
 ```
 
-This prevents NaN errors that occur when jumping directly from minimization
-to 4 fs production. The restraints keep the protein stable while water relaxes.
+The restraints keep the protein stable while water and box density relax.
+Without the NPT stage, jumping directly to NPT production with 4 fs risks
+NaN errors from sudden volume changes.
 
 ### Stage 2: Production (run_production)
 
