@@ -377,6 +377,7 @@ def run_equilibration(
             sim_nvt.saveState(str(out_dir / "equilibration.xml"))
 
         result["state_file"] = str(out_dir / "equilibration.xml")
+        result["stages_completed"] = ["NVT"] if npt_steps == 0 else ["NVT", "NPT"]
 
         # Save final structure as PDB
         pref = f"{name}_" if name else ""
@@ -384,7 +385,7 @@ def run_equilibration(
         with open(final_pdb, 'w') as f:
             PDBFile.writeFile(prmtop.topology, final_positions, f)
         result["final_structure"] = str(final_pdb)
-        logger.info(f"Equilibrated structure saved: {final_pdb}")
+        logger.info(f"Equilibrated structure saved: {final_pdb} (stages: {result['stages_completed']})")
 
         result["success"] = True
 
