@@ -388,8 +388,8 @@ singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
 
 - **Image size**: ~14.5 GB (Docker), includes CUDA runtime, PyTorch, AmberTools, OpenMM (source-built), Boltz-2
 - **GHCR registry**: `ghcr.io/matsunagalab/mdclaw:latest`
-- **GPU support**: Requires **NVIDIA driver 550+** (CUDA 12.4). Runtime stage uses `nvidia/cuda:12.4.1-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
-- **OpenMM source build**: OpenMM is built from source against CUDA 12.4 toolkit in Stage 2, avoiding the driver 560+ requirement of pre-built pip/conda packages. NVRTC from CUDA 12.4 is bundled in the image.
+- **GPU support**: Requires **NVIDIA driver 530+** (CUDA 12.1). Runtime stage uses `nvidia/cuda:12.1.1-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
+- **OpenMM source build**: OpenMM is built from source against CUDA 12.1 toolkit in Stage 2, avoiding the driver 560+ requirement of pre-built pip/conda packages. NVRTC from CUDA 12.1 is bundled in the image.
 - **CUDA forward-compat**: `LD_LIBRARY_PATH` includes `/usr/local/cuda/compat` so older host drivers can run newer CUDA toolkit
 - **`write:packages` scope**: Required for `docker push` to GHCR; add via `gh auth refresh --scopes write:packages`
 - **Singularity pull** requires the GHCR package to be **public** (or `SINGULARITY_DOCKER_USERNAME`/`PASSWORD` to be set)

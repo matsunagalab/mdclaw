@@ -2,9 +2,9 @@
 # 3-stage build: mambaforge -> OpenMM source build (CUDA 12.4) -> slim runtime
 #
 # Driver compatibility:
-#   550.x+ (CUDA 12.4): Full GPU support (OpenMM CUDA + PyTorch)
+#   530.x+ (CUDA 12.1): Full GPU support (OpenMM CUDA + PyTorch)
+#   550.x+ (CUDA 12.4): Full GPU support (backward compatible)
 #   560.x+ (CUDA 12.6): Full GPU support (backward compatible)
-#   535.x  (CUDA 12.2): NOT supported (CUDA 12.4 kernels require 550+)
 #
 # Build:
 #   docker build -f container/Dockerfile -t mdclaw:latest .
@@ -38,8 +38,8 @@ RUN sed '/- -e \./d' environment.yml > environment-docker.yml && \
     mamba env create -f environment-docker.yml -n mdclaw && \
     mamba clean -afy
 
-# Install PyTorch with CUDA 12.4 support
-RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu124 && \
+# Install PyTorch with CUDA 12.1 support
+RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu121 && \
     mamba run -n mdclaw pip cache purge
 
 # Install mdclaw package into the environment
@@ -62,7 +62,7 @@ RUN mamba install -n base -y conda-pack && \
 # =============================================================================
 # Stage 2: Build OpenMM from source with CUDA 12.4
 # =============================================================================
-FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS openmm-builder
+FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS openmm-builder
 
 # Build dependencies
 RUN apt-get update && \
@@ -88,7 +88,7 @@ ARG OPENMM_VERSION=8.2.0
 RUN git clone --depth 1 --branch ${OPENMM_VERSION} \
     https://github.com/openmm/openmm.git /build/openmm
 
-# Build OpenMM with CUDA 12.4 support
+# Build OpenMM with CUDA 12.1 support
 # OpenMM embeds CUDA kernels as source strings and compiles them at runtime
 # via NVRTC, so CMAKE_CUDA_ARCHITECTURES is not needed.
 RUN mkdir /build/openmm/build
@@ -109,7 +109,7 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 # =============================================================================
 # Stage 3: Slim runtime
 # =============================================================================
-FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 # Minimal runtime dependencies
 RUN apt-get update && \
@@ -124,7 +124,7 @@ RUN apt-get update && \
 # Copy conda environment (includes OpenMM)
 COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
 
-# Copy NVRTC from CUDA 12.4 toolkit (needed by OpenMM at runtime for
+# Copy NVRTC from CUDA 12.1 toolkit (needed by OpenMM at runtime for
 # kernel compilation; not included in the runtime base image)
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
@@ -134,7 +134,7 @@ ENV PATH="/opt/mdclaw/bin:$PATH"
 ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
-ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:/usr/local/cuda/compat:${LD_LIBRARY_PATH}"
+ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh

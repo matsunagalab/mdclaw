@@ -76,12 +76,11 @@ sinfo -N -o "%N %T %G"
 ```
 
 **Important — CUDA Driver Compatibility:**
-The MDClaw SIF container is built with CUDA 12.4 and requires **NVIDIA driver 550+**.
+The MDClaw SIF container is built with CUDA 12.1 and requires **NVIDIA driver 530+**.
 Nodes with older drivers will fail with `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH`.
 
-Before targeting a specific node with `--nodelist`, verify its GPU type is compatible:
-- **A6000, A100, RTX 3090** (Ampere) with driver 550+ → OK
-- **Older nodes** (GTX 1080, RTX 2080) may have older drivers → check first
+Before targeting a specific node with `--nodelist`, verify it has a compatible driver.
+Very old nodes (driver < 530) are not supported.
 
 Use `--gres` to target specific GPU types:
 ```bash
