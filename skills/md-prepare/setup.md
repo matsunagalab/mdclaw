@@ -2,13 +2,27 @@
 
 ## Progress Tracking
 
-Create a job directory `job_<8-hex-chars>/` at the start. Write `progress.json` after each step:
+Create a job directory `job_<8-hex-chars>/` at the start. Write `progress.json` with
+the following template. The `commands` array is automatically populated by the CLI
+after each tool execution. The other sections should be filled in by the LLM as
+the workflow progresses, using information from tool outputs.
 
 ```json
 {
+  "schema_version": "1.0",
   "job_id": "<8-char hex>",
+  "created_at": "<ISO8601 timestamp>",
   "current_step": "<step name>",
   "completed_steps": [],
+  "commands": [],
+  "software": {},
+  "hardware": {},
+  "system": {},
+  "preparation": {},
+  "solvation": {},
+  "forcefield": {},
+  "equilibration": {},
+  "production": {},
   "params": {
     "pdb_id": "", "chains": [], "include_ligands": true,
     "solvation_type": "explicit", "water_model": "opc",

@@ -156,3 +156,14 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 | Slow performance | GPU not detected | Check `--platform CUDA` and `nvidia-smi` |
 | Out of memory | System too large | Reduce buffer or use implicit solvent |
 | Barostat instability | Temperature mismatch | Ensure barostat and integrator use same temperature |
+
+---
+
+## Update progress.json Metadata
+
+After production completes, update progress.json with:
+
+- **software**: mdclaw version, openmm version, python version, and other package versions visible in tool logs
+- **hardware**: platform (CUDA/CPU), gpu_device, hostname (from run_equilibration / run_production output)
+- **equilibration**: stages_completed, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, integrator, constraints (from run_equilibration output)
+- **production**: ensemble, temperature_K, pressure_bar, timestep_fs, hmr, hydrogen_mass_amu, integrator, friction_per_ps, constraints, nonbonded_method, nonbonded_cutoff_nm, simulation_time_ns, total_steps, output_frequency_ps (from run_production output)

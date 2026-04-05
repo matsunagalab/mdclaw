@@ -97,3 +97,17 @@ mdclaw run_production \
 - pH 7.4 is physiological default
 - pdb2pqr + propka assigns pH-dependent HIS states (HID/HIE/HIP)
 - Fallback to pdb4amber + reduce (geometry-based) if pdb2pqr unavailable
+
+---
+
+## Update progress.json Metadata
+
+After completing all steps, update progress.json with metadata collected from
+tool outputs. The `commands` array is already populated by the CLI automatically.
+Fill in these sections using information from the tool outputs during this workflow:
+
+- **system**: num_residues, num_atoms_protein, num_atoms_total, num_waters, ions, ligands (from prepare_complex and solvate_structure output)
+- **preparation**: protonation_method, ph, histidine_states, disulfide_bonds (from prepare_complex output)
+- **solvation**: type, water_model, box_shape, box_size_angstrom, buffer_distance_angstrom, salt_type, salt_concentration_M (from solvate_structure output)
+- **forcefield**: protein, water, lipid, ligand_method (from build_amber_system parameters)
+- **artifacts**: file paths for each output file (from each tool's output)

@@ -266,6 +266,37 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _append_command_to_progress(output_dir: str, tool_name: str, success: bool) -> None:
+    """Append a CLI command record to progress.json if it exists.
+
+    Searches for progress.json in output_dir and up to 3 parent directories.
+    This works for both interactive and SLURM execution because:
+    - Interactive: output_dir is a subdirectory of the job directory
+    - SLURM: absolute paths are used, pointing to shared filesystem
+    """
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    cli_str = " ".join(sys.argv)
+    for parent in [Path(output_dir)] + list(Path(output_dir).parents)[:3]:
+        progress_path = parent / "progress.json"
+        if progress_path.exists():
+            try:
+                data = json.loads(progress_path.read_text())
+                if "commands" not in data:
+                    data["commands"] = []
+                data["commands"].append({
+                    "tool": tool_name,
+                    "cli": cli_str,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "success": success,
+                })
+                progress_path.write_text(json.dumps(data, indent=2))
+            except (json.JSONDecodeError, OSError):
+                pass
+            break
+
+
 def main(argv: list[str] | None = None) -> None:
     _configure_logging()
 
@@ -327,6 +358,12 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
+        # Record CLI command to progress.json
+        if isinstance(result, dict) and result.get("output_dir"):
+            _append_command_to_progress(
+                result["output_dir"], tool_name,
+                result.get("success", False),
+            )
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)
