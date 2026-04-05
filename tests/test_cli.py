@@ -314,7 +314,7 @@ class TestHPCParameters:
         assert args.hmr is True
         assert args.timestep_fs == 4.0
 
-    def test_hmr_default_false(self):
+    def test_hmr_default_true(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
@@ -325,7 +325,8 @@ class TestHPCParameters:
             "--prmtop-file", "sys.parm7",
             "--inpcrd-file", "sys.rst7",
         ])
-        assert args.hmr is False
+        assert args.hmr is True
+        assert args.timestep_fs == 4.0
         assert args.platform == "auto"
         assert args.device_index is None
         assert args.restart_from is None

@@ -34,7 +34,7 @@ def run_md_simulation(
     simulation_time_ns: float = 1.0,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = None,
-    timestep_fs: float = 2.0,
+    timestep_fs: float = 4.0,
     output_frequency_ps: float = 10.0,
     trajectory_format: str = "dcd",
     restraint_file: Optional[str] = None,
@@ -45,7 +45,7 @@ def run_md_simulation(
     platform: str = "auto",
     device_index: Optional[str] = None,
     restart_from: Optional[str] = None,
-    hmr: bool = False,
+    hmr: bool = True,
     random_seed: Optional[int] = None,
 ) -> dict:
     """Run MD simulation using OpenMM.
@@ -59,7 +59,7 @@ def run_md_simulation(
         simulation_time_ns: Simulation time in nanoseconds (default: 1.0)
         temperature_kelvin: Temperature in Kelvin (default: 300.0)
         pressure_bar: Pressure in bar. Set for NPT, None for NVT (default: None)
-        timestep_fs: Integration timestep in femtoseconds (default: 2.0)
+        timestep_fs: Integration timestep in femtoseconds (default: 4.0)
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
         trajectory_format: Trajectory format - "dcd" or "pdb" (default: "dcd")
         restraint_file: Optional file with restraint definitions
@@ -83,8 +83,9 @@ def run_md_simulation(
         restart_from: Path to checkpoint file (.chk) to restart from.
                      Skips minimization, appends to existing DCD, and runs
                      only the remaining steps.
-        hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=2 amu).
-                     Allows 4 fs timestep for ~2x throughput improvement.
+        hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=4 amu).
+                     Enabled by default. Allows 4 fs timestep for ~2x throughput.
+                     Use --no-hmr to disable (timestep should then be <= 2 fs).
         random_seed: Random number seed for reproducible simulations.
                      Controls integrator and initial velocity randomization.
                      If None (default), OpenMM uses system entropy.
@@ -224,14 +225,22 @@ def run_md_simulation(
         # HMR (Hydrogen Mass Repartitioning)
         hmr_kwargs = {}
         if hmr:
-            hmr_kwargs["hydrogenMass"] = 2.0 * amu
-            logger.info(f"HMR enabled: hydrogenMass=2.0 amu (timestep={timestep_fs}fs)")
+            hmr_kwargs["hydrogenMass"] = 4.0 * amu
+            logger.info(f"HMR enabled: hydrogenMass=4.0 amu (timestep={timestep_fs}fs)")
             if timestep_fs <= 2.0:
                 result["warnings"].append(
                     f"HMR enabled but timestep is {timestep_fs}fs. "
                     f"Consider using --timestep-fs 4.0 for better throughput."
                 )
             result["hmr"] = True
+        else:
+            if timestep_fs > 2.0:
+                result["warnings"].append(
+                    f"HMR is disabled but timestep is {timestep_fs}fs. "
+                    f"Without HMR, timestep > 2 fs may cause instability. "
+                    f"Consider --hmr or --timestep-fs 2.0."
+                )
+            result["hmr"] = False
 
         # Create system - handle implicit vs explicit solvent
         logger.info("Creating OpenMM system")

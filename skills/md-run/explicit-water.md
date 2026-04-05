@@ -31,6 +31,9 @@
 Already handled by `run_md_simulation` internally (1000 steps steepest descent).
 
 ### Stage 2: NVT Heating (optional, for longer runs)
+
+Short NVT run with reduced timestep to gradually heat the system:
+
 ```bash
 mdclaw run_md_simulation \
   --prmtop-file <parm7> \
@@ -38,11 +41,15 @@ mdclaw run_md_simulation \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 2.0 \
+  --timestep-fs 1.0 \
+  --no-hmr \
   --output-frequency-ps 10.0
 ```
 
 ### Stage 3: NPT Production
+
+Default settings (HMR + 4 fs) apply — no extra flags needed:
+
 ```bash
 mdclaw run_md_simulation \
   --prmtop-file <parm7> \
@@ -50,7 +57,6 @@ mdclaw run_md_simulation \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0 \
-  --timestep-fs 4.0 \
   --output-frequency-ps 10.0
 ```
 
@@ -73,13 +79,15 @@ mdclaw run_md_simulation \
 ```bash
 mdclaw run_md_simulation --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --timestep-fs 4.0
+  --simulation-time-ns 100.0
 ```
 
-### Hydrogen Mass Repartitioning (HMR) — additional stability at 4 fs
+### HMR (default: enabled)
+
+HMR (hydrogenMass=4 amu) and 4 fs timestep are the defaults. To disable:
 ```bash
 mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --hmr --timestep-fs 4.0 --simulation-time-ns 100.0
+  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0
 ```
 
 ### Checkpoint / Restart

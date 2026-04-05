@@ -46,11 +46,14 @@ mdclaw run_md_simulation \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 2.0 \
+  --timestep-fs 1.0 \
+  --no-hmr \
   --output-frequency-ps 10.0
 ```
 
 ### Stage 3: NVT Production
+
+Default settings (HMR + 4 fs) apply:
 ```bash
 mdclaw run_md_simulation \
   --prmtop-file <parm7> \
@@ -58,7 +61,6 @@ mdclaw run_md_simulation \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 4.0 \
   --output-frequency-ps 10.0
 ```
 
@@ -83,13 +85,15 @@ mdclaw run_md_simulation \
 ```bash
 mdclaw run_md_simulation --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --pressure-bar 0 --timestep-fs 4.0
+  --simulation-time-ns 100.0 --pressure-bar 0
 ```
 
-### HMR — additional stability at 4 fs
+### HMR (default: enabled)
+
+HMR and 4 fs timestep are defaults. To disable:
 ```bash
 mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --hmr --timestep-fs 4.0 --simulation-time-ns 100.0 --pressure-bar 0
+  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 --pressure-bar 0
 ```
 
 ### Checkpoint / Restart

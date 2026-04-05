@@ -9,6 +9,7 @@
 | Salt concentration | 0.15M NaCl | "0.3M", "no salt" |
 | Force field | ff19SB | "ff14SB" |
 | Temperature | 300 K | "310K" |
+| Timestep | 4 fs (HMR enabled by default) | "2 fs", "--no-hmr" |
 | Simulation time | 0.1 ns (quick) | "1 ns", "10 ns" |
 
 **Force field + water model pairing**: ff19SB + OPC (recommended), ff14SB + TIP3P.
@@ -67,13 +68,14 @@ mdclaw run_md_simulation \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0 \
-  --timestep-fs 2.0 \
   --output-frequency-ps 10.0
 ```
 
+> HMR (4 fs timestep) is enabled by default. No need to specify `--hmr` or `--timestep-fs`.
+
 ### Domain Knowledge
 - 0.1 ns is sufficient for sanity checking (clash detection, stability)
-- 2 fs timestep with SHAKE constraints on hydrogen bonds
+- Default: 4 fs timestep with HMR (hydrogenMass=4 amu) + HBonds constraints
 - NPT ensemble at 300K, 1 bar for equilibration
 - Energy should drop significantly during minimization (good sign)
 

@@ -46,11 +46,11 @@ mdclaw run_md_simulation \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
-  --timestep-fs 2.0 \
   --output-frequency-ps 10.0
 ```
 
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
+> HMR (4 fs timestep) is enabled by default. No need to specify `--hmr` or `--timestep-fs`.
 
 ### Domain Knowledge
 
