@@ -208,6 +208,7 @@ mdclaw submit_job \
 Optional parameters:
 - `--nodelist "gpu01"` — Run on specific node(s) (maps to sbatch -w)
 - `--gres "gpu:a100:1"` — GRES specification (overrides --gpus). Use for GPU type selection
+- `--dependency "afterok:12345"` — Start after job 12345 completes successfully
 - `--account <project>` — SLURM account/allocation
 - `--qos <level>` — Quality of service
 - `--extra-sbatch "--constraint=a100"` — Additional SBATCH directives

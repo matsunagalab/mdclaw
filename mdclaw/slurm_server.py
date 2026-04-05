@@ -347,6 +347,7 @@ def _generate_sbatch_script(
     time_limit: str,
     memory: Optional[str],
     nodelist: Optional[str],
+    dependency: Optional[str],
     output_dir: str,
     account: Optional[str],
     qos: Optional[str],
@@ -382,6 +383,8 @@ def _generate_sbatch_script(
         lines.append(f"#SBATCH --mem={memory}")
     if nodelist:
         lines.append(f"#SBATCH --nodelist={nodelist}")
+    if dependency:
+        lines.append(f"#SBATCH --dependency={dependency}")
     lines.append(f"#SBATCH --output={stdout_log}")
     lines.append(f"#SBATCH --error={stderr_log}")
     if account:
@@ -649,6 +652,7 @@ def submit_job(
     time_limit: str = "24:00:00",
     memory: Optional[str] = None,
     nodelist: Optional[str] = None,
+    dependency: Optional[str] = None,
     output_dir: Optional[str] = None,
     account: Optional[str] = None,
     qos: Optional[str] = None,
@@ -677,6 +681,10 @@ def submit_job(
         memory: Memory per node (e.g., "64G"). None = SLURM default.
         nodelist: Specific node(s) to run on (e.g., "gpu01", "gpu[01-03]").
             Maps to -w/--nodelist in sbatch.
+        dependency: Job dependency specification (e.g., "afterok:12345").
+            Maps to --dependency in sbatch. Common patterns:
+            - "afterok:JOB_ID": start after JOB_ID completes successfully
+            - "afterany:JOB_ID": start after JOB_ID finishes (any exit code)
         output_dir: Directory for logs and generated script. Default: cwd.
         account: SLURM account/project.
         qos: Quality of service.
@@ -819,6 +827,7 @@ def submit_job(
         time_limit=time_limit,
         memory=memory,
         nodelist=nodelist,
+        dependency=dependency,
         output_dir=str(out_dir),
         account=account,
         qos=qos,

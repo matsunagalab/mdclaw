@@ -25,33 +25,22 @@
 
 ---
 
-## Equilibration Protocol
+## Equilibration + Production Protocol
 
-### Stage 1: Equilibration (run_equilibration)
+### Local Execution
 
-`run_equilibration` handles energy minimization, NVT heating (1 fs), and NPT
-density equilibration (2 fs) with positional restraints on CA atoms.
-Pass `--pressure-bar 1.0` to match the NPT production ensemble — this tells
-`run_equilibration` to include the NPT stage:
+When running on the local machine (not SLURM):
 
 ```bash
+# Equilibration: NVT heating → NPT density (CA restraints)
 mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
   --output-dir <job_dir> \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0
-```
 
-The restraints keep the protein stable while water and box density relax.
-Without the NPT stage, jumping directly to NPT production with 4 fs risks
-NaN errors from sudden volume changes.
-
-### Stage 2: Production (run_production)
-
-Default settings (HMR + 4 fs, no restraints):
-
-```bash
+# Production: NPT, HMR + 4 fs, no restraints
 mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
@@ -60,6 +49,45 @@ mdclaw run_production \
   --pressure-bar 1.0 \
   --output-frequency-ps 10.0
 ```
+
+### SLURM Execution (HPC)
+
+Submit equilibration and production as two dependent SLURM jobs.
+The production job starts only after equilibration completes successfully:
+
+```bash
+# Job 1: Equilibration
+mdclaw submit_job \
+  --script "mdclaw run_equilibration \
+    --prmtop-file <ABSOLUTE_PARM7> \
+    --inpcrd-file <ABSOLUTE_RST7> \
+    --output-dir <ABSOLUTE_JOB_DIR> \
+    --temperature-kelvin 300.0 \
+    --pressure-bar 1.0" \
+  --job-name eq_<name> \
+  --partition <partition> --nodelist <node> --gpus 1 \
+  --time-limit "1:00:00" --memory "32G"
+# → returns slurm_job_id (e.g., 12345)
+
+# Job 2: Production (depends on equilibration)
+mdclaw submit_job \
+  --script "mdclaw run_production \
+    --prmtop-file <ABSOLUTE_PARM7> \
+    --inpcrd-file <ABSOLUTE_RST7> \
+    --simulation-time-ns <user_specified> \
+    --temperature-kelvin 300.0 \
+    --pressure-bar 1.0 \
+    --platform CUDA \
+    --output-dir <ABSOLUTE_JOB_DIR>" \
+  --job-name md_<name> \
+  --partition <partition> --nodelist <node> --gpus 1 \
+  --time-limit <estimated> --memory "32G" \
+  --dependency "afterok:<eq_job_id>"
+# → production starts only after equilibration succeeds
+```
+
+SLURM compute nodes do not inherit the login node's working directory,
+so all paths in `--script` need to be absolute. Use `realpath` to convert.
 
 ---
 

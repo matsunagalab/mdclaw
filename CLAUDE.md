@@ -281,7 +281,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ### slurm_server.py
 - `inspect_cluster(output_file)` - Discover partitions, GPUs, save config (preserves existing policy)
-- `submit_job(script, job_name, partition, nodes, ntasks, cpus_per_task, gpus, gres, time_limit, memory, nodelist, output_dir, account, qos, extra_sbatch, environment)` - Submit SLURM batch job (validates against policy)
+- `submit_job(script, job_name, partition, nodes, ntasks, cpus_per_task, gpus, gres, time_limit, memory, nodelist, dependency, output_dir, account, qos, extra_sbatch, environment)` - Submit SLURM batch job (validates against policy)
 - `check_job(job_id)` - Check job status (squeue/sacct)
 - `list_jobs(all_users)` - List user's SLURM jobs
 - `cancel_job(job_id)` - Cancel a SLURM job
