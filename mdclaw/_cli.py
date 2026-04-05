@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import sys
+from pathlib import Path
 from typing import Union, get_args, get_origin
 
 from mdclaw import __version__
@@ -359,11 +360,18 @@ def main(argv: list[str] | None = None) -> None:
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
         # Record CLI command to progress.json
-        if isinstance(result, dict) and result.get("output_dir"):
-            _append_command_to_progress(
-                result["output_dir"], tool_name,
-                result.get("success", False),
+        # Try output_dir first, then derive from file_path or output_file
+        if isinstance(result, dict):
+            record_dir = (
+                result.get("output_dir")
+                or (str(Path(result["file_path"]).parent) if result.get("file_path") else None)
+                or (str(Path(result["output_file"]).parent) if result.get("output_file") else None)
             )
+            if record_dir:
+                _append_command_to_progress(
+                    record_dir, tool_name,
+                    result.get("success", False),
+                )
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)
