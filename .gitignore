@@ -48,6 +48,9 @@ htmlcov/
 test_output/
 test_output_sif/
 test_output_1ake/
+test_1ake_n5/
+test_4ake_n5/
+test_4ake_n5_10ns/
 
 # MDClaw specific
 *.sif
