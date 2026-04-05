@@ -1617,9 +1617,11 @@ def clean_protein(
         
         if internal_missing:
             result["operations"].append({
-                "step": "missing_residues", 
+                "step": "missing_residues",
                 "status": "will_model",
-                "details": f"Found {len(internal_missing)} internal missing residue(s) to be modeled: {internal_missing}"
+                "count": len(internal_missing),
+                "residues": internal_missing,
+                "details": f"Found {len(internal_missing)} internal missing residue(s) to be modeled"
             })
         elif num_missing_residues == 0 and not cap_termini:
             result["operations"].append({
@@ -2025,19 +2027,29 @@ def clean_protein(
             # Keep the PDBFixer output as the final output if conversion fails
             result["warnings"].append("Using PDBFixer output without Amber naming convention conversion")
 
-        # Token optimization: Replace detailed operations with summary
+        # Build structured provenance summary at top level
+        # (operations[] is kept for full detail, summary for quick access)
         operations = result.get("operations", [])
-        critical_ops = [op for op in operations if op.get("status") in ["success", "error"]
-                       and any(keyword in op.get("step", "") for keyword in
-                              ["missing", "disulfide", "nonstandard", "pdb4amber"])]
-        result["operations_summary"] = {
-            "total_steps": len(operations),
-            "successful_steps": sum(1 for op in operations if op.get("status") == "success"),
-            "errors": sum(1 for op in operations if op.get("status") == "error"),
-            "critical_operations": critical_ops[:5]  # Top 5 critical operations only
-        }
-        # Remove the detailed operations array to save tokens
-        del result["operations"]
+        provenance = {}
+        for op in operations:
+            step = op.get("step", "")
+            if step == "missing_residues" and op.get("status") == "will_model":
+                provenance["missing_residues_modeled"] = op.get("residues", [])
+                provenance["missing_residues_count"] = op.get("count", 0)
+            elif step == "nonstandard_residues" and op.get("status") == "replaced":
+                provenance["nonstandard_residues_replaced"] = op.get("details", "")
+            elif step == "protonation" and op.get("status") == "success":
+                provenance["protonation_method"] = op.get("method", "")
+                provenance["protonation_ph"] = op.get("ph")
+                if op.get("histidine_states"):
+                    provenance["histidine_states"] = op["histidine_states"]
+            elif step == "disulfide_bonds":
+                if op.get("status") in ("success", "modified"):
+                    provenance["disulfide_bonds_applied"] = True
+                    provenance["disulfide_bonds_details"] = op.get("details", "")
+                elif op.get("status") == "none_found":
+                    provenance["disulfide_bonds_applied"] = False
+        result["provenance"] = provenance
 
         result["success"] = True
         logger.info(f"Successfully cleaned protein structure: {result['output_file']}")
@@ -3565,7 +3577,26 @@ def prepare_complex(
                 result["warnings"].append("No files available to merge")
         
         result["success"] = proteins_ok and ligands_ok
-        
+
+        # Aggregate provenance from all proteins into top-level summary
+        # so LLM can read it directly without digging into proteins[]
+        preparation_summary = {}
+        for p in result.get("proteins", []):
+            prov = p.get("provenance", {})
+            if prov:
+                chain = p.get("chain_id", "unknown")
+                for key, val in prov.items():
+                    if key == "histidine_states" and isinstance(val, dict):
+                        preparation_summary.setdefault("histidine_states", {}).update(val)
+                    elif key == "missing_residues_modeled" and val:
+                        preparation_summary.setdefault("missing_residues_modeled", []).extend(val)
+                    elif key == "missing_residues_count" and val:
+                        preparation_summary["missing_residues_count"] = \
+                            preparation_summary.get("missing_residues_count", 0) + val
+                    elif key not in preparation_summary:
+                        preparation_summary[key] = val
+        result["preparation_summary"] = preparation_summary
+
         # Save workflow summary
         summary_file = out_dir / "prepare_complex_summary.json"
         with open(summary_file, 'w') as f:

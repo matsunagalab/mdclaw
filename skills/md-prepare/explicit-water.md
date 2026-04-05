@@ -111,13 +111,10 @@ Fill in these sections using information from the tool outputs during this workf
   - `num_atoms_total`, `num_waters`, `ions` (e.g., `{"Na+": 42, "Cl-": 36}`)
   - `ligands` (list of ligand names if any)
 
-- **preparation**: (from prepare_complex output → `proteins[0]`)
-  - `protonation_method`: from `proteins[0].protonation_method` (e.g., "pdb2pqr+propka")
-  - `ph`: pH value used
-  - `histidine_states`: from `proteins[0].histidine_states` (e.g., `{"A:126": "HIE"}`)
-  - `disulfide_bonds`: from `proteins[0].disulfide_bonds` (list of residue pairs)
-  - `missing_residues_modeled`: check `proteins[0].operations[]` for step="missing_residues"
-  - `operations_log`: copy of `proteins[0].operations[]` for full provenance
+- **preparation**: copy `preparation_summary` from prepare_complex output directly.
+  It contains: `protonation_method`, `protonation_ph`, `histidine_states`,
+  `disulfide_bonds_applied`, `missing_residues_modeled`, `missing_residues_count`,
+  `nonstandard_residues_replaced` — all at the top level, ready to use.
 
 - **solvation**: (from solvate_structure output)
   - `type`: "explicit"
