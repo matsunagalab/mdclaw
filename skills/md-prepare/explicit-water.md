@@ -58,10 +58,22 @@ mdclaw build_amber_system \
 
 > `build_amber_system` looks for `box_dimensions.json` in the same directory as the input PDB. If not found, it builds an implicit solvent system (no PBC).
 
-### Quick MD (sanity check)
+### Equilibration + Quick MD (sanity check)
+
+Run equilibration (NVT heating + NPT with positional restraints on CA atoms),
+then a short production run to verify stability:
 
 ```bash
-mdclaw run_md_simulation \
+# Equilibration: NVT (10ps, 1fs) → NPT (20ps, 2fs) with CA restraints
+mdclaw run_equilibration \
+  --prmtop-file <parm7> \
+  --inpcrd-file <rst7> \
+  --output-dir <job_dir> \
+  --temperature-kelvin 300.0 \
+  --pressure-bar 1.0
+
+# Quick production (0.1 ns, default 4 fs + HMR, no restraints)
+mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
   --output-dir <job_dir> \
@@ -71,11 +83,10 @@ mdclaw run_md_simulation \
   --output-frequency-ps 10.0
 ```
 
-> HMR (4 fs timestep) is enabled by default. No need to specify `--hmr` or `--timestep-fs`.
-
 ### Domain Knowledge
-- 0.1 ns is sufficient for sanity checking (clash detection, stability)
-- Default: 4 fs timestep with HMR (hydrogenMass=4 amu) + HBonds constraints
+- Equilibration uses positional restraints on CA atoms to prevent structural collapse
+- NVT stage heats gradually (1 fs, no HMR), NPT stage equilibrates density (2 fs)
+- Production uses 4 fs + HMR (default) without restraints
 - NPT ensemble at 300K, 1 bar for equilibration
 - Energy should drop significantly during minimization (good sign)
 

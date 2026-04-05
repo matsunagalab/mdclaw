@@ -28,7 +28,363 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 
-def run_md_simulation(
+def run_equilibration(
+    prmtop_file: str,
+    inpcrd_file: str,
+    temperature_kelvin: float = 300.0,
+    pressure_bar: Optional[float] = 1.0,
+    nvt_steps: int = 10000,
+    npt_steps: int = 10000,
+    restraint_atoms: str = "CA",
+    restraint_force_constant: float = 100.0,
+    name: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    is_membrane: bool = False,
+    implicit_solvent: Optional[str] = None,
+    platform: str = "auto",
+    device_index: Optional[str] = None,
+    random_seed: Optional[int] = None,
+) -> dict:
+    """Run equilibration protocol with positional restraints.
+
+    Two-stage protocol:
+      Stage 1 (NVT): Heat the system with positional restraints on selected
+                      atoms. Uses 1 fs timestep without HMR for stability.
+      Stage 2 (NPT): Equilibrate density with restraints still active.
+                      Uses 2 fs timestep for gradual transition to production.
+
+    The restraint is a harmonic potential on the initial positions using
+    OpenMM's CustomExternalForce with periodicdistance.
+
+    After equilibration, use run_production for production MD (4 fs + HMR,
+    no restraints).
+
+    Args:
+        prmtop_file: Amber topology file (.parm7 or .prmtop)
+        inpcrd_file: Amber coordinate file (.rst7 or .inpcrd)
+        temperature_kelvin: Temperature in Kelvin (default: 300.0)
+        pressure_bar: Pressure in bar for NPT stage. None skips NPT stage
+            and runs NVT only (for implicit solvent). Default: 1.0
+        nvt_steps: Number of NVT heating steps (default: 10000 = 10 ps at 1 fs)
+        npt_steps: Number of NPT equilibration steps (default: 10000 = 20 ps at 2 fs)
+        restraint_atoms: Atom selection for restraints. Options:
+            - "CA": alpha carbons only (default, recommended)
+            - "backbone": backbone heavy atoms (N, CA, C, O)
+            - "heavy": all non-hydrogen atoms
+        restraint_force_constant: Restraint force constant in kJ/mol/nm^2
+            (default: 100.0). Higher values = tighter restraints.
+        name: Optional name prefix for output files
+        output_dir: Output directory
+        is_membrane: Set True for membrane systems (uses MonteCarloMembraneBarostat)
+        implicit_solvent: GB model name. If set, only NVT stage runs (no NPT).
+        platform: OpenMM platform - "CUDA", "OpenCL", "CPU", "Reference", or "auto"
+        device_index: GPU device index (e.g. "0")
+        random_seed: Random number seed for reproducibility
+
+    Returns:
+        dict with:
+          - success: bool
+          - output_dir: str
+          - final_structure: str - Path to equilibrated PDB
+          - state_file: str - Path to OpenMM state XML (portable restart)
+          - nvt_steps: int - NVT steps completed
+          - npt_steps: int - NPT steps completed
+          - restraint_atoms: str - Atom selection used
+          - restraint_count: int - Number of restrained atoms
+          - errors: list[str]
+          - warnings: list[str]
+    """
+    logger.info(f"Starting equilibration: NVT({nvt_steps} steps) + NPT({npt_steps} steps) at {temperature_kelvin}K")
+
+    job_id = generate_job_id()
+    result = {
+        "success": False,
+        "job_id": job_id,
+        "output_dir": None,
+        "final_structure": None,
+        "state_file": None,
+        "nvt_steps": 0,
+        "npt_steps": 0,
+        "restraint_atoms": restraint_atoms,
+        "restraint_count": 0,
+        "platform": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    prmtop_path = Path(prmtop_file).resolve()
+    inpcrd_path = Path(inpcrd_file).resolve()
+
+    if not prmtop_path.is_file():
+        result["errors"].append(f"Topology file not found: {prmtop_file}")
+        return result
+    if not inpcrd_path.is_file():
+        result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
+        return result
+
+    try:
+        import openmm as mm
+        from openmm.app import (
+            AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter,
+            StateDataReporter, Simulation, PME, NoCutoff, HBonds,
+            HCT, OBC1, OBC2, GBn, GBn2,
+        )
+        from openmm import (
+            LangevinMiddleIntegrator, MonteCarloBarostat,
+            MonteCarloMembraneBarostat, Platform, CustomExternalForce,
+        )
+        from openmm.unit import (
+            nanometer, kelvin, picosecond, femtoseconds, bar,
+            kilojoules_per_mole,
+        )
+    except ImportError:
+        result["errors"].append("OpenMM not installed")
+        return result
+
+    IMPLICIT_MODELS = {
+        "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
+    }
+    RESTRAINT_SELECTIONS = {
+        "CA": {"CA"},
+        "backbone": {"N", "CA", "C", "O"},
+        "heavy": None,  # all non-hydrogen
+    }
+
+    try:
+        # Set up output directory
+        if output_dir:
+            out_dir = Path(output_dir) / "equilibration"
+        else:
+            out_dir = WORKING_DIR / job_id / "equilibration"
+        ensure_directory(out_dir)
+        result["output_dir"] = str(out_dir)
+
+        # Load topology and coordinates
+        logger.info("Loading Amber files")
+        prmtop = AmberPrmtopFile(str(prmtop_path))
+        inpcrd = AmberInpcrdFile(str(inpcrd_path))
+
+        is_periodic = inpcrd.boxVectors is not None
+
+        # If implicit solvent specified, skip NPT
+        if implicit_solvent:
+            npt_steps = 0
+            if pressure_bar is not None:
+                result["warnings"].append("Implicit solvent: skipping NPT stage (no periodic box)")
+
+        # --- Stage 1: NVT heating (1 fs, no HMR) ---
+        logger.info(f"Stage 1: NVT heating ({nvt_steps} steps, 1 fs, restraints on {restraint_atoms})")
+
+        # Create system for NVT
+        if implicit_solvent:
+            gb_model = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            system_nvt = prmtop.createSystem(
+                implicitSolvent=gb_model,
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds,
+            )
+        elif is_periodic:
+            system_nvt = prmtop.createSystem(
+                nonbondedMethod=PME,
+                nonbondedCutoff=1.0 * nanometer,
+                constraints=HBonds,
+            )
+        else:
+            system_nvt = prmtop.createSystem(
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds,
+            )
+
+        # Add positional restraints
+        restraint = CustomExternalForce(
+            'k*periodicdistance(x, y, z, x0, y0, z0)^2'
+        )
+        restraint.addPerParticleParameter('k')
+        restraint.addPerParticleParameter('x0')
+        restraint.addPerParticleParameter('y0')
+        restraint.addPerParticleParameter('z0')
+
+        allowed_names = RESTRAINT_SELECTIONS.get(restraint_atoms, {"CA"})
+        positions = inpcrd.positions
+        restraint_count = 0
+
+        for atom in prmtop.topology.atoms():
+            if allowed_names is None:
+                # "heavy" = all non-hydrogen
+                if atom.element.symbol == 'H':
+                    continue
+            elif atom.name not in allowed_names:
+                continue
+
+            k_value = restraint_force_constant * kilojoules_per_mole / (nanometer * nanometer)
+            restraint.addParticle(atom.index, [
+                k_value,
+                positions[atom.index][0],
+                positions[atom.index][1],
+                positions[atom.index][2],
+            ])
+            restraint_count += 1
+
+        system_nvt.addForce(restraint)
+        result["restraint_count"] = restraint_count
+        logger.info(f"Applied restraints to {restraint_count} atoms ({restraint_atoms})")
+
+        # NVT integrator (1 fs, no HMR)
+        integrator_nvt = LangevinMiddleIntegrator(
+            temperature_kelvin * kelvin,
+            1.0 / picosecond,
+            1.0 * femtoseconds,
+        )
+        if random_seed is not None:
+            integrator_nvt.setRandomNumberSeed(random_seed)
+
+        # Platform selection
+        PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
+        platform_obj = None
+        platform_properties = {}
+        if platform.lower() != "auto":
+            plat_key = platform.lower()
+            if plat_key in PLATFORM_MAP:
+                platform_obj = Platform.getPlatformByName(PLATFORM_MAP[plat_key])
+                if device_index and plat_key in ("cuda", "opencl"):
+                    platform_properties["DeviceIndex"] = device_index
+
+        if platform_obj:
+            sim_nvt = Simulation(prmtop.topology, system_nvt, integrator_nvt,
+                                 platform_obj, platform_properties)
+        else:
+            sim_nvt = Simulation(prmtop.topology, system_nvt, integrator_nvt)
+
+        result["platform"] = sim_nvt.context.getPlatform().getName()
+
+        sim_nvt.context.setPositions(positions)
+        if is_periodic and inpcrd.boxVectors is not None:
+            sim_nvt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+
+        # Minimize
+        logger.info("Minimizing energy...")
+        sim_nvt.minimizeEnergy()
+
+        # NVT run
+        sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
+        sim_nvt.step(nvt_steps)
+        result["nvt_steps"] = nvt_steps
+        logger.info(f"NVT heating complete ({nvt_steps} steps)")
+
+        # Save NVT state
+        nvt_state = sim_nvt.context.getState(getPositions=True, getVelocities=True)
+        nvt_positions = nvt_state.getPositions()
+        nvt_velocities = nvt_state.getVelocities()
+
+        # --- Stage 2: NPT equilibration (2 fs, no HMR, with restraints) ---
+        if npt_steps > 0:
+            logger.info(f"Stage 2: NPT equilibration ({npt_steps} steps, 2 fs, restraints on {restraint_atoms})")
+
+            # Create new system for NPT
+            if is_periodic:
+                system_npt = prmtop.createSystem(
+                    nonbondedMethod=PME,
+                    nonbondedCutoff=1.0 * nanometer,
+                    constraints=HBonds,
+                )
+            else:
+                system_npt = prmtop.createSystem(
+                    nonbondedMethod=NoCutoff,
+                    constraints=HBonds,
+                )
+
+            # Add same restraints
+            restraint_npt = CustomExternalForce(
+                'k*periodicdistance(x, y, z, x0, y0, z0)^2'
+            )
+            restraint_npt.addPerParticleParameter('k')
+            restraint_npt.addPerParticleParameter('x0')
+            restraint_npt.addPerParticleParameter('y0')
+            restraint_npt.addPerParticleParameter('z0')
+
+            for atom in prmtop.topology.atoms():
+                if allowed_names is None:
+                    if atom.element.symbol == 'H':
+                        continue
+                elif atom.name not in allowed_names:
+                    continue
+                k_value = restraint_force_constant * kilojoules_per_mole / (nanometer * nanometer)
+                restraint_npt.addParticle(atom.index, [
+                    k_value,
+                    positions[atom.index][0],
+                    positions[atom.index][1],
+                    positions[atom.index][2],
+                ])
+
+            system_npt.addForce(restraint_npt)
+
+            # Add barostat
+            if is_membrane:
+                from openmm.app import MonteCarloMembraneBarostat as MemBarostat
+                system_npt.addForce(MonteCarloMembraneBarostat(
+                    pressure_bar * bar, 0.0 * bar * nanometer,
+                    MonteCarloMembraneBarostat.XYIsotropic,
+                    MonteCarloMembraneBarostat.ZFree,
+                    temperature_kelvin * kelvin,
+                ))
+            else:
+                system_npt.addForce(MonteCarloBarostat(
+                    pressure_bar * bar, temperature_kelvin * kelvin,
+                ))
+
+            # NPT integrator (2 fs)
+            integrator_npt = LangevinMiddleIntegrator(
+                temperature_kelvin * kelvin,
+                1.0 / picosecond,
+                2.0 * femtoseconds,
+            )
+            if random_seed is not None:
+                integrator_npt.setRandomNumberSeed(random_seed)
+
+            if platform_obj:
+                sim_npt = Simulation(prmtop.topology, system_npt, integrator_npt,
+                                     platform_obj, platform_properties)
+            else:
+                sim_npt = Simulation(prmtop.topology, system_npt, integrator_npt)
+
+            sim_npt.context.setPositions(nvt_positions)
+            sim_npt.context.setVelocities(nvt_velocities)
+            if is_periodic and inpcrd.boxVectors is not None:
+                sim_npt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+
+            sim_npt.step(npt_steps)
+            result["npt_steps"] = npt_steps
+            logger.info(f"NPT equilibration complete ({npt_steps} steps)")
+
+            # Save final state from NPT
+            final_state = sim_npt.context.getState(getPositions=True)
+            final_positions = final_state.getPositions()
+            sim_npt.saveState(str(out_dir / "equilibration.xml"))
+        else:
+            # Implicit solvent: save from NVT
+            final_positions = nvt_positions
+            sim_nvt.saveState(str(out_dir / "equilibration.xml"))
+
+        result["state_file"] = str(out_dir / "equilibration.xml")
+
+        # Save final structure as PDB
+        pref = f"{name}_" if name else ""
+        final_pdb = out_dir / f"{pref}equilibrated.pdb"
+        with open(final_pdb, 'w') as f:
+            PDBFile.writeFile(prmtop.topology, final_positions, f)
+        result["final_structure"] = str(final_pdb)
+        logger.info(f"Equilibrated structure saved: {final_pdb}")
+
+        result["success"] = True
+
+    except Exception as e:
+        logger.error(f"Equilibration failed: {e}")
+        result["errors"].append(f"Equilibration failed: {e}")
+
+    return result
+
+
+def run_production(
     prmtop_file: str,
     inpcrd_file: str,
     simulation_time_ns: float = 1.0,
@@ -1340,7 +1696,8 @@ def plot_q_value(q_list, native_contacts_with_indices, n_residue, output_contact
 # =============================================================================
 
 TOOLS = {
-    "run_md_simulation": run_md_simulation,
+    "run_equilibration": run_equilibration,
+    "run_production": run_production,
     "analyze_rmsd": analyze_rmsd,
     "analyze_rmsf": analyze_rmsf,
     "calculate_distance": calculate_distance,

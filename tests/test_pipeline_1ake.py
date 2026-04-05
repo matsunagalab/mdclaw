@@ -120,9 +120,9 @@ class TestPipeline1AKE:
 
     # Step 5b: Quick MD (1 ps)
     def test_step5b_quick_md(self, job_dir):
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=self.parm7,
             inpcrd_file=self.rst7,
             simulation_time_ns=0.001,

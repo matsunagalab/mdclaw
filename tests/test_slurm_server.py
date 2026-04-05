@@ -1063,7 +1063,7 @@ class TestContainerExecution:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10001\n")
 
         result = submit_job(
-            script="mdclaw run_md_simulation --prmtop-file /data/sys.parm7",
+            script="mdclaw run_production --prmtop-file /data/sys.parm7",
             partition="gpu",
             gpus=1,
             output_dir=str(tmp_path),

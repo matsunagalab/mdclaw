@@ -36,35 +36,34 @@
 ## Equilibration Protocol
 
 ### Stage 1: Energy Minimization
-Already handled by `run_md_simulation` internally (1000 steps steepest descent).
+Already handled by `run_production` internally (1000 steps steepest descent).
 
-### Stage 2: NVT Heating
+### Stage 2: Equilibration (run_equilibration)
+
+NVT only (no NPT for implicit solvent) with positional restraints on CA atoms:
+
 ```bash
-mdclaw run_md_simulation \
+mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
-  --simulation-time-ns 0.1 \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 0 \
-  --timestep-fs 1.0 \
-  --no-hmr \
-  --output-frequency-ps 10.0
+  --output-dir <job_dir> \
+  --temperature-kelvin 300.0
 ```
+
+> No `--pressure-bar` needed. `run_equilibration` auto-skips NPT for implicit solvent.
 
 ### Stage 3: NVT Production
 
-Default settings (HMR + 4 fs) apply:
+Default settings (HMR + 4 fs, no restraints):
 ```bash
-mdclaw run_md_simulation \
+mdclaw run_production \
   --prmtop-file <parm7> \
-  --inpcrd-file <rst7_from_prev> \
+  --inpcrd-file <rst7> \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin 300.0 \
   --pressure-bar 0 \
   --output-frequency-ps 10.0
 ```
-
-> `--pressure-bar 0` disables the barostat. All implicit solvent runs use NVT.
 
 ---
 
@@ -83,7 +82,7 @@ mdclaw run_md_simulation \
 
 ### GPU Selection
 ```bash
-mdclaw run_md_simulation --platform CUDA --device-index "0" \
+mdclaw run_production --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0 --pressure-bar 0
 ```
@@ -92,14 +91,14 @@ mdclaw run_md_simulation --platform CUDA --device-index "0" \
 
 HMR and 4 fs timestep are defaults. To disable:
 ```bash
-mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 --pressure-bar 0
 ```
 
 ### Checkpoint / Restart
 Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
 
-For long runs on HPC, use `/hpc-run` skill to submit `run_md_simulation` as a SLURM job. Currently, `run_md_simulation` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
+For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM job. Currently, `run_production` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---
 

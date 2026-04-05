@@ -139,7 +139,7 @@ mdclaw inspect_cluster
 
 # Submit a job (command string or script file)
 mdclaw submit_job \
-  --script "mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 --platform CUDA --hmr --timestep-fs 4.0" \
+  --script "mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 --platform CUDA --hmr --timestep-fs 4.0" \
   --partition gpu --gpus 1 --time-limit "24:00:00" --memory "64G"
 
 # Submit an existing script file
@@ -252,7 +252,7 @@ tests/                      # 4-level test suite
 | genesis | `boltz2_protein_from_seq`, `rdkit_validate_smiles` | AI structure prediction |
 | solvation | `solvate_structure`, `embed_in_membrane` | Solvent/membrane setup |
 | amber | `build_amber_system` | Amber topology generation |
-| md_simulation | `run_md_simulation` | OpenMM MD execution |
+| md_simulation | `run_production` | OpenMM MD execution |
 | literature | `pubmed_search`, `pubmed_fetch` | Literature search |
 | metal | `parameterize_metal_ion`, `detect_metal_ions` | Metal ion handling |
 | slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy`, `configure_container` | SLURM job management |

@@ -264,17 +264,17 @@ class TestMDSimulationServer:
         assert amber["success"] is True
         return amber
 
-    def test_run_md_simulation(self, small_pdb, tmp_path):
+    def test_run_production(self, small_pdb, tmp_path):
         """Run a very short MD simulation (0.001 ns = 1 ps).
 
         Full dependency chain: prepare -> solvate -> build -> simulate.
         """
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
         # Quick MD (1 ps)
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -291,11 +291,11 @@ class TestMDSimulationServer:
 
     def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
         """Run MD with explicit CPU platform selection."""
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -311,11 +311,11 @@ class TestMDSimulationServer:
 
     def test_run_md_with_checkpoint(self, small_pdb, tmp_path):
         """Verify CheckpointReporter creates a checkpoint file."""
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -332,12 +332,12 @@ class TestMDSimulationServer:
 
     def test_run_md_restart(self, small_pdb, tmp_path):
         """Run MD, then restart from checkpoint and verify DCD append."""
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
         # First run
-        r1 = run_md_simulation(
+        r1 = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -353,7 +353,7 @@ class TestMDSimulationServer:
         assert Path(chk).exists()
 
         # Restart: request same total time (should complete quickly)
-        r2 = run_md_simulation(
+        r2 = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.002,
@@ -370,11 +370,11 @@ class TestMDSimulationServer:
 
     def test_run_md_with_hmr(self, small_pdb, tmp_path):
         """Run MD with HMR enabled and 4fs timestep."""
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,
@@ -391,11 +391,11 @@ class TestMDSimulationServer:
 
     def test_run_md_invalid_platform(self, small_pdb, tmp_path):
         """Invalid platform name returns error."""
-        from md_simulation_server import run_md_simulation
+        from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
-        result = run_md_simulation(
+        result = run_production(
             prmtop_file=amber["parm7"],
             inpcrd_file=amber["rst7"],
             simulation_time_ns=0.001,

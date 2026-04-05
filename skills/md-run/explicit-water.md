@@ -27,33 +27,31 @@
 
 ## Equilibration Protocol
 
-### Stage 1: Energy Minimization
-Already handled by `run_md_simulation` internally (1000 steps steepest descent).
+### Stage 1: Equilibration (run_equilibration)
 
-### Stage 2: NVT Heating (optional, for longer runs)
-
-Short NVT run with reduced timestep to gradually heat the system:
+`run_equilibration` handles energy minimization, NVT heating (1 fs), and NPT
+density equilibration (2 fs) with positional restraints on CA atoms:
 
 ```bash
-mdclaw run_md_simulation \
+mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
-  --simulation-time-ns 0.1 \
+  --output-dir <job_dir> \
   --temperature-kelvin 300.0 \
-  --pressure-bar 0 \
-  --timestep-fs 1.0 \
-  --no-hmr \
-  --output-frequency-ps 10.0
+  --pressure-bar 1.0
 ```
 
-### Stage 3: NPT Production
+This prevents NaN errors that occur when jumping directly from minimization
+to 4 fs production. The restraints keep the protein stable while water relaxes.
 
-Default settings (HMR + 4 fs) apply — no extra flags needed:
+### Stage 2: Production (run_production)
+
+Default settings (HMR + 4 fs, no restraints):
 
 ```bash
-mdclaw run_md_simulation \
+mdclaw run_production \
   --prmtop-file <parm7> \
-  --inpcrd-file <rst7_from_prev> \
+  --inpcrd-file <rst7> \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0 \
@@ -77,7 +75,7 @@ mdclaw run_md_simulation \
 
 ### GPU Selection
 ```bash
-mdclaw run_md_simulation --platform CUDA --device-index "0" \
+mdclaw run_production --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0
 ```
@@ -86,18 +84,18 @@ mdclaw run_md_simulation --platform CUDA --device-index "0" \
 
 HMR (hydrogenMass=4 amu) and 4 fs timestep are the defaults. To disable:
 ```bash
-mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0
 ```
 
 ### Checkpoint / Restart
 ```bash
 # Initial run (checkpoint.chk saved automatically)
-mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0 --platform CUDA
 
 # Restart from checkpoint (appends to DCD, runs only remaining steps)
-mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0 --platform CUDA \
   --restart-from /path/to/checkpoint.chk
 ```
@@ -106,7 +104,7 @@ mdclaw run_md_simulation --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 - Binary format: platform-specific (CUDA checkpoint cannot load on CPU)
 - For portable saves, use State (XML) — but mdclaw currently uses checkpoint
 - Same DCD file path must be used for trajectory append
-- For long runs on HPC, use `/hpc-run` skill to submit `run_md_simulation` as a SLURM job. Currently, `run_md_simulation` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
+- For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM job. Currently, `run_production` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---
 

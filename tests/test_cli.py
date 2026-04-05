@@ -266,7 +266,7 @@ class TestSubprocessCLI:
 
 
 class TestHPCParameters:
-    """Test new HPC-related CLI parameters for run_md_simulation."""
+    """Test new HPC-related CLI parameters for run_production."""
 
     def test_platform_param(self):
         from mdclaw._cli import _build_parser, _discover_tools
@@ -275,7 +275,7 @@ class TestHPCParameters:
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "run_md_simulation",
+            "run_production",
             "--prmtop-file", "sys.parm7",
             "--inpcrd-file", "sys.rst7",
             "--platform", "CUDA",
@@ -291,7 +291,7 @@ class TestHPCParameters:
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "run_md_simulation",
+            "run_production",
             "--prmtop-file", "sys.parm7",
             "--inpcrd-file", "sys.rst7",
             "--restart-from", "checkpoint.chk",
@@ -305,7 +305,7 @@ class TestHPCParameters:
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "run_md_simulation",
+            "run_production",
             "--prmtop-file", "sys.parm7",
             "--inpcrd-file", "sys.rst7",
             "--hmr",
@@ -321,7 +321,7 @@ class TestHPCParameters:
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "run_md_simulation",
+            "run_production",
             "--prmtop-file", "sys.parm7",
             "--inpcrd-file", "sys.rst7",
         ])

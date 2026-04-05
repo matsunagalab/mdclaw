@@ -25,7 +25,7 @@ For each validated target:
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_md_simulation \
+  --script "mdclaw run_production \
     --prmtop-file /absolute/path/to/<job_dir>/topology/system.parm7 \
     --inpcrd-file /absolute/path/to/<job_dir>/topology/system.rst7 \
     --simulation-time-ns <user_specified> \

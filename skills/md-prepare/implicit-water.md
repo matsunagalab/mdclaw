@@ -38,8 +38,23 @@ mdclaw build_amber_system \
 
 ### Quick MD (implicit solvent)
 
+Two stages: NVT heating (small timestep) then NVT check (default 4 fs + HMR).
+
 ```bash
-mdclaw run_md_simulation \
+# Stage 1: NVT heating (0.01 ns, 1 fs, no HMR)
+mdclaw run_production \
+  --prmtop-file <parm7> \
+  --inpcrd-file <rst7> \
+  --output-dir <job_dir> \
+  --simulation-time-ns 0.01 \
+  --temperature-kelvin 300.0 \
+  --pressure-bar 0 \
+  --timestep-fs 1.0 \
+  --no-hmr \
+  --output-frequency-ps 1.0
+
+# Stage 2: NVT sanity check (0.1 ns, default 4 fs + HMR)
+mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
   --output-dir <job_dir> \
@@ -50,7 +65,6 @@ mdclaw run_md_simulation \
 ```
 
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
-> HMR (4 fs timestep) is enabled by default. No need to specify `--hmr` or `--timestep-fs`.
 
 ### Domain Knowledge
 

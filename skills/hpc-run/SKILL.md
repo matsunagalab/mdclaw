@@ -114,7 +114,7 @@ When a policy is set, `submit_job` rejects requests exceeding the limits. All fi
 
 ## Step 2: Write the Job Script
 
-Currently, the primary mdclaw tool that benefits from SLURM submission is **`run_md_simulation`** (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node, not as SLURM jobs.
+Currently, the primary mdclaw tool that benefits from SLURM submission is **`run_production`** (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node, not as SLURM jobs.
 
 Based on the user's request, write an appropriate job script. The script content depends on the workload type.
 
@@ -122,7 +122,7 @@ Based on the user's request, write an appropriate job script. The script content
 
 ```bash
 #!/bin/bash
-mdclaw run_md_simulation \
+mdclaw run_production \
   --prmtop-file /absolute/path/to/system.parm7 \
   --inpcrd-file /absolute/path/to/system.rst7 \
   --simulation-time-ns 100.0 \
@@ -199,7 +199,7 @@ For a simple command string (no script file — **use absolute paths**):
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_md_simulation --prmtop-file /absolute/path/to/system.parm7 --inpcrd-file /absolute/path/to/system.rst7 --platform CUDA" \
+  --script "mdclaw run_production --prmtop-file /absolute/path/to/system.parm7 --inpcrd-file /absolute/path/to/system.rst7 --platform CUDA" \
   --partition gpu \
   --gpus 1 \
   --time-limit "12:00:00"
@@ -333,7 +333,7 @@ Look for `checkpoint_file` in the JSON output.
 
 ```bash
 #!/bin/bash
-mdclaw run_md_simulation \
+mdclaw run_production \
   --prmtop-file /absolute/path/to/system.parm7 \
   --inpcrd-file /absolute/path/to/system.rst7 \
   --simulation-time-ns <remaining_time> \
