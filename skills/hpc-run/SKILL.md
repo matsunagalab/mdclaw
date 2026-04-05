@@ -151,20 +151,20 @@ Save the script file (e.g., `run_md.sh`), then submit it in Step 3.
 
 ### Absolute Paths in Job Scripts
 
-SLURM の計算ノードはログインノードの作業ディレクトリを継承しない。
-ジョブスクリプトが計算ノードで実行されるとき、カレントディレクトリは
-ログインノードと異なる場所になる。そのため、ジョブスクリプト内の
-ファイルパスはすべて絶対パスにする必要がある。
+SLURM compute nodes do not inherit the login node's working directory.
+When a job script runs on a compute node, the current directory is
+different from where you submitted the job. For this reason, all file
+paths in job scripts need to be absolute.
 
-`realpath` コマンドで変換できる:
+Use `realpath` to convert:
 ```bash
 PARM7=$(realpath job_xxx/topology/system.parm7)
 RST7=$(realpath job_xxx/topology/system.rst7)
 OUTDIR=$(realpath job_xxx)
 ```
 
-対象: `--prmtop-file`, `--inpcrd-file`, `--output-dir`, SIF パス, bind パスなど、
-ジョブスクリプトや `--script` 引数に含まれるすべてのファイルパス。
+This applies to all paths in job scripts and `--script` arguments:
+`--prmtop-file`, `--inpcrd-file`, `--output-dir`, SIF path, bind paths, etc.
 
 ---
 

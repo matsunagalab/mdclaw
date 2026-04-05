@@ -44,7 +44,7 @@ After each submission:
 - Record `slurm_job_id` in `batch_progress.json`
 - Update `md_status` to `"submitted"`
 
-> SLURM の計算ノードはログインノードの作業ディレクトリを継承しないため、`--script` 内のパスはすべて絶対パスにする。`realpath` で変換できる。
+> SLURM compute nodes do not inherit the login node's working directory, so all paths in `--script` need to be absolute. Use `realpath` to convert.
 
 ### 3. Report & Monitor
 
