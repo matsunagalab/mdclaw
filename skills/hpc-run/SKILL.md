@@ -149,24 +149,22 @@ The user may specify any command. Write it as a bash script.
 
 Save the script file (e.g., `run_md.sh`), then submit it in Step 3.
 
-### CRITICAL: Absolute Paths
+### Absolute Paths in Job Scripts
 
-**ALL file paths in job scripts MUST be absolute.** SLURM compute nodes do not
-inherit the login node's working directory. Relative paths WILL fail silently
-or cause "No such file or directory" errors.
+SLURM の計算ノードはログインノードの作業ディレクトリを継承しない。
+ジョブスクリプトが計算ノードで実行されるとき、カレントディレクトリは
+ログインノードと異なる場所になる。そのため、ジョブスクリプト内の
+ファイルパスはすべて絶対パスにする必要がある。
 
-Before writing any job script or `--script` command string:
-1. Convert every file path to absolute using `realpath` or `$(pwd)/`
-2. This applies to: `--prmtop-file`, `--inpcrd-file`, `--output-dir`, SIF path, bind paths
-3. Double-check: no path in the script should start without `/`
-
+`realpath` コマンドで変換できる:
 ```bash
-# WRONG — will fail on compute node
-mdclaw run_md_simulation --prmtop-file job_xxx/topology/system.parm7 ...
-
-# CORRECT — absolute paths
-mdclaw run_md_simulation --prmtop-file /home/user/work/job_xxx/topology/system.parm7 ...
+PARM7=$(realpath job_xxx/topology/system.parm7)
+RST7=$(realpath job_xxx/topology/system.rst7)
+OUTDIR=$(realpath job_xxx)
 ```
+
+対象: `--prmtop-file`, `--inpcrd-file`, `--output-dir`, SIF パス, bind パスなど、
+ジョブスクリプトや `--script` 引数に含まれるすべてのファイルパス。
 
 ---
 
