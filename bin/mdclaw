@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# MDClaw CLI wrapper — routes SLURM tools to host, everything else to SIF.
+# MDClaw CLI wrapper — routes SLURM tools to host, everything else to a container.
 #
 # SLURM tools (submit_job, check_job, etc.) run natively on the host using
 # python3 + the mdclaw package from the plugin/repo directory. This gives
 # them access to host SLURM commands (sbatch, squeue, sinfo, sacct, scancel).
 #
-# Computation tools (solvate, MD, etc.) run inside the Singularity container
-# where AmberTools, OpenMM, and other scientific packages are available.
+# Computation tools (solvate, MD, etc.) run inside a container (Singularity
+# or Docker) where AmberTools, OpenMM, and other scientific packages are
+# available. Singularity is preferred when available; Docker is used as a
+# fallback (useful on macOS where Singularity is hard to install).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,7 +20,10 @@ PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
 # Tools that run natively on the host (need sbatch/squeue/sinfo/sacct/scancel)
 NATIVE_TOOLS="submit_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
 
-# --- Locate SIF ---
+# Docker image (default: published on GHCR)
+DOCKER_IMAGE="${MDCLAW_DOCKER_IMAGE:-ghcr.io/matsunagalab/mdclaw:latest}"
+
+# --- Locate SIF (for Singularity) ---
 # Search order:
 #   1. MDCLAW_SIF env var (explicit path)
 #   2. ${CLAUDE_PLUGIN_DATA}/mdclaw.sif (plugin auto-download)
@@ -31,6 +36,20 @@ elif [ -f "${PKG_ROOT}/mdclaw.sif" ]; then
     SIF="${PKG_ROOT}/mdclaw.sif"
 else
     SIF=""
+fi
+
+# --- Determine runtime ---
+# Explicit override via MDCLAW_RUNTIME=singularity|docker
+# Otherwise auto-detect: singularity (with SIF) > docker
+RUNTIME="${MDCLAW_RUNTIME:-}"
+if [ -z "$RUNTIME" ]; then
+    if [ -n "$SIF" ] && command -v singularity &>/dev/null; then
+        RUNTIME="singularity"
+    elif command -v docker &>/dev/null; then
+        RUNTIME="docker"
+    else
+        RUNTIME=""
+    fi
 fi
 
 TOOL="${1:-}"
@@ -49,21 +68,43 @@ if echo " $NATIVE_TOOLS " | grep -q " $TOOL "; then
         exec python3 -m mdclaw._cli "$@"
 fi
 
-# --- Everything else runs via SIF ---
-if [ -n "$SIF" ]; then
-    NV_FLAG=""
-    if command -v nvidia-smi &>/dev/null; then
-        NV_FLAG="--nv"
-    fi
-    exec singularity exec $NV_FLAG --bind "$(pwd):/work" "$SIF" mdclaw "$@"
-fi
-
-# --- Fallback: local mdclaw (conda env / pip install) ---
-LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
-if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
-    exec "$LOCAL_MDCLAW" "$@"
-fi
-
-echo "Error: MDClaw container not found." >&2
-echo "Set MDCLAW_SIF=/path/to/mdclaw.sif or run scripts/setup-container.sh" >&2
-exit 1
+# --- Computation tools run via container ---
+case "$RUNTIME" in
+    singularity)
+        NV_FLAG=""
+        if command -v nvidia-smi &>/dev/null; then
+            NV_FLAG="--nv"
+        fi
+        exec singularity exec $NV_FLAG --bind "$(pwd):/work" "$SIF" mdclaw "$@"
+        ;;
+    docker)
+        GPU_FLAG=""
+        if command -v nvidia-smi &>/dev/null; then
+            GPU_FLAG="--gpus all"
+        fi
+        # Map host user so output files have correct ownership (Linux only)
+        USER_FLAG=""
+        if [ "$(uname -s)" = "Linux" ]; then
+            USER_FLAG="--user $(id -u):$(id -g)"
+        fi
+        # Bind cwd at its absolute path so absolute paths in arguments still resolve.
+        # This mirrors Singularity's default behavior of binding $HOME.
+        CWD="$(pwd)"
+        exec docker run --rm $GPU_FLAG $USER_FLAG \
+            -v "${CWD}:${CWD}" -w "${CWD}" \
+            "$DOCKER_IMAGE" mdclaw "$@"
+        ;;
+    *)
+        # Fallback: local mdclaw (conda env / pip install)
+        LOCAL_MDCLAW="$(command -v mdclaw 2>/dev/null || true)"
+        if [ -n "$LOCAL_MDCLAW" ] && [ "$LOCAL_MDCLAW" != "$(readlink -f "$0")" ]; then
+            exec "$LOCAL_MDCLAW" "$@"
+        fi
+        echo "Error: No container runtime available." >&2
+        echo "Install one of:" >&2
+        echo "  - Singularity: https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
+        echo "  - Docker: https://docs.docker.com/get-docker/" >&2
+        echo "Or set MDCLAW_SIF=/path/to/mdclaw.sif" >&2
+        exit 1
+        ;;
+esac
