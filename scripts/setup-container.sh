@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
-# Download the MDClaw Singularity container matching the plugin version.
+# Download the MDClaw container matching the plugin version.
+#
+# Priority: Singularity/Apptainer (SIF) > Docker (image pull)
+#   - Singularity/Apptainer: preferred on HPC clusters
+#   - Docker: fallback for macOS and systems without Singularity
 #
 # Usage:
 #   ./scripts/setup-container.sh              # auto-detect version from plugin.json
 #   ./scripts/setup-container.sh 0.5.0        # explicit version
-#   MDCLAW_SIF=/custom/path.sif ./scripts/setup-container.sh  # custom destination
+#   MDCLAW_SIF=/custom/path.sif ./scripts/setup-container.sh  # custom SIF destination
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -28,27 +32,42 @@ else
     SIF_PATH="${REPO_ROOT}/mdclaw.sif"
 fi
 
-# --- Check if already up to date ---
-MANIFEST_PATH="$(dirname "$SIF_PATH")/.mdclaw-version"
-if [ -f "$SIF_PATH" ] && [ -f "$MANIFEST_PATH" ] && [ "$(cat "$MANIFEST_PATH")" = "$VERSION" ]; then
-    echo "MDClaw SIF v${VERSION} already installed at: $SIF_PATH" >&2
+# --- Singularity/Apptainer path: build SIF ---
+if command -v singularity &>/dev/null || command -v apptainer &>/dev/null; then
+    # Check if SIF is already up to date
+    MANIFEST_PATH="$(dirname "$SIF_PATH")/.mdclaw-version"
+    if [ -f "$SIF_PATH" ] && [ -f "$MANIFEST_PATH" ] && [ "$(cat "$MANIFEST_PATH")" = "$VERSION" ]; then
+        echo "MDClaw SIF v${VERSION} already installed at: $SIF_PATH" >&2
+        exit 0
+    fi
+
+    echo "Downloading MDClaw container v${VERSION} from ${REGISTRY} (Singularity)..." >&2
+    echo "Destination: ${SIF_PATH}" >&2
+
+    if command -v singularity &>/dev/null; then
+        singularity pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
+    else
+        apptainer pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
+    fi
+
+    echo "$VERSION" > "$MANIFEST_PATH"
+    echo "MDClaw SIF v${VERSION} installed at: $SIF_PATH" >&2
     exit 0
 fi
 
-# --- Download ---
-echo "Downloading MDClaw container v${VERSION} from ${REGISTRY}..." >&2
-echo "Destination: ${SIF_PATH}" >&2
-
-if command -v singularity &>/dev/null; then
-    singularity pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
-elif command -v apptainer &>/dev/null; then
-    apptainer pull --force "$SIF_PATH" "docker://${REGISTRY}:${VERSION}"
-else
-    echo "Error: Neither singularity nor apptainer found in PATH." >&2
-    echo "Install Singularity: https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
-    exit 1
+# --- Docker fallback: pull image ---
+if command -v docker &>/dev/null; then
+    echo "Downloading MDClaw container v${VERSION} from ${REGISTRY} (Docker)..." >&2
+    docker pull "${REGISTRY}:${VERSION}"
+    echo "MDClaw Docker image ${REGISTRY}:${VERSION} pulled." >&2
+    echo "bin/mdclaw will use this image automatically." >&2
+    exit 0
 fi
 
-# --- Record version ---
-echo "$VERSION" > "$MANIFEST_PATH"
-echo "MDClaw SIF v${VERSION} installed at: $SIF_PATH" >&2
+# --- No runtime available ---
+echo "Error: No container runtime found." >&2
+echo "Install one of:" >&2
+echo "  - Singularity (preferred for HPC): https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
+echo "  - Apptainer: https://apptainer.org/docs/user/main/quick_start.html" >&2
+echo "  - Docker (macOS/desktop): https://docs.docker.com/get-docker/" >&2
+exit 1

@@ -15,14 +15,20 @@ Install MDClaw skills and tools via the Claude Code plugin marketplace:
 /plugin install mdclaw@mdclaw
 ```
 
-On first session start, the Singularity container (~4.6 GB) is automatically downloaded. After that, skills and CLI tools are ready:
+On first session start, the container (~4.6 GB) is automatically downloaded. After that, skills and CLI tools are ready:
 
 - `/mdclaw:md-prepare` — MD simulation preparation
 - `/mdclaw:md-run` — Production MD execution
 - `/mdclaw:md-analyze` — Trajectory analysis
 - `/mdclaw:hpc-run` — HPC/SLURM job submission and management
 
-**Requirements**: [Singularity](https://docs.sylabs.io/guides/latest/user-guide/quick_start.html) (or Apptainer) must be installed on the host. GPU requires NVIDIA driver 550+.
+**Container runtime requirements** (one of the following):
+- **Singularity / Apptainer** (preferred for HPC clusters) — [install guide](https://docs.sylabs.io/guides/latest/user-guide/quick_start.html)
+- **Docker** (recommended for macOS / desktop) — [install guide](https://docs.docker.com/get-docker/)
+
+`bin/mdclaw` auto-detects the available runtime (Singularity first, Docker as fallback). You can force one with `MDCLAW_RUNTIME=docker` or `MDCLAW_RUNTIME=singularity`.
+
+**GPU**: requires NVIDIA driver 530+ (CUDA 12.1 or newer).
 
 ### Alternative: Local Conda Environment
 
