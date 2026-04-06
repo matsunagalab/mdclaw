@@ -4,366 +4,403 @@
 
 MDClaw transforms any PDB structure, FASTA sequence, or ligand-SMILES into a production-ready Amber/OpenMM simulation setup through AI-powered tools and domain knowledge.
 
-**Architecture**: CLI tools + Skills (domain knowledge prompts) - works with Claude Code, Cursor, Windsurf, or any AI coding assistant.
+**Architecture**: CLI tools + Skills (domain knowledge prompts) — works with Claude Code, Cursor, Windsurf, or any AI coding assistant.
 
-## Installation as Claude Code Plugin
+---
 
-Install MDClaw skills and tools via the Claude Code plugin marketplace:
+# For Users
+
+## Installation (Claude Code Plugin)
+
+Install MDClaw as a Claude Code plugin:
 
 ```
 /plugin marketplace add matsunagalab/mdclaw
 /plugin install mdclaw@mdclaw
 ```
 
-On first session start, the container (~4.6 GB) is automatically downloaded. After that, skills and CLI tools are ready:
+On first session start, the container (~4.6 GB) is automatically downloaded.
 
-- `/mdclaw:md-prepare` — MD simulation preparation
-- `/mdclaw:md-run` — Production MD execution
-- `/mdclaw:md-analyze` — Trajectory analysis
-- `/mdclaw:hpc-run` — HPC/SLURM job submission and management
+### Container Runtime Requirements
 
-**Container runtime requirements** (one of the following):
-- **Singularity / Apptainer** (preferred for HPC clusters) — [install guide](https://docs.sylabs.io/guides/latest/user-guide/quick_start.html)
-- **Docker** (recommended for macOS / desktop) — [install guide](https://docs.docker.com/get-docker/)
+You need **one** of the following runtimes on the host:
 
-`bin/mdclaw` auto-detects the available runtime (Singularity first, Docker as fallback). You can force one with `MDCLAW_RUNTIME=docker` or `MDCLAW_RUNTIME=singularity`.
+| Runtime | Best for | Install |
+|---------|---------|---------|
+| **Singularity / Apptainer** | HPC clusters | [Singularity](https://docs.sylabs.io/guides/latest/user-guide/quick_start.html) / [Apptainer](https://apptainer.org/docs/user/main/quick_start.html) |
+| **Docker** | macOS, Linux desktop | [Docker Desktop](https://docs.docker.com/get-docker/) |
 
-**GPU**: requires NVIDIA driver 530+ (CUDA 12.1 or newer).
-
-### Alternative: Local Conda Environment
-
-For development or systems without Singularity:
-
+`bin/mdclaw` auto-detects the available runtime (Singularity first, Docker as fallback). You can force one with:
 ```bash
-conda env create -f environment.yml
-conda activate mdclaw
-pip install -e .
+export MDCLAW_RUNTIME=docker      # force Docker
+export MDCLAW_RUNTIME=singularity  # force Singularity
 ```
 
-## Quick Start
+### GPU Requirements
 
-### 1. Install
+- **NVIDIA driver 530+** (CUDA 12.1 or newer)
+- Verified GPUs: RTX 2080 Ti, RTX A6000, A100
+- CPU-only mode works without GPU (slower, for testing)
 
-#### Local / PC Cluster (Recommended)
+## Usage
 
-```bash
-git clone https://github.com/matsunagalab/mdclaw.git
-cd mdclaw
-conda env create -f environment.yml
-conda activate mdclaw
+After installation, four skills (slash commands) become available:
+
+| Command | Purpose |
+|---------|---------|
+| `/mdclaw:md-prepare` | Structure acquisition → cleaning → solvation → topology → quick MD |
+| `/mdclaw:md-run` | Equilibration (NVT + NPT with CA restraints) + production MD |
+| `/mdclaw:md-analyze` | Trajectory analysis (RMSD, RMSF, energy, hydrogen bonds) |
+| `/mdclaw:hpc-run` | SLURM job submission, monitoring, error recovery |
+
+### Example Conversations
+
+**Single system, end-to-end:**
+```
+> /mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
+
+> /mdclaw:md-run run 10 ns production MD
 ```
 
-#### HPC (Singularity Container)
+**Multiple targets (batch):**
+```
+> /mdclaw:md-prepare 1AKE, 4AKE chain A, explicit water, defaults
 
-Pull the pre-built Docker image and convert to Singularity SIF:
-
-```bash
-# On a machine with Singularity installed
-singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
-
-# Transfer to your cluster
-scp mdclaw.sif user@cluster:/opt/containers/
-
-# Run with GPU
-singularity exec --nv mdclaw.sif mdclaw --list
+> /mdclaw:md-run batch_a1b2c3d4, 100 ns on GPU partition
 ```
 
-Or build the Docker image locally and convert:
+**HPC workflow:**
+```
+> /mdclaw:hpc-run submit 100 ns MD of 1AKE to GPU partition on node gpu01
 
-```bash
-# Build Docker image
-docker build -f container/Dockerfile -t mdclaw:latest .
+> /mdclaw:hpc-run check job 12345
 
-# Convert to Singularity SIF
-singularity pull mdclaw.sif docker-daemon://mdclaw:latest
+> /loop 15m /mdclaw:hpc-run check job 12345 and report when done
 ```
 
-Configure MDClaw to use the container for SLURM jobs:
+### Direct CLI Usage
 
-```bash
-mdclaw configure_container \
-  --image /opt/containers/mdclaw.sif \
-  --bind-paths /scratch /data \
-  --extra-flags "--nv"
-```
-
-After configuration, `submit_job` automatically wraps commands with `singularity exec`.
-
-#### pip Only (No AmberTools/OpenMM)
-
-```bash
-git clone https://github.com/matsunagalab/mdclaw.git
-cd mdclaw && pip install -e .
-```
-
-Only the research, literature, and genesis tools will work. The conda environment is required for structure preparation and MD execution.
-
-### 2. Use with Claude Code
-
-```bash
-# Start Claude Code in the mdclaw directory
-claude
-
-# Run MD preparation (interactive)
-> /md-prepare PDB 1AKE
-
-# Run MD preparation (autonomous - all defaults)
-> /md-prepare PDB 1AKE, chain A, no ligands, run end-to-end with defaults
-
-# Production MD run
-> /md-run resume job_XXXXXXXX, extend to 10 ns
-
-# Analyze trajectory
-> /md-analyze job_XXXXXXXX
-
-# Submit MD simulation to HPC cluster via SLURM
-> /hpc-run submit 100ns MD simulation of 1AKE to GPU partition
-
-# Check job status / recover from errors
-> /hpc-run check job 12345 and restart if timed out
-```
-
-### 3. CLI Usage
+You can also invoke mdclaw directly (outside Claude Code):
 
 ```bash
 # List all tools
 mdclaw --list
 
-# Run a tool (output is JSON on stdout)
-mdclaw download_structure --pdb-id 1AKE --format pdb
-mdclaw inspect_molecules --structure-file 1AKE.pdb
-mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
+# Download a structure
+mdclaw download_structure --pdb-id 1AKE --format pdb --output-dir job_1AKE
+
+# Run a quick MD
+mdclaw run_production \
+  --prmtop-file job_1AKE/topology/system.parm7 \
+  --inpcrd-file job_1AKE/topology/system.rst7 \
+  --simulation-time-ns 0.1 \
+  --output-dir job_1AKE
 ```
 
-### 4. HPC/SLURM Usage
+`bin/mdclaw` is auto-added to your PATH by the plugin installer.
 
-MDClaw provides generic SLURM tools for submitting and managing batch jobs on HPC clusters.
+## Default MD Parameters
+
+MDClaw uses the following defaults, aligned with OpenMM best practices:
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| Force field | ff19SB | Paired with OPC water |
+| Water model | OPC | 4-point, best accuracy |
+| Buffer distance | 15 Å | Prevents periodic image interactions |
+| Salt | 0.15 M NaCl | Physiological |
+| Temperature | 300 K | |
+| Pressure | 1 bar (NPT) | |
+| Integrator | LangevinMiddleIntegrator | Friction 1/ps |
+| Timestep | **4 fs** | With HMR (hydrogenMass=4 amu) |
+| Constraints | HBonds | |
+| Nonbonded method | PME (explicit) / NoCutoff (implicit) | |
+| Equilibration | NVT (10k steps, 1fs) + NPT (10k steps, 2fs) | CA positional restraints (100 kJ/mol/nm²) |
+
+## HPC / SLURM Usage
+
+MDClaw provides SLURM tools for batch job submission, monitoring, and error recovery:
 
 ```bash
-# Discover cluster partitions, GPUs, and time limits
+# Discover cluster partitions, GPUs, nodes
 mdclaw inspect_cluster
 
-# Submit a job (command string or script file)
+# Submit a production MD job
 mdclaw submit_job \
-  --script "mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 --platform CUDA --hmr --timestep-fs 4.0" \
-  --partition gpu --gpus 1 --time-limit "24:00:00" --memory "64G"
+  --script "mdclaw run_production --prmtop-file /abs/path/sys.parm7 ..." \
+  --partition gpu --nodelist gpu01 --gpus 1 \
+  --time-limit "24:00:00" --memory "64G"
 
-# Submit an existing script file
-mdclaw submit_job --script run_md.sh --partition gpu --gpus 1 --time-limit "24:00:00"
+# Chain equilibration → production via dependency
+EQ_JOB=$(mdclaw submit_job --script "mdclaw run_equilibration ..." --gpus 1 ...)
+mdclaw submit_job --script "mdclaw run_production ..." \
+  --dependency "afterok:${EQ_JOB}" --gpus 1 ...
 
-# Check job status
+# Check job status (updates local JSONL tracker)
 mdclaw check_job --job-id 12345
 
-# List your jobs
-mdclaw list_jobs
-
-# Read job logs (stderr/stdout)
-mdclaw check_job_log --job-id 12345 --log-type stderr --tail-lines 100
-
-# Cancel a job
-mdclaw cancel_job --job-id 12345
+# List all tracked jobs (full history)
+mdclaw list_tracked_jobs --sync
 ```
 
-#### Resource Policy
+### Resource Policy
 
-On shared clusters, set resource limits to avoid overuse:
+Set resource limits on shared clusters to prevent overuse:
 
 ```bash
-# Set allowed partitions and resource limits
 mdclaw set_policy \
   --allowed-partitions gpu cpu-small \
   --max-gpus-per-job 2 \
-  --max-cpus-per-task 16 \
-  --max-nodes 1 \
   --max-time-limit "24:00:00" \
   --max-memory "128G" \
-  --default-account myproject \
-  --default-qos normal
+  --default-account myproject
 
-# View current policy
 mdclaw show_policy
 ```
 
-Policy is stored in the `policy` section of `.mdclaw_cluster.json`.
-When set, `submit_job` rejects requests that exceed the limits.
-All fields are optional — omitted fields have no restriction.
+Policy is stored in `.mdclaw_cluster.json`. `submit_job` rejects requests exceeding the limits.
 
-| Field | Example | Description |
-|-------|---------|-------------|
-| `--allowed-partitions` | `gpu cpu-small` | Only these partitions can be used |
-| `--max-gpus-per-job` | `2` | Maximum GPUs per job |
-| `--max-cpus-per-task` | `16` | Maximum CPUs per task |
-| `--max-nodes` | `1` | Maximum nodes per job |
-| `--max-time-limit` | `"24:00:00"` | Maximum wall time (HH:MM:SS or D-HH:MM:SS) |
-| `--max-memory` | `"128G"` | Maximum memory per node |
-| `--default-account` | `myproject` | Default SLURM account |
-| `--default-qos` | `normal` | Default quality of service |
-| `--default-partition` | `gpu` | Default partition |
+## Reproducibility
 
-The SLURM tools are workload-agnostic: use them for MD simulations, Boltz-2 structure predictions, or any other batch computation. The `/hpc-run` skill provides domain-specific guidance for resource estimation, error recovery, and checkpoint restarts.
+Each job directory contains `progress.json` with:
+
+- **commands**: every CLI invocation with timestamps (auto-recorded)
+- **software**: versions of mdclaw, OpenMM, AmberTools, PyTorch
+- **system**: PDB ID, chains, atom counts, ligands
+- **preparation**: protonation method, histidine states, disulfide bonds, missing residues
+- **solvation**: water model, box size, salt concentration
+- **forcefield**: protein / water / ligand parameters
+- **equilibration / production**: full MD conditions (timestep, HMR, integrator, constraints, etc.)
+
+This provides enough information to regenerate the workflow and to write the Methods section of a paper.
+
+---
+
+# For Developers
 
 ## Architecture
 
 ```
-skills/                    # Domain knowledge (platform-agnostic .md)
-  md-prepare/SKILL.md      # Structure -> Solvation -> Topology -> Quick MD
-  md-run/SKILL.md           # Production MD runs
-  md-analyze/SKILL.md       # Trajectory analysis
-  hpc-run/SKILL.md          # HPC/SLURM job management
+skills/                     # Domain knowledge (platform-agnostic .md)
+  md-prepare/
+    SKILL.md                # Router (lightweight)
+    setup.md                # Structure acquisition & preparation
+    explicit-water.md       # Explicit water solvation workflow
+    implicit-water.md       # Implicit solvent workflow
+    batch.md                # Multi-target batch processing
+  md-run/
+    SKILL.md
+    explicit-water.md
+    implicit-water.md
+    batch.md
+  md-analyze/
+    SKILL.md
+    analysis.md
+    batch.md
+  hpc-run/SKILL.md
 
-.claude/commands/           # Dev-only: local slash commands (/md-prepare etc.)
-  md-prepare.md             #   Thin wrappers that read skills/*/SKILL.md
-  md-run.md                 #   Not needed when installed as plugin
-  md-analyze.md             #   (plugin users get /mdclaw:md-prepare etc.)
+.claude/commands/           # Dev-only: local slash commands
+  md-prepare.md             #   (not needed when installed as plugin)
+  md-run.md
+  md-analyze.md
   hpc-run.md
 
-bin/                        # Plugin CLI wrapper (auto-added to PATH)
-  mdclaw                    # Delegates to SIF or local install
+.claude-plugin/             # Claude Code plugin metadata
+  plugin.json               # Plugin manifest (version, skills path)
+  marketplace.json          # Marketplace entry
 
-hooks/                      # Plugin lifecycle hooks
-  hooks.json                # SessionStart -> auto-download SIF
+bin/
+  mdclaw                    # CLI wrapper (Singularity/Docker/native routing)
 
-scripts/                    # Setup & maintenance
-  setup-container.sh        # Download versioned SIF from GHCR
+hooks/
+  hooks.json                # SessionStart → auto-download container
 
-mdclaw/                    # All Python code consolidated here
-  __init__.py               # __version__ + package marker
-  _common.py                # Shared utilities (logging, tool wrappers, errors, timeouts)
-  _registry.py              # Tool registry (SERVER_REGISTRY dict)
-  _cli.py                   # CLI entry point (mdclaw)
-  research_server.py        # PDB/AlphaFold/UniProt retrieval
-  structure_server.py       # Structure cleaning & parameterization
+scripts/
+  setup-container.sh        # Pull SIF (Singularity) or image (Docker)
+
+mdclaw/                     # Python package (CLI tools)
+  __init__.py
+  _cli.py                   # CLI entry point + command logging
+  _registry.py              # Tool registry (SERVER_REGISTRY)
+  _common.py                # Shared utilities
+  research_server.py        # PDB/AlphaFold retrieval
+  structure_server.py       # Cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
-  solvation_server.py       # Water box & membrane embedding
-  amber_server.py           # Amber topology generation
-  md_simulation_server.py   # OpenMM MD execution
+  solvation_server.py       # Water box / membrane
+  amber_server.py           # Amber topology
+  md_simulation_server.py   # OpenMM (equilibration + production)
   literature_server.py      # PubMed search
   metal_server.py           # Metal ion parameterization
-  slurm_server.py           # SLURM job submission & management
+  slurm_server.py           # SLURM integration
+
+container/
+  Dockerfile                # 3-stage build (conda-base → openmm-builder → runtime)
+  scripts/
+    entrypoint.sh
+    test-container.sh
 
 tests/                      # 4-level test suite
-  conftest.py               # Shared fixtures
+  conftest.py
   test_mcp_server.py        # Level 1: Unit tests
+  test_cli.py               # Level 1: CLI tests
+  test_slurm_server.py      # Level 1: SLURM mock tests
   test_server_smoke.py      # Level 2: Server smoke tests
   test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline
-  manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
-## Tools
+## Tool Responsibilities
 
-| Module | Tools | Description |
-|--------|-------|-------------|
-| research | `download_structure`, `get_alphafold_structure`, `inspect_molecules`, `search_proteins` | Structure retrieval and inspection |
-| structure | `prepare_complex`, `clean_protein`, `clean_ligand`, `split_molecules` | Structure cleaning and preparation |
-| genesis | `boltz2_protein_from_seq`, `rdkit_validate_smiles` | AI structure prediction |
-| solvation | `solvate_structure`, `embed_in_membrane` | Solvent/membrane setup |
-| amber | `build_amber_system` | Amber topology generation |
-| md_simulation | `run_production` | OpenMM MD execution |
-| literature | `pubmed_search`, `pubmed_fetch` | Literature search |
-| metal | `parameterize_metal_ion`, `detect_metal_ions` | Metal ion handling |
-| slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy`, `configure_container` | SLURM job management |
+| Module | Tools |
+|--------|-------|
+| research | `download_structure`, `get_alphafold_structure`, `inspect_molecules`, `search_proteins`, `analyze_structure_details` |
+| structure | `prepare_complex`, `clean_protein`, `clean_ligand`, `split_molecules`, `merge_structures`, `create_mutated_structutre` |
+| genesis | `boltz2_protein_from_seq`, `rdkit_validate_smiles`, `pubchem_get_smiles_from_name` |
+| solvation | `solvate_structure`, `embed_in_membrane`, `list_available_lipids` |
+| amber | `build_amber_system` |
+| md_simulation | `run_equilibration`, `run_production`, `analyze_rmsd`, `analyze_rmsf`, `analyze_hydrogen_bonds`, ... |
+| literature | `pubmed_search`, `pubmed_fetch` |
+| metal | `parameterize_metal_ion`, `detect_metal_ions` |
+| slurm | `inspect_cluster`, `submit_job`, `check_job`, `list_jobs`, `list_tracked_jobs`, `cancel_job`, `check_job_log`, `set_policy`, `show_policy`, `configure_container` |
 
-## Testing
+## Development Setup
 
-4-level test suite covering unit tests through full pipeline integration.
+### Option 1: Work in the repo (recommended)
 
 ```bash
-# Level 1: Unit tests (fast, no external deps)
-pytest tests/test_mcp_server.py -v
+git clone https://github.com/matsunagalab/mdclaw.git
+cd mdclaw
 
-# Level 1 + existing tests
-pytest tests/ -v -m "not slow and not integration"
+# Skills and slash commands work directly via .claude/commands/
+# (no plugin install needed — Claude Code finds them automatically)
 
-# Level 2: Server smoke tests (requires conda env)
-pytest tests/test_server_smoke.py -v
+# For CLI tools, either:
+# (a) Use the container via bin/mdclaw (Singularity or Docker)
+./bin/mdclaw --list
 
-# Level 3: Full 1AKE pipeline (requires network + all tools, ~1-2 min)
-pytest tests/test_pipeline_1ake.py -v
-
-# All tests
-pytest tests/ -v
-
-# Keep pipeline artifacts for inspection
-pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
+# (b) Install locally via conda (full scientific stack)
+conda env create -f environment.yml
+conda activate mdclaw
+pip install -e .
+mdclaw --list
 ```
 
-| Level | File | Tests | Requirements |
-|-------|------|-------|-------------|
-| 1 | `test_mcp_server.py` | 15 | None (pure Python) |
-| 2 | `test_server_smoke.py` | 15 | conda env (ambertools, openmm, rdkit) |
-| 3 | `test_pipeline_1ake.py` | 7 | Network + full conda env |
-| 4 | `manual_checklist.md` | - | Claude Code interactive |
+### Option 2: Plugin install (user-like testing)
+
+```bash
+# From Claude Code in any directory:
+/plugin install /path/to/mdclaw
+```
 
 ## Development Workflow
 
-### Daily Development Cycle
+### Daily Cycle
 
 ```
 1. Edit code in mdclaw/ or skills/
 2. Lint:    ruff check mdclaw/
-3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
+3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py tests/test_slurm_server.py -v
 4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
 5. Test skills:  /md-prepare (in Claude Code, new conversation)
 6. Commit
 ```
 
-### Release (Version Tag Sync)
+### Test Levels
 
-Skills (plugin) and tools (SIF container) are distributed through separate channels, kept in sync via version tags:
+| Level | File | Tests | Requirements |
+|-------|------|-------|-------------|
+| 1 | `test_mcp_server.py`, `test_cli.py`, `test_slurm_server.py` | 130+ | None (stdlib) |
+| 2 | `test_server_smoke.py` | 15 | conda env (AmberTools, OpenMM) |
+| 3 | `test_pipeline_1ake.py` | 7 | Full conda env + network |
+| 4 | `manual_checklist.md` | — | Claude Code interactive |
+
+### Adding a New Tool
+
+1. Add function in the appropriate `mdclaw/*_server.py` as a plain Python function
+2. Add the function to the `TOOLS` dict at the bottom of that server file
+3. Add unit test in `tests/test_mcp_server.py` (tool registration check)
+4. Add smoke test in `tests/test_server_smoke.py` (actual execution)
+5. Run `mdclaw --list` to verify CLI auto-discovery
+6. Update CLAUDE.md server section with the new tool signature
+
+### Adding a New Server
+
+1. Create `mdclaw/new_server.py` with tool functions and a `TOOLS` dict
+2. Register in `mdclaw/_registry.py` (`SERVER_REGISTRY`)
+3. Add smoke tests in `tests/test_server_smoke.py`
+4. Update `CLAUDE.md` architecture diagram and server section
+
+### Modifying Skills
+
+Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). When changing tool signatures, update the corresponding SKILL.md examples.
+
+Skills are read by Claude Code at conversation start, so changes take effect in a **new conversation**.
+
+## Release (Version Tag Sync)
+
+Skills (plugin) and tools (container image) are distributed through separate channels, kept in sync via version tags.
 
 ```bash
-# 1. Bump version in all 4 files (must match):
-#    mdclaw/__init__.py, pyproject.toml,
-#    .claude-plugin/plugin.json, .claude-plugin/marketplace.json
+# 1. Bump version in 4 files (must match):
+#    mdclaw/__init__.py        __version__ = "X.Y.Z"
+#    pyproject.toml            version = "X.Y.Z"
+#    .claude-plugin/plugin.json       "version": "X.Y.Z"
+#    .claude-plugin/marketplace.json  "version": "X.Y.Z"
 
 # 2. Commit and tag
 git add -A && git commit -m "release: vX.Y.Z"
-git tag vX.Y.Z && git push origin main --tags
+git tag vX.Y.Z
+git push origin main --tags
 
-# 3. Build, test, and push container
+# 3. Build the Docker image (Stage 2 takes 10-15 min for OpenMM source build)
 docker build -f container/Dockerfile -t mdclaw:latest .
+
+# 4. Test locally
+docker run --rm --gpus all -v $(pwd)/container/scripts/test-container.sh:/work/test.sh:ro \
+    mdclaw:latest bash /work/test.sh
+
+# 5. Push to GHCR
+gh auth refresh --hostname github.com --scopes write:packages  # if needed
+gh auth token | docker login ghcr.io -u <github-username> --password-stdin
 docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
 docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
 docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z
 docker push ghcr.io/matsunagalab/mdclaw:latest
+
+# 6. (Optional) Convert to SIF and test on HPC cluster
+singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:X.Y.Z
+singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
 ```
 
-Users receive updates via `/plugin update` (skills) + automatic SIF re-download on session start (tools).
+Users receive updates via:
+- `/plugin update mdclaw@mdclaw` — updates skills and the `bin/mdclaw` wrapper
+- SessionStart hook automatically re-downloads the container on the next session start
 
-### Pre-commit Checklist
+## Container Details
 
-```bash
-ruff check mdclaw/                                      # lint
-pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
-pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
-```
+The container is built in 3 stages (see `container/Dockerfile`):
+
+1. **conda-base** (`condaforge/mambaforge`): Creates the conda environment with AmberTools, RDKit, PDBFixer, PyTorch (cu121). OpenMM is excluded — built from source in Stage 2.
+2. **openmm-builder** (`nvidia/cuda:12.1.1-devel-ubuntu22.04`): Clones OpenMM source and compiles against CUDA 12.1 toolkit. This gives broader driver compatibility (530+) than pre-built pip/conda OpenMM packages.
+3. **runtime** (`nvidia/cuda:12.1.1-runtime-ubuntu22.04`): Slim image with the conda env + built OpenMM + CUDA 12.1 NVRTC libraries copied from Stage 2.
+
+Final image size: ~14.5 GB Docker / ~4.6 GB SIF.
 
 ## Configuration
 
-Settings via `MDCLAW_` environment variables:
+Environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `MDCLAW_OUTPUT_DIR` | `.` | Output directory |
-| `MDCLAW_DEFAULT_TIMEOUT` | `300` | Default timeout (seconds) |
-| `MDCLAW_SOLVATION_TIMEOUT` | `600` | Solvation timeout |
-| `MDCLAW_MEMBRANE_TIMEOUT` | `7200` | Membrane building timeout |
+| `MDCLAW_RUNTIME` | auto | Force `singularity` or `docker` |
+| `MDCLAW_SIF` | _(auto)_ | Path to Singularity SIF file |
+| `MDCLAW_DOCKER_IMAGE` | `ghcr.io/matsunagalab/mdclaw:latest` | Docker image name |
+| `MDCLAW_OUTPUT_DIR` | `.` | Default output directory |
+| `MDCLAW_DEFAULT_TIMEOUT` | `300` | Default tool timeout (seconds) |
+| `MDCLAW_SOLVATION_TIMEOUT` | `7200` | Solvation timeout |
 | `MDCLAW_MD_SIMULATION_TIMEOUT` | `3600` | MD execution timeout |
 | `MDCLAW_SLURM_TIMEOUT` | `120` | SLURM command timeout |
-| `MDCLAW_MODULE_LOADS` | _(unset)_ | HPC module load commands (e.g., `cuda/12.0 amber/24`) |
+| `MDCLAW_MODULE_LOADS` | _(unset)_ | HPC module load commands (e.g., `cuda/12.1`) |
 | `MDCLAW_MODULE_INIT` | `/etc/profile.d/modules.sh` | Module system init script path |
-
-## Troubleshooting
-
-### packmol-memgen numpy compatibility
-
-If `packmol-memgen` fails with `AttributeError: module 'numpy' has no attribute 'float'`:
-
-```bash
-SITE_PACKAGES=$(python -c "import site; print(site.getsitepackages()[0])")
-sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
-    "$SITE_PACKAGES/packmol_memgen/lib/pdbremix/v3numpy.py"
-```
 
 ## License
 
