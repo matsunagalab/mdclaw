@@ -19,10 +19,16 @@ PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
 NATIVE_TOOLS="submit_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
 
 # --- Locate SIF ---
+# Search order:
+#   1. MDCLAW_SIF env var (explicit path)
+#   2. ${CLAUDE_PLUGIN_DATA}/mdclaw.sif (plugin auto-download)
+#   3. ${PKG_ROOT}/mdclaw.sif (repo checkout or plugin directory)
 if [ -n "${MDCLAW_SIF:-}" ] && [ -f "$MDCLAW_SIF" ]; then
     SIF="$MDCLAW_SIF"
 elif [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -f "${CLAUDE_PLUGIN_DATA}/mdclaw.sif" ]; then
     SIF="${CLAUDE_PLUGIN_DATA}/mdclaw.sif"
+elif [ -f "${PKG_ROOT}/mdclaw.sif" ]; then
+    SIF="${PKG_ROOT}/mdclaw.sif"
 else
     SIF=""
 fi
