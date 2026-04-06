@@ -33,8 +33,8 @@ def run_equilibration(
     inpcrd_file: str,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
-    nvt_steps: int = 10000,
-    npt_steps: int = 10000,
+    nvt_steps: int = 2500,
+    npt_steps: int = 5000,
     restraint_atoms: str = "CA",
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
@@ -44,23 +44,32 @@ def run_equilibration(
     platform: str = "auto",
     device_index: Optional[str] = None,
     random_seed: Optional[int] = None,
+    hmr: bool = True,
+    timestep_fs: float = 4.0,
 ) -> dict:
     """Run equilibration protocol with positional restraints.
 
+    Both stages run at ``timestep_fs`` (default 4 fs) with Hydrogen Mass
+    Repartitioning (``hmr=True`` by default), matching run_production's
+    default integrator so that the saved checkpoint can be loaded directly
+    by run_production without rebuilding the System.
+
     The protocol depends on the production ensemble:
       - Explicit water + NPT production (pressure_bar > 0):
-          Stage 1 (NVT): Heat with restraints, 1 fs
-          Stage 2 (NPT): Equilibrate density with restraints, 2 fs
+          Stage 1 (NVT): Heat with restraints, timestep_fs + HMR
+          Stage 2 (NPT): Equilibrate density with restraints, timestep_fs + HMR
       - Explicit water + NVT production (pressure_bar = 0 or None):
           Stage 1 (NVT) only
       - Implicit solvent:
           Stage 1 (NVT) only (NPT not applicable)
 
     The restraint is a harmonic potential on the initial positions using
-    OpenMM's CustomExternalForce with periodicdistance.
-
-    After equilibration, use run_production for production MD (4 fs + HMR,
-    no restraints).
+    OpenMM's CustomExternalForce with periodicdistance. At the end of the
+    protocol, a production-matching "clean" Simulation is built (same
+    System/Integrator as run_production, no restraint force), the
+    equilibrated positions/velocities/box are transferred into it, and its
+    checkpoint is saved as ``equilibrated.chk``. Pass this checkpoint to
+    ``run_production --restart-from`` to inherit the equilibrated state.
 
     Args:
         prmtop_file: Amber topology file (.parm7 or .prmtop)
@@ -70,8 +79,8 @@ def run_equilibration(
             - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
             - 0 or None: NVT only (for NVT production or implicit solvent)
             Default: 1.0
-        nvt_steps: Number of NVT heating steps (default: 10000 = 10 ps at 1 fs)
-        npt_steps: Number of NPT equilibration steps (default: 10000 = 20 ps at 2 fs).
+        nvt_steps: Number of NVT heating steps (default: 2500 = 10 ps at 4 fs)
+        npt_steps: Number of NPT equilibration steps (default: 5000 = 20 ps at 4 fs).
             Only used when pressure_bar > 0. Ignored otherwise.
         restraint_atoms: Atom selection for restraints. Options:
             - "CA": alpha carbons only (default, recommended)
@@ -81,18 +90,35 @@ def run_equilibration(
             (default: 100.0). Higher values = tighter restraints.
         name: Optional name prefix for output files
         output_dir: Output directory
-        is_membrane: Set True for membrane systems (uses MonteCarloMembraneBarostat)
+        is_membrane: Set True for membrane systems (uses MonteCarloMembraneBarostat).
+            Must match run_production's ``is_membrane`` to share the checkpoint.
         implicit_solvent: GB model name. If set, only NVT stage runs (no NPT).
+            Must match run_production's ``implicit_solvent`` to share the checkpoint.
         platform: OpenMM platform - "CUDA", "OpenCL", "CPU", "Reference", or "auto"
         device_index: GPU device index (e.g. "0")
         random_seed: Random number seed for reproducibility
+        hmr: Hydrogen Mass Repartitioning. When True (default), creates the
+            System with ``hydrogenMass=4.0 amu`` so that ``timestep_fs=4.0``
+            is stable. Must match run_production's ``hmr`` so the checkpoint
+            produced here can be loaded (System particle masses must agree).
+        timestep_fs: Integration timestep in femtoseconds (default: 4.0).
+            Used for both NVT and NPT stages and the clean checkpoint
+            Simulation. Must match run_production's ``timestep_fs`` for a
+            clean handoff.
 
     Returns:
         dict with:
           - success: bool
           - output_dir: str
           - final_structure: str - Path to equilibrated PDB
-          - state_file: str - Path to OpenMM state XML (portable restart)
+          - state_file: str - Path to OpenMM state XML. Kept for
+              reproducibility/audit only — NOT used for restart; pass
+              ``checkpoint_file`` to run_production instead.
+          - checkpoint_file: str - Path to an OpenMM binary checkpoint
+              written from a production-matching System (no restraints,
+              HMR, same integrator). Pass this to
+              run_production --restart-from to start production from the
+              equilibrated coordinates/velocities/box without re-minimization.
           - nvt_steps: int - NVT steps completed
           - npt_steps: int - NPT steps completed
           - restraint_atoms: str - Atom selection used
@@ -109,6 +135,7 @@ def run_equilibration(
         "output_dir": None,
         "final_structure": None,
         "state_file": None,
+        "checkpoint_file": None,
         "nvt_steps": 0,
         "npt_steps": 0,
         "restraint_atoms": restraint_atoms,
@@ -129,10 +156,9 @@ def run_equilibration(
         return result
 
     try:
-        import openmm as mm
         from openmm.app import (
-            AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter,
-            StateDataReporter, Simulation, PME, NoCutoff, HBonds,
+            AmberPrmtopFile, AmberInpcrdFile, PDBFile,
+            Simulation, PME, NoCutoff, HBonds,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (
@@ -141,7 +167,7 @@ def run_equilibration(
         )
         from openmm.unit import (
             nanometer, kelvin, picosecond, femtoseconds, bar,
-            kilojoules_per_mole,
+            kilojoules_per_mole, amu,
         )
     except ImportError:
         result["errors"].append("OpenMM not installed")
@@ -172,6 +198,13 @@ def run_equilibration(
 
         is_periodic = inpcrd.boxVectors is not None
 
+        # HMR kwargs shared by NVT, NPT, and the clean checkpoint System
+        # (must mirror run_production's hmr handling so the saved checkpoint
+        # is loadable).
+        hmr_kwargs = {"hydrogenMass": 4.0 * amu} if hmr else {}
+        if hmr:
+            logger.info(f"HMR enabled: hydrogenMass=4.0 amu (timestep={timestep_fs}fs)")
+
         # Determine whether to run NPT stage
         # NPT equilibration only when production will use NPT (pressure_bar > 0)
         run_npt = (pressure_bar is not None and pressure_bar > 0
@@ -183,8 +216,11 @@ def run_equilibration(
             elif not pressure_bar or pressure_bar == 0:
                 logger.info("NVT production planned: NVT equilibration only")
 
-        # --- Stage 1: NVT heating (1 fs, no HMR) ---
-        logger.info(f"Stage 1: NVT heating ({nvt_steps} steps, 1 fs, restraints on {restraint_atoms})")
+        # --- Stage 1: NVT heating ---
+        logger.info(
+            f"Stage 1: NVT heating ({nvt_steps} steps, {timestep_fs} fs, "
+            f"restraints on {restraint_atoms})"
+        )
 
         # Create system for NVT
         if implicit_solvent:
@@ -193,17 +229,20 @@ def run_equilibration(
                 implicitSolvent=gb_model,
                 nonbondedMethod=NoCutoff,
                 constraints=HBonds,
+                **hmr_kwargs,
             )
         elif is_periodic:
             system_nvt = prmtop.createSystem(
                 nonbondedMethod=PME,
                 nonbondedCutoff=1.0 * nanometer,
                 constraints=HBonds,
+                **hmr_kwargs,
             )
         else:
             system_nvt = prmtop.createSystem(
                 nonbondedMethod=NoCutoff,
                 constraints=HBonds,
+                **hmr_kwargs,
             )
 
         # Add positional restraints
@@ -240,11 +279,11 @@ def run_equilibration(
         result["restraint_count"] = restraint_count
         logger.info(f"Applied restraints to {restraint_count} atoms ({restraint_atoms})")
 
-        # NVT integrator (1 fs, no HMR)
+        # NVT integrator (matches run_production: LangevinMiddle, same timestep, HMR via system)
         integrator_nvt = LangevinMiddleIntegrator(
             temperature_kelvin * kelvin,
             1.0 / picosecond,
-            1.0 * femtoseconds,
+            timestep_fs * femtoseconds,
         )
         if random_seed is not None:
             integrator_nvt.setRandomNumberSeed(random_seed)
@@ -287,9 +326,12 @@ def run_equilibration(
         nvt_positions = nvt_state.getPositions()
         nvt_velocities = nvt_state.getVelocities()
 
-        # --- Stage 2: NPT equilibration (2 fs, no HMR, with restraints) ---
+        # --- Stage 2: NPT equilibration (same timestep + HMR, with restraints) ---
         if npt_steps > 0:
-            logger.info(f"Stage 2: NPT equilibration ({npt_steps} steps, 2 fs, restraints on {restraint_atoms})")
+            logger.info(
+                f"Stage 2: NPT equilibration ({npt_steps} steps, {timestep_fs} fs, "
+                f"restraints on {restraint_atoms})"
+            )
 
             # Create new system for NPT
             if is_periodic:
@@ -297,11 +339,13 @@ def run_equilibration(
                     nonbondedMethod=PME,
                     nonbondedCutoff=1.0 * nanometer,
                     constraints=HBonds,
+                    **hmr_kwargs,
                 )
             else:
                 system_npt = prmtop.createSystem(
                     nonbondedMethod=NoCutoff,
                     constraints=HBonds,
+                    **hmr_kwargs,
                 )
 
             # Add same restraints
@@ -331,7 +375,6 @@ def run_equilibration(
 
             # Add barostat
             if is_membrane:
-                from openmm.app import MonteCarloMembraneBarostat as MemBarostat
                 system_npt.addForce(MonteCarloMembraneBarostat(
                     pressure_bar * bar, 0.0 * bar * nanometer,
                     MonteCarloMembraneBarostat.XYIsotropic,
@@ -343,11 +386,11 @@ def run_equilibration(
                     pressure_bar * bar, temperature_kelvin * kelvin,
                 ))
 
-            # NPT integrator (2 fs)
+            # NPT integrator (matches run_production: LangevinMiddle, same timestep)
             integrator_npt = LangevinMiddleIntegrator(
                 temperature_kelvin * kelvin,
                 1.0 / picosecond,
-                2.0 * femtoseconds,
+                timestep_fs * femtoseconds,
             )
             if random_seed is not None:
                 integrator_npt.setRandomNumberSeed(random_seed)
@@ -386,6 +429,91 @@ def run_equilibration(
             PDBFile.writeFile(prmtop.topology, final_positions, f)
         result["final_structure"] = str(final_pdb)
         logger.info(f"Equilibrated structure saved: {final_pdb} (stages: {result['stages_completed']})")
+
+        # === Build a production-matching clean Simulation and save as .chk ===
+        # The restraint CustomExternalForce is intentionally omitted so that
+        # the saved checkpoint can be loaded by run_production (which builds
+        # its System without restraints). currentStep starts at 0 on the
+        # fresh Simulation, so run_production will execute its full
+        # simulation_time_ns when it loads this checkpoint.
+        logger.info("Building production-matching system for checkpoint handoff...")
+
+        # Pull the final state (positions, velocities, box) from whichever
+        # restrained Simulation actually ran last.
+        sim_src = sim_npt if npt_steps > 0 else sim_nvt
+        final_state_full = sim_src.context.getState(
+            getPositions=True,
+            getVelocities=True,
+            enforcePeriodicBox=is_periodic,
+        )
+
+        # Clean System — mirrors run_production's build exactly
+        # (same nonbonded method, cutoff, constraints, HMR).
+        if implicit_solvent:
+            gb_model_clean = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            system_clean = prmtop.createSystem(
+                implicitSolvent=gb_model_clean,
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds,
+                **hmr_kwargs,
+            )
+        elif is_periodic:
+            system_clean = prmtop.createSystem(
+                nonbondedMethod=PME,
+                nonbondedCutoff=1.0 * nanometer,
+                constraints=HBonds,
+                **hmr_kwargs,
+            )
+        else:
+            system_clean = prmtop.createSystem(
+                nonbondedMethod=NoCutoff,
+                constraints=HBonds,
+                **hmr_kwargs,
+            )
+
+        # Barostat — mirrors run_production's NPT setup.
+        if pressure_bar is not None and is_periodic and not implicit_solvent:
+            if is_membrane:
+                system_clean.addForce(MonteCarloMembraneBarostat(
+                    pressure_bar * bar,
+                    0.0 * bar * nanometer,
+                    temperature_kelvin * kelvin,
+                    MonteCarloMembraneBarostat.XYIsotropic,
+                    MonteCarloMembraneBarostat.ZFree,
+                    25,
+                ))
+            else:
+                system_clean.addForce(MonteCarloBarostat(
+                    pressure_bar * bar,
+                    temperature_kelvin * kelvin,
+                ))
+
+        # Integrator — same type and parameters as run_production's default.
+        integrator_clean = LangevinMiddleIntegrator(
+            temperature_kelvin * kelvin,
+            1.0 / picosecond,
+            timestep_fs * femtoseconds,
+        )
+
+        if platform_obj:
+            sim_clean = Simulation(
+                prmtop.topology, system_clean, integrator_clean,
+                platform_obj, platform_properties,
+            )
+        else:
+            sim_clean = Simulation(prmtop.topology, system_clean, integrator_clean)
+
+        sim_clean.context.setPositions(final_state_full.getPositions())
+        sim_clean.context.setVelocities(final_state_full.getVelocities())
+        if is_periodic:
+            sim_clean.context.setPeriodicBoxVectors(*final_state_full.getPeriodicBoxVectors())
+        # sim_clean.currentStep is 0 by construction → run_production will
+        # execute the full requested simulation length.
+
+        checkpoint_file = out_dir / f"{pref}equilibrated.chk"
+        sim_clean.saveCheckpoint(str(checkpoint_file))
+        result["checkpoint_file"] = str(checkpoint_file)
+        logger.info(f"Saved equilibrated checkpoint (currentStep=0): {checkpoint_file}")
 
         result["success"] = True
 
@@ -1381,7 +1509,7 @@ def analyze_energy_timeseries(
     
     try:
         # Try to read as CSV/TSV
-        df = pd.read_csv(energy_path, sep='\s+', comment='#')
+        df = pd.read_csv(energy_path, sep=r'\s+', comment='#')
     except Exception:
         # Fallback: manual parsing
         data = []
@@ -1484,11 +1612,8 @@ def compute_q_value(
     }
 
     # Setup output directory with human-readable name
-    # If output_dir not specified, try to use current session directory
-    if output_dir is None:
-        out_dir = create_unique_subdir(base_dir, "q_value")
-    else:
-        out_dir = create_unique_subdir(output_dir, "q_value")
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
+    out_dir = create_unique_subdir(base_dir, "q_value")
     result["output_dir"] = str(out_dir)
 
     # Validate input files

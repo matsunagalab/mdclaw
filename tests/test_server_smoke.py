@@ -368,6 +368,54 @@ class TestMDSimulationServer:
         assert r2["success"] is True
         assert r2["restarted_from"] == chk
 
+    def test_equilibration_to_production_checkpoint_handoff(self, small_pdb, tmp_path):
+        """run_equilibration writes a .chk that run_production can loadCheckpoint.
+
+        Verifies the equilibration → production handoff via binary checkpoint:
+        - run_equilibration builds its clean (production-matching) System at
+          the end of NPT and writes equilibrated.chk with currentStep=0.
+        - run_production loads that checkpoint via --restart-from, inherits
+          positions/velocities/box, skips minimization, and runs the full
+          requested simulation_time_ns (because currentStep in the checkpoint
+          is 0, not the equilibration step count).
+        """
+        from md_simulation_server import run_equilibration, run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        equil = run_equilibration(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil"),
+            platform="CPU",
+        )
+        assert equil["success"] is True
+        chk = equil["checkpoint_file"]
+        assert chk is not None
+        assert Path(chk).suffix == ".chk"
+        assert Path(chk).exists()
+
+        prod = run_production(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,   # 250 steps at 4 fs
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "prod_from_equil"),
+            platform="CPU",
+            restart_from=chk,
+        )
+        assert prod["success"] is True
+        assert prod["restarted_from"] == chk
+        # currentStep in the checkpoint was 0 → full requested length ran
+        assert prod["steps_completed"] == prod["num_steps"]
+        assert Path(prod["trajectory_file"]).exists()
+
     def test_run_md_with_hmr(self, small_pdb, tmp_path):
         """Run MD with HMR enabled and 4fs timestep."""
         from md_simulation_server import run_production

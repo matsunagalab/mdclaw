@@ -60,14 +60,18 @@ mdclaw build_amber_system \
 
 ### Equilibration + Quick MD (sanity check)
 
-Run equilibration then a short production run to verify stability.
-When `--pressure-bar` > 0, equilibration runs NVT heating followed by NPT
-density equilibration (both with CA positional restraints). When pressure
-is 0 or omitted, only NVT heating runs.
+Run equilibration then a short production run starting from the equilibrated
+checkpoint. When `--pressure-bar` > 0, equilibration runs NVT heating
+followed by NPT density equilibration (both with CA positional restraints).
+When pressure is 0 or omitted, only NVT heating runs. Both stages use
+4 fs + HMR so the final state can be handed off to production via a binary
+checkpoint.
 
 ```bash
-# Equilibration: NVT (10ps, 1fs) → NPT (20ps, 2fs) with CA restraints
-# NPT stage runs because --pressure-bar 1.0 (matching production ensemble)
+# Equilibration: NVT (10ps) + NPT (20ps) at 4 fs + HMR, CA restraints.
+# --pressure-bar 1.0 triggers the NPT density stage (NPT ensemble target).
+# Writes equilibrated.chk from a production-matching System (no restraints,
+# currentStep=0) and equilibration.xml as an audit/reproducibility backup.
 mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
@@ -75,7 +79,11 @@ mdclaw run_equilibration \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0
 
-# Quick production (0.1 ns, default 4 fs + HMR, no restraints)
+# Quick production (0.1 ns, 4 fs + HMR, no restraints).
+# --restart-from <equilibrated.chk> loads equilibrated positions, velocities,
+# and NPT-adjusted box; currentStep in the checkpoint is 0 so the full
+# simulation_time_ns runs. Minimization and velocity re-randomization are
+# skipped. Use the checkpoint_file path from run_equilibration's JSON output.
 mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
@@ -83,12 +91,22 @@ mdclaw run_production \
   --simulation-time-ns 0.1 \
   --temperature-kelvin 300.0 \
   --pressure-bar 1.0 \
-  --output-frequency-ps 10.0
+  --output-frequency-ps 10.0 \
+  --restart-from <equilibrated_chk>
 ```
 
 ### Domain Knowledge
 - Equilibration uses positional restraints on CA atoms to prevent structural collapse
-- NVT stage heats gradually (1 fs, no HMR), NPT stage equilibrates density (2 fs)
+- Both NVT and NPT stages run at 4 fs with HMR, matching production's integrator.
+  The final state is handed off to production via a binary checkpoint (no
+  re-minimization, equilibrated velocities and NPT-adjusted box preserved).
+- `run_equilibration` writes `equilibrated.chk` from a clean,
+  production-matching System (no restraint force). Pass it to
+  `run_production --restart-from` to inherit the equilibrated state. The
+  checkpoint's `currentStep` is 0 by construction, so `--simulation-time-ns`
+  is interpreted as the full production length.
+- `equilibration.xml` is also written as an audit/reproducibility backup
+  (OpenMM XML State). It is not used for restart — use the `.chk` instead.
 - Production uses 4 fs + HMR (default) without restraints
 - NPT ensemble at 300K, 1 bar for equilibration
 - Energy should drop significantly during minimization (good sign)

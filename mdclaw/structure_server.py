@@ -1902,7 +1902,7 @@ def clean_protein(
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
                 if use_predefined_his:
                     # Skip propka, use pdb2pqr without titration (user specified states)
-                    logger.info(f"Using pdb2pqr without propka (user-specified HIS states)")
+                    logger.info("Using pdb2pqr without propka (user-specified HIS states)")
                     pqr_output = input_path.parent / f"{stem}.pqr"
 
                     pdb2pqr_args = [
@@ -1917,7 +1917,6 @@ def clean_protein(
                 else:
                     logger.info(f"Using pdb2pqr with propka for pH {ph}")
                     pqr_output = input_path.parent / f"{stem}.pqr"
-                    propka_output = input_path.parent / f"{stem}.propka"
 
                     pdb2pqr_args = [
                         str(output_file),

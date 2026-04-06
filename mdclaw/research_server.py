@@ -12,6 +12,7 @@ Provides tools for:
 """
 
 import os
+import re
 import sys
 import hashlib
 import json
@@ -960,9 +961,6 @@ async def search_structures(
         logger.error(f"Search error: {e}")
 
     return result
-
-
-import re
 
 
 def _detect_variant_from_title(title: str) -> dict:
