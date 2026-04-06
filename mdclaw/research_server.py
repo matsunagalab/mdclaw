@@ -23,7 +23,7 @@ import httpx
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger, ensure_directory, get_current_session  # noqa: E402
+from mdclaw._common import setup_logger, ensure_directory  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -159,15 +159,8 @@ async def download_structure(
         ext = "pdb"
 
     try:
-        # Resolve output file path first
-        # Always prefer session directory to ensure files go to the correct location
-        session_dir = get_current_session()
-        if session_dir:
-            save_dir = session_dir
-        elif output_dir:
-            save_dir = Path(output_dir)
-        else:
-            save_dir = WORKING_DIR
+        # Resolve output file path
+        save_dir = Path(output_dir) if output_dir else WORKING_DIR
         ensure_directory(save_dir)
         output_file = save_dir / f"{pdb_id}.{ext}"
 
@@ -269,6 +262,7 @@ async def download_structure(
         except Exception as e:
             result["warnings"].append(f"Could not parse structure statistics: {str(e)}")
 
+        result["output_dir"] = str(save_dir)
         result["success"] = True
         logger.info(f"Successfully downloaded {pdb_id}: {result['num_atoms']} atoms, chains: {result['chains']}")
 
@@ -1553,14 +1547,7 @@ async def get_alphafold_structure(
             content = r.content
 
         # Save file
-        # Always prefer session directory to ensure files go to the correct location
-        session_dir = get_current_session()
-        if session_dir:
-            save_dir = session_dir
-        elif output_dir:
-            save_dir = Path(output_dir)
-        else:
-            save_dir = WORKING_DIR
+        save_dir = Path(output_dir) if output_dir else WORKING_DIR
         ensure_directory(save_dir)
         output_file = save_dir / f"AF-{uniprot_id}.{ext}"
         with open(output_file, "wb") as f:

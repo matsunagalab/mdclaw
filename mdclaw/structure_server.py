@@ -29,7 +29,7 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
 
 # Initialize working directory
 WORKING_DIR = Path("outputs")
@@ -1228,15 +1228,8 @@ def split_molecules(
     structure_path = Path(structure_file)
     suffix = structure_path.suffix.lower()
     
-    # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    # Setup output directory
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "split")
     result["output_dir"] = str(out_dir)
 
@@ -2984,15 +2977,8 @@ def merge_structures(
         logger.error(f"Files not found: {missing_files}")
         return result
 
-    # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    # Setup output directory
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "merge")
     result["output_dir"] = str(out_dir)
 
@@ -3227,15 +3213,8 @@ def prepare_complex(
         logger.error(f"Structure file not found: {structure_file}")
         return result
 
-    # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    # Setup output directory
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "prepare_complex")
     result["output_dir"] = str(out_dir)
 

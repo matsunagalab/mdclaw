@@ -118,27 +118,9 @@ def count_atoms_in_pdb(pdb_path: Union[str, Path]) -> int:
 # ---------------------------------------------------------------------------
 
 
-def get_current_session() -> Optional[Path]:
-    """Get current session directory from .mdclaw_session file."""
-    session_file = Path.cwd() / ".mdclaw_session"
-    if session_file.exists():
-        session_dir = session_file.read_text().strip()
-        if session_dir and Path(session_dir).exists():
-            return Path(session_dir)
-    return None
 
-
-def get_simulation_brief() -> Optional[dict]:
-    """Get simulation brief from current session directory."""
-    session_dir = get_current_session()
-    if session_dir:
-        brief_path = session_dir / "simulation_brief.json"
-        if brief_path.exists():
-            try:
-                return json.loads(brief_path.read_text())
-            except Exception:
-                pass
-    return None
+# get_current_session() and get_simulation_brief() removed.
+# All tools now use --output-dir parameter directly. No session state.
 
 
 # ---------------------------------------------------------------------------

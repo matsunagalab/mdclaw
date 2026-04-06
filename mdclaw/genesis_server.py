@@ -31,7 +31,7 @@ import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from rdkit.Chem import Descriptors  # noqa: E402
 
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -102,14 +102,7 @@ def boltz2_protein_from_seq(
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
     # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "boltz")
 
     result = {

@@ -24,7 +24,7 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
-    ensure_directory, create_unique_subdir, generate_job_id, get_current_session,
+    ensure_directory, create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_validation_error,
 )
@@ -889,14 +889,7 @@ def build_amber_system(
     
     # Setup output directory with human-readable name
     # Always prefer session directory to ensure files go to the correct location
-    # (LLM may pass incorrect output_dir values)
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
     

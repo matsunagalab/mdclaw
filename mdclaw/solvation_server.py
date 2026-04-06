@@ -24,7 +24,7 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
-from mdclaw._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, get_current_session, BaseToolWrapper  # noqa: E402
+from mdclaw._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
 from mdclaw._common import get_timeout  # noqa: E402
 
 
@@ -215,14 +215,7 @@ def _solvate_with_openmm(
         result["errors"].append("OpenMM not available for fallback solvation")
         return result
 
-    # Setup output directory
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
     output_file = out_dir / f"{output_name}.pdb"
@@ -411,14 +404,7 @@ def solvate_structure(
         )
 
     # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
@@ -710,14 +696,7 @@ def embed_in_membrane(
         return result
 
     # Setup output directory with human-readable name (unified with solvate)
-    # Always prefer session directory to ensure files go to the correct location
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 

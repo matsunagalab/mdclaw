@@ -21,7 +21,7 @@ from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, get_current_session, get_simulation_brief  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -508,14 +508,7 @@ def run_production(
 
     # Setup output directory with human-readable name
     # Always prefer session directory to ensure files go to the correct location
-    # (LLM may pass incorrect output_dir values)
-    session_dir = get_current_session()
-    if session_dir:
-        base_dir = session_dir
-    elif output_dir:
-        base_dir = Path(output_dir)
-    else:
-        base_dir = WORKING_DIR
+    base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "md_simulation")
     result["output_dir"] = str(out_dir)
 
@@ -523,20 +516,16 @@ def run_production(
     prmtop_path = Path(prmtop_file)
     inpcrd_path = Path(inpcrd_file)
 
-    # If file not found, try searching in topology subdirectory
-    # This handles cases where LLM passes session_dir/file instead of session_dir/topology/file
-    session_dir = get_current_session()
-
-    if not prmtop_path.is_file() and session_dir:
-        # Search for .parm7 files in session directory
-        candidates = list(session_dir.glob("**/system.parm7")) + list(session_dir.glob("**/*.parm7"))
+    # If file not found, try searching in output_dir subdirectories
+    search_dir = Path(output_dir) if output_dir else None
+    if not prmtop_path.is_file() and search_dir:
+        candidates = list(search_dir.glob("**/system.parm7")) + list(search_dir.glob("**/*.parm7"))
         if candidates:
             prmtop_path = candidates[0]
             logger.info(f"Found topology file: {prmtop_path}")
 
-    if not inpcrd_path.is_file() and session_dir:
-        # Search for .rst7 files in session directory
-        candidates = list(session_dir.glob("**/system.rst7")) + list(session_dir.glob("**/*.rst7"))
+    if not inpcrd_path.is_file() and search_dir:
+        candidates = list(search_dir.glob("**/system.rst7")) + list(search_dir.glob("**/*.rst7"))
         if candidates:
             inpcrd_path = candidates[0]
             logger.info(f"Found coordinate file: {inpcrd_path}")
@@ -584,11 +573,9 @@ def run_production(
 
         # Auto-detect implicit solvent from simulation_brief if not specified
         # This fixes the issue where LLM doesn't pass implicit_solvent parameter
-        if implicit_solvent is None and not is_periodic:
-            brief = get_simulation_brief()
-            if brief and brief.get("solvation_type") == "implicit":
-                implicit_solvent = brief.get("implicit_solvent_model", "OBC2")
-                logger.info(f"Auto-detected implicit solvent from simulation_brief: {implicit_solvent}")
+        # For non-periodic systems without explicit implicit_solvent specification,
+        # the user should pass --implicit-solvent explicitly.
+        # (Previously auto-detected from session_dir/simulation_brief.json)
 
         # HMR (Hydrogen Mass Repartitioning)
         hmr_kwargs = {}
@@ -1499,8 +1486,6 @@ def compute_q_value(
     # Setup output directory with human-readable name
     # If output_dir not specified, try to use current session directory
     if output_dir is None:
-        session_dir = get_current_session()
-        base_dir = session_dir if session_dir else WORKING_DIR
         out_dir = create_unique_subdir(base_dir, "q_value")
     else:
         out_dir = create_unique_subdir(output_dir, "q_value")
