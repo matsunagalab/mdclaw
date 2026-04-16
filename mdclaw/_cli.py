@@ -268,34 +268,38 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 # ---------------------------------------------------------------------------
 
 def _append_command_to_progress(output_dir: str, tool_name: str, success: bool) -> None:
-    """Append a CLI command record to progress.json if it exists.
+    """Append a CLI command record to progress.json and run.json if they exist.
 
-    Searches for progress.json in output_dir and up to 3 parent directories.
-    This works for both interactive and SLURM execution because:
-    - Interactive: output_dir is a subdirectory of the job directory
-    - SLURM: absolute paths are used, pointing to shared filesystem
+    Searches for progress.json and run.json in output_dir and up to 3 parent
+    directories.  Both files get the same command record so that:
+    - progress.json has the full command history for the entire job
+    - run.json has the command history scoped to a single run
     """
     from datetime import datetime, timezone
     from pathlib import Path
 
     cli_str = " ".join(sys.argv)
-    for parent in [Path(output_dir)] + list(Path(output_dir).parents)[:3]:
-        progress_path = parent / "progress.json"
-        if progress_path.exists():
-            try:
-                data = json.loads(progress_path.read_text())
-                if "commands" not in data:
-                    data["commands"] = []
-                data["commands"].append({
-                    "tool": tool_name,
-                    "cli": cli_str,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                    "success": success,
-                })
-                progress_path.write_text(json.dumps(data, indent=2))
-            except (json.JSONDecodeError, OSError):
-                pass
-            break
+    record = {
+        "tool": tool_name,
+        "cli": cli_str,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "success": success,
+    }
+
+    search_dirs = [Path(output_dir)] + list(Path(output_dir).parents)[:3]
+    for json_name in ("run.json", "progress.json"):
+        for parent in search_dirs:
+            json_path = parent / json_name
+            if json_path.exists():
+                try:
+                    data = json.loads(json_path.read_text())
+                    if "commands" not in data:
+                        data["commands"] = []
+                    data["commands"].append(record)
+                    json_path.write_text(json.dumps(data, indent=2))
+                except (json.JSONDecodeError, OSError):
+                    pass
+                break
 
 
 def main(argv: list[str] | None = None) -> None:

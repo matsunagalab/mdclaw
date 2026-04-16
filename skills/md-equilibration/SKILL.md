@@ -58,6 +58,7 @@ and determine the solvent type (`params.solvation_type`).
     "simulation_time_ns": null,
     "random_seed": null
   },
+  "commands": [],
   "stages": {
     "equilibration": { "status": "pending" },
     "production": { "status": "pending" }
