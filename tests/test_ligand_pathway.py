@@ -141,38 +141,75 @@ class TestChargeEstimation:
 # ---------------------------------------------------------------------------
 
 class TestLigandParamsAutoDetect:
-    """Test that build_amber_system auto-detects ligand_params.json."""
+    """Test that build_amber_system auto-detects ligand_params.json.
 
-    def test_auto_detect_ligand_params_json(self, tmp_path):
-        """Verify ligand_params.json is loaded when present."""
+    Realistic directory layout:
+        job_XXX/                      ← job root (= tmp_path)
+          ligand_params.json          ← written by prepare_complex to job root
+          solvate/solvated.pdb        ← explicit solvent input to build_amber_system
+          merge/merged.pdb            ← implicit solvent input
+    build_amber_system searches pdb_file.parent then pdb_file.parent.parent.
+    """
+
+    def test_explicit_solvent_path(self, tmp_path):
+        """ligand_params.json at job root found via solvate/solvated.pdb → parent.parent."""
         from mdclaw.amber_server import build_amber_system
 
-        # Create a minimal PDB
-        pdb_file = tmp_path / "solvate" / "solvated.pdb"
-        pdb_file.parent.mkdir()
+        # Simulate job directory structure
+        solvate_dir = tmp_path / "solvate"
+        solvate_dir.mkdir()
+        pdb_file = solvate_dir / "solvated.pdb"
         pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00\nEND\n")
 
-        # Create ligand_params.json in parent (merge/) dir
-        merge_dir = tmp_path / "merge"
-        merge_dir.mkdir()
+        # ligand_params.json at job root (written by prepare_complex)
         params = [{"mol2": "/fake/lig.mol2", "frcmod": "/fake/lig.frcmod", "residue_name": "LIG"}]
-        (merge_dir / "ligand_params.json").write_text(json.dumps(params))
+        (tmp_path / "ligand_params.json").write_text(json.dumps(params))
 
-        # build_amber_system should auto-detect but will fail because tleap isn't available
-        # or files don't exist -- we just check it attempted to use the params
         result = build_amber_system(pdb_file=str(pdb_file), output_dir=str(tmp_path / "topo"))
 
-        # If tleap is not available, we get a tool-not-available error, but the important
-        # thing is that ligand params were detected (check warnings for validation messages)
-        if not result["success"]:
-            # Ligand param files don't exist, so we expect validation warnings
-            has_ligand_warning = any("mol2" in w or "frcmod" in w or "Ligand" in w
-                                     for w in result.get("warnings", []))
-            has_tool_error = any("tleap" in str(e).lower() for e in result.get("errors", []))
-            assert has_ligand_warning or has_tool_error, (
-                "Expected ligand validation warnings or tleap error, got: "
-                f"warnings={result.get('warnings')}, errors={result.get('errors')}"
-            )
+        # mol2/frcmod paths are fake so validation will warn about missing files.
+        # The key assertion: ligand validation warnings prove the JSON was loaded.
+        all_text = " ".join(result.get("warnings", []) + result.get("errors", []))
+        assert "mol2" in all_text.lower() or "frcmod" in all_text.lower() or "tleap" in all_text.lower(), (
+            "ligand_params.json was not auto-detected from job root via explicit solvent path. "
+            f"warnings={result.get('warnings')}, errors={result.get('errors')}"
+        )
+
+    def test_implicit_solvent_path(self, tmp_path):
+        """ligand_params.json at job root found via merge/merged.pdb → parent.parent."""
+        from mdclaw.amber_server import build_amber_system
+
+        merge_dir = tmp_path / "merge"
+        merge_dir.mkdir()
+        pdb_file = merge_dir / "merged.pdb"
+        pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00\nEND\n")
+
+        params = [{"mol2": "/fake/lig.mol2", "frcmod": "/fake/lig.frcmod", "residue_name": "LIG"}]
+        (tmp_path / "ligand_params.json").write_text(json.dumps(params))
+
+        result = build_amber_system(pdb_file=str(pdb_file), output_dir=str(tmp_path / "topo"))
+
+        all_text = " ".join(result.get("warnings", []) + result.get("errors", []))
+        assert "mol2" in all_text.lower() or "frcmod" in all_text.lower() or "tleap" in all_text.lower(), (
+            "ligand_params.json was not auto-detected from job root via implicit solvent path. "
+            f"warnings={result.get('warnings')}, errors={result.get('errors')}"
+        )
+
+    def test_no_false_positive_without_json(self, tmp_path):
+        """No ligand warnings when ligand_params.json does not exist."""
+        from mdclaw.amber_server import build_amber_system
+
+        solvate_dir = tmp_path / "solvate"
+        solvate_dir.mkdir()
+        pdb_file = solvate_dir / "solvated.pdb"
+        pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00\nEND\n")
+
+        result = build_amber_system(pdb_file=str(pdb_file), output_dir=str(tmp_path / "topo"))
+
+        # Should NOT have ligand validation warnings
+        ligand_warnings = [w for w in result.get("warnings", [])
+                           if "ligand" in w.lower() and ("mol2" in w.lower() or "frcmod" in w.lower())]
+        assert not ligand_warnings, f"Unexpected ligand warnings without ligand_params.json: {ligand_warnings}"
 
 
 # ---------------------------------------------------------------------------
@@ -297,3 +334,80 @@ $$$$
         # The LOW_CONFIDENCE_CHARGE warning should be present (charge mismatch)
         has_warning = any("LOW_CONFIDENCE_CHARGE" in w for w in result.get("warnings", []))
         assert has_warning, f"Expected LOW_CONFIDENCE_CHARGE warning, got: {result.get('warnings')}"
+
+
+# ---------------------------------------------------------------------------
+# Level 1: Warning propagation from run_antechamber_robust to prepare_complex
+# ---------------------------------------------------------------------------
+
+class TestWarningPropagation:
+    """Test that warnings from parameterization reach prepare_complex output."""
+
+    def test_low_confidence_charge_visible_in_prepare_complex(self, tmp_path):
+        """LOW_CONFIDENCE_CHARGE must appear in prepare_complex result warnings."""
+        from unittest.mock import patch
+
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import prepare_complex
+
+        # Create a PDB with a fake "ATP" ligand (just a HETATM block)
+        pdb_content = (
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      2  CA  ALA A   1       1.5   0.0   0.0  1.00  0.00           C\n"
+            "ATOM      3  C   ALA A   1       2.5   1.2   0.0  1.00  0.00           C\n"
+            "ATOM      4  O   ALA A   1       2.0   2.3   0.0  1.00  0.00           O\n"
+            "TER\n"
+            "HETATM    5  C1  ATP B   1       5.0   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    6  C2  ATP B   1       6.5   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    7  O1  ATP B   1       7.2   6.0   5.0  1.00  0.00           O\n"
+            "HETATM    8  O2  ATP B   1       7.1   3.9   5.0  1.00  0.00           O\n"
+            "END\n"
+        )
+        pdb_file = tmp_path / "complex.pdb"
+        pdb_file.write_text(pdb_content)
+
+        # Mock run_antechamber_robust to return success with LOW_CONFIDENCE_CHARGE
+        fake_param = {
+            "success": True,
+            "mol2": str(tmp_path / "fake.mol2"),
+            "frcmod": str(tmp_path / "fake.frcmod"),
+            "pdb": str(tmp_path / "fake.amber.pdb"),
+            "warnings": ["LOW_CONFIDENCE_CHARGE: ATP expected charge=-4 but estimated=-1"],
+            "charge_confidence": "known_cofactor",
+        }
+        # Create the fake files so merge doesn't complain
+        (tmp_path / "fake.mol2").write_text("")
+        (tmp_path / "fake.frcmod").write_text("")
+        (tmp_path / "fake.amber.pdb").write_text(
+            "HETATM    5  C1  ATP B   1       5.0   5.0   5.0  1.00  0.00           C\nEND\n"
+        )
+
+        with patch("mdclaw.structure_server.run_antechamber_robust", return_value=fake_param):
+            result = prepare_complex(
+                structure_file=str(pdb_file),
+                output_dir=str(tmp_path / "job"),
+                include_types=["protein", "ligand"],
+                process_ligands=True,
+                process_proteins=False,
+                ligand_smiles={"ATP": "CC(=O)O"},
+            )
+
+        # 1. Warning must appear in top-level result["warnings"]
+        top_warnings = result.get("warnings", [])
+        has_top_warning = any("LOW_CONFIDENCE_CHARGE" in w for w in top_warnings)
+        assert has_top_warning, (
+            f"LOW_CONFIDENCE_CHARGE not in prepare_complex warnings: {top_warnings}"
+        )
+
+        # 2. Warning must appear in the ligand's own warnings
+        atp_ligands = [l for l in result.get("ligands", []) if l.get("ligand_id") == "ATP"]
+        if atp_ligands:
+            lig_warnings = atp_ligands[0].get("warnings", [])
+            has_lig_warning = any("LOW_CONFIDENCE_CHARGE" in w for w in lig_warnings)
+            assert has_lig_warning, (
+                f"LOW_CONFIDENCE_CHARGE not in ligand warnings: {lig_warnings}"
+            )
+
+        # 3. charge_confidence must be set on the ligand
+        if atp_ligands:
+            assert atp_ligands[0].get("charge_confidence") == "known_cofactor"

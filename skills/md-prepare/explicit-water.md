@@ -40,7 +40,7 @@ mdclaw solvate_structure \
 
 ## Step 5: Build Topology
 
-`box_dimensions.json` and `ligand_params.json` are auto-detected from the solvated/merged PDB directories. No need to pass them explicitly:
+`box_dimensions.json` (in `solvate/`) and `ligand_params.json` (in the job root) are auto-detected. No need to pass them explicitly:
 
 **Without ligands:**
 ```bash
@@ -52,7 +52,7 @@ mdclaw build_amber_system \
   --no-is-membrane
 ```
 
-**With ligands** (auto-detected from `ligand_params.json` written by `prepare_complex`):
+**With ligands** (auto-detected from `job_dir/ligand_params.json` written by `prepare_complex`):
 ```bash
 mdclaw build_amber_system \
   --pdb-file <solvated_pdb> \
@@ -69,7 +69,7 @@ mdclaw build_amber_system --json-input '{"pdb_file": "<solvated_pdb>", "output_d
 
 Extract `mol2_file`, `frcmod_file`, and `ligand_id` from each entry in `prepare_complex` result's `ligands` array.
 
-> `build_amber_system` auto-detects `box_dimensions.json` and `ligand_params.json` in the input PDB's directory (and parent). If not found, box dimensions default to implicit solvent and ligand params default to none.
+> `build_amber_system` auto-detects `box_dimensions.json` and `ligand_params.json` by searching the input PDB's directory and its parent (the job root). If not found, box dimensions default to implicit solvent and ligand params default to none.
 
 **Verify**: Check the tleap log for `loadamberparams` and `loadmol2` lines for each ligand.
 

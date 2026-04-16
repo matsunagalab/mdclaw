@@ -33,7 +33,7 @@ mdclaw build_amber_system \
 ```
 
 > No `--box-dimensions` or `--water-model` needed for implicit solvent.
-> Ligand params (mol2/frcmod) are auto-loaded from `ligand_params.json` if present.
+> Ligand params (mol2/frcmod) are auto-loaded from `ligand_params.json` in the job root if present.
 
 ### Domain Knowledge
 

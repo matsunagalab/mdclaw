@@ -132,7 +132,7 @@ Extract `merged_pdb` from the result. If ligands were processed, also extract `l
 
 For each entry in `result.ligands` where `success=true`:
 - Store `{mol2: ligand.mol2_file, frcmod: ligand.frcmod_file, residue_name: ligand.ligand_id[:3]}` in `progress.json` `artifacts.ligand_params`.
-- `prepare_complex` also writes `ligand_params.json` next to `merged_pdb` for auto-detection by `build_amber_system`.
+- `prepare_complex` also writes `ligand_params.json` to the job root for auto-detection by `build_amber_system`.
 
 **Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings contain `LOW_CONFIDENCE_CHARGE`, present the warning to the user and ask for confirmation before proceeding. The warning indicates the estimated charge may be wrong for this ligand.
 

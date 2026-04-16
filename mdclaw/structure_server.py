@@ -3541,7 +3541,12 @@ def prepare_complex(
                                 ligand_result["mol2_file"] = param_result["mol2"]
                                 ligand_result["frcmod_file"] = param_result["frcmod"]
                                 ligand_result["pdb_file"] = param_result.get("pdb")  # Amber-compatible PDB
+                                ligand_result["charge_confidence"] = param_result.get("charge_confidence")
                                 ligand_result["success"] = True
+                                # Propagate warnings (e.g. LOW_CONFIDENCE_CHARGE, frcmod ATTN)
+                                if param_result.get("warnings"):
+                                    ligand_result.setdefault("warnings", []).extend(param_result["warnings"])
+                                    result["warnings"].extend(param_result["warnings"])
                                 logger.info(f"    ✓ Parameterized: {param_result['mol2']}")
                             else:
                                 ligand_result["errors"].extend(param_result.get("errors", []))
@@ -3642,8 +3647,11 @@ def prepare_complex(
                         preparation_summary[key] = val
         result["preparation_summary"] = preparation_summary
 
-        # Write ligand_params.json next to merged PDB for auto-detection by build_amber_system
-        if result.get("merged_pdb") and result.get("ligands"):
+        # Write ligand_params.json to the job root for auto-detection by build_amber_system.
+        # Job directory layout: job_XXX/{split,merge,solvate,topology}/
+        # build_amber_system receives pdb_file in solvate/ (explicit) or merge/ (implicit)
+        # and searches parent + parent.parent — the job root covers both cases.
+        if result.get("ligands"):
             successful_ligands = [
                 {
                     "mol2": lig["mol2_file"],
@@ -3654,8 +3662,7 @@ def prepare_complex(
                 if lig.get("success") and lig.get("mol2_file") and lig.get("frcmod_file")
             ]
             if successful_ligands:
-                merged_dir = Path(result["merged_pdb"]).parent
-                ligand_params_json = merged_dir / "ligand_params.json"
+                ligand_params_json = base_dir / "ligand_params.json"
                 with open(ligand_params_json, 'w') as f:
                     json.dump(successful_ligands, f, indent=2)
                 logger.info(f"Wrote ligand_params.json ({len(successful_ligands)} ligands) to {ligand_params_json}")
