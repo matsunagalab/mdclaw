@@ -102,7 +102,20 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 ```
 
 ### Checkpoint / Restart
-Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
+
+Mid-run restart appends new frames to the existing `trajectory.dcd`.
+Always use the same `--output-dir` for restarts.
+
+```bash
+# Restart: appends to existing DCD, runs only remaining steps
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --simulation-time-ns 100.0 --pressure-bar 0 \
+  --output-dir <run_dir> \
+  --restart-from <run_dir>/production/checkpoint.chk
+```
+
+- `--simulation-time-ns` is the **total** target time, not additional time
+- Binary checkpoint is platform-specific (CUDA ↔ CPU not interchangeable)
 
 ---
 

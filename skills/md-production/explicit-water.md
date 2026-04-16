@@ -105,22 +105,34 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 ```
 
 ### Checkpoint / Restart
-```bash
-# Initial run (checkpoint.chk saved automatically)
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --platform CUDA \
-  --restart-from equilibrated.chk
 
-# Restart from mid-run checkpoint (appends to DCD, runs only remaining steps)
+Mid-run restart appends new frames to the existing `trajectory.dcd` — the
+DCD stays as a single file across restarts. `--output-dir` must point to
+the **same run directory** so that `run_production` finds the existing DCD
+and `checkpoint.chk`.
+
+```bash
+# Initial run (checkpoint.chk saved automatically every 100 ps)
 mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0 --platform CUDA \
-  --restart-from /path/to/runs/<run_id>/production/checkpoint.chk
+  --output-dir <run_dir> \
+  --restart-from <run_dir>/equilibration/equilibrated.chk
+
+# Restart from mid-run checkpoint
+# - appends to the existing trajectory.dcd (no duplicate frames)
+# - runs only remaining steps (currentStep is restored from checkpoint)
+# - use the SAME --output-dir and --simulation-time-ns as the original run
+mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+  --simulation-time-ns 100.0 --platform CUDA \
+  --output-dir <run_dir> \
+  --restart-from <run_dir>/production/checkpoint.chk
 ```
 
-**Checkpoint notes:**
-- Binary format: platform-specific (CUDA checkpoint cannot load on CPU)
-- Restarted simulations append to the existing DCD
-- For portable saves, use State (XML) — but mdclaw currently uses checkpoint
+**Important:**
+- Always use the same `--output-dir` for restarts — this ensures DCD append
+- `--simulation-time-ns` is the **total** target time, not additional time
+- Binary checkpoint is platform-specific (CUDA checkpoint cannot load on CPU)
+- `energy.dat` also appends on restart
 
 ---
 
