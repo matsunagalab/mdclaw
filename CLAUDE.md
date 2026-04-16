@@ -106,6 +106,34 @@ tests/                      # 4-level test suite
 
 Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). When changing tool signatures, update the corresponding SKILL.md examples.
 
+### Skill Workflow & Job Directory Structure
+
+User flow: `/md-prepare` → `/md-equilibration` → `/md-production` → `/md-analyze`
+
+```
+job_XXXXXXXX/                        # one system (created by md-prepare)
+  progress.json                       # schema 2.0: system info, runs[] index, next_step
+  1AKE.pdb
+  split/  merge/  solvate/
+  topology/                           # parm7 + rst7 (shared by all runs)
+  runs/                               # one subdir per condition set
+    run_001_300K/
+      run.json                        # conditions, stages, next_step
+      equilibration/                  # created by run_equilibration
+        equilibrated.chk
+      production/                     # created by run_production
+        trajectory.dcd
+    run_002_310K/                     # reuse same topology at different T
+      run.json
+      equilibration/
+      production/
+```
+
+- `progress.json` (v2.0) holds system-level data (preparation, solvation, forcefield, artifacts) and a `runs[]` index
+- `run.json` holds per-run conditions, equilibration/production stage status, and `next_step` for handoff
+- `e2e_mode` in params triggers automatic chaining across skills
+- Run labels auto-generated: `run_NNN_<T>K[_seed<N>]`
+
 ### Pre-commit Checklist
 
 ```bash

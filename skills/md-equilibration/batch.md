@@ -37,7 +37,7 @@ with `run.json` in each target's job directory.
 mdclaw run_equilibration \
   --prmtop-file <job_dir>/topology/system.parm7 \
   --inpcrd-file <job_dir>/topology/system.rst7 \
-  --output-dir <job_dir>/runs/<run_id>/equilibration \
+  --output-dir <job_dir>/runs/<run_id> \
   --temperature-kelvin <T> \
   --pressure-bar 1.0
 ```
@@ -48,7 +48,7 @@ mdclaw submit_job \
   --script "mdclaw run_equilibration \
     --prmtop-file <ABSOLUTE_PARM7> \
     --inpcrd-file <ABSOLUTE_RST7> \
-    --output-dir <ABSOLUTE_RUN_DIR>/equilibration \
+    --output-dir <ABSOLUTE_RUN_DIR> \
     --temperature-kelvin <T> \
     --pressure-bar 1.0" \
   --job-name eq_<target_name> \

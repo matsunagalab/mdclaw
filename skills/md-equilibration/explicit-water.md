@@ -12,7 +12,7 @@ with production settings.
 mdclaw run_equilibration \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
-  --output-dir <run_dir>/equilibration \
+  --output-dir <run_dir> \
   --temperature-kelvin <T> \
   --pressure-bar 1.0
 ```

@@ -15,7 +15,7 @@ For each target, scan `<job_dir>/runs/` for run directories with completed produ
 
 For each completed run, find:
 - Topology: `<job_dir>/topology/system.parm7`
-- Trajectory: `<job_dir>/runs/<run_id>/md_simulation/trajectory.dcd`
+- Trajectory: `<job_dir>/runs/<run_id>/production/trajectory.dcd`
   (scan all run directories, or use the run_id specified by the user)
 
 If files are missing, skip and note in the report.

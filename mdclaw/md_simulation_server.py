@@ -637,7 +637,7 @@ def run_production(
     # Setup output directory with human-readable name
     # Always prefer session directory to ensure files go to the correct location
     base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "md_simulation")
+    out_dir = create_unique_subdir(base_dir, "production")
     result["output_dir"] = str(out_dir)
 
     # Validate input files - also search in topology subdirectory if not found

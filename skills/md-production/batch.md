@@ -36,7 +36,7 @@ mdclaw submit_job \
     --pressure-bar 1.0 \
     --timestep-fs 4.0 \
     --platform CUDA \
-    --output-dir /absolute/path/to/<job_dir>/runs/<run_id>/md_simulation \
+    --output-dir /absolute/path/to/<job_dir>/runs/<run_id> \
     --restart-from /absolute/path/to/<job_dir>/runs/<run_id>/equilibration/equilibrated.chk" \
   --job-name md_<target_name> \
   --partition <user_specified> \

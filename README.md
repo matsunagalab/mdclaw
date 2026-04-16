@@ -66,12 +66,28 @@ HBonds constraints, PME for explicit water. Equilibration uses CA
 positional restraints (100 kJ/mol/nm²) for NVT (2500 steps, 4 fs) +
 NPT (5000 steps, 4 fs).
 
+### Output Structure
+
+```
+job_a1b2c3d4/
+  progress.json              ← system info, preparation details
+  topology/                  ← parm7 + rst7 (shared by all runs)
+  runs/
+    run_001_300K/
+      run.json               ← conditions, energy, trajectory paths
+      equilibration/          ← equilibrated.chk
+      production/             ← trajectory.dcd
+    run_002_310K/             ← same topology, different temperature
+      ...
+```
+
+The same topology can be reused for multiple runs at different temperatures
+or random seeds. Each run is self-contained under `runs/<run_id>/`.
+
 ### Reproducibility
 
-Each job directory contains `progress.json` (system composition, preparation
-details) and per-run `runs/<run_id>/run.json` (simulation conditions, energy,
-trajectory paths) — auto-recorded by CLI tools, sufficient to regenerate the
-workflow and write a paper Methods section.
+`progress.json` and `run.json` are auto-recorded by CLI tools — sufficient
+to regenerate the workflow and write a paper Methods section.
 
 ---
 

@@ -41,7 +41,7 @@
 mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
-  --output-dir <run_dir>/md_simulation \
+  --output-dir <run_dir> \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
@@ -62,7 +62,7 @@ mdclaw submit_job \
     --temperature-kelvin <T> \
     --pressure-bar 0 \
     --platform CUDA \
-    --output-dir <ABSOLUTE_RUN_DIR>/md_simulation \
+    --output-dir <ABSOLUTE_RUN_DIR> \
     --restart-from <ABSOLUTE_RUN_DIR>/equilibration/equilibrated.chk" \
   --job-name md_<name> \
   --partition <partition> --gpus 1 \

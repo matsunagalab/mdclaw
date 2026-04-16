@@ -47,7 +47,7 @@ job_XXXXXXXX/
     run_001_300K/
       run.json
       equilibration/
-      md_simulation/
+      production/
 ```
 
 Always read file paths from each tool's JSON output rather than guessing paths.
