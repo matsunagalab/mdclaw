@@ -535,3 +535,45 @@ Support metadata exchange with an MMDB (Molecular Modeling Database) system:
 
 Schema consideration: `node.json` may need an `mmdb` section for external
 IDs and sync status. `progress.json` may need a top-level `mmdb_id` field.
+
+### Skill execution modes: autonomous vs human-in-the-loop
+
+Currently skills have informal mode detection (keywords like "end-to-end",
+"全部やって") and ad-hoc checkpoint logic scattered across SKILL.md files.
+Formalize this into two well-defined modes:
+
+1. **Autonomous mode**: skill runs the full pipeline without pausing.
+   All decision checkpoints (chain selection, ligand inclusion, solvation
+   params, etc.) use defaults or user-specified values. Errors are handled
+   by retry/fallback logic, not by asking the user. Suitable for batch
+   processing, scheduled agents, and e2e workflows.
+
+2. **Human-in-the-loop mode** (default): skill pauses at each decision
+   checkpoint to present options and wait for user input. Errors are
+   reported with structured context for the user to decide next steps.
+
+Implementation considerations:
+- Add an explicit `mode` parameter to skills (or detect from `conditions`
+  in the eq/prod node, or from a job-level `params.execution_mode` field)
+- Define a standard set of checkpoints per skill with clear skip/ask rules
+- Autonomous mode should still log decisions to `events/` for auditability
+- Consider a hybrid mode where only critical checkpoints pause (e.g.,
+  ligand failure) while routine steps proceed automatically
+
+### hpc-run skill audit and node-based integration
+
+The `hpc-run` skill (`skills/hpc-run/SKILL.md`) was written before the
+node-based architecture. Audit and update:
+
+1. **Node awareness**: `submit_job` should accept `--job-dir`/`--node-id`
+   so that SLURM jobs are tracked as part of the DAG. The submitted script
+   should propagate these flags to the inner `mdclaw` command.
+2. **Job tracking**: link SLURM job IDs to node IDs in `node.json` metadata
+   (e.g., `metadata.slurm_job_id`). `check_job` results should update the
+   node status (running/completed/failed).
+3. **Container config**: verify `configure_container` works with the
+   node-based layout (bind paths need to include `nodes/` subdirectories).
+4. **Monitoring loop**: `/loop` + `hpc-run check` should read node status
+   to determine when to stop polling.
+5. **Multi-node submission**: support submitting multiple prod nodes as
+   a SLURM job array (one array task per prod node from the same eq parent).
