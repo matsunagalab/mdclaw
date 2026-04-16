@@ -85,7 +85,9 @@ conda env create -f environment.yml && conda activate mdclaw && pip install -e .
 ```
 
 Skills work directly via `.claude/commands/` when running Claude Code in
-the repo — no plugin install needed.
+the repo — no plugin install needed. In this dev mode, slash commands
+have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-run`, `/md-analyze`,
+`/hpc-run` (the `/mdclaw:*` form only exists when installed as a plugin).
 
 ### Daily Cycle
 
