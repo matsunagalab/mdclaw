@@ -70,11 +70,11 @@ NPT (5000 steps, 4 fs).
 
 ```
 job_a1b2c3d4/
-  progress.json              ← system info, preparation details
+  progress.json              ← source of truth for job state
   topology/                  ← parm7 + rst7 (shared by all runs)
   runs/
     run_001_300K/
-      run.json               ← conditions, energy, trajectory paths
+      run.json               ← per-run conditions & stage details
       equilibration/          ← equilibrated.chk
       production/             ← trajectory.dcd
     run_002_310K/             ← same topology, different temperature
@@ -84,10 +84,21 @@ job_a1b2c3d4/
 The same topology can be reused for multiple runs at different temperatures
 or random seeds. Each run is self-contained under `runs/<run_id>/`.
 
-### Reproducibility
+### State Management
 
-`progress.json` and `run.json` are auto-recorded by CLI tools — sufficient
-to regenerate the workflow and write a paper Methods section.
+Each skill (`/md-prepare`, `/md-equilibration`, …) is **stateless** —
+it reads `progress.json` on entry, runs tools, and the CLI auto-updates
+`progress.json` after each tool execution. No manual bookkeeping is needed.
+
+| File | Scope | Updated by |
+|------|-------|------------|
+| `progress.json` | Job-level: completed steps, artifacts, next step, blocking reasons | CLI (automatic) |
+| `run.json` | Run-level: temperature, equilibration/production stages, trajectory paths | CLI (automatic) |
+
+This means:
+- **Resume** works by reading `progress.json` — even across sessions or agents
+- **Handoff** between skills is deterministic (`next_step` field)
+- **Direct CLI use** still updates state correctly (no skill wrapper required)
 
 ---
 

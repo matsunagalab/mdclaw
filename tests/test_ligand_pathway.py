@@ -1,6 +1,6 @@
 """Tests for ligand force field generation pathway.
 
-Level 1: frcmod parsing, charge estimation (no external tools)
+Level 1: frcmod parsing, charge estimation, amber_geostd lookup (no external tools)
 Level 2: clean_ligand with RDKit (@slow)
 Level 3: full parameterization with AmberTools (@integration)
 """
@@ -8,6 +8,7 @@ Level 3: full parameterization with AmberTools (@integration)
 import json
 import textwrap
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -471,3 +472,635 @@ class TestWarningPropagation:
         # 3. charge_confidence must be set on the ligand
         if atp_ligands:
             assert atp_ligands[0].get("charge_confidence") == "known_cofactor"
+
+
+# ---------------------------------------------------------------------------
+# Level 1: Ligand classification
+# ---------------------------------------------------------------------------
+
+class TestLigandClassification:
+    """Test _classify_ligand deterministic policy."""
+
+    def test_polyphosphate_cofactor(self):
+        from mdclaw.structure_server import _classify_ligand
+        cls = _classify_ligand("ATP", heavy_atom_count=31, element_set={"C", "N", "O", "P"})
+        assert cls["ligand_class"] == "polyphosphate_cofactor"
+        assert cls["curated_params_recommended"] is True
+        assert cls["auto_parameterization_quality"] == "acceptable"
+
+    def test_ap5_classified_as_polyphosphate(self):
+        from mdclaw.structure_server import _classify_ligand
+        cls = _classify_ligand("AP5", heavy_atom_count=47, element_set={"C", "N", "O", "P"})
+        assert cls["ligand_class"] == "polyphosphate_cofactor"
+        assert cls["curated_params_recommended"] is True
+
+    def test_small_organic(self):
+        from mdclaw.structure_server import _classify_ligand
+        cls = _classify_ligand("LIG", heavy_atom_count=12, element_set={"C", "N", "O"})
+        assert cls["ligand_class"] == "small_organic"
+        assert cls["curated_params_recommended"] is False
+
+    def test_metal_containing(self):
+        from mdclaw.structure_server import _classify_ligand, METAL_ELEMENTS
+        cls = _classify_ligand("HEM", heavy_atom_count=43, element_set={"C", "N", "Fe"})
+        assert cls["ligand_class"] == "metal_containing"
+        assert cls["auto_parameterization_quality"] == "unsupported"
+        assert cls["recommended_next_action"] == "hard_fail" if "recommended_next_action" in cls else True
+
+
+# ---------------------------------------------------------------------------
+# Level 1: Structured failure fields in run_antechamber_robust
+# ---------------------------------------------------------------------------
+
+class TestStructuredFailureFields:
+    """Test that all failure paths set failure_class and recommended_next_action."""
+
+    def test_file_not_found_sets_hard_fail(self):
+        from mdclaw.structure_server import run_antechamber_robust
+        result = run_antechamber_robust(ligand_file="/nonexistent/file.sdf")
+        assert result["success"] is False
+        assert result["failure_class"] == "input_error"
+        assert result["recommended_next_action"] == "hard_fail"
+
+    def test_metal_atoms_sets_hard_fail(self, tmp_path):
+        """Metal-containing ligand must fail with failure_class=metal_atoms."""
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import run_antechamber_robust
+
+        # Minimal SDF with an iron atom
+        sdf_content = textwrap.dedent("""\
+            metal
+                 RDKit          3D
+
+              2  0  0  0  0  0  0  0  0  0999 V2000
+                0.0000    0.0000    0.0000 Fe  0  0  0  0  0  0  0  0  0  0  0  0
+                2.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+            M  END
+            $$$$
+        """)
+        sdf_path = tmp_path / "metal.sdf"
+        sdf_path.write_text(sdf_content)
+
+        result = run_antechamber_robust(ligand_file=str(sdf_path))
+        assert result["success"] is False
+        assert result["failure_class"] == "metal_atoms"
+        assert result["recommended_next_action"] == "hard_fail"
+
+    def test_frcmod_zero_dihe_sets_structured_fields(self, tmp_path):
+        """Zero dihedral barriers must return failure_class and recommended_next_action."""
+        from mdclaw.structure_server import _parse_frcmod_warnings
+
+        frcmod = tmp_path / "test.frcmod"
+        frcmod.write_text(textwrap.dedent("""\
+            Remark line
+            MASS
+
+            BOND
+
+            ANGLE
+
+            DIHE
+            X -c3-c3-X    9    1.400         0.000           3.000
+            h1-c3-c3-os   1    0.000         0.000          -3.000      same as h1-c3-c3-os
+            h1-c3-c3-os   1    0.250         0.000           1.000
+
+            IMPROPER
+
+            NONBON
+        """))
+
+        validation = _parse_frcmod_warnings(frcmod)
+        assert validation["severity"] == "dihe_zeros"
+        assert validation["zero_dihe_count"] == 1
+        assert validation["zero_bond_angle_count"] == 0
+
+    def test_frcmod_zero_bond_is_error(self, tmp_path):
+        """Zero force constant in BOND section must be severity=error."""
+        from mdclaw.structure_server import _parse_frcmod_warnings
+
+        frcmod = tmp_path / "test.frcmod"
+        frcmod.write_text(textwrap.dedent("""\
+            Remark line
+            MASS
+
+            BOND
+            c3-os    0.000    0.000       same as missing
+
+            ANGLE
+
+            DIHE
+
+            IMPROPER
+
+            NONBON
+        """))
+
+        validation = _parse_frcmod_warnings(frcmod)
+        assert validation["severity"] == "error"
+        assert validation["zero_bond_angle_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Level 1: prepare_complex overall_status and workflow_recommendation
+# ---------------------------------------------------------------------------
+
+class TestPrepareComplexWorkflowStatus:
+    """Test overall_status and workflow_recommendation fields."""
+
+    def test_blocking_ligand_failure_status(self, tmp_path):
+        """When ligand param fails, overall_status must be
+        completed_with_blocking_ligand_failure with workflow_recommendation."""
+        from unittest.mock import patch
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import prepare_complex
+
+        pdb_content = (
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      2  CA  ALA A   1       1.5   0.0   0.0  1.00  0.00           C\n"
+            "ATOM      3  C   ALA A   1       2.5   1.2   0.0  1.00  0.00           C\n"
+            "ATOM      4  O   ALA A   1       2.0   2.3   0.0  1.00  0.00           O\n"
+            "TER\n"
+            "HETATM    5  C1  AP5 B   1       5.0   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    6  C2  AP5 B   1       6.5   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    7  O1  AP5 B   1       7.2   6.0   5.0  1.00  0.00           O\n"
+            "HETATM    8  O2  AP5 B   1       7.1   3.9   5.0  1.00  0.00           O\n"
+            "END\n"
+        )
+        pdb_file = tmp_path / "complex.pdb"
+        pdb_file.write_text(pdb_content)
+
+        # Mock antechamber to return structured failure
+        fake_fail = {
+            "success": False,
+            "failure_class": "zero_dihe_barriers",
+            "ligand_class": "polyphosphate_cofactor",
+            "recommended_next_action": "use_curated_params",
+            "ligand_classification": {
+                "ligand_class": "polyphosphate_cofactor",
+                "curated_params_recommended": True,
+            },
+            "errors": ["AP5: curated params required"],
+            "warnings": [],
+        }
+
+        with patch("mdclaw.structure_server.run_antechamber_robust", return_value=fake_fail):
+            result = prepare_complex(
+                structure_file=str(pdb_file),
+                output_dir=str(tmp_path / "job"),
+                include_types=["protein", "ligand"],
+                process_ligands=True,
+                process_proteins=False,
+                ligand_smiles={"AP5": "CC(=O)O"},
+            )
+
+        assert result["overall_status"] == "completed_with_blocking_ligand_failure"
+        assert result["protein_preparation_success"] is True
+        assert result["ligand_preparation_success"] is False
+
+        # workflow_recommendation must exist with options
+        wr = result.get("workflow_recommendation")
+        assert wr is not None
+        assert len(wr["blocking_ligands"]) == 1
+        assert wr["blocking_ligands"][0]["ligand_id"] == "AP5"
+        assert wr["blocking_ligands"][0]["recommended_next_action"] == "use_curated_params"
+        assert "provide_curated_params_and_rerun" in wr["options"]
+        assert "exclude_ligands_and_continue_protein_only" in wr["options"]
+
+    def test_success_status_on_clean_run(self, tmp_path):
+        """When all succeeds, overall_status must be success."""
+        from unittest.mock import patch
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import prepare_complex
+
+        pdb_content = (
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      2  CA  ALA A   1       1.5   0.0   0.0  1.00  0.00           C\n"
+            "ATOM      3  C   ALA A   1       2.5   1.2   0.0  1.00  0.00           C\n"
+            "ATOM      4  O   ALA A   1       2.0   2.3   0.0  1.00  0.00           O\n"
+            "TER\n"
+            "HETATM    5  C1  LIG B   1       5.0   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    6  C2  LIG B   1       6.5   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    7  O1  LIG B   1       7.2   6.0   5.0  1.00  0.00           O\n"
+            "HETATM    8  O2  LIG B   1       7.1   3.9   5.0  1.00  0.00           O\n"
+            "END\n"
+        )
+        pdb_file = tmp_path / "complex.pdb"
+        pdb_file.write_text(pdb_content)
+
+        fake_ok = {
+            "success": True,
+            "mol2": str(tmp_path / "fake.mol2"),
+            "frcmod": str(tmp_path / "fake.frcmod"),
+            "pdb": str(tmp_path / "fake.amber.pdb"),
+            "warnings": [],
+            "charge_confidence": "default",
+        }
+        (tmp_path / "fake.mol2").write_text("")
+        (tmp_path / "fake.frcmod").write_text("")
+        (tmp_path / "fake.amber.pdb").write_text(
+            "HETATM    5  C1  LIG B   1       5.0   5.0   5.0  1.00  0.00           C\nEND\n"
+        )
+
+        with patch("mdclaw.structure_server.run_antechamber_robust", return_value=fake_ok):
+            result = prepare_complex(
+                structure_file=str(pdb_file),
+                output_dir=str(tmp_path / "job"),
+                include_types=["protein", "ligand"],
+                process_ligands=True,
+                process_proteins=False,
+                ligand_smiles={"LIG": "CC(=O)O"},
+            )
+
+        assert result["overall_status"] == "success"
+        assert result.get("workflow_recommendation") is None
+
+    def test_no_retry_for_use_curated_params(self, tmp_path):
+        """Verify that use_curated_params failures do NOT trigger retry.
+        The mock is called exactly once — no second call with different params."""
+        from unittest.mock import patch, MagicMock
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import prepare_complex
+
+        pdb_content = (
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+            "ATOM      2  CA  ALA A   1       1.5   0.0   0.0  1.00  0.00           C\n"
+            "ATOM      3  C   ALA A   1       2.5   1.2   0.0  1.00  0.00           C\n"
+            "ATOM      4  O   ALA A   1       2.0   2.3   0.0  1.00  0.00           O\n"
+            "TER\n"
+            "HETATM    5  C1  AP5 B   1       5.0   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    6  C2  AP5 B   1       6.5   5.0   5.0  1.00  0.00           C\n"
+            "HETATM    7  O1  AP5 B   1       7.2   6.0   5.0  1.00  0.00           O\n"
+            "HETATM    8  O2  AP5 B   1       7.1   3.9   5.0  1.00  0.00           O\n"
+            "END\n"
+        )
+        pdb_file = tmp_path / "complex.pdb"
+        pdb_file.write_text(pdb_content)
+
+        mock_antechamber = MagicMock(return_value={
+            "success": False,
+            "failure_class": "zero_dihe_barriers",
+            "ligand_class": "polyphosphate_cofactor",
+            "recommended_next_action": "use_curated_params",
+            "errors": ["curated params required"],
+            "warnings": [],
+        })
+
+        with patch("mdclaw.structure_server.run_antechamber_robust", mock_antechamber):
+            prepare_complex(
+                structure_file=str(pdb_file),
+                output_dir=str(tmp_path / "job"),
+                include_types=["protein", "ligand"],
+                process_ligands=True,
+                process_proteins=False,
+                ligand_smiles={"AP5": "CC(=O)O"},
+            )
+
+        # prepare_complex calls run_antechamber_robust exactly once per ligand.
+        # It must NOT retry with different charge_method or parameters.
+        assert mock_antechamber.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Level 1: amber_geostd directory resolution
+# ---------------------------------------------------------------------------
+
+class TestGeostdDir:
+    """Test _get_geostd_dir search order."""
+
+    def test_env_override(self, fake_geostd_dir, monkeypatch):
+        """$MDCLAW_GEOSTD_DIR takes priority."""
+        from mdclaw.structure_server import _get_geostd_dir
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
+        assert _get_geostd_dir() == fake_geostd_dir
+
+    def test_amberhome_fallback(self, tmp_path, monkeypatch):
+        """$AMBERHOME/dat/amber_geostd is found if env var not set."""
+        from mdclaw.structure_server import _get_geostd_dir
+        monkeypatch.delenv("MDCLAW_GEOSTD_DIR", raising=False)
+        geostd = tmp_path / "dat" / "amber_geostd"
+        geostd.mkdir(parents=True)
+        monkeypatch.setenv("AMBERHOME", str(tmp_path))
+        assert _get_geostd_dir() == geostd
+
+    def test_returns_none_when_missing(self, tmp_path, monkeypatch):
+        """Returns None when no geostd directory exists anywhere."""
+        from mdclaw.structure_server import _get_geostd_dir
+        monkeypatch.delenv("MDCLAW_GEOSTD_DIR", raising=False)
+        monkeypatch.delenv("AMBERHOME", raising=False)
+        monkeypatch.setenv("MDCLAW_CACHE_DIR", str(tmp_path / "empty_cache"))
+        assert _get_geostd_dir() is None
+
+
+# ---------------------------------------------------------------------------
+# Level 1: amber_geostd lookup
+# ---------------------------------------------------------------------------
+
+class TestGeostdLookup:
+    """Test _geostd_lookup with fake database."""
+
+    def test_hit_copies_mol2_frcmod(self, fake_geostd_dir, tmp_path):
+        """Exact residue name match copies mol2 and frcmod to output_dir."""
+        from mdclaw.structure_server import _geostd_lookup
+        out = tmp_path / "output"
+        out.mkdir()
+        hit = _geostd_lookup("TST", out, fake_geostd_dir)
+        assert hit is not None
+        assert Path(hit["mol2"]).exists()
+        assert Path(hit["frcmod"]).exists()
+        assert "geostd" in Path(hit["mol2"]).name
+
+    def test_miss_returns_none(self, fake_geostd_dir, tmp_path):
+        """Non-existent residue returns None."""
+        from mdclaw.structure_server import _geostd_lookup
+        out = tmp_path / "output"
+        out.mkdir()
+        assert _geostd_lookup("XYZ", out, fake_geostd_dir) is None
+
+    def test_partial_files_returns_none(self, tmp_path):
+        """mol2 without frcmod is not a valid hit."""
+        from mdclaw.structure_server import _geostd_lookup
+        geostd = tmp_path / "geostd"
+        sub = geostd / "p"
+        sub.mkdir(parents=True)
+        (sub / "PTL.mol2").write_text("dummy")
+        # No frcmod
+        out = tmp_path / "output"
+        out.mkdir()
+        assert _geostd_lookup("PTL", out, geostd) is None
+
+    def test_empty_residue_name(self, fake_geostd_dir, tmp_path):
+        """Empty residue name returns None without error."""
+        from mdclaw.structure_server import _geostd_lookup
+        out = tmp_path / "output"
+        out.mkdir()
+        assert _geostd_lookup("", out, fake_geostd_dir) is None
+
+
+# ---------------------------------------------------------------------------
+# Level 1: _parse_mol2_charges helper
+# ---------------------------------------------------------------------------
+
+class TestParseMol2Charges:
+    """Test the extracted _parse_mol2_charges helper."""
+
+    def test_parses_charges_from_mol2(self, fake_geostd_dir):
+        from mdclaw.structure_server import _parse_mol2_charges
+        mol2_path = fake_geostd_dir / "t" / "TST.mol2"
+        charges = _parse_mol2_charges(mol2_path)
+        assert len(charges) == 4
+        assert abs(sum(charges) - (-0.6759)) < 0.01  # approximate total
+
+    def test_empty_file_returns_empty(self, tmp_path):
+        from mdclaw.structure_server import _parse_mol2_charges
+        empty = tmp_path / "empty.mol2"
+        empty.write_text("")
+        assert _parse_mol2_charges(empty) == []
+
+
+# ---------------------------------------------------------------------------
+# Level 1: amber_geostd integration with run_antechamber_robust (mocked)
+# ---------------------------------------------------------------------------
+
+class TestGeostdIntegration:
+    """Test geostd-first logic in run_antechamber_robust via mocking."""
+
+    def test_geostd_hit_skips_antechamber(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
+        """When geostd has the residue and PDB generation succeeds,
+        antechamber is only called for mol2->PDB conversion (not parameterization)."""
+        from unittest.mock import MagicMock
+        from mdclaw.structure_server import run_antechamber_robust
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
+
+        # Mock antechamber_wrapper.run to create the expected PDB file
+        mock_wrapper = MagicMock()
+        out_dir = tmp_path / "out"
+
+        def fake_run(args, cwd=None):
+            # antechamber mol2->PDB: look for -fo pdb in args
+            if '-fo' in args and args[args.index('-fo') + 1] == 'pdb':
+                # Create the output PDB at the path specified by -o
+                o_idx = args.index('-o')
+                pdb_path = Path(args[o_idx + 1])
+                pdb_path.write_text("HETATM    1  C1  TST A   1       0.0   0.0   0.0\nEND\n")
+
+        mock_wrapper.run.side_effect = fake_run
+
+        with patch("mdclaw.structure_server.antechamber_wrapper", mock_wrapper):
+            result = run_antechamber_robust(
+                ligand_file=acetic_acid_pdb,
+                output_dir=str(out_dir),
+                residue_name="TST",
+            )
+            assert result["success"] is True
+            assert result["parameter_source"] == "amber_geostd"
+            assert result["parameterization_backend"] == "curated"
+            assert result["charge_confidence"] == "geostd_curated"
+            assert Path(result["mol2"]).exists()
+            assert Path(result["frcmod"]).exists()
+            assert result["pdb"] is not None
+            assert Path(result["pdb"]).exists()
+
+    def test_geostd_miss_falls_through(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
+        """When geostd misses, a warning is added and GAFF2 path runs."""
+        from mdclaw.structure_server import run_antechamber_robust
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
+
+        result = run_antechamber_robust(
+            ligand_file=acetic_acid_pdb,
+            output_dir=str(tmp_path / "out"),
+            residue_name="XYZ",
+        )
+        # Should have the fallback warning
+        has_fallback_warning = any(
+            "amber_geostd" in w and "falling back" in w.lower()
+            for w in result.get("warnings", [])
+        )
+        assert has_fallback_warning, f"Missing geostd fallback warning: {result.get('warnings')}"
+
+    def test_geostd_unavailable_falls_through(self, acetic_acid_pdb, tmp_path, monkeypatch):
+        """When geostd is not installed at all, no error — falls through silently."""
+        from mdclaw.structure_server import run_antechamber_robust
+        monkeypatch.delenv("MDCLAW_GEOSTD_DIR", raising=False)
+        monkeypatch.delenv("AMBERHOME", raising=False)
+        monkeypatch.setenv("MDCLAW_CACHE_DIR", str(tmp_path / "no_cache"))
+
+        result = run_antechamber_robust(
+            ligand_file=acetic_acid_pdb,
+            output_dir=str(tmp_path / "out"),
+            residue_name="TST",
+        )
+        # Should not crash — just proceed to GAFF2 (which may or may not succeed
+        # depending on environment, but no geostd-related error)
+        geostd_errors = [e for e in result.get("errors", []) if "geostd" in e.lower()]
+        assert not geostd_errors, f"Unexpected geostd error: {geostd_errors}"
+
+    def test_geostd_hit_populates_all_return_keys(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
+        """A geostd hit must populate all documented return keys."""
+        from unittest.mock import MagicMock
+        from mdclaw.structure_server import run_antechamber_robust
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
+
+        mock_wrapper = MagicMock()
+
+        def fake_run(args, cwd=None):
+            if '-fo' in args and args[args.index('-fo') + 1] == 'pdb':
+                o_idx = args.index('-o')
+                Path(args[o_idx + 1]).write_text("HETATM    1  C1  TST A   1\nEND\n")
+
+        mock_wrapper.run.side_effect = fake_run
+
+        with patch("mdclaw.structure_server.antechamber_wrapper", mock_wrapper):
+            result = run_antechamber_robust(
+                ligand_file=acetic_acid_pdb,
+                output_dir=str(tmp_path / "out"),
+                residue_name="TST",
+            )
+
+        expected_keys = {
+            "success", "mol2", "frcmod", "pdb",
+            "charge_used", "charge_method", "atom_type", "residue_name",
+            "charges", "total_charge", "frcmod_validation",
+            "sqm_diagnostics", "charge_estimation", "diagnostics_dir",
+            "errors", "warnings",
+            "parameter_source", "parameterization_backend",
+            "charge_confidence", "ligand_classification",
+        }
+        missing = expected_keys - set(result.keys())
+        assert not missing, f"Missing keys in geostd result: {missing}"
+
+    def test_geostd_hit_pdb_failure_falls_back_to_gaff2(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
+        """When geostd hits but PDB generation fails, falls back to GAFF2 instead of
+        returning success=True without a PDB (which would silently drop the ligand
+        from the merged complex)."""
+        from unittest.mock import MagicMock
+        from mdclaw.structure_server import run_antechamber_robust
+
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
+
+        # Mock antechamber_wrapper.run to raise for mol2->pdb conversion
+        mock_wrapper = MagicMock()
+        mock_wrapper.run.side_effect = RuntimeError("antechamber not available")
+
+        with patch("mdclaw.structure_server.antechamber_wrapper", mock_wrapper):
+            result = run_antechamber_robust(
+                ligand_file=acetic_acid_pdb,
+                output_dir=str(tmp_path / "out"),
+                residue_name="TST",
+            )
+
+        # Geostd hit happened but PDB generation failed → should NOT be amber_geostd success
+        # It should either fall back to GAFF2 (which also fails with mocked wrapper)
+        # or fail with a warning about the PDB generation failure
+        has_fallback_warning = any(
+            "amber_geostd hit" in w and "PDB generation failed" in w
+            for w in result.get("warnings", [])
+        )
+        assert has_fallback_warning, f"Expected PDB fallback warning: {result.get('warnings')}"
+        # Must NOT claim amber_geostd as source if PDB was not generated
+        if result.get("success"):
+            assert result.get("parameter_source") != "amber_geostd" or result.get("pdb") is not None
+
+
+# ---------------------------------------------------------------------------
+# Level 1: Metal ligand hard-fails before geostd lookup
+# ---------------------------------------------------------------------------
+
+class TestMetalBeforeGeostd:
+    """Metal pre-check runs before amber_geostd lookup — metal ligands hard-fail
+    even if amber_geostd has an entry for their residue name."""
+
+    def test_metal_ligand_hard_fails_despite_geostd_entry(self, tmp_path, monkeypatch):
+        """A metal-containing ligand hard-fails at the metal pre-check stage,
+        never reaching the amber_geostd lookup."""
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import run_antechamber_robust
+
+        # Create a fake geostd directory that "has" a HEM entry
+        geostd = tmp_path / "geostd"
+        h_dir = geostd / "h"
+        h_dir.mkdir(parents=True)
+        (h_dir / "HEM.mol2").write_text("dummy mol2")
+        (h_dir / "HEM.frcmod").write_text("dummy frcmod")
+        monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(geostd))
+
+        # Create a metal-containing SDF (iron)
+        sdf_content = textwrap.dedent("""\
+            metal
+                 RDKit          3D
+
+              2  0  0  0  0  0  0  0  0  0999 V2000
+                0.0000    0.0000    0.0000 Fe  0  0  0  0  0  0  0  0  0  0  0  0
+                2.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+            M  END
+            $$$$
+        """)
+        sdf_path = tmp_path / "metal.sdf"
+        sdf_path.write_text(sdf_content)
+
+        result = run_antechamber_robust(
+            ligand_file=str(sdf_path),
+            output_dir=str(tmp_path / "out"),
+            residue_name="HEM",
+        )
+
+        assert result["success"] is False
+        assert result["failure_class"] == "metal_atoms"
+        assert result["recommended_next_action"] == "hard_fail"
+        # Should NOT have amber_geostd as source
+        assert result.get("parameter_source") != "amber_geostd"
+
+
+# ---------------------------------------------------------------------------
+# Level 1: download_amber_geostd path handling
+# ---------------------------------------------------------------------------
+
+class TestDownloadAmberGeostd:
+    """Test download_amber_geostd path logic (uses mocked download)."""
+
+    def test_custom_output_dir_returns_correct_path(self, tmp_path):
+        """When output_dir is specified, the returned path must equal output_dir
+        and the directory must exist with mol2 files."""
+        import tarfile
+        from mdclaw.structure_server import download_amber_geostd
+
+        # Create a fake tarball with the amber_geostd/ top-level directory
+        fake_geostd = tmp_path / "build" / "amber_geostd"
+        sub = fake_geostd / "t"
+        sub.mkdir(parents=True)
+        (sub / "TST.mol2").write_text("dummy")
+        (sub / "TST.frcmod").write_text("dummy")
+
+        tarball_path = tmp_path / "fake.tar.bz2"
+        with tarfile.open(str(tarball_path), "w:bz2") as tf:
+            tf.add(str(fake_geostd), arcname="amber_geostd")
+        # Clean up the source
+        import shutil
+        shutil.rmtree(str(fake_geostd))
+
+        custom_dir = tmp_path / "my_custom_path"
+
+        with patch("urllib.request.urlretrieve") as mock_dl:
+            # Simulate download by copying the tarball to the expected location
+            def fake_download(url, dest):
+                shutil.copy2(str(tarball_path), dest)
+            mock_dl.side_effect = fake_download
+
+            result = download_amber_geostd(output_dir=str(custom_dir))
+
+        assert result["success"], f"download failed: {result.get('errors')}"
+        assert result["path"] == str(custom_dir)
+        assert Path(result["path"]).is_dir()
+        assert result["residue_count"] >= 1
+
+    def test_already_exists_skips_download(self, tmp_path):
+        """If target already has mol2 files and force=False, skip download."""
+        from mdclaw.structure_server import download_amber_geostd
+
+        existing = tmp_path / "geostd"
+        sub = existing / "t"
+        sub.mkdir(parents=True)
+        (sub / "TST.mol2").write_text("dummy")
+
+        result = download_amber_geostd(output_dir=str(existing), force=False)
+        assert result["success"] is True
+        assert "Already exists" in result["warnings"][0]

@@ -45,6 +45,17 @@ This confirmation step applies to all interaction modes including autonomous. Mi
 
 ## Error Handling
 
-- If a tool fails, read the error message carefully
-- Retrying the same failed command with identical parameters will produce the same error
-- If stuck, report the error and ask the user for guidance
+Use structured JSON fields from tool output to decide next steps. **Never parse stderr or warning strings to make decisions.**
+
+Key fields to check:
+- `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
+- `parameter_source` — per-ligand: `amber_geostd` (curated) or `gaff2_antechamber` (auto-generated)
+- `workflow_recommendation` — contains `options` (list of valid next actions)
+- `recommended_next_action` — per-ligand: `use_curated_params`, `provide_frcmod`, `hard_fail`
+- `failure_class` — what went wrong: `zero_dihe_barriers`, `metal_atoms`, `antechamber_failed`, etc.
+
+Rules:
+- If `recommended_next_action = use_curated_params`: do NOT retry, do NOT edit frcmod, do NOT change charge method. Present the options from `workflow_recommendation.options` to the user.
+- If `recommended_next_action = hard_fail`: stop immediately. Do not attempt workarounds.
+- Retrying the same command with identical parameters will produce the same error.
+- If stuck, report the structured error fields and ask the user for guidance.

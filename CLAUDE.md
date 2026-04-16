@@ -45,6 +45,7 @@ mdclaw/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
   _registry.py              # Tool registry (SERVER_REGISTRY dict)
+  _progress.py              # Job progress tracking (auto-updates progress.json)
   _cli.py                   # CLI entry point (mdclaw)
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
@@ -130,8 +131,13 @@ job_XXXXXXXX/                        # one system (created by md-prepare)
       production/
 ```
 
-- `progress.json` (v2.0) holds system-level data (preparation, solvation, forcefield, artifacts) and a `runs[]` index
-- `run.json` holds per-run conditions, equilibration/production stage status, and `next_step` for handoff
+**Design principle: skills are stateless, jobs are stateful.**
+Each skill reads `progress.json` on entry to determine current state, runs tools, and the CLI auto-updates `progress.json` after each tool via `_progress.py`. No manual writing or bookkeeping is needed.
+
+- `progress.json` — **source of truth** for job state: `status`, `completed_steps`, `current_step`, `next_step`, artifact paths, warnings, blocking reasons, `runs[]` index. Auto-created by `prepare_complex`, auto-updated by each subsequent tool.
+- `run.json` — per-run details: temperature, pressure, seed, equilibration/production stage status. Auto-updated by `run_equilibration` and `run_production`.
+- Resume: read `progress.json` → check `completed_steps` → continue from `next_step`
+- Handoff: `next_step.skill` tells the next skill what to do
 - `e2e_mode` in params triggers automatic chaining across skills
 - Run labels auto-generated: `run_NNN_<T>K[_seed<N>]`
 - `ligand_params.json` written by `prepare_complex` next to `merged.pdb`; auto-detected by `build_amber_system` (same pattern as `box_dimensions.json`)
@@ -281,7 +287,8 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components
 - `merge_structures(pdb_files, output_name)` - Merge PDB files
-- `run_antechamber_robust(mol2_file, ...)` - GAFF2 + AM1-BCC
+- `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
+- `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
 - `create_mutated_structutre(input_pdb, mutation_indices, mutation_residues, name)` - In-silico mutagenesis
 
 ### genesis_server.py
@@ -379,6 +386,7 @@ export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_LOG_LEVEL=WARNING
 export MDCLAW_SLURM_TIMEOUT=120
+export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"  # curated ligand parameter database
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # HPC module load commands
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ```

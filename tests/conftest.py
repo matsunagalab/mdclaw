@@ -178,3 +178,53 @@ def alanine_dipeptide_pdb(tmp_path):
     pdb_file = tmp_path / "alanine_dipeptide.pdb"
     pdb_file.write_text(ALANINE_DIPEPTIDE_PDB)
     return str(pdb_file)
+
+
+# --- amber_geostd test fixtures ---
+
+# Minimal valid mol2 for fake geostd entries (acetic-acid-sized, GAFF2 atom types)
+SAMPLE_GEOSTD_MOL2 = textwrap.dedent("""\
+@<TRIPOS>MOLECULE
+TST
+    4     3     1     0     0
+SMALL
+abcg2
+
+
+@<TRIPOS>ATOM
+      1 C1          0.0000    0.0000    0.0000 c3         1 TST      -0.193100
+      2 C2          1.5200    0.0000    0.0000 c          1 TST       0.720200
+      3 O1          2.1800    1.0400    0.0000 o          1 TST      -0.601500
+      4 O2          2.0800   -1.1000    0.0000 o          1 TST      -0.601500
+@<TRIPOS>BOND
+     1     1     2 1
+     2     2     3 2
+     3     2     4 1
+@<TRIPOS>SUBSTRUCTURE
+     1 TST         1 TEMP              0 ****  ****    0 ROOT
+""")
+
+
+@pytest.fixture
+def fake_geostd_dir(tmp_path):
+    """Create a minimal fake amber_geostd directory for testing.
+
+    Layout mirrors real amber_geostd: <first_char_lowercase>/<RESNAME>.{mol2,frcmod}
+    Provides entries for TST (test) and NAD.
+    """
+    geostd = tmp_path / "amber_geostd"
+
+    # TST entry under t/
+    tst_dir = geostd / "t"
+    tst_dir.mkdir(parents=True)
+    (tst_dir / "TST.mol2").write_text(SAMPLE_GEOSTD_MOL2)
+    (tst_dir / "TST.frcmod").write_text(SAMPLE_FRCMOD_CLEAN)
+
+    # NAD entry under n/ (uppercase residue name, lowercase subdir)
+    nad_dir = geostd / "n"
+    nad_dir.mkdir(parents=True)
+    nad_mol2 = SAMPLE_GEOSTD_MOL2.replace("TST", "NAD")
+    (nad_dir / "NAD.mol2").write_text(nad_mol2)
+    (nad_dir / "NAD.frcmod").write_text(SAMPLE_FRCMOD_CLEAN)
+
+    return geostd

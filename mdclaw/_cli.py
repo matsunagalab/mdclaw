@@ -376,6 +376,9 @@ def main(argv: list[str] | None = None) -> None:
                     record_dir, tool_name,
                     result.get("success", False),
                 )
+                # Auto-update progress.json with tool results
+                from mdclaw._progress import update_progress_from_result
+                update_progress_from_result(tool_name, result, record_dir)
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)

@@ -31,9 +31,8 @@ from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
 
-# Initialize working directory
-WORKING_DIR = Path("outputs")
-ensure_directory(WORKING_DIR)
+# Default working directory for prepare_complex when output_dir is not specified
+WORKING_DIR = Path(".")
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -42,6 +41,309 @@ pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
 obabel_wrapper = BaseToolWrapper("obabel")
+
+
+def _get_geostd_dir() -> Optional[Path]:
+    """Return path to the amber_geostd curated ligand parameter database.
+
+    Search order:
+    1. $MDCLAW_GEOSTD_DIR (explicit override)
+    2. $AMBERHOME/dat/amber_geostd (standard Amber installation)
+    3. $MDCLAW_CACHE_DIR/amber_geostd (downloaded cache, default .mdclaw_cache/amber_geostd)
+
+    Returns None if the database is not found at any location.
+    """
+    # 1. Explicit override
+    env_dir = os.environ.get("MDCLAW_GEOSTD_DIR")
+    if env_dir:
+        p = Path(env_dir)
+        if p.is_dir():
+            return p
+        logger.warning(f"MDCLAW_GEOSTD_DIR set to {env_dir} but directory does not exist")
+
+    # 2. Standard Amber installation
+    amberhome = os.environ.get("AMBERHOME")
+    if amberhome:
+        p = Path(amberhome) / "dat" / "amber_geostd"
+        if p.is_dir():
+            return p
+
+    # 3. Downloaded cache
+    cache_root = Path(os.environ.get("MDCLAW_CACHE_DIR", ".mdclaw_cache"))
+    p = cache_root / "amber_geostd"
+    if p.is_dir():
+        return p
+
+    return None
+
+
+def _geostd_lookup(residue_name: str, output_dir: Path, geostd_dir: Path) -> Optional[dict]:
+    """Look up curated mol2/frcmod for a residue in the amber_geostd database.
+
+    amber_geostd layout: <first_char_lowercase>/<RESNAME>.{mol2,frcmod}
+    Requires exact residue name match. Both mol2 and frcmod must exist.
+
+    Args:
+        residue_name: 3-letter residue name (e.g. "NAD", "AP5").
+        output_dir: Directory to copy the curated files into.
+        geostd_dir: Root of the amber_geostd database.
+
+    Returns:
+        Dict with 'mol2' and 'frcmod' paths (copied to output_dir), or None on miss.
+    """
+    if not residue_name:
+        return None
+
+    # amber_geostd uses lowercase first character as subdirectory
+    first_char = residue_name[0].lower()
+    subdir = geostd_dir / first_char
+
+    if not subdir.is_dir():
+        return None
+
+    mol2_src = subdir / f"{residue_name}.mol2"
+    frcmod_src = subdir / f"{residue_name}.frcmod"
+
+    if not mol2_src.exists() or not frcmod_src.exists():
+        return None
+
+    # Copy to output_dir
+    mol2_dst = output_dir / f"{residue_name}.geostd.mol2"
+    frcmod_dst = output_dir / f"{residue_name}.geostd.frcmod"
+    shutil.copy2(str(mol2_src), str(mol2_dst))
+    shutil.copy2(str(frcmod_src), str(frcmod_dst))
+
+    logger.info(f"amber_geostd hit for {residue_name}: {mol2_src}")
+    return {"mol2": str(mol2_dst), "frcmod": str(frcmod_dst)}
+
+
+def _read_gaff2_mol2_rdkit(mol2_path: str):
+    """Read a GAFF2-typed mol2 into RDKit by converting atom types to Sybyl.
+
+    RDKit's MolFromMol2File cannot parse GAFF2 atom types (c3, os, p5, …).
+    This helper rewrites the atom-type column to generic Sybyl types in a
+    temp file, reads it with RDKit, then deletes the temp file.
+    """
+    from rdkit import Chem
+
+    with open(mol2_path, 'r') as f:
+        lines = f.readlines()
+
+    sybyl = {'C': 'C.3', 'N': 'N.3', 'O': 'O.3', 'P': 'P.3',
+             'S': 'S.3', 'H': 'H', 'F': 'F', 'I': 'I'}
+    converted = []
+    in_atom = False
+    for line in lines:
+        if '@<TRIPOS>ATOM' in line:
+            in_atom = True
+            converted.append(line)
+            continue
+        elif '@<TRIPOS>' in line:
+            in_atom = False
+
+        if in_atom and line.strip():
+            parts = line.split()
+            if len(parts) >= 6:
+                gt = parts[5].lower()
+                # Two-char elements first
+                if gt[:2] in ('cl', 'br', 'si'):
+                    elem = gt[:2].capitalize()
+                else:
+                    elem = gt[0].upper()
+                parts[5] = sybyl.get(elem, f"{elem}.3")
+                converted.append("  ".join(parts) + "\n")
+                continue
+
+        converted.append(line)
+
+    tmp_path = mol2_path + ".sybyl.tmp"
+    with open(tmp_path, 'w') as f:
+        f.writelines(converted)
+
+    mol = Chem.MolFromMol2File(tmp_path, removeHs=False, sanitize=False)
+    Path(tmp_path).unlink(missing_ok=True)
+    return mol
+
+
+def _transplant_geostd_coords(geostd_mol2: str, ligand_file: str) -> bool:
+    """Replace reference coordinates in a geostd mol2 with crystal coordinates.
+
+    The geostd mol2 has correct GAFF2 atom types and abcg2 charges but uses
+    PDB CCD reference-frame coordinates.  This function maps atoms between
+    the input ligand file (SDF/PDB from clean_ligand, crystal frame) and the
+    geostd mol2 via RDKit substructure matching, then overwrites the mol2
+    coordinate columns in-place.
+
+    Heavy atoms: coordinates copied directly from the ligand file.
+    H atoms: translated by their parent heavy atom's displacement.
+
+    Returns True on success, False if atom mapping fails.
+    """
+    try:
+        from rdkit import Chem
+    except ImportError:
+        logger.warning("RDKit not available for coordinate transplant")
+        return False
+
+    # Read input ligand (crystal coordinates)
+    suffix = Path(ligand_file).suffix.lower()
+    if suffix == ".sdf":
+        mol_lig = Chem.MolFromMolFile(str(ligand_file), removeHs=False, sanitize=False)
+    elif suffix == ".pdb":
+        mol_lig = Chem.MolFromPDBFile(str(ligand_file), removeHs=False, sanitize=False)
+    elif suffix == ".mol2":
+        mol_lig = Chem.MolFromMol2File(str(ligand_file), removeHs=False, sanitize=False)
+    else:
+        return False
+
+    # Read GAFF2-typed mol2 via Sybyl conversion
+    mol_geostd = _read_gaff2_mol2_rdkit(geostd_mol2)
+    if mol_lig is None or mol_geostd is None:
+        logger.warning("Failed to read molecules for coordinate transplant")
+        return False
+
+    # Sanitize to get proper bond orders (needed for substructure matching)
+    try:
+        Chem.SanitizeMol(mol_lig)
+    except Exception:
+        pass
+    try:
+        Chem.SanitizeMol(mol_geostd)
+    except Exception:
+        pass
+
+    # Build heavy-atom index lists (full-molecule indices, preserving order)
+    geostd_heavy = [i for i in range(mol_geostd.GetNumAtoms())
+                    if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() > 1]
+    lig_heavy = [i for i in range(mol_lig.GetNumAtoms())
+                 if mol_lig.GetAtomWithIdx(i).GetAtomicNum() > 1]
+
+    # Heavy-atom-only substructure match (bond-order-agnostic:
+    # the input PDB/SDF may have different bond orders than the geostd mol2)
+    mol_geostd_noH = Chem.RemoveAllHs(mol_geostd)
+    mol_lig_noH = Chem.RemoveAllHs(mol_lig)
+
+    def _bonds_to_single(mol):
+        rw = Chem.RWMol(mol)
+        for bond in rw.GetBonds():
+            bond.SetBondType(Chem.BondType.SINGLE)
+        return rw.GetMol()
+
+    query = _bonds_to_single(mol_geostd_noH)
+    target = _bonds_to_single(mol_lig_noH)
+    match = target.GetSubstructMatch(query)
+    if not match or len(match) != mol_geostd_noH.GetNumAtoms():
+        # Try reverse direction
+        rev = _bonds_to_single(mol_geostd_noH).GetSubstructMatch(target)
+        if rev and len(rev) == mol_lig_noH.GetNumAtoms():
+            # rev[lig_noH_idx] = geostd_noH_idx → invert
+            inv = [0] * mol_geostd_noH.GetNumAtoms()
+            for lig_i, geo_i in enumerate(rev):
+                inv[geo_i] = lig_i
+            match = tuple(inv)
+        else:
+            logger.warning("Heavy-atom substructure match failed for coordinate transplant")
+            return False
+
+    # Build coordinate map: geostd_full_idx → (x, y, z) from ligand
+    conf_lig = mol_lig.GetConformer()
+    conf_geostd = mol_geostd.GetConformer()
+
+    # Save old geostd coords before overwriting (needed for H displacement)
+    old_coords = {}
+    for i in range(mol_geostd.GetNumAtoms()):
+        p = conf_geostd.GetAtomPosition(i)
+        old_coords[i] = (p.x, p.y, p.z)
+
+    new_coords = {}
+    for geostd_noH_idx in range(len(match)):
+        geostd_full_idx = geostd_heavy[geostd_noH_idx]
+        lig_full_idx = lig_heavy[match[geostd_noH_idx]]
+        pos = conf_lig.GetAtomPosition(lig_full_idx)
+        new_coords[geostd_full_idx] = (pos.x, pos.y, pos.z)
+
+    # H atoms: translate by parent heavy atom's displacement
+    for i in range(mol_geostd.GetNumAtoms()):
+        if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() == 1:
+            neighbors = mol_geostd.GetAtomWithIdx(i).GetNeighbors()
+            if neighbors:
+                parent = neighbors[0].GetIdx()
+                if parent in new_coords:
+                    dx = new_coords[parent][0] - old_coords[parent][0]
+                    dy = new_coords[parent][1] - old_coords[parent][1]
+                    dz = new_coords[parent][2] - old_coords[parent][2]
+                    new_coords[i] = (
+                        old_coords[i][0] + dx,
+                        old_coords[i][1] + dy,
+                        old_coords[i][2] + dz,
+                    )
+
+    # Rewrite mol2: replace only coordinate columns in @<TRIPOS>ATOM section
+    with open(geostd_mol2, 'r') as f:
+        lines = f.readlines()
+
+    out_lines = []
+    in_atom = False
+    atom_idx = 0
+    for line in lines:
+        if '@<TRIPOS>ATOM' in line:
+            in_atom = True
+            out_lines.append(line)
+            continue
+        elif '@<TRIPOS>' in line:
+            in_atom = False
+
+        if in_atom and line.strip():
+            if atom_idx in new_coords:
+                parts = line.split()
+                x, y, z = new_coords[atom_idx]
+                parts[2] = f"{x:.4f}"
+                parts[3] = f"{y:.4f}"
+                parts[4] = f"{z:.4f}"
+                # Reconstruct with mol2 spacing
+                out_lines.append(
+                    f"{parts[0]:>7s} {parts[1]:<4s}   {parts[2]:>10s}"
+                    f"{parts[3]:>10s}{parts[4]:>10s} "
+                    f"{parts[5]:<5s}    {parts[6]:>2s} {parts[7]:<4s}"
+                    f"   {parts[8]:>10s}\n"
+                )
+            else:
+                out_lines.append(line)
+            atom_idx += 1
+            continue
+
+        out_lines.append(line)
+
+    with open(geostd_mol2, 'w') as f:
+        f.writelines(out_lines)
+
+    logger.info(f"Transplanted {len(new_coords)} atom coordinates to geostd mol2")
+    return True
+
+
+def _parse_mol2_charges(mol2_path) -> list:
+    """Parse atomic partial charges from the @<TRIPOS>ATOM section of a mol2 file.
+
+    Returns list of float charges, one per atom.
+    """
+    charges = []
+    with open(mol2_path, 'r') as f:
+        in_atom_section = False
+        for line in f:
+            if '@<TRIPOS>ATOM' in line:
+                in_atom_section = True
+                continue
+            elif '@<TRIPOS>' in line:
+                in_atom_section = False
+
+            if in_atom_section and line.strip():
+                parts = line.split()
+                if len(parts) >= 9:
+                    try:
+                        charges.append(float(parts[8]))
+                    except ValueError:
+                        pass
+    return charges
 
 
 # =============================================================================
@@ -98,6 +400,97 @@ METAL_ELEMENTS = {
     "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs", "Ba", "La", "Hf", "Ta",
     "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
 }
+
+# ---------------------------------------------------------------------------
+# Ligand classification for parameterization policy
+# ---------------------------------------------------------------------------
+# Residue names of common polyphosphate/nucleotide cofactors that are known
+# to produce many GAFF analogy parameters.  Auto-parameterization works but
+# curated parameters (e.g., Meagher et al., Carlson et al.) are preferred.
+POLYPHOSPHATE_COFACTORS = {
+    "ATP", "ADP", "AMP", "GTP", "GDP", "GMP",
+    "NAD", "NDP", "NADP", "NADPH",
+    "FAD", "FMN",
+    "COA", "ACO",
+    "AP5",  # P1,P5-Di(adenosine-5') pentaphosphate
+    "ANP", "APC", "AGS",  # non-hydrolyzable ATP analogues
+}
+
+# Residue names of large/multi-ring cofactors where GAFF works but may need
+# extra attention for torsion parameters.
+COMPLEX_COFACTORS = POLYPHOSPHATE_COFACTORS | {
+    "HEM", "HEC",  # heme
+    "PLP",  # pyridoxal phosphate
+    "TPP",  # thiamine pyrophosphate
+    "SAH", "SAM",  # S-adenosylmethionine/homocysteine
+    "B12",  # cobalamin (also has metal)
+}
+
+
+def _classify_ligand(residue_name: str, heavy_atom_count: int = 0,
+                     element_set: Optional[set] = None) -> Dict[str, Any]:
+    """Classify a ligand to inform parameterization policy.
+
+    Returns dict with:
+        ligand_class: str - one of small_organic, polyphosphate_cofactor,
+                      complex_cofactor, metal_containing, large_organic
+        auto_parameterization_quality: str - expected, acceptable, marginal
+        curated_params_recommended: bool
+        notes: list[str]
+    """
+    resname_upper = residue_name[:3].upper() if residue_name else "UNK"
+    elements = element_set or set()
+    has_metal = bool(elements & METAL_ELEMENTS)
+    has_phosphorus = "P" in elements
+
+    cls: Dict[str, Any] = {
+        "ligand_class": "small_organic",
+        "auto_parameterization_quality": "expected",
+        "curated_params_recommended": False,
+        "notes": [],
+    }
+
+    if has_metal:
+        cls["ligand_class"] = "metal_containing"
+        cls["auto_parameterization_quality"] = "unsupported"
+        cls["curated_params_recommended"] = True
+        cls["notes"].append("GAFF cannot parameterize metal-containing ligands. "
+                            "Use metal_server or provide curated parameters.")
+        return cls
+
+    if resname_upper in POLYPHOSPHATE_COFACTORS:
+        cls["ligand_class"] = "polyphosphate_cofactor"
+        cls["auto_parameterization_quality"] = "acceptable"
+        cls["curated_params_recommended"] = True
+        cls["notes"].append(
+            f"{resname_upper} is a polyphosphate cofactor. GAFF2 auto-parameterization "
+            "produces usable but approximate torsion parameters. Published curated "
+            "parameters are recommended for quantitative studies."
+        )
+    elif resname_upper in COMPLEX_COFACTORS:
+        cls["ligand_class"] = "complex_cofactor"
+        cls["auto_parameterization_quality"] = "acceptable"
+        cls["curated_params_recommended"] = True
+        cls["notes"].append(
+            f"{resname_upper} is a complex cofactor. Auto-parameterization works "
+            "but curated parameters are preferred for production use."
+        )
+    elif heavy_atom_count > 80:
+        cls["ligand_class"] = "large_organic"
+        cls["auto_parameterization_quality"] = "marginal"
+        cls["notes"].append(
+            f"Large ligand ({heavy_atom_count} heavy atoms). AM1-BCC charge "
+            "calculation may be slow or inaccurate."
+        )
+    elif has_phosphorus and heavy_atom_count > 30:
+        cls["ligand_class"] = "phosphorus_organic"
+        cls["auto_parameterization_quality"] = "acceptable"
+        cls["notes"].append(
+            "Phosphorus-containing ligand. Check torsion parameters around "
+            "P-O bonds after parameterization."
+        )
+
+    return cls
 
 
 # =============================================================================
@@ -464,12 +857,10 @@ def _parse_sqm_output(sqm_out_path: Path) -> Dict[str, Any]:
 
 def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
     """Parse frcmod file for missing parameter warnings.
-    
-    Args:
-        frcmod_path: Path to .frcmod file
-    
-    Returns:
-        Dict with validation results
+
+    Returns a validation dict with section-aware zero-force-constant
+    classification so callers can distinguish auto-fixable DIHE zeros
+    from critical BOND/ANGLE zeros.
     """
     validation = {
         "valid": True,
@@ -483,17 +874,21 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
         },
         "attn_count": 0,
         "zero_force_constant_count": 0,
+        # Section-level zero counts for policy decisions
+        "zero_dihe_count": 0,
+        "zero_improper_count": 0,
+        "zero_bond_angle_count": 0,
         "recommendations": []
     }
-    
+
     if not frcmod_path.exists():
         validation["valid"] = False
         validation["warnings"].append("frcmod file not found")
         return validation
-    
+
     content = frcmod_path.read_text()
     lines = content.split('\n')
-    
+
     current_section = None
     section_map = {
         "BOND": "bonds",
@@ -501,39 +896,55 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
         "DIHE": "dihedrals",
         "IMPROPER": "impropers"
     }
-    
+
     for line in lines:
         # Track section
         for section_name in section_map:
             if line.strip().startswith(section_name):
                 current_section = section_map[section_name]
                 break
-        
+
         # Check for ATTN warnings
         if "ATTN" in line or "need revision" in line.lower():
             validation["attn_count"] += 1
             validation["warnings"].append(line.strip())
             validation["valid"] = False
-            
+
             if current_section:
-                # Extract parameter type
                 parts = line.split()
                 if parts:
-                    param_type = parts[0]
-                    validation["missing_params"][current_section].append(param_type)
-        
-        # Check for zero force constants (dangerous - causes NaN energies)
+                    validation["missing_params"][current_section].append(parts[0])
+
+        # Check for zero force constants (section-aware)
         if re.search(r'\b0\.0+\s+0\.0+\b', line):
             validation["zero_force_constant_count"] += 1
             validation["warnings"].append(f"Zero force constant detected: {line.strip()}")
+            if current_section in ("dihedrals", "impropers"):
+                if current_section == "dihedrals":
+                    validation["zero_dihe_count"] += 1
+                else:
+                    validation["zero_improper_count"] += 1
+            elif current_section in ("bonds", "angles"):
+                validation["zero_bond_angle_count"] += 1
 
     # Determine severity level
-    if validation["zero_force_constant_count"] > 0:
+    if validation["zero_bond_angle_count"] > 0:
+        # Zero BOND/ANGLE force constants are critical: cannot be auto-fixed
         validation["severity"] = "error"
         validation["valid"] = False
         validation["recommendations"].append(
-            "CRITICAL: Zero force constants will cause NaN energies during simulation. "
-            "Try a different charge method (--charge-method gas) or provide a manual frcmod."
+            "CRITICAL: Zero force constants in BOND/ANGLE sections will cause "
+            "NaN energies. These cannot be safely auto-fixed. "
+            "Provide curated parameters or a different ligand parameterization."
+        )
+    elif validation["zero_force_constant_count"] > 0:
+        # DIHE/IMPROPER zeros only: auto-fixable
+        validation["severity"] = "dihe_zeros"
+        validation["valid"] = False
+        validation["recommendations"].append(
+            f"Found {validation['zero_dihe_count']} DIHE and "
+            f"{validation['zero_improper_count']} IMPROPER zero-barrier term(s). "
+            "Provide curated parameters or a corrected frcmod."
         )
     elif validation["attn_count"] > 3:
         validation["severity"] = "warning"
@@ -546,8 +957,6 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
         validation["recommendations"].extend([
             f"Found {validation['attn_count']} parameters requiring attention.",
             "These parameters were estimated by analogy and may be inaccurate.",
-            "Consider consulting a computational chemistry expert for validation.",
-            "For production runs, quantum chemistry calculations may be needed."
         ])
 
     return validation
@@ -2512,27 +2921,34 @@ def run_antechamber_robust(
     atom_type: str = "gaff2",
     max_retries: int = 2
 ) -> dict:
-    """Run antechamber with robust error handling and diagnostics.
-    
-    Automatically estimates net charge if not provided and parses sqm output
-    for detailed error diagnostics.
-    
+    """Parameterize a ligand: metal pre-check, then amber_geostd, then GAFF2.
+
+    Pipeline order:
+    1. Metal pre-check — metal-containing ligands hard-fail immediately
+       (GAFF and amber_geostd cannot parameterize metals).
+    2. amber_geostd lookup — exact residue_name match against curated database.
+       On hit, copies pre-computed mol2/frcmod and returns immediately.
+    3. GAFF2 fallback — antechamber + parmchk2 with automatic charge estimation
+       and robust error handling.
+
     Args:
         ligand_file: Input ligand file (mol2, pdb, sdf)
         output_dir: Output directory
-        net_charge: Net molecular charge (auto-estimated if None)
-        residue_name: 3-letter residue name for tleap
-        charge_method: Charge method (bcc=AM1-BCC, gas=Gasteiger)
-        atom_type: Atom type (gaff, gaff2)
+        net_charge: Net molecular charge (auto-estimated if None; ignored for geostd hits)
+        residue_name: 3-letter residue name for tleap (used for geostd lookup)
+        charge_method: Charge method (bcc=AM1-BCC, gas=Gasteiger; ignored for geostd hits)
+        atom_type: Atom type (gaff, gaff2; ignored for geostd hits)
         max_retries: Maximum retry attempts with different charges
-    
+
     Returns:
         Dict with:
             - success: bool - True if parameterization completed successfully
-            - mol2: str - Path to GAFF-parameterized MOL2 file
+            - mol2: str - Path to parameterized MOL2 file
             - frcmod: str - Path to force field modification file
             - pdb: str - Path to atom-name-preserving PDB file (for merge_structures)
-            - charge_used: int - Net charge that was used
+            - parameter_source: str - 'amber_geostd' or 'gaff2_antechamber'
+            - parameterization_backend: str - 'curated' or 'antechamber_parmchk2'
+            - charge_used: int - Net charge that was used (None for geostd)
             - charge_method: str - Charge method used
             - atom_type: str - Atom type used
             - residue_name: str - Residue name used
@@ -2570,10 +2986,13 @@ def run_antechamber_robust(
     ligand_path = Path(ligand_file)
     if not ligand_path.exists():
         result["errors"].append(f"Ligand file not found: {ligand_file}")
+        result["failure_class"] = "input_error"
+        result["recommended_next_action"] = "hard_fail"
         logger.error(f"Ligand file not found: {ligand_file}")
         return result
 
-    # Pre-check for metal atoms (GAFF cannot parameterize metals)
+    # Step 1: Metal pre-check — runs before amber_geostd lookup because
+    # neither GAFF nor amber_geostd can parameterize metal-containing ligands.
     try:
         from rdkit import Chem
         mol = None
@@ -2597,10 +3016,9 @@ def run_antechamber_robust(
                     f"Metal atoms detected: {unique_metals}. "
                     "GAFF cannot parameterize metal-containing ligands."
                 )
-                result["errors"].append(
-                    "Hint: Exclude this ligand from parameterization, or use "
-                    "specialized tools like MCPB.py for metal coordination."
-                )
+                result["failure_class"] = "metal_atoms"
+                result["ligand_class"] = "metal_containing"
+                result["recommended_next_action"] = "hard_fail"
                 logger.error(f"Metal atoms {unique_metals} detected in {ligand_file}")
                 return result
     except ImportError:
@@ -2618,7 +3036,93 @@ def run_antechamber_robust(
     diag_dir = out_dir / "diagnostics"
     ensure_directory(diag_dir)
     result["diagnostics_dir"] = str(diag_dir)
-    
+
+    # Step 2: amber_geostd lookup (after metal pre-check, before GAFF2 pipeline)
+    geostd_dir = _get_geostd_dir()
+    if geostd_dir is not None:
+        geostd_hit = _geostd_lookup(residue_name, out_dir, geostd_dir)
+        if geostd_hit is not None:
+            # Transplant crystal coordinates into the geostd mol2.
+            # The geostd mol2 has CCD reference-frame coordinates; the input
+            # ligand_file (SDF from clean_ligand) has crystal coordinates.
+            if not _transplant_geostd_coords(geostd_hit["mol2"], ligand_file):
+                logger.warning(
+                    f"amber_geostd hit for {residue_name} but coordinate transplant "
+                    "failed; falling back to GAFF2"
+                )
+                result["warnings"].append(
+                    f"amber_geostd hit for {residue_name} but coordinate transplant "
+                    "failed; falling back to GAFF2"
+                )
+                geostd_hit = None
+
+        if geostd_hit is not None:
+            result["success"] = True
+            result["mol2"] = geostd_hit["mol2"]
+            result["frcmod"] = geostd_hit["frcmod"]
+            result["parameter_source"] = "amber_geostd"
+            result["parameterization_backend"] = "curated"
+            result["charge_method"] = "geostd_curated"
+            result["charge_confidence"] = "geostd_curated"
+            result["charges"] = _parse_mol2_charges(geostd_hit["mol2"])
+            result["total_charge"] = sum(result["charges"]) if result["charges"] else 0.0
+            result["frcmod_validation"] = {
+                "valid": True, "severity": "ok", "source": "amber_geostd",
+                "attn_count": 0, "zero_force_constant_count": 0,
+                "zero_dihe_count": 0, "zero_improper_count": 0,
+                "warnings": [], "recommendations": [],
+            }
+            result["ligand_classification"] = _classify_ligand(
+                residue_name, len(result["charges"]), set()
+            )
+            # Generate PDB from curated mol2 (required for merge_structures).
+            # Without a PDB the ligand silently drops from the merged complex,
+            # so PDB generation failure makes the whole geostd hit unusable.
+            output_pdb = out_dir / f"{residue_name}.amber.pdb"
+            try:
+                pdb_args = [
+                    '-i', geostd_hit["mol2"],
+                    '-fi', 'mol2',
+                    '-o', str(output_pdb),
+                    '-fo', 'pdb',
+                    '-dr', 'no',
+                ]
+                antechamber_wrapper.run(pdb_args, cwd=out_dir)
+                if output_pdb.exists():
+                    result["pdb"] = str(output_pdb)
+                else:
+                    raise RuntimeError("antechamber completed but PDB file was not created")
+            except Exception as e:
+                # PDB is required for merge — fall back to GAFF2 pipeline
+                logger.warning(
+                    f"amber_geostd hit for {residue_name} but PDB generation failed: {e}; "
+                    "falling back to GAFF2"
+                )
+                result["warnings"].append(
+                    f"amber_geostd hit for {residue_name} but PDB generation failed "
+                    f"({e}); falling back to GAFF2"
+                )
+                # Reset geostd-specific fields before falling through
+                result["success"] = False
+                result["mol2"] = None
+                result["frcmod"] = None
+                for key in ("parameter_source", "parameterization_backend",
+                            "charge_confidence", "ligand_classification"):
+                    result.pop(key, None)
+                # Fall through to GAFF2 pipeline below
+                geostd_hit = None
+
+            if geostd_hit is not None:
+                logger.info(
+                    f"Using amber_geostd parameters for {residue_name} "
+                    f"(total_charge={result['total_charge']:.3f})"
+                )
+                return result
+        else:
+            result["warnings"].append(
+                f"No amber_geostd entry found for {residue_name}; falling back to GAFF2"
+            )
+
     # Auto-estimate charge if not provided
     charge_estimation = None
     if net_charge is None:
@@ -2760,6 +3264,8 @@ def run_antechamber_robust(
             if sqm_diagnostics:
                 error_msg += f". SQM diagnostics: {sqm_diagnostics['errors']}"
             result["errors"].append(error_msg)
+            result["failure_class"] = "antechamber_failed"
+            result["recommended_next_action"] = "use_curated_params"
             if sqm_diagnostics and sqm_diagnostics.get("recommendations"):
                 for rec in sqm_diagnostics["recommendations"]:
                     result["errors"].append(f"Hint: {rec}")
@@ -2782,7 +3288,8 @@ def run_antechamber_robust(
             logger.info(f"parmchk2 completed: {output_frcmod}")
         except Exception as e:
             result["errors"].append(f"parmchk2 failed: {str(e)}")
-            result["errors"].append("Hint: Check if the MOL2 file has valid atom types")
+            result["failure_class"] = "parmchk2_failed"
+            result["recommended_next_action"] = "use_curated_params"
             logger.error(f"parmchk2 failed: {e}")
             return result
         
@@ -2790,16 +3297,67 @@ def run_antechamber_robust(
         frcmod_validation = _parse_frcmod_warnings(output_frcmod)
         result["frcmod_validation"] = frcmod_validation
 
+        # Classify ligand for parameterization policy
+        ligand_elements = set()
+        try:
+            from rdkit import Chem
+            mol = Chem.MolFromMol2File(str(output_mol2), removeHs=True, sanitize=False)
+            if mol:
+                ligand_elements = {a.GetSymbol() for a in mol.GetAtoms()}
+                heavy_count = mol.GetNumAtoms()
+            else:
+                heavy_count = 0
+        except Exception:
+            heavy_count = 0
+        ligand_classification = _classify_ligand(
+            residue_name, heavy_count, ligand_elements
+        )
+        result["ligand_classification"] = ligand_classification
+
+        # Policy: return structured failure info instead of modifying files
         if frcmod_validation["severity"] == "error":
+            # BOND/ANGLE zeros: hard fail
+            result["failure_class"] = "zero_bond_angle_params"
+            result["ligand_class"] = ligand_classification["ligand_class"]
+            result["recommended_next_action"] = "use_curated_params"
             result["errors"].append(
-                f"frcmod has {frcmod_validation['zero_force_constant_count']} zero force constant(s) "
-                "which will cause NaN energies during simulation"
+                f"frcmod has {frcmod_validation['zero_bond_angle_count']} zero force "
+                "constant(s) in BOND/ANGLE sections"
             )
-            for warning in frcmod_validation["warnings"][:5]:
-                result["errors"].append(f"frcmod: {warning}")
             for rec in frcmod_validation.get("recommendations", []):
-                result["errors"].append(f"Hint: {rec}")
-            logger.error("frcmod validation failed: zero force constants detected")
+                result["errors"].append(rec)
+            logger.error("frcmod validation failed: zero BOND/ANGLE force constants")
+            return result
+
+        if frcmod_validation["severity"] == "dihe_zeros":
+            # DIHE/IMPROPER zeros: fail with structured diagnosis
+            result["failure_class"] = "zero_dihe_barriers"
+            result["ligand_class"] = ligand_classification["ligand_class"]
+            result["zero_dihe_count"] = frcmod_validation["zero_dihe_count"]
+            result["zero_improper_count"] = frcmod_validation["zero_improper_count"]
+
+            if ligand_classification["curated_params_recommended"]:
+                result["recommended_next_action"] = "use_curated_params"
+                result["errors"].append(
+                    f"{residue_name} is classified as "
+                    f"'{ligand_classification['ligand_class']}'. "
+                    f"frcmod has {frcmod_validation['zero_dihe_count']} zero-barrier "
+                    "dihedral(s). Curated force field parameters are required."
+                )
+            else:
+                result["recommended_next_action"] = "provide_frcmod"
+                result["errors"].append(
+                    f"frcmod has {frcmod_validation['zero_dihe_count']} zero-barrier "
+                    f"dihedral(s) and {frcmod_validation['zero_improper_count']} "
+                    "zero-barrier improper(s). Provide a corrected frcmod or "
+                    "curated parameters."
+                )
+            for note in ligand_classification["notes"]:
+                result["warnings"].append(note)
+            logger.error(
+                f"frcmod validation failed: {frcmod_validation['zero_dihe_count']} "
+                f"zero DIHE, {frcmod_validation['zero_improper_count']} zero IMPROPER"
+            )
             return result
 
         if not frcmod_validation["valid"]:
@@ -2842,37 +3400,115 @@ def run_antechamber_robust(
             json.dump(frcmod_validation, f, indent=2)
         
         # Parse charges from output MOL2
-        charges = []
-        with open(output_mol2, 'r') as f:
-            in_atom_section = False
-            for line in f:
-                if '@<TRIPOS>ATOM' in line:
-                    in_atom_section = True
-                    continue
-                elif '@<TRIPOS>' in line:
-                    in_atom_section = False
-                
-                if in_atom_section and line.strip():
-                    parts = line.split()
-                    if len(parts) >= 9:
-                        try:
-                            charges.append(float(parts[8]))
-                        except ValueError:
-                            pass
-        
+        charges = _parse_mol2_charges(output_mol2)
+
         result["mol2"] = str(output_mol2)
         result["frcmod"] = str(output_frcmod)
         result["charges"] = charges
         result["total_charge"] = sum(charges) if charges else 0.0
         result["success"] = True
-        
+        result["parameter_source"] = "gaff2_antechamber"
+        result["parameterization_backend"] = "antechamber_parmchk2"
+
         logger.info(f"Successfully parameterized ligand: {output_mol2}")
         
     except Exception as e:
         error_msg = f"Error during antechamber: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
+        result["failure_class"] = "unexpected_error"
+        result["recommended_next_action"] = "hard_fail"
         logger.error(error_msg)
-    
+
+    return result
+
+
+def download_amber_geostd(output_dir: Optional[str] = None, force: bool = False) -> dict:
+    """Download and extract the amber_geostd curated ligand parameter database.
+
+    The database contains ~28,000 pre-computed GAFF2 mol2/frcmod files for
+    PDB Chemical Component Dictionary entries.  Once downloaded, it is
+    automatically used by run_antechamber_robust() as a first-choice source
+    before falling back to antechamber.
+
+    Args:
+        output_dir: Override extraction target.
+                    Default: $MDCLAW_CACHE_DIR/amber_geostd (or .mdclaw_cache/amber_geostd)
+        force: Re-download and overwrite even if already present.
+
+    Returns:
+        Dict with:
+            - success: bool
+            - path: str - Path to extracted database
+            - residue_count: int - Number of mol2 entries found
+            - errors: list[str]
+            - warnings: list[str]
+    """
+    import tarfile
+    import urllib.request
+
+    url = "https://ambermd.org/downloads/amber_geostd.tar.bz2"
+    result = {"success": False, "path": None, "residue_count": 0, "errors": [], "warnings": []}
+
+    if output_dir:
+        target = Path(output_dir)
+    else:
+        cache_root = Path(os.environ.get("MDCLAW_CACHE_DIR", ".mdclaw_cache"))
+        target = cache_root / "amber_geostd"
+
+    if target.is_dir() and not force:
+        mol2_count = sum(1 for _ in target.rglob("*.mol2"))
+        if mol2_count > 0:
+            result["success"] = True
+            result["path"] = str(target)
+            result["residue_count"] = mol2_count
+            result["warnings"].append(f"Already exists at {target} ({mol2_count} entries). Use force=True to re-download.")
+            return result
+
+    try:
+        ensure_directory(target.parent)
+        tarball = target.parent / "amber_geostd.tar.bz2"
+        logger.info(f"Downloading amber_geostd from {url} ...")
+        urllib.request.urlretrieve(url, str(tarball))
+        logger.info("Extracting ...")
+
+        # Extract to a temporary sibling directory, then move to target.
+        # The tarball contains a top-level "amber_geostd/" directory, so
+        # extracting directly to target.parent would place it at
+        # target.parent/amber_geostd — which may differ from target when
+        # the user supplies a custom output_dir.
+        extract_tmp = target.parent / f"_geostd_extract_{os.getpid()}"
+        ensure_directory(extract_tmp)
+        with tarfile.open(str(tarball), "r:bz2") as tf:
+            tf.extractall(path=str(extract_tmp), filter="data")
+
+        tarball.unlink(missing_ok=True)
+
+        # Locate the extracted top-level directory (usually "amber_geostd")
+        extracted_dirs = [d for d in extract_tmp.iterdir() if d.is_dir()]
+        if len(extracted_dirs) == 1:
+            extracted = extracted_dirs[0]
+        else:
+            extracted = extract_tmp  # flat extraction, use tmp dir itself
+
+        # Move to the intended target path
+        if target.exists():
+            shutil.rmtree(target)
+        shutil.move(str(extracted), str(target))
+
+        # Clean up temp dir (may already be empty after move)
+        if extract_tmp.exists():
+            shutil.rmtree(extract_tmp, ignore_errors=True)
+
+        mol2_count = sum(1 for _ in target.rglob("*.mol2"))
+        result["success"] = True
+        result["path"] = str(target)
+        result["residue_count"] = mol2_count
+        logger.info(f"amber_geostd installed: {mol2_count} entries at {target}")
+
+    except Exception as e:
+        result["errors"].append(f"Download failed: {type(e).__name__}: {e}")
+        logger.error(f"amber_geostd download failed: {e}")
+
     return result
 
 
@@ -3547,6 +4183,7 @@ def prepare_complex(
                                 ligand_result["frcmod_file"] = param_result["frcmod"]
                                 ligand_result["pdb_file"] = param_result.get("pdb")  # Amber-compatible PDB
                                 ligand_result["charge_confidence"] = param_result.get("charge_confidence")
+                                ligand_result["parameter_source"] = param_result.get("parameter_source", "gaff2_antechamber")
                                 ligand_result["success"] = True
                                 # Propagate warnings (e.g. LOW_CONFIDENCE_CHARGE, frcmod ATTN)
                                 if param_result.get("warnings"):
@@ -3555,6 +4192,12 @@ def prepare_complex(
                                 logger.info(f"    ✓ Parameterized: {param_result['mol2']}")
                             else:
                                 ligand_result["errors"].extend(param_result.get("errors", []))
+                                # Propagate structured failure fields
+                                for key in ("failure_class", "ligand_class",
+                                            "recommended_next_action",
+                                            "ligand_classification"):
+                                    if key in param_result:
+                                        ligand_result[key] = param_result[key]
                                 result["warnings"].append(f"Ligand {ligand_id} parameterization failed")
                                 logger.warning(f"    ✗ Parameterization failed: {param_result['errors']}")
                         else:
@@ -3591,20 +4234,26 @@ def prepare_complex(
                 if p["success"] and p.get("output_file"):
                     pdb_files_to_merge.append(p["output_file"])
             
-            # Add ligand files (use amber.pdb from antechamber for correct atom names)
+            # Add ligand files (use amber.pdb from parameterization for correct atom names)
             for lig in result["ligands"]:
                 if lig["success"]:
-                    # Prefer the amber PDB from antechamber (has correct atom names for tleap)
+                    # Prefer the amber PDB from parameterization (has correct atom names for tleap)
                     ligand_pdb = lig.get("pdb_file")
                     if ligand_pdb and Path(ligand_pdb).exists():
                         pdb_files_to_merge.append(ligand_pdb)
                     else:
-                        # Fallback: find .amber.pdb from mol2 path
+                        # Fallback: find .amber.pdb from mol2 path (handles both .gaff.mol2 and .geostd.mol2)
                         mol2_file = lig.get("mol2_file")
                         if mol2_file:
                             mol2_path = Path(mol2_file)
-                            amber_pdb = mol2_path.parent / mol2_path.name.replace('.gaff.mol2', '.amber.pdb')
-                            if amber_pdb.exists():
+                            amber_pdb = None
+                            for suffix in ('.gaff.mol2', '.geostd.mol2'):
+                                if mol2_path.name.endswith(suffix):
+                                    candidate = mol2_path.parent / mol2_path.name.replace(suffix, '.amber.pdb')
+                                    if candidate.exists():
+                                        amber_pdb = candidate
+                                        break
+                            if amber_pdb:
                                 pdb_files_to_merge.append(str(amber_pdb))
                             else:
                                 result["warnings"].append(f"No amber.pdb found for ligand {lig.get('ligand_id')}")
@@ -3632,6 +4281,45 @@ def prepare_complex(
                 result["warnings"].append("No files available to merge")
         
         result["success"] = proteins_ok and ligands_ok
+        result["protein_preparation_success"] = proteins_ok
+        result["ligand_preparation_success"] = ligands_ok
+
+        # -- overall_status: workflow-level status for skill dispatch ------
+        failed_ligands = [
+            lig for lig in result.get("ligands", []) if not lig.get("success")
+        ]
+        if proteins_ok and ligands_ok:
+            result["overall_status"] = "success"
+        elif proteins_ok and not ligands_ok:
+            result["overall_status"] = "completed_with_blocking_ligand_failure"
+        else:
+            result["overall_status"] = "failed"
+
+        # -- workflow_recommendation: deterministic options for the caller --
+        if failed_ligands and proteins_ok:
+            blocking = []
+            for lig in failed_ligands:
+                blocking.append({
+                    "ligand_id": lig.get("ligand_id"),
+                    "failure_class": lig.get("failure_class"),
+                    "ligand_class": lig.get("ligand_class"),
+                    "recommended_next_action": lig.get("recommended_next_action"),
+                })
+            # Collect unique next-actions
+            actions = {b["recommended_next_action"] for b in blocking
+                       if b["recommended_next_action"]}
+            options = []
+            if "use_curated_params" in actions or "provide_frcmod" in actions:
+                options.append("provide_curated_params_and_rerun")
+            options.append("exclude_ligands_and_continue_protein_only")
+            if "hard_fail" in actions:
+                options.append("stop")
+            else:
+                options.append("stop")
+            result["workflow_recommendation"] = {
+                "blocking_ligands": blocking,
+                "options": options,
+            }
 
         # Aggregate provenance from all proteins into top-level summary
         # so LLM can read it directly without digging into proteins[]
@@ -3639,7 +4327,6 @@ def prepare_complex(
         for p in result.get("proteins", []):
             prov = p.get("provenance", {})
             if prov:
-                chain = p.get("chain_id", "unknown")
                 for key, val in prov.items():
                     if key == "histidine_states" and isinstance(val, dict):
                         preparation_summary.setdefault("histidine_states", {}).update(val)
@@ -3662,6 +4349,7 @@ def prepare_complex(
                     "mol2": lig["mol2_file"],
                     "frcmod": lig["frcmod_file"],
                     "residue_name": lig.get("ligand_id", "LIG")[:3].upper(),
+                    "parameter_source": lig.get("parameter_source", "gaff2_antechamber"),
                 }
                 for lig in result["ligands"]
                 if lig.get("success") and lig.get("mol2_file") and lig.get("frcmod_file")
@@ -3676,19 +4364,21 @@ def prepare_complex(
         summary_file = out_dir / "prepare_complex_summary.json"
         with open(summary_file, 'w') as f:
             json.dump(result, f, indent=2, default=str)
-        
-        if result["success"]:
-            logger.info(f"Complex preparation complete: {out_dir}")
-            logger.info(f"  Proteins processed: {sum(1 for p in result['proteins'] if p['success'])}/{len(result['proteins'])}")
-            logger.info(f"  Ligands processed: {sum(1 for lig in result['ligands'] if lig['success'])}/{len(result['ligands'])}")
-            if result.get("merged_pdb"):
-                logger.info(f"  Merged PDB: {result['merged_pdb']}")
-        
+
+        n_prot = sum(1 for p in result['proteins'] if p['success'])
+        n_lig = sum(1 for lig in result['ligands'] if lig['success'])
+        logger.info(f"Complex preparation: overall_status={result['overall_status']}")
+        logger.info(f"  Proteins: {n_prot}/{len(result['proteins'])}")
+        logger.info(f"  Ligands: {n_lig}/{len(result['ligands'])}")
+        if result.get("merged_pdb"):
+            logger.info(f"  Merged PDB: {result['merged_pdb']}")
+
     except Exception as e:
         error_msg = f"Error during complex preparation: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
+        result["overall_status"] = "failed"
         logger.error(error_msg)
-    
+
     return result
 
 
@@ -3940,4 +4630,5 @@ TOOLS = {
     "merge_structures": merge_structures,
     "prepare_complex": prepare_complex,
     "create_mutated_structutre": create_mutated_structutre,
+    "download_amber_geostd": download_amber_geostd,
 }

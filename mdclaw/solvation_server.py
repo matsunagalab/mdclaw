@@ -368,6 +368,7 @@ def solvate_structure(
         "output_dir": None,
         "input_file": str(pdb_file),
         "parameters": {
+            "water_model": water_model,
             "dist": dist,
             "cubic": cubic,
             "salt": salt,

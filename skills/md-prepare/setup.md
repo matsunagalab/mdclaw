@@ -2,10 +2,13 @@
 
 ## Progress Tracking
 
-Create a job directory `job_<8-hex-chars>/` at the start. Write `progress.json` with
-the following template. The `commands` array is automatically populated by the CLI
-after each tool execution. The other sections should be filled in by the LLM as
-the workflow progresses, using information from tool outputs.
+`progress.json` is the **source of truth** for job state. It is automatically
+created by `prepare_complex` and updated by each subsequent tool
+(`solvate_structure`, `build_amber_system`, `run_equilibration`, `run_production`).
+No manual writing is needed — the CLI auto-updates it after every tool execution.
+
+Each skill reads `progress.json` to determine the current step, available artifacts,
+and what to do next. Resume is supported by reading `progress.json` alone.
 
 ```json
 {
@@ -128,13 +131,43 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir"
 
 > `prepare_complex` uses author chain IDs internally, so `--use-author-chains` is unnecessary and would cause double-mapping.
 
-Extract `merged_pdb` from the result. If ligands were processed, also extract `ligand_params` from `prepare_complex` output:
+### Step 3 Result Handling
 
-For each entry in `result.ligands` where `success=true`:
-- Store `{mol2: ligand.mol2_file, frcmod: ligand.frcmod_file, residue_name: ligand.ligand_id[:3]}` in `progress.json` `artifacts.ligand_params`.
-- `prepare_complex` also writes `ligand_params.json` to the job root for auto-detection by `build_amber_system`.
+Check `overall_status` from `prepare_complex` JSON output (not stderr):
 
-**Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings contain `LOW_CONFIDENCE_CHARGE`, present the warning to the user and ask for confirmation before proceeding. The warning indicates the estimated charge may be wrong for this ligand.
+| `overall_status` | Action |
+|---|---|
+| `success` | Extract `merged_pdb`, proceed to solvation |
+| `completed_with_blocking_ligand_failure` | Handle by `workflow_recommendation` (see below) |
+| `failed` | Report error, stop |
+
+**On success**: For each entry in `result.ligands` where `success=true`, store `{mol2, frcmod, residue_name}` in `progress.json` `artifacts.ligand_params`. `prepare_complex` also writes `ligand_params.json` to the job root for auto-detection by `build_amber_system`.
+
+**Parameterization source**: Each ligand result includes `parameter_source` (`amber_geostd` or `gaff2_antechamber`). `run_antechamber_robust` follows this order: (1) metal pre-check — metal-containing ligands hard-fail immediately, (2) **amber_geostd** curated database lookup (exact residue name match; on hit uses pre-computed GAFF2 mol2/frcmod with abcg2 charges), (3) antechamber + parmchk2 GAFF2 fallback. The amber_geostd database covers ~28,000 PDB CCD entries. Install via `mdclaw download_amber_geostd`.
+
+**Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings contain `LOW_CONFIDENCE_CHARGE`, present the warning to the user and ask for confirmation before proceeding.
+
+### Blocking Ligand Failure
+
+When `overall_status = completed_with_blocking_ligand_failure`:
+
+1. Read `result.workflow_recommendation.blocking_ligands` — each entry has `ligand_id`, `failure_class`, `ligand_class`, `recommended_next_action`
+2. **Do NOT** retry with different charge methods, edit frcmod files, or attempt workarounds
+3. Present the user with exactly the options from `result.workflow_recommendation.options`:
+
+Typical options:
+- **provide_curated_params_and_rerun** — user provides mol2/frcmod files for the ligand
+- **exclude_ligands_and_continue_protein_only** — re-run `prepare_complex` without `--process-ligands`
+- **stop** — end the workflow
+
+The `recommended_next_action` field per ligand explains why:
+| `recommended_next_action` | Meaning |
+|---|---|
+| `use_curated_params` | GAFF2 cannot produce reliable parameters. User must provide curated mol2/frcmod |
+| `provide_frcmod` | frcmod has issues. User must provide a corrected frcmod |
+| `hard_fail` | Fundamental incompatibility (e.g., metal atoms). Cannot proceed with this ligand |
+
+**Critical**: Never parse stderr or warning strings to decide next steps. Use only the structured fields above.
 
 ---
 
