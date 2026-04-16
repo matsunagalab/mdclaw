@@ -211,6 +211,66 @@ class TestLigandParamsAutoDetect:
                            if "ligand" in w.lower() and ("mol2" in w.lower() or "frcmod" in w.lower())]
         assert not ligand_warnings, f"Unexpected ligand warnings without ligand_params.json: {ligand_warnings}"
 
+    def test_stale_json_not_detected_across_jobs(self, tmp_path):
+        """Job B must not pick up ligand_params.json from sibling job A."""
+        from mdclaw.amber_server import build_amber_system
+
+        # Simulate two separate job directories under a shared parent
+        shared_root = tmp_path / "outputs"
+        shared_root.mkdir()
+
+        # Job A has ligand_params.json
+        job_a = shared_root / "job_aaaa"
+        (job_a / "solvate").mkdir(parents=True)
+        (job_a / "ligand_params.json").write_text(
+            json.dumps([{"mol2": "/a/lig.mol2", "frcmod": "/a/lig.frcmod", "residue_name": "LIG"}])
+        )
+
+        # Job B does NOT have ligand_params.json
+        job_b = shared_root / "job_bbbb"
+        (job_b / "solvate").mkdir(parents=True)
+        pdb_b = job_b / "solvate" / "solvated.pdb"
+        pdb_b.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00\nEND\n")
+
+        result = build_amber_system(pdb_file=str(pdb_b), output_dir=str(job_b / "topo"))
+
+        # search is: solvate/ (no), job_bbbb/ (no) — must NOT reach job_aaaa/
+        ligand_warnings = [w for w in result.get("warnings", [])
+                           if "ligand" in w.lower() and ("mol2" in w.lower() or "frcmod" in w.lower())]
+        assert not ligand_warnings, (
+            f"Stale ligand_params.json from job A leaked into job B: {ligand_warnings}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Level 1: output_dir=None job isolation
+# ---------------------------------------------------------------------------
+
+class TestJobIsolation:
+    """Verify output_dir=None creates unique job dirs, not a shared root."""
+
+    def test_output_dir_none_creates_unique_job_dir(self, small_pdb, monkeypatch):
+        """Two calls with output_dir=None must produce different directories."""
+        from mdclaw.structure_server import prepare_complex
+
+        # Point WORKING_DIR to a temp location to avoid polluting real outputs/
+        import mdclaw.structure_server as mod
+        import tempfile
+        tmp = Path(tempfile.mkdtemp())
+        monkeypatch.setattr(mod, "WORKING_DIR", tmp)
+
+        r1 = prepare_complex(structure_file=small_pdb, output_dir=None,
+                             select_chains=["A"], process_ligands=False, process_proteins=False)
+        r2 = prepare_complex(structure_file=small_pdb, output_dir=None,
+                             select_chains=["A"], process_ligands=False, process_proteins=False)
+
+        dir1 = r1["output_dir"]
+        dir2 = r2["output_dir"]
+        # The split/ dirs are inside different job_<id>/ dirs
+        assert Path(dir1).parent != Path(dir2).parent, (
+            f"Two output_dir=None calls share the same job root: {dir1} vs {dir2}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Level 2: clean_ligand (requires RDKit)

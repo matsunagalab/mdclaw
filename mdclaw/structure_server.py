@@ -3276,9 +3276,14 @@ def prepare_complex(
         logger.error(f"Structure file not found: {structure_file}")
         return result
 
-    # Setup output directory — don't create a subdir here; split_molecules
-    # creates its own split/ subdir, and we adopt that as out_dir.
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
+    # Setup output directory.  When output_dir is explicit (the normal skill
+    # workflow), use it directly as the job root.  When None (ad-hoc CLI use),
+    # create a unique job_<id>/ under WORKING_DIR so that ligand_params.json
+    # and other per-job files don't collide between consecutive runs.
+    if output_dir:
+        base_dir = Path(output_dir)
+    else:
+        base_dir = WORKING_DIR / f"job_{job_id}"
     ensure_directory(base_dir)
     out_dir = base_dir
     result["output_dir"] = str(base_dir)
