@@ -344,16 +344,16 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `rdkit_calc_druglikeness(smiles)` - Drug-likeness assessment
 
 ### solvation_server.py
-- `solvate_structure(pdb_file, output_dir, water_model, dist, salt, saltcon)` - Water box
-- `embed_in_membrane(pdb_file, output_dir, lipid_type, ...)` - Membrane
+- `solvate_structure(pdb_file, output_dir, water_model, dist, salt, saltcon, job_dir, node_id)` - Water box. In node mode, `pdb_file` auto-resolved from `prep` ancestor's `merged_pdb`
+- `embed_in_membrane(pdb_file, output_dir, lipid_type, ..., job_dir, node_id)` - Membrane
 - `list_available_lipids()` - Available lipid types
 
 ### amber_server.py
-- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane)` - tleap
+- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane, job_dir, node_id)` - tleap. In node mode, `pdb_file` auto-resolved from `solv` ancestor's `solvated_pdb`
 
 ### md_simulation_server.py
-- `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ...)` - NVT+NPT equilibration with positional restraints
-- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed)` - Production MD (HMR + 4fs default)
+- `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - NVT+NPT equilibration. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
+- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode, `prmtop_file`/`inpcrd_file` from `topo` ancestor, `restart_from` from `eq` parent
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed

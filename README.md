@@ -40,7 +40,7 @@ The container (~4.6 GB) downloads automatically on first session start.
 ```
 > /mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
 > /mdclaw:md-equilibration job_a1b2c3d4
-> /mdclaw:md-production job_a1b2c3d4 run_001_300K, 10 ns
+> /mdclaw:md-production job_a1b2c3d4, 10 ns
 ```
 
 Batch:
@@ -68,36 +68,61 @@ NPT (5000 steps, 4 fs).
 
 ### Output Structure
 
+Each pipeline step is an independent **node** with its own directory,
+state file, and artifacts. Parent-child relationships form a DAG:
+
 ```
 job_a1b2c3d4/
-  progress.json              ← source of truth for job state
-  topology/                  ← parm7 + rst7 (shared by all runs)
-  runs/
-    run_001_300K/
-      run.json               ← per-run conditions & stage details
-      equilibration/          ← equilibrated.chk
-      production/             ← trajectory.dcd
-    run_002_310K/             ← same topology, different temperature
+  progress.json                ← thin index of nodes + cached summaries
+  nodes/
+    prep_001/                  ← structure preparation
+      node.json                ← node state, artifacts, metadata
+      artifacts/
+        split/ merge/
+    solv_001/                  ← solvation
+      node.json
+      artifacts/
+        solvated.pdb
+    topo_001/                  ← topology (shared by all eq/prod)
+      node.json
+      artifacts/
+        system.parm7 system.rst7
+    eq_001/                    ← equilibration at 300K
+      node.json
+      artifacts/
+        equilibrated.chk
+    prod_001/                  ← production 300K
+      node.json
+      artifacts/
+        trajectory.dcd
+    eq_002/                    ← equilibration at 310K (branch)
       ...
+    prod_002/                  ← production 310K (branch)
+      ...
+  events/                      ← append-only audit log
 ```
 
-The same topology can be reused for multiple runs at different temperatures
-or random seeds. Each run is self-contained under `runs/<run_id>/`.
+The same topology node can be reused for multiple equilibrations at
+different temperatures. Each equilibration can branch into multiple
+productions (different seeds, lengths, etc.).
 
 ### State Management
 
-Each skill (`/md-prepare`, `/md-equilibration`, …) is **stateless** —
-it reads `progress.json` on entry, runs tools, and the CLI auto-updates
-`progress.json` after each tool execution. No manual bookkeeping is needed.
+- **Skills** decide what to run (orchestration only, no state mutation)
+- **Tools** execute and self-record results via `begin_node`/`complete_node`/`fail_node`
+- Input files are **auto-resolved from the DAG**: e.g., `run_equilibration`
+  finds `parm7`/`rst7` from its `topo` ancestor automatically
 
 | File | Scope | Updated by |
 |------|-------|------------|
-| `progress.json` | Job-level: completed steps, artifacts, next step, blocking reasons | CLI (automatic) |
-| `run.json` | Run-level: temperature, equilibration/production stages, trajectory paths | CLI (automatic) |
+| `progress.json` | Job-level: node index (type, status, parents), cached system/params | Tools (automatic) |
+| `node.json` | Per-node: artifacts, metadata, conditions, warnings | Tools (automatic) |
+| `events/*.json` | Audit trail: one file per event (no locking needed) | Tools (automatic) |
 
 This means:
 - **Resume** works by reading `progress.json` — even across sessions or agents
-- **Handoff** between skills is deterministic (`next_step` field)
+- **Branching** is natural: create new nodes with different parents
+- **Parallel agents** can work on different nodes concurrently (lock files prevent conflicts)
 - **Direct CLI use** still updates state correctly (no skill wrapper required)
 
 ---

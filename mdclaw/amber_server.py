@@ -619,7 +619,7 @@ def _add_pdb_info(
 
 
 def build_amber_system(
-    pdb_file: str,
+    pdb_file: Optional[str] = None,
     ligand_params: Optional[List[Dict[str, str]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
@@ -722,6 +722,9 @@ def build_amber_system(
         _inputs = resolve_node_inputs(job_dir, node_id, "topo")
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
+
+    if not pdb_file:
+        return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
 
     logger.info(f"Building Amber system from: {pdb_file}")
 

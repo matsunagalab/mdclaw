@@ -277,7 +277,7 @@ def _solvate_with_openmm(
 
 
 def solvate_structure(
-    pdb_file: str,
+    pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
     output_name: str = "solvated",
     dist: float = 15.0,
@@ -390,6 +390,9 @@ def solvate_structure(
         _inputs = resolve_node_inputs(job_dir, node_id, "solv")
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
+
+    if not pdb_file:
+        return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
 
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()

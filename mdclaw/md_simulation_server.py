@@ -29,8 +29,8 @@ ensure_directory(WORKING_DIR)
 
 
 def run_equilibration(
-    prmtop_file: str,
-    inpcrd_file: str,
+    prmtop_file: Optional[str] = None,
+    inpcrd_file: Optional[str] = None,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
     nvt_steps: int = 2500,
@@ -136,6 +136,9 @@ def run_equilibration(
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
             inpcrd_file = _inputs["inpcrd_file"]
+
+    if not prmtop_file or not inpcrd_file:
+        return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
 
     logger.info(f"Starting equilibration at {temperature_kelvin}K")
 
@@ -564,8 +567,8 @@ def run_equilibration(
 
 
 def run_production(
-    prmtop_file: str,
-    inpcrd_file: str,
+    prmtop_file: Optional[str] = None,
+    inpcrd_file: Optional[str] = None,
     simulation_time_ns: float = 1.0,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = None,
@@ -655,6 +658,9 @@ def run_production(
             inpcrd_file = _inputs["inpcrd_file"]
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+
+    if not prmtop_file or not inpcrd_file:
+        return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
 
     logger.info(f"Starting MD simulation: {simulation_time_ns}ns at {temperature_kelvin}K")
 
