@@ -128,6 +128,15 @@ def run_equilibration(
           - errors: list[str]
           - warnings: list[str]
     """
+    # Auto-resolve inputs from DAG when in node mode
+    if job_dir and node_id:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "eq")
+        if not prmtop_file and "prmtop_file" in _inputs:
+            prmtop_file = _inputs["prmtop_file"]
+        if not inpcrd_file and "inpcrd_file" in _inputs:
+            inpcrd_file = _inputs["inpcrd_file"]
+
     logger.info(f"Starting equilibration at {temperature_kelvin}K")
 
     job_id = generate_job_id()
@@ -636,6 +645,17 @@ def run_production(
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
     """
+    # Auto-resolve inputs from DAG when in node mode
+    if job_dir and node_id:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "prod")
+        if not prmtop_file and "prmtop_file" in _inputs:
+            prmtop_file = _inputs["prmtop_file"]
+        if not inpcrd_file and "inpcrd_file" in _inputs:
+            inpcrd_file = _inputs["inpcrd_file"]
+        if not restart_from and "restart_from" in _inputs:
+            restart_from = _inputs["restart_from"]
+
     logger.info(f"Starting MD simulation: {simulation_time_ns}ns at {temperature_kelvin}K")
 
     # Initialize result structure

@@ -399,3 +399,103 @@ def get_children(job_dir: str, node_id: str) -> list[str]:
 def resolve_artifact(job_dir: str, node_id: str, rel_path: str) -> Path:
     """Resolve a relative artifact path to an absolute path."""
     return (Path(job_dir) / "nodes" / node_id / rel_path).resolve()
+
+
+def find_ancestor_artifact(
+    job_dir: str,
+    node_id: str,
+    ancestor_type: str,
+    artifact_key: str,
+) -> Optional[str]:
+    """Walk the DAG upward from *node_id* to find an artifact from an ancestor.
+
+    Finds the nearest ancestor of *ancestor_type* and returns the absolute
+    path for *artifact_key* from its ``node.json``.  Returns ``None`` if
+    no matching ancestor or artifact is found.
+
+    Example::
+
+        parm7 = find_ancestor_artifact(job_dir, "eq_001", "topo", "parm7")
+        # -> "/abs/path/job_xxx/nodes/topo_001/artifacts/system.parm7"
+    """
+    jd = Path(job_dir)
+    pj = jd / "progress.json"
+    if not pj.exists():
+        return None
+    progress = json.loads(pj.read_text())
+    nodes_index = progress.get("nodes", {})
+
+    # BFS upward through parents
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        if info.get("type") == ancestor_type:
+            # Found the ancestor — read its node.json for the artifact
+            node_json_path = jd / "nodes" / nid / "node.json"
+            if not node_json_path.exists():
+                continue
+            ndata = json.loads(node_json_path.read_text())
+            rel_path = ndata.get("artifacts", {}).get(artifact_key)
+            if rel_path:
+                return str((jd / "nodes" / nid / rel_path).resolve())
+            return None
+        # Keep searching upward
+        queue.extend(info.get("parents", []))
+    return None
+
+
+def resolve_node_inputs(
+    job_dir: str,
+    node_id: str,
+    node_type: str,
+) -> dict:
+    """Auto-resolve standard input files for a node from its DAG ancestors.
+
+    Returns a dict of resolved absolute paths.  Missing artifacts are
+    omitted (the caller should fall back to explicit parameters).
+
+    Mappings:
+
+    - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
+    - ``topo``: ``solvated_pdb`` from nearest ``solv`` ancestor
+    - ``eq``:   ``parm7``, ``rst7`` from nearest ``topo`` ancestor
+    - ``prod``: ``parm7``, ``rst7`` from nearest ``topo`` ancestor;
+                ``checkpoint`` from nearest ``eq`` ancestor (parent)
+    """
+    result: dict[str, str] = {}
+
+    if node_type == "solv":
+        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+        if v:
+            result["pdb_file"] = v
+
+    elif node_type == "topo":
+        v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
+        if v:
+            result["pdb_file"] = v
+
+    elif node_type == "eq":
+        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
+        if p7:
+            result["prmtop_file"] = p7
+        if r7:
+            result["inpcrd_file"] = r7
+
+    elif node_type == "prod":
+        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
+        chk = find_ancestor_artifact(job_dir, node_id, "eq", "checkpoint")
+        if p7:
+            result["prmtop_file"] = p7
+        if r7:
+            result["inpcrd_file"] = r7
+        if chk:
+            result["restart_from"] = chk
+
+    return result

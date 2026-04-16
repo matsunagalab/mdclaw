@@ -716,6 +716,13 @@ def build_amber_system(
         ...     water_model="tip3p"
         ... )
     """
+    # Auto-resolve input from DAG when in node mode and pdb_file not provided
+    if job_dir and node_id and not pdb_file:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "topo")
+        if "pdb_file" in _inputs:
+            pdb_file = _inputs["pdb_file"]
+
     logger.info(f"Building Amber system from: {pdb_file}")
 
     # Auto-detect ligand_params.json if not provided

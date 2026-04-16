@@ -14,12 +14,14 @@ from mdclaw._node import (
     complete_node,
     create_node,
     fail_node,
+    find_ancestor_artifact,
     find_nodes,
     get_ancestors,
     get_children,
     init_progress_v3,
     read_node,
     resolve_artifact,
+    resolve_node_inputs,
     schema_major,
     update_job_summaries,
     update_node,
@@ -386,6 +388,97 @@ class TestReadHelpers:
         path = resolve_artifact(str(job_dir), "eq_001", "artifacts/equilibrated.chk")
         expected = job_dir / "nodes" / "eq_001" / "artifacts" / "equilibrated.chk"
         assert path == expected.resolve()
+
+
+# ── DAG auto-resolve ──────────────────────────────────────────────────────
+
+
+class TestDAGAutoResolve:
+    """Test find_ancestor_artifact and resolve_node_inputs."""
+
+    @pytest.fixture
+    def full_dag(self, job_dir):
+        """Build a complete prep->solv->topo->eq->prod DAG with artifacts."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "artifacts/solvated.pdb",
+                                 "box_dimensions": "artifacts/box_dimensions.json"})
+
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"checkpoint": "artifacts/equilibrated.chk",
+                                 "final_structure": "artifacts/equilibrated.pdb"})
+
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        return job_dir
+
+    def test_find_ancestor_parm7_from_eq(self, full_dag):
+        jd = str(full_dag)
+        result = find_ancestor_artifact(jd, "eq_001", "topo", "parm7")
+        assert result is not None
+        assert result.endswith("topo_001/artifacts/system.parm7")
+
+    def test_find_ancestor_checkpoint_from_prod(self, full_dag):
+        jd = str(full_dag)
+        result = find_ancestor_artifact(jd, "prod_001", "eq", "checkpoint")
+        assert result is not None
+        assert result.endswith("eq_001/artifacts/equilibrated.chk")
+
+    def test_find_ancestor_merged_from_solv(self, full_dag):
+        jd = str(full_dag)
+        result = find_ancestor_artifact(jd, "solv_001", "prep", "merged_pdb")
+        assert result is not None
+        assert result.endswith("prep_001/artifacts/merge/merged.pdb")
+
+    def test_find_ancestor_skips_intermediate(self, full_dag):
+        """prod_001 -> eq_001 -> topo_001: parm7 is 2 hops away."""
+        jd = str(full_dag)
+        result = find_ancestor_artifact(jd, "prod_001", "topo", "parm7")
+        assert result is not None
+        assert "topo_001" in result
+
+    def test_find_ancestor_missing_returns_none(self, full_dag):
+        jd = str(full_dag)
+        result = find_ancestor_artifact(jd, "prep_001", "topo", "parm7")
+        assert result is None
+
+    def test_resolve_node_inputs_eq(self, full_dag):
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert "prmtop_file" in inputs
+        assert "inpcrd_file" in inputs
+        assert inputs["prmtop_file"].endswith("system.parm7")
+        assert inputs["inpcrd_file"].endswith("system.rst7")
+
+    def test_resolve_node_inputs_prod(self, full_dag):
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert "prmtop_file" in inputs
+        assert "inpcrd_file" in inputs
+        assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith("equilibrated.chk")
+
+    def test_resolve_node_inputs_solv(self, full_dag):
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "solv_001", "solv")
+        assert "pdb_file" in inputs
+        assert inputs["pdb_file"].endswith("merged.pdb")
+
+    def test_resolve_node_inputs_topo(self, full_dag):
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "topo_001", "topo")
+        assert "pdb_file" in inputs
+        assert inputs["pdb_file"].endswith("solvated.pdb")
 
 
 # ── Event integration ──────────────────────────────────────────────────────

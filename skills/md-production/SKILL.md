@@ -12,61 +12,40 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 ## Step 0: Parse and Confirm
 
-Extract parameters from the user's request and present a summary.
-Copy identifiers (job directories, eq node IDs) exactly from the user's message.
-
-Summary to present:
-
 | Parameter | Value |
 |-----------|-------|
 | Target | (job directory / batch directory) |
 | Parent eq node | (eq_001, etc.) |
 | Simulation time | |
-| Node / partition | (if specified) |
 | Other | (non-default parameters) |
 
 ## Prerequisites
 
-Read `progress.json` to find the job state.
+Read `progress.json` -- find a completed `eq` node.
+(`prmtop_file`, `inpcrd_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool.)
 
-**Schema v3 (node-based):**
-- Find a completed `eq` node in `progress.json`'s nodes index
-- Read that node's `node.json` for `artifacts.checkpoint` (equilibrated.chk path)
-- Walk ancestors to find `topo` node for `parm7`/`rst7` paths
+If no completed eq node exists, suggest `/md-equilibration <job_dir>` first.
 
-**Schema v2 (legacy):**
-- Find `topology/system.parm7`, `topology/system.rst7` from `progress.json` artifacts
-- Find `equilibrated.chk` from `runs/<run_id>/equilibration/`
-
-**If checkpoint does not exist**: inform the user and suggest
-`/md-equilibration <job_dir>` first.
-
-## Node Setup (Schema v3)
-
-Create a production node linked to the equilibration node:
+## Node Setup
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prod \
   --parent-node-ids eq_001 \
   --label "100ns" \
   --conditions '{"simulation_time_ns": 100}'
-# -> {"node_id": "prod_001", "artifacts_dir": "..."}
 ```
 
-**Branching**: create multiple prod nodes from the same eq node:
+**Branching** (multiple prod from same eq):
 ```bash
 mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids eq_001 \
   --label "100ns_seed42" --conditions '{"simulation_time_ns": 100, "random_seed": 42}'
-# -> prod_002
 ```
 
 ## Workflow
 
-1. If user provides a **batch directory** (`batch_<id>/`):
-   -> **Read and follow `skills/md-production/batch.md`**
+1. If **batch directory**: -> **Read and follow `skills/md-production/batch.md`**
 
-2. If single system:
-   Based on the solvent type (from `progress.json` params or user request):
+2. If single system, based on solvent type:
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
 
@@ -74,22 +53,16 @@ mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids eq_001 \
 
 - If a tool fails, read the error message carefully
 - Retrying the same failed command with identical parameters will produce the same error
-- If stuck, report the error and ask the user for guidance
 
 ## Handoff
 
-After production completes:
+1. Verify prod node status is `completed`.
 
-1. Verify the prod node status is `completed` (auto-updated by the tool).
-
-2. Present the next step to the user:
+2. Present:
    ```
    Production complete. Next:
      /md-analyze <job_dir>
    
-   To run another condition with the same topology:
-     /md-equilibration <job_dir>
-   
-   To branch from the same equilibration:
-     /md-production <job_dir> (create new prod node from same eq node)
+   To branch from same equilibration:
+     /md-production <job_dir>
    ```

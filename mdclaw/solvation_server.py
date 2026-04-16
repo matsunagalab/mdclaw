@@ -384,13 +384,20 @@ def solvate_structure(
         "warnings": []
     }
     
+    # Auto-resolve input from DAG when in node mode and pdb_file not provided
+    if job_dir and node_id and not pdb_file:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "solv")
+        if "pdb_file" in _inputs:
+            pdb_file = _inputs["pdb_file"]
+
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
         logger.error(f"Input PDB file not found: {pdb_file}")
         return result
-    
+
     # Check packmol-memgen availability; fall back to OpenMM if not available
     if not packmol_memgen_wrapper.is_available():
         logger.warning("packmol-memgen not available, trying OpenMM fallback")
