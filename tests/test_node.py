@@ -481,6 +481,120 @@ class TestDAGAutoResolve:
         assert inputs["pdb_file"].endswith("solvated.pdb")
 
 
+# ── Structured (non-path) artifact propagation ─────────────────────────────
+
+
+class TestStructuredArtifactPropagation:
+    """Covers the DAG-based propagation of ``ligand_params`` / ``metal_params``
+    / ``box_dimensions`` from prep/solv ancestors to the topo node.
+    """
+
+    @pytest.fixture
+    def dag_with_ligand(self, job_dir):
+        """prep (with ligand_params) -> solv (with box_dimensions.json) -> topo."""
+        jd = str(job_dir)
+        ligand_params = [
+            {
+                "mol2": "/abs/path/to/AP5.mol2",
+                "frcmod": "/abs/path/to/AP5.frcmod",
+                "residue_name": "AP5",
+                "parameter_source": "amber_geostd",
+            }
+        ]
+
+        create_node(jd, "prep")
+        complete_node(
+            jd,
+            "prep_001",
+            artifacts={
+                "merged_pdb": "artifacts/merge/merged.pdb",
+                "ligand_params": ligand_params,
+            },
+        )
+
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        # Write a real box_dimensions.json so resolve_node_inputs can load it.
+        solv_artifacts = job_dir / "nodes" / "solv_001" / "artifacts"
+        solv_artifacts.mkdir(parents=True, exist_ok=True)
+        box = {"box_a": 77.78, "box_b": 77.78, "box_c": 77.78,
+               "alpha": 90.0, "beta": 90.0, "gamma": 90.0, "is_cubic": True}
+        (solv_artifacts / "box_dimensions.json").write_text(json.dumps(box))
+        complete_node(
+            jd,
+            "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        return job_dir, ligand_params, box
+
+    def test_find_ancestor_returns_str_for_path_artifact(self, dag_with_ligand):
+        """Contract: string-valued artifacts are resolved to abs paths."""
+        job_dir, _lp, _box = dag_with_ligand
+        result = find_ancestor_artifact(str(job_dir), "topo_001", "solv",
+                                        "solvated_pdb")
+        assert isinstance(result, str)
+        assert result.endswith("solv_001/artifacts/solvated.pdb")
+
+    def test_find_ancestor_returns_list_for_structured_artifact(self,
+                                                                dag_with_ligand):
+        """Contract: list/dict artifacts are returned as-is."""
+        job_dir, lp, _box = dag_with_ligand
+        result = find_ancestor_artifact(str(job_dir), "topo_001", "prep",
+                                        "ligand_params")
+        assert isinstance(result, list)
+        assert result == lp  # absolute paths preserved, no path-join applied
+
+    def test_find_ancestor_missing_structured(self, dag_with_ligand):
+        """Absent structured artifact still returns None."""
+        job_dir, _lp, _box = dag_with_ligand
+        result = find_ancestor_artifact(str(job_dir), "topo_001", "prep",
+                                        "metal_params")
+        assert result is None
+
+    def test_resolve_topo_inputs_three_level_dag(self, dag_with_ligand):
+        """prep grandparent -> solv parent -> topo child: ligand_params
+        must be propagated all the way to topo."""
+        job_dir, lp, box = dag_with_ligand
+        inputs = resolve_node_inputs(str(job_dir), "topo_001", "topo")
+
+        # pdb_file from solv parent
+        assert "pdb_file" in inputs
+        assert inputs["pdb_file"].endswith("solvated.pdb")
+
+        # ligand_params from prep grandparent (structured pass-through)
+        assert "ligand_params" in inputs
+        assert inputs["ligand_params"] == lp
+
+        # box_dimensions loaded inline from solv's JSON file
+        assert "box_dimensions" in inputs
+        assert inputs["box_dimensions"] == box
+
+        # metal_params absent → key omitted (not None)
+        assert "metal_params" not in inputs
+
+    def test_resolve_topo_omits_keys_when_prep_has_no_params(self, job_dir):
+        """If prep never wrote ligand/metal params, resolve_node_inputs
+        must silently omit them (not surface as None)."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+
+        inputs = resolve_node_inputs(jd, "topo_001", "topo")
+        assert "pdb_file" in inputs
+        assert "ligand_params" not in inputs
+        assert "metal_params" not in inputs
+        assert "box_dimensions" not in inputs
+
+
 # ── Event integration ──────────────────────────────────────────────────────
 
 

@@ -717,11 +717,17 @@ def build_amber_system(
         ... )
     """
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
-    if job_dir and node_id and not pdb_file:
+    if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "topo")
-        if "pdb_file" in _inputs:
+        if not pdb_file and "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
+        if ligand_params is None and "ligand_params" in _inputs:
+            ligand_params = _inputs["ligand_params"]
+        if metal_params is None and "metal_params" in _inputs:
+            metal_params = _inputs["metal_params"]
+        if box_dimensions is None and "box_dimensions" in _inputs:
+            box_dimensions = _inputs["box_dimensions"]
 
     if not pdb_file:
         return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}

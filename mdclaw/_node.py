@@ -406,17 +406,28 @@ def find_ancestor_artifact(
     node_id: str,
     ancestor_type: str,
     artifact_key: str,
-) -> Optional[str]:
+):
     """Walk the DAG upward from *node_id* to find an artifact from an ancestor.
 
-    Finds the nearest ancestor of *ancestor_type* and returns the absolute
-    path for *artifact_key* from its ``node.json``.  Returns ``None`` if
-    no matching ancestor or artifact is found.
+    Contract for values stored under ``artifacts`` in the ancestor's ``node.json``:
 
-    Example::
+    - **string** → treated as a *path artifact*, resolved relative to the
+      ancestor node's directory; the absolute path is returned as ``str``.
+    - **list or dict** → treated as a *structured artifact* (inline data, or a
+      list of absolute-path dicts such as ``ligand_params``). Returned as-is.
+    - missing / ``None`` → returns ``None``.
+
+    Callers that expect one specific shape should assert the return type.
+
+    Example (path artifact)::
 
         parm7 = find_ancestor_artifact(job_dir, "eq_001", "topo", "parm7")
         # -> "/abs/path/job_xxx/nodes/topo_001/artifacts/system.parm7"
+
+    Example (structured artifact)::
+
+        lp = find_ancestor_artifact(job_dir, "topo_001", "prep", "ligand_params")
+        # -> [{"mol2": "/abs/...", "frcmod": "/abs/...", "residue_name": "AP5"}]
     """
     jd = Path(job_dir)
     pj = jd / "progress.json"
@@ -440,10 +451,14 @@ def find_ancestor_artifact(
             if not node_json_path.exists():
                 continue
             ndata = json.loads(node_json_path.read_text())
-            rel_path = ndata.get("artifacts", {}).get(artifact_key)
-            if rel_path:
-                return str((jd / "nodes" / nid / rel_path).resolve())
-            return None
+            value = ndata.get("artifacts", {}).get(artifact_key)
+            if value is None:
+                return None
+            if isinstance(value, str):
+                # path artifact → resolve relative to ancestor node dir
+                return str((jd / "nodes" / nid / value).resolve())
+            # structured artifact (list/dict) → return as-is
+            return value
         # Keep searching upward
         queue.extend(info.get("parents", []))
     return None
@@ -462,12 +477,14 @@ def resolve_node_inputs(
     Mappings:
 
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
-    - ``topo``: ``solvated_pdb`` from nearest ``solv`` ancestor
+    - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
+                ancestor, plus ``ligand_params`` / ``metal_params`` from
+                nearest ``prep`` ancestor
     - ``eq``:   ``parm7``, ``rst7`` from nearest ``topo`` ancestor
     - ``prod``: ``parm7``, ``rst7`` from nearest ``topo`` ancestor;
                 ``checkpoint`` from nearest ``eq`` ancestor (parent)
     """
-    result: dict[str, str] = {}
+    result: dict = {}
 
     if node_type == "solv":
         v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
@@ -478,6 +495,26 @@ def resolve_node_inputs(
         v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
         if v:
             result["pdb_file"] = v
+
+        lp = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_params")
+        if lp:
+            result["ligand_params"] = lp
+
+        mp = find_ancestor_artifact(job_dir, node_id, "prep", "metal_params")
+        if mp:
+            result["metal_params"] = mp
+
+        bd = find_ancestor_artifact(job_dir, node_id, "solv", "box_dimensions")
+        if bd:
+            # box_dimensions is stored as a path to a JSON file; load inline
+            # so downstream tools receive the dict they expect.
+            if isinstance(bd, str) and bd.endswith(".json"):
+                try:
+                    result["box_dimensions"] = json.loads(Path(bd).read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif isinstance(bd, dict):
+                result["box_dimensions"] = bd
 
     elif node_type == "eq":
         p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
