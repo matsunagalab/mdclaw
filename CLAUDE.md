@@ -500,3 +500,38 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 Two-tier strategy:
 1. **Primary**: pdb2pqr + propka (pH-aware) -> `.amber.pdb`
 2. **Fallback**: pdb4amber + reduce (geometry-based)
+
+## TODO
+
+### Structure acquisition as a DAG root node (`fetch` node type)
+
+Currently `download_structure` / `get_alphafold_structure` are called ad-hoc
+before `prepare_complex`, and their output is not tracked in the job graph.
+Split this into a dedicated `fetch` node type that becomes the DAG root:
+
+```
+fetch_001 (PDB 1AKE) -> prep_001 -> solv_001 -> topo_001 -> eq_001 -> prod_001
+```
+
+This enables:
+- Provenance tracking from the original source (PDB ID, UniProt ID, file path)
+- Re-fetch / version pinning (PDB structures can be updated)
+- Multiple prep variants from the same fetch (e.g., different chain selections)
+
+Implementation: add `"fetch"` to `NODE_TYPES` in `_node.py`, add `fetch`
+case to `resolve_node_inputs`, update `md-prepare` skill to create a
+`fetch` node before `prep`.
+
+### MMDB database integration
+
+Support metadata exchange with an MMDB (Molecular Modeling Database) system:
+
+1. **Read**: populate `node.json` metadata from MMDB entries (forcefield
+   recommendations, known issues, reference parameters for specific systems)
+2. **Write**: register completed job results (system composition, simulation
+   conditions, trajectory metadata) back to MMDB for cataloging
+3. **Agentic workflow**: agents query MMDB to decide simulation parameters,
+   compare results across systems, and auto-register new entries
+
+Schema consideration: `node.json` may need an `mmdb` section for external
+IDs and sync status. `progress.json` may need a top-level `mmdb_id` field.
