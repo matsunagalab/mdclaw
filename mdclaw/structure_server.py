@@ -262,21 +262,51 @@ def _transplant_geostd_coords(geostd_mol2: str, ligand_file: str) -> bool:
         pos = conf_lig.GetAtomPosition(lig_full_idx)
         new_coords[geostd_full_idx] = (pos.x, pos.y, pos.z)
 
-    # H atoms: translate by parent heavy atom's displacement
-    for i in range(mol_geostd.GetNumAtoms()):
-        if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() == 1:
-            neighbors = mol_geostd.GetAtomWithIdx(i).GetNeighbors()
-            if neighbors:
-                parent = neighbors[0].GetIdx()
-                if parent in new_coords:
-                    dx = new_coords[parent][0] - old_coords[parent][0]
-                    dy = new_coords[parent][1] - old_coords[parent][1]
-                    dz = new_coords[parent][2] - old_coords[parent][2]
-                    new_coords[i] = (
-                        old_coords[i][0] + dx,
-                        old_coords[i][1] + dy,
-                        old_coords[i][2] + dz,
-                    )
+    # H atoms: set heavy atom positions first, then optimize H with MMFF
+    from rdkit.Geometry import Point3D
+
+    for idx, (x, y, z) in new_coords.items():
+        conf_geostd.SetAtomPosition(idx, Point3D(x, y, z))
+
+    h_optimized = False
+    try:
+        from rdkit.Chem import AllChem
+        Chem.SanitizeMol(mol_geostd)
+        props = AllChem.MMFFGetMoleculeProperties(mol_geostd)
+        if props:
+            ff = AllChem.MMFFGetMoleculeForceField(mol_geostd, props)
+            if ff:
+                # Constrain all heavy atoms — only H atoms move
+                for i in range(mol_geostd.GetNumAtoms()):
+                    if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() > 1:
+                        ff.MMFFAddPositionConstraint(i, 0.0, 1e5)
+                ff.Minimize(maxIts=200)
+                # Extract optimized H coordinates
+                for i in range(mol_geostd.GetNumAtoms()):
+                    if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                        pos = conf_geostd.GetAtomPosition(i)
+                        new_coords[i] = (pos.x, pos.y, pos.z)
+                h_optimized = True
+                logger.info("H atom positions optimized with MMFF94")
+    except Exception as e:
+        logger.debug(f"MMFF H optimization failed ({e}), using translation fallback")
+
+    if not h_optimized:
+        # Fallback: translate H by parent heavy atom's displacement
+        for i in range(mol_geostd.GetNumAtoms()):
+            if mol_geostd.GetAtomWithIdx(i).GetAtomicNum() == 1:
+                neighbors = mol_geostd.GetAtomWithIdx(i).GetNeighbors()
+                if neighbors:
+                    parent = neighbors[0].GetIdx()
+                    if parent in new_coords:
+                        dx = new_coords[parent][0] - old_coords[parent][0]
+                        dy = new_coords[parent][1] - old_coords[parent][1]
+                        dz = new_coords[parent][2] - old_coords[parent][2]
+                        new_coords[i] = (
+                            old_coords[i][0] + dx,
+                            old_coords[i][1] + dy,
+                            old_coords[i][2] + dz,
+                        )
 
     # Rewrite mol2: replace only coordinate columns in @<TRIPOS>ATOM section
     with open(geostd_mol2, 'r') as f:
