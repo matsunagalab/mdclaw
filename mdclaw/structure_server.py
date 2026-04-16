@@ -74,6 +74,20 @@ KNOWN_LIGAND_SMILES = {
     # Add more as needed
 }
 
+# Expected net charges for common cofactors at pH 7.4
+# Used to cross-check automatic charge estimation and flag low-confidence results
+KNOWN_COFACTOR_CHARGES = {
+    "ATP": -4, "ADP": -3, "AMP": -2,
+    "GTP": -4, "GDP": -3, "GMP": -2,
+    "NAD": -1, "NADP": -3, "NADPH": -4,
+    "FAD": -2, "FMN": -2,
+    "SAH": -1, "SAM": 0,
+    "COA": -4, "ACO": -4,
+    "HEM": -2,
+    "PLP": -2,
+    "TPP": -2,
+}
+
 # Elements supported by GAFF/GAFF2 for parameterization
 GAFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"}
 
@@ -459,6 +473,7 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
     """
     validation = {
         "valid": True,
+        "severity": "ok",
         "warnings": [],
         "missing_params": {
             "bonds": [],
@@ -467,6 +482,7 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
             "impropers": []
         },
         "attn_count": 0,
+        "zero_force_constant_count": 0,
         "recommendations": []
     }
     
@@ -506,10 +522,26 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
                     param_type = parts[0]
                     validation["missing_params"][current_section].append(param_type)
         
-        # Check for zero force constants (dangerous)
+        # Check for zero force constants (dangerous - causes NaN energies)
         if re.search(r'\b0\.0+\s+0\.0+\b', line):
+            validation["zero_force_constant_count"] += 1
             validation["warnings"].append(f"Zero force constant detected: {line.strip()}")
-    
+
+    # Determine severity level
+    if validation["zero_force_constant_count"] > 0:
+        validation["severity"] = "error"
+        validation["valid"] = False
+        validation["recommendations"].append(
+            "CRITICAL: Zero force constants will cause NaN energies during simulation. "
+            "Try a different charge method (--charge-method gas) or provide a manual frcmod."
+        )
+    elif validation["attn_count"] > 3:
+        validation["severity"] = "warning"
+        validation["recommendations"].append(
+            f"Found {validation['attn_count']} parameters estimated by analogy. "
+            "Verify simulation stability early (check for energy drift in first 100 ps)."
+        )
+
     if validation["attn_count"] > 0:
         validation["recommendations"].extend([
             f"Found {validation['attn_count']} parameters requiring attention.",
@@ -517,7 +549,7 @@ def _parse_frcmod_warnings(frcmod_path: Path) -> Dict[str, Any]:
             "Consider consulting a computational chemistry expert for validation.",
             "For production runs, quantum chemistry calculations may be needed."
         ])
-    
+
     return validation
 
 
@@ -2432,8 +2464,12 @@ def clean_ligand(
         logger.info(f"Final net charge: {net_charge} (source: {charge_source})")
         
         # Step 8: Write SDF file (preserves bond orders)
+        # Force 3D flag on conformer so antechamber doesn't reject "2D format"
+        if mol_with_h.GetNumConformers() > 0:
+            mol_with_h.GetConformer().Set3D(True)
+
         output_sdf = out_dir / f"{ligand_path.stem}_prepared.sdf"
-        
+
         writer = Chem.SDWriter(str(output_sdf))
         writer.SetForceV3000(False)  # V2000 format is more compatible with antechamber
         writer.write(mol_with_h)
@@ -2601,7 +2637,23 @@ def run_antechamber_robust(
             result["warnings"].append(f"Charge estimation failed: {e}, defaulting to 0")
             logger.warning(f"Charge estimation failed: {e}, defaulting to 0")
             net_charge = 0
-    
+
+    # Cross-check against known cofactor charges
+    res_upper = residue_name.upper()
+    known_charge = KNOWN_COFACTOR_CHARGES.get(res_upper)
+    if known_charge is not None and known_charge != net_charge:
+        result["warnings"].append(
+            f"LOW_CONFIDENCE_CHARGE: {res_upper} expected charge={known_charge} "
+            f"but estimated={net_charge}. Using known cofactor charge. "
+            f"Override with --manual-charge if needed."
+        )
+        logger.warning(f"Cofactor {res_upper}: overriding estimated charge {net_charge} -> {known_charge}")
+        net_charge = known_charge
+    result["charge_confidence"] = (
+        "known_cofactor" if known_charge is not None
+        else charge_estimation["confidence"] if charge_estimation else "default"
+    )
+
     # Determine input format
     input_format = ligand_path.suffix[1:].lower()
     if input_format == 'sdf':
@@ -2737,7 +2789,19 @@ def run_antechamber_robust(
         # Validate frcmod
         frcmod_validation = _parse_frcmod_warnings(output_frcmod)
         result["frcmod_validation"] = frcmod_validation
-        
+
+        if frcmod_validation["severity"] == "error":
+            result["errors"].append(
+                f"frcmod has {frcmod_validation['zero_force_constant_count']} zero force constant(s) "
+                "which will cause NaN energies during simulation"
+            )
+            for warning in frcmod_validation["warnings"][:5]:
+                result["errors"].append(f"frcmod: {warning}")
+            for rec in frcmod_validation.get("recommendations", []):
+                result["errors"].append(f"Hint: {rec}")
+            logger.error("frcmod validation failed: zero force constants detected")
+            return result
+
         if not frcmod_validation["valid"]:
             for warning in frcmod_validation["warnings"][:5]:
                 result["warnings"].append(f"frcmod: {warning}")
@@ -3575,6 +3639,24 @@ def prepare_complex(
                     elif key not in preparation_summary:
                         preparation_summary[key] = val
         result["preparation_summary"] = preparation_summary
+
+        # Write ligand_params.json next to merged PDB for auto-detection by build_amber_system
+        if result.get("merged_pdb") and result.get("ligands"):
+            successful_ligands = [
+                {
+                    "mol2": lig["mol2_file"],
+                    "frcmod": lig["frcmod_file"],
+                    "residue_name": lig.get("ligand_id", "LIG")[:3].upper(),
+                }
+                for lig in result["ligands"]
+                if lig.get("success") and lig.get("mol2_file") and lig.get("frcmod_file")
+            ]
+            if successful_ligands:
+                merged_dir = Path(result["merged_pdb"]).parent
+                ligand_params_json = merged_dir / "ligand_params.json"
+                with open(ligand_params_json, 'w') as f:
+                    json.dump(successful_ligands, f, indent=2)
+                logger.info(f"Wrote ligand_params.json ({len(successful_ligands)} ligands) to {ligand_params_json}")
 
         # Save workflow summary
         summary_file = out_dir / "prepare_complex_summary.json"

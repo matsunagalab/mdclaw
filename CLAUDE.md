@@ -70,6 +70,7 @@ tests/                      # 4-level test suite
   test_literature_server.py  # PubMed server tests
   test_research_server_structure_analysis.py  # Structure analysis tests
   test_slurm_server.py      # SLURM server mock tests
+  test_ligand_pathway.py    # Ligand parameterization tests (L1-L3)
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -133,6 +134,7 @@ job_XXXXXXXX/                        # one system (created by md-prepare)
 - `run.json` holds per-run conditions, equilibration/production stage status, and `next_step` for handoff
 - `e2e_mode` in params triggers automatic chaining across skills
 - Run labels auto-generated: `run_NNN_<T>K[_seed<N>]`
+- `ligand_params.json` written by `prepare_complex` next to `merged.pdb`; auto-detected by `build_amber_system` (same pattern as `box_dimensions.json`)
 
 ### Pre-commit Checklist
 

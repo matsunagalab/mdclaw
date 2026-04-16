@@ -716,6 +716,20 @@ def build_amber_system(
     """
     logger.info(f"Building Amber system from: {pdb_file}")
 
+    # Auto-detect ligand_params.json if not provided
+    # Written by prepare_complex() next to the merged PDB
+    if ligand_params is None:
+        pdb_path = Path(pdb_file)
+        for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
+            lig_json = search_dir / "ligand_params.json"
+            if lig_json.exists():
+                try:
+                    ligand_params = json.loads(lig_json.read_text())
+                    logger.info(f"Auto-loaded ligand_params ({len(ligand_params)} ligands) from {lig_json}")
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Found {lig_json} but could not read: {e}")
+                break
+
     # Auto-detect box_dimensions.json if not provided
     if box_dimensions is None:
         pdb_path = Path(pdb_file)

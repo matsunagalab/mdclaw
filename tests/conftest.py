@@ -60,6 +60,110 @@ END
 """)
 
 
+# Acetic acid HETATM block (simplest possible ligand for testing)
+ACETIC_ACID_PDB = textwrap.dedent("""\
+HETATM    1  C1  ACE A   1       0.000   0.000   0.000  1.00  0.00           C
+HETATM    2  C2  ACE A   1       1.520   0.000   0.000  1.00  0.00           C
+HETATM    3  O1  ACE A   1       2.180   1.040   0.000  1.00  0.00           O
+HETATM    4  O2  ACE A   1       2.080  -1.100   0.000  1.00  0.00           O
+END
+""")
+
+# Synthetic frcmod with no issues
+SAMPLE_FRCMOD_CLEAN = textwrap.dedent("""\
+remark goes here
+MASS
+
+BOND
+c3-c   300.9    1.508
+
+ANGLE
+c3-c -o    68.7   123.1
+
+DIHE
+hc-c3-c -o    1    0.800       180.000          -1.
+
+IMPROPER
+c3-o -c -o          1.1          180.0         2.0
+
+NONBON
+
+""")
+
+# Synthetic frcmod with ATTN warnings (estimated parameters)
+SAMPLE_FRCMOD_ATTN = textwrap.dedent("""\
+remark goes here
+MASS
+
+BOND
+x1-x2   300.0    1.500       ATTN, need revision
+
+ANGLE
+x1-x2-x3    50.0   120.0       ATTN, need revision
+x2-x3-x4    50.0   109.5       ATTN, need revision
+x3-x4-x5    50.0   109.5       ATTN, need revision
+x4-x5-x6    50.0   109.5       ATTN, need revision
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+""")
+
+# Synthetic frcmod with zero force constants (causes NaN energies)
+SAMPLE_FRCMOD_ZERO = textwrap.dedent("""\
+remark goes here
+MASS
+
+BOND
+x1-x2   0.0    0.0
+
+ANGLE
+x1-x2-x3    0.0   0.0       ATTN, need revision
+
+DIHE
+
+IMPROPER
+
+NONBON
+
+""")
+
+
+@pytest.fixture
+def acetic_acid_pdb(tmp_path):
+    """Create an acetic acid HETATM PDB file for testing."""
+    pdb_file = tmp_path / "acetic_acid.pdb"
+    pdb_file.write_text(ACETIC_ACID_PDB)
+    return str(pdb_file)
+
+
+@pytest.fixture
+def sample_frcmod_clean(tmp_path):
+    """Create a clean frcmod file with no warnings."""
+    frcmod_file = tmp_path / "clean.frcmod"
+    frcmod_file.write_text(SAMPLE_FRCMOD_CLEAN)
+    return frcmod_file
+
+
+@pytest.fixture
+def sample_frcmod_attn(tmp_path):
+    """Create a frcmod file with ATTN warnings."""
+    frcmod_file = tmp_path / "attn.frcmod"
+    frcmod_file.write_text(SAMPLE_FRCMOD_ATTN)
+    return frcmod_file
+
+
+@pytest.fixture
+def sample_frcmod_zero(tmp_path):
+    """Create a frcmod file with zero force constants."""
+    frcmod_file = tmp_path / "zero.frcmod"
+    frcmod_file.write_text(SAMPLE_FRCMOD_ZERO)
+    return frcmod_file
+
+
 @pytest.fixture
 def small_pdb(tmp_path):
     """Create a small protein PDB file for testing."""

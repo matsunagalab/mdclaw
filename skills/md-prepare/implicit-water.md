@@ -22,6 +22,8 @@ No solvation step is needed for implicit solvent. Proceed directly to topology.
 
 ## Step 5: Build Topology (no box, no water)
 
+`ligand_params.json` is auto-detected from the merged PDB directory if ligands were prepared in Step 3.
+
 ```bash
 mdclaw build_amber_system \
   --pdb-file <merged_pdb> \
@@ -31,6 +33,7 @@ mdclaw build_amber_system \
 ```
 
 > No `--box-dimensions` or `--water-model` needed for implicit solvent.
+> Ligand params (mol2/frcmod) are auto-loaded from `ligand_params.json` if present.
 
 ### Domain Knowledge
 
