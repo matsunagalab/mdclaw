@@ -1,4 +1,4 @@
-# Implicit Solvent: Topology & Quick MD
+# Implicit Solvent: Topology
 
 Implicit solvent models represent water as a continuum dielectric instead of explicit water molecules. Faster but less accurate than explicit water.
 
@@ -9,8 +9,6 @@ Implicit solvent models represent water as a continuum dielectric instead of exp
 | GB model | GBn2 (igb=8) | "obc", "obc2", "hct" |
 | Salt concentration | 0.15M | "0.3M", "no salt" |
 | Force field | ff14SB | "ff19SB" (note: ff19SB is optimized for explicit water) |
-| Temperature | 300 K | "310K" |
-| Simulation time | 0.1 ns (quick) | "1 ns" |
 
 **Note**: ff14SB is recommended for implicit solvent. ff19SB was parameterized with OPC explicit water and may be less accurate with GB models.
 
@@ -22,9 +20,7 @@ No solvation step is needed for implicit solvent. Proceed directly to topology.
 
 ---
 
-## Step 5: Topology & Quick MD
-
-### Build Topology (no box, no water)
+## Step 5: Build Topology (no box, no water)
 
 ```bash
 mdclaw build_amber_system \
@@ -35,36 +31,6 @@ mdclaw build_amber_system \
 ```
 
 > No `--box-dimensions` or `--water-model` needed for implicit solvent.
-
-### Quick MD (implicit solvent)
-
-Two stages: NVT heating (small timestep) then NVT check (default 4 fs + HMR).
-
-```bash
-# Stage 1: NVT heating (0.01 ns, 1 fs, no HMR)
-mdclaw run_production \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --simulation-time-ns 0.01 \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 0 \
-  --timestep-fs 1.0 \
-  --no-hmr \
-  --output-frequency-ps 1.0
-
-# Stage 2: NVT sanity check (0.1 ns, default 4 fs + HMR)
-mdclaw run_production \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --simulation-time-ns 0.1 \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 0 \
-  --output-frequency-ps 10.0
-```
-
-> `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
 
 ### Domain Knowledge
 
@@ -85,3 +51,24 @@ mdclaw run_production \
 - Less accurate for surface-exposed residues
 - Membrane systems not supported
 - Salt bridge stability may differ from explicit water
+
+---
+
+## Handoff
+
+1. Set `progress.json.next_step`:
+   ```json
+   {
+     "skill": "md-equilibration",
+     "cli_hint": "/md-equilibration <job_dir>",
+     "rationale": "topology built, ready for equilibration"
+   }
+   ```
+
+2. **If `params.e2e_mode` is true**: read and follow `skills/md-equilibration/SKILL.md`.
+
+3. **Otherwise**: present the next step to the user:
+   ```
+   Preparation complete. Next:
+     /md-equilibration <job_dir>
+   ```

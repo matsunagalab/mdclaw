@@ -1,4 +1,4 @@
-# Explicit Water: Solvation, Topology & Quick MD
+# Explicit Water: Solvation & Topology
 
 ## Decision Defaults
 
@@ -8,9 +8,6 @@
 | Buffer size | 15 A | "buffer 20", "20A" |
 | Salt concentration | 0.15M NaCl | "0.3M", "no salt" |
 | Force field | ff19SB | "ff14SB" |
-| Temperature | 300 K | "310K" |
-| Timestep | 4 fs (HMR enabled by default) | "2 fs", "--no-hmr" |
-| Simulation time | 0.1 ns (quick) | "1 ns", "10 ns" |
 
 **Force field + water model pairing**: ff19SB + OPC (recommended), ff14SB + TIP3P.
 
@@ -41,9 +38,7 @@ mdclaw solvate_structure \
 
 ---
 
-## Step 5: Topology & Quick MD
-
-### Build Topology
+## Step 5: Build Topology
 
 `box_dimensions.json` is auto-detected from the solvated PDB directory. No need to pass `--box-dimensions`:
 
@@ -57,59 +52,6 @@ mdclaw build_amber_system \
 ```
 
 > `build_amber_system` looks for `box_dimensions.json` in the same directory as the input PDB. If not found, it builds an implicit solvent system (no PBC).
-
-### Equilibration + Quick MD (sanity check)
-
-Run equilibration then a short production run starting from the equilibrated
-checkpoint. When `--pressure-bar` > 0, equilibration runs NVT heating
-followed by NPT density equilibration (both with CA positional restraints).
-When pressure is 0 or omitted, only NVT heating runs. Both stages use
-4 fs + HMR so the final state can be handed off to production via a binary
-checkpoint.
-
-```bash
-# Equilibration: NVT (10ps) + NPT (20ps) at 4 fs + HMR, CA restraints.
-# --pressure-bar 1.0 triggers the NPT density stage (NPT ensemble target).
-# Writes equilibrated.chk from a production-matching System (no restraints,
-# currentStep=0) and equilibration.xml as an audit/reproducibility backup.
-mdclaw run_equilibration \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 1.0
-
-# Quick production (0.1 ns, 4 fs + HMR, no restraints).
-# --restart-from <equilibrated.chk> loads equilibrated positions, velocities,
-# and NPT-adjusted box; currentStep in the checkpoint is 0 so the full
-# simulation_time_ns runs. Minimization and velocity re-randomization are
-# skipped. Use the checkpoint_file path from run_equilibration's JSON output.
-mdclaw run_production \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --simulation-time-ns 0.1 \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 1.0 \
-  --output-frequency-ps 10.0 \
-  --restart-from <equilibrated_chk>
-```
-
-### Domain Knowledge
-- Equilibration uses positional restraints on CA atoms to prevent structural collapse
-- Both NVT and NPT stages run at 4 fs with HMR, matching production's integrator.
-  The final state is handed off to production via a binary checkpoint (no
-  re-minimization, equilibrated velocities and NPT-adjusted box preserved).
-- `run_equilibration` writes `equilibrated.chk` from a clean,
-  production-matching System (no restraint force). Pass it to
-  `run_production --restart-from` to inherit the equilibrated state. The
-  checkpoint's `currentStep` is 0 by construction, so `--simulation-time-ns`
-  is interpreted as the full production length.
-- `equilibration.xml` is also written as an audit/reproducibility backup
-  (OpenMM XML State). It is not used for restart — use the `.chk` instead.
-- Production uses 4 fs + HMR (default) without restraints
-- NPT ensemble at 300K, 1 bar for equilibration
-- Energy should drop significantly during minimization (good sign)
 
 ### Protonation Notes
 - pH 7.4 is physiological default
@@ -143,4 +85,25 @@ Fill in these sections using information from the tool outputs during this workf
   - `protein`, `water`, `lipid`, `ligand_method`
 
 - **artifacts**: file paths for each output file (from each tool's output)
-  - `structure_file`, `merged_pdb`, `solvated_pdb`, `parm7`, `rst7`, etc.
+  - `structure_file`, `merged_pdb`, `solvated_pdb`, `parm7`, `rst7`
+
+## Handoff
+
+1. Set `progress.json.next_step`:
+   ```json
+   {
+     "skill": "md-equilibration",
+     "cli_hint": "/md-equilibration <job_dir>",
+     "rationale": "topology built, ready for equilibration"
+   }
+   ```
+
+2. **If `params.e2e_mode` is true** (user said "end-to-end", "then run X ns",
+   "全部やって", etc.): read and follow `skills/md-equilibration/SKILL.md`,
+   passing the job directory and any production parameters from the original request.
+
+3. **Otherwise**: present the next step to the user:
+   ```
+   Preparation complete. Next:
+     /md-equilibration <job_dir>
+   ```

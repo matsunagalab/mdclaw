@@ -1,8 +1,8 @@
 # Batch Prepare: Multiple Targets
 
 Prepare multiple systems for MD simulation. Each target goes through the full
-setup.md → explicit-water.md (or implicit-water.md) pipeline, but **Quick MD
-(Step 5b) is skipped** — production runs are handled by `/md-run`.
+setup.md → explicit-water.md (or implicit-water.md) pipeline. Equilibration
+and production runs are handled by `/md-equilibration` and `/md-production`.
 
 Before starting, present the parsed target list to the user for confirmation.
 Copy identifiers exactly from the user's message — do not rely on conversation
@@ -35,8 +35,6 @@ Targets may be comma-separated, space-separated, or one per line. Mixed types ar
       "type": "pdb_id|sequence|file",
       "job_dir": "job_<name>/",
       "prepare_status": "pending",
-      "slurm_job_id": null,
-      "md_status": "pending",
       "error": null
     }
   ],
@@ -114,6 +112,9 @@ After all targets are processed, report a summary table:
 
 Then suggest:
 ```
-To run production MD for all prepared systems:
-  /md-run batch_<id>, <time>ns production on <partition>
+To equilibrate all prepared systems:
+  /md-equilibration batch_<id>
+
+Then to run production MD:
+  /md-production batch_<id>, <time>ns [on <partition>]
 ```

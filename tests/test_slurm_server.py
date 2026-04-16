@@ -381,7 +381,7 @@ class TestListJobs:
             "jobs": [
                 {
                     "job_id": 111,
-                    "name": "md_run",
+                    "name": "md_production",
                     "job_state": ["RUNNING"],
                     "partition": "gpu",
                     "time": {"elapsed": 3600},
@@ -402,7 +402,7 @@ class TestListJobs:
         result = list_jobs()
         assert result["success"] is True
         assert result["total"] == 2
-        assert result["jobs"][0]["name"] == "md_run"
+        assert result["jobs"][0]["name"] == "md_production"
         assert result["jobs"][1]["state"] == "PENDING"
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)

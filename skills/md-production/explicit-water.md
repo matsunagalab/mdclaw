@@ -11,7 +11,7 @@
 | Thermostat | Langevin (built into integrator) | Friction 1/ps |
 | Barostat | MonteCarloBarostat | Temperature should match integrator (OpenMM requirement) |
 | Constraints | HBonds | Allows up to 4 fs timestep with LangevinMiddle |
-| Ensemble | NPT (300K, 1 bar) | NVT heating → NPT production |
+| Ensemble | NPT (300K, 1 bar) | |
 
 ### Timestep Guide
 
@@ -25,69 +25,52 @@
 
 ---
 
-## Equilibration + Production Protocol
+## Production Run
 
 ### Local Execution
 
-When running on the local machine (not SLURM):
-
 ```bash
-# Equilibration: NVT heating → NPT density (CA restraints)
-mdclaw run_equilibration \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --temperature-kelvin 300.0 \
-  --pressure-bar 1.0
-
-# Production: NPT, HMR + 4 fs, no restraints
 mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
+  --output-dir <run_dir>/md_simulation \
   --simulation-time-ns <user_specified> \
-  --temperature-kelvin 300.0 \
+  --temperature-kelvin <T> \
   --pressure-bar 1.0 \
-  --output-frequency-ps 10.0
+  --output-frequency-ps 10.0 \
+  --restart-from <run_dir>/equilibration/equilibrated.chk
 ```
+
+- `--restart-from equilibrated.chk` loads equilibrated positions, velocities,
+  and NPT-adjusted box. currentStep is 0 so the full `simulation_time_ns` runs.
+- Minimization and velocity re-randomization are skipped when restarting.
+- Use the `checkpoint_file` path from `run_equilibration`'s JSON output (or
+  read from `run.json`'s `stages.equilibration.checkpoint`).
 
 ### SLURM Execution (HPC)
 
-Submit equilibration and production as two dependent SLURM jobs.
-The production job starts only after equilibration completes successfully:
-
 ```bash
-# Job 1: Equilibration
-mdclaw submit_job \
-  --script "mdclaw run_equilibration \
-    --prmtop-file <ABSOLUTE_PARM7> \
-    --inpcrd-file <ABSOLUTE_RST7> \
-    --output-dir <ABSOLUTE_JOB_DIR> \
-    --temperature-kelvin 300.0 \
-    --pressure-bar 1.0" \
-  --job-name eq_<name> \
-  --partition <partition> --nodelist <node> --gpus 1 \
-  --time-limit "1:00:00" --memory "32G"
-# → returns slurm_job_id (e.g., 12345)
-
-# Job 2: Production (depends on equilibration)
 mdclaw submit_job \
   --script "mdclaw run_production \
     --prmtop-file <ABSOLUTE_PARM7> \
     --inpcrd-file <ABSOLUTE_RST7> \
     --simulation-time-ns <user_specified> \
-    --temperature-kelvin 300.0 \
+    --temperature-kelvin <T> \
     --pressure-bar 1.0 \
     --platform CUDA \
-    --output-dir <ABSOLUTE_JOB_DIR>" \
+    --output-dir <ABSOLUTE_RUN_DIR>/md_simulation \
+    --restart-from <ABSOLUTE_RUN_DIR>/equilibration/equilibrated.chk" \
   --job-name md_<name> \
   --partition <partition> --nodelist <node> --gpus 1 \
-  --time-limit <estimated> --memory "32G" \
-  --dependency "afterok:<eq_job_id>"
-# → production starts only after equilibration succeeds
+  --time-limit <estimated> --memory "32G"
 ```
 
 SLURM compute nodes do not inherit the login node's working directory,
 so all paths in `--script` need to be absolute. Use `realpath` to convert.
+
+For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a
+SLURM job. `run_production` is the primary mdclaw tool that benefits from
+SLURM submission (GPU-bound, long-running).
 
 ---
 
@@ -95,7 +78,7 @@ so all paths in `--script` need to be absolute. Use `realpath` to convert.
 
 | Purpose | Time | Notes |
 |---|---|---|
-| Sanity check | 0.1 ns | Already done in md-prepare |
+| Sanity check | 0.1 ns | Quick validation |
 | Short equilibration | 1-10 ns | Good for initial testing |
 | Production | 50-500 ns | Standard for conformational sampling |
 | Extended | 1+ us | For slow processes (folding, binding) |
@@ -108,7 +91,8 @@ so all paths in `--script` need to be absolute. Use `realpath` to convert.
 ```bash
 mdclaw run_production --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0
+  --simulation-time-ns 100.0 \
+  --restart-from equilibrated.chk
 ```
 
 ### HMR (default: enabled)
@@ -116,26 +100,27 @@ mdclaw run_production --platform CUDA --device-index "0" \
 HMR (hydrogenMass=4 amu) and 4 fs timestep are the defaults. To disable:
 ```bash
 mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0
+  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 \
+  --restart-from equilibrated.chk
 ```
 
 ### Checkpoint / Restart
 ```bash
 # Initial run (checkpoint.chk saved automatically)
 mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --platform CUDA
+  --simulation-time-ns 100.0 --platform CUDA \
+  --restart-from equilibrated.chk
 
-# Restart from checkpoint (appends to DCD, runs only remaining steps)
+# Restart from mid-run checkpoint (appends to DCD, runs only remaining steps)
 mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
   --simulation-time-ns 100.0 --platform CUDA \
-  --restart-from /path/to/checkpoint.chk
+  --restart-from /path/to/runs/<run_id>/md_simulation/checkpoint.chk
 ```
 
 **Checkpoint notes:**
 - Binary format: platform-specific (CUDA checkpoint cannot load on CPU)
+- Restarted simulations append to the existing DCD
 - For portable saves, use State (XML) — but mdclaw currently uses checkpoint
-- Restarted simulations append to the existing DCD, so the trajectory path should match the original
-- For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM job. Currently, `run_production` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---
 
@@ -152,18 +137,27 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 | Problem | Cause | Fix |
 |---|---|---|
 | SHAKE constraint failure | Bad geometry or too large timestep | Reduce to 2 fs, or re-prepare structure |
-| NaN energies | Clashes in input | Go back to md-prepare and re-minimize |
+| NaN energies | Clashes in input | Re-equilibrate or re-prepare structure |
 | Slow performance | GPU not detected | Check `--platform CUDA` and `nvidia-smi` |
 | Out of memory | System too large | Reduce buffer or use implicit solvent |
 | Barostat instability | Temperature mismatch | Ensure barostat and integrator use same temperature |
 
 ---
 
-## Update progress.json Metadata
+## Update run.json
 
-After production completes, update progress.json with:
+After production completes, update `run.json` with metadata from the tool output:
 
-- **software**: mdclaw version, openmm version, python version, and other package versions visible in tool logs
-- **hardware**: platform (CUDA/CPU), gpu_device, hostname (from run_equilibration / run_production output)
-- **equilibration**: stages_completed, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, integrator, constraints (from run_equilibration output)
-- **production**: ensemble, temperature_K, pressure_bar, timestep_fs, hmr, hydrogen_mass_amu, integrator, friction_per_ps, constraints, nonbonded_method, nonbonded_cutoff_nm, simulation_time_ns, total_steps, output_frequency_ps (from run_production output)
+- **stages.production**:
+  - `status`: `"completed"`
+  - `trajectory`: path to `trajectory.dcd`
+  - `final_structure`: path to `final_structure.pdb`
+  - `checkpoint_file`: path to `checkpoint.chk`
+  - `energy_file`: path to `energy.dat`
+  - `ensemble`, `simulation_time_ns`, `num_steps`, `timestep_fs`
+  - `hmr`, `platform`, `device_index`
+  - `initial_energy_kj_mol`, `final_energy_kj_mol`
+  - `restarted_from`: path to the equilibrated checkpoint used
+
+- `stages.production.platform`: from tool output (e.g., `"CUDA"`, `"OpenCL"`)
+- `stages.production.device_index`: from tool output if specified

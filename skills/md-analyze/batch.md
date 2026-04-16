@@ -5,15 +5,18 @@ produce a cross-system comparison report.
 
 ## Input
 
-Read `batch_<id>/batch_progress.json` and identify targets where `md_status == "completed"`.
+Read `batch_<id>/batch_progress.json` and identify targets where `prepare_status == "completed"`.
+For each target, scan `<job_dir>/runs/` for run directories with completed production
+(`run.json` → `stages.production.status == "completed"`).
 
 ## Workflow
 
 ### 1. Locate Trajectories
 
-For each completed target, find:
+For each completed run, find:
 - Topology: `<job_dir>/topology/system.parm7`
-- Trajectory: `<job_dir>/md_simulation/trajectory.dcd`
+- Trajectory: `<job_dir>/runs/<run_id>/md_simulation/trajectory.dcd`
+  (scan all run directories, or use the run_id specified by the user)
 
 If files are missing, skip and note in the report.
 

@@ -30,7 +30,8 @@ The container (~4.6 GB) downloads automatically on first session start.
 | Command | Purpose |
 |---------|---------|
 | `/mdclaw:md-prepare` | Structure → cleaning → solvation → topology |
-| `/mdclaw:md-run` | Equilibration (NVT+NPT, CA restraints) + production MD |
+| `/mdclaw:md-equilibration` | Energy minimization → NVT heating → NPT density |
+| `/mdclaw:md-production` | Production MD (NPT/NVT, HMR, checkpoint restart) |
 | `/mdclaw:md-analyze` | RMSD, RMSF, energy, hydrogen bonds |
 | `/mdclaw:hpc-run` | SLURM job submission, monitoring, restart |
 
@@ -38,13 +39,15 @@ The container (~4.6 GB) downloads automatically on first session start.
 
 ```
 > /mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
-> /mdclaw:md-run run 10 ns production MD
+> /mdclaw:md-equilibration job_a1b2c3d4
+> /mdclaw:md-production job_a1b2c3d4 run_001_300K, 10 ns
 ```
 
 Batch:
 ```
 > /mdclaw:md-prepare 1AKE, 4AKE chain A, explicit water
-> /mdclaw:md-run batch_a1b2c3d4, 100 ns on GPU partition
+> /mdclaw:md-equilibration batch_a1b2c3d4
+> /mdclaw:md-production batch_a1b2c3d4, 100 ns on GPU partition
 ```
 
 HPC:
@@ -60,15 +63,15 @@ You can also call `mdclaw <tool>` directly. See `mdclaw --list`.
 ff19SB + OPC water, 15 Å buffer, 0.15 M NaCl, 300 K, 1 bar (NPT),
 LangevinMiddleIntegrator with HMR (4 fs timestep, hydrogenMass=4 amu),
 HBonds constraints, PME for explicit water. Equilibration uses CA
-positional restraints (100 kJ/mol/nm²) for NVT (10k steps, 1 fs) +
-NPT (10k steps, 2 fs).
+positional restraints (100 kJ/mol/nm²) for NVT (2500 steps, 4 fs) +
+NPT (5000 steps, 4 fs).
 
 ### Reproducibility
 
-Each job directory contains `progress.json` with auto-recorded CLI
-commands, software versions, system composition, preparation details
-(protonation, disulfides, missing residues), and full MD conditions —
-sufficient to regenerate the workflow and write a paper Methods section.
+Each job directory contains `progress.json` (system composition, preparation
+details) and per-run `runs/<run_id>/run.json` (simulation conditions, energy,
+trajectory paths) — auto-recorded by CLI tools, sufficient to regenerate the
+workflow and write a paper Methods section.
 
 ---
 
@@ -86,8 +89,9 @@ conda env create -f environment.yml && conda activate mdclaw && pip install -e .
 
 Skills work directly via `.claude/commands/` when running Claude Code in
 the repo — no plugin install needed. In this dev mode, slash commands
-have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-run`, `/md-analyze`,
-`/hpc-run` (the `/mdclaw:*` form only exists when installed as a plugin).
+have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-equilibration`,
+`/md-production`, `/md-analyze`, `/hpc-run` (the `/mdclaw:*` form only
+exists when installed as a plugin).
 
 ### Daily Cycle
 

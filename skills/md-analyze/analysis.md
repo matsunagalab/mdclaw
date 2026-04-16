@@ -2,11 +2,13 @@
 
 ## Prerequisites
 
-Ensure these files exist (from md-prepare or md-run):
+Ensure these files exist (from md-production):
 - `parm7` — Amber topology file
 - `trajectory` — Trajectory file (DCD or similar)
 
-Read `progress.json` in the job directory to find file paths.
+Read `progress.json` in the job directory to find topology paths.
+For jobs with `runs/` subdirectories, also read `runs/<run_id>/run.json`
+to find the trajectory path (`stages.production.trajectory`).
 
 ---
 

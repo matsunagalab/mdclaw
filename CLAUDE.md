@@ -15,15 +15,17 @@ This file provides guidance to Claude Code when working with this repository.
 
 ```
 skills/                    # Domain knowledge (platform-agnostic .md)
-  md-prepare/SKILL.md      # Full MD preparation workflow
-  md-run/SKILL.md           # Production MD runs
+  md-prepare/SKILL.md      # Structure → cleaning → solvation → topology
+  md-equilibration/SKILL.md # Energy min → NVT heating → NPT density
+  md-production/SKILL.md    # Production MD runs
   md-analyze/SKILL.md       # Trajectory analysis
   hpc-run/SKILL.md          # HPC/SLURM job management
 
 .claude/commands/           # Dev-only: local slash commands (/md-prepare etc.)
   md-prepare.md             #   Thin wrappers that read skills/*/SKILL.md
-  md-run.md                 #   Not needed when installed as plugin
-  md-analyze.md             #   (plugin users get /mdclaw:md-prepare etc.)
+  md-equilibration.md       #   Not needed when installed as plugin
+  md-production.md          #   (plugin users get /mdclaw:md-prepare etc.)
+  md-analyze.md
   hpc-run.md
 
 .claude-plugin/              # Plugin marketplace metadata

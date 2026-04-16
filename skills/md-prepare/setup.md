@@ -9,30 +9,28 @@ the workflow progresses, using information from tool outputs.
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "2.0",
   "job_id": "<8-char hex>",
   "created_at": "<ISO8601 timestamp>",
   "current_step": "<step name>",
   "completed_steps": [],
   "commands": [],
-  "software": {},
-  "hardware": {},
   "system": {},
   "preparation": {},
   "solvation": {},
   "forcefield": {},
-  "equilibration": {},
-  "production": {},
   "params": {
     "pdb_id": "", "chains": [], "include_ligands": true,
     "solvation_type": "explicit", "water_model": "opc",
     "buffer_angstrom": 15, "salt_molar": 0.15,
-    "forcefield": "ff19SB", "temperature_kelvin": 300, "ph": 7.4
+    "forcefield": "ff19SB", "ph": 7.4
   },
   "artifacts": {
     "structure_file": "", "merged_pdb": "",
-    "solvated_pdb": "", "parm7": "", "rst7": "", "trajectory": ""
-  }
+    "solvated_pdb": "", "parm7": "", "rst7": ""
+  },
+  "runs": [],
+  "next_step": null
 }
 ```
 
@@ -45,7 +43,11 @@ job_XXXXXXXX/
   merge/        ← Step 3: merged.pdb
   solvate/      ← Step 4: solvated.pdb
   topology/     ← Step 5: system.parm7, system.rst7
-  md_simulation/ ← Step 5: trajectory.dcd
+  runs/          ← Created by md-equilibration / md-production
+    run_001_300K/
+      run.json
+      equilibration/
+      md_simulation/
 ```
 
 Always read file paths from each tool's JSON output rather than guessing paths.

@@ -11,7 +11,7 @@
 | Thermostat | Langevin (built into integrator) | |
 | Barostat | **None** | No periodic box → no pressure coupling |
 | Constraints | HBonds | Allows up to 4 fs with LangevinMiddle |
-| Ensemble | NVT (300K) | No NPT for implicit solvent |
+| Ensemble | NVT | No NPT for implicit solvent |
 
 ### Implicit Solvent Models (fastest → most accurate)
 
@@ -33,36 +33,40 @@
 
 ---
 
-## Equilibration Protocol
+## Production Run
 
-### Stage 1: Energy Minimization
-Already handled by `run_production` internally (1000 steps steepest descent).
+### Local Execution
 
-### Stage 2: Equilibration (run_equilibration)
-
-NVT only (no NPT for implicit solvent) with positional restraints on CA atoms:
-
-```bash
-mdclaw run_equilibration \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <job_dir> \
-  --temperature-kelvin 300.0
-```
-
-> No `--pressure-bar` needed. `run_equilibration` auto-skips NPT for implicit solvent.
-
-### Stage 3: NVT Production
-
-Default settings (HMR + 4 fs, no restraints):
 ```bash
 mdclaw run_production \
   --prmtop-file <parm7> \
   --inpcrd-file <rst7> \
+  --output-dir <run_dir>/md_simulation \
   --simulation-time-ns <user_specified> \
-  --temperature-kelvin 300.0 \
+  --temperature-kelvin <T> \
   --pressure-bar 0 \
-  --output-frequency-ps 10.0
+  --output-frequency-ps 10.0 \
+  --restart-from <run_dir>/equilibration/equilibrated.chk
+```
+
+> `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
+
+### SLURM Execution (HPC)
+
+```bash
+mdclaw submit_job \
+  --script "mdclaw run_production \
+    --prmtop-file <ABSOLUTE_PARM7> \
+    --inpcrd-file <ABSOLUTE_RST7> \
+    --simulation-time-ns <user_specified> \
+    --temperature-kelvin <T> \
+    --pressure-bar 0 \
+    --platform CUDA \
+    --output-dir <ABSOLUTE_RUN_DIR>/md_simulation \
+    --restart-from <ABSOLUTE_RUN_DIR>/equilibration/equilibrated.chk" \
+  --job-name md_<name> \
+  --partition <partition> --gpus 1 \
+  --time-limit <estimated> --memory "32G"
 ```
 
 ---
@@ -71,7 +75,7 @@ mdclaw run_production \
 
 | Purpose | Time | Notes |
 |---|---|---|
-| Sanity check | 0.1 ns | Already done in md-prepare |
+| Sanity check | 0.1 ns | Quick validation |
 | Conformational sampling | 10-100 ns | Faster than explicit, good for screening |
 | Folding study | 100 ns - 1 us | GB allows longer effective sampling |
 | Mutant screening | 10 ns x N | Quick comparative runs |
@@ -84,7 +88,8 @@ mdclaw run_production \
 ```bash
 mdclaw run_production --platform CUDA --device-index "0" \
   --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --pressure-bar 0
+  --simulation-time-ns 100.0 --pressure-bar 0 \
+  --restart-from equilibrated.chk
 ```
 
 ### HMR (default: enabled)
@@ -92,13 +97,12 @@ mdclaw run_production --platform CUDA --device-index "0" \
 HMR and 4 fs timestep are defaults. To disable:
 ```bash
 mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 --pressure-bar 0
+  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 --pressure-bar 0 \
+  --restart-from equilibrated.chk
 ```
 
 ### Checkpoint / Restart
 Same as explicit water. Use `--restart-from /path/to/checkpoint.chk`.
-
-For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM job. Currently, `run_production` is the only mdclaw tool that benefits from SLURM submission (GPU-bound, long-running). Structure preparation steps (md-prepare) should run on the login node.
 
 ---
 
@@ -127,3 +131,21 @@ For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a SLURM
 | Unrealistic compaction | GB artifacts | Consider explicit water for this system |
 | Salt bridges too stable | GB dielectric overestimation | Validate with explicit water run |
 | Slow performance | GPU not detected | Check `--platform CUDA` and `nvidia-smi` |
+
+---
+
+## Update run.json
+
+After production completes, update `run.json` with metadata from the tool output:
+
+- **stages.production**:
+  - `status`: `"completed"`
+  - `trajectory`: path to `trajectory.dcd`
+  - `final_structure`: path to `final_structure.pdb`
+  - `checkpoint_file`: path to `checkpoint.chk`
+  - `energy_file`: path to `energy.dat`
+  - `ensemble`: `"NVT"`
+  - `simulation_time_ns`, `num_steps`, `timestep_fs`
+  - `hmr`, `platform`, `device_index`
+  - `initial_energy_kj_mol`, `final_energy_kj_mol`
+  - `restarted_from`: path to the equilibrated checkpoint used
