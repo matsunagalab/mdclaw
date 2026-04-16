@@ -3835,6 +3835,8 @@ def prepare_complex(
     atom_type: str = "gaff2",
     structure_analysis: Optional[dict] = None,
     keep_crystal_waters: bool = False,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Prepare a protein-ligand complex for MD simulation (complete workflow).
 
@@ -3942,11 +3944,14 @@ def prepare_complex(
         logger.error(f"Structure file not found: {structure_file}")
         return result
 
-    # Setup output directory.  When output_dir is explicit (the normal skill
-    # workflow), use it directly as the job root.  When None (ad-hoc CLI use),
-    # create a unique job_<id>/ under WORKING_DIR so that ligand_params.json
-    # and other per-job files don't collide between consecutive runs.
-    if output_dir:
+    # Setup output directory.
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        base_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        base_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    elif output_dir:
         base_dir = Path(output_dir)
     else:
         base_dir = WORKING_DIR / f"job_{job_id}"
@@ -4408,6 +4413,42 @@ def prepare_complex(
         result["errors"].append(error_msg)
         result["overall_status"] = "failed"
         logger.error(error_msg)
+
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node, update_job_summaries
+        if result.get("success") or result.get("overall_status") == "success":
+            proteins = result.get("proteins", [])
+            ligands = result.get("ligands", [])
+            artifacts = {}
+            if result.get("merged_pdb"):
+                artifacts["merged_pdb"] = "artifacts/merge/merged.pdb"
+            lig_params = [
+                {"mol2": lig.get("mol2_file"), "frcmod": lig.get("frcmod_file"),
+                 "residue_name": lig.get("ligand_id", "LIG")[:3].upper(),
+                 "parameter_source": lig.get("parameter_source")}
+                for lig in ligands if lig.get("success") and lig.get("mol2_file")
+            ]
+            if lig_params:
+                artifacts["ligand_params"] = lig_params
+            complete_node(job_dir, node_id,
+                artifacts=artifacts,
+                metadata=result.get("preparation_summary", {}),
+                warnings=result.get("warnings", []))
+            update_job_summaries(job_dir,
+                system={
+                    "pdb_id": result.get("pdb_id"),
+                    "chains": [p.get("chain_id", "") for p in proteins],
+                    "num_residues": sum(
+                        p.get("statistics", {}).get("final_residues", 0)
+                        for p in proteins if p.get("success")),
+                    "ligands": [lig["ligand_id"] for lig in ligands if lig.get("success")],
+                },
+                preparation=result.get("preparation_summary", {}))
+        else:
+            fail_node(job_dir, node_id,
+                      errors=result.get("errors", []),
+                      warnings=result.get("warnings", []))
 
     return result
 

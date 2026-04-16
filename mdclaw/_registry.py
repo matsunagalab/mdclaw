@@ -10,4 +10,5 @@ SERVER_REGISTRY = {
     "literature": "mdclaw.literature_server",
     "metal": "mdclaw.metal_server",
     "slurm": "mdclaw.slurm_server",
+    "node": "mdclaw.node_server",
 }

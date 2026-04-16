@@ -45,8 +45,11 @@ mdclaw/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
   _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
   _registry.py              # Tool registry (SERVER_REGISTRY dict)
-  _progress.py              # Job progress tracking (auto-updates progress.json)
-  _cli.py                   # CLI entry point (mdclaw)
+  _lock.py                  # File-based locking (fcntl.flock) for concurrent access
+  _event.py                 # Append-only event log (one JSON file per event)
+  _node.py                  # Node-based job graph management (schema v3)
+  _progress.py              # Legacy progress tracking (schema v2, auto-updates progress.json)
+  _cli.py                   # CLI entry point (mdclaw), supports --job-dir/--node-id
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -56,6 +59,7 @@ mdclaw/                    # All Python code consolidated here
   literature_server.py      # PubMed search
   metal_server.py           # Metal ion parameterization
   slurm_server.py           # SLURM job submission & management
+  node_server.py            # Node management tools (create_node)
 
 container/                  # Docker/Singularity containerization
   Dockerfile                # Multi-stage build (mambaforge -> conda-pack -> slim)
@@ -72,6 +76,8 @@ tests/                      # 4-level test suite
   test_research_server_structure_analysis.py  # Structure analysis tests
   test_slurm_server.py      # SLURM server mock tests
   test_ligand_pathway.py    # Ligand parameterization tests (L1-L3)
+  test_node.py              # Node system unit tests (lifecycle, IDs, events)
+  test_event.py             # Event system tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -110,37 +116,76 @@ Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). Whe
 
 ### Skill Workflow & Job Directory Structure
 
-User flow: `/md-prepare` → `/md-equilibration` → `/md-production` → `/md-analyze`
+User flow: `/md-prepare` -> `/md-equilibration` -> `/md-production` -> `/md-analyze`
+
+**Schema v3 (node-based, current):**
 
 ```
-job_XXXXXXXX/                        # one system (created by md-prepare)
-  progress.json                       # schema 2.0: system info, runs[] index, next_step
-  1AKE.pdb
-  split/  merge/  solvate/
-  topology/                           # parm7 + rst7 (shared by all runs)
-  runs/                               # one subdir per condition set
-    run_001_300K/
-      run.json                        # conditions, stages, next_step
-      equilibration/                  # created by run_equilibration
+job_XXXXXXXX/
+  progress.json                       # schema v3: thin index of nodes + cached summaries
+  progress.lock                       # flock for concurrent writes
+  nodes/
+    prep_001/
+      node.json                       # node state, artifacts, metadata
+      node.lock
+      artifacts/
+        split/                        # split_molecules output
+        merge/merged.pdb              # merge_structures output
+        ligand_params.json
+    solv_001/
+      node.json
+      node.lock
+      artifacts/
+        solvated.pdb
+        box_dimensions.json
+    topo_001/
+      node.json
+      node.lock
+      artifacts/
+        system.parm7
+        system.rst7
+    eq_001/
+      node.json
+      node.lock
+      artifacts/
+        equilibrated.pdb
         equilibrated.chk
-      production/                     # created by run_production
+    prod_001/                         # branch 1 from eq_001
+      node.json
+      artifacts/
         trajectory.dcd
-    run_002_310K/                     # reuse same topology at different T
-      run.json
-      equilibration/
-      production/
+        final_structure.pdb
+        checkpoint.chk
+        energy.dat
+    prod_002/                         # branch 2 from eq_001
+      node.json
+      artifacts/
+        trajectory.dcd
+  events/
+    <ISO8601>_<node_id>_<event_type>.json
 ```
 
-**Design principle: skills are stateless, jobs are stateful.**
-Each skill reads `progress.json` on entry to determine current state, runs tools, and the CLI auto-updates `progress.json` after each tool via `_progress.py`. No manual writing or bookkeeping is needed.
+**Schema v2 (legacy, still supported):**
 
-- `progress.json` — **source of truth** for job state: `status`, `completed_steps`, `current_step`, `next_step`, artifact paths, warnings, blocking reasons, `runs[]` index. Auto-created by `prepare_complex`, auto-updated by each subsequent tool.
-- `run.json` — per-run details: temperature, pressure, seed, equilibration/production stage status. Auto-updated by `run_equilibration` and `run_production`.
-- Resume: read `progress.json` → check `completed_steps` → continue from `next_step`
-- Handoff: `next_step.skill` tells the next skill what to do
-- `e2e_mode` in params triggers automatic chaining across skills
-- Run labels auto-generated: `run_NNN_<T>K[_seed<N>]`
-- `ligand_params.json` written by `prepare_complex` next to `merged.pdb`; auto-detected by `build_amber_system` (same pattern as `box_dimensions.json`)
+```
+job_XXXXXXXX/
+  progress.json                       # schema 2.0: monolithic state
+  split/  merge/  solvate/  topology/
+  runs/run_001_300K/
+    run.json
+    equilibration/
+    production/
+```
+
+**Design principles:**
+- `skill = what to run` (orchestration only, no state mutation)
+- `tool = run + record` (execution + state via `_node.py` helpers)
+- Each node is independent: own directory, `node.json`, lock, `artifacts/`
+- Parent-child relationships form a DAG (`parent_node_ids` list in node.json)
+- `progress.json` is a thin index: `nodes` dict + cached `system`/`preparation`/`params`
+- Events are append-only files in `events/` (no JSON array race conditions)
+- Tools receive `job_dir` + `node_id`, call `begin_node`/`complete_node`/`fail_node`
+- CLI `--job-dir`/`--node-id` global flags inject these into tool kwargs
 
 ### Pre-commit Checklist
 
@@ -330,9 +375,14 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `list_tracked_jobs(sync)` - List all tracked jobs from `.mdclaw_jobs.jsonl` (full history); `--sync` updates status from SLURM
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
+### node_server.py
+- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions)` - Create a node in the job graph
+
 ## CLI Interface
 
-`mdclaw/_cli.py` provides `mdclaw` CLI that auto-discovers all 45 tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+`mdclaw/_cli.py` provides `mdclaw` CLI that auto-discovers all tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
+
+**Global flags**: `--job-dir` and `--node-id` enable node-based state tracking (schema v3). When provided, the CLI injects these into tool kwargs and skips legacy progress updates.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 

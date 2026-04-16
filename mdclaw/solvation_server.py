@@ -290,7 +290,9 @@ def solvate_structure(
     notprotonate: bool = True,
     preoriented: bool = True,
     keepligs: bool = True,
-    water_model: str = "opc"
+    water_model: str = "opc",
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None
 ) -> dict:
     """Solvate a protein-ligand complex in a water box using packmol-memgen.
     
@@ -404,9 +406,16 @@ def solvate_structure(
             water_model=water_model,
         )
 
-    # Setup output directory with human-readable name
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "solvate")
+    # Setup output directory
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory
@@ -552,7 +561,31 @@ def solvate_structure(
     metadata_file = out_dir / "solvation_metadata.json"
     with open(metadata_file, 'w') as f:
         json.dump(result, f, indent=2, default=str)
-    
+
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node, update_job_summaries
+        if result.get("success"):
+            _box = result.get("box_dimensions", {})
+            complete_node(job_dir, node_id,
+                artifacts={
+                    "solvated_pdb": f"artifacts/{output_name}.pdb",
+                    "box_dimensions": "artifacts/box_dimensions.json",
+                },
+                metadata={
+                    "water_model": water_model,
+                    "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
+                    "buffer_distance_angstrom": dist,
+                    "salt_concentration_M": saltcon,
+                    "total_atoms": result.get("statistics", {}).get("total_atoms"),
+                })
+            update_job_summaries(job_dir, params={
+                "solvation_type": "explicit",
+                "water_model": water_model,
+            })
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+
     return result
 
 
@@ -576,7 +609,9 @@ def embed_in_membrane(
     keepligs: bool = True,
     nloop: int = 50,
     nloop_all: int = 200,
-    water_model: str = "opc"
+    water_model: str = "opc",
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None
 ) -> dict:
     """Embed a protein in a lipid bilayer membrane using packmol-memgen.
     
@@ -696,9 +731,16 @@ def embed_in_membrane(
         logger.error("packmol-memgen not available")
         return result
 
-    # Setup output directory with human-readable name (unified with solvate)
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "solvate")
+    # Setup output directory
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "solvate")
     result["output_dir"] = str(out_dir)
 
     # Copy input file to output directory for packmol-memgen
@@ -863,7 +905,29 @@ def embed_in_membrane(
     metadata_file = out_dir / "membrane_metadata.json"
     with open(metadata_file, 'w') as f:
         json.dump(result, f, indent=2, default=str)
-    
+
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node, update_job_summaries
+        if result.get("success"):
+            complete_node(job_dir, node_id,
+                artifacts={
+                    "solvated_pdb": f"artifacts/{output_name}.pdb",
+                    "box_dimensions": "artifacts/box_dimensions.json",
+                },
+                metadata={
+                    "water_model": water_model,
+                    "lipid_type": lipids,
+                    "is_membrane": True,
+                    "salt_concentration_M": saltcon,
+                })
+            update_job_summaries(job_dir, params={
+                "solvation_type": "membrane",
+                "water_model": water_model,
+            })
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+
     return result
 
 

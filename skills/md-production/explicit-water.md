@@ -25,41 +25,39 @@
 
 ---
 
-## Production Run
+## Production Run (Schema v3 -- Node-Based)
 
 ### Local Execution
 
 ```bash
-mdclaw run_production \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <run_dir> \
+# Resolve parm7/rst7 from topo node (walk ancestors from eq_001)
+# Read nodes/topo_001/node.json -> artifacts.parm7, artifacts.rst7
+# Read nodes/eq_001/node.json -> artifacts.checkpoint
+
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --prmtop-file <job_dir>/nodes/topo_001/artifacts/system.parm7 \
+  --inpcrd-file <job_dir>/nodes/topo_001/artifacts/system.rst7 \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --pressure-bar 1.0 \
   --output-frequency-ps 10.0 \
-  --restart-from <run_dir>/equilibration/equilibrated.chk
+  --restart-from <job_dir>/nodes/eq_001/artifacts/equilibrated.chk
 ```
 
-- `--restart-from equilibrated.chk` loads equilibrated positions, velocities,
-  and NPT-adjusted box. currentStep is 0 so the full `simulation_time_ns` runs.
-- Minimization and velocity re-randomization are skipped when restarting.
-- Use the `checkpoint_file` path from `run_equilibration`'s JSON output (or
-  read from `run.json`'s `stages.equilibration.checkpoint`).
+The tool self-updates `nodes/prod_001/node.json` and `progress.json` automatically.
 
 ### SLURM Execution (HPC)
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_production \
-    --prmtop-file <ABSOLUTE_PARM7> \
-    --inpcrd-file <ABSOLUTE_RST7> \
+  --script "mdclaw --job-dir <ABS_JOB_DIR> --node-id prod_001 run_production \
+    --prmtop-file <ABS_PARM7> \
+    --inpcrd-file <ABS_RST7> \
     --simulation-time-ns <user_specified> \
     --temperature-kelvin <T> \
     --pressure-bar 1.0 \
     --platform CUDA \
-    --output-dir <ABSOLUTE_RUN_DIR> \
-    --restart-from <ABSOLUTE_RUN_DIR>/equilibration/equilibrated.chk" \
+    --restart-from <ABS_JOB_DIR>/nodes/eq_001/artifacts/equilibrated.chk" \
   --job-name md_<name> \
   --partition <partition> --nodelist <node> --gpus 1 \
   --time-limit <estimated> --memory "32G"
@@ -68,9 +66,15 @@ mdclaw submit_job \
 SLURM compute nodes do not inherit the login node's working directory,
 so all paths in `--script` need to be absolute. Use `realpath` to convert.
 
-For long runs on HPC, use `/hpc-run` skill to submit `run_production` as a
-SLURM job. `run_production` is the primary mdclaw tool that benefits from
-SLURM submission (GPU-bound, long-running).
+### Production Run (Schema v2 -- Legacy)
+
+```bash
+mdclaw run_production \
+  --prmtop-file <parm7> --inpcrd-file <rst7> \
+  --output-dir <run_dir> \
+  --simulation-time-ns <user_specified> \
+  --restart-from <run_dir>/equilibration/equilibrated.chk
+```
 
 ---
 
@@ -89,50 +93,43 @@ SLURM submission (GPU-bound, long-running).
 
 ### GPU Selection
 ```bash
-mdclaw run_production --platform CUDA --device-index "0" \
-  --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --platform CUDA --device-index "0" \
+  --prmtop-file <parm7> --inpcrd-file <rst7> \
   --simulation-time-ns 100.0 \
-  --restart-from equilibrated.chk
+  --restart-from <eq_checkpoint>
 ```
 
 ### HMR (default: enabled)
 
 HMR (hydrogenMass=4 amu) and 4 fs timestep are the defaults. To disable:
 ```bash
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 \
-  --restart-from equilibrated.chk
+--no-hmr --timestep-fs 2.0
 ```
 
 ### Checkpoint / Restart
 
-Mid-run restart appends new frames to the existing `trajectory.dcd` — the
-DCD stays as a single file across restarts. `--output-dir` must point to
-the **same run directory** so that `run_production` finds the existing DCD
-and `checkpoint.chk`.
+For node-based workflow, restarts use the same `--node-id`. The tool detects
+existing trajectory/checkpoint in the node's artifacts directory and appends.
 
 ```bash
-# Initial run (checkpoint.chk saved automatically every 100 ps)
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+# Initial run
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --prmtop-file <parm7> --inpcrd-file <rst7> \
   --simulation-time-ns 100.0 --platform CUDA \
-  --output-dir <run_dir> \
-  --restart-from <run_dir>/equilibration/equilibrated.chk
+  --restart-from <eq_checkpoint>
 
-# Restart from mid-run checkpoint
-# - appends to the existing trajectory.dcd (no duplicate frames)
-# - runs only remaining steps (currentStep is restored from checkpoint)
-# - use the SAME --output-dir and --simulation-time-ns as the original run
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
+# Restart from mid-run checkpoint (same node)
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --prmtop-file <parm7> --inpcrd-file <rst7> \
   --simulation-time-ns 100.0 --platform CUDA \
-  --output-dir <run_dir> \
-  --restart-from <run_dir>/production/checkpoint.chk
+  --restart-from <job_dir>/nodes/prod_001/artifacts/checkpoint.chk
 ```
 
 **Important:**
-- Always use the same `--output-dir` for restarts — this ensures DCD append
+- Use the same `--node-id` for restarts -- ensures DCD append
 - `--simulation-time-ns` is the **total** target time, not additional time
 - Binary checkpoint is platform-specific (CUDA checkpoint cannot load on CPU)
-- `energy.dat` also appends on restart
 
 ---
 
@@ -156,20 +153,9 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 
 ---
 
-## Update run.json
+## Verify Output
 
-After production completes, update `run.json` with metadata from the tool output:
-
-- **stages.production**:
-  - `status`: `"completed"`
-  - `trajectory`: path to `trajectory.dcd`
-  - `final_structure`: path to `final_structure.pdb`
-  - `checkpoint_file`: path to `checkpoint.chk`
-  - `energy_file`: path to `energy.dat`
-  - `ensemble`, `simulation_time_ns`, `num_steps`, `timestep_fs`
-  - `hmr`, `platform`, `device_index`
-  - `initial_energy_kj_mol`, `final_energy_kj_mol`
-  - `restarted_from`: path to the equilibrated checkpoint used
-
-- `stages.production.platform`: from tool output (e.g., `"CUDA"`, `"OpenCL"`)
-- `stages.production.device_index`: from tool output if specified
+After production, read `nodes/prod_001/node.json`:
+- `status` should be `"completed"`
+- `artifacts`: trajectory, final_structure, checkpoint, energy
+- `metadata`: simulation_time_ns, platform, hmr, steps

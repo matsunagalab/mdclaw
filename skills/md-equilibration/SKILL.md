@@ -1,6 +1,6 @@
 ---
 name: MD Equilibration
-description: "Equilibration (energy minimization → NVT heating → NPT density) of a prepared MD system using MDClaw CLI tools. Creates a run directory under runs/ and produces equilibrated.chk for production handoff."
+description: "Equilibration (energy minimization -> NVT heating -> NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node under nodes/ and produces equilibrated.chk for production handoff."
 ---
 
 # MD Equilibration
@@ -26,60 +26,55 @@ Summary to present:
 
 Detect **e2e intent** — if the user's original request includes keywords like
 `end-to-end`, `then run X ns`, `全部やって`, `e2eで`, or specifies a production
-simulation time alongside the equilibration request, set `e2e_mode: true` in
-`run.json` and note the production parameters for handoff.
+simulation time alongside the equilibration request, note the production parameters
+for handoff.
 
 ## Prerequisites
 
-Ensure these files exist (from md-prepare):
-- `parm7` — Amber topology file (`topology/system.parm7`)
-- `rst7` — Amber coordinate file (`topology/system.rst7`)
+Read `progress.json` (single) or `batch_progress.json` (batch).
 
-Read `progress.json` (single) or `batch_progress.json` (batch) to find file paths
-and determine the solvent type (`params.solvation_type`).
+For schema v3 (node-based): find a completed `topo` node in `progress.json`'s nodes index.
+Read that node's `node.json` for `parm7` and `rst7` artifact paths.
 
-## Run Directory Setup
+For schema v2 (legacy): find `topology/system.parm7` and `topology/system.rst7` via
+`progress.json` artifacts.
 
-1. Read existing `runs/` to determine the next sequence number (NNN)
-2. Generate run label: `run_NNN_<T>K[_<P>bar][_seed<N>]`
-   - `run_001_300K` — default conditions
-   - `run_002_310K` — different temperature
-   - `run_003_300K_seed42` — replicate with explicit seed
-3. Create `runs/<run_label>/` and initialize `run.json`:
+## Node Setup (Schema v3)
 
-```json
-{
-  "run_id": "<run_label>",
-  "job_id": "<job_id>",
-  "created_at": "<ISO8601>",
-  "conditions": {
-    "temperature_kelvin": 300,
-    "pressure_bar": 1.0,
-    "simulation_time_ns": null,
-    "random_seed": null
-  },
-  "commands": [],
-  "stages": {
-    "equilibration": { "status": "pending" },
-    "production": { "status": "pending" }
-  },
-  "params": { "e2e_mode": false },
-  "next_step": null
-}
+1. Read `progress.json` — find `topo_001` (or latest completed topo node)
+2. Read `nodes/topo_001/node.json` for `parm7` / `rst7` paths
+3. Create equilibration node:
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids topo_001 \
+  --label "300K" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0}'
+# -> {"node_id": "eq_001", "artifacts_dir": "..."}
 ```
 
-4. Append the new run to `progress.json`'s `runs[]` index:
-   `{ "run_id": "<run_label>", "label": "<T>K", "status": "pending" }`
+For replicates or different conditions, create additional eq nodes:
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids topo_001 --label "310K" \
+  --conditions '{"temperature_kelvin": 310, "pressure_bar": 1.0}'
+# -> eq_002
+
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids topo_001 --label "300K_seed42" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0, "random_seed": 42}'
+# -> eq_003
+```
 
 ## Workflow
 
 1. If user provides a **batch directory** (`batch_<id>/`):
-   → **Read and follow `skills/md-equilibration/batch.md`**
+   -> **Read and follow `skills/md-equilibration/batch.md`**
 
 2. If single system:
-   Based on the solvent type (from `progress.json` or user request):
-   - Explicit water → **Read and follow `skills/md-equilibration/explicit-water.md`**
-   - Implicit solvent → **Read and follow `skills/md-equilibration/implicit-water.md`**
+   Based on the solvent type (from `progress.json` params or user request):
+   - Explicit water -> **Read and follow `skills/md-equilibration/explicit-water.md`**
+   - Implicit solvent -> **Read and follow `skills/md-equilibration/implicit-water.md`**
 
 ## Error Handling
 
@@ -91,18 +86,15 @@ and determine the solvent type (`params.solvation_type`).
 
 After equilibration completes:
 
-1. Update `run.json`:
-   - `stages.equilibration.status` → `"completed"`
-   - `stages.equilibration.checkpoint` → path to `equilibrated.chk`
-   - `next_step` → `{ "skill": "md-production", "cli_hint": "/md-production <job_dir> <run_id>, <time> ns", "rationale": "equilibration complete, ready for production" }`
+1. Verify the eq node status is `completed` (auto-updated by the tool).
 
-2. Update `progress.json`'s `runs[]` entry: `status` → `"equilibrated"`
+2. Read `nodes/eq_001/node.json` — verify `artifacts.checkpoint` exists.
 
-3. **If `params.e2e_mode` is true**: read and follow `skills/md-production/SKILL.md`,
-   passing the job directory, run_id, and production parameters.
+3. **If e2e_mode**: read and follow `skills/md-production/SKILL.md`,
+   passing the job directory and production parameters.
 
 4. **Otherwise**: present the next step to the user:
    ```
    Equilibration complete. Next:
-     /md-production <job_dir> <run_id>, <time> ns
+     /md-production <job_dir>
    ```

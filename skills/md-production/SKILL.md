@@ -13,40 +13,62 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 ## Step 0: Parse and Confirm
 
 Extract parameters from the user's request and present a summary.
-Copy identifiers (job directories, run IDs, batch directories) exactly from the user's message.
+Copy identifiers (job directories, eq node IDs) exactly from the user's message.
 
 Summary to present:
 
 | Parameter | Value |
 |-----------|-------|
 | Target | (job directory / batch directory) |
-| Run ID | (run directory name, e.g. `run_001_300K`) |
+| Parent eq node | (eq_001, etc.) |
 | Simulation time | |
 | Node / partition | (if specified) |
 | Other | (non-default parameters) |
 
 ## Prerequisites
 
-Ensure these files exist:
-- `parm7` — Amber topology file (`topology/system.parm7`)
-- `rst7` — Amber coordinate file (`topology/system.rst7`)
-- `equilibrated.chk` — Equilibrated checkpoint (`runs/<run_id>/equilibration/equilibrated.chk`)
+Read `progress.json` to find the job state.
 
-Read `progress.json` to find topology paths and `runs/<run_id>/run.json` for
-run conditions and equilibration status.
+**Schema v3 (node-based):**
+- Find a completed `eq` node in `progress.json`'s nodes index
+- Read that node's `node.json` for `artifacts.checkpoint` (equilibrated.chk path)
+- Walk ancestors to find `topo` node for `parm7`/`rst7` paths
 
-**If `equilibrated.chk` does not exist**: inform the user and suggest
+**Schema v2 (legacy):**
+- Find `topology/system.parm7`, `topology/system.rst7` from `progress.json` artifacts
+- Find `equilibrated.chk` from `runs/<run_id>/equilibration/`
+
+**If checkpoint does not exist**: inform the user and suggest
 `/md-equilibration <job_dir>` first.
+
+## Node Setup (Schema v3)
+
+Create a production node linked to the equilibration node:
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --parent-node-ids eq_001 \
+  --label "100ns" \
+  --conditions '{"simulation_time_ns": 100}'
+# -> {"node_id": "prod_001", "artifacts_dir": "..."}
+```
+
+**Branching**: create multiple prod nodes from the same eq node:
+```bash
+mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids eq_001 \
+  --label "100ns_seed42" --conditions '{"simulation_time_ns": 100, "random_seed": 42}'
+# -> prod_002
+```
 
 ## Workflow
 
 1. If user provides a **batch directory** (`batch_<id>/`):
-   → **Read and follow `skills/md-production/batch.md`**
+   -> **Read and follow `skills/md-production/batch.md`**
 
 2. If single system:
-   Based on the solvent type (from `progress.json` or user request):
-   - Explicit water → **Read and follow `skills/md-production/explicit-water.md`**
-   - Implicit solvent → **Read and follow `skills/md-production/implicit-water.md`**
+   Based on the solvent type (from `progress.json` params or user request):
+   - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
+   - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
 
 ## Error Handling
 
@@ -58,18 +80,16 @@ run conditions and equilibration status.
 
 After production completes:
 
-1. Update `run.json`:
-   - `stages.production.status` → `"completed"`
-   - `stages.production.trajectory`, `final_structure`, `checkpoint_file`, etc.
-   - `next_step` → `{ "skill": "md-analyze", "cli_hint": "/md-analyze <job_dir> <run_id>", "rationale": "production complete" }`
+1. Verify the prod node status is `completed` (auto-updated by the tool).
 
-2. Update `progress.json`'s `runs[]` entry: `status` → `"completed"`
-
-3. Present the next step to the user:
+2. Present the next step to the user:
    ```
    Production complete. Next:
      /md-analyze <job_dir>
    
    To run another condition with the same topology:
-     /md-equilibration <job_dir>, <new_temperature>K
+     /md-equilibration <job_dir>
+   
+   To branch from the same equilibration:
+     /md-production <job_dir> (create new prod node from same eq node)
    ```

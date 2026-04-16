@@ -6,7 +6,26 @@ NVT heating followed by NPT density equilibration, both with CA positional
 restraints. Both stages use 4 fs + HMR so the final checkpoint is compatible
 with production settings.
 
-### Run Equilibration
+### Run Equilibration (Schema v3 — Node-Based)
+
+```bash
+# Resolve parm7/rst7 from topo node
+# Read nodes/topo_001/node.json -> artifacts.parm7, artifacts.rst7
+
+mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
+  --prmtop-file <job_dir>/nodes/topo_001/artifacts/system.parm7 \
+  --inpcrd-file <job_dir>/nodes/topo_001/artifacts/system.rst7 \
+  --temperature-kelvin <T> \
+  --pressure-bar 1.0
+```
+
+The tool self-updates `nodes/eq_001/node.json` and `progress.json` automatically:
+- On success: status -> `completed`, artifacts (checkpoint, final_structure), metadata
+- On failure: status -> `failed`, errors recorded
+
+No manual `run.json` or `progress.json` updates needed.
+
+### Run Equilibration (Schema v2 — Legacy)
 
 ```bash
 mdclaw run_equilibration \
@@ -17,34 +36,21 @@ mdclaw run_equilibration \
   --pressure-bar 1.0
 ```
 
-- `--pressure-bar 1.0` triggers the NPT density stage after NVT heating
-- CA positional restraints (default 100 kJ/mol/nm^2) prevent structural collapse
-- Writes `equilibrated.chk` from a production-matching System (no restraints,
-  currentStep=0) — ready for direct handoff to `run_production`
-- Also writes `equilibration.xml` as an audit/reproducibility backup
-
 ### Domain Knowledge
 
 - Equilibration uses positional restraints on CA atoms to prevent structural collapse
-- NVT stage: 2500 steps at 4 fs (10 ps) — heats from 0 to target temperature
-- NPT stage: 5000 steps at 4 fs (20 ps) — equilibrates density at target pressure
+- NVT stage: 2500 steps at 4 fs (10 ps) -- heats from 0 to target temperature
+- NPT stage: 5000 steps at 4 fs (20 ps) -- equilibrates density at target pressure
 - Both stages use HMR (hydrogenMass=4 amu), matching production's integrator
 - `equilibrated.chk` is a binary checkpoint with currentStep=0 by construction,
   so `run_production --simulation-time-ns` is the full production length
-- `equilibration.xml` is for audit only — use `.chk` for restart
 - Energy should drop significantly during minimization (good sign)
 
 ---
 
-## Update run.json
+## Verify Output
 
-After equilibration completes, update `run.json` with metadata from the tool output:
-
-- **stages.equilibration**:
-  - `status`: `"completed"`
-  - `checkpoint`: path to `equilibrated.chk`
-  - `state_file`: path to `equilibration.xml`
-  - `final_structure`: path to `equilibrated.pdb`
-  - `platform`: from tool output (e.g., `"CUDA"`, `"OpenCL"`)
-  - `nvt_steps`, `npt_steps`, `restraint_atoms`, `restraint_count`
-  - `stages_completed`: from tool output (e.g., `["NVT", "NPT"]`)
+After equilibration, read `nodes/eq_001/node.json`:
+- `status` should be `"completed"`
+- `artifacts.checkpoint` — path to equilibrated.chk (for production restart)
+- `metadata` — platform, nvt_steps, npt_steps, restraint info

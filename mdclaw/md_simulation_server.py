@@ -46,6 +46,8 @@ def run_equilibration(
     random_seed: Optional[int] = None,
     hmr: bool = True,
     timestep_fs: float = 4.0,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Run equilibration protocol with positional restraints.
 
@@ -184,7 +186,13 @@ def run_equilibration(
 
     try:
         # Set up output directory
-        if output_dir:
+        _node_mode = job_dir and node_id
+        if _node_mode:
+            from mdclaw._node import begin_node
+            out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            begin_node(job_dir, node_id)
+        elif output_dir:
             out_dir = Path(output_dir) / "equilibration"
         else:
             out_dir = WORKING_DIR / job_id / "equilibration"
@@ -521,6 +529,28 @@ def run_equilibration(
         logger.error(f"Equilibration failed: {e}")
         result["errors"].append(f"Equilibration failed: {e}")
 
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node
+        if result.get("success"):
+            complete_node(job_dir, node_id,
+                artifacts={
+                    "checkpoint": f"artifacts/{pref}equilibrated.chk",
+                    "final_structure": result.get("final_structure", ""),
+                    "state_file": result.get("state_file", ""),
+                },
+                metadata={
+                    "platform": result.get("platform"),
+                    "nvt_steps": nvt_steps,
+                    "npt_steps": npt_steps,
+                    "restraint_atoms": restraint_atoms,
+                    "restraint_count": result.get("restraint_count"),
+                    "temperature_kelvin": temperature_kelvin,
+                    "pressure_bar": pressure_bar,
+                })
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+
     return result
 
 
@@ -543,6 +573,8 @@ def run_production(
     restart_from: Optional[str] = None,
     hmr: bool = True,
     random_seed: Optional[int] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Run MD simulation using OpenMM.
 
@@ -634,10 +666,16 @@ def run_production(
         "warnings": []
     }
 
-    # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "production")
+    # Setup output directory
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "production")
     result["output_dir"] = str(out_dir)
 
     # Validate input files - also search in topology subdirectory if not found
@@ -964,6 +1002,30 @@ def run_production(
     except Exception as e:
         logger.error(f"MD simulation failed: {e}")
         result["errors"].append(f"MD simulation failed: {type(e).__name__}: {str(e)}")
+
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node
+        if result.get("success"):
+            complete_node(job_dir, node_id,
+                artifacts={
+                    "trajectory": result.get("trajectory_file", ""),
+                    "final_structure": result.get("final_structure", ""),
+                    "checkpoint": result.get("checkpoint_file", ""),
+                    "energy": result.get("energy_file", ""),
+                },
+                metadata={
+                    "simulation_time_ns": simulation_time_ns,
+                    "temperature_kelvin": temperature_kelvin,
+                    "pressure_bar": pressure_bar,
+                    "platform": result.get("platform"),
+                    "hmr": hmr,
+                    "timestep_fs": timestep_fs,
+                    "random_seed": random_seed,
+                    "num_steps": result.get("steps_completed"),
+                })
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
 
     return result
 

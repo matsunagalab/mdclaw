@@ -145,6 +145,14 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
         "--list", action="store_true", dest="list_tools",
         help="List all available tools grouped by server.",
     )
+    parser.add_argument(
+        "--job-dir", type=str, default=None, dest="_global_job_dir",
+        help="Job directory for node-based state tracking (schema v3).",
+    )
+    parser.add_argument(
+        "--node-id", type=str, default=None, dest="_global_node_id",
+        help="Node ID for node-based state tracking (requires --job-dir).",
+    )
 
     subparsers = parser.add_subparsers(dest="tool_name")
 
@@ -324,6 +332,10 @@ def main(argv: list[str] | None = None) -> None:
     fn = info["fn"]
     is_async = info["is_async"]
 
+    # Resolve node-mode flags (global --job-dir/--node-id or per-tool kwargs)
+    _global_job_dir = getattr(args, "_global_job_dir", None)
+    _global_node_id = getattr(args, "_global_node_id", None)
+
     # Build kwargs
     if args.json_input:
         kwargs = json.loads(args.json_input)
@@ -356,6 +368,28 @@ def main(argv: list[str] | None = None) -> None:
         if missing:
             parser.error(f"the following arguments are required: {', '.join(missing)}")
 
+    # Resolve effective job_dir/node_id: global flags take precedence over
+    # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
+    effective_job_dir = _global_job_dir or kwargs.get("job_dir")
+    effective_node_id = _global_node_id or kwargs.get("node_id")
+    node_mode = effective_node_id is not None
+
+    if node_mode and not effective_job_dir:
+        parser.error("--node-id requires --job-dir")
+
+    # Resolve job_dir to absolute path so that external tools (packmol-memgen
+    # etc.) and all derived node/artifacts paths are always absolute.
+    if effective_job_dir:
+        effective_job_dir = str(Path(effective_job_dir).resolve())
+
+    # Inject into kwargs when the tool accepts them
+    if node_mode:
+        sig = inspect.signature(fn)
+        if "job_dir" in sig.parameters:
+            kwargs["job_dir"] = effective_job_dir
+        if "node_id" in sig.parameters:
+            kwargs["node_id"] = effective_node_id
+
     # Execute
     try:
         result = _run_tool(fn, is_async, kwargs)
@@ -363,9 +397,13 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
-        # Record CLI command to progress.json
-        # Try output_dir first, then derive from file_path or output_file
-        if isinstance(result, dict):
+        # State update: node mode vs legacy
+        if node_mode:
+            # Tool already self-updated via begin_node/complete_node/fail_node.
+            # No legacy progress.json update needed.
+            pass
+        elif isinstance(result, dict):
+            # Legacy v2 path: record CLI command and auto-update progress.json
             record_dir = (
                 result.get("output_dir")
                 or (str(Path(result["file_path"]).parent) if result.get("file_path") else None)

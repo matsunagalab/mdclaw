@@ -627,7 +627,9 @@ def build_amber_system(
     water_model: str = "opc",
     is_membrane: bool = False,
     output_name: str = "system",
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None
 ) -> dict:
     """Build Amber topology (parm7) and coordinate (rst7) files using tleap.
     
@@ -901,10 +903,16 @@ def build_amber_system(
                 result["warnings"].append(err)
             logger.warning(f"Ligand validation warnings: {ligand_errors}")
     
-    # Setup output directory with human-readable name
-    # Always prefer session directory to ensure files go to the correct location
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "topology")
+    # Setup output directory
+    _node_mode = job_dir and node_id
+    if _node_mode:
+        from mdclaw._node import begin_node
+        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
     
     # Output files
@@ -1180,7 +1188,30 @@ def build_amber_system(
     metadata_file = out_dir / "amber_metadata.json"
     with open(metadata_file, 'w') as f:
         json.dump(result, f, indent=2, default=str)
-    
+
+    # Node state update
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node, update_job_summaries
+        if result.get("success"):
+            complete_node(job_dir, node_id,
+                artifacts={
+                    "parm7": f"artifacts/{output_name}.parm7",
+                    "rst7": f"artifacts/{output_name}.rst7",
+                    "leap_script": f"artifacts/{output_name}.leap.in",
+                    "leap_log": f"artifacts/{output_name}.leap.log",
+                },
+                metadata={
+                    "forcefield": forcefield,
+                    "water_model": water_model,
+                    "is_membrane": is_membrane,
+                })
+            update_job_summaries(job_dir, params={
+                "forcefield": forcefield,
+                "water_model": water_model,
+            })
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+
     return result
 
 

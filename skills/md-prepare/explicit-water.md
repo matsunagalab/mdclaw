@@ -13,39 +13,57 @@
 
 ---
 
-## `--output-dir` convention
+## Node-Based Workflow
 
-All tools in Steps 3-5 share a single `--output-dir` = the job root (e.g. `job_abcd1234/`).
-Each tool creates its own subdirectory inside it automatically. This keeps the job layout
-flat and predictable, and allows auto-detection of cross-step artifacts like
-`ligand_params.json` (job root) and `box_dimensions.json` (in `solvate/`).
+Each step creates a node via `mdclaw create_node`, then runs the tool with `--job-dir` and `--node-id`.
+The tool writes output to `nodes/<node_id>/artifacts/` and self-updates `node.json` + `progress.json`.
 
-| Tool | `--output-dir` | Creates |
-|------|---------------|---------|
-| `prepare_complex` | `job_xxx/` | `job_xxx/split/`, `job_xxx/merge/`, `job_xxx/ligand_params.json` |
-| `solvate_structure` | `job_xxx/` | `job_xxx/solvate/solvated.pdb`, `job_xxx/solvate/box_dimensions.json` |
-| `build_amber_system` | `job_xxx/` | `job_xxx/topology/system.parm7`, `job_xxx/topology/system.rst7` |
+| Step | create_node | Tool |
+|------|------------|------|
+| Prepare | `--node-type prep` | `prepare_complex` |
+| Solvate | `--node-type solv --parent-node-ids prep_001` | `solvate_structure` |
+| Topology | `--node-type topo --parent-node-ids solv_001` | `build_amber_system` |
 
-Always pass the job root — not a subdirectory like `job_xxx/topology/`.
-The tool appends its own subdirectory name, so passing `job_xxx/topology/` would
-create `job_xxx/topology/topology/`.
+---
+
+## Step 3: Prepare Complex
+
+```bash
+# Create job directory
+mkdir -p job_xxx
+
+# Create prep node
+mdclaw create_node --job-dir job_xxx --node-type prep
+# -> {"node_id": "prep_001", "artifacts_dir": "job_xxx/nodes/prep_001/artifacts"}
+
+# Run preparation
+mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex \
+  --structure-file <structure_file>
+```
+
+Output in `job_xxx/nodes/prep_001/artifacts/`: `split/`, `merge/merged.pdb`, `ligand_params.json`
 
 ---
 
 ## Step 4: Solvation
 
 ```bash
-mdclaw solvate_structure \
-  --pdb-file job_xxx/merge/merged.pdb \
-  --output-dir job_xxx \
+# Read prep node for merged_pdb path
+cat job_xxx/nodes/prep_001/node.json  # -> artifacts.merged_pdb
+
+# Create solv node
+mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
+
+# Run solvation
+mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
+  --pdb-file job_xxx/nodes/prep_001/artifacts/merge/merged.pdb \
   --water-model opc \
   --dist 15.0 \
   --salt \
   --saltcon 0.15
 ```
 
-This creates `job_xxx/solvate/solvated.pdb` and `job_xxx/solvate/box_dimensions.json`.
-`build_amber_system` auto-detects `box_dimensions.json` — no manual passing needed.
+Output in `job_xxx/nodes/solv_001/artifacts/`: `solvated.pdb`, `box_dimensions.json`
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images
@@ -57,21 +75,27 @@ This creates `job_xxx/solvate/solvated.pdb` and `job_xxx/solvate/box_dimensions.
 ## Step 5: Build Topology
 
 ```bash
-mdclaw build_amber_system \
-  --pdb-file job_xxx/solvate/solvated.pdb \
-  --output-dir job_xxx \
+# Create topo node
+mdclaw create_node --job-dir job_xxx --node-type topo --parent-node-ids solv_001
+
+# Run topology generation
+mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
+  --pdb-file job_xxx/nodes/solv_001/artifacts/solvated.pdb \
   --forcefield ff19SB \
   --water-model opc \
   --no-is-membrane
 ```
 
-This creates `job_xxx/topology/system.parm7` and `job_xxx/topology/system.rst7`.
+Output in `job_xxx/nodes/topo_001/artifacts/`: `system.parm7`, `system.rst7`
 
-`box_dimensions.json` (in `solvate/`) and `ligand_params.json` (in the job root) are auto-detected by searching the input PDB's directory and its parent. No need to pass them explicitly.
-
-If auto-detection fails (e.g., files moved), pass ligand params via `--json-input`:
+If ligand/box auto-detection fails, pass explicitly via `--json-input`:
 ```bash
-mdclaw build_amber_system --json-input '{"pdb_file": "job_xxx/solvate/solvated.pdb", "output_dir": "job_xxx", "forcefield": "ff19SB", "water_model": "opc", "ligand_params": [{"mol2": "...", "frcmod": "...", "residue_name": "LIG"}]}'
+mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system --json-input '{
+  "pdb_file": "job_xxx/nodes/solv_001/artifacts/solvated.pdb",
+  "forcefield": "ff19SB", "water_model": "opc",
+  "ligand_params": [{"mol2": "...", "frcmod": "...", "residue_name": "LIG"}],
+  "job_dir": "job_xxx", "node_id": "topo_001"
+}'
 ```
 
 ### Protonation Notes
@@ -81,31 +105,27 @@ mdclaw build_amber_system --json-input '{"pdb_file": "job_xxx/solvate/solvated.p
 
 ---
 
-## progress.json (auto-updated)
+## progress.json + node.json (auto-updated)
 
-`progress.json` is automatically updated by each tool after execution.
-No manual writing is needed. After Steps 3-5, it will contain:
+Each tool auto-updates its own `node.json` and the job-level `progress.json`.
+No manual writing needed. After Steps 3-5:
 
-- `completed_steps`: `["prepare", "solvate", "topology"]`
-- `system`: chains, num_residues, ligands, num_atoms_total
-- `preparation`: protonation_method, protonation_ph, histidine_states
-- `solvation`: type, box_size, buffer_distance, salt_concentration
-- `forcefield`: protein, water
-- `artifacts`: source_file, merged_pdb, solvated_pdb, parm7, rst7, ligand_params
-- `next_step`: `{"skill": "md-equilibration", ...}`
+- `progress.json`: nodes index with `prep_001`, `solv_001`, `topo_001` all `completed`
+- `progress.json`: cached summaries — `system`, `preparation`, `params` (forcefield, water_model)
+- Each `node.json`: detailed artifacts, metadata, conditions
 
-Read `progress.json` to verify state before handoff. Do not write it manually.
+Read `progress.json` to verify state before handoff. Read `node.json` for artifact paths.
 
 ## Handoff
 
-1. Read `progress.json` — verify `next_step.skill == "md-equilibration"`.
+1. Read `progress.json` — verify `topo_001` status is `completed`.
 
-2. **If `params.e2e_mode` is true** (user said "end-to-end", "then run X ns",
-   "全部やって", etc.): read and follow `skills/md-equilibration/SKILL.md`,
-   passing the job directory and any production parameters from the original request.
+2. **If e2e_mode** (user said "end-to-end", "then run X ns", "全部やって", etc.):
+   read and follow `skills/md-equilibration/SKILL.md`, passing the job directory
+   and any production parameters from the original request.
 
 3. **Otherwise**: present the next step to the user:
    ```
    Preparation complete. Next:
-     /md-equilibration <job_dir>
+     /md-equilibration job_xxx
    ```
