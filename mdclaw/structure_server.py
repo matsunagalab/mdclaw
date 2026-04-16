@@ -3276,10 +3276,12 @@ def prepare_complex(
         logger.error(f"Structure file not found: {structure_file}")
         return result
 
-    # Setup output directory
+    # Setup output directory — don't create a subdir here; split_molecules
+    # creates its own split/ subdir, and we adopt that as out_dir.
     base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "prepare_complex")
-    result["output_dir"] = str(out_dir)
+    ensure_directory(base_dir)
+    out_dir = base_dir
+    result["output_dir"] = str(base_dir)
 
     try:
         # Step 1: Inspect structure
@@ -3298,25 +3300,25 @@ def prepare_complex(
         if not inspection["success"]:
             result["errors"].append(f"Inspection failed: {inspection['errors']}")
             return result
-        
+
         summary = inspection["summary"]
         logger.info(f"Found: {summary['num_protein_chains']} proteins, "
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
-        
+
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
         split_result = split_molecules(
             str(structure_file),
-            output_dir=str(out_dir.parent),  # Will create job_id subdirectory
+            output_dir=str(base_dir),
             select_chains=select_chains,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             exclude_ligand_ids=exclude_ligand_ids,
             keep_crystal_waters=keep_crystal_waters,
         )
-        
-        # Update output_dir to match split_molecules output
+
+        # Adopt split_molecules output dir as our working dir
         if split_result["success"]:
             result["output_dir"] = split_result["output_dir"]
             out_dir = Path(split_result["output_dir"])
