@@ -24,7 +24,7 @@
 # =============================================================================
 # Stage 1: Build conda environment (everything except OpenMM)
 # =============================================================================
-FROM condaforge/mambaforge:latest AS conda-base
+FROM --platform=linux/amd64 condaforge/mambaforge:latest AS conda-base
 
 WORKDIR /build
 
@@ -62,7 +62,7 @@ RUN mamba install -n base -y conda-pack && \
 # =============================================================================
 # Stage 2: Build OpenMM from source with CUDA 12.4
 # =============================================================================
-FROM nvidia/cuda:12.1.1-devel-ubuntu22.04 AS openmm-builder
+FROM --platform=linux/amd64 nvidia/cuda:12.1.1-devel-ubuntu22.04 AS openmm-builder
 
 # Build dependencies
 RUN apt-get update && \
@@ -109,7 +109,7 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 # =============================================================================
 # Stage 3: Slim runtime
 # =============================================================================
-FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+FROM --platform=linux/amd64 nvidia/cuda:12.1.1-runtime-ubuntu22.04
 
 # Minimal runtime dependencies
 RUN apt-get update && \
