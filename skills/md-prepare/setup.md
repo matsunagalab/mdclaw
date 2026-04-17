@@ -1,40 +1,31 @@
 # Setup: Structure Acquisition & Preparation
 
-## Progress Tracking
+## Progress Tracking (schema v3, node-based)
 
-`progress.json` is the **source of truth** for job state. It is automatically
-created by `prepare_complex` and updated by each subsequent tool
-(`solvate_structure`, `build_amber_system`, `run_equilibration`, `run_production`).
-No manual writing is needed — the CLI auto-updates it after every tool execution.
+`progress.json` is a thin **index** over the job's nodes. Each pipeline step
+(`fetch`, `prep`, `solv`, `topo`, `eq`, `prod`) is a separate node with its own
+`node.json`, lock, and `artifacts/` directory. Tools self-update both their
+`node.json` and the `progress.json` index — the skill never writes state
+manually.
 
-Each skill reads `progress.json` to determine the current step, available artifacts,
-and what to do next. Resume is supported by reading `progress.json` alone.
+Read `progress.json` to see which nodes exist and their status; read a specific
+`nodes/<node_id>/node.json` to see that node's artifacts and metadata.
 
 ```json
 {
-  "schema_version": "2.0",
+  "schema_version": 3,
   "job_id": "<8-char hex>",
   "created_at": "<ISO8601 timestamp>",
-  "current_step": "<step name>",
-  "completed_steps": [],
-  "commands": [],
   "system": {},
   "preparation": {},
-  "solvation": {},
-  "forcefield": {},
-  "params": {
-    "pdb_id": "", "chains": [], "include_ligands": true,
-    "solvation_type": "explicit", "water_model": "opc",
-    "buffer_angstrom": 15, "salt_molar": 0.15,
-    "forcefield": "ff19SB", "ph": 7.4
+  "params": {},
+  "nodes": {
+    "fetch_001": {"type": "fetch", "status": "completed", "parents": []},
+    "prep_001":  {"type": "prep",  "status": "completed", "parents": ["fetch_001"]},
+    "solv_001":  {"type": "solv",  "status": "completed", "parents": ["prep_001"]},
+    "topo_001":  {"type": "topo",  "status": "completed", "parents": ["solv_001"]}
   },
-  "artifacts": {
-    "structure_file": "", "merged_pdb": "",
-    "solvated_pdb": "", "parm7": "", "rst7": "",
-    "ligand_params": []
-  },
-  "runs": [],
-  "next_step": null
+  "warnings": []
 }
 ```
 
@@ -43,18 +34,27 @@ and what to do next. Resume is supported by reading `progress.json` alone.
 ```
 job_XXXXXXXX/
   progress.json
-  split/        ← Step 3: prepare_complex
-  merge/        ← Step 3: merged.pdb
-  solvate/      ← Step 4: solvated.pdb
-  topology/     ← Step 5: system.parm7, system.rst7
-  runs/          ← Created by md-equilibration / md-production
-    run_001_300K/
-      run.json
-      equilibration/
-      production/
+  progress.lock
+  nodes/
+    fetch_001/
+      node.json
+      node.lock
+      artifacts/        ← downloaded structure, inspection.json
+    prep_001/
+      node.json
+      artifacts/        ← split/, merge/, cleaned protein, ligand_params.json
+    solv_001/
+      node.json
+      artifacts/        ← solvated.pdb, box_dimensions.json
+    topo_001/
+      node.json
+      artifacts/        ← system.parm7, system.rst7
+  events/               ← append-only JSON files per event
 ```
 
-Always read file paths from each tool's JSON output rather than guessing paths.
+Always read artifact paths from each tool's JSON output or from
+`nodes/<id>/node.json` rather than guessing paths. Downstream tools resolve
+paths automatically from DAG ancestors when invoked with `--job-dir` / `--node-id`.
 
 ---
 
@@ -86,10 +86,20 @@ Always read file paths from each tool's JSON output rather than guessing paths.
 
 > **Node mode (schema v3)**: structure acquisition is a `fetch` DAG-root node.
 > Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
-> and pass `--node-id fetch_001` to the fetch tool above. The downloaded
-> file is recorded under `nodes/fetch_001/artifacts/` with provenance
-> metadata (`source_type`, `source_id`, `sha256`, `source_url`). See
-> `explicit-water.md` for the full node-based runbook.
+> and pass `--node-id fetch_001` to `download_structure`,
+> `get_alphafold_structure`, or `register_local_structure`. The downloaded /
+> registered file is recorded under `nodes/fetch_001/artifacts/` with
+> provenance metadata (`source_type`, `source_id`, `sha256`, `source_url`).
+> See `explicit-water.md` for the full node-based runbook.
+>
+> **Exception — `boltz2_protein_from_seq`**: fetch-node wiring is **not yet
+> implemented** (tracked in `CLAUDE.md` TODO). The tool currently produces
+> a predicted CIF/PDB outside any node's artifacts/ directory. To use a
+> Boltz-2 prediction as a fetch node, run the tool first, then register
+> the resulting file via
+> `mdclaw --job-dir <jd> --node-id fetch_001 register_local_structure --file-path <predicted.cif>`.
+> Passing `--job-dir` / `--node-id` directly to `boltz2_protein_from_seq`
+> will not produce a provenance-annotated fetch artifact.
 
 ---
 
@@ -114,11 +124,14 @@ mdclaw inspect_molecules --structure-file <file>
 
 ## Step 3: Prepare Complex
 
+Create a `prep` node with the `fetch` node as parent, then invoke
+`prepare_complex` in node mode. `structure_file` is auto-resolved from the
+single `fetch` ancestor, and output goes to `nodes/prep_001/artifacts/`.
+
 **Without ligands** (protein only):
 ```bash
-mdclaw prepare_complex \
-  --structure-file <file> \
-  --output-dir <job_dir> \
+mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids fetch_001
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --select-chains A \
   --include-types protein \
   --ph 7.4 \
@@ -127,9 +140,7 @@ mdclaw prepare_complex \
 
 **With ligands** (add `--process-ligands`):
 ```bash
-mdclaw prepare_complex \
-  --structure-file <file> \
-  --output-dir <job_dir> \
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --select-chains A B \
   --include-types protein ligand ion \
   --process-ligands \
@@ -137,12 +148,17 @@ mdclaw prepare_complex \
   --no-cap-termini
 ```
 
-For complex parameters like `--ligand-smiles`, use `--json-input`:
+For complex parameters like `--ligand-smiles`, use `--json-input` (path
+arguments are still auto-resolved, so the JSON only carries decision
+parameters):
 ```bash
-mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "output_dir": "job_xxx", "select_chains": ["A"], "include_types": ["protein","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --json-input '{"select_chains": ["A"], "include_types": ["protein","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
 ```
 
 > `prepare_complex` uses author chain IDs internally, so `--use-author-chains` is unnecessary and would cause double-mapping.
+> To override DAG auto-resolution (e.g., feed a manually edited PDB),
+> pass `--structure-file <path>` explicitly.
 
 ### Step 3 Result Handling
 
@@ -154,7 +170,10 @@ Check `overall_status` from `prepare_complex` JSON output (not stderr):
 | `completed_with_blocking_ligand_failure` | Handle by `workflow_recommendation` (see below) |
 | `failed` | Report error, stop |
 
-**On success**: For each entry in `result.ligands` where `success=true`, store `{mol2, frcmod, residue_name}` in `progress.json` `artifacts.ligand_params`. `prepare_complex` also writes `ligand_params.json` to the job root for auto-detection by `build_amber_system`.
+**On success**: In node mode, `prepare_complex` records ligand parameters
+(`{mol2, frcmod, residue_name}` per ligand) as a structured `ligand_params`
+artifact on the `prep` node. Downstream `build_amber_system` auto-resolves
+this from the `prep` ancestor — no manual bookkeeping or path wiring required.
 
 **Parameterization source**: Each ligand result includes `parameter_source` (`amber_geostd` or `gaff2_antechamber`). `run_antechamber_robust` follows this order: (1) metal pre-check — metal-containing ligands hard-fail immediately, (2) **amber_geostd** curated database lookup (exact residue name match; on hit uses pre-computed GAFF2 mol2/frcmod with abcg2 charges), (3) antechamber + parmchk2 GAFF2 fallback. The amber_geostd database covers ~28,000 PDB CCD entries. Install via `mdclaw download_amber_geostd`.
 
@@ -187,7 +206,11 @@ The `recommended_next_action` field per ligand explains why:
 ## Session Resume
 
 If the user says "resume job_XXXXXXXX":
-1. Read `job_XXXXXXXX/progress.json`
-2. Check `completed_steps`
-3. Verify artifact files exist
-4. Resume from the next incomplete step
+1. Read `job_XXXXXXXX/progress.json` and walk the `nodes` index.
+2. Identify the last node with `status == "completed"` (the DAG tip).
+3. If the next intended node already exists but is `pending` / `running` /
+   `failed`, inspect `nodes/<id>/node.json` for context before deciding to
+   re-run or branch.
+4. Create the next stage's node with the appropriate parent and continue —
+   the tool auto-resolves input files from the DAG, so no paths need to be
+   reconstructed from memory.

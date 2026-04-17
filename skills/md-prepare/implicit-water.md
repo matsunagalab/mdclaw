@@ -22,18 +22,20 @@ No solvation step is needed for implicit solvent. Proceed directly to topology.
 
 ## Step 5: Build Topology (no box, no water)
 
-`ligand_params.json` is auto-detected from the merged PDB directory if ligands were prepared in Step 3.
+Skip `solv` entirely. Create the `topo` node directly from the `prep` ancestor;
+`pdb_file` and `ligand_params` auto-resolve from `prep`, and omitting
+`box_dimensions` tells `build_amber_system` to build an implicit-solvent
+topology (no PBC, no water).
 
 ```bash
-mdclaw build_amber_system \
-  --pdb-file <merged_pdb> \
-  --output-dir <job_dir> \
+mdclaw create_node --job-dir <job_dir> --node-type topo --parent-node-ids prep_001
+mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
   --forcefield ff14SB \
   --no-is-membrane
 ```
 
 > No `--box-dimensions` or `--water-model` needed for implicit solvent.
-> Ligand params (mol2/frcmod) are auto-loaded from `ligand_params.json` in the job root if present.
+> Ligand parameters are auto-resolved from the `prep` ancestor's artifacts.
 
 ### Domain Knowledge
 
@@ -59,18 +61,12 @@ mdclaw build_amber_system \
 
 ## Handoff
 
-1. Set `progress.json.next_step`:
-   ```json
-   {
-     "skill": "md-equilibration",
-     "cli_hint": "/md-equilibration <job_dir>",
-     "rationale": "topology built, ready for equilibration"
-   }
-   ```
+1. Read `progress.json` — verify `topo_001` status is `completed`.
 
-2. **If `params.e2e_mode` is true**: read and follow `skills/md-equilibration/SKILL.md`.
+2. **If e2e_mode** (user said "end-to-end", "then run X ns", etc.):
+   read and follow `skills/md-equilibration/SKILL.md`.
 
-3. **Otherwise**: present the next step to the user:
+3. **Otherwise**:
    ```
    Preparation complete. Next:
      /md-equilibration <job_dir>

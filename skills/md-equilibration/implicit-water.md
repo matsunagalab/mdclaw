@@ -9,35 +9,34 @@ production settings.
 ### Run Equilibration
 
 ```bash
-mdclaw run_equilibration \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <run_dir> \
+mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T>
 ```
 
-- No `--pressure-bar` needed — `run_equilibration` auto-skips NPT for implicit solvent
-- CA positional restraints prevent structural collapse during heating
-- Writes `equilibrated.chk` (production-matching System, currentStep=0)
+`prmtop_file` and `inpcrd_file` are auto-resolved from the `topo` ancestor.
+No `--pressure-bar` is needed — `run_equilibration` auto-skips NPT when the
+topology has no periodic box (implicit solvent) or when `implicit_solvent`
+is set. To override, pass `--prmtop-file` / `--inpcrd-file` explicitly.
+
+The tool self-updates `node.json` and `progress.json` on success or failure.
 
 ### Domain Knowledge
 
 - NVT only: implicit solvent has no periodic box, so no barostat
+- CA positional restraints prevent structural collapse during heating
 - CA restraints are removed in the production-matching checkpoint
 - Energy minimization runs automatically before NVT heating
-- `equilibrated.chk` is directly usable by `run_production --restart-from`
+- `equilibrated.chk` is written with `currentStep=0` by design, so
+  `run_production --simulation-time-ns` is the full production length
+- The checkpoint is directly usable by `run_production --restart-from`, or
+  auto-resolved via the DAG when prod has eq as parent
 
 ---
 
-## Update run.json
+## Verify Output
 
-After equilibration completes, update `run.json` with metadata from the tool output:
+Read `nodes/eq_001/node.json`:
 
-- **stages.equilibration**:
-  - `status`: `"completed"`
-  - `checkpoint`: path to `equilibrated.chk`
-  - `state_file`: path to `equilibration.xml`
-  - `final_structure`: path to `equilibrated.pdb`
-  - `platform`: from tool output
-  - `nvt_steps`, `restraint_atoms`, `restraint_count`
-  - `stages_completed`: from tool output (e.g., `["NVT"]`)
+- `status` should be `"completed"`
+- `artifacts.checkpoint` — path to `equilibrated.chk` (for production restart)
+- `metadata` — platform, nvt_steps, restraint info (no npt for implicit)
