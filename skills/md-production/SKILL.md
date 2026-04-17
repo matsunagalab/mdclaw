@@ -15,6 +15,8 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 | Parameter | Value |
 |-----------|-------|
 | Target | (job directory) |
+| Execution mode | read `progress.json.params.execution_mode` |
+| Workflow mode | read `progress.json.params.workflow_mode` |
 | Parent eq node | (eq_001, etc.) |
 | Simulation time | |
 | Other | (non-default parameters) |
@@ -87,6 +89,9 @@ This skill operates on one `job_dir`. Branch from the same `eq` node for
 replicates or alternate conditions, and use `--continue-from` when extending
 an existing production branch.
 
+If mode metadata is missing, infer it from the current request and persist it
+with `mdclaw update_job_params` before creating new prod nodes.
+
 1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
@@ -108,3 +113,6 @@ an existing production branch.
    To branch from same equilibration:
      /md-production <job_dir>
    ```
+
+`workflow_mode=end_to_end` ends here by default. `md-analyze` is an explicit,
+opt-in follow-up step rather than part of the automatic production handoff.

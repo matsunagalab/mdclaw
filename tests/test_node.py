@@ -23,6 +23,7 @@ from mdclaw._node import (
     resolve_artifact,
     resolve_node_inputs,
     schema_major,
+    update_job_params,
     update_job_summaries,
     update_node,
     update_node_status,
@@ -448,6 +449,40 @@ class TestUpdateNodeStatusTool:
         pj = json.loads((job_dir / "progress.json").read_text())
         assert node["status"] == "failed"
         assert pj["nodes"]["eq_001"]["status"] == "failed"
+
+
+# ── update_job_params tool ────────────────────────────────────────────────
+
+
+class TestUpdateJobParamsTool:
+
+    def test_bootstraps_progress_json(self, job_dir):
+        result = update_job_params(
+            str(job_dir),
+            {"execution_mode": "autonomous", "workflow_mode": "single_step"},
+        )
+        assert result["success"] is True
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["params"]["execution_mode"] == "autonomous"
+        assert progress["params"]["workflow_mode"] == "single_step"
+
+    def test_merges_without_overwriting_other_params(self, job_dir):
+        update_job_params(str(job_dir), {"execution_mode": "autonomous"})
+        result = update_job_params(str(job_dir), {"workflow_mode": "end_to_end"})
+        assert result["success"] is True
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["params"]["execution_mode"] == "autonomous"
+        assert progress["params"]["workflow_mode"] == "end_to_end"
+
+    def test_rejects_unknown_execution_mode(self, job_dir):
+        result = update_job_params(str(job_dir), {"execution_mode": "hybrid"})
+        assert result["success"] is False
+        assert "execution_mode must be one of" in result["error"]
+
+    def test_rejects_unknown_workflow_mode(self, job_dir):
+        result = update_job_params(str(job_dir), {"workflow_mode": "e2e_mode"})
+        assert result["success"] is False
+        assert "workflow_mode must be one of" in result["error"]
 
 
 # ── State transitions ──────────────────────────────────────────────────────

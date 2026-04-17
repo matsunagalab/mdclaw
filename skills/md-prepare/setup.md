@@ -18,7 +18,10 @@ Read `progress.json` to see which nodes exist and their status; read a specific
   "created_at": "<ISO8601 timestamp>",
   "system": {},
   "preparation": {},
-  "params": {},
+  "params": {
+    "execution_mode": "autonomous",
+    "workflow_mode": "single_step"
+  },
   "nodes": {
     "fetch_001": {"type": "fetch", "status": "completed", "parents": []},
     "prep_001":  {"type": "prep",  "status": "completed", "parents": ["fetch_001"]},
@@ -60,11 +63,19 @@ paths automatically from DAG ancestors when invoked with `--job-dir` / `--node-i
 
 ## Decision Checkpoints
 
-| Checkpoint | Trigger | Default | User Cues |
-|---|---|---|---|
-| Chain selection | Multiple chains | All chains | "chain A", "chains A,B" |
-| Ligand inclusion | Ligands detected | Include all | "no ligand", "exclude ligands" |
-| pH | Never ask | 7.4 | "pH 6.5" |
+Use `progress.json.params.execution_mode` as the source of truth:
+- `autonomous` (default): ask only for `ask_if_missing` and `stop_and_ask`
+  checkpoints.
+- `human_in_the_loop`: ask at every checkpoint, even when a default exists.
+
+| Checkpoint | Ask policy | Trigger | Default | User Cues |
+|---|---|---|---|---|
+| Target identity | `stop_and_ask` | Name search or ambiguous source | None | "adenylate kinase", multiple search hits |
+| Chain selection | `ask_if_missing` | Multiple chains and user gave no chain intent | All chains | "chain A", "chains A,B" |
+| Ligand inclusion | `ask_if_missing` | Ligands detected and user gave no ligand intent | Include all | "no ligand", "exclude ligands" |
+| pH | `never_ask` | Standard preparation | 7.4 | "pH 6.5" |
+| Low-confidence charge | `stop_and_ask` | `LOW_CONFIDENCE_CHARGE` warning | None | warning from `prepare_complex` |
+| Blocking ligand failure | `stop_and_ask` | `overall_status=completed_with_blocking_ligand_failure` | None | `workflow_recommendation.options` |
 
 ---
 
@@ -114,8 +125,14 @@ mdclaw inspect_molecules --structure-file <file>
 > node's artifacts dir. The node's status is unchanged (read-only).
 
 1. **Chain ID mapping**: Output has `author_chain` (e.g., `"A"`) and `chain_id` (e.g., `"Axp"`). **Use `author_chain` for `--select-chains` in Step 3.**
-2. **Checkpoint: Chain selection** — If multiple chains and user hasn't specified, ask (present `author_chain` values).
-3. **Checkpoint: Ligand inclusion** — If ligands found and user hasn't specified, ask.
+2. **Checkpoint: Chain selection** — If multiple chains and user hasn't
+   specified, ask in `human_in_the_loop` mode and in `autonomous` only when
+   chain intent is missing (present `author_chain` values). Otherwise use the
+   user's choice or default to all chains.
+3. **Checkpoint: Ligand inclusion** — If ligands found and user hasn't
+   specified, ask in `human_in_the_loop` mode and in `autonomous` only when
+   ligand intent is missing. Otherwise use the user's choice or default to
+   include all detected ligands.
 4. Determine `include_types`:
    - With ligands and ions: `protein ligand ion`
    - No ligands, no ions: `protein`
@@ -177,7 +194,9 @@ this from the `prep` ancestor — no manual bookkeeping or path wiring required.
 
 **Parameterization source**: Each ligand result includes `parameter_source` (`amber_geostd` or `gaff2_antechamber`). `run_antechamber_robust` follows this order: (1) metal pre-check — metal-containing ligands hard-fail immediately, (2) **amber_geostd** curated database lookup (exact residue name match; on hit uses pre-computed GAFF2 mol2/frcmod with abcg2 charges), (3) antechamber + parmchk2 GAFF2 fallback. The amber_geostd database covers ~28,000 PDB CCD entries. Install via `mdclaw download_amber_geostd`.
 
-**Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings contain `LOW_CONFIDENCE_CHARGE`, present the warning to the user and ask for confirmation before proceeding.
+**Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings
+contain `LOW_CONFIDENCE_CHARGE`, this is always `stop_and_ask`: present the
+warning to the user and ask for confirmation before proceeding.
 
 ### Blocking Ligand Failure
 
@@ -185,7 +204,9 @@ When `overall_status = completed_with_blocking_ligand_failure`:
 
 1. Read `result.workflow_recommendation.blocking_ligands` — each entry has `ligand_id`, `failure_class`, `ligand_class`, `recommended_next_action`
 2. **Do NOT** retry with different charge methods, edit frcmod files, or attempt workarounds
-3. Present the user with exactly the options from `result.workflow_recommendation.options`:
+3. Present the user with exactly the options from
+   `result.workflow_recommendation.options` — this is always `stop_and_ask`,
+   even in `autonomous` mode:
 
 Typical options:
 - **provide_curated_params_and_rerun** — user provides mol2/frcmod files for the ligand

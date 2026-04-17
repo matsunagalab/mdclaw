@@ -118,15 +118,19 @@ To intentionally use the legacy pair, override both sides together: `build_amber
 
 Each tool auto-updates its `node.json` and job-level `progress.json`.
 No manual writing needed. Read `progress.json` to verify state before handoff.
+Use `progress.json.params.execution_mode` / `workflow_mode` as the source of
+truth for interaction policy and automatic continuation.
 
 ## Handoff
 
 1. Read `progress.json` -- verify `topo_001` status is `completed`.
 
-2. **If e2e_mode** (user said "end-to-end", "then run X ns", etc.):
+2. Read `progress.json.params.workflow_mode`.
+
+3. If `workflow_mode == "end_to_end"`:
    read and follow `skills/md-equilibration/SKILL.md`.
 
-3. **Otherwise**:
+4. Otherwise:
    ```
    Preparation complete. Next:
      /md-equilibration job_xxx

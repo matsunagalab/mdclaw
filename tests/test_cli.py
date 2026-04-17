@@ -593,6 +593,37 @@ class TestNodeCLIParameters:
         assert node["status"] == "submitted"
         assert progress["nodes"]["prod_001"]["status"] == "submitted"
 
+    def test_update_job_params_accepts_json_dict(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "update_job_params",
+            "--job-dir", "/tmp/job",
+            "--params", '{"execution_mode":"autonomous","workflow_mode":"end_to_end"}',
+        ])
+        assert args.tool_name == "update_job_params"
+        assert args.job_dir == "/tmp/job"
+        assert args.params == '{"execution_mode":"autonomous","workflow_mode":"end_to_end"}'
+
+    def test_update_job_params_end_to_end(self, tmp_path):
+        import json
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_job_params",
+                "--job-dir", str(tmp_path),
+                "--params", '{"execution_mode":"autonomous","workflow_mode":"single_step"}',
+            ])
+        assert exc_info.value.code == 0
+
+        progress = json.loads((tmp_path / "progress.json").read_text())
+        assert progress["params"]["execution_mode"] == "autonomous"
+        assert progress["params"]["workflow_mode"] == "single_step"
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

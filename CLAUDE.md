@@ -386,6 +386,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ### node_server.py
 - `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `fetch` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's checkpoint (no silent fallback); if the checkpoint is missing, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
+- `update_job_params(job_dir, params)` - Merge job-level metadata into `progress.json.params`. Use this to persist workflow-wide settings such as `execution_mode` (`autonomous` / `human_in_the_loop`) and `workflow_mode` (`single_step` / `end_to_end`) without hand-editing progress files.
 - `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
 
 ## CLI Interface
@@ -570,30 +571,6 @@ Support metadata exchange with an MMDB (Molecular Modeling Database) system:
 
 Schema consideration: `node.json` may need an `mmdb` section for external
 IDs and sync status. `progress.json` may need a top-level `mmdb_id` field.
-
-### Skill execution modes: autonomous vs human-in-the-loop
-
-Currently skills have informal mode detection (keywords like "end-to-end",
-"全部やって") and ad-hoc checkpoint logic scattered across SKILL.md files.
-Formalize this into two well-defined modes:
-
-1. **Autonomous mode**: skill runs the full pipeline without pausing.
-   All decision checkpoints (chain selection, ligand inclusion, solvation
-   params, etc.) use defaults or user-specified values. Errors are handled
-   by retry/fallback logic, not by asking the user. Suitable for scheduled
-   agents and e2e workflows.
-
-2. **Human-in-the-loop mode** (default): skill pauses at each decision
-   checkpoint to present options and wait for user input. Errors are
-   reported with structured context for the user to decide next steps.
-
-Implementation considerations:
-- Add an explicit `mode` parameter to skills (or detect from `conditions`
-  in the eq/prod node, or from a job-level `params.execution_mode` field)
-- Define a standard set of checkpoints per skill with clear skip/ask rules
-- Autonomous mode should still log decisions to `events/` for auditability
-- Consider a hybrid mode where only critical checkpoints pause (e.g.,
-  ligand failure) while routine steps proceed automatically
 
 ### hpc-run skill audit and node-based integration
 

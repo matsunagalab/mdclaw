@@ -481,6 +481,55 @@ def update_job_summaries(
         _atomic_write_json(pj, progress)
 
 
+def update_job_params(job_dir: str, params: dict) -> dict:
+    """Merge job-level params into ``progress.json``.
+
+    This is the public, CLI-exposed writer for lightweight job metadata that
+    is not tied to a specific node, such as ``execution_mode`` or
+    ``workflow_mode``. If the job has not been initialized yet, schema v3
+    ``progress.json`` is created first.
+    """
+    if not isinstance(params, dict):
+        raise TypeError("params must be a dict")
+
+    allowed_execution_modes = {"autonomous", "human_in_the_loop"}
+    allowed_workflow_modes = {"single_step", "end_to_end"}
+
+    execution_mode = params.get("execution_mode")
+    if execution_mode is not None and execution_mode not in allowed_execution_modes:
+        return {
+            "success": False,
+            "error": (
+                "execution_mode must be one of "
+                f"{sorted(allowed_execution_modes)} (got {execution_mode!r})"
+            ),
+        }
+
+    workflow_mode = params.get("workflow_mode")
+    if workflow_mode is not None and workflow_mode not in allowed_workflow_modes:
+        return {
+            "success": False,
+            "error": (
+                "workflow_mode must be one of "
+                f"{sorted(allowed_workflow_modes)} (got {workflow_mode!r})"
+            ),
+        }
+
+    jd = Path(job_dir).resolve()
+    if not (jd / "progress.json").exists():
+        init_progress_v3(str(jd))
+
+    update_job_summaries(str(jd), params=params)
+
+    progress = json.loads((jd / "progress.json").read_text())
+    return {
+        "success": True,
+        "job_dir": str(jd),
+        "progress_file": str(jd / "progress.json"),
+        "params": progress.get("params", {}),
+    }
+
+
 # ── Read helpers ───────────────────────────────────────────────────────────
 
 def read_node(job_dir: str, node_id: str) -> dict:

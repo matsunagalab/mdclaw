@@ -63,6 +63,23 @@ HPC:
 
 You can also call `mdclaw <tool>` directly. See `mdclaw --list`.
 
+### Execution Modes
+
+MDClaw separates **how much it asks** from **how far it continues**:
+
+- `execution_mode=autonomous` (default): proceed with user-specified values and
+  repo defaults. Ask only when a required choice is missing, the target is
+  ambiguous, or a structured failure needs a user decision.
+- `execution_mode=human_in_the_loop`: stop at each decision checkpoint and ask
+  before continuing.
+- `workflow_mode=single_step` (default): stop after the current skill and hand
+  off to the next one explicitly.
+- `workflow_mode=end_to_end`: continue automatically from prepare to
+  equilibration to production. Analysis is still an explicit follow-up step.
+
+These mode values are stored in `progress.json.params`, so later skills can
+reuse the same behavior without re-inferring it from chat history.
+
 ### Defaults
 
 ff19SB + OPC water, 15 Å buffer, 0.15 M NaCl, 300 K, 1 bar (NPT),

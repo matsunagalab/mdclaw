@@ -90,6 +90,14 @@ class TestImportServers:
         assert "update_node_status" in TOOLS
         assert callable(TOOLS["update_node_status"])
 
+    def test_node_server_exposes_update_job_params(self):
+        """Mode persistence relies on a CLI-registered tool that writes
+        progress.json.params without hand-editing job state."""
+        from mdclaw.node_server import TOOLS
+
+        assert "update_job_params" in TOOLS
+        assert callable(TOOLS["update_job_params"])
+
     def test_node_server_exposes_create_node_with_continue_from(self):
         """continue_from must remain an exposed parameter of create_node
         so skill docs that call `--continue-from` keep working."""

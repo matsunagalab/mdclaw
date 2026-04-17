@@ -63,10 +63,12 @@ mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
 
 1. Read `progress.json` — verify `topo_001` status is `completed`.
 
-2. **If e2e_mode** (user said "end-to-end", "then run X ns", etc.):
+2. Read `progress.json.params.workflow_mode`.
+
+3. If `workflow_mode == "end_to_end"`:
    read and follow `skills/md-equilibration/SKILL.md`.
 
-3. **Otherwise**:
+4. Otherwise:
    ```
    Preparation complete. Next:
      /md-equilibration <job_dir>

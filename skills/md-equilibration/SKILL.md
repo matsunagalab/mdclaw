@@ -17,6 +17,8 @@ Extract parameters from the user's request and present a summary.
 | Parameter | Value |
 |-----------|-------|
 | Target | (job directory) |
+| Execution mode | read `progress.json.params.execution_mode` |
+| Workflow mode | read `progress.json.params.workflow_mode` |
 | Temperature | 300 K (default) |
 | Pressure | 1.0 bar (default, explicit) / 0 (implicit) |
 | Other | (non-default parameters: seed, label, etc.) |
@@ -51,6 +53,14 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 This skill operates on one `job_dir`. Reuse the same `topo` node and branch
 into multiple `eq` nodes when you need replicates or different conditions.
 
+If `progress.json.params` does not already carry mode information, infer it
+from the current user request and persist it via:
+
+```bash
+mdclaw update_job_params --job-dir <job_dir> \
+  --params '{"execution_mode":"autonomous","workflow_mode":"single_step"}'
+```
+
 1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-equilibration/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-equilibration/implicit-water.md`**
@@ -65,9 +75,12 @@ into multiple `eq` nodes when you need replicates or different conditions.
 
 1. Verify eq node status is `completed` in `progress.json`.
 
-2. **If e2e_mode**: read and follow `skills/md-production/SKILL.md`.
+2. Read `progress.json.params.workflow_mode`.
 
-3. **Otherwise**:
+3. If `workflow_mode == "end_to_end"`: read and follow
+   `skills/md-production/SKILL.md`.
+
+4. Otherwise:
    ```
    Equilibration complete. Next:
      /md-production <job_dir>

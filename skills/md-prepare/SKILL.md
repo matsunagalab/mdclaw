@@ -19,6 +19,8 @@ Summary to present:
 | Parameter | Value |
 |-----------|-------|
 | Target | (PDB ID / sequence / file — exactly as the user wrote) |
+| Execution mode | `autonomous` (default) / `human_in_the_loop` |
+| Workflow mode | `single_step` (default) / `end_to_end` |
 | Chain(s) | (if specified) |
 | Ligands | include / exclude |
 | Solvation | explicit (default) / implicit |
@@ -32,17 +34,38 @@ This skill prepares **one physical system per job directory**. Do not create
 multiple fetch roots in the same DAG. Use DAG branching only after `prep`
 to explore variants of the same system.
 
-1. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
+1. Decide modes from the user's request and persist them in `progress.json`
+   once `job_dir` is known:
+   - `execution_mode=autonomous` unless the user explicitly asks for
+     checkpoint-by-checkpoint confirmation.
+   - `workflow_mode=end_to_end` only when the user wants automatic
+     continuation into equilibration and production. Otherwise use
+     `single_step`.
+   - Persist via:
+     ```bash
+     mdclaw update_job_params --job-dir <job_dir> \
+       --params '{"execution_mode":"autonomous","workflow_mode":"single_step"}'
+     ```
+2. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
    inspection, chain selection, cleaning, and protonation.
-2. **Based on the solvation type**, read the appropriate file:
+3. **Based on the solvation type**, read the appropriate file:
    - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
    - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
 
 ## Interaction Mode
 
-- **Autonomous**: User says "run everything", "end-to-end", or specifies all parameters. Use defaults without asking.
-- **Interactive** (default): Ask at each checkpoint (chain selection, ligand inclusion, etc.).
-- **Hybrid**: User specifies some parameters. Ask only about unspecified ones.
+- **`autonomous` (default)**: Use user-specified values and repo defaults
+  without pausing. Ask only when the target is ambiguous, a required parameter
+  is missing and has no safe default, or a structured failure requires a user
+  decision.
+- **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
+  next action with the user.
+
+`workflow_mode` is separate from `execution_mode`:
+- **`single_step` (default)**: stop after preparation and hand off to
+  `/md-equilibration`.
+- **`end_to_end`**: after preparation, automatically continue through
+  equilibration and production. Analysis is still an explicit follow-up step.
 
 ## Error Handling
 
