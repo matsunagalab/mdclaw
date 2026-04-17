@@ -18,7 +18,7 @@ Summary to present:
 
 | Parameter | Value |
 |-----------|-------|
-| Target(s) | (PDB ID / sequence / file — exactly as the user wrote) |
+| Target | (PDB ID / sequence / file — exactly as the user wrote) |
 | Chain(s) | (if specified) |
 | Ligands | include / exclude |
 | Solvation | explicit (default) / implicit |
@@ -28,14 +28,15 @@ This confirmation step applies to all interaction modes including autonomous. Mi
 
 ## Workflow
 
-1. If user provides **multiple targets** (list of PDB IDs, sequences, or files):
-   → **Read and follow `skills/md-prepare/batch.md`**
+This skill prepares **one physical system per job directory**. Do not create
+multiple fetch roots in the same DAG. Use DAG branching only after `prep`
+to explore variants of the same system.
 
-2. If single target:
-   a. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition, inspection, chain selection, cleaning, and protonation.
-   b. **Based on the solvation type**, read the appropriate file:
-      - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
-      - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
+1. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
+   inspection, chain selection, cleaning, and protonation.
+2. **Based on the solvation type**, read the appropriate file:
+   - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
+   - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
 
 ## Interaction Mode
 

@@ -336,7 +336,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
 
 ### structure_server.py
-- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolved from a single `fetch` ancestor (multi-fetch parents fall back to explicit `--structure-file`)
+- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor
 - `clean_protein(pdb_file, ...)` - PDBFixer + pdb2pqr protonation
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components
@@ -385,8 +385,8 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ### node_server.py
-- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's checkpoint (no silent fallback); if the checkpoint is missing, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
-- `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so that batch workflows can rely on the `progress.json` index for re-entry filtering without drift. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
+- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `fetch` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's checkpoint (no silent fallback); if the checkpoint is missing, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
+- `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
 
 ## CLI Interface
 
@@ -549,16 +549,13 @@ predicted CIF/PDB into `nodes/<fetch_id>/artifacts/`, and call
 `_complete_fetch_node` with `source_type="boltz2"` plus prediction metadata
 (model version, sequence(s), SMILES list, affinity flag, sha256).
 
-### Multi-fetch → `prep` (combine multiple sources)
+### Single-fetch DAG principle
 
-`prep` currently auto-resolves `structure_file` only when it has a single
-`fetch` ancestor. Extending to multi-source merges (e.g., two AlphaFold
-monomers, or protein from one PDB + ligand pose from another) requires:
-- A new structured artifact `structure_files` (list, mirroring
-  `ligand_params`) that `resolve_node_inputs` returns when multiple
-  `fetch` ancestors exist
-- `prepare_complex` (or a dedicated merge tool) to consume the list and
-  merge before chain processing
+Each `job_dir` should contain one physical system with exactly one `fetch`
+root. Variant exploration happens by branching from `prep`, `solv`, `topo`,
+`eq`, or `prod` nodes inside that same DAG. Supporting multiple independent
+fetch roots in one job is intentionally out of scope because it makes input
+resolution and system identity ambiguous.
 
 ### MMDB database integration
 
@@ -583,8 +580,8 @@ Formalize this into two well-defined modes:
 1. **Autonomous mode**: skill runs the full pipeline without pausing.
    All decision checkpoints (chain selection, ligand inclusion, solvation
    params, etc.) use defaults or user-specified values. Errors are handled
-   by retry/fallback logic, not by asking the user. Suitable for batch
-   processing, scheduled agents, and e2e workflows.
+   by retry/fallback logic, not by asking the user. Suitable for scheduled
+   agents and e2e workflows.
 
 2. **Human-in-the-loop mode** (default): skill pauses at each decision
    checkpoint to present options and wait for user input. Errors are

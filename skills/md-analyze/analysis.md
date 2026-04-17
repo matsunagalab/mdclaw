@@ -2,13 +2,14 @@
 
 ## Prerequisites
 
-Ensure these files exist (from md-production):
+Ensure these files exist (from `md-production`):
 - `parm7` — Amber topology file
 - `trajectory` — Trajectory file (DCD or similar)
 
-Read `progress.json` in the job directory to find topology paths.
-For jobs with `runs/` subdirectories, also read `runs/<run_id>/run.json`
-to find the trajectory path (`stages.production.trajectory`).
+Read `progress.json` in the job directory to find completed `prod` nodes.
+Read `nodes/<prod_id>/node.json` to find the trajectory path under
+`artifacts.trajectory`, then walk ancestors to the relevant `topo` node
+to find `system.parm7`.
 
 ---
 

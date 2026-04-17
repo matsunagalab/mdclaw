@@ -1019,19 +1019,30 @@ class TestFetchNode:
         inputs = resolve_node_inputs(jd, "prep_001", "prep")
         assert "structure_file" not in inputs
 
-    def test_prep_omits_when_multiple_fetch_ancestors(self, job_dir):
-        """v1 contract: multi-fetch -> prep is unsupported; auto-resolve
-        returns empty so prepare_complex falls back to explicit --structure-file."""
+    def test_rejects_second_fetch_root(self, job_dir):
+        jd = str(job_dir)
+        assert create_node(jd, "fetch")["success"] is True
+        result = create_node(jd, "fetch")
+        assert result["success"] is False
+        assert "already has a fetch root" in result["error"]
+
+    def test_rejects_prep_with_multiple_fetch_lineages(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "fetch")
         complete_node(jd, "fetch_001",
                       artifacts={"structure_file": "artifacts/a.pdb"})
-        create_node(jd, "fetch")
-        complete_node(jd, "fetch_002",
-                      artifacts={"structure_file": "artifacts/b.pdb"})
-        create_node(jd, "prep", parent_node_ids=["fetch_001", "fetch_002"])
-        inputs = resolve_node_inputs(jd, "prep_001", "prep")
-        assert "structure_file" not in inputs
+        # Simulate a legacy/hand-edited second fetch lineage in progress.json.
+        progress_path = job_dir / "progress.json"
+        progress = json.loads(progress_path.read_text())
+        progress["nodes"]["fetch_002"] = {
+            "type": "fetch",
+            "status": "completed",
+            "parents": [],
+        }
+        progress_path.write_text(json.dumps(progress))
+        result = create_node(jd, "prep", parent_node_ids=["fetch_001", "fetch_002"])
+        assert result["success"] is False
+        assert "multiple fetch ancestors" in result["error"]
 
     def test_prep_with_single_fetch_through_intermediate_ignored(self, job_dir):
         """If only one fetch ancestor exists, resolve still works even when
@@ -1049,6 +1060,25 @@ class TestFetchNode:
         create_node(jd, "prep", parent_node_ids=["fetch_001"])
         inputs = resolve_node_inputs(jd, "prep_002", "prep")
         assert inputs.get("structure_file", "").endswith("fetch_001/artifacts/src.pdb")
+
+    def test_single_fetch_can_branch_into_multiple_preps(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "fetch")
+        (job_dir / "nodes" / "fetch_001" / "artifacts" / "src.pdb").write_text("X")
+        complete_node(
+            jd,
+            "fetch_001",
+            artifacts={"structure_file": "artifacts/src.pdb"},
+        )
+        first = create_node(jd, "prep", parent_node_ids=["fetch_001"], label="protein_only")
+        second = create_node(jd, "prep", parent_node_ids=["fetch_001"], label="protein_ligand")
+        assert first["success"] is True
+        assert second["success"] is True
+
+        first_inputs = resolve_node_inputs(jd, "prep_001", "prep")
+        second_inputs = resolve_node_inputs(jd, "prep_002", "prep")
+        assert first_inputs["structure_file"].endswith("fetch_001/artifacts/src.pdb")
+        assert second_inputs["structure_file"].endswith("fetch_001/artifacts/src.pdb")
 
 
 # ── Tool registration ─────────────────────────────────────────────────────

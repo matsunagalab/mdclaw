@@ -41,13 +41,7 @@ The container (~4.6 GB) downloads automatically on first session start.
 > /mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
 > /mdclaw:md-equilibration job_a1b2c3d4
 > /mdclaw:md-production job_a1b2c3d4, 10 ns
-```
-
-Batch:
-```
-> /mdclaw:md-prepare 1AKE, 4AKE chain A, explicit water
-> /mdclaw:md-equilibration batch_a1b2c3d4
-> /mdclaw:md-production batch_a1b2c3d4, 100 ns on GPU partition
+> /mdclaw:md-production job_a1b2c3d4, 100 ns with seed 42
 ```
 
 HPC:
@@ -105,6 +99,10 @@ job_a1b2c3d4/
 The same topology node can be reused for multiple equilibrations at
 different temperatures. Each equilibration can branch into multiple
 productions (different seeds, lengths, etc.).
+
+One `job_dir` represents one physical system. Keep a single `fetch` root per
+job and use branching after `prep` to explore preparation, equilibration, and
+production variants.
 
 ### State Management
 

@@ -163,8 +163,8 @@ def create_node(
 
     # Invariant: ``fetch`` is the DAG root for structure acquisition. It
     # records the original source (PDB/AlphaFold/local file) and must not
-    # depend on any other node, otherwise downstream auto-resolution
-    # ("prep's single fetch ancestor") loses meaning.
+    # depend on any other node. A job_dir is also limited to a single fetch
+    # root so one DAG always describes one physical system.
     if node_type == "fetch":
         if parents:
             return {
@@ -209,6 +209,42 @@ def create_node(
                     "error": (
                         f"continue_from='{continue_from}' must reference a "
                         f"prod node (got type='{ref_type}')"
+                    ),
+                }
+
+        existing_fetch_nodes = [
+            nid for nid, info in nodes_index.items()
+            if info.get("type") == "fetch"
+        ]
+        if node_type == "fetch" and existing_fetch_nodes:
+            return {
+                "success": False,
+                "error": (
+                    "job_dir already has a fetch root "
+                    f"({existing_fetch_nodes[0]}). Use prep/solv/topo/eq/prod "
+                    "branches for variants instead of adding another fetch node."
+                ),
+            }
+
+        if node_type == "prep":
+            fetch_lineages = set()
+            queue = list(parents)
+            seen = set()
+            while queue:
+                ref = queue.pop(0)
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                info = nodes_index.get(ref, {})
+                if info.get("type") == "fetch":
+                    fetch_lineages.add(ref)
+                queue.extend(info.get("parents", []))
+            if len(fetch_lineages) > 1:
+                return {
+                    "success": False,
+                    "error": (
+                        "prep nodes must descend from at most one fetch root; "
+                        f"got multiple fetch ancestors {sorted(fetch_lineages)}"
                     ),
                 }
 
@@ -603,11 +639,8 @@ def resolve_node_inputs(
 
     Mappings:
 
-    - ``prep``: ``structure_file`` from nearest ``fetch`` ancestor.
-                If multiple ``fetch`` ancestors are present (multi-source
-                merge), this is omitted — the caller must pass
-                ``structure_file`` explicitly. Multi-fetch merging is a
-                planned v2 feature that will use a ``structure_files`` list.
+    - ``prep``: ``structure_file`` from the job's single ``fetch`` root,
+                when one exists.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_params`` / ``metal_params`` from

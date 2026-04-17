@@ -12,17 +12,14 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 ## Find Trajectory
 
-**Schema v3 (node-based)**: Read `progress.json` -> find completed `prod` nodes.
+Read `progress.json` -> find completed `prod` nodes.
 Read `nodes/prod_001/node.json` -> `artifacts.trajectory` for trajectory path,
-walk ancestors to find `topo` node for topology (parm7) path.
-
-**Schema v2 (legacy)**: Read `progress.json` -> `artifacts.parm7`, check
-`runs/<run_id>/run.json` -> `stages.production.trajectory`.
+then walk ancestors to find the `topo` node for topology (`parm7`) path.
 
 ## Workflow
 
-1. If user provides a **batch directory** (`batch_<id>/`):
-   -> **Read and follow `skills/md-analyze/batch.md`**
+This skill operates on one `job_dir`. Compare branches by selecting the
+relevant completed `prod` nodes inside the same DAG.
 
-2. If single trajectory:
+1. If single trajectory or branch comparison:
    -> **Read and follow `skills/md-analyze/analysis.md`**

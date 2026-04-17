@@ -16,7 +16,7 @@ Extract parameters from the user's request and present a summary.
 
 | Parameter | Value |
 |-----------|-------|
-| Target | (job directory / batch directory) |
+| Target | (job directory) |
 | Temperature | 300 K (default) |
 | Pressure | 1.0 bar (default, explicit) / 0 (implicit) |
 | Other | (non-default parameters: seed, label, etc.) |
@@ -48,10 +48,10 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 
 ## Workflow
 
-1. If **batch directory** (`batch_<id>/`):
-   -> **Read and follow `skills/md-equilibration/batch.md`**
+This skill operates on one `job_dir`. Reuse the same `topo` node and branch
+into multiple `eq` nodes when you need replicates or different conditions.
 
-2. If single system, based on solvent type:
+1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-equilibration/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-equilibration/implicit-water.md`**
 

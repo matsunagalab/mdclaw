@@ -14,7 +14,7 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 | Parameter | Value |
 |-----------|-------|
-| Target | (job directory / batch directory) |
+| Target | (job directory) |
 | Parent eq node | (eq_001, etc.) |
 | Simulation time | |
 | Other | (non-default parameters) |
@@ -83,9 +83,11 @@ mdclaw create_node --job-dir <dir> --node-type prod \
 
 ## Workflow
 
-1. If **batch directory**: -> **Read and follow `skills/md-production/batch.md`**
+This skill operates on one `job_dir`. Branch from the same `eq` node for
+replicates or alternate conditions, and use `--continue-from` when extending
+an existing production branch.
 
-2. If single system, based on solvent type:
+1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
 
