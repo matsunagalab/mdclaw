@@ -84,13 +84,14 @@ Use the same chain selection / ligand inclusion rules for all targets, or per-ta
 
 ```bash
 mdclaw solvate_structure --pdb-file <merged_pdb> --output-dir <job_dir> \
-  --water-model opc --dist 15.0 --salt --saltcon 0.15
+  --dist 15.0 --salt --saltcon 0.15
 
 mdclaw build_amber_system --pdb-file <solvated_pdb> --output-dir <job_dir> \
-  --forcefield ff19SB --water-model opc --no-is-membrane
+  --no-is-membrane
 ```
 
 > `box_dimensions.json` is auto-saved by `solvate_structure` and auto-loaded by `build_amber_system`.
+> For explicit water, MDClaw defaults to the recommended `ff19SB + opc` pair. Only override this for intentional legacy reproduction.
 
 ### 4. Update Progress
 

@@ -8,9 +8,19 @@ import os
 import subprocess
 import uuid
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 logger = logging.getLogger(__name__)
+
+
+CANONICAL_WATER_MODELS = {
+    "tip3p": "tip3p",
+    "opc": "opc",
+    "opc3": "opc3",
+    "tip4pew": "tip4pew",
+    "spce": "spce",
+    "spc/e": "spce",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +290,62 @@ def get_timeout(timeout_type: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Guardrail helpers
+# ---------------------------------------------------------------------------
+
+
+def normalize_choice(value: Optional[str], aliases: dict[str, str]) -> Optional[str]:
+    """Normalize a user-provided string through a case-insensitive alias map."""
+    if value is None:
+        return None
+    return aliases.get(str(value).strip().lower())
+
+
+def create_guardrail_result(
+    field: str,
+    message: str,
+    severity: str = "error",
+    *,
+    actual: Optional[str] = None,
+    expected: Optional[str] = None,
+    suggested_fix: Optional[str] = None,
+    code: Optional[str] = None,
+) -> dict[str, Any]:
+    """Create a normalized rule-evaluation result for validation guardrails."""
+    return {
+        "field": field,
+        "message": message,
+        "severity": severity,
+        "actual": actual,
+        "expected": expected,
+        "suggested_fix": suggested_fix,
+        "code": code,
+    }
+
+
+def split_guardrail_results(results: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split guardrail results into blocking errors and non-blocking warnings."""
+    blocking = [result for result in results if result.get("severity") == "error"]
+    warnings = [result for result in results if result.get("severity") == "warning"]
+    return blocking, warnings
+
+
+def guardrail_messages(results: list[dict[str, Any]]) -> list[str]:
+    """Extract human-readable messages from guardrail results."""
+    return [result["message"] for result in results if result.get("message")]
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    seen = set()
+    unique_items = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            unique_items.append(item)
+    return unique_items
+
+
+# ---------------------------------------------------------------------------
 # Error helpers
 # ---------------------------------------------------------------------------
 
@@ -287,20 +353,66 @@ def get_timeout(timeout_type: str) -> int:
 def create_validation_error(
     field: str, message: str,
     expected: Optional[str] = None, actual: Optional[str] = None,
+    hints: Optional[list[str]] = None,
+    context_extra: Optional[dict[str, Any]] = None,
+    warnings: Optional[list[str]] = None,
 ) -> dict:
     """Standardized validation error dict."""
-    hints = [f"Check the '{field}' parameter"]
+    error_hints = [f"Check the '{field}' parameter"]
     if expected:
-        hints.append(f"Expected: {expected}")
+        error_hints.append(f"Expected: {expected}")
     if actual:
-        hints.append(f"Received: {actual}")
+        error_hints.append(f"Received: {actual}")
+    if hints:
+        error_hints.extend(hints)
+    context = {"field": field, "expected": expected, "actual": actual}
+    if context_extra:
+        context.update(context_extra)
     return {
         "success": False, "error_type": "ValidationError",
         "message": f"Validation failed for '{field}': {message}",
-        "hints": hints,
-        "context": {"field": field, "expected": expected, "actual": actual},
-        "recoverable": True, "errors": [f"{field}: {message}"], "warnings": [],
+        "hints": _dedupe_strings(error_hints),
+        "context": context,
+        "recoverable": True,
+        "errors": [f"{field}: {message}"],
+        "warnings": warnings or [],
     }
+
+
+def create_validation_error_from_guardrails(
+    field: str,
+    results: list[dict[str, Any]],
+    *,
+    summary: Optional[str] = None,
+    expected: Optional[str] = None,
+    actual: Optional[str] = None,
+) -> dict:
+    """Convert structured guardrail results into a standardized validation error."""
+    blocking, warnings = split_guardrail_results(results)
+    if not blocking:
+        raise ValueError("create_validation_error_from_guardrails requires at least one blocking result")
+
+    error_messages = guardrail_messages(blocking)
+    hint_items = []
+    for result in results:
+        suggested_fix = result.get("suggested_fix")
+        if suggested_fix:
+            hint_items.append(suggested_fix)
+        result_expected = result.get("expected")
+        if result_expected:
+            hint_items.append(f"Expected: {result_expected}")
+        if result.get("severity") == "error" and result.get("actual"):
+            hint_items.append(f"Received: {result['actual']}")
+
+    return create_validation_error(
+        field,
+        summary or "; ".join(error_messages),
+        expected=expected,
+        actual=actual,
+        hints=_dedupe_strings(hint_items),
+        context_extra={"guardrail_results": results},
+        warnings=guardrail_messages(warnings),
+    )
 
 
 def create_file_not_found_error(file_path: str, file_type: str = "file") -> dict:

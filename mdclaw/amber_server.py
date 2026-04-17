@@ -24,9 +24,12 @@ from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
     ensure_directory, create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
-    create_validation_error,
+    create_guardrail_result, create_validation_error,
+    create_validation_error_from_guardrails, guardrail_messages,
+    normalize_choice, split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
 
@@ -131,6 +134,11 @@ RECOMMENDED_COMBINATIONS = {
     },
 }
 
+CANONICAL_PROTEIN_FORCEFIELDS = {
+    "ff14sb": "ff14SB",
+    "ff19sb": "ff19SB",
+    "ff14sbonlysc": "ff14SBonlysc",
+}
 
 # =============================================================================
 # Helper Functions
@@ -232,6 +240,63 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
         })
     
     return valid_params, errors
+
+
+def _canonical_forcefield_name(forcefield: Optional[str]) -> Optional[str]:
+    """Normalize force field aliases to their canonical names."""
+    return normalize_choice(forcefield, CANONICAL_PROTEIN_FORCEFIELDS)
+
+
+def _canonical_water_model_name(water_model: Optional[str]) -> Optional[str]:
+    """Normalize water model aliases to their canonical names."""
+    return normalize_choice(water_model, CANONICAL_WATER_MODELS)
+
+
+def _evaluate_forcefield_water_guardrails(forcefield: str, water_model: str) -> list[Dict[str, Any]]:
+    """Evaluate explicit-solvent forcefield/water guardrails."""
+    compat = FORCEFIELD_WATER_COMPATIBILITY.get(forcefield, {})
+    recommended = compat.get("recommended", [])
+    acceptable = compat.get("acceptable", [])
+    not_recommended = compat.get("not_recommended", [])
+    pair = f"{forcefield} + {water_model}"
+    results = []
+
+    if water_model in not_recommended:
+        preferred_pair = f"{forcefield} + {recommended[0]}" if recommended else forcefield
+        results.append(create_guardrail_result(
+            "water_model",
+            f"{pair} is blocked by MDClaw. Amber strongly recommends OPC with ff19SB and warns against TIP3P for this force field.",
+            severity="error",
+            actual=pair,
+            expected=preferred_pair,
+            suggested_fix=(
+                "Use water_model='opc' with forcefield='ff19SB', "
+                "or explicitly choose forcefield='ff14SB' with water_model='tip3p' for legacy systems."
+            ),
+            code="forcefield_water_blocked",
+        ))
+    elif water_model in acceptable:
+        results.append(create_guardrail_result(
+            "water_model",
+            f"{pair} is allowed, but {forcefield} is optimized for {', '.join(recommended)}.",
+            severity="warning",
+            actual=pair,
+            expected=", ".join(recommended) if recommended else None,
+            suggested_fix=f"Prefer water_model='{recommended[0]}' for new {forcefield} systems." if recommended else None,
+            code="forcefield_water_not_preferred",
+        ))
+    elif recommended and water_model not in recommended:
+        results.append(create_guardrail_result(
+            "water_model",
+            f"{pair} is allowed, but recommended water models for {forcefield} are: {', '.join(recommended)}.",
+            severity="warning",
+            actual=pair,
+            expected=", ".join(recommended),
+            suggested_fix=f"Prefer water_model='{recommended[0]}' for new {forcefield} systems.",
+            code="forcefield_water_recommended_alternative",
+        ))
+
+    return results
 
 
 def fix_ligand_residue_names(pdb_path: Path, output_path: Path, 
@@ -649,7 +714,7 @@ def build_amber_system(
     amber_result = build_amber_system(
         pdb_file=solvate_result["output_file"],
         box_dimensions=solvate_result["box_dimensions"],
-        water_model="tip3p"
+        water_model="opc"
     )
     ```
     
@@ -713,7 +778,7 @@ def build_amber_system(
         >>> result = build_amber_system(
         ...     pdb_file=solvate_result["output_file"],
         ...     box_dimensions=solvate_result["box_dimensions"],
-        ...     water_model="tip3p"
+        ...     water_model="opc"
         ... )
     """
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
@@ -790,7 +855,7 @@ def build_amber_system(
         "solvent_type": "implicit" if box_dimensions is None else "explicit",
         "parameters": {
             "forcefield": forcefield,
-            "water_model": water_model if box_dimensions else None,
+            "water_model": water_model,
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
             "ligand_count": len(ligand_params) if ligand_params else 0,
@@ -807,6 +872,58 @@ def build_amber_system(
     if box_dim_warning:
         result["warnings"].append(box_dim_warning)
 
+    # Validate force field
+    canonical_forcefield = _canonical_forcefield_name(forcefield)
+    if not canonical_forcefield:
+        logger.error(f"Unknown force field: {forcefield}")
+        return {
+            **result,
+            **create_validation_error(
+                "forcefield",
+                f"Unknown force field: {forcefield}",
+                expected=f"One of: {sorted(CANONICAL_PROTEIN_FORCEFIELDS.values())}",
+                actual=forcefield,
+                warnings=result["warnings"],
+            ),
+        }
+    forcefield = canonical_forcefield
+    result["parameters"]["forcefield"] = forcefield
+    protein_ff = PROTEIN_FORCEFIELDS[forcefield]
+
+    # Normalize water model up front, even for implicit solvent, so typos never pass silently.
+    canonical_water_model = _canonical_water_model_name(water_model)
+    if not canonical_water_model:
+        logger.error(f"Unknown water model: {water_model}")
+        return {
+            **result,
+            **create_validation_error(
+                "water_model",
+                f"Unknown water model: {water_model}",
+                expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+                actual=water_model,
+                warnings=result["warnings"],
+            ),
+        }
+    water_model = canonical_water_model
+    result["parameters"]["water_model"] = water_model
+
+    # Validate explicit-solvent compatibility before any filesystem or external-tool checks.
+    if box_dimensions:
+        compatibility_results = _evaluate_forcefield_water_guardrails(forcefield, water_model)
+        blocking_results, warning_results = split_guardrail_results(compatibility_results)
+        if blocking_results:
+            return {
+                **result,
+                **create_validation_error_from_guardrails(
+                    "water_model",
+                    compatibility_results,
+                    summary=compatibility_results[0]["message"],
+                    expected="ff19SB + opc (recommended) or ff14SB + tip3p (legacy)",
+                    actual=f"{forcefield} + {water_model}",
+                ),
+            }
+        result["warnings"].extend(guardrail_messages(warning_results))
+
     # Validate input PDB file
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():
@@ -820,38 +937,6 @@ def build_amber_system(
             "tleap",
             "Install AmberTools or activate the mdclaw conda environment"
         )
-
-    # Validate force field
-    protein_ff = PROTEIN_FORCEFIELDS.get(forcefield)
-    if not protein_ff:
-        logger.error(f"Unknown force field: {forcefield}")
-        return create_validation_error(
-            "forcefield",
-            f"Unknown force field: {forcefield}",
-            expected=f"One of: {list(PROTEIN_FORCEFIELDS.keys())}",
-            actual=forcefield
-        )
-
-    # Check force field + water model compatibility (Amber Manual 2024 recommendations)
-    if box_dimensions:
-        ff_upper = forcefield.upper()
-        wm_lower = water_model.lower()
-        compat = FORCEFIELD_WATER_COMPATIBILITY.get(ff_upper, {})
-
-        if wm_lower in compat.get("not_recommended", []):
-            logger.warning(
-                f"WARNING: {forcefield} with {water_model} is NOT recommended. "
-                f"The Amber manual strongly recommends using OPC water with ff19SB. "
-                f"Consider using water_model='opc' for better accuracy."
-            )
-            result["warnings"].append(
-                f"Force field compatibility warning: {forcefield} + {water_model} is not recommended. "
-                f"Recommended: {', '.join(compat.get('recommended', ['opc']))}"
-            )
-        elif wm_lower not in compat.get("recommended", []) and compat.get("recommended"):
-            result["warnings"].append(
-                f"Note: Recommended water models for {forcefield}: {', '.join(compat['recommended'])}"
-            )
 
     # Validate water model (for explicit solvent)
     water_ff = None
@@ -900,7 +985,7 @@ def build_amber_system(
             return create_validation_error(
                 "water_model",
                 f"Unknown water model: {actual_water_model}",
-                expected=f"One of: {list(WATER_FORCEFIELDS.keys())}",
+                expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
                 actual=actual_water_model
             )
         ion_params = WATER_ION_PARAMS.get(actual_water_model.lower(), "frcmod.ionsjc_tip3p")
@@ -909,6 +994,8 @@ def build_amber_system(
         result["parameters"]["water_model"] = actual_water_model
         if actual_water_model != water_model:
             result["parameters"]["requested_water_model"] = water_model
+    else:
+        result["parameters"]["water_model"] = None
 
     # Validate ligand parameters
     valid_ligands = []

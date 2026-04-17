@@ -22,7 +22,14 @@ logger = setup_logger(__name__)
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 
-from mdclaw._common import ensure_directory  # noqa: E402
+from mdclaw._common import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
+    create_guardrail_result,
+    create_validation_error,
+    create_validation_error_from_guardrails,
+    ensure_directory,
+    normalize_choice,
+)
 
 
 # =============================================================================
@@ -49,6 +56,13 @@ METAL_ELEMENTS: set[str] = {
     "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",  # First-row transition
     "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",  # Second-row transition
     "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",  # Third-row transition
+}
+
+SUPPORTED_ION_WATER_MODELS = {
+    "tip3p": "frcmod.ions1lm_126_tip3p",
+    "opc": "frcmod.ions1lm_126_opc",
+    "tip4pew": "frcmod.ions1lm_126_tip4pew",
+    "spce": "frcmod.ions1lm_126_spce",
 }
 
 
@@ -148,7 +162,31 @@ def _run_metalpdb2mol2(pdb_file: str, mol2_file: str, charge: int, timeout: int 
     return {"mol2_file": mol2_file, "success": True}
 
 
-def _get_ion_frcmod(water_model: str = "tip3p") -> str:
+def _normalize_water_model_name(water_model: str | None) -> str | None:
+    """Normalize water model aliases to canonical names."""
+    return normalize_choice(water_model, CANONICAL_WATER_MODELS)
+
+
+def _evaluate_metal_water_model_guardrails(water_model: str) -> list[dict]:
+    """Return structured guardrails for metal ion water-model support."""
+    if water_model in SUPPORTED_ION_WATER_MODELS:
+        return []
+
+    return [create_guardrail_result(
+        "water_model",
+        f"Metal ion parameter selection does not currently support '{water_model}'.",
+        severity="error",
+        actual=water_model,
+        expected=f"One of: {sorted(SUPPORTED_ION_WATER_MODELS)}",
+        suggested_fix=(
+            "Use tip3p, opc, tip4pew, or spce for metal ion parameterization. "
+            "If you need opc3, add the matching ion frcmod mapping first."
+        ),
+        code="metal_unsupported_water_model",
+    )]
+
+
+def _get_ion_frcmod(water_model: str = "opc") -> str:
     """Get the appropriate ion frcmod file for the water model.
 
     Args:
@@ -159,13 +197,7 @@ def _get_ion_frcmod(water_model: str = "tip3p") -> str:
     """
     # Map water models to ion parameter files
     # Using Li/Merz ion parameters (12-6 model)
-    ion_params = {
-        "tip3p": "frcmod.ions1lm_126_tip3p",
-        "opc": "frcmod.ions1lm_126_opc",
-        "tip4pew": "frcmod.ions1lm_126_tip4pew",
-        "spce": "frcmod.ions1lm_126_spce",
-    }
-    return ion_params.get(water_model.lower(), "frcmod.ions1lm_126_tip3p")
+    return SUPPORTED_ION_WATER_MODELS[water_model.lower()]
 
 
 # =============================================================================
@@ -209,7 +241,7 @@ def parameterize_metal_ion(
     output_dir: str,
     metal_resname: str | None = None,
     metal_charge: int | None = None,
-    water_model: str = "tip3p",
+    water_model: str = "opc",
 ) -> dict:
     """Prepare metal ion(s) for Amber simulation using the nonbonded model.
 
@@ -232,8 +264,11 @@ def parameterize_metal_ion(
                        If None, all detected metals are parameterized.
         metal_charge: Charge of the metal ion (e.g., 2 for Zn2+).
                       If None, charge is inferred from residue name.
-        water_model: Water model for selecting ion parameters (default: tip3p)
-                     Options: tip3p, opc, tip4pew, spce
+        water_model: Water model for selecting ion parameters (default: opc)
+                     Options: tip3p, opc, opc3, tip4pew, spce
+                     Note: opc3 is recognized canonically but currently rejected
+                     because metal ion frcmod mappings are only available for
+                     tip3p, opc, tip4pew, and spce.
 
     Returns:
         Dict containing:
@@ -245,6 +280,24 @@ def parameterize_metal_ion(
     pdb_path = Path(pdb_file)
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+
+    canonical_water_model = _normalize_water_model_name(water_model)
+    if not canonical_water_model:
+        return create_validation_error(
+            "water_model",
+            f"Unknown water model: {water_model}",
+            expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+            actual=water_model,
+        )
+    water_model = canonical_water_model
+    guardrail_results = _evaluate_metal_water_model_guardrails(water_model)
+    if guardrail_results:
+        return create_validation_error_from_guardrails(
+            "water_model",
+            guardrail_results,
+            summary=guardrail_results[0]["message"],
+            actual=water_model,
+        )
 
     output_path = Path(output_dir)
     ensure_directory(output_path)
@@ -314,6 +367,7 @@ def parameterize_metal_ion(
         "success": True,
         "metal_mol2_files": mol2_outputs,
         "ion_frcmod": ion_frcmod,  # Name of Amber's built-in ion parameter file
+        "water_model": water_model,
         "metals_parameterized": [
             {"resname": m["resname"], "atom_id": m["atom_id"], "element": m["element"], "charge": METAL_CHARGES.get(m["resname"].upper(), 2)}
             for m in metals

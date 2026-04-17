@@ -24,7 +24,20 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
-from mdclaw._common import ensure_directory, count_atoms_in_pdb, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
+from mdclaw._common import (  # noqa: E402
+    CANONICAL_WATER_MODELS,
+    BaseToolWrapper,
+    count_atoms_in_pdb,
+    create_guardrail_result,
+    create_unique_subdir,
+    create_validation_error,
+    create_validation_error_from_guardrails,
+    ensure_directory,
+    generate_job_id,
+    guardrail_messages,
+    normalize_choice,
+    split_guardrail_results,
+)
 from mdclaw._common import get_timeout  # noqa: E402
 
 
@@ -56,6 +69,46 @@ def _setup_amber_environment():
 
 
 _setup_amber_environment()
+
+OPENMM_FALLBACK_WATER_MAP = {
+    "tip3p": "tip3p.xml",
+    "tip4pew": "tip4pew.xml",
+    "spce": "spce.xml",
+}
+OPENMM_FALLBACK_WATER_MODELS = set(OPENMM_FALLBACK_WATER_MAP)
+
+
+def _normalize_water_model_name(water_model: Optional[str]) -> Optional[str]:
+    """Normalize water model aliases used by MDClaw's explicit-solvent pipeline."""
+    return normalize_choice(water_model, CANONICAL_WATER_MODELS)
+
+
+def _evaluate_solvation_water_model_guardrails(
+    water_model: str,
+    *,
+    backend: str,
+) -> list[dict]:
+    """Return backend-specific guardrail results for solvation water models."""
+    results = []
+
+    if backend == "openmm_fallback" and water_model not in OPENMM_FALLBACK_WATER_MODELS:
+        results.append(create_guardrail_result(
+            "water_model",
+            (
+                f"OpenMM fallback cannot safely produce '{water_model}' water without changing models. "
+                "MDClaw blocks this path instead of silently falling back to TIP3P."
+            ),
+            severity="error",
+            actual=water_model,
+            expected=f"One of: {sorted(OPENMM_FALLBACK_WATER_MODELS)}",
+            suggested_fix=(
+                "Install AmberTools/packmol-memgen to use opc or opc3, "
+                "or choose tip3p, tip4pew, or spce when relying on the OpenMM fallback."
+            ),
+            code="openmm_fallback_unsupported_water_model",
+        ))
+
+    return results
 
 
 def extract_box_size_from_cryst1(pdb_file: str) -> Optional[dict]:
@@ -227,13 +280,7 @@ def _solvate_with_openmm(
 
         # Select force field and water model
         # Map water_model to OpenMM water XML
-        water_map = {
-            "tip3p": "tip3p.xml",
-            "tip4pew": "tip4pew.xml",
-            "spce": "spce.xml",
-            "opc": "opc.xml",  # OPC requires amber14 ff
-        }
-        water_xml = water_map.get(water_model.lower(), "tip3p.xml")
+        water_xml = OPENMM_FALLBACK_WATER_MAP[water_model.lower()]
 
         # Use amber14 force field (compatible with most water models)
         ff = ForceField("amber14-all.xml", water_xml)
@@ -242,7 +289,7 @@ def _solvate_with_openmm(
         padding_nm = dist / 10.0  # Convert Angstrom to nm
         modeller.addSolvent(
             ff,
-            model=water_model.lower() if water_model.lower() in ["tip3p", "tip4pew", "spce"] else "tip3p",
+            model=water_model.lower(),
             padding=padding_nm * unit.nanometer,
             ionicStrength=(saltcon if salt else 0.0) * unit.molar,
             positiveIon="Na+",
@@ -324,7 +371,7 @@ def solvate_structure(
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes.
         water_model: Water model type (default: "opc").
-                     Options: "tip3p", "tip4pd", "tip4pew", "opc3", "opc", "spce", "spceb", "fb3".
+                     Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      IMPORTANT: Must match the water model used in build_amber_system for
                      topology generation. Using mismatched models causes severe atom clashes.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
@@ -383,6 +430,17 @@ def solvate_structure(
         "errors": [],
         "warnings": []
     }
+
+    canonical_water_model = _normalize_water_model_name(water_model)
+    if not canonical_water_model:
+        return create_validation_error(
+            "water_model",
+            f"Unknown water model: {water_model}",
+            expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+            actual=water_model,
+        )
+    water_model = canonical_water_model
+    result["parameters"]["water_model"] = water_model
     
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id and not pdb_file:
@@ -403,6 +461,22 @@ def solvate_structure(
 
     # Check packmol-memgen availability; fall back to OpenMM if not available
     if not packmol_memgen_wrapper.is_available():
+        guardrail_results = _evaluate_solvation_water_model_guardrails(
+            water_model,
+            backend="openmm_fallback",
+        )
+        blocking_results, warning_results = split_guardrail_results(guardrail_results)
+        if blocking_results:
+            return {
+                **result,
+                **create_validation_error_from_guardrails(
+                    "water_model",
+                    guardrail_results,
+                    summary=guardrail_results[0]["message"],
+                    actual=water_model,
+                ),
+            }
+        result["warnings"].extend(guardrail_messages(warning_results))
         logger.warning("packmol-memgen not available, trying OpenMM fallback")
         return _solvate_with_openmm(
             pdb_path=pdb_path,
@@ -664,7 +738,7 @@ def embed_in_membrane(
         nloop: PACKMOL GENCAN loops for individual packing (default: 50)
         nloop_all: PACKMOL GENCAN loops for final packing (default: 200)
         water_model: Water model type (default: "opc").
-                     Options: "tip3p", "tip4pd", "tip4pew", "opc3", "opc", "spce", "spceb", "fb3".
+                     Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      Must match the water model used in build_amber_system.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
     
@@ -719,13 +793,25 @@ def embed_in_membrane(
             "salt_c": salt_c,
             "salt_a": salt_a,
             "saltcon": saltcon,
-            "salt_override": salt_override
+            "salt_override": salt_override,
+            "water_model": water_model,
         },
         "packmol_log": None,
         "statistics": {},
         "errors": [],
         "warnings": []
     }
+
+    canonical_water_model = _normalize_water_model_name(water_model)
+    if not canonical_water_model:
+        return create_validation_error(
+            "water_model",
+            f"Unknown water model: {water_model}",
+            expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
+            actual=water_model,
+        )
+    water_model = canonical_water_model
+    result["parameters"]["water_model"] = water_model
     
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()

@@ -600,7 +600,9 @@ class TestValidateAgainstPolicy:
             time_limit="01:00:00", memory=None, policy=policy,
         )
         assert len(violations) == 1
-        assert "max_gpus_per_job" in violations[0]
+        assert violations[0]["field"] == "gpus"
+        assert violations[0]["severity"] == "error"
+        assert violations[0]["code"] == "policy_gpus_exceeded"
 
     def test_partition_violation(self):
         policy = {"allowed_partitions": ["cpu"]}
@@ -609,7 +611,9 @@ class TestValidateAgainstPolicy:
             time_limit="01:00:00", memory=None, policy=policy,
         )
         assert len(violations) == 1
-        assert "allowed_partitions" in violations[0]
+        assert violations[0]["field"] == "partition"
+        assert violations[0]["severity"] == "error"
+        assert violations[0]["code"] == "policy_partition_not_allowed"
 
     def test_time_violation(self):
         policy = {"max_time_limit": "12:00:00"}
@@ -618,7 +622,9 @@ class TestValidateAgainstPolicy:
             time_limit="24:00:00", memory=None, policy=policy,
         )
         assert len(violations) == 1
-        assert "max_time_limit" in violations[0]
+        assert violations[0]["field"] == "time_limit"
+        assert violations[0]["severity"] == "error"
+        assert violations[0]["code"] == "policy_time_exceeded"
 
     def test_memory_violation(self):
         policy = {"max_memory": "64G"}
@@ -627,7 +633,9 @@ class TestValidateAgainstPolicy:
             time_limit="01:00:00", memory="128G", policy=policy,
         )
         assert len(violations) == 1
-        assert "max_memory" in violations[0]
+        assert violations[0]["field"] == "memory"
+        assert violations[0]["severity"] == "error"
+        assert violations[0]["code"] == "policy_memory_exceeded"
 
     def test_multiple_violations(self):
         policy = {"max_gpus_per_job": 1, "max_nodes": 1, "max_cpus_per_task": 8}
@@ -636,6 +644,7 @@ class TestValidateAgainstPolicy:
             time_limit="01:00:00", memory=None, policy=policy,
         )
         assert len(violations) == 3
+        assert {violation["field"] for violation in violations} == {"gpus", "cpus_per_task", "nodes"}
 
     def test_empty_policy_no_violations(self):
         violations = _validate_against_policy(
@@ -643,6 +652,17 @@ class TestValidateAgainstPolicy:
             time_limit="7-00:00:00", memory="512G", policy={},
         )
         assert violations == []
+
+    def test_invalid_time_format_becomes_warning(self):
+        policy = {"max_time_limit": "12:00:00"}
+        violations = _validate_against_policy(
+            partition=None, gpus=0, cpus_per_task=1, nodes=1,
+            time_limit="not-a-time", memory=None, policy=policy,
+        )
+        assert len(violations) == 1
+        assert violations[0]["field"] == "time_limit"
+        assert violations[0]["severity"] == "warning"
+        assert violations[0]["code"] == "policy_time_unparseable"
 
 
 # ---------------------------------------------------------------------------
@@ -836,7 +856,9 @@ class TestSubmitJobPolicy:
 
         result = submit_job(script="echo test", partition="gpu", gpus=4, output_dir=str(tmp_path))
         assert result["success"] is False
-        assert "policy" in result.get("message", "").lower() or "policy" in str(result.get("errors", []))
+        assert result["error_type"] == "ValidationError"
+        assert "max_gpus_per_job" in result.get("message", "")
+        assert any("Lower --gpus to 2 or less." in hint for hint in result.get("hints", []))
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
@@ -850,6 +872,8 @@ class TestSubmitJobPolicy:
 
         result = submit_job(script="echo test", partition="gpu", output_dir=str(tmp_path))
         assert result["success"] is False
+        assert result["error_type"] == "ValidationError"
+        assert any("allowed partitions" in hint.lower() for hint in result.get("hints", []))
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")

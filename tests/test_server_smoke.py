@@ -198,7 +198,6 @@ class TestAmberServer:
         solv = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
-            water_model="opc",
             dist=10.0,
             salt=True,
             saltcon=0.15,
@@ -209,8 +208,6 @@ class TestAmberServer:
         result = build_amber_system(
             pdb_file=solv["output_file"],
             box_dimensions=solv.get("box_dimensions"),
-            forcefield="ff19SB",
-            water_model="opc",
             output_dir=str(tmp_path / "amber"),
         )
         assert result["success"] is True
@@ -247,7 +244,6 @@ class TestMDSimulationServer:
         solv = solvate_structure(
             pdb_file=prep["merged_pdb"],
             output_dir=str(tmp_path / "solvate"),
-            water_model="opc",
             dist=10.0,
             salt=True,
             saltcon=0.15,
@@ -257,8 +253,6 @@ class TestMDSimulationServer:
         amber = build_amber_system(
             pdb_file=solv["output_file"],
             box_dimensions=solv.get("box_dimensions"),
-            forcefield="ff19SB",
-            water_model="opc",
             output_dir=str(tmp_path / "amber"),
         )
         assert amber["success"] is True

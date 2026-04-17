@@ -21,13 +21,17 @@ from typing import Any, Optional
 
 from mdclaw._common import (
     check_external_tool,
+    create_guardrail_result,
     create_tool_not_available_error,
     create_validation_error,
+    create_validation_error_from_guardrails,
     ensure_directory,
     generate_job_id,
+    guardrail_messages,
     get_module_loads,
     get_timeout,
     run_command,
+    split_guardrail_results,
 )
 
 # File-argument flags used to auto-extract bind paths for Singularity
@@ -185,35 +189,69 @@ def _validate_against_policy(
     time_limit: str,
     memory: Optional[str],
     policy: dict,
-) -> list[str]:
-    """Validate job parameters against policy. Returns list of violations (empty = OK)."""
-    violations = []
+) -> list[dict[str, Any]]:
+    """Validate job parameters against policy and return structured guardrail results."""
+    results: list[dict[str, Any]] = []
 
     if partition and not _is_partition_allowed(partition, policy):
         allowed = policy.get("allowed_partitions", [])
         denied = policy.get("denied_partitions", [])
         if allowed:
-            violations.append(
-                f"Partition '{partition}' is not in allowed_partitions: {allowed}"
-            )
+            results.append(create_guardrail_result(
+                "partition",
+                f"Partition '{partition}' is not in allowed_partitions: {allowed}",
+                severity="error",
+                actual=partition,
+                expected=", ".join(allowed),
+                suggested_fix=f"Choose one of the allowed partitions: {', '.join(allowed)}.",
+                code="policy_partition_not_allowed",
+            ))
         else:
-            violations.append(
-                f"Partition '{partition}' is in denied_partitions: {denied}"
-            )
+            results.append(create_guardrail_result(
+                "partition",
+                f"Partition '{partition}' is in denied_partitions: {denied}",
+                severity="error",
+                actual=partition,
+                expected="Any partition not listed in denied_partitions",
+                suggested_fix=f"Choose a partition outside the denied list: {', '.join(denied)}.",
+                code="policy_partition_denied",
+            ))
 
     max_gpus = policy.get("max_gpus_per_job")
     if max_gpus is not None and gpus > max_gpus:
-        violations.append(f"GPUs ({gpus}) exceeds max_gpus_per_job ({max_gpus})")
+        results.append(create_guardrail_result(
+            "gpus",
+            f"GPUs ({gpus}) exceeds max_gpus_per_job ({max_gpus})",
+            severity="error",
+            actual=str(gpus),
+            expected=f"<= {max_gpus}",
+            suggested_fix=f"Lower --gpus to {max_gpus} or less.",
+            code="policy_gpus_exceeded",
+        ))
 
     max_cpus = policy.get("max_cpus_per_task")
     if max_cpus is not None and cpus_per_task > max_cpus:
-        violations.append(
-            f"CPUs per task ({cpus_per_task}) exceeds max_cpus_per_task ({max_cpus})"
-        )
+        results.append(create_guardrail_result(
+            "cpus_per_task",
+            f"CPUs per task ({cpus_per_task}) exceeds max_cpus_per_task ({max_cpus})",
+            severity="error",
+            actual=str(cpus_per_task),
+            expected=f"<= {max_cpus}",
+            suggested_fix=f"Lower --cpus-per-task to {max_cpus} or less.",
+            code="policy_cpus_exceeded",
+        ))
 
     max_nodes = policy.get("max_nodes")
     if max_nodes is not None and nodes > max_nodes:
-        violations.append(f"Nodes ({nodes}) exceeds max_nodes ({max_nodes})")
+        results.append(create_guardrail_result(
+            "nodes",
+            f"Nodes ({nodes}) exceeds max_nodes ({max_nodes})",
+            severity="error",
+            actual=str(nodes),
+            expected=f"<= {max_nodes}",
+            suggested_fix=f"Lower --nodes to {max_nodes} or less.",
+            code="policy_nodes_exceeded",
+        ))
 
     max_time = policy.get("max_time_limit")
     if max_time is not None and time_limit:
@@ -221,11 +259,25 @@ def _validate_against_policy(
             requested_sec = _parse_time_limit_seconds(time_limit)
             max_sec = _parse_time_limit_seconds(max_time)
             if requested_sec > max_sec:
-                violations.append(
-                    f"Time limit ({time_limit}) exceeds max_time_limit ({max_time})"
-                )
+                results.append(create_guardrail_result(
+                    "time_limit",
+                    f"Time limit ({time_limit}) exceeds max_time_limit ({max_time})",
+                    severity="error",
+                    actual=time_limit,
+                    expected=f"<= {max_time}",
+                    suggested_fix=f"Lower --time-limit to {max_time} or less.",
+                    code="policy_time_exceeded",
+                ))
         except ValueError:
-            pass  # Don't block on unparseable time
+            results.append(create_guardrail_result(
+                "time_limit",
+                f"Could not compare time_limit '{time_limit}' against max_time_limit '{max_time}' because the format is invalid.",
+                severity="warning",
+                actual=time_limit,
+                expected="MM, HH:MM:SS, or D-HH:MM:SS",
+                suggested_fix="Use a SLURM time format such as 24:00:00 or 2-00:00:00.",
+                code="policy_time_unparseable",
+            ))
 
     max_mem = policy.get("max_memory")
     if max_mem is not None and memory:
@@ -233,13 +285,27 @@ def _validate_against_policy(
             requested_bytes = _parse_memory_bytes(memory)
             max_bytes = _parse_memory_bytes(max_mem)
             if requested_bytes > max_bytes:
-                violations.append(
-                    f"Memory ({memory}) exceeds max_memory ({max_mem})"
-                )
+                results.append(create_guardrail_result(
+                    "memory",
+                    f"Memory ({memory}) exceeds max_memory ({max_mem})",
+                    severity="error",
+                    actual=memory,
+                    expected=f"<= {max_mem}",
+                    suggested_fix=f"Lower --memory to {max_mem} or less.",
+                    code="policy_memory_exceeded",
+                ))
         except ValueError:
-            pass  # Don't block on unparseable memory
+            results.append(create_guardrail_result(
+                "memory",
+                f"Could not compare memory '{memory}' against max_memory '{max_mem}' because the format is invalid.",
+                severity="warning",
+                actual=memory,
+                expected="A SLURM memory string such as 64000M or 64G",
+                suggested_fix="Use a SLURM memory format such as 64000M or 64G.",
+                code="policy_memory_unparseable",
+            ))
 
-    return violations
+    return results
 
 
 def _find_job_metadata(job_id: str) -> Optional[dict]:
@@ -771,7 +837,7 @@ def submit_job(
 
     # Validate against policy
     if policy:
-        violations = _validate_against_policy(
+        policy_results = _validate_against_policy(
             partition=partition,
             gpus=gpus,
             cpus_per_task=cpus_per_task,
@@ -780,12 +846,19 @@ def submit_job(
             memory=memory,
             policy=policy,
         )
-        if violations:
+        blocking_results, warning_results = split_guardrail_results(policy_results)
+        result["warnings"].extend(guardrail_messages(warning_results))
+        if blocking_results:
             return {
                 **result,
-                **create_validation_error(
+                **create_validation_error_from_guardrails(
                     "policy",
-                    "Job violates resource policy: " + "; ".join(violations),
+                    policy_results,
+                    summary="; ".join(guardrail_messages(blocking_results)),
+                    actual=(
+                        f"partition={partition}, gpus={gpus}, cpus_per_task={cpus_per_task}, "
+                        f"nodes={nodes}, time_limit={time_limit}, memory={memory}"
+                    ),
                 ),
             }
 

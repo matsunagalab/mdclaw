@@ -1,0 +1,169 @@
+"""Unit tests for shared guardrail behavior across MDClaw tools."""
+
+from pathlib import Path
+from unittest.mock import patch
+
+from mdclaw.amber_server import (
+    _canonical_water_model_name as amber_canonical_water_model_name,
+    _evaluate_forcefield_water_guardrails,
+    build_amber_system,
+)
+from mdclaw.metal_server import (
+    SUPPORTED_ION_WATER_MODELS,
+    _normalize_water_model_name as metal_canonical_water_model_name,
+    parameterize_metal_ion,
+)
+from mdclaw.slurm_server import _validate_against_policy
+from mdclaw.solvation_server import (
+    OPENMM_FALLBACK_WATER_MAP,
+    OPENMM_FALLBACK_WATER_MODELS,
+    _normalize_water_model_name as solvation_canonical_water_model_name,
+    solvate_structure,
+)
+
+
+def _write_minimal_pdb(path: Path) -> None:
+    path.write_text(
+        "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+        "END\n"
+    )
+
+
+def _write_minimal_metal_pdb(path: Path) -> None:
+    path.write_text(
+        "HETATM    1 ZN   ZN  A   1      10.000  10.000  10.000  1.00 20.00          ZN\n"
+        "END\n"
+    )
+
+
+def test_build_amber_system_blocks_ff19sb_tip3p():
+    result = build_amber_system(
+        pdb_file="missing.pdb",
+        box_dimensions={"box_a": 10.0, "box_b": 10.0, "box_c": 10.0},
+        forcefield="ff19SB",
+        water_model="tip3p",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert "ff19SB + tip3p" in result["message"]
+    assert any("forcefield='ff14SB' with water_model='tip3p'" in hint for hint in result["hints"])
+
+
+def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensions():
+    result = build_amber_system(
+        pdb_file="missing.pdb",
+        forcefield="ff19SB",
+        water_model="opccc",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert "Unknown water model" in result["message"]
+
+
+def test_forcefield_guardrail_warning_for_ff19sb_opc3():
+    results = _evaluate_forcefield_water_guardrails("ff19SB", "opc3")
+
+    assert len(results) == 1
+    assert results[0]["severity"] == "warning"
+    assert results[0]["code"] == "forcefield_water_not_preferred"
+
+
+def test_forcefield_guardrail_allows_recommended_and_legacy_pairs():
+    assert _evaluate_forcefield_water_guardrails("ff19SB", "opc") == []
+    assert _evaluate_forcefield_water_guardrails("ff14SB", "tip3p") == []
+
+
+def test_case_insensitive_water_model_normalization():
+    assert amber_canonical_water_model_name("OPC") == "opc"
+    assert solvation_canonical_water_model_name("SPC/E") == "spce"
+    assert metal_canonical_water_model_name("TIP3P") == "tip3p"
+
+
+def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+
+    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available", return_value=False):
+        result = solvate_structure(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "solvate"),
+            water_model="opc",
+        )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert "OpenMM fallback cannot safely produce 'opc'" in result["message"]
+    assert any("Install AmberTools/packmol-memgen" in hint for hint in result["hints"])
+
+
+def test_openmm_fallback_water_model_invariants():
+    assert OPENMM_FALLBACK_WATER_MODELS == set(OPENMM_FALLBACK_WATER_MAP)
+
+
+def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    with patch("mdclaw.metal_server._run_metalpdb2mol2", return_value={"success": True}):
+        result = parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "metal_out"),
+        )
+
+    assert result["success"] is True
+    assert result["water_model"] == "opc"
+    assert result["ion_frcmod"] == "frcmod.ions1lm_126_opc"
+
+
+def test_parameterize_metal_ion_rejects_canonical_but_unsupported_water_model(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    result = parameterize_metal_ion(
+        pdb_file=str(pdb_file),
+        output_dir=str(tmp_path / "metal_out"),
+        water_model="opc3",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert "does not currently support 'opc3'" in result["message"]
+
+
+def test_parameterize_metal_ion_rejects_unknown_water_model(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    result = parameterize_metal_ion(
+        pdb_file=str(pdb_file),
+        output_dir=str(tmp_path / "metal_out"),
+        water_model="fb3",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert "Unknown water model" in result["message"]
+
+
+def test_metal_water_model_invariants():
+    assert set(SUPPORTED_ION_WATER_MODELS).issubset(set(OPENMM_FALLBACK_WATER_MAP) | {"opc"})
+
+
+def test_policy_unparseable_time_and_memory_are_warnings():
+    results = _validate_against_policy(
+        partition=None,
+        gpus=0,
+        cpus_per_task=1,
+        nodes=1,
+        time_limit="not-a-time",
+        memory="not-a-memory",
+        policy={"max_time_limit": "12:00:00", "max_memory": "64G"},
+    )
+
+    assert {result["code"] for result in results} == {
+        "policy_time_unparseable",
+        "policy_memory_unparseable",
+    }
+    assert all(result["severity"] == "warning" for result in results)

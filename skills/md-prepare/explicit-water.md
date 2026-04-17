@@ -9,7 +9,7 @@
 | Salt concentration | 0.15M NaCl | "0.3M", "no salt" |
 | Force field | ff19SB | "ff14SB" |
 
-**Force field + water model pairing**: ff19SB + OPC (recommended), ff14SB + TIP3P.
+**Standard explicit-water pair**: default to `ff19SB + opc`. Only override for legacy reproduction such as `ff14SB + tip3p`.
 
 ---
 
@@ -36,7 +36,7 @@ mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex \
 ```bash
 mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
 mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
-  --water-model opc --dist 15.0 --salt --saltcon 0.15
+  --dist 15.0 --salt --saltcon 0.15
 ```
 
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
@@ -54,10 +54,11 @@ To override, pass `--pdb-file` explicitly.
 ```bash
 mdclaw create_node --job-dir job_xxx --node-type topo --parent-node-ids solv_001
 mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
-  --forcefield ff19SB --water-model opc --no-is-membrane
+  --no-is-membrane
 ```
 
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
+To intentionally use the legacy pair, override both sides together: `build_amber_system --forcefield ff14SB --water-model tip3p`.
 
 ### Protonation Notes
 - pH 7.4 is physiological default
