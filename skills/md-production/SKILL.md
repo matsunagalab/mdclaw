@@ -41,6 +41,46 @@ mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids eq_001 \
   --label "100ns_seed42" --conditions '{"simulation_time_ns": 100, "random_seed": 42}'
 ```
 
+**Extension** (continue from a completed prod — **preferred** way to extend):
+```bash
+mdclaw create_node --job-dir <dir> --node-type prod \
+  --continue-from prod_001 \
+  --label "+50ns" --conditions '{"simulation_time_ns": 50}'
+```
+
+- `--continue-from` is sugar for `--parent-node-ids prod_001` that also
+  validates the reference is a `prod` node. Using it makes the extension
+  intent explicit in the DAG; it stores `metadata.continued_from` in the
+  new `node.json`.
+- When `--continue-from` is used, `restart_from` resolves to **exactly
+  that prod's `checkpoint.chk`** — no silent fallback. If the named
+  prod has no checkpoint yet (e.g. it's still running or failed), the
+  run is refused with a clear error rather than restarting from a
+  different ancestor.
+- Without `--continue-from`, the default path (plain
+  `--parent-node-ids prod_001`) still works: the resolver does a BFS
+  through prod ancestors first, then falls back to the `eq` ancestor.
+  Use this form only when you don't care exactly which prod up the
+  chain was the source.
+- `simulation_time_ns` is the **additional** time to run in this node
+  (the `eq→prod` case keeps its "full production duration" meaning
+  because the eq checkpoint is written with `currentStep=0` by design).
+- Each prod node writes its own `trajectory.dcd` under its `artifacts/` —
+  there is **no cross-node DCD append**. Stitch with mdtraj when a full
+  trajectory is needed.
+- `node.json` records `start_step` / `start_time_ns` so analysis tools
+  can place each segment on the correct timeline.
+
+> **Legacy: mid-run restart into the same node.** Re-running against
+> the same `--node-id prod_001` with an existing `trajectory.dcd` in
+> that node's `artifacts/` still works — the tool detects the existing
+> file and appends. In this mode `--simulation-time-ns` has the same
+> meaning as above ("additional time for this call"); the differences
+> from the recommended path are only (1) where the DCD lands (same
+> node's artifacts, append) and (2) no `metadata.continued_from` audit
+> record. Prefer creating a new prod node with `--continue-from` for
+> chained extensions; it is much easier to reason about.
+
 ## Workflow
 
 1. If **batch directory**: -> **Read and follow `skills/md-production/batch.md`**

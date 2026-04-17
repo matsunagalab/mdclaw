@@ -32,8 +32,17 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --output-frequency-ps 10.0
 ```
 
-`prmtop_file`, `inpcrd_file`, and `restart_from` are all auto-resolved from DAG ancestors
-(`topo` for topology, `eq` for checkpoint). To override, pass explicitly.
+`prmtop_file`, `inpcrd_file`, and `restart_from` are all auto-resolved from DAG
+ancestors. Topology comes from the `topo` ancestor. The checkpoint rule depends
+on how the prod node was created:
+
+- **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
+  `checkpoint.chk` (no fallback; missing checkpoint = hard error).
+- **plain `--parent-node-ids prod_N`** → BFS picks the nearest prod
+  ancestor with a checkpoint, or falls through to the `eq` ancestor.
+- **fresh run (eq parent)** → restart from the `eq` ancestor's checkpoint.
+
+To override any of this, pass the flags explicitly.
 
 ### SLURM Execution (HPC)
 
@@ -76,18 +85,49 @@ can find all files without manual `realpath` conversion.
 
 ## Checkpoint / Restart
 
-Reuse the same `--node-id` for restarts. The tool detects existing trajectory
-and appends new frames.
+### Extension: create a new prod node (recommended)
+
+Each production extension gets its own node and its own trajectory file.
+Use `--continue-from` when creating the node to make the intent explicit:
 
 ```bash
-# Restart from mid-run checkpoint (same node)
-mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
-  --simulation-time-ns 100.0 --platform CUDA \
-  --restart-from <job_dir>/nodes/prod_001/artifacts/checkpoint.chk
+# Create the extension node (sugar for --parent-node-ids prod_001 with a
+# type check that prod_001 really is a prod node)
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --continue-from prod_001 --label "+50ns" \
+  --conditions '{"simulation_time_ns": 50}'
+
+# Run it — restart_from resolves via the DAG to prod_001's checkpoint
+mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
+  --simulation-time-ns 50.0 --platform CUDA
 ```
 
-- `--simulation-time-ns` is the **total** target time, not additional
-- Binary checkpoint is platform-specific (CUDA checkpoint cannot load on CPU)
+- `--simulation-time-ns` is the **additional** time to run in this node
+  (the `eq→prod` case still behaves as the full production duration
+  because the eq checkpoint is saved with `currentStep=0` by design).
+- With `--continue-from`, `restart_from` resolves to **exactly that
+  prod's checkpoint** — no silent fallback. If the named prod has no
+  checkpoint yet (still running or failed), the run fails cleanly.
+- Without `--continue-from` (plain `--parent-node-ids prod_001`),
+  the resolver does a BFS through prod ancestors that skips same-type
+  ancestors missing a checkpoint and falls through to the next prod
+  back, and finally to the `eq` ancestor. Only use this form if you
+  don't care which prod in the chain is the source.
+- Each prod node keeps its own `trajectory.dcd` under `artifacts/`; there
+  is **no cross-node DCD append**. Concatenate with mdtraj / `analyze`
+  tools when a continuous trajectory is required.
+- Binary checkpoint is platform-specific (CUDA checkpoint cannot load on
+  CPU, and vice versa).
+
+### Mid-run restart into the same node (advanced / rare)
+
+The tool will append to an existing `trajectory.dcd` **only** if you
+re-run against the same `--node-id` AND an existing trajectory is already
+present under that node's `artifacts/`. In this (legacy) mode
+`--simulation-time-ns` is interpreted as the time to run **in this call**
+(added on top of whatever step count the checkpoint carries), so repeated
+same-node restarts can still over- or under-run if you lose track.
+Prefer the extension-node workflow above.
 
 ---
 

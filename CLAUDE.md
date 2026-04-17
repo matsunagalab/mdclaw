@@ -362,7 +362,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ### md_simulation_server.py
 - `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - NVT+NPT equilibration. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
-- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode, `prmtop_file`/`inpcrd_file` from `topo` ancestor, `restart_from` from `eq` parent
+- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode: `prmtop_file`/`inpcrd_file` resolve from the `topo` ancestor; `restart_from` walks the DAG upward and takes the nearest `prod` ancestor carrying a `checkpoint` artifact (extension case), falling through to the `eq` ancestor if no prod ancestor has one (fresh production). `simulation_time_ns` is the time to run **in this call** — it is added on top of the checkpoint's `currentStep`, so `eq→prod` keeps its "full production length" meaning (the eq checkpoint is written with `currentStep=0` by design) while `prod→prod` cleanly extends by the requested duration. The node records `start_step` / `start_time_ns` so analysis tools can place each segment on the right timeline, and DCDs are never appended across nodes
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed
@@ -385,7 +385,8 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ### node_server.py
-- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions)` - Create a node in the job graph
+- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's checkpoint (no silent fallback); if the checkpoint is missing, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
+- `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so that batch workflows can rely on the `progress.json` index for re-entry filtering without drift. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
 
 ## CLI Interface
 

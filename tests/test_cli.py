@@ -460,7 +460,138 @@ class TestToolListOutput:
 
         assert "[solvation]" in captured.out
         assert "[slurm]" in captured.out
+        assert "[node]" in captured.out
         assert "Total:" in captured.out
+
+
+class TestNodeCLIParameters:
+    """Argparse-level regression guards for the node-server CLI tools.
+
+    ``mdclaw create_node --continue-from prod_001`` and
+    ``mdclaw update_node_status --job-dir ... --node-id ... --status ...``
+    are user-facing contracts referenced by skill docs. These tests make
+    sure the parser round-trip stays stable even if the underlying
+    function signatures are refactored.
+    """
+
+    def test_create_node_accepts_continue_from(self):
+        """--continue-from prod_001 parses into args.continue_from."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "create_node",
+            "--job-dir", "/tmp/job",
+            "--node-type", "prod",
+            "--continue-from", "prod_001",
+        ])
+        assert args.tool_name == "create_node"
+        assert args.continue_from == "prod_001"
+        assert args.node_type == "prod"
+        # parent_node_ids should default to None / empty when not given
+        assert not args.parent_node_ids
+
+    def test_create_node_accepts_continue_from_and_parent_ids_together(self):
+        """The parser must not reject ``--continue-from`` +
+        ``--parent-node-ids`` at the argparse layer — that combination
+        is validated at the *tool* layer (it is a runtime error), so
+        the parser accepting both is a feature, not a bug. This test
+        pins that contract so it can't silently change to a parser-level
+        rejection that bypasses the nicer tool-level error message."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "create_node",
+            "--job-dir", "/tmp/job",
+            "--node-type", "prod",
+            "--continue-from", "prod_001",
+            "--parent-node-ids", "prod_001",
+        ])
+        assert args.continue_from == "prod_001"
+        assert args.parent_node_ids == ["prod_001"]
+
+    def test_create_node_rejects_mutual_exclusion_at_tool_layer(self, tmp_path):
+        """End-to-end guard: passing both options through the CLI entry
+        point yields a non-zero exit (the tool layer catches the mutual
+        exclusion) — the argparse accepting both is intentional."""
+        from mdclaw._cli import main
+
+        # --job-dir bootstraps progress.json; no real prod node exists, so
+        # the tool will also fail validation of the parent reference, but
+        # the key assertion is simply "CLI exits non-zero cleanly".
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "create_node",
+                "--job-dir", str(tmp_path),
+                "--node-type", "prod",
+                "--continue-from", "prod_001",
+                "--parent-node-ids", "prod_001",
+            ])
+        assert exc_info.value.code != 0
+
+    def test_update_node_status_accepts_required_flags(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "update_node_status",
+            "--job-dir", "/tmp/job",
+            "--node-id", "prod_001",
+            "--status", "submitted",
+        ])
+        assert args.tool_name == "update_node_status"
+        assert args.job_dir == "/tmp/job"
+        assert args.node_id == "prod_001"
+        assert args.status == "submitted"
+
+    def test_update_node_status_requires_all_three_fields(self):
+        """Missing any of job-dir / node-id / status exits non-zero."""
+        from mdclaw._cli import main
+
+        for missing in (
+            ["update_node_status", "--node-id", "x", "--status", "s"],
+            ["update_node_status", "--job-dir", "/tmp/j", "--status", "s"],
+            ["update_node_status", "--job-dir", "/tmp/j", "--node-id", "x"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main(missing)
+            assert exc_info.value.code != 0, f"expected failure for: {missing}"
+
+    def test_update_node_status_end_to_end(self, tmp_path):
+        """Smoke test the full CLI path for update_node_status against a
+        real temp job directory: create a node, flip its status via the
+        CLI entry point, then confirm both node.json and progress.json
+        agree.
+        """
+        import json
+        from mdclaw._cli import main
+        from mdclaw._node import create_node
+
+        create_node(str(tmp_path), "prod")
+
+        # main() always raises SystemExit (exit_code=0 on success)
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_node_status",
+                "--job-dir", str(tmp_path),
+                "--node-id", "prod_001",
+                "--status", "submitted",
+            ])
+        assert exc_info.value.code == 0
+
+        node = json.loads(
+            (tmp_path / "nodes" / "prod_001" / "node.json").read_text()
+        )
+        progress = json.loads((tmp_path / "progress.json").read_text())
+        assert node["status"] == "submitted"
+        assert progress["nodes"]["prod_001"]["status"] == "submitted"
 
 
 if __name__ == "__main__":

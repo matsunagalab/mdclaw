@@ -1,67 +1,108 @@
 # Batch Production: SLURM Job Submission for Multiple Systems
 
-Submit production MD simulations for all equilibrated systems in a batch directory.
-Jobs are submitted via `submit_job` (fire-and-forget) and run in parallel on the cluster.
+Submit production MD for every system in a batch directory whose equilibration
+is complete. Jobs are submitted via `submit_job` (fire-and-forget) and run in
+parallel on the cluster. Each system is driven through its own node-based job
+graph (schema v3).
 
 ## Input
 
-Read `batch_<id>/batch_progress.json` and identify targets with completed equilibration.
-For each target, read `<job_dir>/runs/<run_id>/run.json` and check
-`stages.equilibration.status == "completed"`.
+For each job in the batch:
 
-Skip targets where equilibration is not complete or production is already submitted/completed.
+1. Read `<job_dir>/progress.json`
+2. Identify a completed `eq` node (`nodes.<eq_id>.status == "completed"`), OR
+   the most recent `prod` node if the user is asking for an **extension**
+3. Skip jobs whose chosen prod node is already `submitted`, `running`, or
+   `completed`
 
 ## Workflow
 
-### 1. Validate Equilibrated Systems
+### 1. Validate Each System
 
-For each eligible target, verify:
-- `<job_dir>/topology/system.parm7` exists
-- `<job_dir>/topology/system.rst7` exists
-- `<job_dir>/runs/<run_id>/equilibration/equilibrated.chk` exists
+For each eligible job, verify:
 
-If files are missing, mark as failed and continue.
+- The starting node exists and is `completed` in `progress.json`
+- The upstream `topo` node's `parm7` / `rst7` artifacts exist
+  (run `ls nodes/topo_*/artifacts/system.parm7` if uncertain)
 
-### 2. Submit Jobs (fire-and-forget)
+If files are missing, skip and record the reason.
 
-For each validated target:
+### 2. Create the Prod Node
+
+For each system, create a prod node up-front so SLURM jobs can reference it
+by ID:
+
+```bash
+# Fresh production from eq_001
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --parent-node-ids eq_001 \
+  --label "<target>_<duration>ns" \
+  --conditions '{"simulation_time_ns": <ns>, "temperature_kelvin": <T>}'
+
+# Extension from an existing prod_001
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --continue-from prod_001 \
+  --label "<target>_+<delta>ns" \
+  --conditions '{"simulation_time_ns": <delta_ns>}'
+```
+
+Capture the returned `node_id` (e.g. `prod_001`) per system.
+
+### 3. Submit Jobs (fire-and-forget)
+
+`prmtop_file` / `inpcrd_file` / `restart_from` auto-resolve from the DAG, so
+the inner `run_production` only needs physics parameters:
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_production \
-    --prmtop-file /absolute/path/to/<job_dir>/topology/system.parm7 \
-    --inpcrd-file /absolute/path/to/<job_dir>/topology/system.rst7 \
-    --simulation-time-ns <user_specified> \
+  --script "mdclaw --job-dir <ABSOLUTE_JOB_DIR> --node-id <prod_id> run_production \
+    --simulation-time-ns <ns> \
     --temperature-kelvin <T> \
     --pressure-bar 1.0 \
     --timestep-fs 4.0 \
-    --platform CUDA \
-    --output-dir /absolute/path/to/<job_dir>/runs/<run_id> \
-    --restart-from /absolute/path/to/<job_dir>/runs/<run_id>/equilibration/equilibrated.chk" \
-  --job-name md_<target_name> \
+    --platform CUDA" \
+  --job-name md_<target> \
   --partition <user_specified> \
   --gpus 1 \
   --time-limit <estimated>
 ```
 
-After each submission:
-- Record `slurm_job_id` in `run.json` (`stages.production.slurm_job_id`)
-- Update `stages.production.status` to `"submitted"`
+After each submission, two things need to be recorded on the prod node:
 
-> SLURM compute nodes do not inherit the login node's working directory, so all paths in `--script` need to be absolute. Use `realpath` to convert.
+1. **`metadata.slurm_job_id`** — merge
+   `{"metadata": {"slurm_job_id": "<id>"}}` into
+   `nodes/<prod_id>/node.json` directly (no dedicated CLI yet; this
+   field is not part of the batch re-entry filter so a single-file
+   edit is safe).
+2. **`status` → `"submitted"`** — **always** go through
+   `mdclaw update_node_status`, not a raw `node.json` edit. The status
+   field lives in two places (`node.json` and the `progress.json`
+   index that step 1 of this workflow reads) and `update_node_status`
+   is the only writer that keeps them in sync:
 
-### 3. Report & Monitor
+   ```bash
+   mdclaw update_node_status --job-dir <job_dir> \
+     --node-id <prod_id> --status submitted
+   ```
+
+> SLURM compute nodes do not inherit the login node's working directory,
+> so pass an absolute path to `--job-dir` (the CLI resolves it to absolute
+> automatically when invoked from the login node, but the value baked into
+> `--script` must already be absolute).
+
+### 4. Report & Monitor
 
 After all submissions, report:
 
 ```
-| Target | Run ID       | Job ID | Status    | Partition |
-|--------|-------------|--------|-----------|-----------|
-| 1AKE   | run_001_300K | 12345  | submitted | gpu       |
-| 4AKE   | run_001_300K | 12346  | submitted | gpu       |
+| Target | Prod node | Job ID | Status    | Partition |
+|--------|-----------|--------|-----------|-----------|
+| 1AKE   | prod_001  | 12345  | submitted | gpu       |
+| 4AKE   | prod_001  | 12346  | submitted | gpu       |
 ```
 
 Then:
+
 1. Run `mdclaw list_tracked_jobs --sync` for a unified view
 2. Estimate check interval from the expected runtime:
 
@@ -73,17 +114,25 @@ Then:
 | > 24 h | 1h |
 
 3. Suggest:
-```
-/loop <interval> /hpc-run check all jobs in batch_<id>
-```
+   ```
+   /loop <interval> /hpc-run check all jobs in <batch_dir>
+   ```
 
 ## Status Checking (re-entry)
 
 When the user asks to check batch status:
 
-1. Read `batch_progress.json` and each target's `run.json`
-2. For each target with `stages.production.status == "submitted"`:
-   - `mdclaw check_job --job-id <slurm_job_id>`
-   - Update status to the SLURM state (`RUNNING`, `COMPLETED`, `FAILED`, etc.)
-3. Report updated summary table
-4. For completed targets, suggest: `/md-analyze batch_<id>`
+1. For each job, walk `nodes/prod_*/node.json` and collect any recorded
+   `metadata.slurm_job_id`
+2. Run `mdclaw check_job --job-id <slurm_job_id>` for each submitted node
+3. Reflect the SLURM state onto the node **via** `mdclaw update_node_status`
+   (never via a raw JSON edit — that would de-sync the `progress.json`
+   index that the next run of this workflow reads):
+
+   ```bash
+   mdclaw update_node_status --job-dir <job_dir> \
+     --node-id <prod_id> --status <running|completed|failed>
+   ```
+
+4. Report the updated summary table
+5. For completed targets, suggest: `/md-analyze <job_dir>`

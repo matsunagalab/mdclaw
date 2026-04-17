@@ -81,6 +81,24 @@ class TestImportServers:
         param = sig.parameters["random_seed"]
         assert param.default is None, "random_seed default should be None"
 
+    def test_node_server_exposes_update_node_status(self):
+        """Batch workflows depend on `mdclaw update_node_status` being a
+        CLI-registered tool so that status edits stay consistent across
+        node.json and the progress.json index."""
+        from mdclaw.node_server import TOOLS
+
+        assert "update_node_status" in TOOLS
+        assert callable(TOOLS["update_node_status"])
+
+    def test_node_server_exposes_create_node_with_continue_from(self):
+        """continue_from must remain an exposed parameter of create_node
+        so skill docs that call `--continue-from` keep working."""
+        import inspect
+        from mdclaw.node_server import TOOLS
+
+        sig = inspect.signature(TOOLS["create_node"])
+        assert "continue_from" in sig.parameters
+
 
 # ---------------------------------------------------------------------------
 # Config (get_timeout in servers/_common.py)

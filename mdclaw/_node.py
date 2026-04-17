@@ -110,8 +110,16 @@ def create_node(
     dependency_node_ids: Optional[list[str]] = None,
     label: Optional[str] = None,
     conditions: Optional[dict] = None,
+    continue_from: Optional[str] = None,
 ) -> dict:
     """Create a new node directory and register it in ``progress.json``.
+
+    ``continue_from`` is sugar for ``parent_node_ids=[<prod_id>]`` intended
+    for ``prod`` nodes that extend a previous ``prod`` run. It documents
+    intent in the call site and validates that the named ancestor is an
+    actual ``prod`` node (so ``restart_from`` auto-resolution behaves as
+    expected). It is mutually exclusive with ``parent_node_ids``; mixing
+    the two is rejected to avoid ambiguity.
 
     Returns::
 
@@ -127,6 +135,27 @@ def create_node(
             "success": False,
             "error": f"Invalid node_type '{node_type}'. Must be one of: {sorted(NODE_TYPES)}",
         }
+
+    # continue_from sugar: only for prod nodes, and only one of
+    # continue_from / parent_node_ids may be given.
+    if continue_from is not None:
+        if node_type != "prod":
+            return {
+                "success": False,
+                "error": (
+                    "continue_from is only valid for node_type='prod' "
+                    f"(got '{node_type}')"
+                ),
+            }
+        if parent_node_ids:
+            return {
+                "success": False,
+                "error": (
+                    "continue_from and parent_node_ids are mutually "
+                    "exclusive — pass one or the other"
+                ),
+            }
+        parent_node_ids = [continue_from]
 
     jd = Path(job_dir).resolve()
     parents = parent_node_ids or []
@@ -171,6 +200,18 @@ def create_node(
                     "error": f"Referenced node '{ref}' does not exist in progress.json",
                 }
 
+        # If continue_from was used, the referenced node must be a prod node.
+        if continue_from is not None:
+            ref_type = nodes_index.get(continue_from, {}).get("type")
+            if ref_type != "prod":
+                return {
+                    "success": False,
+                    "error": (
+                        f"continue_from='{continue_from}' must reference a "
+                        f"prod node (got type='{ref_type}')"
+                    ),
+                }
+
         # Allocate ID
         node_id = _next_node_id(nodes_index, node_type)
         node_dir = jd / "nodes" / node_id
@@ -180,6 +221,9 @@ def create_node(
         now = datetime.now(timezone.utc).isoformat()
 
         # Write node.json
+        node_metadata: dict = {}
+        if continue_from is not None:
+            node_metadata["continued_from"] = continue_from
         node_data = {
             "schema_version": SCHEMA_VERSION,
             "node_id": node_id,
@@ -192,7 +236,7 @@ def create_node(
             "updated_at": now,
             "conditions": conditions or {},
             "artifacts": {},
-            "metadata": {},
+            "metadata": node_metadata,
             "warnings": [],
         }
         _atomic_write_json(node_dir / "node.json", node_data)
@@ -222,71 +266,26 @@ def create_node(
     }
 
 
-# ── State transitions (tools call these) ───────────────────────────────────
-
-def begin_node(job_dir: str, node_id: str) -> None:
-    """Mark a node as ``running``.  Called by tools at the start of execution."""
-    _set_node_status(job_dir, node_id, "running")
-    write_event(job_dir, node_id, "tool_started")
-
-
-def complete_node(
-    job_dir: str,
-    node_id: str,
-    artifacts: dict,
-    *,
-    metadata: Optional[dict] = None,
-    warnings: Optional[list[str]] = None,
-) -> None:
-    """Mark a node as ``completed`` and record its outputs.
-
-    *artifacts* maps logical names to paths **relative to the node directory**
-    (e.g. ``{"solvated_pdb": "artifacts/solvated.pdb"}``).
-    """
-    updates: dict = {
-        "status": "completed",
-        "artifacts": artifacts,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if metadata:
-        updates["metadata"] = metadata
-    if warnings:
-        updates["warnings"] = warnings
-
-    update_node(job_dir, node_id, updates)
-    update_node_status(job_dir, node_id, "completed")
-    write_event(job_dir, node_id, "tool_completed", success=True)
-
-
-def fail_node(
-    job_dir: str,
-    node_id: str,
-    *,
-    errors: Optional[list[str]] = None,
-    warnings: Optional[list[str]] = None,
-) -> None:
-    """Mark a node as ``failed`` and record errors."""
-    updates: dict = {
-        "status": "failed",
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    }
-    if warnings:
-        updates["warnings"] = warnings
-
-    # Store errors in metadata (node.json doesn't have a top-level errors key)
-    if errors:
-        updates["metadata"] = {"errors": errors}
-
-    update_node(job_dir, node_id, updates)
-    update_node_status(job_dir, node_id, "failed")
-    write_event(job_dir, node_id, "tool_failed", success=False,
-                details={"errors": errors or []})
-
-
 # ── Node JSON helpers ──────────────────────────────────────────────────────
 
 def update_node(job_dir: str, node_id: str, updates: dict) -> None:
-    """Merge *updates* into ``node.json`` (under node.lock)."""
+    """Merge *updates* into ``node.json`` (under node.lock).
+
+    .. important::
+       ``updates`` must NOT include ``status``. Status is the one field
+       that lives in two files (``node.json`` and the ``progress.json``
+       index), so it has a single writer-path — :func:`update_node_status`
+       — that all callers (CLI, :func:`begin_node`, :func:`complete_node`,
+       :func:`fail_node`) route through. Mutating status through this
+       generic merge would bypass the index update and let the two stores
+       drift. A ``status`` key in *updates* raises ``ValueError``.
+    """
+    if "status" in updates:
+        raise ValueError(
+            "update_node() must not set 'status' — use update_node_status() "
+            "so the progress.json index stays in sync."
+        )
+
     node_dir = Path(job_dir) / "nodes" / node_id
     node_json = node_dir / "node.json"
 
@@ -304,8 +303,48 @@ def update_node(job_dir: str, node_id: str, updates: dict) -> None:
         _atomic_write_json(node_json, data)
 
 
-def update_node_status(job_dir: str, node_id: str, status: str) -> None:
-    """Update a node's status in the ``progress.json`` index."""
+def _apply_status(
+    job_dir: str,
+    node_id: str,
+    status: str,
+    *,
+    payload: Optional[dict] = None,
+) -> None:
+    """The sole writer-path for node status.
+
+    1. Merge ``status`` + ``updated_at`` (and any caller-supplied
+       ``payload`` — e.g. artifacts / metadata / warnings) into
+       ``node.json`` under ``node.lock``.
+    2. Mirror ``status`` into the ``progress.json`` index under
+       ``progress.lock``.
+
+    :func:`update_node_status` (public/CLI), :func:`begin_node`,
+    :func:`complete_node`, and :func:`fail_node` all delegate here so
+    that status edits *cannot* hit one file without the other, and so
+    the invariant is enforceable from a single function.
+    """
+    merged: dict = dict(payload or {})
+    merged["_status_write"] = status  # sentinel the node.json writer recognises
+    merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    node_dir = Path(job_dir) / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        for key, value in merged.items():
+            if key == "_status_write":
+                data["status"] = value
+                continue
+            if isinstance(value, dict) and isinstance(data.get(key), dict):
+                data[key].update(value)
+            elif isinstance(value, list) and key == "warnings":
+                existing = data.get("warnings", [])
+                existing.extend(value)
+                data["warnings"] = existing
+            else:
+                data[key] = value
+        _atomic_write_json(node_json, data)
+
     jd = Path(job_dir)
     with file_lock(jd / "progress.lock"):
         pj = jd / "progress.json"
@@ -316,13 +355,67 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> None:
             _atomic_write_json(pj, progress)
 
 
-def _set_node_status(job_dir: str, node_id: str, status: str) -> None:
-    """Set status on both node.json and progress.json."""
-    update_node(job_dir, node_id, {
-        "status": status,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-    })
-    update_node_status(job_dir, node_id, status)
+def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
+    """CLI-facing status writer.
+
+    Delegates to :func:`_apply_status` so that every status edit in the
+    system flows through the same single path. Returns
+    ``{"success": True, "node_id", "status"}`` so it can be exposed as
+    a CLI tool.
+    """
+    _apply_status(job_dir, node_id, status)
+    return {"success": True, "node_id": node_id, "status": status}
+
+
+# ── State transitions (tools call these) ───────────────────────────────────
+
+def begin_node(job_dir: str, node_id: str) -> None:
+    """Mark a node as ``running``.  Called by tools at the start of execution."""
+    _apply_status(job_dir, node_id, "running")
+    write_event(job_dir, node_id, "tool_started")
+
+
+def complete_node(
+    job_dir: str,
+    node_id: str,
+    artifacts: dict,
+    *,
+    metadata: Optional[dict] = None,
+    warnings: Optional[list[str]] = None,
+) -> None:
+    """Mark a node as ``completed`` and record its outputs.
+
+    *artifacts* maps logical names to paths **relative to the node directory**
+    (e.g. ``{"solvated_pdb": "artifacts/solvated.pdb"}``).
+    """
+    payload: dict = {"artifacts": artifacts}
+    if metadata:
+        payload["metadata"] = metadata
+    if warnings:
+        payload["warnings"] = warnings
+
+    _apply_status(job_dir, node_id, "completed", payload=payload)
+    write_event(job_dir, node_id, "tool_completed", success=True)
+
+
+def fail_node(
+    job_dir: str,
+    node_id: str,
+    *,
+    errors: Optional[list[str]] = None,
+    warnings: Optional[list[str]] = None,
+) -> None:
+    """Mark a node as ``failed`` and record errors."""
+    payload: dict = {}
+    if warnings:
+        payload["warnings"] = warnings
+    # Store errors in metadata (node.json doesn't have a top-level errors key)
+    if errors:
+        payload["metadata"] = {"errors": errors}
+
+    _apply_status(job_dir, node_id, "failed", payload=payload)
+    write_event(job_dir, node_id, "tool_failed", success=False,
+                details={"errors": errors or []})
 
 
 # ── Progress-level cached summaries ────────────────────────────────────────
@@ -437,7 +530,13 @@ def find_ancestor_artifact(
       ancestor node's directory; the absolute path is returned as ``str``.
     - **list or dict** → treated as a *structured artifact* (inline data, or a
       list of absolute-path dicts such as ``ligand_params``). Returned as-is.
-    - missing / ``None`` → returns ``None``.
+    - missing / ``None`` → search continues upward (not treated as a match).
+
+    The BFS returns the artifact from the *nearest* ancestor of the given type
+    that actually carries the key. If the nearest matching-type ancestor is
+    missing the key (incomplete, failed, ``node.json`` absent, unreadable),
+    the walk keeps going through its parents. Only when no ancestor in the
+    chain carries the key is ``None`` returned.
 
     Callers that expect one specific shape should assert the return type.
 
@@ -467,22 +566,28 @@ def find_ancestor_artifact(
             continue
         seen.add(nid)
         info = nodes_index.get(nid, {})
+        parents = info.get("parents", [])
         if info.get("type") == ancestor_type:
-            # Found the ancestor — read its node.json for the artifact
+            # Matching-type ancestor — try to read the artifact. If this node
+            # doesn't carry the key (incomplete run, missing/broken node.json),
+            # fall through and keep walking upward so older same-type
+            # ancestors (e.g. prod_001 behind an incomplete prod_002) can
+            # still satisfy the lookup.
             node_json_path = jd / "nodes" / nid / "node.json"
-            if not node_json_path.exists():
-                continue
-            ndata = json.loads(node_json_path.read_text())
-            value = ndata.get("artifacts", {}).get(artifact_key)
-            if value is None:
-                return None
-            if isinstance(value, str):
-                # path artifact → resolve relative to ancestor node dir
-                return str((jd / "nodes" / nid / value).resolve())
-            # structured artifact (list/dict) → return as-is
-            return value
-        # Keep searching upward
-        queue.extend(info.get("parents", []))
+            if node_json_path.exists():
+                try:
+                    ndata = json.loads(node_json_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    ndata = {}
+                value = ndata.get("artifacts", {}).get(artifact_key)
+                if value is not None:
+                    if isinstance(value, str):
+                        # path artifact → resolve relative to ancestor node dir
+                        return str((jd / "nodes" / nid / value).resolve())
+                    # structured artifact (list/dict) → return as-is
+                    return value
+        # Keep searching upward regardless of whether the type matched.
+        queue.extend(parents)
     return None
 
 
@@ -570,12 +675,83 @@ def resolve_node_inputs(
     elif node_type == "prod":
         p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
         r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
-        chk = find_ancestor_artifact(job_dir, node_id, "eq", "checkpoint")
         if p7:
             result["prmtop_file"] = p7
         if r7:
             result["inpcrd_file"] = r7
-        if chk:
-            result["restart_from"] = chk
+
+        # `continued_from` is the strict, user-visible contract: the new
+        # node was explicitly marked as extending that specific prod. In
+        # that mode we restart *only* from that prod's checkpoint — any
+        # silent fallback (to another prod up the chain, or to eq) would
+        # defeat the purpose of the explicit marker, so the caller gets
+        # a structured error instead and must fix the DAG.
+        continued_from = _read_continued_from(job_dir, node_id)
+        if continued_from is not None:
+            chk = _read_artifact_from_node(
+                job_dir, continued_from, "checkpoint"
+            )
+            if chk is not None:
+                result["restart_from"] = chk
+            else:
+                result["restart_from_error"] = (
+                    f"continue_from='{continued_from}' but that node has "
+                    f"no 'checkpoint' artifact — extension cannot start. "
+                    f"Wait for that prod to finish (or fix the DAG to "
+                    f"point at a completed prod ancestor)."
+                )
+        else:
+            # Default (no explicit continue_from): prefer a prod parent's
+            # checkpoint so `--parent-node-ids prod_001` still chains
+            # correctly; fall back to the eq ancestor for fresh prod runs.
+            chk = find_ancestor_artifact(
+                job_dir, node_id, "prod", "checkpoint"
+            )
+            if chk is None:
+                chk = find_ancestor_artifact(
+                    job_dir, node_id, "eq", "checkpoint"
+                )
+            if chk:
+                result["restart_from"] = chk
 
     return result
+
+
+def _read_continued_from(job_dir: str, node_id: str) -> Optional[str]:
+    """Return ``node.json.metadata.continued_from`` for *node_id*, or None."""
+    nj = Path(job_dir) / "nodes" / node_id / "node.json"
+    if not nj.exists():
+        return None
+    try:
+        data = json.loads(nj.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = data.get("metadata", {}).get("continued_from")
+    return value if isinstance(value, str) else None
+
+
+def _read_artifact_from_node(
+    job_dir: str,
+    node_id: str,
+    artifact_key: str,
+):
+    """Read a single artifact directly from *node_id*'s node.json.
+
+    Mirrors :func:`find_ancestor_artifact`'s value contract (path artifacts
+    are resolved to absolute strings; structured artifacts are returned
+    as-is) but scoped to a specific node instead of walking the DAG.
+    """
+    jd = Path(job_dir)
+    nj = jd / "nodes" / node_id / "node.json"
+    if not nj.exists():
+        return None
+    try:
+        data = json.loads(nj.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = data.get("artifacts", {}).get(artifact_key)
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return str((jd / "nodes" / node_id / value).resolve())
+    return value

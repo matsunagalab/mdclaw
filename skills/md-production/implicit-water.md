@@ -35,39 +35,46 @@
 
 ## Production Run
 
-### Local Execution
+### Local Execution (node-based)
 
 ```bash
-mdclaw run_production \
-  --prmtop-file <parm7> \
-  --inpcrd-file <rst7> \
-  --output-dir <run_dir> \
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
-  --output-frequency-ps 10.0 \
-  --restart-from <run_dir>/equilibration/equilibrated.chk
+  --implicit-solvent GBn2 \
+  --output-frequency-ps 10.0
 ```
 
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
+
+`prmtop_file`, `inpcrd_file`, and `restart_from` auto-resolve from DAG
+ancestors. Topology comes from the `topo` ancestor. The checkpoint rule
+depends on how the prod node was created:
+
+- **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
+  `checkpoint.chk` (no fallback; missing checkpoint = hard error).
+- **plain `--parent-node-ids prod_N`** → BFS picks the nearest prod
+  ancestor with a checkpoint, or falls through to the `eq` ancestor.
+- **fresh run (eq parent)** → restart from the `eq` ancestor's checkpoint.
 
 ### SLURM Execution (HPC)
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw run_production \
-    --prmtop-file <ABSOLUTE_PARM7> \
-    --inpcrd-file <ABSOLUTE_RST7> \
+  --script "mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
     --simulation-time-ns <user_specified> \
     --temperature-kelvin <T> \
     --pressure-bar 0 \
-    --platform CUDA \
-    --output-dir <ABSOLUTE_RUN_DIR> \
-    --restart-from <ABSOLUTE_RUN_DIR>/equilibration/equilibrated.chk" \
+    --implicit-solvent GBn2 \
+    --platform CUDA" \
   --job-name md_<name> \
   --partition <partition> --gpus 1 \
   --time-limit <estimated> --memory "32G"
 ```
+
+`--job-dir` is auto-resolved to an absolute path by the CLI, so SLURM
+compute nodes can find all files without manual `realpath` conversion.
 
 ---
 
@@ -85,37 +92,56 @@ mdclaw submit_job \
 ## HPC / GPU Usage
 
 ### GPU Selection
+
 ```bash
-mdclaw run_production --platform CUDA --device-index "0" \
-  --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --pressure-bar 0 \
-  --restart-from equilibrated.chk
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --platform CUDA --device-index "0" \
+  --simulation-time-ns 100.0 --pressure-bar 0 --implicit-solvent GBn2
 ```
 
 ### HMR (default: enabled)
 
 HMR and 4 fs timestep are defaults. To disable:
-```bash
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --no-hmr --timestep-fs 2.0 --simulation-time-ns 100.0 --pressure-bar 0 \
-  --restart-from equilibrated.chk
-```
-
-### Checkpoint / Restart
-
-Mid-run restart appends new frames to the existing `trajectory.dcd`.
-Always use the same `--output-dir` for restarts.
 
 ```bash
-# Restart: appends to existing DCD, runs only remaining steps
-mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
-  --simulation-time-ns 100.0 --pressure-bar 0 \
-  --output-dir <run_dir> \
-  --restart-from <run_dir>/production/checkpoint.chk
+mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --no-hmr --timestep-fs 2.0 \
+  --simulation-time-ns 100.0 --pressure-bar 0 --implicit-solvent GBn2
 ```
 
-- `--simulation-time-ns` is the **total** target time, not additional time
-- Binary checkpoint is platform-specific (CUDA ↔ CPU not interchangeable)
+---
+
+## Checkpoint / Restart
+
+### Extension: create a new prod node (recommended)
+
+```bash
+# Create the extension node
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --continue-from prod_001 --label "+50ns" \
+  --conditions '{"simulation_time_ns": 50}'
+
+# Run it — restart_from resolves via the DAG
+mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
+  --simulation-time-ns 50.0 --platform CUDA \
+  --pressure-bar 0 --implicit-solvent GBn2
+```
+
+- `--simulation-time-ns` is the **additional** time to run in this node
+  (the `eq→prod` case still behaves as the full production duration
+  because the eq checkpoint is saved with `currentStep=0` by design).
+- Each prod node keeps its own `trajectory.dcd` under `artifacts/` — no
+  cross-node DCD append. Concatenate with mdtraj when a continuous
+  trajectory is required.
+- Binary checkpoint is platform-specific (CUDA ↔ CPU not interchangeable).
+
+### Mid-run restart into the same node (advanced / rare)
+
+Re-running against the same `--node-id` with an existing trajectory in
+that node's `artifacts/` makes the tool append. `--simulation-time-ns`
+then means "time to run in this call" (additional on top of the
+checkpoint's step count). Prefer the extension-node workflow above — it
+is easier to reason about for chained restarts.
 
 ---
 
@@ -147,18 +173,13 @@ mdclaw run_production --prmtop-file sys.parm7 --inpcrd-file sys.rst7 \
 
 ---
 
-## Update run.json
+## Verify Output
 
-After production completes, update `run.json` with metadata from the tool output:
+Read `nodes/prod_001/node.json`:
 
-- **stages.production**:
-  - `status`: `"completed"`
-  - `trajectory`: path to `trajectory.dcd`
-  - `final_structure`: path to `final_structure.pdb`
-  - `checkpoint_file`: path to `checkpoint.chk`
-  - `energy_file`: path to `energy.dat`
-  - `ensemble`: `"NVT"`
-  - `simulation_time_ns`, `num_steps`, `timestep_fs`
-  - `hmr`, `platform`, `device_index`
-  - `initial_energy_kj_mol`, `final_energy_kj_mol`
-  - `restarted_from`: path to the equilibrated checkpoint used
+- `status`: `"completed"`
+- `artifacts`: `trajectory`, `final_structure`, `checkpoint`, `energy`
+- `metadata`: `simulation_time_ns`, `temperature_kelvin`, `platform`,
+  `hmr`, `timestep_fs`, `num_steps`, `start_step`, `start_time_ns`
+  (non-zero only for extension runs), `continued_from` (set when the
+  node was created via `--continue-from`)

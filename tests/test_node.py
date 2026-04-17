@@ -201,6 +201,255 @@ class TestCreateNode:
         assert (job_dir / "progress.json").exists()
 
 
+# ── continue_from sugar (prod extension) ───────────────────────────────────
+
+
+class TestContinueFromSugar:
+    """Covers create_node(..., continue_from=<prod_id>)."""
+
+    @pytest.fixture
+    def job_with_prod(self, job_dir):
+        """Build fetch→prep→solv→topo→eq→prod_001 and return (job_dir,
+        prod_001_id). prod_001 is marked completed with a checkpoint
+        artifact."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"checkpoint": "artifacts/equilibrated.chk"})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(jd, "prod_001",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                                 "trajectory": "artifacts/trajectory.dcd"})
+        return job_dir, "prod_001"
+
+    def test_continue_from_folds_into_parent_ids(self, job_with_prod):
+        jd, prod_id = job_with_prod
+        result = create_node(str(jd), "prod", continue_from=prod_id)
+        assert result["success"]
+        node = read_node(str(jd), result["node_id"])
+        assert node["parent_node_ids"] == [prod_id]
+
+    def test_continue_from_records_audit_metadata(self, job_with_prod):
+        jd, prod_id = job_with_prod
+        result = create_node(str(jd), "prod", continue_from=prod_id)
+        node = read_node(str(jd), result["node_id"])
+        assert node["metadata"].get("continued_from") == prod_id
+
+    def test_continue_from_resolves_restart(self, job_with_prod):
+        jd, prod_id = job_with_prod
+        result = create_node(str(jd), "prod", continue_from=prod_id)
+        inputs = resolve_node_inputs(str(jd), result["node_id"], "prod")
+        assert inputs["restart_from"].endswith(f"{prod_id}/artifacts/checkpoint.chk")
+
+    def test_continue_from_only_allowed_for_prod(self, job_with_prod):
+        jd, prod_id = job_with_prod
+        result = create_node(str(jd), "eq", continue_from=prod_id)
+        assert result["success"] is False
+        assert "only valid for node_type='prod'" in result["error"]
+
+    def test_continue_from_rejects_mixed_parents(self, job_with_prod):
+        jd, prod_id = job_with_prod
+        result = create_node(str(jd), "prod",
+                             continue_from=prod_id,
+                             parent_node_ids=[prod_id])
+        assert result["success"] is False
+        assert "mutually exclusive" in result["error"]
+
+    def test_continue_from_rejects_non_prod_reference(self, job_with_prod):
+        jd, _ = job_with_prod
+        # Pointing at eq_001 (not a prod) must fail
+        result = create_node(str(jd), "prod", continue_from="eq_001")
+        assert result["success"] is False
+        assert "must reference a prod node" in result["error"]
+
+    def test_continue_from_rejects_unknown_reference(self, job_with_prod):
+        jd, _ = job_with_prod
+        result = create_node(str(jd), "prod", continue_from="prod_999")
+        assert result["success"] is False
+        # Unknown reference is caught by the standard parent-ref check
+        assert "does not exist" in result["error"]
+
+
+# ── Strict continue_from enforcement at resolve_node_inputs ────────────────
+
+
+class TestContinueFromStrictEnforcement:
+    """Covers runtime enforcement of node.json.metadata.continued_from.
+
+    When a prod node was created via ``--continue-from``, the resolver
+    must use *only* that ancestor's checkpoint. Silently falling through
+    to another prod or to the eq ancestor would defeat the point of the
+    explicit marker, so the contract is: exact hit, or ``restart_from_error``.
+    """
+
+    @pytest.fixture
+    def full_dag_with_prod(self, job_dir):
+        """fetch-less DAG: prep→solv→topo→eq→prod_001 (no checkpoint yet)."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"checkpoint": "artifacts/equilibrated.chk"})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        return jd
+
+    def test_exact_ancestor_checkpoint_is_used(self, full_dag_with_prod):
+        jd = full_dag_with_prod
+        complete_node(jd, "prod_001",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk"})
+        create_node(jd, "prod", continue_from="prod_001")
+
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert "restart_from_error" not in inputs
+        assert inputs["restart_from"].endswith(
+            "prod_001/artifacts/checkpoint.chk"
+        )
+
+    def test_missing_checkpoint_surfaces_error(self, full_dag_with_prod):
+        """prod_001 never completed (no checkpoint artifact) → strict
+        continue_from must NOT silently fall back to eq_001."""
+        jd = full_dag_with_prod
+        # prod_001 stays pending, no checkpoint artifact recorded
+        create_node(jd, "prod", continue_from="prod_001")
+
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert "restart_from" not in inputs
+        assert "restart_from_error" in inputs
+        assert "prod_001" in inputs["restart_from_error"]
+        assert "checkpoint" in inputs["restart_from_error"]
+
+    def test_does_not_pull_sibling_prod_checkpoint(self, full_dag_with_prod):
+        """prod_003 is a sibling branched off eq_001 (completed, has a
+        checkpoint). prod_002 is continue_from=prod_001, which has none.
+        Strict enforcement must NOT scoop prod_003's checkpoint."""
+        jd = full_dag_with_prod
+        # Create a sibling prod on eq_001 and complete it — this should be
+        # invisible to strict continue_from resolution.
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(jd, "prod_002",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk"})
+        # The extension the user explicitly asked for: prod_001's continuation
+        create_node(jd, "prod", continue_from="prod_001")
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        assert "restart_from" not in inputs
+        assert "restart_from_error" in inputs
+
+    def test_plain_parent_ids_still_fallbacks(self, full_dag_with_prod):
+        """Regression guard: the default (non-continue_from) path keeps
+        its BFS + eq fallback. Here prod_001 has no checkpoint but the
+        walk should reach eq_001's checkpoint."""
+        jd = full_dag_with_prod
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert "restart_from_error" not in inputs
+        assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith("equilibrated.chk")
+
+
+# ── update_node_status tool ────────────────────────────────────────────────
+
+
+class TestUpdateNodeStatusTool:
+    """Covers the CLI-exposed ``update_node_status`` that keeps
+    ``node.json`` and ``progress.json`` in sync."""
+
+    def test_updates_both_files(self, job_dir):
+        create_node(str(job_dir), "prep")
+        result = update_node_status(str(job_dir), "prep_001", "submitted")
+        assert result == {"success": True, "node_id": "prep_001",
+                          "status": "submitted"}
+
+        node = read_node(str(job_dir), "prep_001")
+        assert node["status"] == "submitted"
+
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert pj["nodes"]["prep_001"]["status"] == "submitted"
+
+    def test_bumps_updated_at(self, job_dir):
+        create_node(str(job_dir), "prep")
+        before = read_node(str(job_dir), "prep_001")["updated_at"]
+        # Same-second writes would match; patch updated_at to a clearly
+        # older timestamp so we can observe the refresh.
+        update_node(str(job_dir), "prep_001",
+                    {"updated_at": "2000-01-01T00:00:00+00:00"})
+        update_node_status(str(job_dir), "prep_001", "running")
+        after = read_node(str(job_dir), "prep_001")["updated_at"]
+        assert after != "2000-01-01T00:00:00+00:00"
+        assert after >= before
+
+    def test_node_json_and_progress_stay_consistent(self, job_dir):
+        """Multiple status changes keep both stores in sync."""
+        create_node(str(job_dir), "prod")
+        for status in ("submitted", "running", "completed"):
+            update_node_status(str(job_dir), "prod_001", status)
+            node = read_node(str(job_dir), "prod_001")
+            pj = json.loads((job_dir / "progress.json").read_text())
+            assert node["status"] == status
+            assert pj["nodes"]["prod_001"]["status"] == status
+
+    def test_unknown_node_raises(self, job_dir):
+        create_node(str(job_dir), "prep")
+        # update_node opens nodes/<id>/node.json unconditionally, so an
+        # unknown id surfaces as FileNotFoundError — that's acceptable and
+        # is the same behaviour as update_node's existing contract.
+        with pytest.raises((FileNotFoundError, OSError)):
+            update_node_status(str(job_dir), "prod_999", "running")
+
+    def test_lifecycle_calls_keep_both_files_in_sync(self, job_dir):
+        """begin_node / complete_node / fail_node all route through the
+        same single status writer, so at every step node.json and the
+        progress.json index must agree on status.
+
+        This regression-guards against any future reintroduction of a
+        two-step status write (node.json + progress.json as independent
+        operations), which was the SSOT bug this refactor closed.
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+
+        def _pair() -> tuple[str, str]:
+            node = read_node(jd, "prep_001")
+            pj = json.loads((job_dir / "progress.json").read_text())
+            return node["status"], pj["nodes"]["prep_001"]["status"]
+
+        assert _pair() == ("pending", "pending")
+
+        begin_node(jd, "prep_001")
+        assert _pair() == ("running", "running")
+
+        complete_node(jd, "prep_001", artifacts={"dummy": "artifacts/x.dat"})
+        assert _pair() == ("completed", "completed")
+
+        # Separately: fail_node on a fresh node
+        create_node(jd, "eq")
+        fail_node(jd, "eq_001", errors=["something"])
+        node = read_node(jd, "eq_001")
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert node["status"] == "failed"
+        assert pj["nodes"]["eq_001"]["status"] == "failed"
+
+
 # ── State transitions ──────────────────────────────────────────────────────
 
 
@@ -297,10 +546,19 @@ class TestUpdateNode:
         assert node["warnings"] == ["w1", "w2"]
 
     def test_overwrite_scalar(self, job_dir):
+        """Generic scalar merges still work for non-status fields."""
         create_node(str(job_dir), "prep")
-        update_node(str(job_dir), "prep_001", {"status": "running"})
+        update_node(str(job_dir), "prep_001", {"label": "reheat"})
         node = read_node(str(job_dir), "prep_001")
-        assert node["status"] == "running"
+        assert node["label"] == "reheat"
+
+    def test_update_node_refuses_status_edits(self, job_dir):
+        """update_node must not write the ``status`` field — that is
+        routed through update_node_status so the progress.json index
+        can never drift from node.json."""
+        create_node(str(job_dir), "prep")
+        with pytest.raises(ValueError, match="status"):
+            update_node(str(job_dir), "prep_001", {"status": "running"})
 
 
 # ── update_job_summaries ───────────────────────────────────────────────────
@@ -466,6 +724,54 @@ class TestDAGAutoResolve:
         assert "prmtop_file" in inputs
         assert "inpcrd_file" in inputs
         assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith("equilibrated.chk")
+
+    def test_resolve_node_inputs_prod_extension(self, full_dag):
+        """prod with a prod parent restarts from the prod parent's checkpoint,
+        not from the eq ancestor — this is the extension-run case."""
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                                 "trajectory": "artifacts/trajectory.dcd"})
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith("prod_001/artifacts/checkpoint.chk")
+        # topo inputs still resolve to the shared topo ancestor
+        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+
+    def test_resolve_node_inputs_prod_chain(self, full_dag):
+        """Deep chain prod_003 → prod_002 → prod_001 → eq_001: when prod_002
+        (the nearest prod) has no checkpoint artifact (e.g. still running /
+        failed), the BFS must keep walking and return prod_001's checkpoint
+        rather than the eq one — otherwise chained extensions silently
+        restart from the wrong state.
+        """
+        jd = str(full_dag)
+        # prod_001 is the only prod with a saved checkpoint
+        complete_node(jd, "prod_001",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                                 "trajectory": "artifacts/trajectory.dcd"})
+        # prod_002 exists but never completed — no checkpoint artifact
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        # prod_003 continues; even though prod_002 is nearest, its checkpoint
+        # key is absent, so BFS must fall through to prod_001.
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith(
+            "prod_001/artifacts/checkpoint.chk"
+        ), "BFS must skip artifact-less prod_002 and return prod_001's checkpoint"
+
+    def test_resolve_node_inputs_prod_falls_back_to_eq(self, full_dag):
+        """With no intermediate prod ancestor on the path, resolve falls back
+        to the eq ancestor's checkpoint (legacy eq→prod case)."""
+        jd = str(full_dag)
+        # No prod_001 artifacts registered; prod_001 exists from full_dag but
+        # has no checkpoint key. The direct parent of prod_001 is eq_001.
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
         assert inputs["restart_from"].endswith("equilibrated.chk")
 
     def test_resolve_node_inputs_solv(self, full_dag):

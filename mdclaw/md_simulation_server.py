@@ -52,6 +52,35 @@ def _close_reporter_stream(reporter) -> None:
             out.close()
 
 
+def _compute_step_plan(
+    simulation_time_ns: float,
+    timestep_fs: float,
+    current_step: int,
+) -> dict:
+    """Translate a requested duration into a concrete step schedule.
+
+    ``simulation_time_ns`` is always interpreted as time to run **in this
+    call** (additional on top of ``current_step``). Callers pass
+    ``simulation.currentStep`` for restart cases (prod→prod) and 0 for
+    fresh runs; the eq→prod path saves its checkpoint with
+    ``currentStep=0`` by design so legacy callers see unchanged behaviour.
+
+    Returns a dict with:
+
+    - ``start_step`` — step counter at restart (same as ``current_step``)
+    - ``start_time_ns`` — that step count expressed as time
+    - ``steps_to_run`` — MD steps scheduled for this call
+    - ``num_steps`` — total step counter after this call completes
+    """
+    steps_to_run = int(simulation_time_ns * 1_000_000 / timestep_fs)
+    return {
+        "start_step": current_step,
+        "start_time_ns": current_step * timestep_fs / 1e6,
+        "steps_to_run": steps_to_run,
+        "num_steps": current_step + steps_to_run,
+    }
+
+
 def run_equilibration(
     prmtop_file: Optional[str] = None,
     inpcrd_file: Optional[str] = None,
@@ -620,7 +649,14 @@ def run_production(
     Args:
         prmtop_file: Amber topology file (.parm7 or .prmtop)
         inpcrd_file: Amber coordinate file (.rst7 or .inpcrd)
-        simulation_time_ns: Simulation time in nanoseconds (default: 1.0)
+        simulation_time_ns: Simulation time to run IN THIS CALL in nanoseconds
+                     (default: 1.0). On restart (``restart_from`` set) this is
+                     the *additional* time to append after the checkpoint —
+                     e.g. prod_001 ran 10 ns, prod_002 with ``simulation_time_ns=5``
+                     runs 5 more ns. (The eq checkpoint is written with
+                     ``currentStep=0`` by design, so the eq→prod case is
+                     unchanged: ``simulation_time_ns`` there is the full
+                     production duration.)
         temperature_kelvin: Temperature in Kelvin (default: 300.0)
         pressure_bar: Pressure in bar. Set for NPT, None for NVT (default: None)
         timestep_fs: Integration timestep in femtoseconds (default: 4.0)
@@ -644,9 +680,13 @@ def run_production(
                      "auto" (default). "auto" lets OpenMM choose the fastest.
         device_index: GPU device index (e.g. "0", "0,1"). Only used with
                      CUDA or OpenCL platforms.
-        restart_from: Path to checkpoint file (.chk) to restart from.
-                     Skips minimization, appends to existing DCD, and runs
-                     only the remaining steps.
+        restart_from: Path to checkpoint file (.chk) to restart from. Skips
+                     minimization and runs ``simulation_time_ns`` additional
+                     nanoseconds on top of the restart step count. The
+                     trajectory is written to this node's own ``artifacts/``
+                     directory as a fresh DCD (no cross-node append) — to
+                     stitch trajectories across nodes, concatenate with
+                     mdtraj or similar.
         hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=4 amu).
                      Enabled by default. Allows 4 fs timestep for ~2x throughput.
                      Use --no-hmr to disable (timestep should then be <= 2 fs).
@@ -676,6 +716,10 @@ def run_production(
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
+        # Strict continue_from violation — fail before we touch OpenMM so
+        # the user sees a clean error instead of a wrong-checkpoint run.
+        if not restart_from and "restart_from_error" in _inputs:
+            return {"success": False, "errors": [_inputs["restart_from_error"]]}
         if not prmtop_file and "prmtop_file" in _inputs:
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
@@ -710,6 +754,8 @@ def run_production(
         "checkpoint_file": None,
         "restarted_from": None,
         "steps_completed": None,
+        "start_step": None,
+        "start_time_ns": None,
         "hmr": False,
         "random_seed": None,
         "errors": [],
@@ -1010,20 +1056,24 @@ def run_production(
                     temperature_kelvin * kelvin
                 )
 
-        # Run simulation
-        simulation_steps = int(simulation_time_ns * 1000000 / timestep_fs)
+        # Run simulation. See _compute_step_plan for the semantics —
+        # simulation_time_ns is always "run this much in this call", and
+        # eq→prod's legacy "full production length" meaning is preserved
+        # because the eq checkpoint is saved with currentStep=0.
+        plan = _compute_step_plan(
+            simulation_time_ns, timestep_fs, simulation.currentStep
+        )
+        start_step = plan["start_step"]
+        steps_to_run = plan["steps_to_run"]
+        simulation_steps = plan["num_steps"]
         result["num_steps"] = simulation_steps
+        result["start_step"] = start_step
+        result["start_time_ns"] = plan["start_time_ns"]
 
-        # On restart, compute remaining steps
-        steps_to_run = simulation_steps - simulation.currentStep
-        if steps_to_run <= 0:
-            result["warnings"].append(
-                f"Already completed ({simulation.currentStep} steps done, "
-                f"{simulation_steps} requested)"
-            )
-            steps_to_run = 0
-
-        logger.info(f"Running {steps_to_run} steps (total: {simulation_steps}, current: {simulation.currentStep})")
+        logger.info(
+            f"Running {steps_to_run} steps "
+            f"(start_step={start_step}, target_total={simulation_steps})"
+        )
 
         if steps_to_run > 0:
             simulation.step(steps_to_run)
@@ -1114,6 +1164,8 @@ def run_production(
                     "timestep_fs": timestep_fs,
                     "random_seed": random_seed,
                     "num_steps": result.get("steps_completed"),
+                    "start_step": result.get("start_step"),
+                    "start_time_ns": result.get("start_time_ns"),
                 })
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))
