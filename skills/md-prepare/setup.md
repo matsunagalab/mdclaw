@@ -84,24 +84,24 @@ Use `progress.json.params.execution_mode` as the source of truth:
 **Tools**:
 - `mdclaw download_structure --pdb-id <ID> --format pdb`
 - `mdclaw get_alphafold_structure --uniprot-id <ID>`
-- `mdclaw register_local_structure --file-path <path>` (node mode only)
+- `mdclaw register_local_structure --file-path <path>` (requires `fetch` node context)
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
 - `mdclaw search_structures --query "<name>"`
 
 **Logic**:
 1. PDB ID (4-char like `1AKE`) → `download_structure`
 2. UniProt ID (like `P12345`) → `get_alphafold_structure`
-3. Local file → `register_local_structure` (node mode) or pass path directly
+3. Local file → create a `fetch` node, then `register_local_structure`
 4. FASTA sequence → `boltz2_protein_from_seq`
 5. Protein name → `search_structures`, then ask user to pick
 
-> **Node mode (schema v3)**: structure acquisition is a `fetch` DAG-root node.
-> Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
+> **Schema v3 workflow**: structure acquisition is always a `fetch` DAG-root
+> node. Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
 > and pass `--node-id fetch_001` to `download_structure`,
 > `get_alphafold_structure`, or `register_local_structure`. The downloaded /
 > registered file is recorded under `nodes/fetch_001/artifacts/` with
 > provenance metadata (`source_type`, `source_id`, `sha256`, `source_url`).
-> See `explicit-water.md` for the full node-based runbook.
+> See `explicit-water.md` for the full runbook.
 >
 > **Exception — `boltz2_protein_from_seq`**: fetch-node wiring is **not yet
 > implemented** (tracked in `CLAUDE.md` TODO). The tool currently produces
@@ -117,12 +117,13 @@ Use `progress.json.params.execution_mode` as the source of truth:
 ## Step 2: Inspect & Decide
 
 ```bash
-mdclaw inspect_molecules --structure-file <file>
+mdclaw --job-dir <jd> --node-id fetch_001 inspect_molecules \
+  --structure-file <file>
 ```
 
-> **Node mode**: pass `--job-dir <jd> --node-id fetch_001` to record an
-> `inspection_completed` event and drop `inspection.json` into the fetch
-> node's artifacts dir. The node's status is unchanged (read-only).
+This records an `inspection_completed` event and writes `inspection.json`
+into the fetch node's artifacts dir. The node's status is unchanged
+(read-only).
 
 1. **Chain ID mapping**: Output has `author_chain` (e.g., `"A"`) and `chain_id` (e.g., `"Axp"`). **Use `author_chain` for `--select-chains` in Step 3.**
 2. **Checkpoint: Chain selection** — If multiple chains and user hasn't
@@ -142,7 +143,7 @@ mdclaw inspect_molecules --structure-file <file>
 ## Step 3: Prepare Complex
 
 Create a `prep` node with the `fetch` node as parent, then invoke
-`prepare_complex` in node mode. `structure_file` is auto-resolved from the
+`prepare_complex` in the schema v3 workflow. `structure_file` is auto-resolved from the
 single `fetch` ancestor, and output goes to `nodes/prep_001/artifacts/`.
 
 **Without ligands** (protein only):
@@ -187,7 +188,7 @@ Check `overall_status` from `prepare_complex` JSON output (not stderr):
 | `completed_with_blocking_ligand_failure` | Handle by `workflow_recommendation` (see below) |
 | `failed` | Report error, stop |
 
-**On success**: In node mode, `prepare_complex` records ligand parameters
+**On success**: `prepare_complex` records ligand parameters
 (`{mol2, frcmod, residue_name}` per ligand) as a structured `ligand_params`
 artifact on the `prep` node. Downstream `build_amber_system` auto-resolves
 this from the `prep` ancestor — no manual bookkeeping or path wiring required.

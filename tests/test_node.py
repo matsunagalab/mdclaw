@@ -22,7 +22,6 @@ from mdclaw._node import (
     read_node,
     resolve_artifact,
     resolve_node_inputs,
-    schema_major,
     update_job_params,
     update_job_summaries,
     update_node,
@@ -74,25 +73,6 @@ class TestInitProgress:
         deep = tmp_path / "a" / "b" / "job_deep"
         init_progress_v3(str(deep))
         assert (deep / "progress.json").exists()
-
-
-# ── schema_major ───────────────────────────────────────────────────────────
-
-
-class TestSchemaMajor:
-
-    def test_no_progress_returns_3(self, tmp_path):
-        assert schema_major(str(tmp_path)) == SCHEMA_VERSION
-
-    def test_v2_string(self, job_dir):
-        (job_dir / "progress.json").write_text(
-            json.dumps({"schema_version": "2.0"})
-        )
-        assert schema_major(str(job_dir)) == 2
-
-    def test_v3_int(self, job_dir):
-        init_progress_v3(str(job_dir))
-        assert schema_major(str(job_dir)) == 3
 
 
 # ── create_node ────────────────────────────────────────────────────────────
@@ -200,6 +180,11 @@ class TestCreateNode:
         result = create_node(str(job_dir), "prep")
         assert result["success"]
         assert (job_dir / "progress.json").exists()
+
+    def test_rejects_legacy_progress_schema(self, job_dir):
+        (job_dir / "progress.json").write_text(json.dumps({"schema_version": "2.0"}))
+        with pytest.raises(ValueError, match="schema v3 only"):
+            create_node(str(job_dir), "prep")
 
 
 # ── continue_from sugar (prod extension) ───────────────────────────────────
@@ -483,6 +468,11 @@ class TestUpdateJobParamsTool:
         result = update_job_params(str(job_dir), {"workflow_mode": "e2e_mode"})
         assert result["success"] is False
         assert "workflow_mode must be one of" in result["error"]
+
+    def test_rejects_legacy_progress_schema(self, job_dir):
+        (job_dir / "progress.json").write_text(json.dumps({"schema_version": "2.0"}))
+        with pytest.raises(ValueError, match="schema v3 only"):
+            update_job_params(str(job_dir), {"execution_mode": "autonomous"})
 
 
 # ── State transitions ──────────────────────────────────────────────────────

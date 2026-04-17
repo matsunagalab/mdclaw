@@ -38,21 +38,36 @@ NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod"})
 SCHEMA_VERSION = 3
 
 
-# ── Schema version helpers ─────────────────────────────────────────────────
+# ── Progress JSON helpers ──────────────────────────────────────────────────
 
-def schema_major(job_dir: str) -> int:
-    """Return the major schema version of a job (2 for legacy, 3 for nodes)."""
-    pj = Path(job_dir) / "progress.json"
-    if not pj.exists():
-        return SCHEMA_VERSION
+def _load_progress_v3(
+    progress_path: Path,
+    *,
+    create_if_missing: bool = False,
+    job_id: Optional[str] = None,
+) -> Optional[dict]:
+    """Read ``progress.json`` and require schema v3.
+
+    Returns ``None`` only when the file is missing and ``create_if_missing``
+    is False. All present files must declare ``schema_version == 3``.
+    """
+    if not progress_path.exists():
+        if create_if_missing:
+            init_progress_v3(str(progress_path.parent), job_id=job_id)
+        else:
+            return None
     try:
-        data = json.loads(pj.read_text())
-    except (json.JSONDecodeError, OSError):
-        return SCHEMA_VERSION
-    v = data.get("schema_version", "2.0")
-    if isinstance(v, int):
-        return v
-    return int(str(v).split(".")[0])
+        data = json.loads(progress_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"Unreadable progress.json: {progress_path}") from exc
+
+    version = data.get("schema_version")
+    if version != SCHEMA_VERSION:
+        raise ValueError(
+            "Unsupported progress.json schema_version "
+            f"{version!r} at {progress_path}. MDClaw now supports schema v3 only."
+        )
+    return data
 
 
 # ── Init progress ──────────────────────────────────────────────────────────
@@ -186,10 +201,7 @@ def create_node(
     with file_lock(jd / "progress.lock"):
         # Bootstrap progress.json if needed
         pj = jd / "progress.json"
-        if not pj.exists():
-            init_progress_v3(job_dir)
-
-        progress = json.loads(pj.read_text())
+        progress = _load_progress_v3(pj, create_if_missing=True)
         nodes_index = progress.get("nodes", {})
 
         # Validate parent/dependency references
@@ -384,7 +396,7 @@ def _apply_status(
     jd = Path(job_dir)
     with file_lock(jd / "progress.lock"):
         pj = jd / "progress.json"
-        progress = json.loads(pj.read_text())
+        progress = _load_progress_v3(pj, create_if_missing=True)
         nodes = progress.get("nodes", {})
         if node_id in nodes:
             nodes[node_id]["status"] = status
@@ -471,7 +483,7 @@ def update_job_summaries(
     jd = Path(job_dir)
     with file_lock(jd / "progress.lock"):
         pj = jd / "progress.json"
-        progress = json.loads(pj.read_text())
+        progress = _load_progress_v3(pj, create_if_missing=True)
         if system:
             progress.setdefault("system", {}).update(system)
         if preparation:
@@ -516,12 +528,11 @@ def update_job_params(job_dir: str, params: dict) -> dict:
         }
 
     jd = Path(job_dir).resolve()
-    if not (jd / "progress.json").exists():
-        init_progress_v3(str(jd))
+    _load_progress_v3(jd / "progress.json", create_if_missing=True)
 
     update_job_summaries(str(jd), params=params)
 
-    progress = json.loads((jd / "progress.json").read_text())
+    progress = _load_progress_v3(jd / "progress.json")
     return {
         "success": True,
         "job_dir": str(jd),
@@ -549,9 +560,9 @@ def find_nodes(
     Returns a dict ``{node_id: {type, status, parents}}``.
     """
     pj = Path(job_dir) / "progress.json"
-    if not pj.exists():
+    progress = _load_progress_v3(pj)
+    if progress is None:
         return {}
-    progress = json.loads(pj.read_text())
     nodes = progress.get("nodes", {})
     result = {}
     for nid, info in nodes.items():
@@ -566,9 +577,9 @@ def find_nodes(
 def get_ancestors(job_dir: str, node_id: str) -> list[str]:
     """Walk parent chain upward.  Returns ``[node_id, parent, grandparent, ...]``."""
     pj = Path(job_dir) / "progress.json"
-    if not pj.exists():
+    progress = _load_progress_v3(pj)
+    if progress is None:
         return [node_id]
-    progress = json.loads(pj.read_text())
     nodes = progress.get("nodes", {})
 
     visited: list[str] = []
@@ -588,9 +599,9 @@ def get_ancestors(job_dir: str, node_id: str) -> list[str]:
 def get_children(job_dir: str, node_id: str) -> list[str]:
     """Derive children of *node_id* from the progress.json index."""
     pj = Path(job_dir) / "progress.json"
-    if not pj.exists():
+    progress = _load_progress_v3(pj)
+    if progress is None:
         return []
-    progress = json.loads(pj.read_text())
     nodes = progress.get("nodes", {})
     return [nid for nid, info in nodes.items()
             if node_id in info.get("parents", [])]
@@ -637,9 +648,9 @@ def find_ancestor_artifact(
     """
     jd = Path(job_dir)
     pj = jd / "progress.json"
-    if not pj.exists():
+    progress = _load_progress_v3(pj)
+    if progress is None:
         return None
-    progress = json.loads(pj.read_text())
     nodes_index = progress.get("nodes", {})
 
     # BFS upward through parents
@@ -703,8 +714,9 @@ def resolve_node_inputs(
     if node_type == "prep":
         ancestors = get_ancestors(job_dir, node_id)
         pj = Path(job_dir) / "progress.json"
-        if pj.exists():
-            nodes_index = json.loads(pj.read_text()).get("nodes", {})
+        progress = _load_progress_v3(pj)
+        if progress is not None:
+            nodes_index = progress.get("nodes", {})
             fetch_ancestors = [
                 nid for nid in ancestors
                 if nodes_index.get(nid, {}).get("type") == "fetch"

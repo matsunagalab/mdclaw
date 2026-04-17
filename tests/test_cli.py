@@ -120,6 +120,17 @@ class TestArgparseConstruction:
             main(["download_structure"])
         assert exc_info.value.code != 0
 
+    def test_workflow_tools_require_node_context(self):
+        """Schema-v3 workflow tools must reject calls without --job-dir/node-id."""
+        from mdclaw._cli import main
+
+        if not _dependency_available("httpx"):
+            pytest.skip("download_structure unavailable because research server dependencies are missing")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["download_structure", "--pdb-id", "1AKE"])
+        assert exc_info.value.code != 0
+
     def test_optional_params_have_defaults(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

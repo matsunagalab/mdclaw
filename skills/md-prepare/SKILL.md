@@ -46,6 +46,9 @@ to explore variants of the same system.
      mdclaw update_job_params --job-dir <job_dir> \
        --params '{"execution_mode":"autonomous","workflow_mode":"single_step"}'
      ```
+   - Treat this DAG layout as the only supported workflow state model.
+     Create nodes first, then run workflow tools with both `--job-dir`
+     and `--node-id`.
 2. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
    inspection, chain selection, cleaning, and protonation.
 3. **Based on the solvation type**, read the appropriate file:

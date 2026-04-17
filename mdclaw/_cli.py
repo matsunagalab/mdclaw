@@ -275,39 +275,18 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-def _append_command_to_progress(output_dir: str, tool_name: str, success: bool) -> None:
-    """Append a CLI command record to progress.json and run.json if they exist.
-
-    Searches for progress.json and run.json in output_dir and up to 3 parent
-    directories.  Both files get the same command record so that:
-    - progress.json has the full command history for the entire job
-    - run.json has the command history scoped to a single run
-    """
-    from datetime import datetime, timezone
-    from pathlib import Path
-
-    cli_str = " ".join(sys.argv)
-    record = {
-        "tool": tool_name,
-        "cli": cli_str,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "success": success,
-    }
-
-    search_dirs = [Path(output_dir)] + list(Path(output_dir).parents)[:3]
-    for json_name in ("run.json", "progress.json"):
-        for parent in search_dirs:
-            json_path = parent / json_name
-            if json_path.exists():
-                try:
-                    data = json.loads(json_path.read_text())
-                    if "commands" not in data:
-                        data["commands"] = []
-                    data["commands"].append(record)
-                    json_path.write_text(json.dumps(data, indent=2))
-                except (json.JSONDecodeError, OSError):
-                    pass
-                break
+# Tools that represent DAG workflow nodes must always run with node context.
+_NODE_REQUIRED_TOOLS = frozenset({
+    "download_structure",
+    "get_alphafold_structure",
+    "register_local_structure",
+    "prepare_complex",
+    "solvate_structure",
+    "embed_in_membrane",
+    "build_amber_system",
+    "run_equilibration",
+    "run_production",
+})
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -374,21 +353,24 @@ def main(argv: list[str] | None = None) -> None:
     effective_node_id = _global_node_id or kwargs.get("node_id")
     node_mode = effective_node_id is not None
 
-    if node_mode and not effective_job_dir:
+    if effective_node_id and not effective_job_dir:
         parser.error("--node-id requires --job-dir")
+    if tool_name in _NODE_REQUIRED_TOOLS and (not effective_job_dir or not effective_node_id):
+        parser.error(
+            f"{tool_name} requires --job-dir and --node-id in schema v3 mode"
+        )
 
     # Resolve job_dir to absolute path so that external tools (packmol-memgen
     # etc.) and all derived node/artifacts paths are always absolute.
     if effective_job_dir:
         effective_job_dir = str(Path(effective_job_dir).resolve())
 
-    # Inject into kwargs when the tool accepts them
-    if node_mode:
-        sig = inspect.signature(fn)
-        if "job_dir" in sig.parameters:
-            kwargs["job_dir"] = effective_job_dir
-        if "node_id" in sig.parameters:
-            kwargs["node_id"] = effective_node_id
+    # Inject global schema-v3 context when the tool accepts it.
+    sig = inspect.signature(fn)
+    if effective_job_dir and "job_dir" in sig.parameters:
+        kwargs["job_dir"] = effective_job_dir
+    if effective_node_id and "node_id" in sig.parameters:
+        kwargs["node_id"] = effective_node_id
 
     # Execute
     try:
@@ -397,26 +379,6 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
-        # State update: node mode vs legacy
-        if node_mode:
-            # Tool already self-updated via begin_node/complete_node/fail_node.
-            # No legacy progress.json update needed.
-            pass
-        elif isinstance(result, dict):
-            # Legacy v2 path: record CLI command and auto-update progress.json
-            record_dir = (
-                result.get("output_dir")
-                or (str(Path(result["file_path"]).parent) if result.get("file_path") else None)
-                or (str(Path(result["output_file"]).parent) if result.get("output_file") else None)
-            )
-            if record_dir:
-                _append_command_to_progress(
-                    record_dir, tool_name,
-                    result.get("success", False),
-                )
-                # Auto-update progress.json with tool results
-                from mdclaw._progress import update_progress_from_result
-                update_progress_from_result(tool_name, result, record_dir)
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)

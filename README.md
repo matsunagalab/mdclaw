@@ -61,7 +61,11 @@ HPC:
 > /loop 15m /mdclaw:hpc-run check job 12345 and report when done
 ```
 
-You can also call `mdclaw <tool>` directly. See `mdclaw --list`.
+You can also call `mdclaw <tool>` directly. For DAG workflow tools
+(`download_structure`, `prepare_complex`, `solvate_structure`,
+`build_amber_system`, `run_equilibration`, `run_production`, etc.),
+create a node first and then pass both `--job-dir` and `--node-id`.
+See `mdclaw --list`.
 
 ### Execution Modes
 
@@ -97,6 +101,10 @@ state file, and artifacts. Parent-child relationships form a DAG:
 job_a1b2c3d4/
   progress.json                ← thin index of nodes + cached summaries
   nodes/
+    fetch_001/                 ← structure acquisition root
+      node.json
+      artifacts/
+        1AKE.pdb
     prep_001/                  ← structure preparation
       node.json                ← node state, artifacts, metadata
       artifacts/
@@ -149,7 +157,7 @@ This means:
 - **Resume** works by reading `progress.json` — even across sessions or agents
 - **Branching** is natural: create new nodes with different parents
 - **Parallel agents** can work on different nodes concurrently (lock files prevent conflicts)
-- **Direct CLI use** still updates state correctly (no skill wrapper required)
+- **Direct CLI use** still updates state correctly as long as workflow tools run with `--job-dir` and `--node-id`
 
 ---
 

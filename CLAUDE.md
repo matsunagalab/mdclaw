@@ -48,8 +48,7 @@ mdclaw/                    # All Python code consolidated here
   _lock.py                  # File-based locking (fcntl.flock) for concurrent access
   _event.py                 # Append-only event log (one JSON file per event)
   _node.py                  # Node-based job graph management (schema v3)
-  _progress.py              # Legacy progress tracking (schema v2, auto-updates progress.json)
-  _cli.py                   # CLI entry point (mdclaw), supports --job-dir/--node-id
+  _cli.py                   # CLI entry point (mdclaw), enforces --job-dir/--node-id for workflow nodes
   research_server.py        # PDB/AlphaFold/UniProt retrieval, inspection
   structure_server.py       # Structure cleaning & parameterization
   genesis_server.py         # Boltz-2 structure prediction
@@ -72,14 +71,13 @@ tests/                      # 4-level test suite
   test_cli.py               # Level 1: CLI unit tests
   test_guardrails.py        # Level 1: Structured guardrails (ff/water, OpenMM fallback, SLURM policy)
   test_server_smoke.py      # Level 2: Server smoke tests
-  test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
+  test_pipeline_1ake_dag.py # Level 3: Full 1AKE DAG integration
   test_literature_server.py  # PubMed server tests
   test_research_server_structure_analysis.py  # Structure analysis tests
   test_slurm_server.py      # SLURM server mock tests
   test_ligand_pathway.py    # Ligand parameterization tests (L1-L3)
   test_node.py              # Node system unit tests (lifecycle, IDs, events)
   test_event.py             # Event system tests
-  test_progress.py          # Legacy progress.json (schema v2) tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -120,7 +118,7 @@ Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). Whe
 
 User flow: `/md-prepare` -> `/md-equilibration` -> `/md-production` -> `/md-analyze`
 
-**Schema v3 (node-based, current):**
+**Schema v3 (node-based, only supported schema):**
 
 ```
 job_XXXXXXXX/
@@ -173,18 +171,6 @@ job_XXXXXXXX/
     <ISO8601>_<node_id>_<event_type>.json
 ```
 
-**Schema v2 (legacy, still supported):**
-
-```
-job_XXXXXXXX/
-  progress.json                       # schema 2.0: monolithic state
-  split/  merge/  solvate/  topology/
-  runs/run_001_300K/
-    run.json
-    equilibration/
-    production/
-```
-
 **Design principles:**
 - `skill = what to run` (orchestration only, no state mutation)
 - `tool = run + record` (execution + state via `_node.py` helpers)
@@ -192,8 +178,8 @@ job_XXXXXXXX/
 - Parent-child relationships form a DAG (`parent_node_ids` list in node.json)
 - `progress.json` is a thin index: `nodes` dict + cached `system`/`preparation`/`params`
 - Events are append-only files in `events/` (no JSON array race conditions)
-- Tools receive `job_dir` + `node_id`, call `begin_node`/`complete_node`/`fail_node`
-- CLI `--job-dir`/`--node-id` global flags inject these into tool kwargs
+- Workflow tools receive `job_dir` + `node_id`, call `begin_node`/`complete_node`/`fail_node`
+- CLI `--job-dir`/`--node-id` global flags inject these into tool kwargs, and workflow nodes require both flags
 
 ### Pre-commit Checklist
 
@@ -306,14 +292,14 @@ pytest tests/ -v -m "not slow and not integration"
 # Level 2: Server smoke tests (requires conda env with scientific packages)
 pytest tests/test_server_smoke.py -v
 
-# Level 3: Full 1AKE pipeline integration (network + full conda env, ~1-2 min)
-pytest tests/test_pipeline_1ake.py -v
+# Level 3: Full 1AKE DAG pipeline integration (network + full conda env, ~1-2 min)
+pytest tests/test_pipeline_1ake_dag.py -v
 
 # All tests
 pytest tests/ -v
 
 # Keep pipeline artifacts for inspection
-pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
+pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 ```
 
 **Markers**: `slow` (Level 2+), `integration` (Level 3). Configured in `pyproject.toml`.
@@ -393,7 +379,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 `mdclaw/_cli.py` provides `mdclaw` CLI that auto-discovers all tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
-**Global flags**: `--job-dir` and `--node-id` enable node-based state tracking (schema v3). When provided, the CLI injects these into tool kwargs and skips legacy progress updates.
+**Global flags**: `--job-dir` and `--node-id` provide node-based state tracking (schema v3). Workflow tools require both flags; the CLI injects them into tool kwargs before execution.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 
