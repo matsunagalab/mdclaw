@@ -23,7 +23,18 @@ The container (~4.6 GB) downloads automatically on first session start.
 - Container runtime: Singularity/Apptainer (HPC) or Docker (macOS/desktop)
 - GPU (optional): NVIDIA driver 530+ (CUDA 12.1+)
 
-`bin/mdclaw` auto-detects the runtime. Override with `MDCLAW_RUNTIME=docker` or `MDCLAW_RUNTIME=singularity`.
+`bin/mdclaw` chooses the runtime in this order:
+- `MDCLAW_RUNTIME=singularity|apptainer|docker` if you set it explicitly
+- otherwise `singularity` if a `.sif` is available
+- otherwise `apptainer` if a `.sif` is available
+- otherwise `docker`
+
+If no container runtime is available, `bin/mdclaw` falls back to a local
+`mdclaw` on your `PATH` (for example from a conda environment or `pip install -e .`).
+
+The session-start hook downloads the container automatically:
+- on HPC, it prefers a `.sif` for Singularity/Apptainer
+- on desktop, it falls back to pulling the Docker image
 
 ### Skills
 
