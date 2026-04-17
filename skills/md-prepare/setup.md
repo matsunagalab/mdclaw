@@ -73,14 +73,23 @@ Always read file paths from each tool's JSON output rather than guessing paths.
 **Tools**:
 - `mdclaw download_structure --pdb-id <ID> --format pdb`
 - `mdclaw get_alphafold_structure --uniprot-id <ID>`
+- `mdclaw register_local_structure --file-path <path>` (node mode only)
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
 - `mdclaw search_structures --query "<name>"`
 
 **Logic**:
 1. PDB ID (4-char like `1AKE`) → `download_structure`
 2. UniProt ID (like `P12345`) → `get_alphafold_structure`
-3. FASTA sequence → `boltz2_protein_from_seq`
-4. Protein name → `search_structures`, then ask user to pick
+3. Local file → `register_local_structure` (node mode) or pass path directly
+4. FASTA sequence → `boltz2_protein_from_seq`
+5. Protein name → `search_structures`, then ask user to pick
+
+> **Node mode (schema v3)**: structure acquisition is a `fetch` DAG-root node.
+> Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
+> and pass `--node-id fetch_001` to the fetch tool above. The downloaded
+> file is recorded under `nodes/fetch_001/artifacts/` with provenance
+> metadata (`source_type`, `source_id`, `sha256`, `source_url`). See
+> `explicit-water.md` for the full node-based runbook.
 
 ---
 
@@ -89,6 +98,10 @@ Always read file paths from each tool's JSON output rather than guessing paths.
 ```bash
 mdclaw inspect_molecules --structure-file <file>
 ```
+
+> **Node mode**: pass `--job-dir <jd> --node-id fetch_001` to record an
+> `inspection_completed` event and drop `inspection.json` into the fetch
+> node's artifacts dir. The node's status is unchanged (read-only).
 
 1. **Chain ID mapping**: Output has `author_chain` (e.g., `"A"`) and `chain_id` (e.g., `"Axp"`). **Use `author_chain` for `--select-chains` in Step 3.**
 2. **Checkpoint: Chain selection** — If multiple chains and user hasn't specified, ask (present `author_chain` values).

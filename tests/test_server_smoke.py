@@ -58,6 +58,118 @@ class TestResearchServer:
         )
         assert result["success"] is True
 
+    def test_inspect_molecules_records_under_node(self, small_pdb, tmp_path):
+        """When job_dir/node_id are provided, inspect_molecules drops an
+        inspection.json into the node's artifacts dir and emits an
+        inspection_completed event WITHOUT changing node status."""
+        from mdclaw._node import create_node, read_node
+        from research_server import inspect_molecules
+
+        job_dir = tmp_path / "job_inspect"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "fetch")
+
+        result = inspect_molecules(
+            structure_file=small_pdb,
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert result["success"]
+
+        # File written
+        inspection_json = (
+            job_dir / "nodes" / node["node_id"] / "artifacts" / "inspection.json"
+        )
+        assert inspection_json.exists()
+
+        # Event written
+        events = list((job_dir / "events").glob("*inspection_completed*"))
+        assert len(events) == 1
+
+        # Status unchanged (still pending — inspection is read-only)
+        node_data = read_node(str(job_dir), node["node_id"])
+        assert node_data["status"] == "pending"
+
+    def test_register_local_structure(self, small_pdb, tmp_path):
+        """register_local_structure copies the file into a fetch node and
+        records sha256 + source metadata."""
+        import json
+
+        from mdclaw._node import create_node, read_node
+        from research_server import register_local_structure
+
+        job_dir = tmp_path / "job_local"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "fetch")
+        assert node["success"]
+
+        result = register_local_structure(
+            file_path=small_pdb,
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert result["success"], result.get("errors")
+        copied = Path(result["file_path"])
+        assert copied.exists()
+        assert copied.parent.name == "artifacts"
+
+        node_data = read_node(str(job_dir), node["node_id"])
+        assert node_data["status"] == "completed"
+        assert node_data["artifacts"]["structure_file"] == f"artifacts/{copied.name}"
+        assert node_data["metadata"]["source_type"] == "local"
+        assert node_data["metadata"]["source_id"] == copied.name
+        assert node_data["metadata"]["sha256"]
+        # progress.json index reflects completion
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"][node["node_id"]]["status"] == "completed"
+
+    def test_register_local_structure_missing_file(self, tmp_path):
+        from mdclaw._node import create_node, read_node
+        from research_server import register_local_structure
+
+        job_dir = tmp_path / "job_missing"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "fetch")
+
+        result = register_local_structure(
+            file_path=str(tmp_path / "no_such_file.pdb"),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert not result["success"]
+        assert any("not found" in e for e in result["errors"])
+        # Node was not started (begin_node skipped on early validation fail),
+        # so it remains pending.
+        node_data = read_node(str(job_dir), node["node_id"])
+        assert node_data["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_download_structure_node_mode(self, tmp_path):
+        from mdclaw._node import create_node, read_node
+        from research_server import download_structure
+
+        job_dir = tmp_path / "job_dl"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "fetch")
+
+        result = await download_structure(
+            pdb_id="1AKE",
+            format="pdb",
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert result["success"], result.get("errors")
+        # File landed under the fetch node's artifacts dir
+        assert Path(result["file_path"]).parent.name == "artifacts"
+
+        node_data = read_node(str(job_dir), node["node_id"])
+        assert node_data["status"] == "completed"
+        assert node_data["artifacts"]["structure_file"] == "artifacts/1AKE.pdb"
+        assert node_data["metadata"]["source_type"] == "pdb"
+        assert node_data["metadata"]["source_id"] == "1AKE"
+        assert node_data["metadata"]["source_url"].endswith(".pdb")
+        assert node_data["metadata"]["sha256"]
+
 
 # ---------------------------------------------------------------------------
 # structure_server
@@ -282,6 +394,8 @@ class TestMDSimulationServer:
         assert result["checkpoint_file"] is not None
         assert result["steps_completed"] is not None
         assert result["platform"] is not None
+        assert Path(result["trajectory_file"]).stat().st_size > 0
+        assert Path(result["energy_file"]).stat().st_size > 0
 
     def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
         """Run MD with explicit CPU platform selection."""
@@ -409,6 +523,75 @@ class TestMDSimulationServer:
         # currentStep in the checkpoint was 0 → full requested length ran
         assert prod["steps_completed"] == prod["num_steps"]
         assert Path(prod["trajectory_file"]).exists()
+        assert Path(prod["trajectory_file"]).stat().st_size > 0
+        assert Path(prod["energy_file"]).stat().st_size > 0
+
+    def test_run_production_node_mode_records_relative_artifacts(self, small_pdb, tmp_path):
+        """Node-mode production should write non-empty outputs and relative artifacts."""
+        from md_simulation_server import run_equilibration, run_production
+        from mdclaw._node import complete_node, create_node, read_node
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        equil = run_equilibration(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil_node_mode"),
+            platform="CPU",
+        )
+        assert equil["success"] is True
+
+        job_dir = tmp_path / "job_node_mode"
+        topo = create_node(str(job_dir), "topo")
+        complete_node(
+            str(job_dir),
+            topo["node_id"],
+            artifacts={
+                "parm7": f"artifacts/{Path(amber['parm7']).name}",
+                "rst7": f"artifacts/{Path(amber['rst7']).name}",
+            },
+        )
+        topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / Path(amber["parm7"]).name).write_bytes(Path(amber["parm7"]).read_bytes())
+        (topo_artifacts / Path(amber["rst7"]).name).write_bytes(Path(amber["rst7"]).read_bytes())
+
+        eq = create_node(str(job_dir), "eq", parent_node_ids=[topo["node_id"]])
+        complete_node(
+            str(job_dir),
+            eq["node_id"],
+            artifacts={"checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}"},
+        )
+        eq_artifacts = job_dir / "nodes" / eq["node_id"] / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / Path(equil["checkpoint_file"]).name).write_bytes(
+            Path(equil["checkpoint_file"]).read_bytes()
+        )
+
+        prod = create_node(str(job_dir), "prod", parent_node_ids=[eq["node_id"]])
+        result = run_production(
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            output_frequency_ps=0.5,
+            platform="CPU",
+            job_dir=str(job_dir),
+            node_id=prod["node_id"],
+        )
+
+        assert result["success"] is True
+        assert Path(result["trajectory_file"]).stat().st_size > 0
+        assert Path(result["energy_file"]).stat().st_size > 0
+
+        prod_node = read_node(str(job_dir), prod["node_id"])
+        assert prod_node["artifacts"]["trajectory"] == "artifacts/trajectory.dcd"
+        assert prod_node["artifacts"]["final_structure"] == "artifacts/final_structure.pdb"
+        assert prod_node["artifacts"]["checkpoint"] == "artifacts/checkpoint.chk"
+        assert prod_node["artifacts"]["energy"] == "artifacts/energy.dat"
 
     def test_run_md_with_hmr(self, small_pdb, tmp_path):
         """Run MD with HMR enabled and 4fs timestep."""

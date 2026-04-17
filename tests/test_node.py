@@ -632,6 +632,119 @@ class TestNodeEvents:
         assert ev["details"]["errors"] == ["boom"]
 
 
+# ── Fetch node (DAG root) ──────────────────────────────────────────────────
+
+
+class TestFetchNode:
+    """Fetch is the DAG-root node type for structure acquisition."""
+
+    def test_fetch_is_valid_node_type(self, job_dir):
+        result = create_node(str(job_dir), "fetch")
+        assert result["success"] is True
+        assert result["node_id"] == "fetch_001"
+
+    def test_fetch_as_dag_root_no_parent(self, job_dir):
+        result = create_node(str(job_dir), "fetch")
+        node = read_node(str(job_dir), result["node_id"])
+        assert node["parent_node_ids"] == []
+
+    def test_fetch_rejects_parent_node_ids(self, job_dir):
+        """fetch is the DAG root — parents are forbidden by invariant."""
+        jd = str(job_dir)
+        # Build a valid existing node first (so the rejection isn't from
+        # a missing-reference error)
+        create_node(jd, "fetch")
+        result = create_node(jd, "fetch", parent_node_ids=["fetch_001"])
+        assert result["success"] is False
+        assert "DAG root" in result["error"]
+        assert "parent_node_ids" in result["error"]
+        # Index unchanged: only the original fetch_001 exists
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert list(progress["nodes"].keys()) == ["fetch_001"]
+
+    def test_fetch_rejects_dependency_node_ids(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "fetch")
+        result = create_node(jd, "fetch", dependency_node_ids=["fetch_001"])
+        assert result["success"] is False
+        assert "DAG root" in result["error"]
+        assert "dependency_node_ids" in result["error"]
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert list(progress["nodes"].keys()) == ["fetch_001"]
+
+    def test_fetch_lifecycle(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "fetch", label="PDB 1AKE")
+        begin_node(jd, "fetch_001")
+        complete_node(
+            jd,
+            "fetch_001",
+            artifacts={"structure_file": "artifacts/1AKE.pdb"},
+            metadata={
+                "source_type": "pdb",
+                "source_id": "1AKE",
+                "sha256": "deadbeef",
+            },
+        )
+        node = read_node(jd, "fetch_001")
+        assert node["status"] == "completed"
+        assert node["label"] == "PDB 1AKE"
+        assert node["artifacts"]["structure_file"] == "artifacts/1AKE.pdb"
+        assert node["metadata"]["source_type"] == "pdb"
+
+    def test_prep_resolves_structure_file_from_fetch(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "fetch")
+        # Create the actual file so resolve gives a usable path
+        (job_dir / "nodes" / "fetch_001" / "artifacts" / "1AKE.pdb").write_text("HEADER\n")
+        complete_node(
+            jd,
+            "fetch_001",
+            artifacts={"structure_file": "artifacts/1AKE.pdb"},
+        )
+        create_node(jd, "prep", parent_node_ids=["fetch_001"])
+        inputs = resolve_node_inputs(jd, "prep_001", "prep")
+        assert "structure_file" in inputs
+        assert inputs["structure_file"].endswith("fetch_001/artifacts/1AKE.pdb")
+
+    def test_prep_omits_structure_file_when_no_fetch_ancestor(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        inputs = resolve_node_inputs(jd, "prep_001", "prep")
+        assert "structure_file" not in inputs
+
+    def test_prep_omits_when_multiple_fetch_ancestors(self, job_dir):
+        """v1 contract: multi-fetch -> prep is unsupported; auto-resolve
+        returns empty so prepare_complex falls back to explicit --structure-file."""
+        jd = str(job_dir)
+        create_node(jd, "fetch")
+        complete_node(jd, "fetch_001",
+                      artifacts={"structure_file": "artifacts/a.pdb"})
+        create_node(jd, "fetch")
+        complete_node(jd, "fetch_002",
+                      artifacts={"structure_file": "artifacts/b.pdb"})
+        create_node(jd, "prep", parent_node_ids=["fetch_001", "fetch_002"])
+        inputs = resolve_node_inputs(jd, "prep_001", "prep")
+        assert "structure_file" not in inputs
+
+    def test_prep_with_single_fetch_through_intermediate_ignored(self, job_dir):
+        """If only one fetch ancestor exists, resolve still works even when
+        there are non-fetch siblings on the parent list."""
+        jd = str(job_dir)
+        create_node(jd, "fetch")
+        (job_dir / "nodes" / "fetch_001" / "artifacts" / "src.pdb").write_text("X")
+        complete_node(jd, "fetch_001",
+                      artifacts={"structure_file": "artifacts/src.pdb"})
+        # A second prep without a fetch parent (e.g. legacy)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merged.pdb"})
+        # New prep: single fetch ancestor
+        create_node(jd, "prep", parent_node_ids=["fetch_001"])
+        inputs = resolve_node_inputs(jd, "prep_002", "prep")
+        assert inputs.get("structure_file", "").endswith("fetch_001/artifacts/src.pdb")
+
+
 # ── Tool registration ─────────────────────────────────────────────────────
 
 

@@ -28,6 +28,30 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 
+def _node_artifact_path(path: Optional[str]) -> str:
+    """Convert an absolute output path into a node-relative artifact path."""
+    if not path:
+        return ""
+    return f"artifacts/{Path(path).name}"
+
+
+def _flush_reporter_stream(reporter) -> None:
+    """Best-effort flush for OpenMM reporters that own a file handle."""
+    out = getattr(reporter, "_out", None)
+    if out is not None and hasattr(out, "flush"):
+        out.flush()
+
+
+def _close_reporter_stream(reporter) -> None:
+    """Best-effort close for OpenMM reporters that own a file handle."""
+    out = getattr(reporter, "_out", None)
+    if out is not None:
+        if hasattr(out, "flush"):
+            out.flush()
+        if hasattr(out, "close"):
+            out.close()
+
+
 def run_equilibration(
     prmtop_file: Optional[str] = None,
     inpcrd_file: Optional[str] = None,
@@ -548,8 +572,8 @@ def run_equilibration(
             complete_node(job_dir, node_id,
                 artifacts={
                     "checkpoint": f"artifacts/{pref}equilibrated.chk",
-                    "final_structure": result.get("final_structure", ""),
-                    "state_file": result.get("state_file", ""),
+                    "final_structure": _node_artifact_path(result.get("final_structure")),
+                    "state_file": _node_artifact_path(result.get("state_file")),
                 },
                 metadata={
                     "platform": result.get("platform"),
@@ -935,14 +959,18 @@ def run_production(
 
         # Setup trajectory reporter
         report_interval = int(output_frequency_ps / timestep_fs * 1000)
+        trajectory_reporter = None
         if trajectory_format.lower() == "dcd":
-            simulation.reporters.append(DCDReporter(str(trajectory_file), report_interval, append=do_append))
+            trajectory_reporter = DCDReporter(
+                str(trajectory_file), report_interval, append=do_append
+            )
         else:
             from openmm.app import PDBReporter
-            simulation.reporters.append(PDBReporter(str(trajectory_file), report_interval))
+            trajectory_reporter = PDBReporter(str(trajectory_file), report_interval)
+        simulation.reporters.append(trajectory_reporter)
 
         # Setup energy reporter
-        simulation.reporters.append(StateDataReporter(
+        energy_reporter = StateDataReporter(
             str(energy_file),
             report_interval,
             step=True,
@@ -954,7 +982,8 @@ def run_production(
             volume=(ensemble == "NPT"),
             density=(ensemble == "NPT"),
             append=(append_dcd and energy_file.exists()),
-        ))
+        )
+        simulation.reporters.append(energy_reporter)
 
         # Checkpoint reporter - periodic checkpoint saves
         checkpoint_interval = max(report_interval * 10, 5000)
@@ -1011,6 +1040,28 @@ def run_production(
         result["final_energy_kj_mol"] = float(final_energy._value)
         logger.info(f"Final energy: {final_energy}")
 
+        expected_reports = steps_to_run // report_interval if report_interval > 0 else 0
+        if expected_reports > 0:
+            fallback_outputs = []
+            for reporter, output_path, label in (
+                (trajectory_reporter, trajectory_file, "trajectory"),
+                (energy_reporter, energy_file, "energy"),
+            ):
+                _flush_reporter_stream(reporter)
+                if not output_path.exists() or output_path.stat().st_size == 0:
+                    reporter.report(simulation, state)
+                    _flush_reporter_stream(reporter)
+                    fallback_outputs.append(label)
+            if fallback_outputs:
+                result["warnings"].append(
+                    "Reporter outputs were empty after simulation; wrote final "
+                    + ", ".join(fallback_outputs)
+                    + " snapshot(s)."
+                )
+
+        for reporter in (trajectory_reporter, energy_reporter):
+            _close_reporter_stream(reporter)
+
         # Save final structure
         final_pdb = out_dir / f"{pref}final_structure.pdb"
         positions = state.getPositions()
@@ -1021,7 +1072,21 @@ def run_production(
         result["trajectory_file"] = str(trajectory_file)
         result["final_structure"] = str(final_pdb)
         result["energy_file"] = str(energy_file)
-        result["success"] = True
+
+        missing_outputs = []
+        if expected_reports > 0:
+            if not trajectory_file.exists() or trajectory_file.stat().st_size == 0:
+                missing_outputs.append("trajectory")
+            if not energy_file.exists() or energy_file.stat().st_size == 0:
+                missing_outputs.append("energy")
+
+        if missing_outputs:
+            result["errors"].append(
+                "Reporter outputs missing after simulation: "
+                + ", ".join(missing_outputs)
+            )
+        else:
+            result["success"] = True
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
 
@@ -1035,10 +1100,10 @@ def run_production(
         if result.get("success"):
             complete_node(job_dir, node_id,
                 artifacts={
-                    "trajectory": result.get("trajectory_file", ""),
-                    "final_structure": result.get("final_structure", ""),
-                    "checkpoint": result.get("checkpoint_file", ""),
-                    "energy": result.get("energy_file", ""),
+                    "trajectory": _node_artifact_path(result.get("trajectory_file")),
+                    "final_structure": _node_artifact_path(result.get("final_structure")),
+                    "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
+                    "energy": _node_artifact_path(result.get("energy_file")),
                 },
                 metadata={
                     "simulation_time_ns": simulation_time_ns,

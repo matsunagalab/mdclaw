@@ -3818,7 +3818,7 @@ def merge_structures(
 
 
 def prepare_complex(
-    structure_file: str,
+    structure_file: Optional[str] = None,
     output_dir: Optional[str] = None,
     select_chains: Optional[List[str]] = None,
     ph: float = 7.4,
@@ -3920,15 +3920,22 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['mol2_file']}")
     """
+    # Auto-resolve structure_file from a fetch ancestor when in node mode.
+    if job_dir and node_id and not structure_file:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "prep")
+        if "structure_file" in _inputs:
+            structure_file = _inputs["structure_file"]
+
     logger.info(f"Preparing complex: {structure_file}")
-    
+
     # Initialize result structure
     job_id = generate_job_id()
     result = {
         "success": False,
         "job_id": job_id,
         "output_dir": None,
-        "source_file": str(structure_file),
+        "source_file": str(structure_file) if structure_file else None,
         "inspection": None,
         "split": None,
         "proteins": [],
@@ -3936,7 +3943,14 @@ def prepare_complex(
         "errors": [],
         "warnings": []
     }
-    
+
+    if not structure_file:
+        result["errors"].append(
+            "structure_file is required (or pass --job-dir/--node-id with a "
+            "fetch ancestor that provides it)"
+        )
+        return result
+
     # Validate input file
     structure_path = Path(structure_file)
     if not structure_path.exists():

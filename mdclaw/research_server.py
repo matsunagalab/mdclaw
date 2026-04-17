@@ -57,6 +57,93 @@ def _copy_if_exists(src: Path, dst: Path) -> bool:
     return True
 
 
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _resolve_fetch_artifacts_dir(job_dir: str, node_id: str) -> Path:
+    """Return the artifacts dir for a fetch node, creating it if absent."""
+    out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir
+
+
+def _validate_fetch_node(job_dir: str, node_id: str) -> Optional[str]:
+    """Verify *node_id* exists under *job_dir* and is a ``fetch`` node.
+
+    Returns an error message string when invalid; ``None`` when usable.
+    Callers MUST short-circuit on a non-None return *before* calling
+    ``begin_node`` — otherwise a typo or wrong-type ID would silently
+    record fetch metadata against an unrelated node (e.g. a prep node).
+
+    Note: this never mutates node state. The bad node_id is returned to
+    the caller as a structured error in the tool's result dict; we do not
+    ``fail_node`` the wrong node.
+    """
+    from mdclaw._node import read_node
+
+    node_json = Path(job_dir) / "nodes" / node_id / "node.json"
+    if not node_json.exists():
+        return (
+            f"Node '{node_id}' does not exist under {job_dir}. "
+            "Create it first with: "
+            f"`mdclaw create_node --job-dir {job_dir} --node-type fetch`"
+        )
+    try:
+        node = read_node(job_dir, node_id)
+    except (json.JSONDecodeError, OSError) as e:
+        return f"Could not read node.json for '{node_id}': {e}"
+
+    nt = node.get("node_type")
+    if nt != "fetch":
+        return (
+            f"Node '{node_id}' has type '{nt}', expected 'fetch'. "
+            "Structure-acquisition tools may only run under a fetch node."
+        )
+    return None
+
+
+def _complete_fetch_node(
+    job_dir: str,
+    node_id: str,
+    file_path: Path,
+    *,
+    source_type: str,
+    source_id: str,
+    file_format: str,
+    extra_metadata: Optional[dict] = None,
+) -> dict:
+    """Record a fetch artifact + metadata and mark the node completed.
+
+    Returns the artifact dict that was written (relative path under the node).
+    """
+    from datetime import datetime, timezone
+
+    from mdclaw._node import complete_node
+
+    rel_artifact = f"artifacts/{file_path.name}"
+    metadata = {
+        "source_type": source_type,
+        "source_id": source_id,
+        "format": file_format,
+        "sha256": _sha256_file(file_path),
+        "file_size_bytes": file_path.stat().st_size,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if extra_metadata:
+        metadata.update(extra_metadata)
+
+    complete_node(
+        job_dir,
+        node_id,
+        artifacts={"structure_file": rel_artifact},
+        metadata=metadata,
+    )
+    return {"artifact": rel_artifact, "metadata": metadata}
 
 
 # =============================================================================
@@ -109,13 +196,20 @@ async def download_structure(
     pdb_id: str,
     format: str = "pdb",
     output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Download structure coordinates from RCSB PDB.
 
     Args:
         pdb_id: 4-character PDB identifier (e.g., '1AKE')
         format: Output format - 'pdb' or 'cif' (default: 'pdb')
-        output_dir: Directory to save the downloaded file (default: outputs/)
+        output_dir: Directory to save the downloaded file (default: outputs/).
+            Ignored in node mode.
+        job_dir: Job directory for node-based tracking (schema v3).
+        node_id: Fetch node ID. When both job_dir and node_id are provided,
+            the file is written under ``<job_dir>/nodes/<node_id>/artifacts/``
+            and the node is marked completed with source metadata.
 
     Returns:
         Dict with:
@@ -146,9 +240,22 @@ async def download_structure(
 
     pdb_id = pdb_id.upper()
 
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import begin_node, fail_node
+        # Verify the node_id refers to an existing fetch node BEFORE we
+        # touch any node state. A typo or wrong-type ID must not write
+        # fetch metadata onto an unrelated node (e.g. prep_001).
+        _node_err = _validate_fetch_node(job_dir, node_id)
+        if _node_err:
+            result["errors"].append(_node_err)
+            return result
+
     # Validate format
     if format not in ["pdb", "cif"]:
         result["errors"].append(f"Invalid format: '{format}'. Valid formats: pdb, cif")
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
     # Construct URL
@@ -159,10 +266,20 @@ async def download_structure(
         url = f"https://files.rcsb.org/download/{pdb_id}.pdb"
         ext = "pdb"
 
+    if _node_mode:
+        if output_dir:
+            result["warnings"].append(
+                "output_dir is ignored in node mode; file goes to nodes/{node_id}/artifacts/"
+            )
+        begin_node(job_dir, node_id)
+
     try:
         # Resolve output file path
-        save_dir = Path(output_dir) if output_dir else WORKING_DIR
-        ensure_directory(save_dir)
+        if _node_mode:
+            save_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+        else:
+            save_dir = Path(output_dir) if output_dir else WORKING_DIR
+            ensure_directory(save_dir)
         output_file = save_dir / f"{pdb_id}.{ext}"
 
         # Cache locations (pinned by checksum, reused across attempts)
@@ -170,6 +287,10 @@ async def download_structure(
         cache_entry_dir = cache_root / "pdb" / pdb_id
         cache_file = cache_entry_dir / f"{pdb_id}.{ext}"
         cache_meta = cache_entry_dir / "metadata.json"
+
+        source_url = url
+        fallback_used = False
+        last_modified: Optional[str] = None
 
         # Cache hit: copy cached file to output_dir without network call
         if _copy_if_exists(cache_file, output_file):
@@ -180,6 +301,8 @@ async def download_structure(
                 try:
                     meta = json.loads(cache_meta.read_text(encoding="utf-8"))
                     result["sha256"] = meta.get("sha256")
+                    source_url = meta.get("source_url", source_url)
+                    last_modified = meta.get("last_modified")
                 except Exception:
                     pass
             logger.info(f"Cache hit for {pdb_id}: {cache_file} -> {output_file}")
@@ -197,11 +320,16 @@ async def download_structure(
                     if r.status_code != 200:
                         result["errors"].append(f"Structure not found: {pdb_id} (HTTP {r.status_code})")
                         result["errors"].append("Hint: Verify the PDB ID at https://www.rcsb.org/")
+                        if _node_mode:
+                            fail_node(job_dir, node_id, errors=result["errors"])
                         return result
                     ext = fallback_format
                     result["file_format"] = fallback_format
+                    source_url = fallback_url
+                    fallback_used = True
 
                 content = r.content
+                last_modified = r.headers.get("last-modified")
 
                 # If we fell back to a different extension, recompute paths
                 if ext != output_file.suffix.lstrip("."):
@@ -223,9 +351,10 @@ async def download_structure(
                         {
                             "pdb_id": pdb_id,
                             "file_format": ext,
-                            "source_url": url,
+                            "source_url": source_url,
                             "downloaded_at": __import__("datetime").datetime.now().isoformat(),
                             "sha256": sha256,
+                            "last_modified": last_modified,
                         },
                         indent=2,
                     ),
@@ -274,6 +403,30 @@ async def download_structure(
     except Exception as e:
         result["errors"].append(f"Unexpected error: {type(e).__name__}: {str(e)}")
         logger.error(f"Error downloading {pdb_id}: {e}")
+
+    if _node_mode:
+        if result["success"]:
+            extras = {
+                "source_url": source_url,
+                "cache_hit": result["cache_hit"],
+                "cache_path": result["cache_path"],
+                "fallback_used": fallback_used,
+                "num_atoms": result["num_atoms"],
+                "chains": result["chains"],
+            }
+            if last_modified:
+                extras["last_modified"] = last_modified
+            _complete_fetch_node(
+                job_dir,
+                node_id,
+                Path(result["file_path"]),
+                source_type="pdb",
+                source_id=pdb_id,
+                file_format=result["file_format"],
+                extra_metadata=extras,
+            )
+        else:
+            fail_node(job_dir, node_id, errors=result["errors"])
 
     return result
 
@@ -1490,17 +1643,30 @@ def _calculate_md_suitability_score(
 # =============================================================================
 
 
+_ALPHAFOLD_MODEL_VERSION = "v4"
+
+
 async def get_alphafold_structure(
     uniprot_id: str,
     format: str = "pdb",
     output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Get predicted structure from AlphaFold Database.
 
     Args:
         uniprot_id: UniProt accession number (e.g., 'P12345')
         format: Output format - 'pdb' or 'cif' (default: 'pdb')
-        output_dir: Directory to save the downloaded file (default: outputs/)
+        output_dir: Directory to save the downloaded file (default: outputs/).
+            Ignored in node mode.
+        job_dir: Job directory for node-based tracking (schema v3).
+        node_id: Fetch node ID. When both job_dir and node_id are provided,
+            the file is written under ``<job_dir>/nodes/<node_id>/artifacts/``
+            and the node is marked completed with source metadata. AlphaFold
+            entries are NOT cached locally, so the recorded sha256 does not
+            guarantee re-fetch returns the same bytes (``cached=false`` in
+            metadata reflects this).
 
     Returns:
         Dict with:
@@ -1526,13 +1692,30 @@ async def get_alphafold_structure(
 
     uniprot_id = uniprot_id.upper()
 
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import begin_node, fail_node
+        _node_err = _validate_fetch_node(job_dir, node_id)
+        if _node_err:
+            result["errors"].append(_node_err)
+            return result
+
     # AlphaFold API
     if format == "cif":
-        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v4.cif"
+        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_{_ALPHAFOLD_MODEL_VERSION}.cif"
         ext = "cif"
     else:
-        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_v4.pdb"
+        url = f"https://alphafold.ebi.ac.uk/files/AF-{uniprot_id}-F1-model_{_ALPHAFOLD_MODEL_VERSION}.pdb"
         ext = "pdb"
+
+    if _node_mode:
+        if output_dir:
+            result["warnings"].append(
+                "output_dir is ignored in node mode; file goes to nodes/{node_id}/artifacts/"
+            )
+        begin_node(job_dir, node_id)
+
+    last_modified: Optional[str] = None
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -1540,13 +1723,19 @@ async def get_alphafold_structure(
             if r.status_code != 200:
                 result["errors"].append(f"AlphaFold structure not found: {uniprot_id} (HTTP {r.status_code})")
                 result["errors"].append("Hint: Use UniProt accession ID (e.g., 'P12345'), not PDB ID")
+                if _node_mode:
+                    fail_node(job_dir, node_id, errors=result["errors"])
                 return result
 
             content = r.content
+            last_modified = r.headers.get("last-modified")
 
         # Save file
-        save_dir = Path(output_dir) if output_dir else WORKING_DIR
-        ensure_directory(save_dir)
+        if _node_mode:
+            save_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+        else:
+            save_dir = Path(output_dir) if output_dir else WORKING_DIR
+            ensure_directory(save_dir)
         output_file = save_dir / f"AF-{uniprot_id}.{ext}"
         with open(output_file, "wb") as f:
             f.write(content)
@@ -1576,6 +1765,121 @@ async def get_alphafold_structure(
     except Exception as e:
         result["errors"].append(f"Error: {type(e).__name__}: {str(e)}")
         logger.error(f"Error getting AlphaFold structure: {e}")
+
+    if _node_mode:
+        if result["success"]:
+            extras = {
+                "source_url": url,
+                "model_version": _ALPHAFOLD_MODEL_VERSION,
+                "cached": False,
+                "num_atoms": result["num_atoms"],
+            }
+            if last_modified:
+                extras["last_modified"] = last_modified
+            _complete_fetch_node(
+                job_dir,
+                node_id,
+                Path(result["file_path"]),
+                source_type="alphafold",
+                source_id=uniprot_id,
+                file_format=ext,
+                extra_metadata=extras,
+            )
+        else:
+            fail_node(job_dir, node_id, errors=result["errors"])
+
+    return result
+
+
+def register_local_structure(
+    file_path: str,
+    job_dir: str,
+    node_id: str,
+    copy: bool = True,
+) -> dict:
+    """Register a user-supplied local structure file as a fetch node artifact.
+
+    Use this to make local PDB/CIF files first-class DAG roots, alongside
+    ``download_structure`` (PDB) and ``get_alphafold_structure`` (AlphaFold).
+
+    Args:
+        file_path: Absolute or relative path to a .pdb/.cif/.ent file.
+        job_dir: Job directory (schema v3).
+        node_id: Existing fetch node ID (create with ``create_node --node-type fetch``).
+        copy: When True (default), copy the file into the node's artifacts
+            directory. When False, create a symlink instead — fragile if the
+            source moves, so use only for read-only datasets.
+
+    Returns:
+        Dict with success/file_path/sha256/errors/warnings.
+    """
+    from mdclaw._node import begin_node, fail_node
+
+    result = {
+        "success": False,
+        "file_path": None,
+        "source_id": None,
+        "sha256": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    # Verify the target is actually a fetch node before we touch any state.
+    _node_err = _validate_fetch_node(job_dir, node_id)
+    if _node_err:
+        result["errors"].append(_node_err)
+        return result
+
+    src = Path(file_path).expanduser().resolve()
+    if not src.exists():
+        result["errors"].append(f"Source file not found: {file_path}")
+        return result
+    if not src.is_file():
+        result["errors"].append(f"Not a regular file: {file_path}")
+        return result
+
+    suffix = src.suffix.lower()
+    if suffix not in (".pdb", ".cif", ".ent"):
+        result["warnings"].append(
+            f"Unrecognized extension {suffix!r} (expected .pdb/.cif/.ent)"
+        )
+    file_format = "cif" if suffix == ".cif" else "pdb"
+
+    begin_node(job_dir, node_id)
+
+    try:
+        artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+        dst = artifacts_dir / src.name
+
+        if copy:
+            shutil.copy2(src, dst)
+        else:
+            if dst.exists() or dst.is_symlink():
+                dst.unlink()
+            os.symlink(src, dst)
+
+        info = _complete_fetch_node(
+            job_dir,
+            node_id,
+            dst,
+            source_type="local",
+            source_id=src.name,
+            file_format=file_format,
+            extra_metadata={
+                "original_path": str(src),
+                "copy_mode": "copy" if copy else "symlink",
+            },
+        )
+        result["success"] = True
+        result["file_path"] = str(dst)
+        result["source_id"] = src.name
+        result["sha256"] = info["metadata"]["sha256"]
+        logger.info(f"Registered local structure {src} -> {dst}")
+    except Exception as e:
+        msg = f"Failed to register local structure: {type(e).__name__}: {e}"
+        result["errors"].append(msg)
+        logger.error(msg)
+        fail_node(job_dir, node_id, errors=result["errors"])
 
     return result
 
@@ -1779,7 +2083,11 @@ async def get_protein_info(accession: str) -> dict:
 # =============================================================================
 
 
-def inspect_molecules(structure_file: str) -> dict:
+def inspect_molecules(
+    structure_file: str,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
     """Inspect an mmCIF or PDB structure file and return detailed molecular information.
 
     This tool examines a structure file without modifying it, returning comprehensive
@@ -1794,6 +2102,12 @@ def inspect_molecules(structure_file: str) -> dict:
 
     Args:
         structure_file: Path to the mmCIF (.cif) or PDB (.pdb/.ent) file to inspect.
+        job_dir: Optional job directory (schema v3). When provided together
+            with ``node_id``, the inspection summary is written as
+            ``inspection.json`` into that node's artifacts directory and an
+            ``inspection_completed`` event is appended to ``events/``. The
+            node's status is **not** changed (this stays a read-only query).
+        node_id: Fetch (or any) node ID under which to record the inspection.
 
     Returns:
         Dict with:
@@ -2058,6 +2372,34 @@ def inspect_molecules(structure_file: str) -> dict:
 
         if "parse" in str(e).lower() or "read" in str(e).lower():
             result["errors"].append("Hint: The structure file may be corrupted or in an unsupported format")
+
+    # Optionally record the inspection result under a node (read-only — do not
+    # mutate node status). Useful when called against a fetch node so chain
+    # selection decisions made afterwards are auditable.
+    if job_dir and node_id:
+        try:
+            from mdclaw._event import write_event
+
+            artifacts_dir = (
+                Path(job_dir) / "nodes" / node_id / "artifacts"
+            ).resolve()
+            artifacts_dir.mkdir(parents=True, exist_ok=True)
+            inspection_path = artifacts_dir / "inspection.json"
+            inspection_path.write_text(json.dumps(result, indent=2, default=str))
+            write_event(
+                job_dir,
+                node_id,
+                "inspection_completed",
+                success=result["success"],
+                details={
+                    "structure_file": str(structure_file),
+                    "summary": result.get("summary", {}),
+                },
+            )
+        except Exception as e:
+            result["warnings"].append(
+                f"Could not record inspection under node {node_id}: {e}"
+            )
 
     return result
 
@@ -2651,6 +2993,7 @@ TOOLS = {
     "get_structure_info": get_structure_info,
     "search_structures": search_structures,
     "get_alphafold_structure": get_alphafold_structure,
+    "register_local_structure": register_local_structure,
     "search_proteins": search_proteins,
     "get_protein_info": get_protein_info,
     "inspect_molecules": inspect_molecules,

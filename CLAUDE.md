@@ -127,6 +127,12 @@ job_XXXXXXXX/
   progress.json                       # schema v3: thin index of nodes + cached summaries
   progress.lock                       # flock for concurrent writes
   nodes/
+    fetch_001/                        # DAG root: structure acquisition
+      node.json                       # records source_type/source_id/sha256/source_url
+      node.lock
+      artifacts/
+        1AKE.pdb                      # downloaded / copied structure
+        inspection.json               # optional: recorded by inspect_molecules
     prep_001/
       node.json                       # node state, artifacts, metadata
       node.lock
@@ -320,16 +326,17 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 ## Tool Modules
 
 ### research_server.py
-- `download_structure(pdb_id, format)` - Download from RCSB PDB
+- `download_structure(pdb_id, format, output_dir, job_dir, node_id)` - Download from RCSB PDB. In node mode (`fetch` node), file is written to `nodes/<node_id>/artifacts/` with `source_type=pdb`, `source_id`, `sha256`, `source_url`, `last_modified`, `cache_hit`, `fallback_used`
 - `get_structure_info(pdb_id)` - Get PDB entry metadata
-- `get_alphafold_structure(uniprot_id, format)` - AlphaFold DB
-- `inspect_molecules(structure_file)` - Analyze chains, ligands, ions
+- `get_alphafold_structure(uniprot_id, format, output_dir, job_dir, node_id)` - AlphaFold DB. In node mode, records `source_type=alphafold`, `model_version`, `cached=false` (AlphaFold entries are not locally cached)
+- `register_local_structure(file_path, job_dir, node_id, copy)` - Register a user-supplied PDB/CIF/ENT as a fetch node artifact. Default copies the file; `--no-copy` symlinks it (fragile).
+- `inspect_molecules(structure_file, job_dir, node_id)` - Analyze chains, ligands, ions. With `job_dir`/`node_id`, writes `inspection.json` under the node and emits an `inspection_completed` event (read-only — node status unchanged)
 - `search_structures(query)` - Search PDB database
 - `search_proteins(query)` / `get_protein_info(uniprot_id)` - UniProt
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
 
 ### structure_server.py
-- `prepare_complex(structure_file, output_dir, ...)` - Full preparation pipeline
+- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolved from a single `fetch` ancestor (multi-fetch parents fall back to explicit `--structure-file`)
 - `clean_protein(pdb_file, ...)` - PDBFixer + pdb2pqr protonation
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components
@@ -532,24 +539,25 @@ Two-tier strategy:
 
 ## TODO
 
-### Structure acquisition as a DAG root node (`fetch` node type)
+### Boltz-2 as a `fetch` node source
 
-Currently `download_structure` / `get_alphafold_structure` are called ad-hoc
-before `prepare_complex`, and their output is not tracked in the job graph.
-Split this into a dedicated `fetch` node type that becomes the DAG root:
+`boltz2_protein_from_seq` is the third structure-acquisition path (alongside
+PDB / AlphaFold / local) but was not wired into the `fetch` node in v1.
+Apply the same pattern: add `job_dir`/`node_id` to the tool, write the
+predicted CIF/PDB into `nodes/<fetch_id>/artifacts/`, and call
+`_complete_fetch_node` with `source_type="boltz2"` plus prediction metadata
+(model version, sequence(s), SMILES list, affinity flag, sha256).
 
-```
-fetch_001 (PDB 1AKE) -> prep_001 -> solv_001 -> topo_001 -> eq_001 -> prod_001
-```
+### Multi-fetch → `prep` (combine multiple sources)
 
-This enables:
-- Provenance tracking from the original source (PDB ID, UniProt ID, file path)
-- Re-fetch / version pinning (PDB structures can be updated)
-- Multiple prep variants from the same fetch (e.g., different chain selections)
-
-Implementation: add `"fetch"` to `NODE_TYPES` in `_node.py`, add `fetch`
-case to `resolve_node_inputs`, update `md-prepare` skill to create a
-`fetch` node before `prep`.
+`prep` currently auto-resolves `structure_file` only when it has a single
+`fetch` ancestor. Extending to multi-source merges (e.g., two AlphaFold
+monomers, or protein from one PDB + ligand pose from another) requires:
+- A new structured artifact `structure_files` (list, mirroring
+  `ligand_params`) that `resolve_node_inputs` returns when multiple
+  `fetch` ancestors exist
+- `prepare_complex` (or a dedicated merge tool) to consume the list and
+  merge before chain processing
 
 ### MMDB database integration
 

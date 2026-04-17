@@ -33,7 +33,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-NODE_TYPES = frozenset({"prep", "solv", "topo", "eq", "prod"})
+NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod"})
 
 SCHEMA_VERSION = 3
 
@@ -131,6 +131,28 @@ def create_node(
     jd = Path(job_dir).resolve()
     parents = parent_node_ids or []
     deps = dependency_node_ids or []
+
+    # Invariant: ``fetch`` is the DAG root for structure acquisition. It
+    # records the original source (PDB/AlphaFold/local file) and must not
+    # depend on any other node, otherwise downstream auto-resolution
+    # ("prep's single fetch ancestor") loses meaning.
+    if node_type == "fetch":
+        if parents:
+            return {
+                "success": False,
+                "error": (
+                    "fetch nodes are DAG roots and cannot have "
+                    f"parent_node_ids (got {parents})"
+                ),
+            }
+        if deps:
+            return {
+                "success": False,
+                "error": (
+                    "fetch nodes are DAG roots and cannot have "
+                    f"dependency_node_ids (got {deps})"
+                ),
+            }
 
     with file_lock(jd / "progress.lock"):
         # Bootstrap progress.json if needed
@@ -476,6 +498,11 @@ def resolve_node_inputs(
 
     Mappings:
 
+    - ``prep``: ``structure_file`` from nearest ``fetch`` ancestor.
+                If multiple ``fetch`` ancestors are present (multi-source
+                merge), this is omitted — the caller must pass
+                ``structure_file`` explicitly. Multi-fetch merging is a
+                planned v2 feature that will use a ``structure_files`` list.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_params`` / ``metal_params`` from
@@ -486,7 +513,23 @@ def resolve_node_inputs(
     """
     result: dict = {}
 
-    if node_type == "solv":
+    if node_type == "prep":
+        ancestors = get_ancestors(job_dir, node_id)
+        pj = Path(job_dir) / "progress.json"
+        if pj.exists():
+            nodes_index = json.loads(pj.read_text()).get("nodes", {})
+            fetch_ancestors = [
+                nid for nid in ancestors
+                if nodes_index.get(nid, {}).get("type") == "fetch"
+            ]
+            if len(fetch_ancestors) == 1:
+                v = find_ancestor_artifact(
+                    job_dir, node_id, "fetch", "structure_file"
+                )
+                if v:
+                    result["structure_file"] = v
+
+    elif node_type == "solv":
         v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
         if v:
             result["pdb_file"] = v
