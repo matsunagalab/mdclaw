@@ -43,7 +43,7 @@ scripts/                     # Setup & maintenance scripts
 
 mdclaw/                    # All Python code consolidated here
   __init__.py               # __version__ + package marker
-  _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts)
+  _common.py                # Shared utilities (logging, BaseToolWrapper, errors, timeouts, guardrails, CANONICAL_WATER_MODELS)
   _registry.py              # Tool registry (SERVER_REGISTRY dict)
   _lock.py                  # File-based locking (fcntl.flock) for concurrent access
   _event.py                 # Append-only event log (one JSON file per event)
@@ -70,6 +70,7 @@ tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
   test_mcp_server.py        # Level 1: Unit tests (config, registry)
   test_cli.py               # Level 1: CLI unit tests
+  test_guardrails.py        # Level 1: Structured guardrails (ff/water, OpenMM fallback, SLURM policy)
   test_server_smoke.py      # Level 2: Server smoke tests
   test_pipeline_1ake.py     # Level 3: Full 1AKE pipeline integration
   test_literature_server.py  # PubMed server tests
@@ -78,6 +79,7 @@ tests/                      # 4-level test suite
   test_ligand_pathway.py    # Ligand parameterization tests (L1-L3)
   test_node.py              # Node system unit tests (lifecycle, IDs, events)
   test_event.py             # Event system tests
+  test_progress.py          # Legacy progress.json (schema v2) tests
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -88,7 +90,7 @@ tests/                      # 4-level test suite
 ```
 1. Edit code in mdclaw/
 2. Lint:    ruff check mdclaw/
-3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py -v
+3. Test:    pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 4. Smoke:   pytest tests/test_server_smoke.py -v        (if touching tool logic)
 5. Commit
 ```
@@ -190,9 +192,9 @@ job_XXXXXXXX/
 ### Pre-commit Checklist
 
 ```bash
-ruff check mdclaw/                                      # lint
-pytest tests/test_mcp_server.py tests/test_cli.py -v     # unit tests
-pytest tests/test_server_smoke.py -v                      # smoke tests (if applicable)
+ruff check mdclaw/                                                                           # lint
+pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v  # unit tests
+pytest tests/test_server_smoke.py -v                                                          # smoke tests (if applicable)
 ```
 
 ### Release Workflow (Version Tag Sync)
@@ -361,7 +363,7 @@ pytest tests/test_pipeline_1ake.py -v --basetemp=./test_output
 
 ### metal_server.py
 - `detect_metal_ions(pdb_file)` - Find metal ions
-- `parameterize_metal_ion(pdb_file, metal_name, ...)` - Metal parameters
+- `parameterize_metal_ion(pdb_file, output_dir, metal_resname, metal_charge, water_model)` - Metal ion parameters (default `water_model="opc"`; `opc3` is recognized as canonical but unsupported for ion frcmod)
 
 ### slurm_server.py
 - `inspect_cluster(output_file)` - Discover partitions, GPUs, save config (preserves existing policy)
@@ -423,6 +425,33 @@ Centralized in `mdclaw/_common.py`:
 from mdclaw._common import get_timeout
 timeout = get_timeout("solvation")  # MDCLAW_SOLVATION_TIMEOUT (7200s)
 ```
+
+### Structured Guardrails
+
+Parameter validation shared across tools uses structured guardrail results
+defined in `mdclaw/_common.py`:
+
+```python
+from mdclaw._common import (
+    CANONICAL_WATER_MODELS,        # canonical water-model alias map (shared across servers)
+    normalize_choice,              # case-insensitive alias lookup
+    create_guardrail_result,       # {field, message, severity, actual, expected, suggested_fix, code}
+    split_guardrail_results,       # -> (blocking_errors, warnings)
+    create_validation_error_from_guardrails,
+    guardrail_messages,
+)
+```
+
+Each guardrail result carries a stable `code` string
+(e.g., `forcefield_water_blocked`, `openmm_fallback_unsupported_water_model`,
+`metal_unsupported_water_model`, `policy_gpus_exceeded`). Skills and agents
+should branch on `code`, not parse human-readable messages.
+
+Current guardrail enforcement points:
+- `amber_server.build_amber_system`: forcefield/water canonicalization (always) + explicit-solvent compatibility (when `box_dimensions` is set)
+- `solvation_server.solvate_structure`: blocks `opc`/`opc3` on OpenMM fallback (no packmol-memgen)
+- `metal_server.parameterize_metal_ion`: `SUPPORTED_ION_WATER_MODELS` drives the supported set; `opc3` is canonical-but-unsupported
+- `slurm_server.submit_job`: policy checks return structured results (partition/gpus/cpus/nodes/time/memory); unparseable time/memory become warnings
 
 ## Configuration
 

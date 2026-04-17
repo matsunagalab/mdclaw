@@ -150,7 +150,7 @@ exists when installed as a plugin).
 ```
 1. Edit code in mdclaw/ or skills/
 2. ruff check mdclaw/
-3. pytest tests/test_mcp_server.py tests/test_cli.py tests/test_slurm_server.py -v
+3. pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 4. Test skills in a new Claude Code conversation
 5. Commit
 ```
