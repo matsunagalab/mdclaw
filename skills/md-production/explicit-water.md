@@ -32,6 +32,9 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --output-frequency-ps 10.0
 ```
 
+If the user does not specify a run length and `execution_mode=autonomous`,
+use `--simulation-time-ns 0.1` as the default sanity check.
+
 `prmtop_file`, `inpcrd_file`, and `restart_from` are all auto-resolved from DAG
 ancestors. Topology comes from the `topo` ancestor. The checkpoint rule depends
 on how the prod node was created:
@@ -66,7 +69,7 @@ can find all files without manual `realpath` conversion.
 
 | Purpose | Time | Notes |
 |---|---|---|
-| Sanity check | 0.1 ns | Quick validation |
+| Sanity check | 0.1 ns | Quick validation; default when autonomous and omitted |
 | Short | 1-10 ns | Initial testing |
 | Production | 50-500 ns | Conformational sampling |
 | Extended | 1+ us | Slow processes (folding, binding) |

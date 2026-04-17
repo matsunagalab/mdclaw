@@ -46,6 +46,9 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --output-frequency-ps 10.0
 ```
 
+If the user does not specify a run length and `execution_mode=autonomous`,
+use `--simulation-time-ns 0.1` as the default sanity check.
+
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
 
 `prmtop_file`, `inpcrd_file`, and `restart_from` auto-resolve from DAG
@@ -82,7 +85,7 @@ compute nodes can find all files without manual `realpath` conversion.
 
 | Purpose | Time | Notes |
 |---|---|---|
-| Sanity check | 0.1 ns | Quick validation |
+| Sanity check | 0.1 ns | Quick validation; default when autonomous and omitted |
 | Conformational sampling | 10-100 ns | Faster than explicit, good for screening |
 | Folding study | 100 ns - 1 us | GB allows longer effective sampling |
 | Mutant screening | 10 ns x N | Quick comparative runs |

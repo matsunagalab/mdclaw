@@ -18,7 +18,7 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 | Execution mode | read `progress.json.params.execution_mode` |
 | Workflow mode | read `progress.json.params.workflow_mode` |
 | Parent eq node | (eq_001, etc.) |
-| Simulation time | |
+| Simulation time | user-specified, or `0.1 ns (default in autonomous)` when omitted |
 | Other | (non-default parameters) |
 
 ## Prerequisites
@@ -27,6 +27,17 @@ Read `progress.json` -- find a completed `eq` node.
 (`prmtop_file`, `inpcrd_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool.)
 
 If no completed eq node exists, suggest `/md-equilibration <job_dir>` first.
+
+## Default Decision Rule
+
+- If `execution_mode=autonomous` and the user did **not** specify a
+  production length, adopt `simulation_time_ns=0.1` as the default sanity
+  check run length and proceed without asking.
+- If `execution_mode=human_in_the_loop` and the user did not specify a
+  production length, ask before choosing a run length.
+- If the user explicitly asks for a longer campaign, HPC submission, or a
+  specific scientific objective, prefer the user's stated intent over the
+  `0.1 ns` default.
 
 ## Node Setup
 
