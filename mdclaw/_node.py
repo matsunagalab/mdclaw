@@ -746,6 +746,18 @@ def resolve_node_inputs(
         if mp:
             result["metal_params"] = mp
 
+        db = find_ancestor_artifact(job_dir, node_id, "prep", "disulfide_bonds")
+        if db:
+            # Stored as a path to disulfide_bonds.json; load inline so
+            # build_amber_system receives the list it expects.
+            if isinstance(db, str) and db.endswith(".json"):
+                try:
+                    result["disulfide_bonds"] = json.loads(Path(db).read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif isinstance(db, list):
+                result["disulfide_bonds"] = db
+
         bd = find_ancestor_artifact(job_dir, node_id, "solv", "box_dimensions")
         if bd:
             # box_dimensions is stored as a path to a JSON file; load inline

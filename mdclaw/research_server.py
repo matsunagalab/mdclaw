@@ -2472,11 +2472,95 @@ def _detect_disulfide_candidates(structure_path: Path) -> list[dict]:
                         "distance_angstrom": round(distance, 2),
                         "confidence": confidence,
                         "recommendation": "form_bond" if confidence == "high" else "review",
+                        "source": "distance",
                     })
     except Exception as e:
         logger.warning(f"Error detecting disulfide candidates: {e}")
 
     return candidates
+
+
+def _parse_ssbond_records(structure_path: Path) -> list[dict]:
+    """Parse explicit disulfide bond records from PDB SSBOND or mmCIF _struct_conn.
+
+    Uses gemmi's unified ``Structure.connections`` which exposes both PDB
+    SSBOND lines and mmCIF ``_struct_conn`` entries with
+    ``conn_type_id="disulf"``. The returned entries use the same schema as
+    ``_detect_disulfide_candidates`` so the two sources can be merged
+    downstream, with the additional field ``source="pdb_ssbond"``.
+
+    The ``distance_angstrom`` is recomputed from the actual SG atom
+    coordinates — the SSBOND ``Length`` column (74-78) is optional and
+    only meaningful when both symmetry operators are 1555, so the
+    measured value is preferred.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        return []
+
+    out: list[dict] = []
+    try:
+        suffix = structure_path.suffix.lower()
+        if suffix == ".cif":
+            doc = gemmi.cif.read(str(structure_path))
+            block = doc[0]
+            st = gemmi.make_structure_from_block(block)
+        else:
+            st = gemmi.read_pdb(str(structure_path))
+
+        if len(st) == 0:
+            return []
+        model = st[0]
+
+        def _find_sg_atom(addr):
+            """Locate the SG atom described by a gemmi AtomAddress, if any."""
+            try:
+                chain = model.find_chain(addr.chain_name)
+                if chain is None:
+                    return None
+                # Prefer exact seqid match; fallback to iterating residues.
+                for res in chain:
+                    if res.seqid.num == addr.res_id.seqid.num and res.name == addr.res_id.name:
+                        return res.find_atom(addr.atom_name or "SG", "*")
+                return None
+            except Exception:
+                return None
+
+        for conn in st.connections:
+            if conn.type != gemmi.ConnectionType.Disulf:
+                continue
+            p1, p2 = conn.partner1, conn.partner2
+            entry = {
+                "cys1": {
+                    "chain": p1.chain_name,
+                    "resnum": p1.res_id.seqid.num,
+                    "resname": p1.res_id.name,
+                },
+                "cys2": {
+                    "chain": p2.chain_name,
+                    "resnum": p2.res_id.seqid.num,
+                    "resname": p2.res_id.name,
+                },
+                "distance_angstrom": None,
+                "confidence": "high",
+                "recommendation": "form_bond",
+                "source": "pdb_ssbond",
+            }
+
+            a1 = _find_sg_atom(p1)
+            a2 = _find_sg_atom(p2)
+            if a1 is not None and a2 is not None:
+                dx = a1.pos.x - a2.pos.x
+                dy = a1.pos.y - a2.pos.y
+                dz = a1.pos.z - a2.pos.z
+                entry["distance_angstrom"] = round((dx * dx + dy * dy + dz * dz) ** 0.5, 2)
+
+            out.append(entry)
+    except Exception as e:
+        logger.warning(f"Error parsing SSBOND records: {e}")
+
+    return out
 
 
 def _find_histidines(structure_path: Path) -> list[dict]:

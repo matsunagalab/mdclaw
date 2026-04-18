@@ -21,7 +21,7 @@ logger = setup_logger(__name__)
 import json  # noqa: E402
 import re  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import List, Optional, Dict, Any  # noqa: E402
+from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     CANONICAL_WATER_MODELS,
@@ -591,6 +591,154 @@ def strip_crystal_waters(input_pdb: Path, output_pdb: Path) -> dict:
     return result
 
 
+def _plan_disulfide_tleap_bonds(
+    pdb_path: Path,
+    disulfide_pairs: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Map disulfide pairs (from prepare_complex) onto the PDB tleap will load.
+
+    tleap's ``bond unit.N.atom`` syntax uses the *unit sequential index*
+    assigned during ``loadpdb`` (1-based, in PDB atom order), not PDB
+    resSeq. For single-chain, contiguously numbered structures the two
+    happen to coincide — but they diverge for homodimers (same resSeq
+    repeated across chains) and when waters/ligands precede the protein.
+    So this function walks the PDB once, builds a ``(chain, resnum) →
+    unit_index`` map, and emits bond lines using the unit index.
+
+    Resolution is done **per chain**: for each disulfide pair, every
+    chain in the merged PDB that carries both resnums as ``CYX`` yields
+    one bond line. The pair's ``chain`` field is advisory and ignored,
+    because ``merge_structures`` renames chain IDs (A, B, C, …) while
+    the pair's chain comes from the original pre-split structure —
+    propagating the mapping is not worth the wiring cost when per-chain
+    CYX presence is an equally reliable signal.
+
+    Global de-duplication on ``frozenset({idx1, idx2})`` keeps the
+    homodimer case (two legitimate disulfide_bonds.json entries listing
+    the same pair under different chains) from double-bonding: the
+    first entry emits one line per matching chain, and later entries
+    that resolve to the same indices are recorded as
+    ``emitted_duplicate``.
+
+    Returns a dict with:
+        ``bond_lines``: list[str] — ``bond mol.<idx>.SG mol.<idx>.SG``
+            commands to inject into the tleap script.
+        ``resolved``: list[dict] — per-pair provenance (``cys1``, ``cys2``,
+            ``source``, ``tleap_residues`` as ``[[idx1, idx2], …]`` — a
+            list because one pair can match multiple chains —, ``status``:
+            ``emitted``, ``emitted_duplicate``, ``skipped_cys_protonated``,
+            or ``unresolved``).
+        ``warnings``: list[str] — human-readable notes for non-emitted pairs.
+    """
+    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    if not disulfide_pairs:
+        return plan
+
+    # Walk the PDB once. ``unit_index`` counts every unique residue in PDB
+    # order (1-based) — this is exactly how tleap numbers residues in a
+    # unit after ``loadpdb``, so ``bond mol.<unit_index>.atom`` resolves
+    # unambiguously even when PDB resSeq collides across chains.
+    unit_index = 0
+    by_chain: Dict[str, Dict[int, Dict[str, Any]]] = {}
+    last_key: Optional[Tuple[str, int, str]] = None
+    try:
+        with open(pdb_path, "r") as fh:
+            for line in fh:
+                if not (line.startswith("ATOM") or line.startswith("HETATM")):
+                    continue
+                if len(line) < 26:
+                    continue
+                resname = line[17:20].strip()
+                chain = line[21].strip()
+                try:
+                    resnum = int(line[22:26])
+                except ValueError:
+                    continue
+                key = (chain, resnum, resname)
+                if key == last_key:
+                    continue
+                last_key = key
+                unit_index += 1
+                by_chain.setdefault(chain, {})[resnum] = {
+                    "resname": resname,
+                    "unit_index": unit_index,
+                }
+    except OSError as e:
+        plan["warnings"].append(
+            f"Could not read PDB for disulfide bond mapping: {e}"
+        )
+        return plan
+
+    emitted_pairs: set = set()  # frozenset({idx1, idx2}) already emitted
+
+    for pair in disulfide_pairs:
+        c1 = pair.get("cys1", {})
+        c2 = pair.get("cys2", {})
+        r1 = c1.get("resnum")
+        r2 = c2.get("resnum")
+        record = {
+            "cys1": c1,
+            "cys2": c2,
+            "source": pair.get("source"),
+            "tleap_residues": None,
+            "status": "unresolved",
+        }
+
+        matched: List[Tuple[str, int, int]] = []
+        saw_cys_protonated = False
+        for chain_id, residues in by_chain.items():
+            if r1 not in residues or r2 not in residues:
+                continue
+            rn1 = residues[r1]["resname"]
+            rn2 = residues[r2]["resname"]
+            if rn1 not in ("CYX", "CYS") or rn2 not in ("CYX", "CYS"):
+                continue
+            if rn1 == "CYS" or rn2 == "CYS":
+                saw_cys_protonated = True
+                continue
+            matched.append((
+                chain_id,
+                residues[r1]["unit_index"],
+                residues[r2]["unit_index"],
+            ))
+
+        if not matched:
+            if saw_cys_protonated:
+                record["status"] = "skipped_cys_protonated"
+                plan["warnings"].append(
+                    f"Disulfide pair {r1}-{r2} skipped: one or both residues "
+                    f"are CYS (protonated) in {pdb_path.name}; rename to CYX "
+                    f"before building the system."
+                )
+            else:
+                plan["warnings"].append(
+                    f"Disulfide pair {r1}-{r2} skipped: residues not found "
+                    f"as CYX in {pdb_path.name}"
+                )
+            plan["resolved"].append(record)
+            continue
+
+        emitted_indices: List[List[int]] = []
+        for _chain_id, idx1, idx2 in matched:
+            bond_key = frozenset({idx1, idx2})
+            if bond_key in emitted_pairs:
+                continue
+            emitted_pairs.add(bond_key)
+            plan["bond_lines"].append(f"bond mol.{idx1}.SG mol.{idx2}.SG")
+            emitted_indices.append([idx1, idx2])
+
+        if emitted_indices:
+            record["status"] = "emitted"
+            record["tleap_residues"] = emitted_indices
+        else:
+            # Every chain that matched was already covered by an earlier
+            # pair — typical for the second entry of a homodimer listing.
+            record["status"] = "emitted_duplicate"
+        plan["resolved"].append(record)
+
+    return plan
+
+
 def _add_pdb_info(
     parm7_path: Path,
     pdb_path: Path,
@@ -687,6 +835,7 @@ def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_params: Optional[List[Dict[str, str]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
+    disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
     forcefield: str = "ff19SB",
     water_model: str = "opc",
@@ -791,6 +940,8 @@ def build_amber_system(
             ligand_params = _inputs["ligand_params"]
         if metal_params is None and "metal_params" in _inputs:
             metal_params = _inputs["metal_params"]
+        if disulfide_bonds is None and "disulfide_bonds" in _inputs:
+            disulfide_bonds = _inputs["disulfide_bonds"]
         if box_dimensions is None and "box_dimensions" in _inputs:
             box_dimensions = _inputs["box_dimensions"]
 
@@ -811,6 +962,22 @@ def build_amber_system(
                     logger.info(f"Auto-loaded ligand_params ({len(ligand_params)} ligands) from {lig_json}")
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"Found {lig_json} but could not read: {e}")
+                break
+
+    # Auto-detect disulfide_bonds.json if not provided (written by prepare_complex
+    # as a prep-node artifact; same parent-directory search as ligand_params).
+    if disulfide_bonds is None:
+        pdb_path = Path(pdb_file)
+        for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
+            ss_json = search_dir / "disulfide_bonds.json"
+            if ss_json.exists():
+                try:
+                    disulfide_bonds = json.loads(ss_json.read_text())
+                    logger.info(
+                        f"Auto-loaded disulfide_bonds ({len(disulfide_bonds)} pairs) from {ss_json}"
+                    )
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Found {ss_json} but could not read: {e}")
                 break
 
     # Auto-detect box_dimensions.json if not provided
@@ -1121,7 +1288,23 @@ def build_amber_system(
         script_lines.append("# Load structure")
         script_lines.append(f"mol = loadpdb {pdb_path}")
         script_lines.append("")
-        
+
+        # Explicit disulfide bonds: merged.pdb already has CYX on the SS
+        # residues (from prepare_complex), but tleap does not auto-create
+        # SG-SG covalent bonds — they must be declared with `bond`, which
+        # is what this block does.
+        if disulfide_bonds:
+            ss_plan = _plan_disulfide_tleap_bonds(Path(pdb_path), disulfide_bonds)
+            if ss_plan["bond_lines"]:
+                script_lines.append("# Disulfide bonds (from prepare_complex)")
+                script_lines.extend(ss_plan["bond_lines"])
+                script_lines.append("")
+            if ss_plan["warnings"]:
+                result["warnings"].extend(ss_plan["warnings"])
+                for w in ss_plan["warnings"]:
+                    logger.warning(w)
+            result["disulfide_bond_plan"] = ss_plan["resolved"]
+
         # Set box dimensions for explicit solvent
         if box_dimensions:
             box_a = box_dimensions.get("box_a", 0)

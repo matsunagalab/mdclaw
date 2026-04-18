@@ -77,6 +77,60 @@ def _get_geostd_dir() -> Optional[Path]:
     return None
 
 
+def _merge_disulfide_pairs(
+    ssbond_pairs: List[dict],
+    distance_pairs: List[dict],
+    select_chains: Optional[List[str]] = None,
+) -> List[dict]:
+    """Merge explicit SSBOND records with distance-based candidates.
+
+    Dedupes on the unordered pair of ``(chain, resnum)``. When the same
+    pair appears in both sources, the SSBOND entry wins but its
+    ``source`` is updated to ``"pdb_ssbond+distance"`` and the measured
+    ``distance_angstrom`` from the distance-based result is preferred
+    (since the SSBOND column value may be absent for non-1555 symmetry).
+
+    When ``select_chains`` is given, pairs are filtered to those where
+    BOTH residues' chains are selected — pairs that span dropped chains
+    cannot exist in the merged PDB downstream.
+    """
+    def _key(pair: dict) -> frozenset:
+        return frozenset({
+            (pair["cys1"]["chain"], pair["cys1"]["resnum"]),
+            (pair["cys2"]["chain"], pair["cys2"]["resnum"]),
+        })
+
+    selected = set(select_chains) if select_chains else None
+
+    def _passes_chain_filter(pair: dict) -> bool:
+        if selected is None:
+            return True
+        return (
+            pair["cys1"]["chain"] in selected
+            and pair["cys2"]["chain"] in selected
+        )
+
+    merged: Dict[frozenset, dict] = {}
+    for pair in ssbond_pairs:
+        if not _passes_chain_filter(pair):
+            continue
+        merged[_key(pair)] = dict(pair)  # shallow copy
+
+    for pair in distance_pairs:
+        if not _passes_chain_filter(pair):
+            continue
+        k = _key(pair)
+        if k in merged:
+            existing = merged[k]
+            existing["source"] = "pdb_ssbond+distance"
+            if pair.get("distance_angstrom") is not None:
+                existing["distance_angstrom"] = pair["distance_angstrom"]
+        else:
+            merged[k] = dict(pair)
+
+    return list(merged.values())
+
+
 def _geostd_lookup(residue_name: str, output_dir: Path, geostd_dir: Path) -> Optional[dict]:
     """Look up curated mol2/frcmod for a residue in the amber_geostd database.
 
@@ -3996,6 +4050,28 @@ def prepare_complex(
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
+        # Step 1.5: Aggregate disulfide bonds from SSBOND + distance detection
+        # Merge explicit PDB SSBOND / mmCIF _struct_conn entries with the
+        # distance-based candidates so downstream tools have a single
+        # chain-filtered source of truth. This runs on the ORIGINAL
+        # structure file (before splitting) so inter-chain pairs are
+        # captured too.
+        from mdclaw.research_server import (
+            _parse_ssbond_records,
+            _detect_disulfide_candidates,
+        )
+        ssbond_pairs = _parse_ssbond_records(structure_path)
+        distance_pairs = _detect_disulfide_candidates(structure_path)
+        disulfide_bonds = _merge_disulfide_pairs(
+            ssbond_pairs, distance_pairs, select_chains=select_chains
+        )
+        result["disulfide_bonds"] = disulfide_bonds
+        if disulfide_bonds:
+            logger.info(
+                f"Disulfide pairs detected: {len(disulfide_bonds)} "
+                f"(ssbond={len(ssbond_pairs)}, distance={len(distance_pairs)})"
+            )
+
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
         split_result = split_molecules(
@@ -4409,6 +4485,12 @@ def prepare_complex(
                     json.dump(successful_ligands, f, indent=2)
                 logger.info(f"Wrote ligand_params.json ({len(successful_ligands)} ligands) to {ligand_params_json}")
 
+        # Persist merged disulfide bond pairs (written even when empty so
+        # downstream consumers can distinguish "none" from "not recorded").
+        disulfide_json = base_dir / "disulfide_bonds.json"
+        with open(disulfide_json, 'w') as f:
+            json.dump(result.get("disulfide_bonds", []), f, indent=2)
+
         # Save workflow summary
         summary_file = out_dir / "prepare_complex_summary.json"
         with open(summary_file, 'w') as f:
@@ -4445,6 +4527,11 @@ def prepare_complex(
             ]
             if lig_params:
                 artifacts["ligand_params"] = lig_params
+            # disulfide_bonds.json is always written (see above); register
+            # it as a node artifact so build_amber_system / analysis tools
+            # can auto-resolve it from the prep ancestor.
+            if (base_dir / "disulfide_bonds.json").exists():
+                artifacts["disulfide_bonds"] = "artifacts/disulfide_bonds.json"
             complete_node(job_dir, node_id,
                 artifacts=artifacts,
                 metadata=result.get("preparation_summary", {}),

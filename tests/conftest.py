@@ -60,6 +60,28 @@ END
 """)
 
 
+# Two CYS residues positioned so the SG-SG distance is ~2.04 Å, plus an
+# explicit SSBOND record. Geometry is simplified (not chemically realistic
+# elsewhere) — the test only needs the SSBOND line and SG positions.
+SSBOND_MINI_PDB = textwrap.dedent("""\
+SSBOND   1 CYS A   10    CYS A   20                          1555   1555  2.04
+ATOM      1  N   CYS A  10      -2.000   0.000   0.000  1.00  0.00           N
+ATOM      2  CA  CYS A  10      -1.000   0.000   0.000  1.00  0.00           C
+ATOM      3  C   CYS A  10      -0.500   1.000   0.000  1.00  0.00           C
+ATOM      4  O   CYS A  10      -1.000   2.000   0.000  1.00  0.00           O
+ATOM      5  CB  CYS A  10      -0.500  -1.000   0.000  1.00  0.00           C
+ATOM      6  SG  CYS A  10       0.000  -1.500   0.000  1.00  0.00           S
+ATOM      7  N   CYS A  20       4.000   0.000   0.000  1.00  0.00           N
+ATOM      8  CA  CYS A  20       3.000   0.000   0.000  1.00  0.00           C
+ATOM      9  C   CYS A  20       2.500   1.000   0.000  1.00  0.00           C
+ATOM     10  O   CYS A  20       3.000   2.000   0.000  1.00  0.00           O
+ATOM     11  CB  CYS A  20       2.500  -1.000   0.000  1.00  0.00           C
+ATOM     12  SG  CYS A  20       2.040  -1.500   0.000  1.00  0.00           S
+TER
+END
+""")
+
+
 # Acetic acid HETATM block (simplest possible ligand for testing)
 ACETIC_ACID_PDB = textwrap.dedent("""\
 HETATM    1  C1  ACE A   1       0.000   0.000   0.000  1.00  0.00           C
@@ -177,6 +199,14 @@ def alanine_dipeptide_pdb(tmp_path):
     """Create an alanine dipeptide PDB file for testing."""
     pdb_file = tmp_path / "alanine_dipeptide.pdb"
     pdb_file.write_text(ALANINE_DIPEPTIDE_PDB)
+    return str(pdb_file)
+
+
+@pytest.fixture
+def ssbond_mini_pdb(tmp_path):
+    """Minimal PDB with an explicit SSBOND record and two close CYS SGs."""
+    pdb_file = tmp_path / "ssbond_mini.pdb"
+    pdb_file.write_text(SSBOND_MINI_PDB)
     return str(pdb_file)
 
 

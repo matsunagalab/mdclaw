@@ -247,6 +247,35 @@ class TestStructureServer:
         assert result["success"] is True
         assert Path(result["merged_pdb"]).exists()
 
+    def test_prepare_complex_writes_disulfide_bonds_json(
+        self, ssbond_mini_pdb, tmp_path
+    ):
+        """prepare_complex persists detected SS bonds as a JSON artifact."""
+        import json as _json
+        from structure_server import prepare_complex
+
+        result = prepare_complex(
+            structure_file=ssbond_mini_pdb,
+            output_dir=str(tmp_path),
+            select_chains=["A"],
+            include_types=["protein"],
+            process_proteins=False,
+            process_ligands=False,
+            ph=7.4,
+            cap_termini=False,
+        )
+        # Disulfide detection runs before protein/ligand processing, so even
+        # with both disabled the pair list and JSON file must be populated.
+        assert result["disulfide_bonds"], result
+        pair = result["disulfide_bonds"][0]
+        assert pair["source"] in ("pdb_ssbond", "pdb_ssbond+distance")
+        assert {pair["cys1"]["resnum"], pair["cys2"]["resnum"]} == {10, 20}
+
+        json_candidates = list(Path(tmp_path).rglob("disulfide_bonds.json"))
+        assert json_candidates, "disulfide_bonds.json was not written"
+        on_disk = _json.loads(json_candidates[0].read_text())
+        assert len(on_disk) == 1
+
 
 # ---------------------------------------------------------------------------
 # solvation_server
