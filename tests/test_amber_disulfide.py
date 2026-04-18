@@ -167,3 +167,54 @@ def test_plan_disulfide_tleap_bonds_empty_input(tmp_path):
     pdb = _write_pdb(tmp_path, "CYX", "CYX")
     plan = _plan_disulfide_tleap_bonds(pdb, [])
     assert plan == {"bond_lines": [], "resolved": [], "warnings": []}
+
+
+def test_plan_disulfide_tleap_bonds_waters_do_not_clobber_protein(tmp_path):
+    """Waters sharing chain + resnum with a protein CYX must not shadow it.
+
+    Solvated PDBs have waters with PDB resSeq wrapping at 9999, and
+    packmol-memgen often puts them under the same chain letter as the
+    protein. A naive ``by_chain[chain][resnum] = resname`` map would let
+    a later ``WAT`` entry overwrite the earlier ``CYX``. The scanner
+    filters to CYS/CYX residues at insertion time so the protein entry
+    wins and the bond is emitted. unit_index keeps counting every
+    residue (including waters) so it continues to match what tleap
+    assigns after ``loadpdb``.
+    """
+    import textwrap as _textwrap
+    from mdclaw.amber_server import _plan_disulfide_tleap_bonds
+
+    # Protein CYX at (A, 22) and (A, 95), followed by WAT residues that
+    # reuse resSeq 22 and 95 on the same chain A — the real pattern seen
+    # in packmol-memgen output for 4M3J.
+    pdb_text = _textwrap.dedent("""\
+        ATOM      1  N   CYX A  22       0.000   0.000   0.000  1.00  0.00           N
+        ATOM      2  CA  CYX A  22       1.458   0.000   0.000  1.00  0.00           C
+        ATOM      3  CB  CYX A  22       2.000  -1.000   0.000  1.00  0.00           C
+        ATOM      4  SG  CYX A  22       3.500  -1.500   0.000  1.00  0.00           S
+        ATOM      5  C   CYX A  22       2.000   1.000   0.000  1.00  0.00           C
+        ATOM      6  O   CYX A  22       1.300   2.000   0.000  1.00  0.00           O
+        ATOM      7  N   CYX A  95       5.000   0.000   0.000  1.00  0.00           N
+        ATOM      8  CA  CYX A  95       4.000   0.000   0.000  1.00  0.00           C
+        ATOM      9  CB  CYX A  95       4.500  -1.000   0.000  1.00  0.00           C
+        ATOM     10  SG  CYX A  95       5.540  -1.500   0.000  1.00  0.00           S
+        ATOM     11  C   CYX A  95       3.000   1.000   0.000  1.00  0.00           C
+        ATOM     12  O   CYX A  95       3.500   2.000   0.000  1.00  0.00           O
+        ATOM     13  O   WAT A  22      50.000  50.000  50.000  1.00  0.00           O
+        ATOM     14  H1  WAT A  22      50.800  50.400  50.000  1.00  0.00           H
+        ATOM     15  H2  WAT A  22      49.200  50.400  50.000  1.00  0.00           H
+        ATOM     16  O   WAT A  95      60.000  60.000  60.000  1.00  0.00           O
+        ATOM     17  H1  WAT A  95      60.800  60.400  60.000  1.00  0.00           H
+        ATOM     18  H2  WAT A  95      59.200  60.400  60.000  1.00  0.00           H
+        TER
+        END
+        """)
+    pdb = tmp_path / "protein_with_colliding_waters.pdb"
+    pdb.write_text(pdb_text)
+
+    plan = _plan_disulfide_tleap_bonds(pdb, [_pair("B", 22, "B", 95)])
+
+    assert plan["bond_lines"] == ["bond mol.1.SG mol.2.SG"]
+    assert plan["resolved"][0]["status"] == "emitted"
+    assert plan["resolved"][0]["tleap_residues"] == [[1, 2]]
+    assert plan["warnings"] == []

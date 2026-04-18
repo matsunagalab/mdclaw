@@ -659,6 +659,14 @@ def _plan_disulfide_tleap_bonds(
                     continue
                 last_key = key
                 unit_index += 1
+                # Only index CYS/CYX residues. Everything else is irrelevant
+                # to disulfide bond resolution, and indexing water/ion
+                # residues would silently overwrite protein entries in
+                # solvated PDBs where PDB resSeq wraps and waters share
+                # chain IDs with the protein (e.g. a water at chain A
+                # resnum 22 clobbering the protein's CYX 22).
+                if resname not in ("CYX", "CYS"):
+                    continue
                 by_chain.setdefault(chain, {})[resnum] = {
                     "resname": resname,
                     "unit_index": unit_index,
