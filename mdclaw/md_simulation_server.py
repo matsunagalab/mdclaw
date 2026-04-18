@@ -1125,29 +1125,26 @@ def run_production(
         result["final_structure"] = str(final_pdb)
         result["energy_file"] = str(energy_file)
 
-        # Trajectory is the primary scientific output — missing it is a
-        # hard failure. Energy is an auxiliary log (state reporter text
-        # file); when a shared filesystem or a reporter quirk leaves it
-        # empty despite the trajectory being fine, we surface it as a
-        # warning but keep the node marked successful so downstream
-        # analysis can still proceed against the trajectory.
-        trajectory_ok = (
-            trajectory_file.exists() and trajectory_file.stat().st_size > 0
-        )
-        energy_ok = (
-            energy_file.exists() and energy_file.stat().st_size > 0
-        )
+        # Trajectory and energy reporters share identical report_interval
+        # and append state by construction, so they fire at the same steps
+        # against the same simulation state. Either both files are populated
+        # or both are empty — a divergence (one ok, one empty) would mean
+        # the alignment has silently broken. Treat either missing file as a
+        # hard failure so that divergence surfaces loudly rather than hiding
+        # behind a warning.
+        missing_outputs = []
+        if expected_reports > 0:
+            if not trajectory_file.exists() or trajectory_file.stat().st_size == 0:
+                missing_outputs.append("trajectory")
+            if not energy_file.exists() or energy_file.stat().st_size == 0:
+                missing_outputs.append("energy")
 
-        if expected_reports > 0 and not trajectory_ok:
+        if missing_outputs:
             result["errors"].append(
-                "Reporter output missing after simulation: trajectory"
+                "Reporter outputs missing after simulation: "
+                + ", ".join(missing_outputs)
             )
         else:
-            if expected_reports > 0 and not energy_ok:
-                result["warnings"].append(
-                    "Energy reporter output is empty after simulation; "
-                    "trajectory is intact and the node is marked successful."
-                )
             result["success"] = True
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
