@@ -1000,11 +1000,14 @@ def run_production(
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
         energy_file = out_dir / f"{pref}energy.dat"
 
-        # Only append if restarting AND the file already exists
+        # Trajectory and energy reporters must fire on the SAME schedule
+        # and share the SAME append state. A single report_interval and a
+        # single do_append variable ensures they cannot drift apart (e.g.
+        # energy_file existing but trajectory_file missing, or vice versa,
+        # would otherwise silently diverge the `append=` argument).
+        report_interval = int(output_frequency_ps / timestep_fs * 1000)
         do_append = append_dcd and trajectory_file.exists()
 
-        # Setup trajectory reporter
-        report_interval = int(output_frequency_ps / timestep_fs * 1000)
         trajectory_reporter = None
         if trajectory_format.lower() == "dcd":
             trajectory_reporter = DCDReporter(
@@ -1015,7 +1018,6 @@ def run_production(
             trajectory_reporter = PDBReporter(str(trajectory_file), report_interval)
         simulation.reporters.append(trajectory_reporter)
 
-        # Setup energy reporter
         energy_reporter = StateDataReporter(
             str(energy_file),
             report_interval,
@@ -1027,7 +1029,7 @@ def run_production(
             temperature=True,
             volume=(ensemble == "NPT"),
             density=(ensemble == "NPT"),
-            append=(append_dcd and energy_file.exists()),
+            append=do_append,
         )
         simulation.reporters.append(energy_reporter)
 
@@ -1123,19 +1125,29 @@ def run_production(
         result["final_structure"] = str(final_pdb)
         result["energy_file"] = str(energy_file)
 
-        missing_outputs = []
-        if expected_reports > 0:
-            if not trajectory_file.exists() or trajectory_file.stat().st_size == 0:
-                missing_outputs.append("trajectory")
-            if not energy_file.exists() or energy_file.stat().st_size == 0:
-                missing_outputs.append("energy")
+        # Trajectory is the primary scientific output — missing it is a
+        # hard failure. Energy is an auxiliary log (state reporter text
+        # file); when a shared filesystem or a reporter quirk leaves it
+        # empty despite the trajectory being fine, we surface it as a
+        # warning but keep the node marked successful so downstream
+        # analysis can still proceed against the trajectory.
+        trajectory_ok = (
+            trajectory_file.exists() and trajectory_file.stat().st_size > 0
+        )
+        energy_ok = (
+            energy_file.exists() and energy_file.stat().st_size > 0
+        )
 
-        if missing_outputs:
+        if expected_reports > 0 and not trajectory_ok:
             result["errors"].append(
-                "Reporter outputs missing after simulation: "
-                + ", ".join(missing_outputs)
+                "Reporter output missing after simulation: trajectory"
             )
         else:
+            if expected_reports > 0 and not energy_ok:
+                result["warnings"].append(
+                    "Energy reporter output is empty after simulation; "
+                    "trajectory is intact and the node is marked successful."
+                )
             result["success"] = True
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
