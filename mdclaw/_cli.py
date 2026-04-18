@@ -330,6 +330,15 @@ def main(argv: list[str] | None = None) -> None:
         kwargs = {}
         missing = []
         args_dict = vars(args)
+        # Propagate global --job-dir/--node-id into the per-tool namespace so
+        # that downstream missing-arg checks see them. The subparser declares
+        # its own --job-dir/--node-id when the tool signature has those
+        # parameters, but argparse does not mirror the global flags into the
+        # subparser's namespace automatically.
+        if _global_job_dir is not None and args_dict.get("job_dir") is None:
+            args_dict["job_dir"] = _global_job_dir
+        if _global_node_id is not None and args_dict.get("node_id") is None:
+            args_dict["node_id"] = _global_node_id
         for pname, param in sig.parameters.items():
             hint = hints.get(pname, param.annotation)
             _, is_optional = _unwrap_optional(hint) if hint is not inspect.Parameter.empty else (hint, False)

@@ -635,6 +635,32 @@ class TestNodeCLIParameters:
         assert progress["params"]["execution_mode"] == "autonomous"
         assert progress["params"]["workflow_mode"] == "single_step"
 
+    def test_global_job_dir_node_id_satisfy_subparser_required_params(self, tmp_path):
+        """Skill docs invoke node tools with global flags placed BEFORE the
+        subcommand (``mdclaw --job-dir X --node-id Y <tool> ...``). The
+        subparser also declares ``--job-dir``/``--node-id`` whenever the
+        tool signature has those parameters, so the CLI must forward the
+        global values into the per-tool namespace before the missing-args
+        check runs. Otherwise tools like ``register_local_structure`` that
+        declare ``job_dir`` / ``node_id`` as required parameters error out
+        even when the global flags were supplied.
+        """
+        from mdclaw._cli import main
+        from mdclaw._node import create_node
+
+        create_node(str(tmp_path), "fetch")
+        src = tmp_path / "input.pdb"
+        src.write_text("HEADER    test\nEND\n")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--job-dir", str(tmp_path),
+                "--node-id", "fetch_001",
+                "register_local_structure",
+                "--file-path", str(src),
+            ])
+        assert exc_info.value.code == 0
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
