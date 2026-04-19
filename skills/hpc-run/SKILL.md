@@ -333,17 +333,46 @@ structured `tasks` on the CLI. Pass the same flag names with `--tasks
 '<json>'` directly once you have the list built in your shell — CLI-level
 JSON-string decoding works for list-of-dict arguments too.
 
-### Throttling concurrency
+### Concurrency: default is no throttle
 
-Pass `--max-concurrent K` to cap simultaneously-running tasks:
+**Default:** do **not** pass `--max-concurrent`. Submit all N tasks as a
+single array (`#SBATCH --array=0-N-1`) and let the SLURM scheduler decide
+how many run concurrently based on live partition availability. With K
+free GPUs on the partition, SLURM will dispatch min(N, K) tasks
+immediately and queue the rest — that is strictly the fastest way to
+drain a batch. Capping concurrency below what the cluster can actually
+absorb only *slows* the batch down and leaves GPUs idle.
+
+This is especially important when running many short jobs (e.g., a
+fan-out of 100+ 1 ns sanity runs across the full GPU pool). Let SLURM
+spread them across every node with a free GPU; don't hand-pick a
+concurrency number.
 
 ```bash
-mdclaw submit_array_job --tasks "$TASKS" --max-concurrent 2 \
+# Preferred: no --max-concurrent. Submit all N tasks, let SLURM schedule.
+mdclaw submit_array_job --tasks "$TASKS" \
   --partition gpu --gpus 1 --time-limit "24:00:00"
 ```
 
-This emits `#SBATCH --array=0-N-1%K`. Useful when the queue has many
-free GPUs but you want to hold back (e.g., I/O pressure, quota).
+**When to throttle with `--max-concurrent K`** (rare, opt-in):
+
+```bash
+mdclaw submit_array_job --tasks "$TASKS" --max-concurrent 8 \
+  --partition gpu --gpus 1 --time-limit "24:00:00"
+```
+
+Use this only for concrete, named reasons — **not** as a generic safety
+habit. Legitimate reasons include:
+
+- **Fair-share / quota**: you're sharing the partition and cluster
+  policy tells you to cap yourself.
+- **Shared I/O pressure**: all N tasks hammer the same filesystem
+  (large DCD writes to a single scratch mount) and empirically thrash.
+- **License limits**: a paid MD engine with a concurrent-seat license.
+- **Debugging**: running just the first few to validate the sbatch
+  script before unleashing the full batch.
+
+If none of those apply, leave `--max-concurrent` off.
 
 ### Replicates from a single `eq` node
 
