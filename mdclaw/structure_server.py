@@ -2211,8 +2211,12 @@ def clean_protein(
         num_nonstandard = len(fixer.nonstandardResidues)
         
         if num_nonstandard > 0:
-            nonstandard_info = [f"{res.name} (chain {res.chain.id}, pos {res.index})" 
-                              for res in fixer.nonstandardResidues]
+            # PDBFixer's nonstandardResidues is a list of (Residue, replacement_name)
+            # tuples, not a list of Residue objects — unpacking is mandatory.
+            nonstandard_info = [
+                f"{res.name}->{repl} (chain {res.chain.id}, pos {res.index})"
+                for res, repl in fixer.nonstandardResidues
+            ]
             
             if replace_nonstandard_residues:
                 fixer.replaceNonstandardResidues()

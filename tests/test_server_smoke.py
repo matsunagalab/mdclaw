@@ -219,6 +219,59 @@ class TestStructureServer:
         assert result["success"] is True
         assert Path(result["output_file"]).exists()
 
+    def test_clean_protein_handles_nonstandard_residue_tuples(
+        self, small_pdb, monkeypatch
+    ):
+        """PDBFixer returns (Residue, replacement_name) tuples for
+        ``nonstandardResidues``. Regression for a bug where the comprehension
+        treated each entry as a Residue and crashed with AttributeError on
+        any structure that actually has non-standard residues (e.g. PCA, MSE).
+        """
+        from pdbfixer import PDBFixer
+        import structure_server
+
+        class _FakeChain:
+            def __init__(self, chain_id):
+                self.id = chain_id
+
+        class _FakeResidue:
+            def __init__(self, name, chain_id, index):
+                self.name = name
+                self.chain = _FakeChain(chain_id)
+                self.index = index
+
+        real_find = PDBFixer.findNonstandardResidues
+
+        def fake_find(self):
+            real_find(self)
+            # Inject a (Residue, replacement_name) tuple so the fix's
+            # unpacking path is exercised even on inputs without PCA/MSE.
+            self.nonstandardResidues = [
+                (_FakeResidue("PCA", "A", 0), "GLU"),
+            ]
+
+        monkeypatch.setattr(PDBFixer, "findNonstandardResidues", fake_find)
+
+        # Skip the actual replaceNonstandardResidues call — PDBFixer would
+        # reject our stub Residue objects. The comprehension runs before
+        # the replace call, which is the only thing we need to verify.
+        monkeypatch.setattr(
+            PDBFixer, "replaceNonstandardResidues", lambda self: None
+        )
+
+        result = structure_server.clean_protein(
+            pdb_file=small_pdb,
+            ignore_terminal_missing_residues=True,
+        )
+        assert result["success"] is True
+        ns_ops = [
+            op for op in result["operations"]
+            if op["step"] == "nonstandard_residues"
+        ]
+        assert ns_ops, "clean_protein did not record a nonstandard_residues op"
+        assert ns_ops[0]["status"] == "replaced"
+        assert "PCA->GLU" in ns_ops[0]["details"]
+
     def test_merge_structures(self, small_pdb, tmp_path):
         from structure_server import merge_structures
 
