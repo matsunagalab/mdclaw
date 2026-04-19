@@ -92,6 +92,18 @@ mdclaw create_node --job-dir <dir> --node-type prod \
 > node's artifacts, append) and (2) no `metadata.continued_from` audit
 > record. Prefer creating a new prod node with `--continue-from` for
 > chained extensions; it is much easier to reason about.
+>
+> **Safety guard on retry.** If the prior run left the node in
+> `status: failed` or the existing `trajectory.dcd` has no valid DCD
+> header (e.g. 0-byte orphan left by a reporter flush interrupted by
+> synced-filesystem lag), the tool discards the stale `trajectory.dcd`
+> and `energy.dat` and starts those files fresh while still resuming
+> from the checkpoint. The caller sees this as a
+> `warnings[]` entry of the form
+> `"Discarded stale artifacts from previous run (<reason>); starting
+> trajectory/energy fresh while resuming from checkpoint."`. The legacy
+> append path is only taken when the prior state is safe — i.e. valid
+> partial DCD on a node whose status is not `failed`.
 
 ## Workflow
 
