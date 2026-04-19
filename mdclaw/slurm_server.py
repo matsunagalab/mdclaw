@@ -33,6 +33,12 @@ from mdclaw._common import (
     run_command,
     split_guardrail_results,
 )
+from mdclaw._node import (
+    fail_node,
+    read_node,
+    update_node,
+    update_node_status,
+)
 
 # File-argument flags used to auto-extract bind paths for Singularity
 _FILE_ARG_PATTERN = re.compile(r"--[\w-]*file\s+(\S+)")
@@ -79,7 +85,13 @@ def _read_job_records() -> list[dict]:
 
 
 def _update_job_record(job_id: str, updates: dict) -> None:
-    """Update fields of a tracked job in-place."""
+    """Update fields of a tracked job in-place.
+
+    Matches on ``job_id``. When SLURM returns an array child in ``JOBID_TASKID``
+    form, records keyed by either the full child id or the parent id are
+    updated: each array child stamps its own row by ``slurm_job_id`` equal to
+    the child id, so callers pass that to this function.
+    """
     path = _get_jobs_path()
     if not path.exists():
         return
@@ -95,6 +107,149 @@ def _update_job_record(job_id: str, updates: dict) -> None:
         except json.JSONDecodeError:
             updated.append(line)
     path.write_text("\n".join(updated) + "\n")
+
+
+def _find_record_by_job_id(job_id: str) -> Optional[dict]:
+    """Return the first tracker record whose ``job_id`` matches."""
+    for rec in _read_job_records():
+        if str(rec.get("job_id")) == str(job_id):
+            return rec
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Node integration helpers (schema v3)
+# ---------------------------------------------------------------------------
+
+
+def _stamp_slurm_on_node(
+    job_dir: str,
+    node_id: str,
+    slurm_job_id: str,
+    *,
+    script_file: str,
+    stdout_log: str,
+    stderr_log: str,
+    array_task_id: Optional[int] = None,
+    parent_job_id: Optional[str] = None,
+    set_queued: bool = True,
+) -> Optional[str]:
+    """Stamp SLURM-submission metadata onto a node's ``node.json``.
+
+    Returns an error string on failure (for caller to append to warnings),
+    or ``None`` on success. Never raises — stamping is a convenience, not a
+    correctness requirement.
+
+    ``slurm_parent_job_id`` is recorded whenever *parent_job_id* is given
+    (always for array children; also for single-job submissions so that
+    later tools can construct chain dependencies purely from ``node.json``
+    without falling back to the JSONL tracker). For array children
+    ``parent_job_id`` is the array's parent id (e.g. ``117135``) and
+    ``slurm_job_id`` is the child id (``117135_<task>``); for single-job
+    submissions the two are equal.
+    """
+    node_dir = Path(job_dir) / "nodes" / node_id
+    if not (node_dir / "node.json").exists():
+        return f"node {node_id} not found under {job_dir} (stamp skipped)"
+
+    meta: dict = {
+        "slurm_job_id": slurm_job_id,
+        "slurm_script_file": script_file,
+        "slurm_stdout_log": stdout_log,
+        "slurm_stderr_log": stderr_log,
+        "slurm_submitted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if array_task_id is not None:
+        meta["slurm_array_task_id"] = array_task_id
+    if parent_job_id is not None:
+        meta["slurm_parent_job_id"] = parent_job_id
+
+    try:
+        update_node(str(job_dir), node_id, {"metadata": meta})
+        if set_queued:
+            update_node_status(str(job_dir), node_id, "queued")
+        return None
+    except Exception as e:
+        return f"could not stamp node {node_id}: {e}"
+
+
+def _sync_slurm_state_to_node(
+    job_dir: str,
+    node_id: str,
+    slurm_state: str,
+    *,
+    stderr_tail: Optional[str] = None,
+    elapsed: Optional[str] = None,
+    exit_code: Optional[str] = None,
+) -> Optional[str]:
+    """Reflect a SLURM state transition onto a node.
+
+    Policy:
+    - RUNNING → node.status=running (only if currently queued/pending; never
+      roll back from a tool-owned completed/failed state).
+    - FAILED / TIMEOUT / OUT_OF_MEMORY / CANCELLED → node.status=failed via
+      ``fail_node`` with stderr tail captured in metadata.
+    - COMPLETED / success → do nothing here: the tool running inside the job
+      is responsible for transitioning to ``completed`` once its work is done.
+      SLURM exit 0 only means the wrapper script exited cleanly, which is
+      a weaker signal than the tool's own completion hook.
+    """
+    node_json = Path(job_dir) / "nodes" / node_id / "node.json"
+    if not node_json.exists():
+        return f"node {node_id} not found under {job_dir} (sync skipped)"
+
+    try:
+        current = read_node(str(job_dir), node_id).get("status")
+    except Exception as e:
+        return f"could not read node {node_id}: {e}"
+
+    state = (slurm_state or "").upper()
+
+    if state == "RUNNING":
+        # Only advance from pending/queued states; never demote completed.
+        if current in (None, "pending", "queued"):
+            try:
+                update_node_status(str(job_dir), node_id, "running")
+            except Exception as e:
+                return f"could not set node {node_id} running: {e}"
+        return None
+
+    if state in {"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "NODE_FAIL",
+                 "BOOT_FAIL", "DEADLINE"}:
+        # Leave tool-owned failures alone but still annotate stderr.
+        if current == "completed":
+            return (
+                f"node {node_id} already completed but SLURM reports {state}; "
+                f"not demoting node status"
+            )
+        try:
+            errors = [f"SLURM state: {state}"]
+            if exit_code:
+                errors.append(f"exit_code={exit_code}")
+            if elapsed:
+                errors.append(f"elapsed={elapsed}")
+            meta: dict = {"slurm_state": state}
+            if stderr_tail:
+                meta["slurm_stderr_tail"] = stderr_tail
+            if exit_code:
+                meta["slurm_exit_code"] = exit_code
+            if elapsed:
+                meta["slurm_elapsed"] = elapsed
+            # fail_node wraps update_node_status under the right lock.
+            fail_node(
+                str(job_dir),
+                node_id,
+                errors=errors,
+            )
+            # Attach the stderr tail via generic metadata merge (fail_node
+            # only takes errors). Status is already "failed" at this point.
+            update_node(str(job_dir), node_id, {"metadata": meta})
+        except Exception as e:
+            return f"could not fail node {node_id}: {e}"
+        return None
+
+    # COMPLETED / other states: leave node.status alone (tool owns it).
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +879,8 @@ def submit_job(
     qos: Optional[str] = None,
     extra_sbatch: Optional[str] = None,
     environment: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Submit a job to SLURM via sbatch.
 
@@ -758,6 +915,13 @@ def submit_job(
         environment: Shell commands for environment setup (e.g., module loads).
             Inserted before the main command. If None, auto-inserts from
             MDCLAW_MODULE_LOADS if set.
+        job_dir: Optional path to a schema-v3 job directory. When provided
+            together with ``node_id``, the SLURM job ID is stamped on that
+            node's ``node.json`` metadata and the node's status is advanced
+            to ``queued``. Stamping failure becomes a warning; sbatch
+            submission is not rolled back.
+        node_id: Optional node ID within ``job_dir`` whose ``node.json``
+            receives the SLURM metadata.
 
     Returns:
         dict with:
@@ -768,6 +932,8 @@ def submit_job(
           - stdout_log: str - Path to stdout log
           - stderr_log: str - Path to stderr log
           - output_dir: str
+          - job_dir: str | None - echoed from input
+          - node_id: str | None - echoed from input
           - errors: list[str]
           - warnings: list[str]
     """
@@ -779,9 +945,23 @@ def submit_job(
         "stdout_log": None,
         "stderr_log": None,
         "output_dir": None,
+        "job_dir": job_dir,
+        "node_id": node_id,
         "errors": [],
         "warnings": [],
     }
+
+    if node_id and not job_dir:
+        return {
+            **result,
+            **create_validation_error(
+                "node_id",
+                "node_id requires job_dir",
+                actual=f"node_id={node_id!r} without job_dir",
+                expected="both job_dir and node_id, or neither",
+                hints=["Pass --job-dir together with --node-id."],
+            ),
+        }
 
     if not check_external_tool("sbatch"):
         return {**result, **create_tool_not_available_error(
@@ -949,8 +1129,8 @@ def submit_job(
             except OSError as e:
                 result["warnings"].append(f"Could not save metadata: {e}")
 
-            # Track in JSONL
-            _append_job_record({
+            # Track in JSONL (includes node linkage when provided)
+            tracker_record = {
                 "job_id": slurm_job_id,
                 "job_name": job_name,
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
@@ -960,12 +1140,460 @@ def submit_job(
                 "time_limit": time_limit,
                 "script": script,
                 "output_dir": str(out_dir),
-            })
+            }
+            if job_dir:
+                tracker_record["job_dir"] = str(Path(job_dir).resolve())
+            if node_id:
+                tracker_record["node_id"] = node_id
+            _append_job_record(tracker_record)
+
+            # Stamp the DAG node (optional; best-effort).
+            # For a single submit_job, parent = child = slurm_job_id, so a
+            # downstream caller can still read a stable `slurm_parent_job_id`
+            # off the node and build an `afterok:<id>` dependency against it.
+            if job_dir and node_id:
+                stamp_err = _stamp_slurm_on_node(
+                    str(Path(job_dir).resolve()),
+                    node_id,
+                    slurm_job_id,
+                    script_file=str(script_file),
+                    stdout_log=result["stdout_log"],
+                    stderr_log=result["stderr_log"],
+                    parent_job_id=slurm_job_id,
+                )
+                if stamp_err:
+                    result["warnings"].append(stamp_err)
 
             result["success"] = True
         else:
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
 
+    except subprocess.CalledProcessError as e:
+        result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
+    except subprocess.TimeoutExpired:
+        result["errors"].append(f"sbatch timed out after {timeout}s")
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Job array submission (multi-node DAG)
+# ---------------------------------------------------------------------------
+
+
+def _generate_array_sbatch_script(
+    tasks: list[dict],
+    job_name: str,
+    partition: Optional[str],
+    cpus_per_task: int,
+    gpus: int,
+    gres: Optional[str],
+    time_limit: str,
+    memory: Optional[str],
+    max_concurrent: Optional[int],
+    dependency: Optional[str],
+    output_dir: str,
+    account: Optional[str],
+    qos: Optional[str],
+    extra_sbatch: Optional[str],
+    environment: Optional[str],
+    stdout_log: str,
+    stderr_log: str,
+    container: Optional[dict] = None,
+) -> str:
+    """Generate a sbatch script that dispatches one DAG node per array task.
+
+    The dispatcher is a bash ``case`` statement keyed on
+    ``$SLURM_ARRAY_TASK_ID``. Each case arm wraps the task's user-supplied
+    command with a ``singularity exec`` call when a container is configured,
+    using *only* the paths this specific task needs (its own ``job_dir``)
+    plus user-configured binds. Tasks do not share bind sets — keeping each
+    arm's bind list tight makes it obvious which job_dir each task touches
+    and avoids accidental cross-job writes through the container.
+    """
+    lines = ["#!/bin/bash"]
+
+    n_tasks = len(tasks)
+    last_idx = n_tasks - 1
+    array_spec = f"0-{last_idx}"
+    if max_concurrent is not None and max_concurrent > 0:
+        array_spec = f"{array_spec}%{max_concurrent}"
+
+    lines.append(f"#SBATCH --job-name={job_name}")
+    if partition:
+        lines.append(f"#SBATCH --partition={partition}")
+    lines.append("#SBATCH --nodes=1")
+    lines.append("#SBATCH --ntasks=1")
+    lines.append(f"#SBATCH --cpus-per-task={cpus_per_task}")
+    if gres:
+        lines.append(f"#SBATCH --gres={gres}")
+    elif gpus > 0:
+        lines.append(f"#SBATCH --gpus-per-node={gpus}")
+    lines.append(f"#SBATCH --time={time_limit}")
+    if memory:
+        lines.append(f"#SBATCH --mem={memory}")
+    if dependency:
+        lines.append(f"#SBATCH --dependency={dependency}")
+    lines.append(f"#SBATCH --array={array_spec}")
+    lines.append(f"#SBATCH --output={stdout_log}")
+    lines.append(f"#SBATCH --error={stderr_log}")
+    if account:
+        lines.append(f"#SBATCH --account={account}")
+    if qos:
+        lines.append(f"#SBATCH --qos={qos}")
+
+    if extra_sbatch:
+        for line in extra_sbatch.strip().splitlines():
+            line = line.strip()
+            if line:
+                if not line.startswith("#SBATCH"):
+                    line = f"#SBATCH {line}"
+                lines.append(line)
+
+    lines.append("")
+
+    env_lines = environment
+    if not env_lines:
+        modules = get_module_loads()
+        if modules:
+            module_init = os.getenv("MDCLAW_MODULE_INIT", "/etc/profile.d/modules.sh")
+            env_parts = [f"source {module_init}"]
+            env_parts.extend(f"module load {m}" for m in modules)
+            env_lines = "\n".join(env_parts)
+
+    if env_lines:
+        lines.append("# Environment setup")
+        lines.append(env_lines.strip())
+        lines.append("")
+
+    lines.append("# Array dispatch: one DAG node per SLURM_ARRAY_TASK_ID")
+    lines.append('case "$SLURM_ARRAY_TASK_ID" in')
+    for idx, task in enumerate(tasks):
+        cmd = task["command"].strip()
+        # Wrap with singularity per-task (only when no explicit environment was
+        # provided — explicit environment takes precedence just like in
+        # submit_job).
+        if container and not environment:
+            cmd = _build_singularity_command(
+                cmd, container, output_dir=task["job_dir"],
+            )
+        # Quote-safe single-line echo + exec; use printf for the banner so
+        # literal $-signs in the command don't re-expand in the case body.
+        banner = f"echo [array_task=${{SLURM_ARRAY_TASK_ID}}] job_dir={task['job_dir']} node_id={task['node_id']}"
+        lines.append(f"  {idx})")
+        lines.append(f"    {banner}")
+        lines.append(f"    {cmd}")
+        lines.append("    ;;")
+    lines.append("  *)")
+    lines.append('    echo "Unknown SLURM_ARRAY_TASK_ID: $SLURM_ARRAY_TASK_ID" >&2')
+    lines.append("    exit 1")
+    lines.append("    ;;")
+    lines.append("esac")
+    lines.append("")
+
+    return "\n".join(lines)
+
+
+def submit_array_job(
+    tasks: list[dict],
+    job_name: Optional[str] = None,
+    partition: Optional[str] = None,
+    cpus_per_task: int = 1,
+    gpus: int = 0,
+    gres: Optional[str] = None,
+    time_limit: str = "24:00:00",
+    memory: Optional[str] = None,
+    max_concurrent: Optional[int] = None,
+    dependency: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    account: Optional[str] = None,
+    qos: Optional[str] = None,
+    extra_sbatch: Optional[str] = None,
+    environment: Optional[str] = None,
+) -> dict:
+    """Submit a SLURM job array where each task maps 1:1 to a DAG node.
+
+    This is the preferred way to fan out N independent workflow nodes
+    (for example, N production replicates from the same equilibration, or
+    N eq nodes from N different systems) as a single sbatch submission with
+    ``#SBATCH --array=0-N-1``.
+
+    Each task dict MUST carry:
+      - ``job_dir`` (str): absolute path to the job directory (schema v3)
+      - ``node_id`` (str): the node this array task is responsible for
+      - ``command`` (str): the shell command to execute for this task.
+        Typically a ``mdclaw --job-dir <jd> --node-id <nid> <tool> ...``
+        invocation. The command is wrapped with ``singularity exec`` when
+        a container is configured (matches ``submit_job`` behaviour), with
+        that task's ``job_dir`` as the primary bind path.
+
+    Policy validation (partition / gpus / cpus / time / memory) runs exactly
+    as in ``submit_job``. The ``--array`` spec appends ``%<max_concurrent>``
+    when that argument is given so the scheduler caps simultaneously-running
+    tasks.
+
+    On success, every task's ``node.json`` is stamped with:
+      - ``slurm_job_id`` = ``<parent_id>_<array_task_id>`` (matches
+        ``squeue``/``sacct`` child-id form)
+      - ``slurm_array_task_id`` (int)
+      - standard script_file / stdout_log / stderr_log paths
+
+    Args:
+        tasks: Non-empty list of task dicts as described above.
+        job_name: Base job name. SLURM adds ``_<task>`` to child jobs'
+            display names (the array "parent" keeps the base name).
+        partition: SLURM partition.
+        cpus_per_task, gpus, gres, time_limit, memory: Per-task resources.
+        max_concurrent: Upper bound on simultaneously-running array tasks
+            (maps to ``--array=0-N%M``). Useful when you want to submit
+            many tasks but only let K run at once.
+        dependency: Job dependency spec (applied to the parent array).
+        output_dir: Directory for logs and the generated sbatch script.
+            Log files use ``%A_%a`` so each task lands in its own file.
+        account, qos, extra_sbatch, environment: Same as ``submit_job``.
+
+    Returns:
+        dict with:
+          - success: bool
+          - parent_job_id: str — SLURM id of the array parent
+          - array_spec: str — e.g. ``"0-2"`` or ``"0-9%3"``
+          - tasks: list[dict] — per-task {array_task_id, slurm_job_id,
+            job_dir, node_id, stdout_log, stderr_log}
+          - script_file: str
+          - output_dir: str
+          - errors: list[str]
+          - warnings: list[str]
+    """
+    result: dict[str, Any] = {
+        "success": False,
+        "parent_job_id": None,
+        "array_spec": None,
+        "tasks": [],
+        "script_file": None,
+        "output_dir": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    if not isinstance(tasks, list) or not tasks:
+        return {
+            **result,
+            **create_validation_error(
+                "tasks",
+                "tasks must be a non-empty list",
+                actual=str(type(tasks).__name__) if not isinstance(tasks, list) else "[]",
+                expected="list[dict] with at least one entry",
+                hints=['Pass e.g. [{"job_dir": "/abs/jd", "node_id": "prod_001", "command": "mdclaw ..."}]'],
+            ),
+        }
+
+    for idx, task in enumerate(tasks):
+        for field in ("job_dir", "node_id", "command"):
+            if not task.get(field):
+                return {
+                    **result,
+                    **create_validation_error(
+                        f"tasks[{idx}].{field}",
+                        f"tasks[{idx}] is missing required field '{field}'",
+                        actual=json.dumps(task, default=str),
+                        expected="dict with keys job_dir, node_id, command",
+                        hints=["Provide all three fields for every task."],
+                    ),
+                }
+
+    if not check_external_tool("sbatch"):
+        return {**result, **create_tool_not_available_error(
+            "sbatch", "SLURM is not installed or not in PATH."
+        )}
+
+    # Resolve job_dirs to absolute and check node.json existence
+    normalized_tasks: list[dict] = []
+    for idx, task in enumerate(tasks):
+        jd = Path(task["job_dir"]).resolve()
+        nid = task["node_id"]
+        if not (jd / "nodes" / nid / "node.json").exists():
+            result["warnings"].append(
+                f"tasks[{idx}]: node {nid} not found under {jd}; stamp will be skipped"
+            )
+        normalized_tasks.append({
+            "job_dir": str(jd),
+            "node_id": nid,
+            "command": task["command"],
+        })
+
+    if not job_name:
+        job_name = f"mdclaw_array_{generate_job_id(6)}"
+    result["output_dir"] = None
+
+    out_dir = Path(output_dir) if output_dir else Path.cwd()
+    ensure_directory(out_dir)
+    out_dir = out_dir.resolve()
+    result["output_dir"] = str(out_dir)
+
+    # Load policy + defaults (same path as submit_job).
+    config = _load_cluster_config()
+    policy = _get_policy(config)
+    defaults = policy.get("defaults", {})
+
+    if not partition and defaults.get("partition"):
+        partition = defaults["partition"]
+        result["warnings"].append(f"Using policy default partition: {partition}")
+    if not account and defaults.get("account"):
+        account = defaults["account"]
+    if not qos and defaults.get("qos"):
+        qos = defaults["qos"]
+
+    if not partition and config and config.get("partitions"):
+        available = [
+            p for p in config["partitions"]
+            if _is_partition_allowed(p["name"], policy)
+        ] or config["partitions"]
+        if gpus > 0:
+            for p in available:
+                if p.get("gpus_per_node", 0) > 0:
+                    partition = p["name"]
+                    break
+        if not partition and available:
+            partition = available[0]["name"]
+        if partition:
+            result["warnings"].append(f"Auto-selected partition: {partition}")
+
+    if policy:
+        policy_results = _validate_against_policy(
+            partition=partition,
+            gpus=gpus,
+            cpus_per_task=cpus_per_task,
+            nodes=1,
+            time_limit=time_limit,
+            memory=memory,
+            policy=policy,
+        )
+        blocking, warning_res = split_guardrail_results(policy_results)
+        result["warnings"].extend(guardrail_messages(warning_res))
+        if blocking:
+            return {
+                **result,
+                **create_validation_error_from_guardrails(
+                    "policy",
+                    policy_results,
+                    summary="; ".join(guardrail_messages(blocking)),
+                    actual=(
+                        f"partition={partition}, gpus={gpus}, "
+                        f"cpus_per_task={cpus_per_task}, time_limit={time_limit}, "
+                        f"memory={memory}"
+                    ),
+                ),
+            }
+
+    # Log paths use SLURM's %A (array parent) and %a (task id) substitutions.
+    stdout_log = str(out_dir / f"{job_name}_%A_%a.out")
+    stderr_log = str(out_dir / f"{job_name}_%A_%a.err")
+
+    container = _get_container_config(config)
+
+    sbatch_content = _generate_array_sbatch_script(
+        tasks=normalized_tasks,
+        job_name=job_name,
+        partition=partition,
+        cpus_per_task=cpus_per_task,
+        gpus=gpus,
+        gres=gres,
+        time_limit=time_limit,
+        memory=memory,
+        max_concurrent=max_concurrent,
+        dependency=dependency,
+        output_dir=str(out_dir),
+        account=account,
+        qos=qos,
+        extra_sbatch=extra_sbatch,
+        environment=environment,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        container=container,
+    )
+
+    script_file = out_dir / f"{job_name}.sbatch"
+    script_file.write_text(sbatch_content)
+    script_file.chmod(0o755)
+    result["script_file"] = str(script_file)
+
+    last_idx = len(normalized_tasks) - 1
+    array_spec = f"0-{last_idx}"
+    if max_concurrent is not None and max_concurrent > 0:
+        array_spec = f"{array_spec}%{max_concurrent}"
+    result["array_spec"] = array_spec
+
+    timeout = get_timeout("slurm")
+    try:
+        proc = run_command(["sbatch", str(script_file)], timeout=timeout)
+        m = re.search(r"Submitted batch job (\d+)", proc.stdout)
+        if not m:
+            result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
+            return result
+        parent_id = m.group(1)
+        result["parent_job_id"] = parent_id
+
+        # Per-task bookkeeping
+        for idx, task in enumerate(normalized_tasks):
+            child_job_id = f"{parent_id}_{idx}"
+            task_stdout = stdout_log.replace("%A", parent_id).replace("%a", str(idx))
+            task_stderr = stderr_log.replace("%A", parent_id).replace("%a", str(idx))
+
+            _append_job_record({
+                "job_id": child_job_id,
+                "job_name": job_name,
+                "submitted_at": datetime.now(timezone.utc).isoformat(),
+                "status": "SUBMITTED",
+                "partition": partition,
+                "gpus": gpus,
+                "time_limit": time_limit,
+                "script": task["command"],
+                "output_dir": str(out_dir),
+                "parent_job_id": parent_id,
+                "array_task_id": idx,
+                "job_dir": task["job_dir"],
+                "node_id": task["node_id"],
+            })
+
+            stamp_err = _stamp_slurm_on_node(
+                task["job_dir"],
+                task["node_id"],
+                child_job_id,
+                script_file=str(script_file),
+                stdout_log=task_stdout,
+                stderr_log=task_stderr,
+                array_task_id=idx,
+                parent_job_id=parent_id,
+            )
+            if stamp_err:
+                result["warnings"].append(stamp_err)
+
+            result["tasks"].append({
+                "array_task_id": idx,
+                "slurm_job_id": child_job_id,
+                "job_dir": task["job_dir"],
+                "node_id": task["node_id"],
+                "stdout_log": task_stdout,
+                "stderr_log": task_stderr,
+            })
+
+        # Save parent metadata (useful for check_job_log fallbacks)
+        meta_path = out_dir / "job_metadata.json"
+        try:
+            meta_path.write_text(json.dumps({
+                "parent_job_id": parent_id,
+                "job_name": job_name,
+                "script_file": str(script_file),
+                "partition": partition,
+                "gpus": gpus,
+                "time_limit": time_limit,
+                "array_spec": array_spec,
+                "tasks": result["tasks"],
+            }, indent=2))
+        except OSError as e:
+            result["warnings"].append(f"Could not save array metadata: {e}")
+
+        result["success"] = True
     except subprocess.CalledProcessError as e:
         result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
     except subprocess.TimeoutExpired:
@@ -1033,6 +1661,7 @@ def check_job(job_id: str) -> dict:
                 result["elapsed"] = str(time_info)
 
             result["success"] = True
+            _check_job_finalize(result, str(job_id))
             return result
 
     except (subprocess.CalledProcessError, json.JSONDecodeError):
@@ -1049,6 +1678,7 @@ def check_job(job_id: str) -> dict:
                 result["elapsed"] = parts[1] if len(parts) > 1 else None
                 result["node"] = parts[2] if len(parts) > 2 else None
                 result["success"] = True
+                _check_job_finalize(result, str(job_id))
                 return result
         except subprocess.CalledProcessError:
             pass  # Job not in queue, try sacct
@@ -1110,9 +1740,20 @@ def check_job(job_id: str) -> dict:
         result["errors"].append(f"Job {job_id} not in queue and sacct not available")
         return result
 
+    _check_job_finalize(result, str(job_id))
+    return result
+
+
+def _check_job_finalize(result: dict, job_id: str) -> None:
+    """Shared tail of :func:`check_job`: capture stderr tail for failures,
+    update the JSONL tracker, and reflect SLURM state onto any linked DAG
+    node. Called from every exit point of :func:`check_job` so queue-hit
+    (RUNNING/PENDING via squeue) and archive-hit (COMPLETED/FAILED via
+    sacct) paths both sync consistently.
+    """
     # Auto-retrieve stderr tail for failed/timed-out jobs
     if result.get("state") in ("FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"):
-        meta = _find_job_metadata(str(job_id))
+        meta = _find_job_metadata(job_id)
         if meta:
             stderr_path = meta.get("stderr_log")
             if stderr_path and Path(stderr_path).exists():
@@ -1134,17 +1775,31 @@ def check_job(job_id: str) -> dict:
                     break
 
     # Update job tracker
-    if result.get("success") and result.get("state"):
-        updates = {"status": result["state"]}
-        if result.get("node"):
-            updates["node"] = result["node"]
-        if result.get("elapsed"):
-            updates["elapsed"] = result["elapsed"]
-        if result.get("exit_code"):
-            updates["exit_code"] = result["exit_code"]
-        _update_job_record(job_id, updates)
+    if not (result.get("success") and result.get("state")):
+        return
 
-    return result
+    updates = {"status": result["state"]}
+    if result.get("node"):
+        updates["node"] = result["node"]
+    if result.get("elapsed"):
+        updates["elapsed"] = result["elapsed"]
+    if result.get("exit_code"):
+        updates["exit_code"] = result["exit_code"]
+    _update_job_record(job_id, updates)
+
+    # Reflect SLURM state onto the linked DAG node (if any).
+    rec = _find_record_by_job_id(job_id)
+    if rec and rec.get("job_dir") and rec.get("node_id"):
+        sync_err = _sync_slurm_state_to_node(
+            rec["job_dir"],
+            rec["node_id"],
+            str(result["state"]),
+            stderr_tail=result.get("stderr_tail"),
+            elapsed=result.get("elapsed"),
+            exit_code=result.get("exit_code"),
+        )
+        if sync_err:
+            result.setdefault("warnings", []).append(sync_err)
 
 
 def list_jobs(all_users: bool = False) -> dict:
@@ -1565,22 +2220,36 @@ def configure_container(
     return result
 
 
-def list_tracked_jobs(sync: bool = False) -> dict:
+def list_tracked_jobs(
+    sync: bool = False,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
     """List all tracked jobs from the local JSONL job log.
 
-    Reads .mdclaw_jobs.jsonl which is automatically maintained by submit_job
-    and check_job. Unlike list_jobs (which queries SLURM directly),
-    this shows the full history including completed and old jobs.
+    Reads .mdclaw_jobs.jsonl which is automatically maintained by submit_job,
+    submit_array_job, and check_job. Unlike list_jobs (which queries SLURM
+    directly), this shows the full history including completed and old jobs.
+    Records that were submitted through node-aware paths also carry
+    ``job_dir`` and ``node_id`` fields so the linkage to the DAG is
+    visible without a separate lookup.
 
     Args:
         sync: If True, query SLURM for current status of non-terminal jobs
             and update the tracker. Default: False.
+        job_dir: Optional filter — return only records whose ``job_dir``
+            (resolved absolute path) matches.
+        node_id: Optional filter — return only records whose ``node_id``
+            matches. Typically combined with ``job_dir``.
 
     Returns:
         dict with:
           - success: bool
-          - jobs: list[dict] - All tracked jobs (newest first)
-          - total: int - Total number of tracked jobs
+          - jobs: list[dict] - Matching tracked jobs (newest first). Each
+            record carries the keys it was stamped with, including
+            ``job_dir`` / ``node_id`` / ``parent_job_id`` / ``array_task_id``
+            when the submission was node-linked or part of an array.
+          - total: int - Number of matching records
           - tracker_file: str - Path to the JSONL file
           - errors: list[str]
     """
@@ -1609,6 +2278,13 @@ def list_tracked_jobs(sync: bool = False) -> dict:
         # Re-read after sync
         records = _read_job_records()
 
+    # Filters
+    if job_dir is not None:
+        jd_abs = str(Path(job_dir).resolve())
+        records = [r for r in records if r.get("job_dir") == jd_abs]
+    if node_id is not None:
+        records = [r for r in records if r.get("node_id") == node_id]
+
     result["jobs"] = list(reversed(records))  # newest first
     result["total"] = len(records)
     result["success"] = True
@@ -1622,6 +2298,7 @@ def list_tracked_jobs(sync: bool = False) -> dict:
 TOOLS = {
     "inspect_cluster": inspect_cluster,
     "submit_job": submit_job,
+    "submit_array_job": submit_array_job,
     "check_job": check_job,
     "list_jobs": list_jobs,
     "list_tracked_jobs": list_tracked_jobs,

@@ -360,14 +360,15 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 
 ### slurm_server.py
 - `inspect_cluster(output_file)` - Discover partitions, GPUs, save config (preserves existing policy)
-- `submit_job(script, job_name, partition, nodes, ntasks, cpus_per_task, gpus, gres, time_limit, memory, nodelist, dependency, output_dir, account, qos, extra_sbatch, environment)` - Submit SLURM batch job (validates against policy)
-- `check_job(job_id)` - Check job status (squeue/sacct)
+- `submit_job(script, job_name, partition, nodes, ntasks, cpus_per_task, gpus, gres, time_limit, memory, nodelist, dependency, output_dir, account, qos, extra_sbatch, environment, job_dir, node_id)` - Submit SLURM batch job (validates against policy). `--job-dir` + `--node-id` link the SLURM job to a DAG node: the tool stamps `slurm_job_id` / log paths onto `node.json.metadata`, advances `node.status = "queued"`, and records the linkage in `.mdclaw_jobs.jsonl`. Both must be passed together; `--node-id` alone is rejected.
+- `submit_array_job(tasks, job_name, partition, cpus_per_task, gpus, gres, time_limit, memory, max_concurrent, dependency, output_dir, account, qos, extra_sbatch, environment)` - Submit a SLURM job array where each task maps 1:1 to a DAG node. `tasks` is a non-empty `list[dict]` with `{job_dir, node_id, command}` per entry. Generates a single sbatch with `#SBATCH --array=0-N-1[%max_concurrent]` and a `case $SLURM_ARRAY_TASK_ID` dispatcher; every target `node.json` is stamped with `slurm_job_id=<parent>_<task>` and `slurm_array_task_id`. Each task's command is wrapped with `singularity exec` per-task when a container is configured, binding that task's `job_dir`.
+- `check_job(job_id)` - Check job status (squeue/sacct). Also reflects SLURM state onto the linked DAG node when one is recorded: RUNNING → `queued→running`, FAILED/TIMEOUT/OUT_OF_MEMORY/CANCELLED → `failed` via `fail_node` + `slurm_stderr_tail` in metadata. COMPLETED is intentionally left alone — the tool running inside the job is the sole writer for `node.status = "completed"`.
 - `list_jobs(all_users)` - List user's SLURM jobs
 - `cancel_job(job_id)` - Cancel a SLURM job
 - `check_job_log(job_id, log_type, tail_lines)` - Read job log files
 - `set_policy(allowed_partitions, denied_partitions, max_gpus_per_job, max_cpus_per_task, max_nodes, max_time_limit, max_memory, default_partition, default_account, default_qos)` - Set resource policy
 - `show_policy()` - Show current resource policy
-- `list_tracked_jobs(sync)` - List all tracked jobs from `.mdclaw_jobs.jsonl` (full history); `--sync` updates status from SLURM
+- `list_tracked_jobs(sync, job_dir, node_id)` - List all tracked jobs from `.mdclaw_jobs.jsonl` (full history); `--sync` updates status from SLURM; `--job-dir` / `--node-id` filter records to a specific DAG or node.
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ### node_server.py
@@ -551,18 +552,33 @@ IDs and sync status. `progress.json` may need a top-level `mmdb_id` field.
 
 ### hpc-run skill audit and node-based integration
 
-The `hpc-run` skill (`skills/hpc-run/SKILL.md`) was written before the
-node-based architecture. Audit and update:
+Status (2026-04-19): landed. `skills/hpc-run/SKILL.md` is now rewritten
+for the node-based workflow, and `slurm_server` tools are DAG-aware:
 
-1. **Node awareness**: `submit_job` should accept `--job-dir`/`--node-id`
-   so that SLURM jobs are tracked as part of the DAG. The submitted script
-   should propagate these flags to the inner `mdclaw` command.
-2. **Job tracking**: link SLURM job IDs to node IDs in `node.json` metadata
-   (e.g., `metadata.slurm_job_id`). `check_job` results should update the
-   node status (running/completed/failed).
-3. **Container config**: verify `configure_container` works with the
-   node-based layout (bind paths need to include `nodes/` subdirectories).
-4. **Monitoring loop**: `/loop` + `hpc-run check` should read node status
-   to determine when to stop polling.
-5. **Multi-node submission**: support submitting multiple prod nodes as
-   a SLURM job array (one array task per prod node from the same eq parent).
+1. **Node awareness** — `submit_job` / `submit_array_job` accept
+   `--job-dir` / `--node-id` (single node) or a `tasks` list (array).
+   DAG nodes are stamped with `slurm_job_id` / `slurm_array_task_id` on
+   successful `sbatch`.
+2. **Job tracking** — `.mdclaw_jobs.jsonl` rows carry `job_dir` /
+   `node_id` / `parent_job_id` / `array_task_id`. `check_job` syncs
+   RUNNING → `queued→running`, FAILED/TIMEOUT → `failed` + stderr tail.
+   COMPLETED is intentionally not written back; the tool inside the job
+   owns that transition.
+3. **Container config** — `submit_job` auto-extracts `--*-file` /
+   `--*-dir` paths (including `--job-dir`) into Singularity bind paths.
+   `submit_array_job` wraps per-task commands individually so each
+   container invocation binds only that task's `job_dir`.
+4. **Monitoring loop** — `/loop` + `list_tracked_jobs --sync
+   [--job-dir X] [--node-id Y]` is the recommended poll pattern. Terminal
+   states in the tracker also reflect into `node.status`.
+5. **Multi-node submission** — `submit_array_job` emits one sbatch with
+   `#SBATCH --array=0-N-1[%max_concurrent]` and a case-statement
+   dispatcher. Matches the common fan-out cases: N replicates from one
+   `eq_001`, or one `prod_001` each across N job directories.
+
+Remaining follow-ups (nice-to-have):
+- Propagate SLURM state back into `progress.json` summary so the skill
+  can surface "active SLURM jobs" at a glance without iterating
+  tracker rows.
+- Optional `check_job --poll` that blocks until terminal (mirror of
+  `/loop` but without the outer scheduler).

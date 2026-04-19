@@ -234,11 +234,45 @@ class TestParameterCoercion:
         assert _is_dict_type(Dict[str, str]) is True
         assert _is_dict_type(str) is False
 
+    def test_is_list_of_dict(self):
+        from typing import Dict, List
+        from mdclaw._cli import _is_list_of_dict
+
+        assert _is_list_of_dict(list[dict]) is True
+        assert _is_list_of_dict(List[Dict[str, str]]) is True
+        assert _is_list_of_dict(list[str]) is False
+        assert _is_list_of_dict(dict) is False
+        assert _is_list_of_dict(str) is False
+
+    def test_takes_json(self):
+        from typing import Dict, List, Optional
+        from mdclaw._cli import _takes_json
+
+        assert _takes_json(dict) is True
+        assert _takes_json(list[dict]) is True
+        # Optional[list[dict]] strips down to list[dict]
+        assert _takes_json(list[Dict[str, str]]) is True
+        assert _takes_json(str) is False
+        assert _takes_json(list[str]) is False
+
     def test_coerce_json_to_dict(self):
         from mdclaw._cli import _coerce_value
 
         result = _coerce_value('{"key": "val"}', dict)
         assert result == {"key": "val"}
+
+    def test_coerce_json_to_list_of_dict(self):
+        """Regression: list[dict] args (e.g. submit_array_job.tasks) must
+        accept a JSON string at the CLI boundary and deserialize. Before
+        the fix, _coerce_value fell through to the str default and the
+        tool received a literal JSON string rather than a list.
+        """
+        from mdclaw._cli import _coerce_value
+
+        payload = '[{"job_dir": "/x", "node_id": "prod_001", "command": "echo"}]'
+        result = _coerce_value(payload, list[dict])
+        assert isinstance(result, list)
+        assert result[0]["node_id"] == "prod_001"
 
     def test_coerce_int(self):
         from mdclaw._cli import _coerce_value

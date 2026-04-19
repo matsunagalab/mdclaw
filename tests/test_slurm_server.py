@@ -19,6 +19,8 @@ from mdclaw.slurm_server import (
     _parse_memory_bytes,
     _parse_time_limit_seconds,
     _read_job_records,
+    _stamp_slurm_on_node,
+    _sync_slurm_state_to_node,
     _update_job_record,
     _validate_against_policy,
     cancel_job,
@@ -30,6 +32,7 @@ from mdclaw.slurm_server import (
     list_tracked_jobs,
     set_policy,
     show_policy,
+    submit_array_job,
     submit_job,
 )
 
@@ -1257,6 +1260,384 @@ class TestJobTracker:
         assert len(records) == 1
         assert records[0]["job_id"] == "99999"
         assert records[0]["status"] == "SUBMITTED"
+
+
+# ---------------------------------------------------------------------------
+# Node integration: submit_job + check_job + submit_array_job
+# ---------------------------------------------------------------------------
+
+
+def _make_job_with_nodes(tmp_path, job_name: str, node_ids: list[str]) -> Path:
+    """Build a minimal schema-v3 job_dir with the requested nodes pre-created.
+
+    Avoids importing the heavy node_server.create_node path — we only need
+    the files ``_stamp_slurm_on_node`` and ``_sync_slurm_state_to_node``
+    read/write (node.json + progress.json index).
+    """
+    jd = tmp_path / job_name
+    jd.mkdir()
+    (jd / "nodes").mkdir()
+
+    progress = {
+        "schema_version": 3,
+        "job_id": "testjob",
+        "nodes": {},
+        "params": {"execution_mode": "autonomous"},
+    }
+
+    for nid in node_ids:
+        node_dir = jd / "nodes" / nid
+        node_dir.mkdir()
+        (node_dir / "artifacts").mkdir()
+        (node_dir / "node.json").write_text(json.dumps({
+            "node_id": nid,
+            "type": nid.split("_")[0],
+            "status": "pending",
+            "parents": [],
+            "metadata": {},
+            "artifacts": {},
+            "warnings": [],
+        }))
+        progress["nodes"][nid] = {"type": nid.split("_")[0], "status": "pending", "parents": []}
+
+    (jd / "progress.json").write_text(json.dumps(progress))
+    return jd
+
+
+class TestSubmitJobNodeIntegration:
+    """submit_job: stamps node.json when --job-dir / --node-id are passed."""
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_stamps_node_metadata(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_x", ["prod_001"])
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 77777\n")
+
+        result = submit_job(
+            script="mdclaw --job-dir /x --node-id prod_001 run_production --simulation-time-ns 0.1",
+            job_dir=str(jd),
+            node_id="prod_001",
+            partition="gpu",
+            gpus=1,
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        assert result["slurm_job_id"] == "77777"
+        assert result["job_dir"] == str(jd)
+        assert result["node_id"] == "prod_001"
+
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["metadata"]["slurm_job_id"] == "77777"
+        assert node["metadata"]["slurm_script_file"].endswith(".sbatch")
+        assert "slurm_submitted_at" in node["metadata"]
+        # For a non-array submit_job, parent == child, so chain deps can
+        # still read a single stable id off the node.
+        assert node["metadata"]["slurm_parent_job_id"] == "77777"
+        assert node["status"] == "queued"
+
+        # progress.json index should mirror status
+        prog = json.loads((jd / "progress.json").read_text())
+        assert prog["nodes"]["prod_001"]["status"] == "queued"
+
+        # Tracker record carries job_dir / node_id
+        records = _read_job_records()
+        assert len(records) == 1
+        assert records[0]["job_dir"] == str(jd.resolve())
+        assert records[0]["node_id"] == "prod_001"
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    def test_node_id_without_job_dir_is_rejected(self, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = submit_job(
+            script="echo test",
+            node_id="prod_001",  # missing job_dir
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is False
+        # Failure comes back as a structured validation error, not a raw string.
+        assert "job_dir" in json.dumps(result, default=str)
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_missing_node_becomes_warning_not_error(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """If node.json doesn't exist, submission still succeeds; stamp falls through as a warning."""
+        monkeypatch.chdir(tmp_path)
+        jd = tmp_path / "empty_job"
+        jd.mkdir()
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 11111\n")
+
+        result = submit_job(
+            script="echo test",
+            job_dir=str(jd),
+            node_id="prod_001",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        assert any("stamp skipped" in w for w in result["warnings"])
+
+
+class TestCheckJobNodeSync:
+    """check_job: reflects SLURM state back onto the linked DAG node."""
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_failed_state_fails_node(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_failed", ["prod_001"])
+
+        # Pre-seed tracker so check_job can find the node linkage
+        _append_job_record({
+            "job_id": "55555",
+            "job_name": "test",
+            "status": "RUNNING",
+            "job_dir": str(jd),
+            "node_id": "prod_001",
+        })
+
+        # Mark the node queued first (submit_job would have done this)
+        (jd / "nodes" / "prod_001" / "node.json").write_text(json.dumps({
+            "node_id": "prod_001",
+            "type": "prod",
+            "status": "queued",
+            "parents": [],
+            "metadata": {"slurm_job_id": "55555"},
+            "artifacts": {},
+            "warnings": [],
+        }))
+
+        # Mock squeue (no record) then sacct returning FAILED
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "squeue":
+                # squeue has no record for a completed-failed job; raise CPE like real slurm
+                raise subprocess.CalledProcessError(1, cmd)
+            # sacct --json returns FAILED
+            return _mock_run_command(stdout=json.dumps({
+                "jobs": [{
+                    "state": {"current": ["FAILED"]},
+                    "nodes": "compute01",
+                    "exit_code": {"return_code": 1},
+                    "time": {"elapsed": "00:01:23"},
+                }]
+            }))
+        mock_run.side_effect = side_effect
+
+        result = check_job("55555")
+        assert result["state"] == "FAILED"
+
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["status"] == "failed"
+        assert node["metadata"].get("slurm_state") == "FAILED"
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_running_state_advances_queued_node(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_running", ["prod_001"])
+
+        # Tracker records the node linkage
+        _append_job_record({
+            "job_id": "66666",
+            "status": "SUBMITTED",
+            "job_dir": str(jd),
+            "node_id": "prod_001",
+        })
+        # Simulate submit_job having set the node to queued
+        (jd / "nodes" / "prod_001" / "node.json").write_text(json.dumps({
+            "node_id": "prod_001",
+            "type": "prod",
+            "status": "queued",
+            "parents": [],
+            "metadata": {"slurm_job_id": "66666"},
+            "artifacts": {},
+            "warnings": [],
+        }))
+
+        mock_run.return_value = _mock_run_command(stdout=json.dumps({
+            "jobs": [{
+                "job_id": 66666,
+                "job_state": ["RUNNING"],
+                "nodes": "compute02",
+                "time": {"elapsed": "00:00:10"},
+            }]
+        }))
+
+        result = check_job("66666")
+        assert result["state"] == "RUNNING"
+
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["status"] == "running"
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_completed_state_leaves_node_alone(self, mock_run, mock_check, tmp_path, monkeypatch):
+        """SLURM COMPLETED does NOT mark the DAG node completed — the tool
+        running inside the job is solely responsible for that transition.
+        """
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_ok", ["prod_001"])
+
+        _append_job_record({
+            "job_id": "88888",
+            "status": "RUNNING",
+            "job_dir": str(jd),
+            "node_id": "prod_001",
+        })
+
+        # Node starts as "running" — but the tool hasn't called complete_node yet
+        (jd / "nodes" / "prod_001" / "node.json").write_text(json.dumps({
+            "node_id": "prod_001",
+            "type": "prod",
+            "status": "running",
+            "parents": [],
+            "metadata": {"slurm_job_id": "88888"},
+            "artifacts": {},
+            "warnings": [],
+        }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "squeue":
+                raise subprocess.CalledProcessError(1, cmd)
+            return _mock_run_command(stdout=json.dumps({
+                "jobs": [{
+                    "state": {"current": ["COMPLETED"]},
+                    "nodes": "compute03",
+                    "exit_code": {"return_code": 0},
+                    "time": {"elapsed": "00:05:00"},
+                }]
+            }))
+        mock_run.side_effect = side_effect
+
+        check_job("88888")
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        # Node status untouched — this is the whole point: SLURM success only
+        # means the wrapper script exited 0; the tool's own complete_node hook
+        # is the source of truth for "completed".
+        assert node["status"] == "running"
+
+
+class TestSubmitArrayJob:
+    """submit_array_job: one sbatch with --array, one node per task."""
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_three_nodes_one_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        # Three jobs, each with its own prod_001
+        jds = [
+            _make_job_with_nodes(tmp_path, f"job_{i}", ["prod_001"])
+            for i in range(3)
+        ]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 99999\n")
+
+        result = submit_array_job(
+            tasks=[
+                {
+                    "job_dir": str(jd),
+                    "node_id": "prod_001",
+                    "command": f"mdclaw --job-dir {jd} --node-id prod_001 run_production --simulation-time-ns 0.1",
+                }
+                for jd in jds
+            ],
+            job_name="prod_batch",
+            partition="gpu",
+            gpus=1,
+            time_limit="00:30:00",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        assert result["parent_job_id"] == "99999"
+        assert result["array_spec"] == "0-2"
+        assert len(result["tasks"]) == 3
+
+        # Child IDs follow SLURM's JOBID_TASKID form
+        for idx, task in enumerate(result["tasks"]):
+            assert task["slurm_job_id"] == f"99999_{idx}"
+            assert task["array_task_id"] == idx
+            assert task["job_dir"] == str(jds[idx].resolve())
+            assert task["node_id"] == "prod_001"
+
+        # Each node.json stamped
+        for idx, jd in enumerate(jds):
+            node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+            assert node["metadata"]["slurm_job_id"] == f"99999_{idx}"
+            assert node["metadata"]["slurm_array_task_id"] == idx
+            # parent_job_id lets downstream chain jobs read the array parent
+            # off the node and build --dependency=aftercorr:<parent> without
+            # having to consult the JSONL tracker.
+            assert node["metadata"]["slurm_parent_job_id"] == "99999"
+            assert node["status"] == "queued"
+
+        # Generated sbatch contains --array, case statement, one arm per task
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --array=0-2" in content
+        assert 'case "$SLURM_ARRAY_TASK_ID" in' in content
+        for idx in range(3):
+            assert f"  {idx})" in content
+        # Log file pattern uses SLURM %A_%a substitutions
+        assert "_%A_%a.out" in content or "%A_%a.out" in content
+
+        # Tracker contains 3 rows (one per child)
+        records = _read_job_records()
+        ids = [r["job_id"] for r in records]
+        assert ids == ["99999_0", "99999_1", "99999_2"]
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_max_concurrent_applied(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [_make_job_with_nodes(tmp_path, f"j{i}", ["prod_001"]) for i in range(5)]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 42\n")
+
+        result = submit_array_job(
+            tasks=[
+                {"job_dir": str(jd), "node_id": "prod_001", "command": "echo x"}
+                for jd in jds
+            ],
+            max_concurrent=2,
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        assert result["array_spec"] == "0-4%2"
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --array=0-4%2" in content
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    def test_empty_tasks_rejected(self, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = submit_array_job(tasks=[], output_dir=str(tmp_path))
+        assert result["success"] is False
+        assert "tasks" in json.dumps(result, default=str)
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    def test_missing_field_rejected(self, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = submit_array_job(
+            tasks=[{"job_dir": "/x", "node_id": "prod_001"}],  # missing 'command'
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is False
+        assert "command" in json.dumps(result, default=str)
+
+
+class TestListTrackedJobsFilters:
+    """list_tracked_jobs: new job_dir/node_id filters."""
+
+    def test_filter_by_job_dir(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd_a = tmp_path / "a"; jd_a.mkdir()
+        jd_b = tmp_path / "b"; jd_b.mkdir()
+        _append_job_record({"job_id": "1", "job_dir": str(jd_a.resolve()), "node_id": "prod_001"})
+        _append_job_record({"job_id": "2", "job_dir": str(jd_b.resolve()), "node_id": "prod_001"})
+        _append_job_record({"job_id": "3", "job_dir": str(jd_a.resolve()), "node_id": "prod_002"})
+
+        result = list_tracked_jobs(job_dir=str(jd_a))
+        ids = sorted(r["job_id"] for r in result["jobs"])
+        assert ids == ["1", "3"]
+
+        result = list_tracked_jobs(job_dir=str(jd_a), node_id="prod_002")
+        ids = [r["job_id"] for r in result["jobs"]]
+        assert ids == ["3"]
 
 
 if __name__ == "__main__":

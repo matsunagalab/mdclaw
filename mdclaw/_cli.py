@@ -101,6 +101,34 @@ def _is_dict_type(hint) -> bool:
     return origin is dict or hint is dict
 
 
+def _is_list_of_dict(hint) -> bool:
+    """Check if hint is list[dict] / list[Dict[...]] / List[dict] etc.
+
+    Used to route structured list arguments (e.g. ``submit_array_job
+    tasks=list[dict]``) through the same JSON-string argparse path as
+    plain dict arguments — they're not expressible as a flat CLI list.
+    """
+    origin = get_origin(hint)
+    if origin is not list:
+        return False
+    args = get_args(hint)
+    if not args:
+        return False
+    inner = args[0]
+    inner_origin = get_origin(inner)
+    return inner_origin is dict or inner is dict
+
+
+def _takes_json(hint) -> bool:
+    """True when the argument expects a JSON string at the CLI boundary.
+
+    Covers ``dict`` / ``Dict[...]`` and ``list[dict]`` / ``List[Dict[...]]``
+    (including under ``Optional[...]``). ``list[str]`` stays on the plain
+    ``nargs='+'`` path — that's a better CLI UX for flat lists.
+    """
+    return _is_dict_type(hint) or _is_list_of_dict(hint)
+
+
 def _coerce_value(value, hint):
     """Coerce a CLI value to the target type."""
     if hint is None or hint is inspect.Parameter.empty:
@@ -122,8 +150,8 @@ def _coerce_value(value, hint):
         if isinstance(value, list):
             return value
         return [value]
-    if _is_dict_type(inner):
-        # JSON string -> dict
+    if _takes_json(inner):
+        # JSON string -> dict / list[dict]
         if isinstance(value, str):
             return json.loads(value)
         return value
@@ -204,13 +232,18 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     required=False,
                     help="(list of str, required)" if required else "(list of str)",
                 )
-            elif _is_dict_type(inner):
+            elif _takes_json(inner):
+                example = (
+                    '\'{"key":"val"}\''
+                    if _is_dict_type(inner)
+                    else '\'[{"key":"val"}, ...]\''
+                )
                 sub.add_argument(
                     cli_name,
                     type=str,
                     default=param.default if param.default is not inspect.Parameter.empty else None,
                     required=False,
-                    help='(JSON string, e.g. \'{"key":"val"}\', required)' if required else '(JSON string, e.g. \'{"key":"val"}\')',
+                    help=f"(JSON string, e.g. {example}, required)" if required else f"(JSON string, e.g. {example})",
                 )
             elif inner is int:
                 sub.add_argument(
@@ -349,7 +382,7 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             if value is None:
                 continue
-            if _is_dict_type(_unwrap_optional(hint)[0]) and isinstance(value, str):
+            if _takes_json(_unwrap_optional(hint)[0]) and isinstance(value, str):
                 value = json.loads(value)
             kwargs[pname] = value
 

@@ -19,7 +19,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PKG_ROOT="${CLAUDE_PLUGIN_ROOT:-$REPO_ROOT}"
 
 # Tools that run natively on the host (need sbatch/squeue/sinfo/sacct/scancel)
-NATIVE_TOOLS="submit_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
+NATIVE_TOOLS="submit_job submit_array_job check_job list_jobs cancel_job check_job_log inspect_cluster set_policy show_policy configure_container list_tracked_jobs"
 
 # Docker image (default: published on GHCR)
 DOCKER_IMAGE="${MDCLAW_DOCKER_IMAGE:-ghcr.io/matsunagalab/mdclaw:latest}"
