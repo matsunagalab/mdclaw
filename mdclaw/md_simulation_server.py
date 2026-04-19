@@ -676,6 +676,17 @@ def run_equilibration(
         result["checkpoint_file"] = str(checkpoint_file)
         logger.info(f"Saved equilibrated checkpoint (currentStep=0): {checkpoint_file}")
 
+        # Save XML state as well — cross-node portable restart artifact.
+        # loadCheckpoint requires identical GPU architecture (binary
+        # context dump includes device-specific layouts); loadState is
+        # portable because it only carries publicly-visible
+        # positions/velocities/box. On a heterogeneous cluster this is
+        # what run_production should use.
+        state_file = out_dir / f"{pref}equilibrated.xml"
+        sim_clean.saveState(str(state_file))
+        result["state_file_prod_ready"] = str(state_file)
+        logger.info(f"Saved equilibrated state (cross-node portable): {state_file}")
+
         result["success"] = True
 
     except Exception as e:
@@ -689,6 +700,7 @@ def run_equilibration(
             complete_node(job_dir, node_id,
                 artifacts={
                     "checkpoint": f"artifacts/{pref}equilibrated.chk",
+                    "state": f"artifacts/{pref}equilibrated.xml",
                     "final_structure": _node_artifact_path(result.get("final_structure")),
                     "state_file": _node_artifact_path(result.get("state_file")),
                 },
@@ -700,6 +712,7 @@ def run_equilibration(
                     "restraint_count": result.get("restraint_count"),
                     "temperature_kelvin": temperature_kelvin,
                     "pressure_bar": pressure_bar,
+                    "final_step": 0,
                 })
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))
@@ -1071,12 +1084,34 @@ def run_production(
         if restart_from:
             restart_path = Path(restart_from)
             if not restart_path.is_file():
-                result["errors"].append(f"Checkpoint file not found: {restart_from}")
+                result["errors"].append(f"Restart file not found: {restart_from}")
                 return result
-            simulation.loadCheckpoint(str(restart_path))
+            # Prefer saveState (XML) for cross-node portability.
+            # saveCheckpoint (binary) is GPU-architecture-specific and
+            # fails silently across heterogeneous clusters. .xml and
+            # .chk both remain on disk; resolve_node_inputs picks .xml
+            # first when available.
+            if restart_path.suffix == ".xml":
+                simulation.loadState(str(restart_path))
+                # loadState does NOT restore simulation.currentStep —
+                # it only carries positions/velocities/box. Pull the
+                # ancestor node's metadata.final_step so prod→prod
+                # extension preserves the cumulative step counter.
+                if _node_mode:
+                    from mdclaw._node import read_ancestor_final_step
+                    anc_step = read_ancestor_final_step(job_dir, node_id)
+                    if anc_step is not None:
+                        simulation.currentStep = anc_step
+                logger.info(
+                    f"Restarted from state XML (step {simulation.currentStep})"
+                )
+            else:
+                simulation.loadCheckpoint(str(restart_path))
+                logger.info(
+                    f"Restarted from checkpoint (step {simulation.currentStep})"
+                )
             append_dcd = True
             result["restarted_from"] = restart_from
-            logger.info(f"Restarted from checkpoint (step {simulation.currentStep})")
         else:
             append_dcd = False
             simulation.context.setPositions(inpcrd.positions)
@@ -1131,10 +1166,20 @@ def run_production(
         )
         simulation.reporters.append(energy_reporter)
 
-        # Checkpoint reporter - periodic checkpoint saves
+        # Checkpoint + state reporters — periodic saves. Both fire on
+        # the same interval. The .chk is bit-identical-restart material
+        # (same GPU only); the .xml is the portable artifact that
+        # downstream prod and `--continue-from` extensions will load.
         checkpoint_interval = max(report_interval * 10, 5000)
-        simulation.reporters.append(CheckpointReporter(str(checkpoint_file), checkpoint_interval))
+        simulation.reporters.append(
+            CheckpointReporter(str(checkpoint_file), checkpoint_interval)
+        )
+        state_file = out_dir / f"{pref}state.xml"
+        simulation.reporters.append(
+            CheckpointReporter(str(state_file), checkpoint_interval, writeState=True)
+        )
         result["checkpoint_file"] = str(checkpoint_file)
+        result["state_file"] = str(state_file)
 
         # Get initial energy
         state = simulation.context.getState(getEnergy=True)
@@ -1178,9 +1223,12 @@ def run_production(
         if steps_to_run > 0:
             simulation.step(steps_to_run)
 
-        # Save final checkpoint (periodic reporter may not have fired for short runs)
+        # Save final checkpoint + state (periodic reporter may not have
+        # fired for short runs). Both formats so downstream can choose.
         simulation.saveCheckpoint(str(checkpoint_file))
+        simulation.saveState(str(state_file))
         logger.info(f"Final checkpoint saved: {checkpoint_file}")
+        logger.info(f"Final state saved: {state_file}")
 
         result["steps_completed"] = simulation.currentStep
 
@@ -1260,6 +1308,7 @@ def run_production(
                     "trajectory": _node_artifact_path(result.get("trajectory_file")),
                     "final_structure": _node_artifact_path(result.get("final_structure")),
                     "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
+                    "state": _node_artifact_path(result.get("state_file")),
                     "energy": _node_artifact_path(result.get("energy_file")),
                 },
                 metadata={
@@ -1273,6 +1322,7 @@ def run_production(
                     "num_steps": result.get("steps_completed"),
                     "start_step": result.get("start_step"),
                     "start_time_ns": result.get("start_time_ns"),
+                    "final_step": result.get("steps_completed"),
                 })
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))

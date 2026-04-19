@@ -793,6 +793,135 @@ class TestDAGAutoResolve:
         inputs = resolve_node_inputs(jd, "prod_001", "prod")
         assert inputs["restart_from"].endswith("equilibrated.chk")
 
+    def test_resolve_node_inputs_prod_prefers_state_over_checkpoint(
+        self, job_dir
+    ):
+        """When the eq ancestor has *both* ``state`` (XML) and
+        ``checkpoint`` (binary) artifacts, resolve_node_inputs returns
+        the state path. Binary checkpoints are GPU-architecture-
+        specific and silently corrupt on cross-node handoff, so the
+        XML state is the correct default."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"checkpoint": "artifacts/equilibrated.chk",
+                                 "state": "artifacts/equilibrated.xml"})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs["restart_from"].endswith("equilibrated.xml"), (
+            "resolve_node_inputs must prefer state (XML) over checkpoint "
+            "(binary) so the handoff is cross-node portable"
+        )
+
+    def test_resolve_node_inputs_prod_falls_back_to_checkpoint_when_no_state(
+        self, full_dag
+    ):
+        """Legacy DAGs written before the saveState migration have only
+        the ``checkpoint`` artifact. resolve_node_inputs must fall back
+        to it rather than returning no restart source."""
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs["restart_from"].endswith("equilibrated.chk")
+
+    def test_resolve_node_inputs_prod_continue_from_prefers_state(
+        self, job_dir
+    ):
+        """--continue-from also prefers state over checkpoint."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"checkpoint": "artifacts/equilibrated.chk",
+                                 "state": "artifacts/equilibrated.xml"})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(jd, "prod_001",
+                      artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "prod", continue_from="prod_001")
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert inputs["restart_from"].endswith(
+            "prod_001/artifacts/state.xml"
+        ), "continue_from must prefer state XML over checkpoint too"
+
+    def test_read_ancestor_final_step_returns_eq_value(self, job_dir):
+        """read_ancestor_final_step picks up metadata.final_step from
+        the eq ancestor so run_production can restore simulation.currentStep
+        after loadState."""
+        from mdclaw._node import read_ancestor_final_step
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_step": 0})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        assert read_ancestor_final_step(jd, "prod_001") == 0
+
+    def test_read_ancestor_final_step_prefers_prod_over_eq(self, job_dir):
+        """For prod→prod extension, read the *prod* ancestor's final_step
+        so the cumulative step counter continues correctly."""
+        from mdclaw._node import read_ancestor_final_step
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(jd, "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_step": 0})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(jd, "prod_001",
+                      artifacts={"state": "artifacts/state.xml"},
+                      metadata={"final_step": 250000})
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        assert read_ancestor_final_step(jd, "prod_002") == 250000
+
+    def test_read_ancestor_final_step_returns_none_when_missing(
+        self, full_dag
+    ):
+        """Legacy DAGs without final_step metadata: helper returns None
+        so the caller falls back to simulation.currentStep=0 after
+        loadState — same observable behavior as loadCheckpoint for a
+        fresh prod (eq→prod)."""
+        from mdclaw._node import read_ancestor_final_step
+        assert read_ancestor_final_step(str(full_dag), "prod_001") is None
+
     def test_resolve_node_inputs_solv(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "solv_001", "solv")

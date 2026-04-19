@@ -778,37 +778,58 @@ def resolve_node_inputs(
 
         # `continued_from` is the strict, user-visible contract: the new
         # node was explicitly marked as extending that specific prod. In
-        # that mode we restart *only* from that prod's checkpoint — any
+        # that mode we restart *only* from that prod's artifact — any
         # silent fallback (to another prod up the chain, or to eq) would
         # defeat the purpose of the explicit marker, so the caller gets
         # a structured error instead and must fix the DAG.
+        #
+        # Preference order for the restart source: saveState (XML,
+        # cross-node portable) → saveCheckpoint (binary, legacy).
+        # OpenMM binary checkpoints encode GPU-specific context and
+        # silently corrupt when loaded on a different GPU architecture;
+        # XML State is public (positions, velocities, box) and safe
+        # across any CUDA device.
         continued_from = _read_continued_from(job_dir, node_id)
         if continued_from is not None:
-            chk = _read_artifact_from_node(
-                job_dir, continued_from, "checkpoint"
+            src = _read_artifact_from_node(
+                job_dir, continued_from, "state"
             )
-            if chk is not None:
-                result["restart_from"] = chk
+            if src is None:
+                src = _read_artifact_from_node(
+                    job_dir, continued_from, "checkpoint"
+                )
+            if src is not None:
+                result["restart_from"] = src
             else:
                 result["restart_from_error"] = (
                     f"continue_from='{continued_from}' but that node has "
-                    f"no 'checkpoint' artifact — extension cannot start. "
-                    f"Wait for that prod to finish (or fix the DAG to "
-                    f"point at a completed prod ancestor)."
+                    f"neither a 'state' nor 'checkpoint' artifact — "
+                    f"extension cannot start. Wait for that prod to "
+                    f"finish (or fix the DAG to point at a completed "
+                    f"prod ancestor)."
                 )
         else:
-            # Default (no explicit continue_from): prefer a prod parent's
-            # checkpoint so `--parent-node-ids prod_001` still chains
-            # correctly; fall back to the eq ancestor for fresh prod runs.
-            chk = find_ancestor_artifact(
-                job_dir, node_id, "prod", "checkpoint"
+            # Default (no explicit continue_from): prefer a prod
+            # parent's state/checkpoint so `--parent-node-ids prod_001`
+            # still chains correctly; fall back to the eq ancestor for
+            # fresh prod runs.
+            src = find_ancestor_artifact(
+                job_dir, node_id, "prod", "state"
             )
-            if chk is None:
-                chk = find_ancestor_artifact(
+            if src is None:
+                src = find_ancestor_artifact(
+                    job_dir, node_id, "prod", "checkpoint"
+                )
+            if src is None:
+                src = find_ancestor_artifact(
+                    job_dir, node_id, "eq", "state"
+                )
+            if src is None:
+                src = find_ancestor_artifact(
                     job_dir, node_id, "eq", "checkpoint"
                 )
-            if chk:
-                result["restart_from"] = chk
+            if src:
+                result["restart_from"] = src
 
     return result
 
@@ -851,3 +872,83 @@ def _read_artifact_from_node(
     if isinstance(value, str):
         return str((jd / "nodes" / node_id / value).resolve())
     return value
+
+
+def read_ancestor_final_step(job_dir: str, node_id: str) -> Optional[int]:
+    """Return the ``metadata.final_step`` of the ancestor that would be
+    chosen as the restart source for *node_id*.
+
+    Mirrors the resolution order in :func:`resolve_node_inputs`'s prod
+    branch (continue_from → prod ancestor → eq ancestor) so that
+    ``run_production``, after calling :meth:`Simulation.loadState`, can
+    restore the cumulative step counter that XML State does not
+    persist. Returns ``None`` when the ancestor has no ``final_step``
+    metadata (e.g. legacy DAGs predating this schema or a node whose
+    run didn't record it).
+    """
+    continued_from = _read_continued_from(job_dir, node_id)
+    if continued_from is not None:
+        return _read_metadata_field(job_dir, continued_from, "final_step")
+
+    # Default path matches resolve_node_inputs: prod ancestor first,
+    # then eq ancestor. Walk parents in the same order.
+    for anc_type in ("prod", "eq"):
+        anc_id = _find_ancestor_node_id(job_dir, node_id, anc_type)
+        if anc_id is None:
+            continue
+        v = _read_metadata_field(job_dir, anc_id, "final_step")
+        if v is not None:
+            return v
+    return None
+
+
+def _read_metadata_field(
+    job_dir: str, node_id: str, field: str
+) -> Optional[int]:
+    nj = Path(job_dir) / "nodes" / node_id / "node.json"
+    if not nj.exists():
+        return None
+    try:
+        data = json.loads(nj.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    value = data.get("metadata", {}).get(field)
+    return value if isinstance(value, int) else None
+
+
+def _find_ancestor_node_id(
+    job_dir: str, node_id: str, anc_type: str
+) -> Optional[str]:
+    """Return the nearest ancestor of *node_id* whose ``node_type`` matches
+    *anc_type*, using the same BFS ordering :func:`find_ancestor_artifact`
+    uses. Needed so ``read_ancestor_final_step`` reads the metadata from
+    the exact ancestor whose artifact ``resolve_node_inputs`` picked."""
+    from collections import deque
+    jd = Path(job_dir)
+    start = jd / "nodes" / node_id / "node.json"
+    if not start.exists():
+        return None
+    try:
+        start_data = json.loads(start.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+    seen: set[str] = {node_id}
+    queue = deque(start_data.get("parent_node_ids", []))
+    while queue:
+        cur_id = queue.popleft()
+        if cur_id in seen:
+            continue
+        seen.add(cur_id)
+        nj = jd / "nodes" / cur_id / "node.json"
+        if not nj.exists():
+            continue
+        try:
+            cur_data = json.loads(nj.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        if cur_data.get("node_type") == anc_type:
+            return cur_id
+        for pid in cur_data.get("parent_node_ids", []):
+            if pid not in seen:
+                queue.append(pid)
+    return None
