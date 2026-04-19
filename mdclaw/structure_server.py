@@ -4382,7 +4382,15 @@ def prepare_complex(
                                 pdb_files_to_merge.append(str(amber_pdb))
                             else:
                                 result["warnings"].append(f"No amber.pdb found for ligand {lig.get('ligand_id')}")
-            
+
+            # Add ion files as-is (no cleaning needed). Multivalent metals
+            # must land in merged.pdb so parameterize_metal_ion can locate
+            # them; otherwise the metal would silently disappear between
+            # split and merge even though "ion" was in include_types.
+            for ion_pdb in split_result.get("ion_files", []):
+                if ion_pdb and Path(ion_pdb).exists():
+                    pdb_files_to_merge.append(ion_pdb)
+
             if pdb_files_to_merge:
                 merge_result = merge_structures(
                     pdb_files=pdb_files_to_merge,

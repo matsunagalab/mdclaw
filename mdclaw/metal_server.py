@@ -59,11 +59,58 @@ METAL_ELEMENTS: set[str] = {
 }
 
 SUPPORTED_ION_WATER_MODELS = {
-    "tip3p": "frcmod.ions1lm_126_tip3p",
-    "opc": "frcmod.ions1lm_126_opc",
-    "tip4pew": "frcmod.ions1lm_126_tip4pew",
-    "spce": "frcmod.ions1lm_126_spce",
+    "tip3p": "frcmod.ionslm_126_tip3p",
+    "opc": "frcmod.ionslm_126_opc",
+    "tip4pew": "frcmod.ionslm_126_tip4pew",
+    "spce": "frcmod.ionslm_126_spce",
 }
+
+
+def _amber_ion_atom_type(element: str, charge: int) -> str:
+    """Return the Amber ionslm/hfe frcmod atom type for an ion.
+
+    Amber's ion frcmod files define vdW parameters under atom types of
+    the form ``<Element><|charge| if != 1><sign>`` with the element in
+    Title case. Examples: Zn +2 -> ``Zn2+``; Na +1 -> ``Na+``; Cl -1 ->
+    ``Cl-``. ``metalpdb2mol2.py`` emits the raw PDB element (all caps),
+    so the generated mol2 must be rewritten to match the frcmod before
+    tleap can resolve the vdW parameters.
+    """
+    el = element.strip()
+    el = el[:1].upper() + el[1:].lower() if len(el) > 1 else el.upper()
+    if charge == 0:
+        return el
+    sign = "+" if charge > 0 else "-"
+    mag = abs(charge)
+    return f"{el}{sign}" if mag == 1 else f"{el}{mag}{sign}"
+
+
+def _rewrite_mol2_atom_type(mol2_file: str, new_atom_type: str) -> None:
+    """Overwrite the atom_type column in every ``@<TRIPOS>ATOM`` record.
+
+    mol2 atom rows are whitespace-delimited with the layout
+    ``atom_id atom_name x y z atom_type subst_id subst_name charge``.
+    Rewriting in place keeps parameters and coordinates intact while
+    pointing tleap at the correct frcmod vdW entry.
+    """
+    p = Path(mol2_file)
+    lines = p.read_text().splitlines()
+    out: list[str] = []
+    in_atom_block = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("@<TRIPOS>"):
+            in_atom_block = stripped == "@<TRIPOS>ATOM"
+            out.append(line)
+            continue
+        if in_atom_block and stripped:
+            parts = line.split()
+            if len(parts) >= 9:
+                parts[5] = new_atom_type
+                out.append(" ".join(parts))
+                continue
+        out.append(line)
+    p.write_text("\n".join(out) + "\n")
 
 
 # =============================================================================
@@ -237,11 +284,13 @@ def detect_metal_ions(pdb_file: str) -> dict:
 
 
 def parameterize_metal_ion(
-    pdb_file: str,
-    output_dir: str,
+    pdb_file: str | None = None,
+    output_dir: str | None = None,
     metal_resname: str | None = None,
     metal_charge: int | None = None,
     water_model: str = "opc",
+    job_dir: str | None = None,
+    node_id: str | None = None,
 ) -> dict:
     """Prepare metal ion(s) for Amber simulation using the nonbonded model.
 
@@ -259,7 +308,10 @@ def parameterize_metal_ion(
 
     Args:
         pdb_file: Path to PDB file containing protein with metal ion(s).
-        output_dir: Directory for output files
+                  Optional in node mode — auto-resolved from the prep
+                  node's ``merged_pdb`` artifact.
+        output_dir: Directory for output files. Optional in node mode —
+                    defaults to the prep node's ``artifacts/`` directory.
         metal_resname: Residue name of metal to parameterize (e.g., "ZN").
                        If None, all detected metals are parameterized.
         metal_charge: Charge of the metal ion (e.g., 2 for Zn2+).
@@ -269,6 +321,13 @@ def parameterize_metal_ion(
                      Note: opc3 is recognized canonically but currently rejected
                      because metal ion frcmod mappings are only available for
                      tip3p, opc, tip4pew, and spce.
+        job_dir: Job directory (schema v3).
+        node_id: Prep node ID. When both ``job_dir`` and ``node_id`` are
+                 provided, outputs land under the prep node's artifacts
+                 directory and a structured ``metal_params`` list is
+                 registered on the node so ``build_amber_system`` picks it
+                 up via DAG auto-resolution. The prep node's status is
+                 **not** changed — this extends an existing prep artifact.
 
     Returns:
         Dict containing:
@@ -276,7 +335,69 @@ def parameterize_metal_ion(
         - metal_mol2_files: List of generated mol2 files
         - ion_frcmod: Name of Amber's built-in ion parameter file to load
         - metals_parameterized: List of metals that were parameterized
+        - metal_params: List of {mol2, residue_name, charge} dicts
+          (node mode only — ready for build_amber_system)
     """
+    # Node-mode resolution: validate node type, auto-resolve inputs/outputs.
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import read_node
+        try:
+            node = read_node(job_dir, node_id)
+        except (FileNotFoundError, OSError) as e:
+            return {
+                "success": False,
+                "errors": [
+                    f"Node '{node_id}' does not exist under {job_dir}: {e}. "
+                    "Metal parameterization attaches to an existing prep node."
+                ],
+                "metals_parameterized": [],
+            }
+        if node.get("node_type") != "prep":
+            return {
+                "success": False,
+                "errors": [
+                    f"Node '{node_id}' has type '{node.get('node_type')}', "
+                    "expected 'prep'. parameterize_metal_ion extends a prep "
+                    "node's artifacts."
+                ],
+                "metals_parameterized": [],
+            }
+
+        node_root = (Path(job_dir) / "nodes" / node_id).resolve()
+        if not pdb_file:
+            merged_rel = node.get("artifacts", {}).get("merged_pdb")
+            if not merged_rel:
+                return {
+                    "success": False,
+                    "errors": [
+                        f"Prep node '{node_id}' has no merged_pdb artifact yet. "
+                        "Run prepare_complex first, or pass --pdb-file explicitly."
+                    ],
+                    "metals_parameterized": [],
+                }
+            pdb_file = str((node_root / merged_rel).resolve())
+        if not output_dir:
+            output_dir = str((node_root / "artifacts").resolve())
+
+    if not pdb_file:
+        return {
+            "success": False,
+            "errors": [
+                "pdb_file is required (pass explicitly or use --job-dir/--node-id "
+                "with a prep node that has merged_pdb)."
+            ],
+            "metals_parameterized": [],
+        }
+    if not output_dir:
+        return {
+            "success": False,
+            "errors": [
+                "output_dir is required (pass explicitly or use --job-dir/--node-id)."
+            ],
+            "metals_parameterized": [],
+        }
+
     pdb_path = Path(pdb_file)
     if not pdb_path.exists():
         raise FileNotFoundError(f"PDB file not found: {pdb_file}")
@@ -353,6 +474,12 @@ def parameterize_metal_ion(
         metal_mol2 = str(metal_dir / f"metal_{i}_{resname}.mol2")
         _run_metalpdb2mol2(metal_pdb, metal_mol2, charge)
 
+        # metalpdb2mol2.py writes the raw PDB element as the atom_type
+        # (e.g. "ZN"), but Amber's ionslm/hfe frcmod files key vdW
+        # parameters by "Zn2+"/"Mg2+"/... — without this rewrite tleap
+        # aborts with "could not find vdW parameters for type (ZN)".
+        _rewrite_mol2_atom_type(metal_mol2, _amber_ion_atom_type(element, charge))
+
         ion_ids.append(atom_id)
         ion_mol2files.append(metal_mol2)
         ion_info_list.append(f"{resname} {atname} {element} {charge}")
@@ -363,17 +490,49 @@ def parameterize_metal_ion(
     # Step 4: Get appropriate ion frcmod file
     ion_frcmod = _get_ion_frcmod(water_model)
 
-    return {
+    metal_params_list = [
+        {
+            "mol2": mol2_path,
+            "residue_name": metal["resname"],
+            "charge": metal_charge if metal_charge is not None
+                      else METAL_CHARGES.get(metal["resname"].upper(), 2),
+        }
+        for mol2_path, metal in zip(mol2_outputs, metals)
+    ]
+
+    result = {
         "success": True,
         "metal_mol2_files": mol2_outputs,
         "ion_frcmod": ion_frcmod,  # Name of Amber's built-in ion parameter file
         "water_model": water_model,
+        "metal_params": metal_params_list,
         "metals_parameterized": [
             {"resname": m["resname"], "atom_id": m["atom_id"], "element": m["element"], "charge": METAL_CHARGES.get(m["resname"].upper(), 2)}
             for m in metals
         ],
         "message": f"Successfully prepared {len(metals)} metal ion(s) for simulation (nonbonded model)",
     }
+
+    # Node integration: attach metal_params to the prep node so that
+    # build_amber_system's DAG auto-resolution can pick it up. Status is
+    # intentionally NOT mutated — this extends an existing prep node.
+    if _node_mode:
+        from mdclaw._node import update_node
+        from mdclaw._event import write_event
+        update_node(job_dir, node_id, {"artifacts": {"metal_params": metal_params_list}})
+        write_event(
+            job_dir,
+            node_id,
+            "metal_params_attached",
+            success=True,
+            details={
+                "num_metals": len(metal_params_list),
+                "residues": [m["residue_name"] for m in metal_params_list],
+                "water_model": water_model,
+            },
+        )
+
+    return result
 
 
 # =============================================================================

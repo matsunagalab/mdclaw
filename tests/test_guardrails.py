@@ -106,7 +106,20 @@ def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
     pdb_file = tmp_path / "metal.pdb"
     _write_minimal_metal_pdb(pdb_file)
 
-    with patch("mdclaw.metal_server._run_metalpdb2mol2", return_value={"success": True}):
+    def _fake_metalpdb2mol2(pdb_path, mol2_path, charge, timeout=60):
+        # Write a minimal mol2 so the post-processing atom-type rewrite
+        # has something to operate on. Mirrors the real metalpdb2mol2.py
+        # output shape — atom_type appears as the 6th whitespace column.
+        from pathlib import Path as _P
+        _P(mol2_path).write_text(
+            "@<TRIPOS>MOLECULE\nZN\n    1     0     1     0     0\nSMALL\nNO_CHARGES\n"
+            "@<TRIPOS>ATOM\n"
+            f"      1 ZN          0.0000    0.0000    0.0000 ZN         1 ZN        {float(charge):.4f}\n"
+            "@<TRIPOS>SUBSTRUCTURE\n     1 ZN          1 ****              0 ****  ****    0 ROOT\n"
+        )
+        return {"success": True, "mol2_file": mol2_path}
+
+    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
         result = parameterize_metal_ion(
             pdb_file=str(pdb_file),
             output_dir=str(tmp_path / "metal_out"),
@@ -114,7 +127,7 @@ def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
 
     assert result["success"] is True
     assert result["water_model"] == "opc"
-    assert result["ion_frcmod"] == "frcmod.ions1lm_126_opc"
+    assert result["ion_frcmod"] == "frcmod.ionslm_126_opc"
 
 
 def test_parameterize_metal_ion_rejects_canonical_but_unsupported_water_model(tmp_path):
