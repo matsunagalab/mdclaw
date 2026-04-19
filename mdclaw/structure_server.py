@@ -77,6 +77,63 @@ def _get_geostd_dir() -> Optional[Path]:
     return None
 
 
+def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dict[str, int]:
+    """Rewrite CYS/CYX residue names in *pdb_file* to match *disulfide_bonds*.
+
+    pdb2pqr geometrically detects SS-bonded cysteines and renames them to
+    CYX independently of what ``clean_protein`` is told. When the caller
+    supplies an explicit ``disulfide_pairs`` list (complete replacement),
+    ``result["disulfide_bonds"]`` is the authoritative view and this
+    helper brings the merged PDB in line with it:
+
+    - CYX residues *not* in ``disulfide_bonds`` are demoted back to CYS
+      (otherwise tleap would build a CYX residue without an SS bond,
+      leaving SG unprotonated — chemically wrong).
+    - CYS residues that *are* in ``disulfide_bonds`` are promoted to CYX.
+
+    Runs unconditionally after merge; it is a no-op whenever the
+    auto-detection path agrees with pdb2pqr (the common case).
+    """
+    target_cyx: set = set()
+    for bond in disulfide_bonds:
+        for key in ("cys1", "cys2"):
+            entry = bond.get(key) or {}
+            chain = entry.get("chain")
+            resnum = entry.get("resnum")
+            if chain is not None and resnum is not None:
+                target_cyx.add((chain, int(resnum)))
+
+    path = Path(pdb_file)
+    lines = path.read_text().splitlines()
+    out: List[str] = []
+    renamed_to_cys = 0
+    renamed_to_cyx = 0
+
+    for line in lines:
+        if len(line) >= 27 and line.startswith(("ATOM", "HETATM")):
+            resname = line[17:20].strip()
+            chain = line[21].strip()
+            try:
+                resnum = int(line[22:26].strip())
+            except ValueError:
+                out.append(line)
+                continue
+            key = (chain, resnum)
+            if resname == "CYX" and key not in target_cyx:
+                line = line[:17] + "CYS" + line[20:]
+                renamed_to_cys += 1
+            elif resname == "CYS" and key in target_cyx:
+                line = line[:17] + "CYX" + line[20:]
+                renamed_to_cyx += 1
+        out.append(line)
+
+    path.write_text("\n".join(out) + ("\n" if lines and not lines[-1].endswith("\n") else ""))
+    return {
+        "renamed_to_cys": renamed_to_cys,
+        "renamed_to_cyx": renamed_to_cyx,
+    }
+
+
 def _merge_disulfide_pairs(
     ssbond_pairs: List[dict],
     distance_pairs: List[dict],
@@ -2423,37 +2480,29 @@ def clean_protein(
         use_predefined_his = histidine_states is not None and len(histidine_states) > 0
 
         try:
-            # Primary method: pdb2pqr + propka (pH-aware protonation with Amber naming)
+            # Primary method: pdb2pqr + propka (pH-aware protonation with Amber naming).
+            # We always run propka so that pdb2pqr produces correct Amber
+            # terminal variant naming (NHID/CHIE/etc.) and matching atom
+            # lists. User-supplied histidine_states are applied *on top*
+            # of the propka result by renaming residues after pdb2pqr
+            # finishes — skipping propka caused tleap to reject atoms on
+            # terminal HIS residues because their N-terminal H1/H2 (or
+            # C-terminal OXT) did not have a defined atom type.
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
-                if use_predefined_his:
-                    # Skip propka, use pdb2pqr without titration (user specified states)
-                    logger.info("Using pdb2pqr without propka (user-specified HIS states)")
-                    pqr_output = input_path.parent / f"{stem}.pqr"
+                logger.info(f"Using pdb2pqr with propka for pH {ph}")
+                pqr_output = input_path.parent / f"{stem}.pqr"
 
-                    pdb2pqr_args = [
-                        str(output_file),
-                        str(pqr_output),
-                        "--ff", "AMBER",
-                        "--ffout", "AMBER",
-                        "--pdb-output", str(amber_output_file),
-                        "--keep-chain",
-                        "--drop-water",
-                    ]
-                else:
-                    logger.info(f"Using pdb2pqr with propka for pH {ph}")
-                    pqr_output = input_path.parent / f"{stem}.pqr"
-
-                    pdb2pqr_args = [
-                        str(output_file),
-                        str(pqr_output),
-                        "--ff", "AMBER",
-                        "--ffout", "AMBER",
-                        "--titration-state-method", "propka",
-                        "--with-ph", str(ph),
-                        "--pdb-output", str(amber_output_file),
-                        "--keep-chain",
-                        "--drop-water",
-                    ]
+                pdb2pqr_args = [
+                    str(output_file),
+                    str(pqr_output),
+                    "--ff", "AMBER",
+                    "--ffout", "AMBER",
+                    "--titration-state-method", "propka",
+                    "--with-ph", str(ph),
+                    "--pdb-output", str(amber_output_file),
+                    "--keep-chain",
+                    "--drop-water",
+                ]
 
                 try:
                     pdb2pqr_wrapper.run(pdb2pqr_args)
@@ -3888,6 +3937,8 @@ def prepare_complex(
     charge_method: str = "bcc",
     atom_type: str = "gaff2",
     structure_analysis: Optional[dict] = None,
+    disulfide_pairs: Optional[List[Dict[str, Any]]] = None,
+    histidine_states: Optional[Dict[str, str]] = None,
     keep_crystal_waters: bool = False,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -3932,7 +3983,17 @@ def prepare_complex(
                            user-approved settings for disulfide bonds, histidine states,
                            missing residue handling, and ligand processing. If provided,
                            these settings are used instead of auto-detection.
-    
+        disulfide_pairs: Explicit disulfide bond list — complete replacement of
+                        auto-detection. Each pair is ``{"cys1": {"chain", "resnum"},
+                        "cys2": {"chain", "resnum"}}``. Pass ``[]`` to disable
+                        disulfides entirely. Wins over ``structure_analysis``
+                        when both are provided.
+        histidine_states: Explicit histidine protonation state overrides. Dict
+                         mapping ``"<chain>:<resnum>"`` to ``"HID"`` / ``"HIE"``
+                         / ``"HIP"``. Only the keys present are overridden; the
+                         rest keep their propka-derived state. Wins over
+                         ``structure_analysis`` when both are provided.
+
     Returns:
         Dict with:
             - success: bool - True if workflow completed successfully
@@ -4050,27 +4111,39 @@ def prepare_complex(
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
-        # Step 1.5: Aggregate disulfide bonds from SSBOND + distance detection
-        # Merge explicit PDB SSBOND / mmCIF _struct_conn entries with the
+        # Step 1.5: Aggregate disulfide bonds. When the caller supplies
+        # ``disulfide_pairs`` explicitly, it is a **complete replacement** of
+        # auto-detection — empty list means "no disulfides at all". Otherwise
+        # we merge explicit PDB SSBOND / mmCIF _struct_conn entries with
         # distance-based candidates so downstream tools have a single
-        # chain-filtered source of truth. This runs on the ORIGINAL
-        # structure file (before splitting) so inter-chain pairs are
-        # captured too.
-        from mdclaw.research_server import (
-            _parse_ssbond_records,
-            _detect_disulfide_candidates,
-        )
-        ssbond_pairs = _parse_ssbond_records(structure_path)
-        distance_pairs = _detect_disulfide_candidates(structure_path)
-        disulfide_bonds = _merge_disulfide_pairs(
-            ssbond_pairs, distance_pairs, select_chains=select_chains
-        )
-        result["disulfide_bonds"] = disulfide_bonds
-        if disulfide_bonds:
+        # chain-filtered source of truth. Detection runs on the ORIGINAL
+        # structure file (before splitting) so inter-chain pairs survive.
+        if disulfide_pairs is not None:
+            disulfide_bonds = list(disulfide_pairs)
+            for b in disulfide_bonds:
+                b.setdefault("source", "user_override")
             logger.info(
-                f"Disulfide pairs detected: {len(disulfide_bonds)} "
-                f"(ssbond={len(ssbond_pairs)}, distance={len(distance_pairs)})"
+                f"Disulfide pairs overridden by caller: {len(disulfide_bonds)} pair(s)"
             )
+            disulfide_source = "user_override"
+        else:
+            from mdclaw.research_server import (
+                _parse_ssbond_records,
+                _detect_disulfide_candidates,
+            )
+            ssbond_pairs = _parse_ssbond_records(structure_path)
+            distance_pairs = _detect_disulfide_candidates(structure_path)
+            disulfide_bonds = _merge_disulfide_pairs(
+                ssbond_pairs, distance_pairs, select_chains=select_chains
+            )
+            if disulfide_bonds:
+                logger.info(
+                    f"Disulfide pairs detected: {len(disulfide_bonds)} "
+                    f"(ssbond={len(ssbond_pairs)}, distance={len(distance_pairs)})"
+                )
+            disulfide_source = "auto_detected"
+        result["disulfide_bonds"] = disulfide_bonds
+        result["disulfide_source"] = disulfide_source
 
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
@@ -4118,38 +4191,63 @@ def prepare_complex(
         if process_proteins and split_result.get("protein_files"):
             logger.info(f"Step 3: Processing {len(split_result['protein_files'])} protein(s)...")
 
-            # Extract pre-defined structure analysis settings if provided
+            # Assemble the disulfide + histidine override lists that the
+            # per-chain clean_protein step actually consumes. Precedence is
+            # direct CLI args > structure_analysis > auto-detect.
             sa_disulfide_pairs = None
             sa_histidine_states = None
-            if structure_analysis:
-                # Extract disulfide bonds
-                sa_disulfide_bonds = structure_analysis.get("disulfide_bonds", [])
-                if sa_disulfide_bonds:
-                    # Filter to only form_bond=True and convert to expected format
-                    sa_disulfide_pairs = [
-                        {
-                            "chain1": bond.get("chain1"),
-                            "resnum1": bond.get("resnum1"),
-                            "chain2": bond.get("chain2"),
-                            "resnum2": bond.get("resnum2"),
-                            "form_bond": bond.get("form_bond", True),
-                        }
-                        for bond in sa_disulfide_bonds
-                        if bond.get("form_bond", True)
-                    ]
-                    logger.info(f"Using {len(sa_disulfide_pairs)} pre-defined disulfide pair(s)")
 
-                # Extract histidine states as dict
-                sa_histidine_list = structure_analysis.get("histidine_states", [])
-                if sa_histidine_list:
-                    sa_histidine_states = {}
-                    for his in sa_histidine_list:
-                        chain = his.get("chain")
-                        resnum = his.get("resnum")
-                        state = his.get("state")
-                        if chain and resnum and state:
-                            sa_histidine_states[f"{chain}:{resnum}"] = state
-                    logger.info(f"Using {len(sa_histidine_states)} pre-defined histidine state(s)")
+            if disulfide_pairs is not None:
+                # Convert user's nested cys1/cys2 schema into the flat shape
+                # clean_protein expects. An empty list intentionally disables
+                # disulfide formation in cleaning too.
+                sa_disulfide_pairs = [
+                    {
+                        "chain1": p.get("cys1", {}).get("chain"),
+                        "resnum1": p.get("cys1", {}).get("resnum"),
+                        "chain2": p.get("cys2", {}).get("chain"),
+                        "resnum2": p.get("cys2", {}).get("resnum"),
+                        "form_bond": True,
+                    }
+                    for p in disulfide_pairs
+                ]
+                logger.info(f"User override: {len(sa_disulfide_pairs)} disulfide pair(s)")
+
+            if histidine_states:
+                sa_histidine_states = dict(histidine_states)
+                logger.info(f"User override: {len(sa_histidine_states)} histidine state(s)")
+
+            if structure_analysis:
+                # Extract disulfide bonds only if no direct override
+                if sa_disulfide_pairs is None:
+                    sa_disulfide_bonds = structure_analysis.get("disulfide_bonds", [])
+                    if sa_disulfide_bonds:
+                        # Filter to only form_bond=True and convert to expected format
+                        sa_disulfide_pairs = [
+                            {
+                                "chain1": bond.get("chain1"),
+                                "resnum1": bond.get("resnum1"),
+                                "chain2": bond.get("chain2"),
+                                "resnum2": bond.get("resnum2"),
+                                "form_bond": bond.get("form_bond", True),
+                            }
+                            for bond in sa_disulfide_bonds
+                            if bond.get("form_bond", True)
+                        ]
+                        logger.info(f"Using {len(sa_disulfide_pairs)} pre-defined disulfide pair(s)")
+
+                # Extract histidine states only if no direct override
+                if sa_histidine_states is None:
+                    sa_histidine_list = structure_analysis.get("histidine_states", [])
+                    if sa_histidine_list:
+                        sa_histidine_states = {}
+                        for his in sa_histidine_list:
+                            chain = his.get("chain")
+                            resnum = his.get("resnum")
+                            state = his.get("state")
+                            if chain and resnum and state:
+                                sa_histidine_states[f"{chain}:{resnum}"] = state
+                        logger.info(f"Using {len(sa_histidine_states)} pre-defined histidine state(s)")
 
             for protein_file in split_result["protein_files"]:
                 # Find chain info for this file
@@ -4406,6 +4504,30 @@ def prepare_complex(
                         "statistics": merge_result.get("statistics", {})
                     }
                     logger.info(f"  ✓ Merged: {merge_result['output_file']}")
+
+                    # Reconcile CYS/CYX residue names against the
+                    # authoritative disulfide_bonds list. pdb2pqr does its
+                    # own geometric SS detection and may have left CYX
+                    # residues that our list does not include (or vice
+                    # versa). Without this step, `disulfide_pairs=[]`
+                    # would yield CYX residues in merged.pdb without tleap
+                    # `bond` commands, leaving SG atoms unprotonated.
+                    try:
+                        reconcile = _reconcile_cyx_cys_in_pdb(
+                            merge_result["output_file"],
+                            result.get("disulfide_bonds", []),
+                        )
+                        if reconcile["renamed_to_cys"] or reconcile["renamed_to_cyx"]:
+                            logger.info(
+                                f"  ↳ CYS/CYX reconciliation: "
+                                f"{reconcile['renamed_to_cyx']} promoted, "
+                                f"{reconcile['renamed_to_cys']} demoted"
+                            )
+                            result["cys_cyx_reconciliation"] = reconcile
+                    except Exception as e:
+                        result["warnings"].append(
+                            f"CYS/CYX reconciliation skipped: {type(e).__name__}: {e}"
+                        )
                 else:
                     result["warnings"].append(f"Merge failed: {merge_result.get('errors', [])}")
                     result["merge_result"] = {"success": False, "errors": merge_result.get("errors", [])}
@@ -4473,21 +4595,31 @@ def prepare_complex(
         result["preparation_summary"] = preparation_summary
 
         # -- confirmation_needed: structured block for HITL review --------
-        # Surface auto-detected disulfide bonds and histidine protonation
-        # states in one place so the skill can show them to the user before
-        # proceeding to solvation. The values are already applied to
-        # merged.pdb; there is no CLI override at this time.
+        # Surface disulfide bonds and histidine protonation states in one
+        # place so the skill can show them to the user before proceeding
+        # to solvation. Each block carries a `source` field so the skill
+        # can tell "auto_detected" from "user_override" and avoid prompting
+        # again when the caller already supplied an explicit value.
+        applied_his = preparation_summary.get("histidine_states", {}) or {}
+        his_source = "user_override" if histidine_states else "auto_detected"
         confirmation_items = {
-            "disulfide_bonds": result.get("disulfide_bonds", []),
-            "histidine_states": preparation_summary.get("histidine_states", {}),
+            "disulfide_bonds": {
+                "source": result.get("disulfide_source", "auto_detected"),
+                "pairs": result.get("disulfide_bonds", []),
+            },
+            "histidine_states": {
+                "source": his_source,
+                "states": applied_his,
+            },
         }
-        if confirmation_items["disulfide_bonds"] or confirmation_items["histidine_states"]:
+        if confirmation_items["disulfide_bonds"]["pairs"] or applied_his:
             confirmation_items["policy"] = (
-                "In human_in_the_loop mode, present these detections to the "
-                "user and confirm before invoking solvate_structure. In "
-                "autonomous mode, log and continue. The values shown here "
-                "are already applied to merged.pdb; CLI override flags are "
-                "not yet implemented."
+                "In human_in_the_loop mode, present these values to the user "
+                "and confirm before invoking solvate_structure. In autonomous "
+                "mode, log and continue. When `source == user_override` the "
+                "skill may skip the prompt — the caller already made the "
+                "decision. To change auto-detected values, re-run "
+                "prepare_complex with --disulfide-pairs or --histidine-states."
             )
             result["confirmation_needed"] = confirmation_items
 

@@ -240,30 +240,65 @@ warning to the user and ask for confirmation before proceeding.
 
 **Checkpoint: SS-bond / HIS state review** -- `prepare_complex` emits a
 `confirmation_needed` block whenever disulfide bonds or non-default
-histidine states were applied during cleanup:
+histidine states were applied during cleanup. Each sub-block carries a
+`source` field so the skill can tell auto-detection from an explicit
+user override:
 
 ```json
 {
   "confirmation_needed": {
-    "disulfide_bonds": [
-      {"cys1": {"chain":"A","resnum":12}, "cys2": {"chain":"A","resnum":88},
-       "source":"pdb_ssbond", "distance_angstrom":2.04, "confidence":"high"}
-    ],
-    "histidine_states": {"A:64": "HID", "A:119": "HIE"},
+    "disulfide_bonds": {
+      "source": "auto_detected",
+      "pairs": [
+        {"cys1": {"chain":"A","resnum":12}, "cys2": {"chain":"A","resnum":88},
+         "distance_angstrom":2.04, "confidence":"high", "source":"pdb_ssbond"}
+      ]
+    },
+    "histidine_states": {
+      "source": "auto_detected",
+      "states": {"A:64": "HID", "A:119": "HIE"}
+    },
     "policy": "..."
   }
 }
 ```
 
-- In `human_in_the_loop` mode: present both lists verbatim and ask the
-  user to confirm before invoking `solvate_structure`.
+- In `human_in_the_loop` mode: present both blocks verbatim.
+  - If `source == "user_override"`, the caller already made the decision —
+    do not prompt again.
+  - If `source == "auto_detected"`, ask the user to confirm or override.
 - In `autonomous` mode: log the values and continue — they are already
   applied to `merged.pdb`.
 
-There is no CLI override today. If the user wants different bonds/states,
-they must edit `merged.pdb` by hand and pass it to `solvate_structure`
-with `--pdb-file` (bypassing DAG auto-resolution), or re-run
-`prepare_complex` with a corrected input structure.
+### Overriding auto-detection
+
+When the user wants different bonds or histidine states, re-run
+`prepare_complex` with the explicit overrides:
+
+```bash
+# Disable all disulfides (empty list = complete override, no SS bonds)
+mdclaw --job-dir <jd> --node-id prep_001 prepare_complex \
+  --json-input '{"select_chains":["A"],"disulfide_pairs":[]}'
+
+# Force a specific disulfide pair list (replaces auto-detection entirely)
+mdclaw --job-dir <jd> --node-id prep_001 prepare_complex \
+  --json-input '{"select_chains":["A"],"disulfide_pairs":[
+    {"cys1":{"chain":"A","resnum":12},"cys2":{"chain":"A","resnum":88}}
+  ]}'
+
+# Override specific histidine states (partial — only listed residues change)
+mdclaw --job-dir <jd> --node-id prep_001 prepare_complex \
+  --json-input '{"select_chains":["A"],"histidine_states":{"A:64":"HIP"}}'
+```
+
+Semantics:
+- `disulfide_pairs` is **complete replacement**: passing `[]` means
+  "no disulfides", passing `[...]` means "use exactly this list". Auto-detect
+  is skipped entirely.
+- `histidine_states` is **partial override**: only the listed residues
+  change; the rest stay on their propka-derived state.
+- Direct CLI args win over the JSON-blob `--structure-analysis` path when
+  both are provided.
 
 ### Blocking Ligand Failure
 

@@ -406,21 +406,29 @@ def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> 
         if target != current:
             desired[key] = target
 
-    # Second pass: rewrite residue name field for matching residues
+    # Second pass: rewrite residue name field for matching residues.
+    # Filter on resname too — packmol-memgen reuses chain IDs and residue
+    # numbers for waters and ions, so a water molecule can share
+    # (chain, resnum, icode) with a HIS residue. Without the resname
+    # guard, the water's resname would be silently renamed to HID/HIE/HIP
+    # too, corrupting downstream tleap input.
+    _his_family = {"HIS", "HID", "HIE", "HIP"}
     out_lines: list[str] = []
     for line in lines:
         if line.startswith(("ATOM", "HETATM")):
-            chain = line[21:22]
-            resnum = line[22:26]
-            icode = line[26:27]
-            key = (chain, resnum, icode)
-            if key in desired:
-                old = line[17:20]
-                new = f"{desired[key]:>3}"
-                if old != new:
-                    result["changed"] += 1
-                    result["changes"].append(f"{chain.strip() or '_'}:{resnum.strip()}{icode.strip() or ''} {old.strip()} -> {new.strip()}")
-                    line = line[:17] + new + line[20:]
+            resname_cur = line[17:20].strip().upper()
+            if resname_cur in _his_family:
+                chain = line[21:22]
+                resnum = line[22:26]
+                icode = line[26:27]
+                key = (chain, resnum, icode)
+                if key in desired:
+                    old = line[17:20]
+                    new = f"{desired[key]:>3}"
+                    if old != new:
+                        result["changed"] += 1
+                        result["changes"].append(f"{chain.strip() or '_'}:{resnum.strip()}{icode.strip() or ''} {old.strip()} -> {new.strip()}")
+                        line = line[:17] + new + line[20:]
         out_lines.append(line)
 
     output_path.write_text("".join(out_lines))
