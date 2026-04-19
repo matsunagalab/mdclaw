@@ -19,8 +19,7 @@ Read `progress.json` to see which nodes exist and their status; read a specific
   "system": {},
   "preparation": {},
   "params": {
-    "execution_mode": "autonomous",
-    "workflow_mode": "single_step"
+    "execution_mode": "autonomous"
   },
   "nodes": {
     "fetch_001": {"type": "fetch", "status": "completed", "parents": []},
@@ -89,12 +88,16 @@ Use `progress.json.params.execution_mode` as the source of truth:
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
 - `mdclaw search_structures --query "<name>"` (no node flags — discovery only)
 
-**Logic**:
+**Logic** (first rule that matches wins):
 1. PDB ID (4-char like `1AKE`) → `download_structure`
 2. UniProt ID (like `P12345`) → `get_alphafold_structure`
-3. Local file → create a `fetch` node, then `register_local_structure`
-4. FASTA sequence (+ optional SMILES) → `boltz2_protein_from_seq`
-5. Protein name → `search_structures`, then ask user to pick
+3. Local file path exists → create a `fetch` node, then `register_local_structure`
+4. FASTA sequence (+ optional SMILES) and no PDB/UniProt known → `boltz2_protein_from_seq`
+5. Protein name (fuzzy / ambiguous) → `search_structures`, then ask user to pick
+
+If the user gives **both** a PDB ID and a sequence, prefer the PDB ID and
+ask whether Boltz-2 prediction is still wanted — the experimental
+structure is almost always the right starting point.
 
 > **Schema v3 workflow**: structure acquisition is always a `fetch` DAG-root
 > node. Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
@@ -149,33 +152,31 @@ into the fetch node's artifacts dir. The node's status is unchanged
 ### Metal ion handling
 
 `prepare_complex` does **not** parameterize multivalent metal ions. Monovalent
-buffer ions (Na⁺, K⁺, Cl⁻) are covered by tleap's built-in `ions1lm_*.frcmod`,
+buffer ions (Na⁺, K⁺, Cl⁻) are covered by tleap's built-in `ionslm_*.frcmod`,
 but transition metals and Mg/Ca must be parameterized with
-`parameterize_metal_ion` (nonbonded 12-6 model) and attached to the `prep`
-node manually:
+`parameterize_metal_ion` (nonbonded 12-6 model, Li/Merz). The tool attaches
+its output to the prep node so `build_amber_system` picks it up
+automatically via DAG auto-resolution:
 
 ```bash
-# After prepare_complex, before build_amber_system
-mdclaw parameterize_metal_ion \
-  --pdb-file <job_dir>/nodes/prep_001/artifacts/merged.pdb \
-  --output-dir <job_dir>/nodes/prep_001/artifacts \
+# After prepare_complex completes, before solvation/topology:
+mdclaw --job-dir <jd> --node-id prep_001 parameterize_metal_ion \
   --water-model opc
 ```
 
-Collect the returned `metal_mol2_files` + `ion_frcmod` and pass them to
-`build_amber_system` via `--json-input`:
+With `--job-dir` + `--node-id` (a prep node), `parameterize_metal_ion`:
+- Auto-resolves `pdb_file` from the prep node's `merged_pdb` artifact.
+- Writes mol2 files into `nodes/prep_001/artifacts/metal_params/` and
+  rewrites each atom type to Amber's `Zn2+` / `Mg2+` / ... convention so
+  tleap resolves vdW parameters against the ion frcmod.
+- Registers a structured `metal_params` artifact (list of
+  `{mol2, residue_name, charge}` dicts) on the prep node. The node's
+  `status` is **not** changed — it simply extends an already-completed prep.
+- Emits a `metal_params_attached` event for auditability.
 
-```bash
-mdclaw --job-dir <jd> --node-id topo_001 build_amber_system \
-  --json-input '{"metal_params":[{"mol2":"<path>.mol2","residue_name":"ZN"}]}'
-```
-
-> **Known gap**: `parameterize_metal_ion` does not yet accept
-> `--job-dir`/`--node-id`, so DAG auto-resolution of `metal_params` only
-> works when the artifact is written into the `prep` node's `artifacts/`
-> directory by hand (as shown above) and referenced explicitly in the
-> `build_amber_system` invocation. Tracked as a follow-up to the node
-> integration work.
+`build_amber_system` walks the DAG and picks up `metal_params` from the
+prep ancestor — no manual `--json-input` wiring required. The explicit
+`--json-input` form remains valid for non-node-mode invocations.
 
 ---
 
@@ -300,6 +301,36 @@ Semantics:
 - Direct CLI args win over the JSON-blob `--structure-analysis` path when
   both are provided.
 
+### Confirmation Loop
+
+The complete interaction loop the skill should run after each
+`prepare_complex` invocation:
+
+```
+1. Run prepare_complex (with any user-specified overrides).
+2. Check result["overall_status"]:
+   - "failed"                                -> report errors, stop.
+   - "completed_with_blocking_ligand_failure" -> stop_and_ask using
+       workflow_recommendation.options (see Blocking Ligand Failure).
+   - "success"                                -> continue to step 3.
+3. Check result["warnings"] for "LOW_CONFIDENCE_CHARGE":
+   - If present: stop_and_ask (always, regardless of execution_mode).
+4. Check result["confirmation_needed"]:
+   - Absent or both sub-blocks source=="user_override": skip to step 5.
+   - source=="auto_detected" sub-blocks present:
+     - execution_mode == "autonomous": log values, continue to step 5.
+     - execution_mode == "human_in_the_loop": present the
+       detected values, ask user to accept or override.
+       If user overrides: re-run prepare_complex with the corresponding
+       --disulfide-pairs / --histidine-states args and loop back to 1.
+5. Proceed to Step 4 (metal parameterization if multivalent metals) or
+   Step 5 (solvation / topology) depending on the structure.
+```
+
+Never ask the user the same question twice in the same loop iteration —
+`source == "user_override"` is the explicit signal that the caller has
+already committed to a choice.
+
 ### Blocking Ligand Failure
 
 When `overall_status = completed_with_blocking_ligand_failure`:
@@ -322,7 +353,65 @@ The `recommended_next_action` field per ligand explains why:
 | `provide_frcmod` | frcmod has issues. User must provide a corrected frcmod |
 | `hard_fail` | Fundamental incompatibility (e.g., metal atoms). Cannot proceed with this ligand |
 
+`failure_class` exhaustively enumerates **why** each ligand failed. Branch
+on this field, not on free-text `errors[]`:
+
+| `failure_class` | Cause | `recommended_next_action` |
+|---|---|---|
+| `input_error` | Ligand file missing, unreadable, or malformed | `hard_fail` |
+| `metal_atoms` | Ligand contains metal element(s) GAFF2 cannot handle | `hard_fail` |
+| `antechamber_failed` | AM1-BCC charge calculation or atom-type assignment failed | `use_curated_params` |
+| `parmchk2_failed` | `parmchk2` could not emit a usable frcmod | `use_curated_params` |
+| `zero_bond_angle_params` | frcmod has zero force constants on bond/angle terms — simulation would blow up | `use_curated_params` |
+| `zero_dihe_barriers` | frcmod has zero dihedral barriers — conformational sampling broken | `use_curated_params` or `provide_frcmod` |
+| `unexpected_error` | Internal error outside the above classes (see `errors[]` for detail) | `hard_fail` |
+
 **Critical**: Never parse stderr or warning strings to decide next steps. Use only the structured fields above.
+
+---
+
+## Tool Defaults (skill-relevant)
+
+Defaults the tools apply silently when the user does not specify. The
+skill should surface any non-default value the user provided in the
+initial summary (Step 0) and otherwise trust these.
+
+`prepare_complex`:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `ph` | 7.4 | Physiological pH for pdb2pqr/propka |
+| `cap_termini` | `False` | `ACE`/`NME` caps not added; set `--cap-termini` only for explicit termini capping |
+| `process_proteins` | `True` | Run clean_protein on each protein chain |
+| `process_ligands` | `True` | Run ligand cleanup + parameterization on each ligand |
+| `optimize_ligands` | `True` | MMFF94 geometry optimization before antechamber |
+| `charge_method` | `"bcc"` | AM1-BCC; the only well-tested path. `"gas"` available but not recommended |
+| `atom_type` | `"gaff2"` | GAFF2 atom typing; GAFF legacy only |
+| `keep_crystal_waters` | `False` | Crystal waters dropped by default; opt-in via `--keep-crystal-waters` |
+
+`solvate_structure`:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `water_model` | `"opc"` | Pairs with ff19SB (Amber Manual 2024 recommendation) |
+| `dist` | 15.0 | Buffer distance (Å). Smaller (10) for large systems where PBC image contact is acceptable |
+| `salt` | `True` | Add NaCl |
+| `saltcon` | 0.15 | Physiological salt (M) |
+| `cubic` | `True` | Cubic box; set False for elongated proteins to reduce water count |
+| `notprotonate` | `True` | `prepare_complex` already protonated; solvation step does not re-run pdb2pqr |
+
+`build_amber_system`:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `forcefield` | `"ff19SB"` | Modern protein FF, requires OPC water (tleap ff14SB+tip3p legacy pair still supported) |
+| `water_model` | `"opc"` | Must match the water used in solvate_structure |
+| `is_membrane` | `False` | Set True for `embed_in_membrane` output |
+| `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |
+
+Force field × water compatibility is guardrail-checked — `ff19SB + tip3p`
+is rejected with a structured error (not a warning), and you should
+present the suggested fix rather than retrying blindly.
 
 ---
 

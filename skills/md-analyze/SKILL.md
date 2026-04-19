@@ -21,9 +21,9 @@ then walk ancestors to find the `topo` node for topology (`parm7`) path.
 This skill operates on one `job_dir`. Compare branches by selecting the
 relevant completed `prod` nodes inside the same DAG.
 
-Analysis is an explicit step. Even when earlier stages use
-`workflow_mode=end_to_end`, the automatic workflow stops after production
-unless the user explicitly asks to continue into analysis.
+Analysis is always user-initiated. `/md-production` does not chain into
+`/md-analyze` — the user invokes this skill explicitly when they are
+ready to look at trajectories.
 
 1. If single trajectory or branch comparison:
    -> **Read and follow `skills/md-analyze/analysis.md`**

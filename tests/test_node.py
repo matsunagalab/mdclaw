@@ -444,30 +444,24 @@ class TestUpdateJobParamsTool:
     def test_bootstraps_progress_json(self, job_dir):
         result = update_job_params(
             str(job_dir),
-            {"execution_mode": "autonomous", "workflow_mode": "single_step"},
+            {"execution_mode": "autonomous"},
         )
         assert result["success"] is True
         progress = json.loads((job_dir / "progress.json").read_text())
         assert progress["params"]["execution_mode"] == "autonomous"
-        assert progress["params"]["workflow_mode"] == "single_step"
 
     def test_merges_without_overwriting_other_params(self, job_dir):
         update_job_params(str(job_dir), {"execution_mode": "autonomous"})
-        result = update_job_params(str(job_dir), {"workflow_mode": "end_to_end"})
+        result = update_job_params(str(job_dir), {"custom_note": "keep me"})
         assert result["success"] is True
         progress = json.loads((job_dir / "progress.json").read_text())
         assert progress["params"]["execution_mode"] == "autonomous"
-        assert progress["params"]["workflow_mode"] == "end_to_end"
+        assert progress["params"]["custom_note"] == "keep me"
 
     def test_rejects_unknown_execution_mode(self, job_dir):
         result = update_job_params(str(job_dir), {"execution_mode": "hybrid"})
         assert result["success"] is False
         assert "execution_mode must be one of" in result["error"]
-
-    def test_rejects_unknown_workflow_mode(self, job_dir):
-        result = update_job_params(str(job_dir), {"workflow_mode": "e2e_mode"})
-        assert result["success"] is False
-        assert "workflow_mode must be one of" in result["error"]
 
     def test_rejects_legacy_progress_schema(self, job_dir):
         (job_dir / "progress.json").write_text(json.dumps({"schema_version": "2.0"}))

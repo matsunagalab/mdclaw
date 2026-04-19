@@ -31,11 +31,10 @@ class TestNodeServer:
 
         result = update_job_params(
             str(tmp_path / "job_modes"),
-            {"execution_mode": "autonomous", "workflow_mode": "end_to_end"},
+            {"execution_mode": "autonomous"},
         )
         assert result["success"] is True
         assert result["params"]["execution_mode"] == "autonomous"
-        assert result["params"]["workflow_mode"] == "end_to_end"
 
 
 # ---------------------------------------------------------------------------

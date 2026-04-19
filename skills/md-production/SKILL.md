@@ -16,7 +16,6 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 |-----------|-------|
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
-| Workflow mode | read `progress.json.params.workflow_mode` |
 | Parent eq node | (eq_001, etc.) |
 | Simulation time | user-specified, or `0.1 ns (default in autonomous)` when omitted |
 | Other | (non-default parameters) |
@@ -125,5 +124,5 @@ with `mdclaw update_job_params` before creating new prod nodes.
      /md-production <job_dir>
    ```
 
-`workflow_mode=end_to_end` ends here by default. `md-analyze` is an explicit,
-opt-in follow-up step rather than part of the automatic production handoff.
+`/md-production` does not auto-invoke analysis — `/md-analyze` is always
+a user-initiated follow-up step.

@@ -5,11 +5,21 @@
 | Parameter | Default | User Cues |
 |---|---|---|
 | Water model | OPC | "tip3p", "spce" |
-| Buffer size | 15 A | "buffer 20", "20A" |
-| Salt concentration | 0.15M NaCl | "0.3M", "no salt" |
+| Buffer size | 15 Å | "buffer 20", "20A" |
+| Salt concentration | 0.15 M NaCl | "0.3M", "no salt" |
+| Cubic box | true | "octahedral", "truncated octahedron" |
 | Force field | ff19SB | "ff14SB" |
 
-**Standard explicit-water pair**: default to `ff19SB + opc`. Only override for legacy reproduction such as `ff14SB + tip3p`.
+**Standard explicit-water pair**: default to `ff19SB + opc`. This pair is
+the Amber Manual 2024 recommendation — ff19SB was parameterized against
+OPC and behaves incorrectly with TIP3P (guardrail rejects this
+combination). Use `ff14SB + tip3p` only to reproduce pre-2019 results.
+
+Full tool-level defaults (including `cubic`, `notprotonate`,
+`optimize_ligands`, `charge_method`, etc.) live in the "Tool Defaults"
+section of `setup.md`. Prepare-time checkpoints (chain selection, ligand
+inclusion, metal handling, confirmation loop) also live in `setup.md`
+and apply identically for both explicit- and implicit-solvent paths.
 
 ---
 
@@ -63,6 +73,11 @@ mdclaw --job-dir job_xxx --node-id fetch_001 inspect_molecules \
 
 This writes `inspection.json` next to the structure file and appends an
 `inspection_completed` event. Node status stays `completed` (read-only).
+
+Before moving on, check `summary.multivalent_metal_residues` and
+`notes.metal_parameterization_required` in the inspection output. If
+non-empty, follow the "Metal ion handling" section of `setup.md` —
+`parameterize_metal_ion` runs on the prep node after `prepare_complex`.
 
 ---
 
@@ -118,20 +133,16 @@ To intentionally use the legacy pair, override both sides together: `build_amber
 
 Each tool auto-updates its `node.json` and job-level `progress.json`.
 No manual writing needed. Read `progress.json` to verify state before handoff.
-Use `progress.json.params.execution_mode` / `workflow_mode` as the source of
-truth for interaction policy and automatic continuation.
+Use `progress.json.params.execution_mode` as the source of truth for
+interaction policy.
 
 ## Handoff
 
 1. Read `progress.json` -- verify `topo_001` status is `completed`.
-
-2. Read `progress.json.params.workflow_mode`.
-
-3. If `workflow_mode == "end_to_end"`:
-   read and follow `skills/md-equilibration/SKILL.md`.
-
-4. Otherwise:
+2. Tell the user:
    ```
    Preparation complete. Next:
      /md-equilibration job_xxx
    ```
+   `/md-prepare` does not auto-invoke equilibration — each stage is
+   user-initiated.

@@ -20,7 +20,6 @@ Summary to present:
 |-----------|-------|
 | Target | (PDB ID / sequence / file — exactly as the user wrote) |
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
-| Workflow mode | `single_step` (default) / `end_to_end` |
 | Chain(s) | (if specified) |
 | Ligands | include / exclude |
 | Solvation | explicit (default) / implicit |
@@ -34,26 +33,27 @@ This skill prepares **one physical system per job directory**. Do not create
 multiple fetch roots in the same DAG. Use DAG branching only after `prep`
 to explore variants of the same system.
 
-1. Decide modes from the user's request and persist them in `progress.json`
-   once `job_dir` is known:
+1. Decide `execution_mode` from the user's request and persist it in
+   `progress.json` once `job_dir` is known:
    - `execution_mode=autonomous` unless the user explicitly asks for
      checkpoint-by-checkpoint confirmation.
-   - `workflow_mode=end_to_end` only when the user wants automatic
-     continuation into equilibration and production. Otherwise use
-     `single_step`.
    - Persist via:
      ```bash
      mdclaw update_job_params --job-dir <job_dir> \
-       --params '{"execution_mode":"autonomous","workflow_mode":"single_step"}'
+       --params '{"execution_mode":"autonomous"}'
      ```
    - Treat this DAG layout as the only supported workflow state model.
      Create nodes first, then run workflow tools with both `--job-dir`
      and `--node-id`.
 2. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
-   inspection, chain selection, cleaning, and protonation.
+   inspection, chain selection, cleaning, and protonation. Metal ion
+   handling and the HITL confirmation loop live here too.
 3. **Based on the solvation type**, read the appropriate file:
    - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
    - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
+4. After `topo_001` completes, hand off: tell the user to invoke
+   `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
+   auto-chain into equilibration — each stage is user-initiated.
 
 ## Interaction Mode
 
@@ -62,27 +62,31 @@ to explore variants of the same system.
   is missing and has no safe default, or a structured failure requires a user
   decision.
 - **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
-  next action with the user.
-
-`workflow_mode` is separate from `execution_mode`:
-- **`single_step` (default)**: stop after preparation and hand off to
-  `/md-equilibration`.
-- **`end_to_end`**: after preparation, automatically continue through
-  equilibration and production. Analysis is still an explicit follow-up step.
+  next action with the user. The full checkpoint list and the confirmation
+  loop are documented in `setup.md`.
 
 ## Error Handling
 
 Use structured JSON fields from tool output to decide next steps. **Never parse stderr or warning strings to make decisions.**
+
+Use structured JSON fields from tool output to decide next steps.
+**Never parse stderr or warning strings to make decisions.**
 
 Key fields to check:
 - `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
 - `parameter_source` — per-ligand: `amber_geostd` (curated) or `gaff2_antechamber` (auto-generated)
 - `workflow_recommendation` — contains `options` (list of valid next actions)
 - `recommended_next_action` — per-ligand: `use_curated_params`, `provide_frcmod`, `hard_fail`
-- `failure_class` — what went wrong: `zero_dihe_barriers`, `metal_atoms`, `antechamber_failed`, etc.
+- `failure_class` — what went wrong. Full enumeration in
+  `setup.md` "Blocking Ligand Failure" (7 classes: `input_error`,
+  `metal_atoms`, `antechamber_failed`, `parmchk2_failed`,
+  `zero_bond_angle_params`, `zero_dihe_barriers`, `unexpected_error`)
 
 Rules:
 - If `recommended_next_action = use_curated_params`: do NOT retry, do NOT edit frcmod, do NOT change charge method. Present the options from `workflow_recommendation.options` to the user.
 - If `recommended_next_action = hard_fail`: stop immediately. Do not attempt workarounds.
 - Retrying the same command with identical parameters will produce the same error.
 - If stuck, report the structured error fields and ask the user for guidance.
+- The full HITL interaction loop (check `confirmation_needed`, respect
+  `source`, re-run with overrides if needed) is documented in
+  `setup.md` under "Confirmation Loop".

@@ -613,11 +613,11 @@ class TestNodeCLIParameters:
         args = parser.parse_args([
             "update_job_params",
             "--job-dir", "/tmp/job",
-            "--params", '{"execution_mode":"autonomous","workflow_mode":"end_to_end"}',
+            "--params", '{"execution_mode":"autonomous"}',
         ])
         assert args.tool_name == "update_job_params"
         assert args.job_dir == "/tmp/job"
-        assert args.params == '{"execution_mode":"autonomous","workflow_mode":"end_to_end"}'
+        assert args.params == '{"execution_mode":"autonomous"}'
 
     def test_update_job_params_end_to_end(self, tmp_path):
         import json
@@ -627,13 +627,12 @@ class TestNodeCLIParameters:
             main([
                 "update_job_params",
                 "--job-dir", str(tmp_path),
-                "--params", '{"execution_mode":"autonomous","workflow_mode":"single_step"}',
+                "--params", '{"execution_mode":"autonomous"}',
             ])
         assert exc_info.value.code == 0
 
         progress = json.loads((tmp_path / "progress.json").read_text())
         assert progress["params"]["execution_mode"] == "autonomous"
-        assert progress["params"]["workflow_mode"] == "single_step"
 
     def test_global_job_dir_node_id_satisfy_subparser_required_params(self, tmp_path):
         """Skill docs invoke node tools with global flags placed BEFORE the

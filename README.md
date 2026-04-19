@@ -67,22 +67,24 @@ You can also call `mdclaw <tool>` directly. For DAG workflow tools
 create a node first and then pass both `--job-dir` and `--node-id`.
 See `mdclaw --list`.
 
-### Execution Modes
+### Execution Mode
 
-MDClaw separates **how much it asks** from **how far it continues**:
+MDClaw tracks **how much it asks** the user during a skill:
 
 - `execution_mode=autonomous` (default): proceed with user-specified values and
   repo defaults. Ask only when a required choice is missing, the target is
   ambiguous, or a structured failure needs a user decision.
 - `execution_mode=human_in_the_loop`: stop at each decision checkpoint and ask
   before continuing.
-- `workflow_mode=single_step` (default): stop after the current skill and hand
-  off to the next one explicitly.
-- `workflow_mode=end_to_end`: continue automatically from prepare to
-  equilibration to production. Analysis is still an explicit follow-up step.
 
-These mode values are stored in `progress.json.params`, so later skills can
-reuse the same behavior without re-inferring it from chat history.
+The mode is stored in `progress.json.params`, so later skills on the same
+`job_dir` reuse the same behavior without re-inferring it from chat history.
+
+Skill sequencing is always **user-initiated**: `/md-prepare` →
+`/md-equilibration` → `/md-production` → `/md-analyze`. Each skill stops at
+the end of its stage and tells the user the next command to run. There is
+no automatic end-to-end chaining — you run the next stage yourself when you
+are ready.
 
 ### Defaults
 

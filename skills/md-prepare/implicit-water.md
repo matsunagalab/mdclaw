@@ -7,10 +7,19 @@ Implicit solvent models represent water as a continuum dielectric instead of exp
 | Parameter | Default | User Cues |
 |---|---|---|
 | GB model | GBn2 (igb=8) | "obc", "obc2", "hct" |
-| Salt concentration | 0.15M | "0.3M", "no salt" |
+| Salt concentration | 0.15 M | "0.3M", "no salt" |
 | Force field | ff14SB | "ff19SB" (note: ff19SB is optimized for explicit water) |
 
-**Note**: ff14SB is recommended for implicit solvent. ff19SB was parameterized with OPC explicit water and may be less accurate with GB models.
+**Force field choice**: default to `ff14SB` for implicit solvent.
+`ff19SB` was parameterized against OPC explicit water and may be less
+accurate under GB models; `ff14SB` remains the tested pair for implicit
+solvent runs.
+
+Prepare-time checkpoints (chain selection, ligand inclusion, metal
+handling, confirmation loop) live in `setup.md` and apply identically
+for both explicit- and implicit-solvent paths. The Metal ion handling
+section in `setup.md` is relevant here too — `parameterize_metal_ion`
+runs on the prep node regardless of solvent type.
 
 ---
 
@@ -62,14 +71,10 @@ mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
 ## Handoff
 
 1. Read `progress.json` — verify `topo_001` status is `completed`.
-
-2. Read `progress.json.params.workflow_mode`.
-
-3. If `workflow_mode == "end_to_end"`:
-   read and follow `skills/md-equilibration/SKILL.md`.
-
-4. Otherwise:
+2. Tell the user:
    ```
    Preparation complete. Next:
      /md-equilibration <job_dir>
    ```
+   `/md-prepare` does not auto-invoke equilibration — each stage is
+   user-initiated.
