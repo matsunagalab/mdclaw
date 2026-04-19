@@ -157,6 +157,10 @@ AMINO_ACIDS = {
 }
 WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "D2O"}
 COMMON_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
+# Subset of COMMON_IONS that requires explicit parameterize_metal_ion step.
+# Monovalent buffer ions (Na+, Cl-, K+) are handled by tleap's built-in
+# ion parameters; multivalent cofactors are not.
+MULTIVALENT_METAL_IONS = {"MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
 
 # Amber/protonation/terminal residue name variants that should still count as "protein"
 # for chain classification and for excluding them from ligand detection.
@@ -2255,6 +2259,7 @@ def inspect_molecules(
         ligand_author_chains = []
         water_chain_ids = []
         ion_chain_ids = []
+        multivalent_metal_residues: list[dict] = []
 
         for subchain in model.subchains():
             chain_id = subchain.subchain_id()
@@ -2295,6 +2300,11 @@ def inspect_molecules(
                     has_water = True
                 elif res_name in COMMON_IONS:
                     has_ion = True
+                    if res_name in MULTIVALENT_METAL_IONS:
+                        multivalent_metal_residues.append({
+                            "resname": res_name,
+                            "resnum": res.seqid.num,
+                        })
 
             # Get author chain name
             author_chain = None
@@ -2357,6 +2367,20 @@ def inspect_molecules(
             "ligand_label_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
+            "multivalent_metal_residues": multivalent_metal_residues,
+        }
+
+        result["notes"] = {
+            "metal_parameterization_required": bool(multivalent_metal_residues),
+            "metal_handling": (
+                "Multivalent metal ion(s) detected. These are NOT parameterized "
+                "automatically by prepare_complex and are NOT covered by tleap's "
+                "built-in ion parameters. Before build_amber_system, run "
+                "`mdclaw parameterize_metal_ion --pdb-file <merged.pdb> "
+                "--output-dir <prep_artifacts>` and pass its mol2/frcmod to "
+                "build_amber_system via --metal-params. "
+                "See skills/md-prepare/setup.md 'Metal ion handling' for details."
+            ) if multivalent_metal_residues else None,
         }
 
         if not chains_info:

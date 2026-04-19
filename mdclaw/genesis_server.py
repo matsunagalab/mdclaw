@@ -20,7 +20,9 @@ from mdclaw._common import setup_logger  # noqa: E402
 logger = setup_logger(__name__)
 
 import datetime  # noqa: E402
+import hashlib  # noqa: E402
 import json  # noqa: E402
+import shutil  # noqa: E402
 import string  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -51,7 +53,9 @@ def boltz2_protein_from_seq(
     amino_acid_sequence_list: list[str],
     smiles_list: list[str],
     affinity: bool = False,
-    output_dir: Optional[str] = None
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
 ) -> dict:
     """Predict protein structures for one or more amino acid sequences using Boltz-2.
 
@@ -71,15 +75,24 @@ def boltz2_protein_from_seq(
                   Default is False.
         output_dir: Output directory. If None, creates output/boltz/.
                     When provided (e.g., session directory), creates a "boltz"
-                    subdirectory within it.
+                    subdirectory within it. Ignored in node mode.
+        job_dir: Job directory for node-based tracking (schema v3).
+        node_id: Fetch node ID. When both ``job_dir`` and ``node_id`` are provided,
+                 the top-ranked predicted PDB is copied into
+                 ``<job_dir>/nodes/<node_id>/artifacts/`` and the fetch node is
+                 marked completed with ``source_type="boltz2"`` plus sequence
+                 and SMILES metadata. Additional prediction models remain under
+                 the boltz output directory for inspection.
 
     Returns:
         Dict with:
             - success: bool - True if prediction completed successfully
             - job_id: str - Unique identifier for this prediction job
-            - output_dir: str - Path to output directory
+            - output_dir: str - Path to boltz output directory (all models)
             - input_yaml_path: str - Path to Boltz-2 input YAML file
             - predicted_pdb_files: list[str] - Paths to predicted PDB structure files
+            - file_path: str | None - Path to the primary PDB copied under the
+              fetch node artifacts (node mode only)
             - affinity_scores: dict | None - Binding affinity predictions if requested
               Contains:
               - affinity_probability_binary: Higher = more confident binding
@@ -101,8 +114,34 @@ def boltz2_protein_from_seq(
     job_id = generate_job_id()
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
+    # Node-mode setup: validate fetch node before touching state, then use the
+    # node artifacts dir as the boltz output root so predictions land under it.
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw.research_server import (
+            _validate_fetch_node,
+            _resolve_fetch_artifacts_dir,
+        )
+        from mdclaw._node import begin_node, fail_node
+        _node_err = _validate_fetch_node(job_dir, node_id)
+        if _node_err:
+            return {
+                "success": False,
+                "job_id": job_id,
+                "output_dir": None,
+                "input_yaml_path": None,
+                "predicted_pdb_files": [],
+                "file_path": None,
+                "affinity_scores": None,
+                "errors": [_node_err],
+                "warnings": [],
+            }
+
     # Setup output directory with human-readable name
-    base_dir = Path(output_dir) if output_dir else WORKING_DIR
+    if _node_mode:
+        base_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+    else:
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "boltz")
 
     result = {
@@ -111,6 +150,7 @@ def boltz2_protein_from_seq(
         "output_dir": str(out_dir),
         "input_yaml_path": None,
         "predicted_pdb_files": [],
+        "file_path": None,
         "affinity_scores": None,
         "errors": [],
         "warnings": []
@@ -120,6 +160,9 @@ def boltz2_protein_from_seq(
     if not amino_acid_sequence_list:
         result["errors"].append("At least one amino acid sequence is required")
         return result
+
+    if _node_mode:
+        begin_node(job_dir, node_id)
 
     # Create YAML input for Boltz-2
     yaml_filename = f"{timestamp}.yaml"
@@ -191,6 +234,8 @@ def boltz2_protein_from_seq(
     if not boltz_executable_path:
         result["errors"].append("Boltz executable not found")
         result["errors"].append("Hint: Install Boltz-2 or activate the mdclaw conda environment")
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
     # Run Boltz-2
@@ -222,11 +267,15 @@ def boltz2_protein_from_seq(
     except subprocess.CalledProcessError as e:
         logger.error(f"Boltz-2 prediction failed: {e.stderr}")
         result["errors"].append(f"Boltz-2 prediction failed: {e.stderr[:500]}")
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
     except Exception as e:
         logger.error(f"Boltz-2 prediction failed: {e}")
         result["errors"].append(f"Boltz-2 prediction failed: {type(e).__name__}: {str(e)}")
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
     # Parse results
@@ -253,6 +302,56 @@ def boltz2_protein_from_seq(
                 result["warnings"].append(f"Failed to load affinity scores: {e}")
         else:
             result["warnings"].append("Affinity file not found in output")
+
+    # Node integration: promote the top-ranked predicted PDB as the fetch
+    # node's primary structure artifact. Additional models stay under
+    # out_dir for inspection.
+    if _node_mode:
+        if not result["predicted_pdb_files"]:
+            result["errors"].append(
+                "Boltz-2 produced no PDB files; cannot complete fetch node"
+            )
+            fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+        try:
+            from mdclaw.research_server import (
+                _complete_fetch_node,
+                _resolve_fetch_artifacts_dir,
+            )
+            primary_src = Path(result["predicted_pdb_files"][0])
+            artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            primary_dst = artifacts_dir / f"boltz2_prediction_{primary_src.name}"
+            shutil.copy2(primary_src, primary_dst)
+
+            yaml_digest = hashlib.sha256(
+                yaml_path.read_bytes()
+            ).hexdigest()[:12] if yaml_path.exists() else job_id
+            extra = {
+                "sequences": amino_acid_sequence_list,
+                "smiles_list": smiles_list,
+                "affinity_requested": affinity,
+                "num_predicted_models": len(result["predicted_pdb_files"]),
+                "boltz_output_dir": str(result_dir),
+                "input_yaml": str(yaml_path),
+            }
+            if result.get("affinity_scores"):
+                extra["affinity_scores"] = result["affinity_scores"]
+            _complete_fetch_node(
+                job_dir,
+                node_id,
+                primary_dst,
+                source_type="boltz2",
+                source_id=f"boltz2_{yaml_digest}",
+                file_format="pdb",
+                extra_metadata=extra,
+            )
+            result["file_path"] = str(primary_dst)
+        except Exception as e:
+            msg = f"Failed to attach Boltz-2 prediction to fetch node: {type(e).__name__}: {e}"
+            logger.error(msg)
+            result["errors"].append(msg)
+            fail_node(job_dir, node_id, errors=[msg])
+            return result
 
     result["success"] = True
     logger.info(f"Job {job_id} finished. Found {len(result['predicted_pdb_files'])} PDB files.")

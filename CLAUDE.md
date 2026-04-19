@@ -527,15 +527,6 @@ Two-tier strategy:
 
 ## TODO
 
-### Boltz-2 as a `fetch` node source
-
-`boltz2_protein_from_seq` is the third structure-acquisition path (alongside
-PDB / AlphaFold / local) but was not wired into the `fetch` node in v1.
-Apply the same pattern: add `job_dir`/`node_id` to the tool, write the
-predicted CIF/PDB into `nodes/<fetch_id>/artifacts/`, and call
-`_complete_fetch_node` with `source_type="boltz2"` plus prediction metadata
-(model version, sequence(s), SMILES list, affinity flag, sha256).
-
 ### Single-fetch DAG principle
 
 Each `job_dir` should contain one physical system with exactly one `fetch`

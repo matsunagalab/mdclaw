@@ -76,41 +76,43 @@ Use `progress.json.params.execution_mode` as the source of truth:
 | pH | `never_ask` | Standard preparation | 7.4 | "pH 6.5" |
 | Low-confidence charge | `stop_and_ask` | `LOW_CONFIDENCE_CHARGE` warning | None | warning from `prepare_complex` |
 | Blocking ligand failure | `stop_and_ask` | `overall_status=completed_with_blocking_ligand_failure` | None | `workflow_recommendation.options` |
+| SS-bond / HIS state review | `ask_if_missing` | `confirmation_needed` block in `prepare_complex` output | Auto-detected values applied | "keep", "change HIS X to HIE" |
 
 ---
 
 ## Step 1: Acquire Structure
 
-**Tools**:
+**Tools** (all accept `--job-dir <jd> --node-id <fetch_id>` for schema v3):
 - `mdclaw download_structure --pdb-id <ID> --format pdb`
 - `mdclaw get_alphafold_structure --uniprot-id <ID>`
-- `mdclaw register_local_structure --file-path <path>` (requires `fetch` node context)
+- `mdclaw register_local_structure --file-path <path>`
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
-- `mdclaw search_structures --query "<name>"`
+- `mdclaw search_structures --query "<name>"` (no node flags — discovery only)
 
 **Logic**:
 1. PDB ID (4-char like `1AKE`) → `download_structure`
 2. UniProt ID (like `P12345`) → `get_alphafold_structure`
 3. Local file → create a `fetch` node, then `register_local_structure`
-4. FASTA sequence → `boltz2_protein_from_seq`
+4. FASTA sequence (+ optional SMILES) → `boltz2_protein_from_seq`
 5. Protein name → `search_structures`, then ask user to pick
 
 > **Schema v3 workflow**: structure acquisition is always a `fetch` DAG-root
 > node. Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
 > and pass `--node-id fetch_001` to `download_structure`,
-> `get_alphafold_structure`, or `register_local_structure`. The downloaded /
-> registered file is recorded under `nodes/fetch_001/artifacts/` with
-> provenance metadata (`source_type`, `source_id`, `sha256`, `source_url`).
+> `get_alphafold_structure`, `register_local_structure`, or
+> `boltz2_protein_from_seq`. The downloaded / registered / predicted file
+> is recorded under `nodes/fetch_001/artifacts/` with provenance metadata
+> (`source_type`, `source_id`, `sha256`, `source_url` or sequence/SMILES).
 > See `explicit-water.md` for the full runbook.
 >
-> **Exception — `boltz2_protein_from_seq`**: fetch-node wiring is **not yet
-> implemented** (tracked in `CLAUDE.md` TODO). The tool currently produces
-> a predicted CIF/PDB outside any node's artifacts/ directory. To use a
-> Boltz-2 prediction as a fetch node, run the tool first, then register
-> the resulting file via
-> `mdclaw --job-dir <jd> --node-id fetch_001 register_local_structure --file-path <predicted.cif>`.
-> Passing `--job-dir` / `--node-id` directly to `boltz2_protein_from_seq`
-> will not produce a provenance-annotated fetch artifact.
+> **Boltz-2 note**: `boltz2_protein_from_seq` takes its ligands via
+> `--smiles-list` — SMILES handling is entirely Boltz-2's responsibility
+> and `prepare_complex` does **not** take novel SMILES. The predicted
+> complex (protein + embedded ligand coordinates) becomes the fetch node's
+> structure, and `prepare_complex` parameterizes the ligand the same way
+> it would for a PDB-derived complex. A collaborator-maintained Boltz-2
+> CLI/skill set may also be in use — either path populates the same fetch
+> node layout.
 
 ---
 
@@ -137,6 +139,43 @@ into the fetch node's artifacts dir. The node's status is unchanged
 4. Determine `include_types`:
    - With ligands and ions: `protein ligand ion`
    - No ligands, no ions: `protein`
+5. **Checkpoint: Multivalent metal ions** — Read
+   `summary.multivalent_metal_residues` and `notes.metal_parameterization_required`
+   from `inspect_molecules` output. If non-empty, the structure carries
+   metal cofactors (Zn, Fe, Mn, Cu, Mg, Ca, Co, Ni, Cd, Hg) that **require
+   an explicit `parameterize_metal_ion` step**. See "Metal ion handling"
+   below before continuing.
+
+### Metal ion handling
+
+`prepare_complex` does **not** parameterize multivalent metal ions. Monovalent
+buffer ions (Na⁺, K⁺, Cl⁻) are covered by tleap's built-in `ions1lm_*.frcmod`,
+but transition metals and Mg/Ca must be parameterized with
+`parameterize_metal_ion` (nonbonded 12-6 model) and attached to the `prep`
+node manually:
+
+```bash
+# After prepare_complex, before build_amber_system
+mdclaw parameterize_metal_ion \
+  --pdb-file <job_dir>/nodes/prep_001/artifacts/merged.pdb \
+  --output-dir <job_dir>/nodes/prep_001/artifacts \
+  --water-model opc
+```
+
+Collect the returned `metal_mol2_files` + `ion_frcmod` and pass them to
+`build_amber_system` via `--json-input`:
+
+```bash
+mdclaw --job-dir <jd> --node-id topo_001 build_amber_system \
+  --json-input '{"metal_params":[{"mol2":"<path>.mol2","residue_name":"ZN"}]}'
+```
+
+> **Known gap**: `parameterize_metal_ion` does not yet accept
+> `--job-dir`/`--node-id`, so DAG auto-resolution of `metal_params` only
+> works when the artifact is written into the `prep` node's `artifacts/`
+> directory by hand (as shown above) and referenced explicitly in the
+> `build_amber_system` invocation. Tracked as a follow-up to the node
+> integration work.
 
 ---
 
@@ -198,6 +237,33 @@ this from the `prep` ancestor — no manual bookkeeping or path wiring required.
 **Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings
 contain `LOW_CONFIDENCE_CHARGE`, this is always `stop_and_ask`: present the
 warning to the user and ask for confirmation before proceeding.
+
+**Checkpoint: SS-bond / HIS state review** -- `prepare_complex` emits a
+`confirmation_needed` block whenever disulfide bonds or non-default
+histidine states were applied during cleanup:
+
+```json
+{
+  "confirmation_needed": {
+    "disulfide_bonds": [
+      {"cys1": {"chain":"A","resnum":12}, "cys2": {"chain":"A","resnum":88},
+       "source":"pdb_ssbond", "distance_angstrom":2.04, "confidence":"high"}
+    ],
+    "histidine_states": {"A:64": "HID", "A:119": "HIE"},
+    "policy": "..."
+  }
+}
+```
+
+- In `human_in_the_loop` mode: present both lists verbatim and ask the
+  user to confirm before invoking `solvate_structure`.
+- In `autonomous` mode: log the values and continue — they are already
+  applied to `merged.pdb`.
+
+There is no CLI override today. If the user wants different bonds/states,
+they must edit `merged.pdb` by hand and pass it to `solvate_structure`
+with `--pdb-file` (bypassing DAG auto-resolution), or re-run
+`prepare_complex` with a corrected input structure.
 
 ### Blocking Ligand Failure
 

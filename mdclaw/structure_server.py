@@ -4464,6 +4464,25 @@ def prepare_complex(
                         preparation_summary[key] = val
         result["preparation_summary"] = preparation_summary
 
+        # -- confirmation_needed: structured block for HITL review --------
+        # Surface auto-detected disulfide bonds and histidine protonation
+        # states in one place so the skill can show them to the user before
+        # proceeding to solvation. The values are already applied to
+        # merged.pdb; there is no CLI override at this time.
+        confirmation_items = {
+            "disulfide_bonds": result.get("disulfide_bonds", []),
+            "histidine_states": preparation_summary.get("histidine_states", {}),
+        }
+        if confirmation_items["disulfide_bonds"] or confirmation_items["histidine_states"]:
+            confirmation_items["policy"] = (
+                "In human_in_the_loop mode, present these detections to the "
+                "user and confirm before invoking solvate_structure. In "
+                "autonomous mode, log and continue. The values shown here "
+                "are already applied to merged.pdb; CLI override flags are "
+                "not yet implemented."
+            )
+            result["confirmation_needed"] = confirmation_items
+
         # Write ligand_params.json to the job root for auto-detection by build_amber_system.
         # Job directory layout: job_XXX/{split,merge,solvate,topology}/
         # build_amber_system receives pdb_file in solvate/ (explicit) or merge/ (implicit)
