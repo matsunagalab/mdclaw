@@ -94,6 +94,7 @@ pattern is lifted directly from mdtraj's built-in `mdconvert` script.
 | Key | File | Purpose |
 |---|---|---|
 | `combined_trajectory` | `{output_name}.dcd` | Concatenated + stripped trajectory |
+| `combined_energy` | `{output_name}.energy.csv` | Concatenated StateDataReporter CSV (Step / Time / PE / KE / total / Temp / Volume / Density). Same `--stride` applied as the DCD, so row k of this CSV corresponds to frame k of the trajectory. Present iff every prod in the lineage produced an `energy` artifact — missing files are skipped with a warning rather than failing the whole concat. |
 | `reference_pdb` | `{output_name}.pdb` | First frame of the stripped system — use as topology for downstream analysis (RMSD, RMSF, contacts, etc.) |
 | `selection_indices` | `{output_name}.selection.json` | Atom indices that survived selection (maps back to the full-system prmtop for cross-tool comparisons) |
 

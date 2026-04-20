@@ -37,6 +37,7 @@ def concat_trajectory(
     node_id: Optional[str] = None,
     trajectory_files: Optional[list[str]] = None,
     prmtop_file: Optional[str] = None,
+    energy_files: Optional[list[str]] = None,
     selection: str = "protein",
     output_name: str = "combined",
     stride: int = 1,
@@ -104,6 +105,7 @@ def concat_trajectory(
         "success": False,
         "output_dir": None,
         "combined_trajectory": None,
+        "combined_energy": None,
         "reference_pdb": None,
         "selection_indices": None,
         "selection": selection,
@@ -112,6 +114,9 @@ def concat_trajectory(
         "total_frames": 0,
         "frames_per_source": [],
         "source_trajectories": [],
+        "source_energy_files": [],
+        "energy_rows_per_source": [],
+        "total_energy_rows": 0,
         "errors": [],
         "warnings": [],
     }
@@ -127,6 +132,11 @@ def concat_trajectory(
             prmtop_file = resolved.get("prmtop_file")
         if trajectory_files is None:
             trajectory_files = resolved.get("trajectory_chain")
+        if energy_files is None:
+            # Optional: present iff every prod in the lineage actually
+            # produced an energy.dat. Non-node-mode callers can still
+            # skip by passing energy_files=[] explicitly.
+            energy_files = resolved.get("energy_chain") or []
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
         ensure_directory(out_dir)
@@ -296,6 +306,61 @@ def concat_trajectory(
         )
         result["selection_indices"] = str(sel_json)
 
+        # Energy CSV concatenation (optional — only when every prod in
+        # the lineage produced an energy.dat). The StateDataReporter
+        # writes one row per DCD frame on the same ``report_interval``
+        # inside ``run_production``, so applying ``--stride`` to the
+        # DCD and to the CSV keeps frames and energies aligned 1:1.
+        if energy_files:
+            energy_files = [str(p) for p in energy_files]
+            missing_en = [p for p in energy_files if not Path(p).is_file()]
+            if missing_en:
+                result["warnings"].append(
+                    f"energy CSV(s) not found, skipping energy concat: "
+                    f"{missing_en}"
+                )
+            else:
+                energy_out = out_dir / f"{output_name}.energy.csv"
+                rows_per_source: list[int] = []
+                total_rows = 0
+                header_written = False
+                with energy_out.open("w") as outf:
+                    for src in energy_files:
+                        in_rows = 0
+                        with Path(src).open("r") as inf:
+                            header = inf.readline()
+                            if not header_written:
+                                outf.write(header)
+                                header_written = True
+                            # Stride rows 1:1 with the DCD stride so
+                            # each row in the combined CSV maps to
+                            # exactly one frame in combined.dcd.
+                            for i, line in enumerate(inf):
+                                if i % stride == 0:
+                                    outf.write(line)
+                                    in_rows += 1
+                        rows_per_source.append(in_rows)
+                        total_rows += in_rows
+                        logger.info(
+                            f"  + {in_rows} energy rows from {Path(src).name}"
+                        )
+                result["combined_energy"] = str(energy_out)
+                result["source_energy_files"] = energy_files
+                result["energy_rows_per_source"] = rows_per_source
+                result["total_energy_rows"] = total_rows
+                if total_rows != result["total_frames"]:
+                    result["warnings"].append(
+                        f"energy rows ({total_rows}) != trajectory "
+                        f"frames ({result['total_frames']}) — the "
+                        "reporters may have drifted in some prod "
+                        "restart, or energy.dat was truncated. The "
+                        "combined CSV is still written but row-to-"
+                        "frame alignment is not guaranteed."
+                    )
+                logger.info(
+                    f"Wrote {total_rows} energy rows → {energy_out}"
+                )
+
         result["success"] = True
 
     except Exception as e:  # noqa: BLE001 — surface any mdtraj-side failure
@@ -317,14 +382,17 @@ def concat_trajectory(
                     else str(pp)
                 )
 
+            arts = {
+                "combined_trajectory": _rel(result["combined_trajectory"]),
+                "reference_pdb": _rel(result["reference_pdb"]),
+                "selection_indices": _rel(result["selection_indices"]),
+            }
+            if result.get("combined_energy"):
+                arts["combined_energy"] = _rel(result["combined_energy"])
             complete_node(
                 job_dir,
                 node_id,
-                artifacts={
-                    "combined_trajectory": _rel(result["combined_trajectory"]),
-                    "reference_pdb": _rel(result["reference_pdb"]),
-                    "selection_indices": _rel(result["selection_indices"]),
-                },
+                artifacts=arts,
                 metadata={
                     "selection": selection,
                     "stride": stride,
@@ -342,6 +410,11 @@ def concat_trajectory(
                     "total_frames": result["total_frames"],
                     "frames_per_source": result["frames_per_source"],
                     "source_trajectories": result["source_trajectories"],
+                    "source_energy_files": result.get("source_energy_files", []),
+                    "energy_rows_per_source": result.get(
+                        "energy_rows_per_source", []
+                    ),
+                    "total_energy_rows": result.get("total_energy_rows", 0),
                     "prmtop_file": prmtop_file,
                 },
             )

@@ -900,11 +900,18 @@ def resolve_node_inputs(
                     pass
 
         if parent_type == "prod":
-            # Phase 1: concat-style input set.
+            # Phase 1: concat-style input set. Trajectory + energy CSV
+            # are always collected in parallel — they're written on the
+            # same interval by run_production so downstream
+            # concat_trajectory can strip + stride them together and
+            # keep the energy-vs-frame correspondence exact.
             p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
             if p7:
                 result["prmtop_file"] = p7
             result["trajectory_chain"] = _collect_prod_trajectory_chain(
+                job_dir, node_id
+            )
+            result["energy_chain"] = _collect_prod_energy_chain(
                 job_dir, node_id
             )
         elif parent_type == "analyze":
@@ -936,25 +943,27 @@ def resolve_node_inputs(
     return result
 
 
-def _collect_prod_trajectory_chain(
-    job_dir: str, analyze_node_id: str
+def _collect_prod_artifact_chain(
+    job_dir: str,
+    analyze_node_id: str,
+    artifact_key: str,
 ) -> list[str]:
     """Walk the prod lineage above *analyze_node_id* and return a list of
-    ``trajectory`` artifact paths in chronological order (oldest first).
+    *artifact_key* paths in chronological order (oldest first).
 
-    Starts from the analyze node's direct parent. If that parent is a
-    prod carrying a ``trajectory`` artifact, record it and recurse into
-    ITS parents (up through prod ancestors only). Non-prod ancestors
-    (typically the eq root) terminate the walk. The ``continued_from``
-    metadata trail, where present, is preferred over plain parents so
-    the chronological order matches how the user actually chained the
-    runs — but a prod node without ``continued_from`` will still fall
-    back to ``parent_node_ids`` so the traversal works on legacy DAGs.
+    Generic BFS through the prod ancestor chain (via
+    ``metadata.continued_from``, falling back to ``parent_node_ids``):
+    for each prod ancestor, if it carries the named artifact,
+    prepend-then-reverse to get chronological order; ancestors that
+    lack the artifact are skipped silently (a prod run that never
+    completed does not contribute). Non-prod ancestors (typically eq)
+    terminate the walk.
 
-    Returned paths are absolute (via ``_read_artifact_from_node``'s
-    contract). An analyze node directly above an eq (no prod between)
-    returns an empty list — downstream tools must then handle "no
-    trajectory to concatenate" with a clear error.
+    Used for both ``artifact_key="trajectory"`` (concat_trajectory
+    input) and ``artifact_key="energy"`` (StateDataReporter CSV
+    concatenation alongside). An empty return means no matching prod
+    ancestor was found — downstream tools must surface that to the
+    caller with a clear error.
     """
     jd = Path(job_dir)
     start_nj = jd / "nodes" / analyze_node_id / "node.json"
@@ -984,9 +993,9 @@ def _collect_prod_trajectory_chain(
             break
         if cur_data.get("node_type") != "prod":
             break
-        traj = _read_artifact_from_node(job_dir, current, "trajectory")
-        if traj is not None:
-            reversed_chain.append(traj)
+        art = _read_artifact_from_node(job_dir, current, artifact_key)
+        if art is not None:
+            reversed_chain.append(art)
         # Prefer continued_from metadata (explicit chain marker); fall
         # back to the first parent. Both should point at a prod or eq.
         next_id = cur_data.get("metadata", {}).get("continued_from")
@@ -997,6 +1006,27 @@ def _collect_prod_trajectory_chain(
     # reversed_chain is leaf→root; flip to chronological.
     reversed_chain.reverse()
     return reversed_chain
+
+
+def _collect_prod_trajectory_chain(
+    job_dir: str, analyze_node_id: str
+) -> list[str]:
+    """Back-compat wrapper: trajectory chain (see
+    :func:`_collect_prod_artifact_chain`)."""
+    return _collect_prod_artifact_chain(
+        job_dir, analyze_node_id, "trajectory"
+    )
+
+
+def _collect_prod_energy_chain(
+    job_dir: str, analyze_node_id: str
+) -> list[str]:
+    """Energy CSV chain from the same prod lineage that produced the
+    trajectory chain. StateDataReporter writes on the same interval as
+    DCDReporter in ``run_production``, so energy rows line up with DCD
+    frames file-for-file — concat in parallel and a ``--stride N`` on
+    the DCD keeps the energy in sync with the same stride applied."""
+    return _collect_prod_artifact_chain(job_dir, analyze_node_id, "energy")
 
 
 def _read_continued_from(job_dir: str, node_id: str) -> Optional[str]:

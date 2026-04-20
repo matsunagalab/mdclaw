@@ -940,6 +940,57 @@ class TestDAGAutoResolve:
         assert len(chain) == 1
         assert chain[0].endswith("prod_001/artifacts/trajectory.dcd")
 
+    def test_analyze_resolves_energy_chain_alongside_trajectory(
+        self, full_dag
+    ):
+        """Each prod's ``energy`` artifact (StateDataReporter CSV) is
+        chained in parallel to the ``trajectory`` so concat_trajectory
+        can strip + stride them together. Order matches the trajectory
+        chain exactly."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "energy": "artifacts/energy.dat",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "prod", continue_from="prod_001")
+        complete_node(jd, "prod_002",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "energy": "artifacts/energy.dat"})
+        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        energy_chain = inputs.get("energy_chain")
+        assert energy_chain is not None
+        assert len(energy_chain) == 2
+        assert "prod_001/artifacts/energy.dat" in energy_chain[0]
+        assert "prod_002/artifacts/energy.dat" in energy_chain[1]
+        # Lengths must match the trajectory chain — rows-per-frame
+        # alignment is the whole point of pairing them.
+        assert len(inputs["trajectory_chain"]) == len(energy_chain)
+
+    def test_analyze_energy_chain_skips_prods_without_energy_artifact(
+        self, full_dag
+    ):
+        """A prod ancestor that produced a trajectory but crashed
+        before the energy reporter flushed (or legacy prod nodes from
+        before the energy artifact existed) should be silently skipped
+        — we can't recover what isn't there, and falsely dropping the
+        whole concat just because one leg lacks a CSV would be
+        disproportionate."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "energy": "artifacts/energy.dat"})
+        create_node(jd, "prod", continue_from="prod_001")
+        complete_node(jd, "prod_002",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"})
+        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        # 2 trajectories, but only 1 energy
+        assert len(inputs["trajectory_chain"]) == 2
+        assert len(inputs["energy_chain"]) == 1
+
     def test_analyze_resolves_trajectory_chain_in_chronological_order(
         self, full_dag
     ):
