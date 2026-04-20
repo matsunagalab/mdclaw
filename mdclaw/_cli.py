@@ -227,6 +227,11 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
             pass
 
         for pname, param in sig.parameters.items():
+            # Underscore-prefixed kwargs are internal (used by Python
+            # callers for dispatch plumbing, e.g. multi-branch analyze
+            # helpers). They never become CLI flags.
+            if pname.startswith("_"):
+                continue
             hint = hints.get(pname, param.annotation)
             if hint is inspect.Parameter.empty:
                 hint = str  # fallback

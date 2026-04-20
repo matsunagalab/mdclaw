@@ -1091,9 +1091,12 @@ class TestDAGAutoResolve:
             "analyze_001/artifacts/fitted.dcd"
         ), "fitted_trajectory must win when both artifacts are present"
 
-    def test_analyze_rejects_multi_parent(self, full_dag):
-        """Analyze nodes are single-parent. Branching is expressed by
-        creating multiple analyze siblings, not multi-parent analyze."""
+    def test_analyze_rejects_mixed_prod_and_analyze_parents(self, full_dag):
+        """Multi-parent analyze is allowed (Phase 3) but parents must
+        be uniformly prod or uniformly analyze. Mixing the two shapes
+        confuses resolve_node_inputs (prods need chain-walking,
+        analyze nodes already expose a ready trajectory), so reject
+        mixed cases at create_node time."""
         jd = str(full_dag)
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
@@ -1105,7 +1108,7 @@ class TestDAGAutoResolve:
             jd, "analyze", parent_node_ids=["prod_001", "analyze_001"]
         )
         assert r["success"] is False
-        assert "exactly 1 parent" in r["error"]
+        assert "cannot mix" in r["error"]
 
     def test_analyze_rejects_non_prod_non_analyze_parent(self, full_dag):
         """An analyze node parented on something other than prod or

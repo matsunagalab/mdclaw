@@ -238,42 +238,59 @@ def create_node(
                 ),
             }
 
-        # Analyze nodes take exactly one parent, and that parent must
-        # be either a prod (Phase 1 concat entry) or another analyze
-        # (Phase 2 downstream analysis). Other shapes would break the
-        # resolve_node_inputs("analyze") contract.
+        # Analyze nodes accept N ≥ 1 parents — multiple prods for
+        # comparing replicates/temperatures (Phase 3 multi-branch), or
+        # multiple analyze nodes to compose previously-concatenated
+        # branches downstream. Mixed shapes (one prod + one analyze)
+        # are rejected because the DAG semantics diverge: prods need
+        # chain-walking, analyze already expose a ready trajectory.
         if node_type == "analyze":
-            if len(parents) != 1:
+            if len(parents) < 1:
                 return {
                     "success": False,
                     "error": (
-                        f"analyze nodes require exactly 1 parent, got "
-                        f"{len(parents)}. Branch by creating multiple "
-                        "analyze siblings (analyze_001, analyze_002, ...)"
-                        " from the same parent instead."
+                        "analyze nodes require at least 1 parent. For "
+                        "downstream analyses, parent the analyze node "
+                        "whose trajectory you want to consume; for "
+                        "concatenation, parent one or more prod nodes."
                     ),
                 }
-            parent_id = parents[0]
-            parent_entry = nodes_index.get(parent_id)
-            if parent_entry is None:
+            parent_types: list[str] = []
+            for pid in parents:
+                parent_entry = nodes_index.get(pid)
+                if parent_entry is None:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"analyze parent '{pid}' does not exist in "
+                            "this job's progress.json"
+                        ),
+                    }
+                pt = parent_entry.get("type")
+                if pt not in ("prod", "analyze"):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"analyze parent must be a 'prod' or "
+                            f"'analyze' node; got '{pid}' of type "
+                            f"'{pt}'. For DCD concatenation from the "
+                            "prod chain, parent one or more prods. For "
+                            "downstream analyses, parent the analyze "
+                            "node(s) whose combined_trajectory you "
+                            "want to consume."
+                        ),
+                    }
+                parent_types.append(pt)
+            if len(set(parent_types)) > 1:
                 return {
                     "success": False,
                     "error": (
-                        f"analyze parent '{parent_id}' does not exist "
-                        "in this job's progress.json"
-                    ),
-                }
-            parent_type = parent_entry.get("type")
-            if parent_type not in ("prod", "analyze"):
-                return {
-                    "success": False,
-                    "error": (
-                        f"analyze parent must be a 'prod' or 'analyze' "
-                        f"node; got '{parent_id}' of type "
-                        f"'{parent_type}'. For DCD concatenation from "
-                        "the prod chain, parent a prod. For downstream "
-                        "analyses, parent the analyze node whose "
-                        "combined_trajectory you want to consume."
+                        "analyze nodes cannot mix prod and analyze "
+                        f"parents; got {parent_types}. Decide which "
+                        "layer you're operating at: either concatenate "
+                        "prod chains (all parents = prod) OR consume "
+                        "already-concatenated analyze outputs (all "
+                        "parents = analyze)."
                     ),
                 }
 
@@ -871,74 +888,178 @@ def resolve_node_inputs(
                 result["restart_from"] = src
 
     elif node_type == "analyze":
-        # Analyze nodes have two parent shapes:
-        #   (a) parent is a prod  → Phase 1 concat_trajectory: gather
-        #       all prod-chain trajectory DCDs chronologically.
-        #   (b) parent is another analyze → Phase 2 tools (rmsd,
-        #       distance, q_value, fit): consume the parent's single
-        #       combined/fitted trajectory + reference PDB.
-        # Single-parent validation is enforced in create_node; this
-        # branch only needs to peek at the (single) parent's node_type.
+        # Analyze nodes resolve inputs based on how many parents they
+        # have and whether those parents are prods or analyze nodes.
+        # Four combinations, documented inline below. create_node
+        # already validated that parents are non-empty and uniform
+        # (all-prod or all-analyze); this branch trusts that contract.
         start_nj = Path(job_dir) / "nodes" / node_id / "node.json"
-        parent_id: Optional[str] = None
-        if start_nj.exists():
+        if not start_nj.exists():
+            return result
+        try:
+            start_data = json.loads(start_nj.read_text())
+        except (json.JSONDecodeError, OSError):
+            return result
+        parents: list[str] = start_data.get("parent_node_ids", [])
+        if not parents:
+            return result
+
+        parent_types: list[str] = []
+        for pid in parents:
+            pj = Path(job_dir) / "nodes" / pid / "node.json"
+            if not pj.exists():
+                parent_types.append("missing")
+                continue
             try:
-                start_data = json.loads(start_nj.read_text())
-                parents = start_data.get("parent_node_ids", [])
-                if parents:
-                    parent_id = parents[0]
+                parent_types.append(
+                    json.loads(pj.read_text()).get("node_type", "unknown")
+                )
             except (json.JSONDecodeError, OSError):
-                pass
+                parent_types.append("unreadable")
 
-        parent_type: Optional[str] = None
-        if parent_id:
-            pj = Path(job_dir) / "nodes" / parent_id / "node.json"
-            if pj.exists():
-                try:
-                    parent_type = json.loads(pj.read_text()).get("node_type")
-                except (json.JSONDecodeError, OSError):
-                    pass
+        n_parents = len(parents)
+        # Every analyze branch needs the same prmtop for atom-selection
+        # DSL evaluation — within one job_dir all prods share the topo.
+        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        if p7:
+            result["prmtop_file"] = p7
 
-        if parent_type == "prod":
-            # Phase 1: concat-style input set. Trajectory + energy CSV
-            # are always collected in parallel — they're written on the
-            # same interval by run_production so downstream
-            # concat_trajectory can strip + stride them together and
-            # keep the energy-vs-frame correspondence exact.
-            p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-            if p7:
-                result["prmtop_file"] = p7
+        if n_parents == 1 and parent_types[0] == "prod":
+            # Phase 1 single-prod shape: trajectory + energy chain
+            # collected chronologically along the prod lineage.
             result["trajectory_chain"] = _collect_prod_trajectory_chain(
                 job_dir, node_id
             )
             result["energy_chain"] = _collect_prod_energy_chain(
                 job_dir, node_id
             )
-        elif parent_type == "analyze":
-            # Phase 2: prefer fitted_trajectory (fit-chain output) over
-            # combined_trajectory (concat output). reference_pdb stays
-            # the same regardless of which upstream output we pick.
-            traj = _read_artifact_from_node(
-                job_dir, parent_id, "fitted_trajectory"
-            )
-            if traj is None:
-                traj = _read_artifact_from_node(
-                    job_dir, parent_id, "combined_trajectory"
+        elif n_parents >= 1 and all(pt == "prod" for pt in parent_types):
+            # Phase 3 multi-prod shape: each parent is an independent
+            # leaf prod; walk its own chain and produce one branch
+            # input per parent.
+            branches_input: list[dict[str, Any]] = []
+            for pid in parents:
+                # Borrow the chain collector by pointing a synthetic
+                # analyze node at this prod. Simplest is to walk
+                # directly from the parent id.
+                traj_chain = _walk_prod_chain_from(
+                    job_dir, pid, "trajectory"
                 )
-            if traj is not None:
-                result["trajectory_file"] = traj
-            ref_pdb = _read_artifact_from_node(
-                job_dir, parent_id, "reference_pdb"
+                energy_chain = _walk_prod_chain_from(
+                    job_dir, pid, "energy"
+                )
+                conditions = _read_node_metadata(job_dir, pid).get(
+                    "conditions", {}
+                )
+                branches_input.append(
+                    {
+                        "label": _sanitize_label(pid),
+                        "leaf_prod_id": pid,
+                        "trajectory_chain": traj_chain,
+                        "energy_chain": energy_chain,
+                        "conditions": conditions,
+                    }
+                )
+            result["branches_input"] = branches_input
+        elif n_parents == 1 and parent_types[0] == "analyze":
+            # Phase 2/3 single-analyze parent. If the parent itself is
+            # multi-branch, propagate its branches structured artifact
+            # so downstream tools iterate the same way regardless of
+            # how the multi-ness arose.
+            parent_branches = _read_artifact_from_node(
+                job_dir, parents[0], "branches"
             )
+            if isinstance(parent_branches, list):
+                # Multi-branch propagation. The `branches` artifact
+                # stores per-branch paths as node-relative strings
+                # (``artifacts/combined_<label>.dcd``); resolve them
+                # to absolute paths here so downstream tools don't
+                # have to re-derive the parent node's directory.
+                parent_node_dir = (
+                    Path(job_dir) / "nodes" / parents[0]
+                )
+
+                def _abs(rel: Optional[str]) -> Optional[str]:
+                    if not rel:
+                        return None
+                    p = Path(rel)
+                    return str(p if p.is_absolute() else (parent_node_dir / rel).resolve())
+
+                result["branches_input"] = [
+                    {
+                        "label": b.get("label"),
+                        "leaf_prod_id": b.get("leaf_prod_id"),
+                        "trajectory_file": _abs(
+                            b.get("fitted_trajectory")
+                            or b.get("combined_trajectory")
+                            or b.get("trajectory")
+                        ),
+                        "energy_file": _abs(
+                            b.get("combined_energy") or b.get("energy")
+                        ),
+                        "conditions": b.get("conditions", {}),
+                    }
+                    for b in parent_branches
+                ]
+                # Shared reference_pdb lives at the parent's top-level
+                ref_pdb = _read_artifact_from_node(
+                    job_dir, parents[0], "reference_pdb"
+                )
+                if ref_pdb is not None:
+                    result["reference_pdb"] = ref_pdb
+            else:
+                # Single-trajectory parent (Phase 1 concat output, or
+                # a single-parent Phase 2 output). Prefer fitted over
+                # combined so a fit→rmsd chain picks up aligned frames.
+                traj = _read_artifact_from_node(
+                    job_dir, parents[0], "fitted_trajectory"
+                ) or _read_artifact_from_node(
+                    job_dir, parents[0], "combined_trajectory"
+                )
+                if traj is not None:
+                    result["trajectory_file"] = traj
+                ref_pdb = _read_artifact_from_node(
+                    job_dir, parents[0], "reference_pdb"
+                )
+                if ref_pdb is not None:
+                    result["reference_pdb"] = ref_pdb
+        elif n_parents >= 2 and all(pt == "analyze" for pt in parent_types):
+            # Phase 3 multi-analyze shape: each parent contributes one
+            # branch (its combined_trajectory, preferring fitted).
+            # reference_pdb is taken from the first parent as a shared
+            # topology reference — create_node does not enforce that
+            # the parents share one; caller is responsible for sanity.
+            ref_pdb: Optional[str] = None
+            branches_input = []
+            for pid in parents:
+                traj = _read_artifact_from_node(
+                    job_dir, pid, "fitted_trajectory"
+                ) or _read_artifact_from_node(
+                    job_dir, pid, "combined_trajectory"
+                )
+                energy = _read_artifact_from_node(
+                    job_dir, pid, "combined_energy"
+                )
+                conditions = _read_node_metadata(job_dir, pid).get(
+                    "conditions", {}
+                )
+                if ref_pdb is None:
+                    ref_pdb = _read_artifact_from_node(
+                        job_dir, pid, "reference_pdb"
+                    )
+                branches_input.append(
+                    {
+                        "label": _sanitize_label(pid),
+                        "leaf_prod_id": None,
+                        "trajectory_file": traj,
+                        "energy_file": energy,
+                        "conditions": conditions,
+                    }
+                )
+            result["branches_input"] = branches_input
             if ref_pdb is not None:
                 result["reference_pdb"] = ref_pdb
-            # Also keep the prmtop handy for atom-selection DSL — walks
-            # strictly upward past the concat analyze node to reach topo.
-            p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-            if p7:
-                result["prmtop_file"] = p7
-        # parent_type neither prod nor analyze → create_node would have
-        # rejected it; nothing to resolve here.
+        # Other shapes were rejected at create_node time.
 
     return result
 
@@ -1016,6 +1137,72 @@ def _collect_prod_trajectory_chain(
     return _collect_prod_artifact_chain(
         job_dir, analyze_node_id, "trajectory"
     )
+
+
+def _walk_prod_chain_from(
+    job_dir: str, leaf_prod_id: str, artifact_key: str
+) -> list[str]:
+    """Walk strictly upward from *leaf_prod_id* (which must itself be
+    a prod) through prod ancestors, collecting *artifact_key* paths
+    in chronological order (oldest first).
+
+    Used by the Phase 3 multi-prod resolver so each parent prod's
+    lineage becomes its own independent branch. The shape mirrors
+    :func:`_collect_prod_artifact_chain` but starts from the prod
+    node directly (not from an analyze node above it) and includes
+    the start node in the walk.
+    """
+    jd = Path(job_dir)
+    reversed_chain: list[str] = []
+    current: Optional[str] = leaf_prod_id
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        nj = jd / "nodes" / current / "node.json"
+        if not nj.exists():
+            break
+        try:
+            cur_data = json.loads(nj.read_text())
+        except (json.JSONDecodeError, OSError):
+            break
+        if cur_data.get("node_type") != "prod":
+            break
+        art = _read_artifact_from_node(job_dir, current, artifact_key)
+        if art is not None:
+            reversed_chain.append(art)
+        next_id = cur_data.get("metadata", {}).get("continued_from")
+        if not next_id:
+            cur_parents = cur_data.get("parent_node_ids", [])
+            next_id = cur_parents[0] if cur_parents else None
+        current = next_id
+    reversed_chain.reverse()
+    return reversed_chain
+
+
+def _read_node_metadata(job_dir: str, node_id: str) -> dict:
+    nj = Path(job_dir) / "nodes" / node_id / "node.json"
+    if not nj.exists():
+        return {}
+    try:
+        return json.loads(nj.read_text()).get("metadata", {}) or {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+_LABEL_SAFE_CHARS = set(
+    "abcdefghijklmnopqrstuvwxyz"
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "0123456789_"
+)
+
+
+def _sanitize_label(raw: str) -> str:
+    """Map any string to a filename-safe label. Non-alnum/underscore
+    characters become ``_`` so paths composed with ``f"combined_{label}.dcd"``
+    stay portable across shells / filesystems."""
+    if not raw:
+        return "branch"
+    return "".join(c if c in _LABEL_SAFE_CHARS else "_" for c in raw)
 
 
 def _collect_prod_energy_chain(

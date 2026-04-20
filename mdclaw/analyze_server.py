@@ -104,6 +104,7 @@ def concat_trajectory(
     result: dict[str, Any] = {
         "success": False,
         "output_dir": None,
+        # single-branch keys (set only when exactly one branch)
         "combined_trajectory": None,
         "combined_energy": None,
         "reference_pdb": None,
@@ -117,11 +118,17 @@ def concat_trajectory(
         "source_energy_files": [],
         "energy_rows_per_source": [],
         "total_energy_rows": 0,
+        # multi-branch keys (set only when ≥ 2 branches)
+        "branches": [],
+        "n_branches": 0,
         "errors": [],
         "warnings": [],
     }
 
     _node_mode = bool(job_dir and node_id)
+
+    # Multi-branch resolution from the DAG (Phase 3 multi-prod parents)
+    branches_input: Optional[list[dict]] = None
 
     # DAG auto-resolution
     if _node_mode:
@@ -130,13 +137,18 @@ def concat_trajectory(
         resolved = resolve_node_inputs(job_dir, node_id, "analyze")
         if prmtop_file is None:
             prmtop_file = resolved.get("prmtop_file")
-        if trajectory_files is None:
-            trajectory_files = resolved.get("trajectory_chain")
-        if energy_files is None:
-            # Optional: present iff every prod in the lineage actually
-            # produced an energy.dat. Non-node-mode callers can still
-            # skip by passing energy_files=[] explicitly.
-            energy_files = resolved.get("energy_chain") or []
+        # Phase 3: multiple prod parents produce a branches_input list;
+        # otherwise fall back to the flat single-chain shape.
+        if resolved.get("branches_input"):
+            branches_input = resolved["branches_input"]
+        else:
+            if trajectory_files is None:
+                trajectory_files = resolved.get("trajectory_chain")
+            if energy_files is None:
+                # Optional: present iff every prod in the lineage actually
+                # produced an energy.dat. Non-node-mode callers can still
+                # skip by passing energy_files=[] explicitly.
+                energy_files = resolved.get("energy_chain") or []
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
         ensure_directory(out_dir)
@@ -150,6 +162,42 @@ def concat_trajectory(
             )
         out_dir = ensure_directory(Path(os.getcwd()) / "analyze_output")
     result["output_dir"] = str(out_dir)
+
+    # ── Multi-branch path ──────────────────────────────────────────
+    if branches_input is not None and len(branches_input) >= 1:
+        try:
+            shared_ref_pdb, shared_sel_json, branch_results = _run_multi_branch_concat(
+                branches=branches_input,
+                prmtop_file=prmtop_file,
+                out_dir=out_dir,
+                selection=selection,
+                stride=stride,
+                chunk=chunk,
+                output_name=output_name,
+            )
+            result["reference_pdb"] = str(shared_ref_pdb)
+            result["selection_indices"] = str(shared_sel_json)
+            result["branches"] = branch_results
+            result["n_branches"] = len(branch_results)
+            result["n_atoms_selected"] = (
+                branch_results[0]["n_atoms_selected"] if branch_results else 0
+            )
+            result["total_frames"] = sum(
+                b["total_frames"] for b in branch_results
+            )
+            result["success"] = True
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"concat_trajectory (multi-branch) failed: {e}")
+            result["errors"].append(
+                f"concat_trajectory failed: {type(e).__name__}: {e}"
+            )
+        # Skip single-branch section entirely
+        if _node_mode:
+            _finalize_concat_node(
+                job_dir, node_id, result, out_dir,
+                selection, stride, chunk, prmtop_file,
+            )
+        return result
 
     # Input validation (after resolution so node-mode errors surface
     # here rather than in mdtraj)
@@ -367,61 +415,324 @@ def concat_trajectory(
         logger.error(f"concat_trajectory failed: {e}")
         result["errors"].append(f"concat_trajectory failed: {type(e).__name__}: {e}")
 
-    # Node state update
+    # Node state update (single-branch path)
     if _node_mode:
-        from mdclaw._node import complete_node, fail_node
-
-        if result["success"]:
-            def _rel(p: Optional[str]) -> Optional[str]:
-                if not p:
-                    return None
-                pp = Path(p)
-                return (
-                    str(pp.relative_to(out_dir.parent))
-                    if out_dir.parent in pp.parents
-                    else str(pp)
-                )
-
-            arts = {
-                "combined_trajectory": _rel(result["combined_trajectory"]),
-                "reference_pdb": _rel(result["reference_pdb"]),
-                "selection_indices": _rel(result["selection_indices"]),
-            }
-            if result.get("combined_energy"):
-                arts["combined_energy"] = _rel(result["combined_energy"])
-            complete_node(
-                job_dir,
-                node_id,
-                artifacts=arts,
-                metadata={
-                    "selection": selection,
-                    "stride": stride,
-                    "chunk": chunk,
-                    "n_atoms_selected": result["n_atoms_selected"],
-                    "n_atoms_original": (
-                        result["n_atoms_selected"]
-                        if selection.lower() == "all"
-                        else int(
-                            json.loads(
-                                Path(result["selection_indices"]).read_text()
-                            )["n_atoms_original"]
-                        )
-                    ),
-                    "total_frames": result["total_frames"],
-                    "frames_per_source": result["frames_per_source"],
-                    "source_trajectories": result["source_trajectories"],
-                    "source_energy_files": result.get("source_energy_files", []),
-                    "energy_rows_per_source": result.get(
-                        "energy_rows_per_source", []
-                    ),
-                    "total_energy_rows": result.get("total_energy_rows", 0),
-                    "prmtop_file": prmtop_file,
-                },
-            )
-        else:
-            fail_node(job_dir, node_id, errors=result["errors"])
+        _finalize_concat_node(
+            job_dir, node_id, result, out_dir,
+            selection, stride, chunk, prmtop_file,
+        )
 
     return result
+
+
+def _rel_to_node_root(p: Optional[str], out_dir: Path) -> Optional[str]:
+    """Resolve *p* to a path relative to the node's root directory
+    (``nodes/<id>/``). Falls back to the absolute string if *p* is
+    outside ``out_dir``'s parent."""
+    if not p:
+        return None
+    pp = Path(p)
+    return (
+        str(pp.relative_to(out_dir.parent))
+        if out_dir.parent in pp.parents
+        else str(pp)
+    )
+
+
+def _finalize_concat_node(
+    job_dir: str,
+    node_id: str,
+    result: dict,
+    out_dir: Path,
+    selection: str,
+    stride: int,
+    chunk: int,
+    prmtop_file: Optional[str],
+) -> None:
+    """Update node.json with the concat result. Single-branch uses the
+    flat ``combined_trajectory`` keys; multi-branch uses a structured
+    ``branches`` list artifact. Both shapes share ``reference_pdb``
+    and ``selection_indices`` at the top level."""
+    from mdclaw._node import complete_node, fail_node
+
+    if not result["success"]:
+        fail_node(job_dir, node_id, errors=result["errors"])
+        return
+
+    n_atoms_original = None
+    if result.get("selection_indices"):
+        try:
+            n_atoms_original = int(
+                json.loads(Path(result["selection_indices"]).read_text())[
+                    "n_atoms_original"
+                ]
+            )
+        except (json.JSONDecodeError, OSError, KeyError, ValueError):
+            pass
+    if n_atoms_original is None:
+        n_atoms_original = result.get("n_atoms_selected", 0)
+
+    if result.get("n_branches", 0) >= 1 and result.get("branches"):
+        # Multi-branch artifact shape: a list of per-branch dicts with
+        # label + trajectory + energy + metadata. reference_pdb /
+        # selection_indices stay at the top level because every branch
+        # shares one topology.
+        arts: dict[str, Any] = {
+            "reference_pdb": _rel_to_node_root(
+                result["reference_pdb"], out_dir
+            ),
+            "selection_indices": _rel_to_node_root(
+                result["selection_indices"], out_dir
+            ),
+            "branches": [
+                {
+                    "label": b["label"],
+                    "leaf_prod_id": b.get("leaf_prod_id"),
+                    "combined_trajectory": _rel_to_node_root(
+                        b.get("combined_trajectory"), out_dir
+                    ),
+                    "combined_energy": _rel_to_node_root(
+                        b.get("combined_energy"), out_dir
+                    ),
+                    "total_frames": b.get("total_frames"),
+                    "frames_per_source": b.get("frames_per_source", []),
+                    "source_trajectories": b.get("source_trajectories", []),
+                    "source_energy_files": b.get("source_energy_files", []),
+                    "total_energy_rows": b.get("total_energy_rows", 0),
+                    "conditions": b.get("conditions", {}),
+                }
+                for b in result["branches"]
+            ],
+        }
+        complete_node(
+            job_dir,
+            node_id,
+            artifacts=arts,
+            metadata={
+                "selection": selection,
+                "stride": stride,
+                "chunk": chunk,
+                "n_atoms_selected": result["n_atoms_selected"],
+                "n_atoms_original": n_atoms_original,
+                "n_branches": result["n_branches"],
+                "total_frames": result["total_frames"],
+                "prmtop_file": prmtop_file,
+            },
+        )
+        return
+
+    # Single-branch flat shape (back-compat)
+    arts = {
+        "combined_trajectory": _rel_to_node_root(
+            result["combined_trajectory"], out_dir
+        ),
+        "reference_pdb": _rel_to_node_root(result["reference_pdb"], out_dir),
+        "selection_indices": _rel_to_node_root(
+            result["selection_indices"], out_dir
+        ),
+    }
+    if result.get("combined_energy"):
+        arts["combined_energy"] = _rel_to_node_root(
+            result["combined_energy"], out_dir
+        )
+    complete_node(
+        job_dir,
+        node_id,
+        artifacts=arts,
+        metadata={
+            "selection": selection,
+            "stride": stride,
+            "chunk": chunk,
+            "n_atoms_selected": result["n_atoms_selected"],
+            "n_atoms_original": n_atoms_original,
+            "total_frames": result["total_frames"],
+            "frames_per_source": result["frames_per_source"],
+            "source_trajectories": result["source_trajectories"],
+            "source_energy_files": result.get("source_energy_files", []),
+            "energy_rows_per_source": result.get(
+                "energy_rows_per_source", []
+            ),
+            "total_energy_rows": result.get("total_energy_rows", 0),
+            "prmtop_file": prmtop_file,
+        },
+    )
+
+
+def _run_multi_branch_concat(
+    branches: list[dict],
+    prmtop_file: str,
+    out_dir: Path,
+    selection: str,
+    stride: int,
+    chunk: int,
+    output_name: str,
+) -> tuple[Path, Path, list[dict]]:
+    """Per-branch concat. All branches share one selection → one
+    stripped topology / one reference_pdb / one selection.json.
+
+    Returns (reference_pdb_path, selection_json_path, branch_results).
+    Each branch_result dict has label + output paths + per-branch
+    stats, suitable for splatting into the ``branches`` artifact.
+    """
+    import mdtraj as md
+    from mdtraj.core.trajectory import _parse_topology
+    from mdtraj.formats import DCDTrajectoryFile
+    from mdtraj.utils import in_units_of
+
+    if not Path(prmtop_file).is_file():
+        raise FileNotFoundError(f"prmtop file not found: {prmtop_file}")
+
+    topology = _parse_topology(prmtop_file)
+    if selection and selection.lower() != "all":
+        atom_indices = np.asarray(
+            topology.select(selection), dtype=np.int64
+        )
+        if atom_indices.size == 0:
+            raise ValueError(f"selection {selection!r} matched 0 atoms")
+        sub_topology = topology.subset(atom_indices)
+    else:
+        atom_indices = None
+        sub_topology = topology
+    n_selected = sub_topology.n_atoms
+
+    branch_results: list[dict] = []
+    first_frame_written = False
+    ref_pdb = out_dir / f"{output_name}.pdb"
+    sel_json = out_dir / f"{output_name}.selection.json"
+
+    for branch in branches:
+        label = branch["label"]
+        traj_chain = branch.get("trajectory_chain") or (
+            [branch["trajectory_file"]] if branch.get("trajectory_file") else []
+        )
+        energy_chain = branch.get("energy_chain") or (
+            [branch["energy_file"]] if branch.get("energy_file") else []
+        )
+        if not traj_chain:
+            raise RuntimeError(
+                f"branch {label!r} has no trajectory to concatenate"
+            )
+        missing = [p for p in traj_chain if not Path(p).is_file()]
+        if missing:
+            raise FileNotFoundError(
+                f"branch {label!r} input DCD(s) not found: {missing}"
+            )
+
+        out_dcd = out_dir / f"{output_name}_{label}.dcd"
+        total_frames = 0
+        frames_per_source: list[int] = []
+        with DCDTrajectoryFile(str(out_dcd), "w", force_overwrite=True) as outfile:
+            for src_path in traj_chain:
+                src_frames = 0
+                with DCDTrajectoryFile(str(src_path), "r") as infile:
+                    while True:
+                        xyz, cl, ca = infile.read(
+                            n_frames=chunk,
+                            stride=stride,
+                            atom_indices=atom_indices,
+                        )
+                        if xyz.size == 0:
+                            break
+                        xyz = in_units_of(xyz, "angstroms", "angstroms", inplace=True)
+                        if cl is not None:
+                            cl = in_units_of(cl, "angstroms", "angstroms", inplace=True)
+                        outfile.write(
+                            xyz=xyz, cell_lengths=cl, cell_angles=ca
+                        )
+                        src_frames += xyz.shape[0]
+                frames_per_source.append(src_frames)
+                total_frames += src_frames
+        if total_frames == 0:
+            raise RuntimeError(
+                f"branch {label!r}: all input DCDs were empty"
+            )
+        logger.info(
+            f"  branch {label!r}: {total_frames} frames × {n_selected} atoms → {out_dcd}"
+        )
+
+        # Energy CSV concat for this branch
+        combined_energy: Optional[Path] = None
+        total_rows = 0
+        rows_per_source: list[int] = []
+        if energy_chain:
+            missing_en = [p for p in energy_chain if not Path(p).is_file()]
+            if missing_en:
+                # Skip with warning — do not fail the whole multi-concat
+                logger.warning(
+                    f"branch {label!r}: missing energy CSV(s) {missing_en}, "
+                    "skipping energy concat"
+                )
+            else:
+                combined_energy = out_dir / f"{output_name}_{label}.energy.csv"
+                header_written = False
+                with combined_energy.open("w") as outf:
+                    for src in energy_chain:
+                        in_rows = 0
+                        with Path(src).open("r") as inf:
+                            header = inf.readline()
+                            if not header_written:
+                                outf.write(header)
+                                header_written = True
+                            for i, line in enumerate(inf):
+                                if i % stride == 0:
+                                    outf.write(line)
+                                    in_rows += 1
+                        rows_per_source.append(in_rows)
+                        total_rows += in_rows
+                logger.info(
+                    f"  branch {label!r}: {total_rows} energy rows → {combined_energy}"
+                )
+
+        # Shared reference PDB: write once from the first completed
+        # branch's first frame (after selection).
+        if not first_frame_written:
+            with DCDTrajectoryFile(str(out_dcd), "r") as infile:
+                xyz0, cl0, ca0 = infile.read(n_frames=1, atom_indices=None)
+            first = md.Trajectory(
+                xyz=xyz0[0:1] / 10.0,
+                topology=sub_topology,
+                unitcell_lengths=(cl0[0:1] / 10.0) if cl0 is not None else None,
+                unitcell_angles=ca0[0:1] if ca0 is not None else None,
+            )
+            first.save_pdb(str(ref_pdb))
+            logger.info(f"Wrote shared reference PDB: {ref_pdb}")
+            first_frame_written = True
+
+        branch_results.append(
+            {
+                "label": label,
+                "leaf_prod_id": branch.get("leaf_prod_id"),
+                "combined_trajectory": str(out_dcd),
+                "combined_energy": str(combined_energy) if combined_energy else None,
+                "total_frames": total_frames,
+                "frames_per_source": frames_per_source,
+                "source_trajectories": [str(p) for p in traj_chain],
+                "source_energy_files": [str(p) for p in energy_chain],
+                "energy_rows_per_source": rows_per_source,
+                "total_energy_rows": total_rows,
+                "n_atoms_selected": int(n_selected),
+                "conditions": branch.get("conditions", {}),
+            }
+        )
+
+    # Shared selection.json (same topology for every branch)
+    sel_json.write_text(
+        json.dumps(
+            {
+                "selection": selection,
+                "n_atoms_selected": int(n_selected),
+                "n_atoms_original": int(topology.n_atoms),
+                "atom_indices": (
+                    atom_indices.tolist()
+                    if atom_indices is not None
+                    else list(range(topology.n_atoms))
+                ),
+            },
+            indent=2,
+        )
+    )
+
+    return ref_pdb, sel_json, branch_results
 
 
 # ============================================================================
@@ -476,13 +787,14 @@ def _resolve_analyze_parent_inputs(
     trajectory_file: Optional[str],
     reference_pdb: Optional[str],
 ) -> tuple[Optional[str], Optional[str], bool]:
-    """Shared DAG resolution for Phase 2 analyze tools.
+    """Shared DAG resolution for Phase 2 analyze tools (single-branch).
 
     In node mode, defer to :func:`mdclaw._node.resolve_node_inputs`
     with ``node_type="analyze"``. In direct mode, just pass through
     whatever the caller supplied.
 
-    Returns ``(trajectory_file, reference_pdb, node_mode)``.
+    Returns ``(trajectory_file, reference_pdb, node_mode)``. Multi-
+    branch callers should use :func:`_resolve_analyze_branches` instead.
     """
     node_mode = bool(job_dir and node_id)
     if node_mode:
@@ -494,6 +806,113 @@ def _resolve_analyze_parent_inputs(
         if reference_pdb is None:
             reference_pdb = resolved.get("reference_pdb")
     return trajectory_file, reference_pdb, node_mode
+
+
+def _resolve_analyze_branches(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    trajectory_file: Optional[str],
+    reference_pdb: Optional[str],
+) -> tuple[list[dict], Optional[str], bool]:
+    """Branch-aware DAG resolution for Phase 2 tools.
+
+    Returns ``(branches, reference_pdb, node_mode)`` where ``branches``
+    is a list of ``{"label": str, "trajectory_file": str,
+    "conditions": dict, "leaf_prod_id": Optional[str]}`` entries —
+    length 1 for a single-trajectory parent, N for a multi-branch
+    parent. Downstream tools iterate this list uniformly so the same
+    loop handles both shapes.
+
+    Direct mode (no job_dir / node_id): synthesise a single-entry
+    list from the explicit ``trajectory_file`` argument.
+    """
+    node_mode = bool(job_dir and node_id)
+    if not node_mode:
+        if trajectory_file is None:
+            return [], reference_pdb, False
+        return (
+            [
+                {
+                    "label": Path(trajectory_file).stem,
+                    "trajectory_file": trajectory_file,
+                    "conditions": {},
+                    "leaf_prod_id": None,
+                }
+            ],
+            reference_pdb,
+            False,
+        )
+
+    from mdclaw._node import resolve_node_inputs
+
+    resolved = resolve_node_inputs(job_dir, node_id, "analyze")
+    if reference_pdb is None:
+        reference_pdb = resolved.get("reference_pdb")
+
+    # Multi-branch parent (parent analyze has `branches` artifact, or
+    # multi-prod parents)
+    if resolved.get("branches_input"):
+        branches = [
+            {
+                "label": b["label"],
+                "trajectory_file": b.get("trajectory_file"),
+                "conditions": b.get("conditions", {}),
+                "leaf_prod_id": b.get("leaf_prod_id"),
+            }
+            for b in resolved["branches_input"]
+            if b.get("trajectory_file")
+        ]
+        return branches, reference_pdb, True
+
+    # Single-branch parent
+    traj = trajectory_file or resolved.get("trajectory_file")
+    if traj is None:
+        return [], reference_pdb, True
+    label = Path(traj).stem if traj else "branch"
+    return (
+        [
+            {
+                "label": label,
+                "trajectory_file": traj,
+                "conditions": {},
+                "leaf_prod_id": None,
+            }
+        ],
+        reference_pdb,
+        True,
+    )
+
+
+def _save_overlay_plot(
+    series_by_label: dict[str, np.ndarray],
+    out_path: Path,
+    xlabel: str = "frame",
+    ylabel: str = "value",
+    title: str = "",
+) -> None:
+    """Multi-branch overlay lineplot (one curve per label). Only
+    called when ≥ 2 branches — a single-branch overlay would just
+    duplicate the per-branch plot."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    for label, arr in series_by_label.items():
+        if arr.ndim == 1:
+            ax.plot(arr, label=label)
+        else:
+            for k in range(arr.shape[1]):
+                ax.plot(arr[:, k], label=f"{label}[{k}]")
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    if title:
+        ax.set_title(title)
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=120)
+    plt.close(fig)
 
 
 def _time_axis_ns(n_frames: int, dt_ps: float = 100.0) -> np.ndarray:
@@ -549,6 +968,7 @@ def fit_trajectory(
     tol_nm: float = 1e-4,
     output_name: str = "fitted",
     chunk: int = 1000,
+    _out_dir_override: Optional[str] = None,
 ) -> dict:
     """Kabsch-fit a trajectory to a reference structure and write the
     aligned DCD.
@@ -588,6 +1008,26 @@ def fit_trajectory(
         "warnings": [],
     }
 
+    # Multi-branch dispatch — per-branch iterative fit. Each branch
+    # gets its own mean-structure reference and its own fitted DCD;
+    # no overlay (fitted trajectories are DCDs, not scalar series).
+    if job_dir and node_id:
+        branches, _ref, _nm = _resolve_analyze_branches(
+            job_dir, node_id, trajectory_file, reference_pdb
+        )
+        if reference_pdb is None:
+            reference_pdb = _ref
+        if len(branches) >= 2:
+            return _multi_branch_fit(
+                job_dir=job_dir, node_id=node_id,
+                branches=branches, reference_pdb=reference_pdb,
+                selection=selection,
+                reference=reference, max_iter=max_iter, tol_nm=tol_nm,
+                output_name=output_name, chunk=chunk,
+            )
+        if len(branches) == 1 and trajectory_file is None:
+            trajectory_file = branches[0]["trajectory_file"]
+
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
     )
@@ -611,7 +1051,9 @@ def fit_trajectory(
         return result
 
     # Setup output dir
-    if node_mode:
+    if _out_dir_override is not None:
+        out_dir = ensure_directory(Path(_out_dir_override))
+    elif node_mode:
         from mdclaw._node import begin_node, complete_node, fail_node
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
@@ -865,6 +1307,7 @@ def analyze_rmsd(
     reference_frame: Any = 0,
     output_name: str = "rmsd",
     chunk: int = 1000,
+    _out_dir_override: Optional[str] = None,
 ) -> dict:
     """RMSD timeseries against a reference frame or structure.
 
@@ -888,6 +1331,34 @@ def analyze_rmsd(
         "warnings": [],
     }
 
+    # Multi-branch dispatch: if the parent analyze node exposes
+    # multiple branches (Phase 3), iterate and emit an overlay plot.
+    if job_dir and node_id:
+        branches, _ref, _nm = _resolve_analyze_branches(
+            job_dir, node_id, trajectory_file, reference_pdb
+        )
+        if reference_pdb is None:
+            reference_pdb = _ref
+        if len(branches) >= 2:
+            return _multi_branch_timeseries(
+                tool_name="rmsd",
+                tool_fn=analyze_rmsd,
+                job_dir=job_dir, node_id=node_id,
+                branches=branches, reference_pdb=reference_pdb,
+                output_name=output_name,
+                result_key_series="rmsd_timeseries",
+                result_keys_stats=("mean_rmsd_nm", "std_rmsd_nm", "max_rmsd_nm"),
+                overlay_ylabel="RMSD (nm)",
+                tool_kwargs=dict(
+                    selection_align=selection_align,
+                    selection_rmsd=selection_rmsd,
+                    reference_frame=reference_frame,
+                    chunk=chunk,
+                ),
+            )
+        if len(branches) == 1 and trajectory_file is None:
+            trajectory_file = branches[0]["trajectory_file"]
+
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
     )
@@ -898,7 +1369,9 @@ def analyze_rmsd(
             "Both are required.",
         )
 
-    if node_mode:
+    if _out_dir_override is not None:
+        out_dir = ensure_directory(Path(_out_dir_override))
+    elif node_mode:
         from mdclaw._node import begin_node, complete_node, fail_node
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
@@ -1057,6 +1530,7 @@ def analyze_distance(
     mode: str = "min",
     output_name: str = "distance",
     chunk: int = 1000,
+    _out_dir_override: Optional[str] = None,
 ) -> dict:
     """Inter-atom or group-group distance timeseries.
 
@@ -1083,6 +1557,34 @@ def analyze_distance(
         "warnings": [],
     }
 
+    # Multi-branch dispatch
+    if job_dir and node_id:
+        branches, _ref, _nm = _resolve_analyze_branches(
+            job_dir, node_id, trajectory_file, reference_pdb
+        )
+        if reference_pdb is None:
+            reference_pdb = _ref
+        if len(branches) >= 2:
+            return _multi_branch_timeseries(
+                tool_name="distance",
+                tool_fn=analyze_distance,
+                job_dir=job_dir, node_id=node_id,
+                branches=branches, reference_pdb=reference_pdb,
+                output_name=output_name,
+                result_key_series="distance_timeseries",
+                result_keys_stats=("mean_nm", "min_nm", "max_nm"),
+                overlay_ylabel=f"distance ({mode}, nm)",
+                tool_kwargs=dict(
+                    atom_pairs=atom_pairs,
+                    selection_group1=selection_group1,
+                    selection_group2=selection_group2,
+                    mode=mode,
+                    chunk=chunk,
+                ),
+            )
+        if len(branches) == 1 and trajectory_file is None:
+            trajectory_file = branches[0]["trajectory_file"]
+
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
     )
@@ -1091,7 +1593,9 @@ def analyze_distance(
             "trajectory_file / reference_pdb", "Both are required."
         )
 
-    if node_mode:
+    if _out_dir_override is not None:
+        out_dir = ensure_directory(Path(_out_dir_override))
+    elif node_mode:
         from mdclaw._node import begin_node, complete_node, fail_node
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
@@ -1278,6 +1782,7 @@ def analyze_q_value(
     min_resid_gap: int = 3,
     output_name: str = "q_value",
     chunk: int = 1000,
+    _out_dir_override: Optional[str] = None,
 ) -> dict:
     """Best-Hummer Q-value timeseries against a native reference.
 
@@ -1300,6 +1805,36 @@ def analyze_q_value(
         "warnings": [],
     }
 
+    # Multi-branch dispatch
+    if job_dir and node_id:
+        branches, _ref, _nm = _resolve_analyze_branches(
+            job_dir, node_id, trajectory_file, reference_pdb
+        )
+        if reference_pdb is None:
+            reference_pdb = _ref
+        if len(branches) >= 2:
+            return _multi_branch_timeseries(
+                tool_name="q_value",
+                tool_fn=analyze_q_value,
+                job_dir=job_dir, node_id=node_id,
+                branches=branches, reference_pdb=reference_pdb,
+                output_name=output_name,
+                result_key_series="q_timeseries",
+                result_keys_stats=("mean_q", "final_q"),
+                overlay_ylabel="Q",
+                tool_kwargs=dict(
+                    native_pdb=native_pdb,
+                    selection=selection,
+                    beta_const=beta_const,
+                    lambda_const=lambda_const,
+                    native_cutoff_nm=native_cutoff_nm,
+                    min_resid_gap=min_resid_gap,
+                    chunk=chunk,
+                ),
+            )
+        if len(branches) == 1 and trajectory_file is None:
+            trajectory_file = branches[0]["trajectory_file"]
+
     trajectory_file, reference_pdb, node_mode = _resolve_analyze_parent_inputs(
         job_dir, node_id, trajectory_file, reference_pdb
     )
@@ -1312,7 +1847,9 @@ def analyze_q_value(
             "native_pdb", f"native_pdb is required; got {native_pdb!r}"
         )
 
-    if node_mode:
+    if _out_dir_override is not None:
+        out_dir = ensure_directory(Path(_out_dir_override))
+    elif node_mode:
         from mdclaw._node import begin_node, complete_node, fail_node
 
         out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
@@ -1481,6 +2018,245 @@ def analyze_q_value(
             fail_node(job_dir, node_id, errors=result["errors"])
 
     return result
+
+
+def _multi_branch_timeseries(
+    tool_name: str,
+    tool_fn,
+    job_dir: str,
+    node_id: str,
+    branches: list[dict],
+    reference_pdb: Optional[str],
+    output_name: str,
+    result_key_series: str,
+    result_keys_stats: tuple[str, ...],
+    overlay_ylabel: str,
+    tool_kwargs: dict,
+) -> dict:
+    """Multi-branch driver for analyze_rmsd / analyze_distance /
+    analyze_q_value.
+
+    For each branch, invoke *tool_fn* in direct mode with
+    ``_out_dir_override = <node's artifacts dir>`` and
+    ``output_name=f"{output_name}_{label}"`` so every branch's
+    per-frame series, CSV, and PNG land in the same analyze node's
+    artifacts dir with unambiguous filenames. After all branches
+    complete, load the per-branch series arrays and render a single
+    ``{output_name}.overlay.png`` with every branch's curve plotted
+    in one figure. Finally update ``node.json`` with a structured
+    ``branches`` artifact (list of dicts, one per branch) plus the
+    shared ``overlay_plot`` artifact.
+    """
+    from mdclaw._node import begin_node, complete_node, fail_node
+
+    out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
+    ensure_directory(out_dir)
+    begin_node(job_dir, node_id)
+
+    overall: dict[str, Any] = {
+        "success": False,
+        "n_branches": len(branches),
+        "branches": [],
+        "overlay_plot": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    series_by_label: dict[str, np.ndarray] = {}
+    per_branch_artifacts: list[dict] = []
+
+    try:
+        for b in branches:
+            label = b["label"]
+            traj_path = b["trajectory_file"]
+            if not traj_path or not Path(traj_path).is_file():
+                raise FileNotFoundError(
+                    f"branch {label!r}: trajectory not found "
+                    f"({traj_path!r})"
+                )
+            per_out_name = f"{output_name}_{label}"
+            per = tool_fn(
+                trajectory_file=traj_path,
+                reference_pdb=reference_pdb,
+                output_name=per_out_name,
+                _out_dir_override=str(out_dir),
+                **tool_kwargs,
+            )
+            if not per.get("success"):
+                raise RuntimeError(
+                    f"branch {label!r} {tool_name} failed: "
+                    f"{per.get('errors', ['?'])[0]}"
+                )
+            series_path = per.get(result_key_series)
+            if series_path and Path(series_path).is_file():
+                series_by_label[label] = np.load(series_path)
+            stats = {k: per.get(k) for k in result_keys_stats}
+            per_branch_artifacts.append(
+                {
+                    "label": label,
+                    "leaf_prod_id": b.get("leaf_prod_id"),
+                    "conditions": b.get("conditions", {}),
+                    result_key_series: _rel_to_node_root(
+                        per.get(result_key_series), out_dir
+                    ),
+                    f"{tool_name}_csv": _rel_to_node_root(
+                        per.get(f"{tool_name}_csv"), out_dir
+                    ),
+                    f"{tool_name}_plot": _rel_to_node_root(
+                        per.get(f"{tool_name}_plot"), out_dir
+                    ),
+                    "stats": stats,
+                }
+            )
+
+        # Overlay plot (only emitted when 2+ branches produced arrays)
+        if len(series_by_label) >= 2:
+            overlay_path = out_dir / f"{output_name}.overlay.png"
+            _save_overlay_plot(
+                series_by_label,
+                overlay_path,
+                xlabel="frame",
+                ylabel=overlay_ylabel,
+                title=f"{tool_name} — {len(series_by_label)} branches",
+            )
+            overall["overlay_plot"] = str(overlay_path)
+
+        overall["branches"] = per_branch_artifacts
+        overall["success"] = True
+
+        complete_node(
+            job_dir,
+            node_id,
+            artifacts={
+                "branches": per_branch_artifacts,
+                "overlay_plot": _rel_to_node_root(
+                    overall["overlay_plot"], out_dir
+                ),
+            },
+            metadata={
+                "tool": tool_name,
+                "n_branches": len(branches),
+                "overlay_plot_present": overall["overlay_plot"] is not None,
+                **{
+                    k: v for k, v in tool_kwargs.items()
+                    if not isinstance(v, (list, dict)) or v
+                },
+            },
+        )
+
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"multi-branch {tool_name} failed: {e}")
+        overall["errors"].append(
+            f"multi-branch {tool_name} failed: {type(e).__name__}: {e}"
+        )
+        fail_node(job_dir, node_id, errors=overall["errors"])
+
+    return overall
+
+
+def _multi_branch_fit(
+    job_dir: str,
+    node_id: str,
+    branches: list[dict],
+    reference_pdb: Optional[str],
+    selection: str,
+    reference: str,
+    max_iter: int,
+    tol_nm: float,
+    output_name: str,
+    chunk: int,
+) -> dict:
+    """Multi-branch driver for fit_trajectory. Per-branch mean-fit
+    (``reference="average"``) produces one fitted DCD + one converged
+    reference PDB + one fit_info JSON per branch. No overlay (fitted
+    DCDs aren't scalar curves)."""
+    from mdclaw._node import begin_node, complete_node, fail_node
+
+    out_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
+    ensure_directory(out_dir)
+    begin_node(job_dir, node_id)
+
+    overall: dict[str, Any] = {
+        "success": False,
+        "n_branches": len(branches),
+        "branches": [],
+        "errors": [],
+        "warnings": [],
+    }
+    per_branch_artifacts: list[dict] = []
+
+    try:
+        for b in branches:
+            label = b["label"]
+            traj_path = b["trajectory_file"]
+            if not traj_path or not Path(traj_path).is_file():
+                raise FileNotFoundError(
+                    f"branch {label!r}: trajectory not found "
+                    f"({traj_path!r})"
+                )
+            per_out_name = f"{output_name}_{label}"
+            per = fit_trajectory(
+                trajectory_file=traj_path,
+                reference_pdb=reference_pdb,
+                selection=selection,
+                reference=reference,
+                max_iter=max_iter,
+                tol_nm=tol_nm,
+                output_name=per_out_name,
+                chunk=chunk,
+                _out_dir_override=str(out_dir),
+            )
+            if not per.get("success"):
+                raise RuntimeError(
+                    f"branch {label!r} fit_trajectory failed: "
+                    f"{per.get('errors', ['?'])[0]}"
+                )
+            per_branch_artifacts.append(
+                {
+                    "label": label,
+                    "leaf_prod_id": b.get("leaf_prod_id"),
+                    "conditions": b.get("conditions", {}),
+                    "fitted_trajectory": _rel_to_node_root(
+                        per.get("fitted_trajectory"), out_dir
+                    ),
+                    "reference_pdb": _rel_to_node_root(
+                        per.get("reference_pdb"), out_dir
+                    ),
+                    "fit_info": _rel_to_node_root(
+                        per.get("fit_info"), out_dir
+                    ),
+                    "n_iter_used": per.get("n_iter_used"),
+                    "converged": per.get("converged"),
+                    "mean_fit_rmsd_nm": per.get("mean_fit_rmsd_nm"),
+                    "total_frames": per.get("total_frames"),
+                }
+            )
+
+        overall["branches"] = per_branch_artifacts
+        overall["success"] = True
+
+        complete_node(
+            job_dir,
+            node_id,
+            artifacts={"branches": per_branch_artifacts},
+            metadata={
+                "tool": "fit",
+                "selection_align": selection,
+                "reference": reference,
+                "max_iter": max_iter,
+                "tol_nm": tol_nm,
+                "n_branches": len(branches),
+            },
+        )
+
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"multi-branch fit_trajectory failed: {e}")
+        overall["errors"].append(
+            f"multi-branch fit_trajectory failed: {type(e).__name__}: {e}"
+        )
+        fail_node(job_dir, node_id, errors=overall["errors"])
+
+    return overall
 
 
 TOOLS = {
