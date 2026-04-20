@@ -985,20 +985,96 @@ class TestDAGAutoResolve:
         assert len(chain) == 1
         assert "prod_001/artifacts/trajectory.dcd" in chain[0]
 
-    def test_analyze_empty_chain_when_parent_is_eq_directly(
+    def test_analyze_parent_analyze_resolves_combined_trajectory(
         self, full_dag
     ):
-        """Creating an analyze node directly above eq (no prod between) is
-        structurally allowed but yields an empty trajectory chain — the
-        tool layer surfaces this as a clear error rather than silently
-        succeeding with no output."""
+        """An analyze node whose parent is another analyze node
+        resolves to the parent's combined_trajectory + reference_pdb —
+        the Phase 2 input shape for rmsd / distance / q_value / fit."""
         from mdclaw._node import resolve_node_inputs
         jd = str(full_dag)
-        # full_dag ends with prod_001 but no completed prod; attach
-        # analyze directly to eq_001 to test the empty-chain case.
-        create_node(jd, "analyze", parent_node_ids=["eq_001"])
-        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
-        assert inputs["trajectory_chain"] == []
+        # Phase 1 concat shape (parent=prod)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"})
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        complete_node(jd, "analyze_001",
+                      artifacts={"combined_trajectory": "artifacts/combined.dcd",
+                                 "reference_pdb": "artifacts/combined.pdb"})
+        # Phase 2 shape (parent=analyze)
+        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+        inputs = resolve_node_inputs(jd, "analyze_002", "analyze")
+        assert inputs["trajectory_file"].endswith(
+            "analyze_001/artifacts/combined.dcd"
+        )
+        assert inputs["reference_pdb"].endswith(
+            "analyze_001/artifacts/combined.pdb"
+        )
+        # prmtop still resolves through the earlier topo ancestor
+        assert inputs["prmtop_file"].endswith(
+            "topo_001/artifacts/system.parm7"
+        )
+        # Phase 1 keys must NOT appear in the Phase 2 resolution
+        assert "trajectory_chain" not in inputs
+
+    def test_analyze_parent_fit_prefers_fitted_over_combined(
+        self, full_dag
+    ):
+        """When a parent analyze node exposes BOTH ``fitted_trajectory``
+        and ``combined_trajectory``, Phase 2 tools get the fitted one —
+        so a fit → rmsd chain picks up the aligned frames automatically."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"})
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        # A single analyze node that emitted both artifacts (unusual
+        # in practice but allowed — fit_trajectory does exactly this
+        # when re-emitting reference_pdb and writing fitted.dcd)
+        complete_node(jd, "analyze_001",
+                      artifacts={"combined_trajectory": "artifacts/combined.dcd",
+                                 "fitted_trajectory": "artifacts/fitted.dcd",
+                                 "reference_pdb": "artifacts/combined.pdb"})
+        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+        inputs = resolve_node_inputs(jd, "analyze_002", "analyze")
+        assert inputs["trajectory_file"].endswith(
+            "analyze_001/artifacts/fitted.dcd"
+        ), "fitted_trajectory must win when both artifacts are present"
+
+    def test_analyze_rejects_multi_parent(self, full_dag):
+        """Analyze nodes are single-parent. Branching is expressed by
+        creating multiple analyze siblings, not multi-parent analyze."""
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"})
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        complete_node(jd, "analyze_001",
+                      artifacts={"combined_trajectory": "artifacts/combined.dcd",
+                                 "reference_pdb": "artifacts/combined.pdb"})
+        r = create_node(
+            jd, "analyze", parent_node_ids=["prod_001", "analyze_001"]
+        )
+        assert r["success"] is False
+        assert "exactly 1 parent" in r["error"]
+
+    def test_analyze_rejects_non_prod_non_analyze_parent(self, full_dag):
+        """An analyze node parented on something other than prod or
+        analyze (e.g. directly on topo) is rejected up-front with a
+        structured error explaining the two valid shapes."""
+        jd = str(full_dag)
+        r = create_node(jd, "analyze", parent_node_ids=["topo_001"])
+        assert r["success"] is False
+        assert "prod" in r["error"] and "analyze" in r["error"]
+
+    def test_analyze_rejects_eq_parent_at_create_time(self, full_dag):
+        """Analyze nodes require a prod or analyze parent. Creating one
+        directly above eq must fail at create_node — there is no valid
+        trajectory source through an eq ancestor (eq doesn't emit
+        ``trajectory`` artifacts), so failing fast is the right call
+        instead of silently producing an empty-chain analyze."""
+        jd = str(full_dag)
+        r = create_node(jd, "analyze", parent_node_ids=["eq_001"])
+        assert r["success"] is False
+        assert "prod" in r["error"] or "analyze" in r["error"]
 
     def test_resolve_node_inputs_solv(self, full_dag):
         jd = str(full_dag)

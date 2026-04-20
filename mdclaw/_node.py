@@ -238,6 +238,45 @@ def create_node(
                 ),
             }
 
+        # Analyze nodes take exactly one parent, and that parent must
+        # be either a prod (Phase 1 concat entry) or another analyze
+        # (Phase 2 downstream analysis). Other shapes would break the
+        # resolve_node_inputs("analyze") contract.
+        if node_type == "analyze":
+            if len(parents) != 1:
+                return {
+                    "success": False,
+                    "error": (
+                        f"analyze nodes require exactly 1 parent, got "
+                        f"{len(parents)}. Branch by creating multiple "
+                        "analyze siblings (analyze_001, analyze_002, ...)"
+                        " from the same parent instead."
+                    ),
+                }
+            parent_id = parents[0]
+            parent_entry = nodes_index.get(parent_id)
+            if parent_entry is None:
+                return {
+                    "success": False,
+                    "error": (
+                        f"analyze parent '{parent_id}' does not exist "
+                        "in this job's progress.json"
+                    ),
+                }
+            parent_type = parent_entry.get("type")
+            if parent_type not in ("prod", "analyze"):
+                return {
+                    "success": False,
+                    "error": (
+                        f"analyze parent must be a 'prod' or 'analyze' "
+                        f"node; got '{parent_id}' of type "
+                        f"'{parent_type}'. For DCD concatenation from "
+                        "the prod chain, parent a prod. For downstream "
+                        "analyses, parent the analyze node whose "
+                        "combined_trajectory you want to consume."
+                    ),
+                }
+
         if node_type == "prep":
             fetch_lineages = set()
             queue = list(parents)
@@ -832,16 +871,67 @@ def resolve_node_inputs(
                 result["restart_from"] = src
 
     elif node_type == "analyze":
-        # An analyze node aggregates every trajectory along the prod
-        # chain above it. Walk the parent pointer strictly through prod
-        # nodes (stop at eq / non-prod) and collect their trajectory
-        # artifacts in chronological order (oldest first).
-        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-        if p7:
-            result["prmtop_file"] = p7
-        result["trajectory_chain"] = _collect_prod_trajectory_chain(
-            job_dir, node_id
-        )
+        # Analyze nodes have two parent shapes:
+        #   (a) parent is a prod  → Phase 1 concat_trajectory: gather
+        #       all prod-chain trajectory DCDs chronologically.
+        #   (b) parent is another analyze → Phase 2 tools (rmsd,
+        #       distance, q_value, fit): consume the parent's single
+        #       combined/fitted trajectory + reference PDB.
+        # Single-parent validation is enforced in create_node; this
+        # branch only needs to peek at the (single) parent's node_type.
+        start_nj = Path(job_dir) / "nodes" / node_id / "node.json"
+        parent_id: Optional[str] = None
+        if start_nj.exists():
+            try:
+                start_data = json.loads(start_nj.read_text())
+                parents = start_data.get("parent_node_ids", [])
+                if parents:
+                    parent_id = parents[0]
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        parent_type: Optional[str] = None
+        if parent_id:
+            pj = Path(job_dir) / "nodes" / parent_id / "node.json"
+            if pj.exists():
+                try:
+                    parent_type = json.loads(pj.read_text()).get("node_type")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        if parent_type == "prod":
+            # Phase 1: concat-style input set.
+            p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+            if p7:
+                result["prmtop_file"] = p7
+            result["trajectory_chain"] = _collect_prod_trajectory_chain(
+                job_dir, node_id
+            )
+        elif parent_type == "analyze":
+            # Phase 2: prefer fitted_trajectory (fit-chain output) over
+            # combined_trajectory (concat output). reference_pdb stays
+            # the same regardless of which upstream output we pick.
+            traj = _read_artifact_from_node(
+                job_dir, parent_id, "fitted_trajectory"
+            )
+            if traj is None:
+                traj = _read_artifact_from_node(
+                    job_dir, parent_id, "combined_trajectory"
+                )
+            if traj is not None:
+                result["trajectory_file"] = traj
+            ref_pdb = _read_artifact_from_node(
+                job_dir, parent_id, "reference_pdb"
+            )
+            if ref_pdb is not None:
+                result["reference_pdb"] = ref_pdb
+            # Also keep the prmtop handy for atom-selection DSL — walks
+            # strictly upward past the concat analyze node to reach topo.
+            p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+            if p7:
+                result["prmtop_file"] = p7
+        # parent_type neither prod nor analyze → create_node would have
+        # rejected it; nothing to resolve here.
 
     return result
 

@@ -119,14 +119,33 @@ def _is_list_of_dict(hint) -> bool:
     return inner_origin is dict or inner is dict
 
 
+def _is_list_of_list(hint) -> bool:
+    """Check if hint is list[list[...]] / List[List[...]].
+
+    Nested-list arguments (e.g. ``atom_pairs=list[list[int]]`` for
+    ``analyze_distance``) are not expressible as a flat CLI list
+    either; route them through the JSON-string argparse path.
+    """
+    origin = get_origin(hint)
+    if origin is not list:
+        return False
+    args = get_args(hint)
+    if not args:
+        return False
+    inner = args[0]
+    inner_origin = get_origin(inner)
+    return inner_origin is list or inner is list
+
+
 def _takes_json(hint) -> bool:
     """True when the argument expects a JSON string at the CLI boundary.
 
-    Covers ``dict`` / ``Dict[...]`` and ``list[dict]`` / ``List[Dict[...]]``
-    (including under ``Optional[...]``). ``list[str]`` stays on the plain
-    ``nargs='+'`` path — that's a better CLI UX for flat lists.
+    Covers ``dict`` / ``Dict[...]``, ``list[dict]`` / ``List[Dict[...]]``,
+    and ``list[list[...]]`` (including under ``Optional[...]``).
+    ``list[str]`` stays on the plain ``nargs='+'`` path — that's a
+    better CLI UX for flat lists.
     """
-    return _is_dict_type(hint) or _is_list_of_dict(hint)
+    return _is_dict_type(hint) or _is_list_of_dict(hint) or _is_list_of_list(hint)
 
 
 def _coerce_value(value, hint):
@@ -320,6 +339,10 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "run_equilibration",
     "run_production",
     "concat_trajectory",
+    "fit_trajectory",
+    "analyze_rmsd",
+    "analyze_distance",
+    "analyze_q_value",
 })
 
 

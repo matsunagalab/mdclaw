@@ -137,16 +137,137 @@ Next analyses (will be added in later phases):
   cleans these up on retry, but historical failed runs may still have
   them).
 
-## Future phases (for context — not implemented yet)
+## Phase 2 — geometric analyses on the combined trajectory
 
-- RMSD / RMSF via mdtraj
-- Per-residue contact frequencies
+Phase 2 adds four tools that consume the Phase 1 analyze node's
+`combined_trajectory` + `reference_pdb` artifacts. The DAG shape is:
+
+```
+prod_001 ─ analyze_001 (concat, parent=prod)
+             ├─ analyze_002 (rmsd,     parent=analyze_001)
+             ├─ analyze_003 (distance, parent=analyze_001)
+             ├─ analyze_004 (q_value,  parent=analyze_001)
+             └─ analyze_005 (fit,      parent=analyze_001)
+                  └─ analyze_006 (rmsd on fitted.dcd — chainable)
+```
+
+**Node constraints**:
+
+- Analyze nodes are single-parent. Branching = multiple sibling
+  analyze nodes. Multi-parent is rejected at `create_node` time.
+- Parent must be `prod` (Phase 1 = concat entry) or `analyze`
+  (Phase 2 downstream analyses). Any other parent type is rejected.
+- When a parent analyze node exposes both `combined_trajectory` and
+  `fitted_trajectory`, `fitted_trajectory` wins — so `fit → rmsd`
+  chains pick up the aligned frames automatically.
+
+### Where does fitting belong?
+
+**Opt-in, separate step**. Do not bake fitting into concat_trajectory.
+- RMSD computation internally does Kabsch via `md.rmsd` — pre-fitting
+  is wasted work for RMSD.
+- Distance / Q-value are translation/rotation invariant — fit is
+  meaningless.
+- Explicit `fit_trajectory` tool produces a `fitted.dcd` when you
+  genuinely need aligned frames (visualization, PCA/tICA).
+
+### Tool 1: `fit_trajectory`
+
+```bash
+mdclaw --job-dir <job_dir> --node-id analyze_005 fit_trajectory \
+  --selection "backbone" --reference "average" --max-iter 10
+```
+
+Three reference modes:
+- `"first_frame"` or an int frame index — single-pass fit to that frame.
+- A PDB path — fit to an external reference (crystal structure, etc.).
+- `"average"` (default) — **iterative fit to the mean structure**
+  (streaming adaptation of Matsunaga-lab's tutorial algorithm at
+  https://github.com/matsunagalab/tutorial_analyzingMDdata/blob/main/05_md_dimensionalreduction.ipynb).
+  Per iteration: stream through the DCD, superpose each chunk to the
+  current reference, accumulate a running mean; after `max_iter`
+  iterations (or once `||Δref||_RMS < tol_nm`) a final pass writes
+  the aligned DCD with the converged reference.
+
+Memory footprint is the same as concat: `chunk × n_atoms × 12 B`
+independent of trajectory length (no full-trajectory load).
+
+Artifacts: `fitted_trajectory` (`fitted.dcd`), `reference_pdb`
+(re-emitted; for `reference="average"` this IS the converged mean
+structure so downstream tools see the true reference), `fit_info`
+(JSON with per-iteration `delta_history_nm`).
+
+### Tool 2: `analyze_rmsd`
+
+```bash
+mdclaw --job-dir <job_dir> --node-id analyze_002 analyze_rmsd \
+  --selection-align "backbone" --reference-frame 0
+```
+
+Per-chunk `md.rmsd(chunk, ref, atom_indices=align_idx)` — Kabsch +
+RMSD in one C call. `--selection-rmsd` defaults to
+`--selection-align`; pass a different one to fit on X and score on Y
+(e.g. align on backbone, measure side-chain RMSD).
+
+Artifacts: `rmsd_timeseries` (`.npy`, shape (N,)), `rmsd_csv`,
+`rmsd_plot`.
+
+### Tool 3: `analyze_distance`
+
+```bash
+# explicit atom-index pairs (JSON list):
+mdclaw --job-dir <job_dir> --node-id analyze_003 analyze_distance \
+  --atom-pairs '[[5, 119], [42, 201]]' --mode pairs
+
+# or: group-group, with mode = min (closest contact) | com (centroid) | pairs (dense)
+mdclaw --job-dir <job_dir> --node-id analyze_003 analyze_distance \
+  --selection-group1 "resid 12 and name CA" \
+  --selection-group2 "resid 50 to 70 and backbone" \
+  --mode "min"
+```
+
+Artifacts: `distance_timeseries` (`.npy`, shape (N, K)), `distance_csv`,
+`distance_plot`, `pairs_metadata` (JSON recording the exact atom
+indices used so the plot axis is interpretable).
+
+### Tool 4: `analyze_q_value`
+
+```bash
+mdclaw --job-dir <job_dir> --node-id analyze_004 analyze_q_value \
+  --native-pdb /path/to/native.pdb \
+  --selection "backbone and not element H" \
+  --beta-const 50.0 --lambda-const 1.8 \
+  --native-cutoff-nm 0.45 --min-resid-gap 3
+```
+
+Best-Hummer smooth-Q: the native contact list is built once from
+`native_pdb` (heavy-atom pairs within `native_cutoff_nm` whose residues
+are more than `min_resid_gap` apart). Per chunk, compute the same pair
+distances in the trajectory and weight them with
+`1 / (1 + exp(β (d - λ·d_native)))`. Q at each frame is the mean over
+pairs.
+
+Artifacts: `q_timeseries` (`.npy`, shape (N,)), `q_csv`, `q_plot`,
+`native_contacts` (JSON with the native pair list for reproducibility).
+
+## Phase 2 troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `selection matched 0 atoms` | DSL doesn't match the reduced topology. HIS may have been split into HID/HIE/HIP during prep, backbone may exclude caps, etc. | `mdclaw inspect_molecules --structure-file <reference_pdb>` to see the actual atom names / residue names in the stripped system. |
+| `native_pdb atom count mismatch` (analyze_q_value) | `native_pdb` was built from a different selection than the analyze DAG's reduced topology. | Use the parent analyze node's `reference_pdb` as the native, OR apply the same selection when building the external native. |
+| `average-fit did not converge` (warning) | `max_iter` too low for a floppy / large-conformational-change trajectory. | Bump `--max-iter 20` (or more) and/or loosen `--tol-nm`. Inspect `delta_history_nm` in `fit_info.json` to see whether the delta was plateauing or still dropping. |
+| `input trajectory contained no frames` | The parent analyze node's combined DCD is zero-length. | Check that Phase 1 concat actually produced frames (look at the parent analyze node's `frames_per_source`). |
+
+## Future phases (not implemented yet)
+
 - PCA / tICA dimensionality reduction
-- H-bond analysis
-- Alignment + RMSD matrix across branches (e.g. comparing different
-  equilibration temperatures, or multiple seeds from the same eq)
+- Multi-trajectory comparison (replicate-to-replicate alignment)
+- H-bond timeseries, per-residue contact frequencies
+- Secondary-structure timeseries (DSSP / STRIDE)
+- HMM / MSM analysis
 
-Each future tool will be a new function in `mdclaw/analyze_server.py`
-and will consume the `combined_trajectory` + `reference_pdb` artifacts
-produced by this step, so adding them doesn't change the contract of
-`concat_trajectory`.
+Each future tool will live in `mdclaw/analyze_server.py` and consume
+either `combined_trajectory` (concat), `fitted_trajectory` (fit), or
+per-tool output artifacts, so adding them doesn't change the contract
+of the tools above.
