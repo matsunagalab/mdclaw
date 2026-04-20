@@ -922,6 +922,84 @@ class TestDAGAutoResolve:
         from mdclaw._node import read_ancestor_final_step
         assert read_ancestor_final_step(str(full_dag), "prod_001") is None
 
+    def test_analyze_resolves_prod_trajectory_chain_single_prod(
+        self, full_dag
+    ):
+        """An analyze node directly parented on a single prod node with
+        one trajectory resolves to that trajectory plus the topo's parm7."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        assert "prmtop_file" in inputs
+        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        chain = inputs["trajectory_chain"]
+        assert len(chain) == 1
+        assert chain[0].endswith("prod_001/artifacts/trajectory.dcd")
+
+    def test_analyze_resolves_trajectory_chain_in_chronological_order(
+        self, full_dag
+    ):
+        """prod_001 → prod_002 → prod_003 with continue_from: analyze on
+        prod_003 must return DCDs in the order [prod_001, prod_002, prod_003]
+        (oldest first). Reverse order breaks time-series concatenation."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "prod", continue_from="prod_001")
+        complete_node(jd, "prod_002",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "prod", continue_from="prod_002")
+        complete_node(jd, "prod_003",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd",
+                                 "state": "artifacts/state.xml"})
+        create_node(jd, "analyze", parent_node_ids=["prod_003"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        chain = inputs["trajectory_chain"]
+        assert len(chain) == 3
+        assert "prod_001/artifacts" in chain[0]
+        assert "prod_002/artifacts" in chain[1]
+        assert "prod_003/artifacts" in chain[2]
+
+    def test_analyze_skips_prod_ancestor_without_trajectory_artifact(
+        self, full_dag
+    ):
+        """A prod ancestor that never completed (no `trajectory` artifact)
+        must be skipped — the chain should still terminate correctly, and
+        the completed prods above it should appear in the returned list."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        complete_node(jd, "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"})
+        # prod_002 exists but has no artifacts (never completed)
+        create_node(jd, "prod", continue_from="prod_001")
+        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        chain = inputs["trajectory_chain"]
+        assert len(chain) == 1
+        assert "prod_001/artifacts/trajectory.dcd" in chain[0]
+
+    def test_analyze_empty_chain_when_parent_is_eq_directly(
+        self, full_dag
+    ):
+        """Creating an analyze node directly above eq (no prod between) is
+        structurally allowed but yields an empty trajectory chain — the
+        tool layer surfaces this as a clear error rather than silently
+        succeeding with no output."""
+        from mdclaw._node import resolve_node_inputs
+        jd = str(full_dag)
+        # full_dag ends with prod_001 but no completed prod; attach
+        # analyze directly to eq_001 to test the empty-chain case.
+        create_node(jd, "analyze", parent_node_ids=["eq_001"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        assert inputs["trajectory_chain"] == []
+
     def test_resolve_node_inputs_solv(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "solv_001", "solv")

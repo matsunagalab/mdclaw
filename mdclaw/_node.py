@@ -33,7 +33,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod"})
+NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod", "analyze"})
 
 SCHEMA_VERSION = 3
 
@@ -831,7 +831,82 @@ def resolve_node_inputs(
             if src:
                 result["restart_from"] = src
 
+    elif node_type == "analyze":
+        # An analyze node aggregates every trajectory along the prod
+        # chain above it. Walk the parent pointer strictly through prod
+        # nodes (stop at eq / non-prod) and collect their trajectory
+        # artifacts in chronological order (oldest first).
+        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        if p7:
+            result["prmtop_file"] = p7
+        result["trajectory_chain"] = _collect_prod_trajectory_chain(
+            job_dir, node_id
+        )
+
     return result
+
+
+def _collect_prod_trajectory_chain(
+    job_dir: str, analyze_node_id: str
+) -> list[str]:
+    """Walk the prod lineage above *analyze_node_id* and return a list of
+    ``trajectory`` artifact paths in chronological order (oldest first).
+
+    Starts from the analyze node's direct parent. If that parent is a
+    prod carrying a ``trajectory`` artifact, record it and recurse into
+    ITS parents (up through prod ancestors only). Non-prod ancestors
+    (typically the eq root) terminate the walk. The ``continued_from``
+    metadata trail, where present, is preferred over plain parents so
+    the chronological order matches how the user actually chained the
+    runs — but a prod node without ``continued_from`` will still fall
+    back to ``parent_node_ids`` so the traversal works on legacy DAGs.
+
+    Returned paths are absolute (via ``_read_artifact_from_node``'s
+    contract). An analyze node directly above an eq (no prod between)
+    returns an empty list — downstream tools must then handle "no
+    trajectory to concatenate" with a clear error.
+    """
+    jd = Path(job_dir)
+    start_nj = jd / "nodes" / analyze_node_id / "node.json"
+    if not start_nj.exists():
+        return []
+    try:
+        start_data = json.loads(start_nj.read_text())
+    except (json.JSONDecodeError, OSError):
+        return []
+    parents = start_data.get("parent_node_ids", [])
+    if not parents:
+        return []
+    # Follow single prod ancestor chain upward. We don't try to merge
+    # branching trajectories — an analyze node must have exactly one
+    # prod parent; forks are handled by making multiple analyze nodes.
+    reversed_chain: list[str] = []
+    current = parents[0]
+    seen: set[str] = set()
+    while current and current not in seen:
+        seen.add(current)
+        nj = jd / "nodes" / current / "node.json"
+        if not nj.exists():
+            break
+        try:
+            cur_data = json.loads(nj.read_text())
+        except (json.JSONDecodeError, OSError):
+            break
+        if cur_data.get("node_type") != "prod":
+            break
+        traj = _read_artifact_from_node(job_dir, current, "trajectory")
+        if traj is not None:
+            reversed_chain.append(traj)
+        # Prefer continued_from metadata (explicit chain marker); fall
+        # back to the first parent. Both should point at a prod or eq.
+        next_id = cur_data.get("metadata", {}).get("continued_from")
+        if not next_id:
+            cur_parents = cur_data.get("parent_node_ids", [])
+            next_id = cur_parents[0] if cur_parents else None
+        current = next_id
+    # reversed_chain is leaf→root; flip to chronological.
+    reversed_chain.reverse()
+    return reversed_chain
 
 
 def _read_continued_from(job_dir: str, node_id: str) -> Optional[str]:
