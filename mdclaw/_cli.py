@@ -319,6 +319,7 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "build_amber_system",
     "run_equilibration",
     "run_production",
+    "concat_trajectory",
 })
 
 
