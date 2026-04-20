@@ -92,8 +92,9 @@ are ready.
 ff19SB + OPC water, 15 Å buffer, 0.15 M NaCl, 300 K, 1 bar (NPT),
 LangevinMiddleIntegrator with HMR (4 fs timestep, hydrogenMass=4 amu),
 HBonds constraints, PME for explicit water. Equilibration uses CA
-positional restraints (100 kJ/mol/nm²) for NVT (2500 steps, 4 fs) +
-NPT (5000 steps, 4 fs).
+positional restraints (100 kJ/mol/nm²) for NVT (250000 steps, 4 fs = 1 ns) +
+NPT (250000 steps, 4 fs = 1 ns). Override the stage lengths with
+`--nvt-steps` / `--npt-steps` on `run_equilibration`.
 
 ### Output Structure
 

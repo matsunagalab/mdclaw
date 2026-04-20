@@ -21,8 +21,12 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 ### Domain Knowledge
 
 - Equilibration uses positional restraints on CA atoms to prevent structural collapse
-- NVT stage: 2500 steps at 4 fs (10 ps) -- heats from 0 to target temperature
-- NPT stage: 5000 steps at 4 fs (20 ps) -- equilibrates density at target pressure
+- NVT stage: 250000 steps at 4 fs (1 ns, default) -- heats from 0 to target temperature
+- NPT stage: 250000 steps at 4 fs (1 ns, default) -- equilibrates density at target pressure
+- Override: pass `--nvt-steps <N>` / `--npt-steps <N>` to shorten or
+  lengthen either stage. Common choices: 2500 (10 ps) for fast sanity
+  runs, 125000 (500 ps) for compromise, 500000+ (2 ns+) for difficult
+  systems needing more relaxation.
 - Both stages use HMR (hydrogenMass=4 amu), matching production's integrator
 - `equilibrated.chk` is a binary checkpoint with currentStep=0 by construction,
   so `run_production --simulation-time-ns` is the full production length

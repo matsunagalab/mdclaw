@@ -23,6 +23,8 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 ### Domain Knowledge
 
 - NVT only: implicit solvent has no periodic box, so no barostat
+- NVT default length: 250000 steps at 4 fs (1 ns). Override with
+  `--nvt-steps <N>` (e.g. `--nvt-steps 2500` for a 10 ps sanity run).
 - CA positional restraints prevent structural collapse during heating
 - CA restraints are removed in the production-matching checkpoint
 - Energy minimization runs automatically before NVT heating

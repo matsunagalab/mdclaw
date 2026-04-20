@@ -174,8 +174,8 @@ def run_equilibration(
     inpcrd_file: Optional[str] = None,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
-    nvt_steps: int = 2500,
-    npt_steps: int = 5000,
+    nvt_steps: int = 250000,
+    npt_steps: int = 250000,
     restraint_atoms: str = "CA",
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
@@ -222,9 +222,12 @@ def run_equilibration(
             - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
             - 0 or None: NVT only (for NVT production or implicit solvent)
             Default: 1.0
-        nvt_steps: Number of NVT heating steps (default: 2500 = 10 ps at 4 fs)
-        npt_steps: Number of NPT equilibration steps (default: 5000 = 20 ps at 4 fs).
-            Only used when pressure_bar > 0. Ignored otherwise.
+        nvt_steps: Number of NVT heating steps (default: 250000 = 1 ns at 4 fs).
+            Override with e.g. `--nvt-steps 2500` (10 ps) for a fast
+            sanity run.
+        npt_steps: Number of NPT equilibration steps (default: 250000 = 1 ns at 4 fs).
+            Only used when pressure_bar > 0; ignored otherwise. Override
+            with e.g. `--npt-steps 5000` (20 ps) for a fast sanity run.
         restraint_atoms: Atom selection for restraints. Options:
             - "CA": alpha carbons only (default, recommended)
             - "backbone": backbone heavy atoms (N, CA, C, O)
