@@ -1,10 +1,22 @@
 # MDClaw: All-in-one container (GPU/CPU unified)
-# 3-stage build: mambaforge -> OpenMM source build (CUDA 12.4) -> slim runtime
+# 3-stage build: mambaforge -> OpenMM source build (CUDA 11.8) -> slim runtime
 #
 # Driver compatibility:
-#   530.x+ (CUDA 12.1): Full GPU support (OpenMM CUDA + PyTorch)
-#   550.x+ (CUDA 12.4): Full GPU support (backward compatible)
-#   560.x+ (CUDA 12.6): Full GPU support (backward compatible)
+#   450.x+ (CUDA 11.0+): OpenMM CUDA + PyTorch cu118
+#   530.x+ (CUDA 12.1):  still fine (newer drivers are always backward compatible)
+#   550.x+ (CUDA 12.4):  still fine
+#   560.x+ (CUDA 12.6):  still fine
+#
+# Why 11.8 rather than 12.x:
+#   Some HPC sites run heterogeneous clusters where a subset of GPU nodes
+#   still have NVIDIA drivers in the 460-520 range (e.g. Pascal / Turing
+#   era). CUDA 12.x toolkits require driver >=525, so a 12.x-built SIF
+#   silently fails with `CUDA_ERROR_UNSUPPORTED_PTX_VERSION` on those
+#   nodes. CUDA 11.8 is supported by driver 450+, which covers every
+#   NVIDIA GPU generation from Maxwell through Hopper on any reasonably
+#   maintained cluster. OpenMM MD workloads do not depend on features
+#   introduced after CUDA 11.x, so there is no measurable performance
+#   cost to building against 11.8.
 #
 # Build:
 #   docker build -f container/Dockerfile -t mdclaw:latest .
@@ -38,8 +50,10 @@ RUN sed '/- -e \./d' environment.yml > environment-docker.yml && \
     mamba env create -f environment-docker.yml -n mdclaw && \
     mamba clean -afy
 
-# Install PyTorch with CUDA 12.1 support
-RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu121 && \
+# Install PyTorch with CUDA 11.8 support (matches the base image's CUDA
+# toolkit, so PyTorch's bundled CUDA runtime is consistent with the one
+# OpenMM is compiled against — no dual-runtime loader surprises).
+RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu118 && \
     mamba run -n mdclaw pip cache purge
 
 # Install mdclaw package into the environment
@@ -62,7 +76,7 @@ RUN mamba install -n base -y conda-pack && \
 # =============================================================================
 # Stage 2: Build OpenMM from source with CUDA 12.4
 # =============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:12.1.1-devel-ubuntu22.04 AS openmm-builder
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04 AS openmm-builder
 
 # Build dependencies
 RUN apt-get update && \
@@ -88,7 +102,7 @@ ARG OPENMM_VERSION=8.2.0
 RUN git clone --depth 1 --branch ${OPENMM_VERSION} \
     https://github.com/openmm/openmm.git /build/openmm
 
-# Build OpenMM with CUDA 12.1 support
+# Build OpenMM with CUDA 11.8 support
 # OpenMM embeds CUDA kernels as source strings and compiles them at runtime
 # via NVRTC, so CMAKE_CUDA_ARCHITECTURES is not needed.
 RUN mkdir /build/openmm/build
@@ -109,7 +123,7 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 # =============================================================================
 # Stage 3: Slim runtime
 # =============================================================================
-FROM --platform=linux/amd64 nvidia/cuda:12.1.1-runtime-ubuntu22.04
+FROM --platform=linux/amd64 nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 # Minimal runtime dependencies
 RUN apt-get update && \
@@ -124,7 +138,7 @@ RUN apt-get update && \
 # Copy conda environment (includes OpenMM)
 COPY --from=openmm-builder /opt/mdclaw /opt/mdclaw
 
-# Copy NVRTC from CUDA 12.1 toolkit (needed by OpenMM at runtime for
+# Copy NVRTC from CUDA 11.8 toolkit (needed by OpenMM at runtime for
 # kernel compilation; not included in the runtime base image)
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc.so* /opt/mdclaw/lib/
 COPY --from=openmm-builder /usr/local/cuda/lib64/libnvrtc-builtins.so* /opt/mdclaw/lib/
