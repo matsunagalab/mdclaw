@@ -155,13 +155,15 @@ job_XXXXXXXX/
       node.lock
       artifacts/
         equilibrated.pdb
-        equilibrated.chk
+        equilibrated.xml            # saveState (preferred by downstream load)
+        equilibrated.chk            # saveCheckpoint (kept for bit-identical reproduction)
     prod_001/                         # branch 1 from eq_001
       node.json
       artifacts/
         trajectory.dcd
         final_structure.pdb
-        checkpoint.chk
+        state.xml                   # saveState (end-of-run + periodic)
+        checkpoint.chk              # saveCheckpoint (end-of-run + periodic)
         energy.dat
     prod_002/                         # branch 2 from eq_001
       node.json
@@ -348,7 +350,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 
 ### md_simulation_server.py
 - `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - NVT+NPT equilibration. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
-- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode: `prmtop_file`/`inpcrd_file` resolve from the `topo` ancestor; `restart_from` walks the DAG upward and takes the nearest `prod` ancestor carrying a `checkpoint` artifact (extension case), falling through to the `eq` ancestor if no prod ancestor has one (fresh production). `simulation_time_ns` is the time to run **in this call** — it is added on top of the checkpoint's `currentStep`, so `eq→prod` keeps its "full production length" meaning (the eq checkpoint is written with `currentStep=0` by design) while `prod→prod` cleanly extends by the requested duration. The node records `start_step` / `start_time_ns` so analysis tools can place each segment on the right timeline, and DCDs are never appended across nodes
+- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode: `prmtop_file`/`inpcrd_file` resolve from the `topo` ancestor; `restart_from` walks the DAG upward and **prefers the ancestor's `state` artifact (XML, cross-node portable); falls back to `checkpoint` (binary, same-GPU-only) for legacy DAGs that predate the saveState migration**. Resolution picks the nearest `prod` ancestor with a `state`/`checkpoint` artifact (extension case), falling through to the `eq` ancestor if no prod ancestor has one (fresh production). On load, `.xml` triggers `Simulation.loadState` and `simulation.currentStep` is restored from `node.json.metadata.final_step` of that ancestor (saveState does not persist the step counter); `.chk` triggers `Simulation.loadCheckpoint` which carries the step counter itself. Both formats are saved at end-of-run and periodically (via two `CheckpointReporter` instances, one with `writeState=True`); the `.chk` remains on disk as an escape hatch for bit-identical reproduction cases (committor / sensitivity analyses), but no code path reads it when a `.xml` is also present. `simulation_time_ns` is the time to run **in this call** — it is added on top of the restart state's `currentStep`, so `eq→prod` keeps its "full production length" meaning (the eq state is written with `final_step=0` by design) while `prod→prod` cleanly extends by the requested duration. The node records `start_step` / `start_time_ns` / `final_step` so analysis tools can place each segment on the right timeline, and DCDs are never appended across nodes
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed
@@ -372,7 +374,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ### node_server.py
-- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `fetch` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's checkpoint (no silent fallback); if the checkpoint is missing, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
+- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `fetch` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's `state` / `checkpoint` artifact (no silent fallback); if neither is present, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
 - `update_job_params(job_dir, params)` - Merge job-level metadata into `progress.json.params`. Use this to persist workflow-wide settings such as `execution_mode` (`autonomous` / `human_in_the_loop`) without hand-editing progress files.
 - `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
 
@@ -502,11 +504,11 @@ singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
 
 ### Key Notes
 
-- **Image size**: ~14.5 GB (Docker), includes CUDA runtime, PyTorch, AmberTools, OpenMM (source-built), Boltz-2
+- **Image size**: ~11.4 GB (Docker, ~4.6 GB SIF), includes CUDA runtime, PyTorch, AmberTools, OpenMM (source-built), Boltz-2
 - **GHCR registry**: `ghcr.io/matsunagalab/mdclaw:latest`
-- **GPU support**: Requires **NVIDIA driver 530+** (CUDA 12.1). Runtime stage uses `nvidia/cuda:12.1.1-runtime-ubuntu22.04`; `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough
-- **OpenMM source build**: OpenMM is built from source against CUDA 12.1 toolkit in Stage 2, avoiding the driver 560+ requirement of pre-built pip/conda packages. NVRTC from CUDA 12.1 is bundled in the image.
-- **CUDA forward-compat**: `LD_LIBRARY_PATH` includes `/usr/local/cuda/compat` so older host drivers can run newer CUDA toolkit
+- **GPU support**: Minimum **NVIDIA driver 520** (the image ships CUDA 11.8; driver 450+ is the theoretical floor per the CUDA 11.8 release notes, 520+ is what we actively verify). `--nv` (Singularity) or `--gpus all` (Docker) enables GPU passthrough. Runtime stage uses `nvidia/cuda:11.8.0-runtime-ubuntu22.04`.
+- **Why CUDA 11.8, not 12.x**: HPC clusters often mix Pascal/Turing-era nodes whose drivers are in the 460-520 range. CUDA 12.x requires driver ≥525, and its forward-compat libs are restricted to datacenter GPUs (Tesla / A100 / H100) — consumer GPUs return `CUDA_ERROR_COMPAT_NOT_SUPPORTED_ON_DEVICE`. CUDA 11.8 is the newest toolkit that works on any driver ≥520 without forward-compat tricks, on any NVIDIA consumer or datacenter GPU from Maxwell through Hopper.
+- **OpenMM source build**: OpenMM 8.2.0 is built from source against the CUDA 11.8 toolkit in Stage 2 so PTX emitted at runtime by NVRTC matches the driver floor. NVRTC + nvrtc-builtins from CUDA 11.8 are copied into `/opt/mdclaw/lib/` so the slim runtime image has the JIT compiler available without pulling the devel base.
 - **`write:packages` scope**: Required for `docker push` to GHCR; add via `gh auth refresh --scopes write:packages`
 - **Singularity pull** requires the GHCR package to be **public** (or `SINGULARITY_DOCKER_USERNAME`/`PASSWORD` to be set)
 

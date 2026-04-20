@@ -21,7 +21,8 @@ The container (~4.6 GB) downloads automatically on first session start.
 
 **Requirements:**
 - Container runtime: Singularity/Apptainer (HPC) or Docker (macOS/desktop)
-- GPU (optional): NVIDIA driver 530+ (CUDA 12.1+)
+- GPU (optional): NVIDIA driver 520+ (the image ships CUDA 11.8; driver
+  450+ is the theoretical floor, 520+ is what we actively verify)
 
 `bin/mdclaw` chooses the runtime in this order:
 - `MDCLAW_RUNTIME=singularity|apptainer|docker` if you set it explicitly
@@ -122,11 +123,14 @@ job_a1b2c3d4/
     eq_001/                    ← equilibration at 300K
       node.json
       artifacts/
-        equilibrated.chk
+        equilibrated.xml       ← portable state (loaded by default)
+        equilibrated.chk       ← binary checkpoint (kept for reproducibility)
     prod_001/                  ← production 300K
       node.json
       artifacts/
         trajectory.dcd
+        state.xml              ← portable state (end + periodic)
+        checkpoint.chk         ← binary checkpoint (periodic)
     eq_002/                    ← equilibration at 310K (branch)
       ...
     prod_002/                  ← production 310K (branch)
