@@ -1,0 +1,70 @@
+# Keep the build context lean. Dockerfile COPYs only environment.yml,
+# pyproject.toml, README.md, mdclaw/, and container/scripts/. Everything
+# else is either noise or huge (SabDab job artifacts can reach many GB).
+
+# Python / build caches
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.cache/
+
+# mdclaw-specific caches and job artifacts
+.mdclaw_cache/
+.mdclaw_jobs.jsonl
+.mdclaw_cluster.json
+.mdclaw-version
+job_*/
+logs/
+split/
+nanobodies/
+outputs/
+
+# SabDab / batch artifacts
+ab_*.sbatch
+ab_*.out
+ab_*.err
+ab_manifest.json
+ab_status.json
+*.sbatch
+*.out
+*.err
+sabdab*.tsv
+
+# Editor / OS / git / envs
+.git/
+.gitignore
+.gitattributes
+.github/
+.claude/
+.claude-plugin/
+.DS_Store
+*.swp
+*.swo
+
+# Large binaries / existing SIF
+*.sif
+*.tar.gz
+*.tar
+*.pdb
+*.cif
+*.parm7
+*.rst7
+*.dcd
+*.chk
+*.xml
+
+# Tests are baked into the image via mdclaw/ — don't re-send from tests/
+tests/
+
+# Scripts are developer tooling, not runtime
+scripts/
+
+# Plan / memory files
+plans/
+memory/
