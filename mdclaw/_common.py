@@ -274,7 +274,13 @@ _TIMEOUT_DEFAULTS = {
     "genesis": 300,
     "solvation": 7200,
     "membrane": 7200,
-    "amber": 900,
+    # ``amber`` is the tleap wall-time budget for build_amber_system.
+    # 3600 s (60 min) covers solvated nanobody–scaffold fusions
+    # (megabody-style, ~450 residues / 400k atoms) observed in the
+    # 2422-row SabDab batch where the earlier 900 s default timed out
+    # on 48 entries. For even larger systems, override via
+    # MDCLAW_AMBER_TIMEOUT=<seconds>.
+    "amber": 3600,
     "md_simulation": 3600,
     "slurm": 120,
 }

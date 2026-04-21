@@ -123,7 +123,7 @@ class TestConfig:
         assert get_timeout("default") == 300
         assert get_timeout("solvation") == 7200
         assert get_timeout("membrane") == 7200
-        assert get_timeout("amber") == 900
+        assert get_timeout("amber") == 3600  # bumped in Fix A to cover ~450-residue fusions
         assert get_timeout("md_simulation") == 3600
         assert get_timeout("structure") == 600
 

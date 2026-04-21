@@ -263,8 +263,8 @@ mdclaw --version
 mdclaw download_structure --help
 
 # Run a tool (output is JSON on stdout)
-mdclaw download_structure --pdb-id 1AKE --format pdb
-mdclaw inspect_molecules --structure-file 1AKE.pdb
+mdclaw download_structure --pdb-id 1AKE                    # CIF by default
+mdclaw inspect_molecules --structure-file 1AKE.cif
 mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 
 # Complex parameters via JSON
@@ -324,10 +324,10 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
 
 ### structure_server.py
-- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor
+- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor. Chain-ID rule for `select_chains`: **pass the short chain ID as it appears in your input file** — `chain_id` (label_asym_id) for mmCIF, `author_chain` (auth_asym_id, = column 22) for PDB. See "Chain ID mapping" in `skills/md-prepare/setup.md` for why the two can disagree in mmCIF (e.g. 7QVK label `B` ↔ author `BBB`) and why gemmi's PDB `chain_id` is an internal artifact (`Axp` / `Ax1` / `Axw`) you never type
 - `clean_protein(pdb_file, ...)` - PDBFixer + pdb2pqr protonation
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
-- `split_molecules(structure_file, select_chains, include_types)` - Extract components
+- `split_molecules(structure_file, select_chains, include_types)` - Extract components (same "pass what's in your file" chain-ID rule as `prepare_complex`)
 - `merge_structures(pdb_files, output_name)` - Merge PDB files
 - `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
 - `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
@@ -460,6 +460,7 @@ export MDCLAW_OUTPUT_DIR="."
 export MDCLAW_DEFAULT_TIMEOUT=300
 export MDCLAW_SOLVATION_TIMEOUT=600
 export MDCLAW_MEMBRANE_TIMEOUT=7200
+export MDCLAW_AMBER_TIMEOUT=3600   # tleap wall-time (build_amber_system); raise for very large fusions
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_LOG_LEVEL=WARNING
 export MDCLAW_SLURM_TIMEOUT=120

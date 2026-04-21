@@ -47,7 +47,7 @@ Then run the appropriate fetch tool with `--node-id fetch_001`:
 ```bash
 # PDB
 mdclaw --job-dir job_xxx --node-id fetch_001 download_structure \
-  --pdb-id 1AKE --format pdb
+  --pdb-id 1AKE
 
 # AlphaFold
 mdclaw --job-dir job_xxx --node-id fetch_001 get_alphafold_structure \

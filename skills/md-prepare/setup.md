@@ -82,7 +82,7 @@ Use `progress.json.params.execution_mode` as the source of truth:
 ## Step 1: Acquire Structure
 
 **Tools** (all accept `--job-dir <jd> --node-id <fetch_id>` for schema v3):
-- `mdclaw download_structure --pdb-id <ID> --format pdb`
+- `mdclaw download_structure --pdb-id <ID>` (CIF by default; pass `--format pdb` only when a caller actually needs PDB format)
 - `mdclaw get_alphafold_structure --uniprot-id <ID>`
 - `mdclaw register_local_structure --file-path <path>`
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
@@ -130,11 +130,36 @@ This records an `inspection_completed` event and writes `inspection.json`
 into the fetch node's artifacts dir. The node's status is unchanged
 (read-only).
 
-1. **Chain ID mapping**: Output has `author_chain` (e.g., `"A"`) and `chain_id` (e.g., `"Axp"`). **Use `author_chain` for `--select-chains` in Step 3.**
+1. **Chain ID mapping (label_asym_id vs auth_asym_id)**: structures
+   carry two chain-ID systems and they can disagree. Which one is the
+   "natural short ID" depends on the file format:
+
+   - **mmCIF** — both IDs come from the file itself.
+     - `chain_id` (**label_asym_id**) = entity-level internal ID,
+       typically a short letter (`A`, `B`, `C`). **This is the
+       user-facing "simple" chain ID** used by RCSB / SabDab.
+     - `author_chain` (**auth_asym_id**) = depositor's original ID,
+       arbitrary-length (`AAA`, `BBB`, `AbA`), sometimes reordered from
+       the label (e.g. 7NMU has label `C` ↔ author `DDD`).
+   - **PDB format** — the file has only one chain column (1 char).
+     - `author_chain` = that 1-char column value (`A`, `B`) — **this is
+       the user-facing ID**.
+     - `chain_id` = **gemmi auto-generates** subchain IDs like `Axp`
+       (protein part of A), `Ax1` (1st ligand of A), `Axw` (water of A).
+       These are not meant for users to type.
+
+   **What to pass to `--select-chains`:** always the short 1–2 char
+   value, i.e. `chain_id` for mmCIF and `author_chain` for PDB. The
+   tool tries `chain_id` first, falls back to `author_chain` — so for
+   PDB the author-fallback is the normal path and the tool stays
+   silent; for mmCIF the fallback fires only when you accidentally
+   pass a long author ID and triggers a warning asking you to pass
+   the label instead. Use `inspect_molecules` → `summary.chain_id_map`
+   and `summary.protein_label_ids` when in doubt.
 2. **Checkpoint: Chain selection** — If multiple chains and user hasn't
    specified, ask in `human_in_the_loop` mode and in `autonomous` only when
-   chain intent is missing (present `author_chain` values). Otherwise use the
-   user's choice or default to all chains.
+   chain intent is missing (present `chain_id` / label values). Otherwise
+   use the user's choice or default to all chains.
 3. **Checkpoint: Ligand inclusion** — If ligands found and user hasn't
    specified, ask in `human_in_the_loop` mode and in `autonomous` only when
    ligand intent is missing. Otherwise use the user's choice or default to
@@ -214,7 +239,10 @@ mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --json-input '{"select_chains": ["A"], "include_types": ["protein","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
 ```
 
-> `prepare_complex` uses author chain IDs internally, so `--use-author-chains` is unnecessary and would cause double-mapping.
+> `--select-chains` values are `chain_id` (label_asym_id); the tool
+> maps to `author_chain` (auth_asym_id) internally. See "Chain ID
+> mapping" under Step 2 for the label-vs-author distinction. The
+> legacy `--use-author-chains` flag has been removed.
 > To override DAG auto-resolution (e.g., feed a manually edited PDB),
 > pass `--structure-file <path>` explicitly.
 

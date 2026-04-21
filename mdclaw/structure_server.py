@@ -91,6 +91,12 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
       leaving SG unprotonated — chemically wrong).
     - CYS residues that *are* in ``disulfide_bonds`` are promoted to CYX.
 
+    Additionally, every final CYX residue has its ``HG`` thiol hydrogen
+    stripped. SS-bonded cysteines have their SG bonded to another SG,
+    not to a proton, and tleap aborts with
+    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type`` if an HG atom
+    survives — observed for 5vm0_A and 7on5_A in the 2422-row batch.
+
     Runs unconditionally after merge; it is a no-op whenever the
     auto-detection path agrees with pdb2pqr (the common case).
     """
@@ -108,6 +114,7 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     out: List[str] = []
     renamed_to_cys = 0
     renamed_to_cyx = 0
+    stripped_hg = 0
 
     for line in lines:
         if len(line) >= 27 and line.startswith(("ATOM", "HETATM")):
@@ -119,18 +126,30 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
                 out.append(line)
                 continue
             key = (chain, resnum)
+            final_resname = resname
             if resname == "CYX" and key not in target_cyx:
                 line = line[:17] + "CYS" + line[20:]
+                final_resname = "CYS"
                 renamed_to_cys += 1
             elif resname == "CYS" and key in target_cyx:
                 line = line[:17] + "CYX" + line[20:]
+                final_resname = "CYX"
                 renamed_to_cyx += 1
+
+            # Drop the thiol hydrogen from every CYX record. This covers
+            # both the CYS→CYX promotion path above and pre-existing CYX
+            # residues from pdb2pqr that still carry HG (which tleap
+            # rejects with a FATAL).
+            if final_resname == "CYX" and line[12:16].strip() == "HG":
+                stripped_hg += 1
+                continue
         out.append(line)
 
     path.write_text("\n".join(out) + ("\n" if lines and not lines[-1].endswith("\n") else ""))
     return {
         "renamed_to_cys": renamed_to_cys,
         "renamed_to_cyx": renamed_to_cyx,
+        "stripped_hg_from_cyx": stripped_hg,
     }
 
 
@@ -1359,17 +1378,32 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 - num_atoms: int - Number of atoms in the chain
                 - residue_names: list[str] - Unique residue names in the chain
                 - sequence: str - One-letter sequence (for proteins only)
-            - summary: dict - Quick overview:
+            - summary: dict - Quick overview. Exposes BOTH chain-ID
+              systems so callers can pick the right one for
+              ``select_chains``:
                 - num_protein_chains: int
                 - num_ligand_chains: int
                 - num_water_chains: int
                 - num_ion_chains: int
                 - total_chains: int
-                - protein_chain_ids: list[str] - Author chain IDs (auth_asym_id like "A", "B")
-                - ligand_chain_ids: list[str] - Author chain IDs
-                - water_chain_ids: list[str] - Author chain IDs
-                - ion_chain_ids: list[str] - Author chain IDs
-              Note: Use these IDs with split_molecules(select_chains=..., use_author_chains=True)
+                # Pass these to ``select_chains`` (label_asym_id, the
+                # simple PDB-style ID used by RCSB / SabDab):
+                - protein_label_ids: list[str]
+                - ligand_label_ids: list[str]
+                - water_label_ids: list[str]
+                - ion_label_ids: list[str]
+                # Author IDs (auth_asym_id) — for display and provenance,
+                # kept under the historical field names for backward
+                # compatibility. split_molecules will still accept these
+                # via its author_chain fallback:
+                - protein_chain_ids: list[str]
+                - ligand_chain_ids: list[str]
+                - water_chain_ids: list[str]
+                - ion_chain_ids: list[str]
+                # Explicit mapping, useful when label and author disagree
+                # (e.g. 7QVK label "B" ↔ auth "BBB"; 7NMU label "C" ↔
+                # auth "DDD" — the mapping can even be reordered):
+                - chain_id_map: dict[str, str]  # label -> author
             - errors: list[str] - Error messages (empty if success=True)
             - warnings: list[str] - Non-critical issues encountered
     """
@@ -1566,9 +1600,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             if author_chain is None:
                 author_chain = chain_id  # Fallback
             
-            # Classify chain type
-            # Use author_chain (auth_asym_id like "A", "B") for chain ID lists
-            # This matches what split_molecules expects with use_author_chains=True
+            # Classify chain type.
+            # The *_chain_ids lists store author_chain (auth_asym_id); they
+            # are kept for display and backward compatibility. The
+            # corresponding *_label_ids lists (emitted below in summary)
+            # are built from chain_id (label_asym_id) and are what
+            # split_molecules / prepare_complex expect in select_chains.
             if has_protein:
                 chain_type = "protein"
                 if author_chain not in protein_chain_ids:
@@ -1628,19 +1665,37 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             chains_info.append(chain_info)
         
         result["chains"] = chains_info
-        # Summary uses author_chain IDs (auth_asym_id like "A", "B") for user display
-        # For internal use, access chains[*]["chain_id"] which is label_asym_id
+        # Summary exposes BOTH ID systems so the caller can pick the right
+        # one for `select_chains`. The contract is:
+        #   - `protein_label_ids` / `ligand_label_ids` / ... = chain_id
+        #     (label_asym_id) — **this is what you pass to select_chains**.
+        #   - `protein_chain_ids` / `ligand_chain_ids` / ... =
+        #     author_chain (auth_asym_id) — for display / provenance.
+        #     Kept under the historical name for backward compatibility.
+        #   - `chain_id_map` = {chain_id -> author_chain} so surprising
+        #     pairings (e.g. 7NMU has label C ↔ auth DDD) are visible.
+        protein_label_ids = [c["chain_id"] for c in chains_info if c["chain_type"] == "protein"]
+        ligand_label_ids  = [c["chain_id"] for c in chains_info if c["chain_type"] == "ligand"]
+        water_label_ids   = [c["chain_id"] for c in chains_info if c["chain_type"] == "water"]
+        ion_label_ids     = [c["chain_id"] for c in chains_info if c["chain_type"] == "ion"]
+        chain_id_map = {c["chain_id"]: c["author_chain"] for c in chains_info}
         result["summary"] = {
             "num_protein_chains": len(protein_chain_ids),
             "num_ligand_chains": len(ligand_chain_ids),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
-            # These are author_chain IDs (auth_asym_id) - use for display and select_chains
+            # author_chain (auth_asym_id) lists — for display.
             "protein_chain_ids": protein_chain_ids,
             "ligand_chain_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
+            # chain_id (label_asym_id) lists — pass these to select_chains.
+            "protein_label_ids": protein_label_ids,
+            "ligand_label_ids": ligand_label_ids,
+            "water_label_ids": water_label_ids,
+            "ion_label_ids": ion_label_ids,
+            "chain_id_map": chain_id_map,
         }
         
         # Check if any chains were found
@@ -1669,50 +1724,72 @@ def split_molecules(
     output_dir: Optional[str] = None,
     select_chains: Optional[List[str]] = None,
     include_types: Optional[List[str]] = None,
-    use_author_chains: bool = True,
     include_ligand_ids: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
     keep_crystal_waters: bool = False,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
-    
+
     This tool splits a structure into chain files by molecular type:
     protein, ligand, ion, and water. Output files are always in PDB format.
     Files are named as protein_1.pdb, ligand_1.pdb, ion_1.pdb, water_1.pdb, etc.
-    
-    Chain Selection:
-        By default (use_author_chains=True), chains are selected using the 
-        "author chain ID" which corresponds to:
-        - PDB format: The chain ID column (e.g., 'A', 'B')
-        - mmCIF format: auth_asym_id (the original chain ID assigned by authors)
-        
-        This is the intuitive behavior where selecting chain 'A' includes all
-        molecules (protein, ligands, ions) that belong to author chain A.
-        
-        For advanced use cases with many chains that need unique identifiers,
-        set use_author_chains=False to use label_asym_id (mmCIF internal IDs).
-        In mmCIF, label_asym_id assigns unique IDs to each molecular entity
-        (e.g., 'A' for protein, 'C' for ligand, 'E' for water), even if they
-        share the same author chain.
-    
+
+    Chain Selection — label_asym_id vs auth_asym_id:
+        **Rule of thumb: pass the short chain ID exactly as it appears
+        in your input file.**
+
+        - For **mmCIF** inputs pass ``chain_id`` (= label_asym_id), the
+          short per-entity ID used by RCSB / SabDab (e.g. ``B`` for
+          7QVK). The accompanying ``author_chain`` (auth_asym_id) is
+          the depositor's original label and may be multi-letter
+          (``AAA``, ``BBB``, ``AbA``) or reordered from the label
+          (7NMU: label ``C`` ↔ auth ``DDD``).
+        - For **PDB** inputs pass ``author_chain`` (= the 1-character
+          value in column 22). gemmi's ``chain_id`` for PDB files is
+          an auto-generated subchain ID like ``Axp`` / ``Ax1`` / ``Axw``
+          — that's an internal artifact, not something users write.
+
+        Implementation: the tool tries ``chain_id`` (label) first, then
+        ``author_chain`` (auth). This single rule handles both formats
+        correctly — mmCIF hits on the primary path, PDB hits on the
+        fallback — and the fallback warning is suppressed for PDB
+        inputs since author-match IS the natural path there. Errors
+        list both systems and the ``label -> author`` mapping so the
+        caller can disambiguate.
+
+        Type-aware rescue: when the primary label match lands on chains
+        that are all outside ``include_types`` (e.g. a SabDab
+        ``Hchain='F'`` that matches the water/ligand subchain at label
+        F while the nanobody lives at a different label), the tool
+        retries with author_chain matching — including a
+        first-character-of-author shortcut (``'F' -> auth 'FFF'``).
+        This covers multi-chain RCSB mmCIF entries whose PDB-format
+        export truncated long auth IDs to single letters. The rescue
+        emits a warning naming the actual label chosen.
+
+        Internally, gemmi's subchain iteration is keyed on label_asym_id
+        (that's a gemmi API constraint, not a design choice). For
+        chain-level bookkeeping (disulfide pairs, merged-PDB chain
+        column) we prefer auth_asym_id because it tracks the biological
+        chain rather than mmCIF's entity-level split.
+
     Type Filtering:
         Use include_types to filter by molecular type. By default (None), all
         types except water are included. Valid types: "protein", "ligand", "ion", "water".
-    
+
     Tip: Use inspect_molecules first to understand the structure and identify
     which chains you want to extract. It shows both chain_id (label_asym_id)
-    and author_chain (auth_asym_id) for each chain.
+    and author_chain (auth_asym_id) for each chain, plus a
+    ``chain_id_map`` in the summary.
 
     Args:
         structure_file: Path to the mmCIF (.cif) or PDB (.pdb) file to split.
         output_dir: Output directory (auto-generated if None).
-        select_chains: List of chain IDs to extract.
-                       By default (use_author_chains=True), matches author chain IDs:
-                       - PDB: chain ID column (e.g., ['A', 'B'])
-                       - mmCIF: auth_asym_id (e.g., ['A', 'B'])
-                       If use_author_chains=False, matches label_asym_id (mmCIF internal IDs).
-                       Use inspect_molecules to find available chain IDs.
-                       If None, extracts all chains.
+        select_chains: List of chain IDs to extract. Matches ``chain_id``
+                       (label_asym_id) first and falls back to
+                       ``author_chain`` (auth_asym_id) for any unresolved
+                       entries. Use inspect_molecules to find available
+                       IDs. If None, extracts all chains.
         include_types: List of molecular types to include. Valid values:
                        "protein", "ligand", "ion", "water".
                        If None (default), includes ["protein", "ligand", "ion"].
@@ -1720,12 +1797,6 @@ def split_molecules(
                             Default is False (crystal waters are excluded even if "water"
                             is in include_types). For most MD simulations, crystal waters
                             should be excluded and bulk solvent added via solvate_structure.
-        use_author_chains: If True (default), select_chains matches author chain IDs
-                          (PDB chain ID / mmCIF auth_asym_id). This is the intuitive
-                          behavior for most use cases.
-                          If False, select_chains matches label_asym_id (mmCIF internal
-                          unique identifiers). Use this when you need to select specific
-                          molecular entities in structures with many chains.
         include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
                            e.g., ["A:ACP:501"]). If specified, only these ligands are extracted.
                            Use inspect_molecules to get available ligand unique IDs.
@@ -1831,38 +1902,110 @@ def split_molecules(
         # Build chain info lookup from analysis results
         chain_info = {c["chain_id"]: c for c in analysis["chains"]}
         
-        # Determine which chains to select
+        # Determine which chains to select.
+        # Option 2 contract: select_chains is label_asym_id (chain_id) first,
+        # with a safety fallback to author_chain for unresolved IDs. We always
+        # end up with a set of label IDs in selected_chain_ids, which is what
+        # the downstream gemmi subchain loop keys on.
         available_chain_ids = [c["chain_id"] for c in analysis["chains"]]
-        available_author_chains = list(set(c["author_chain"] for c in analysis["chains"]))
+        available_author_chains = sorted({c["author_chain"] for c in analysis["chains"]})
+        label_to_author_map = {c["chain_id"]: c["author_chain"] for c in analysis["chains"]}
 
         if select_chains is not None:
-            if use_author_chains:
-                # Match by author_chain (auth_asym_id) - useful for PDB files
-                missing_chains = [ch for ch in select_chains if ch not in available_author_chains]
-                if missing_chains:
-                    result["errors"].append(f"Author chain(s) not found: {missing_chains}")
-                    result["errors"].append(f"Hint: Available author chains: {available_author_chains}")
-                    logger.error(f"Requested author chains not found: {missing_chains}")
-                    return result
-                # Find all chain_ids that match the selected author_chains
-                selected_chain_ids = set()
-                for c in analysis["chains"]:
-                    if c["author_chain"] in select_chains:
-                        selected_chain_ids.add(c["chain_id"])
-            else:
-                # Match by chain_id (label_asym_id) - default behavior
-                missing_chains = [ch for ch in select_chains if ch not in available_chain_ids]
-                if missing_chains:
-                    result["errors"].append(f"Chain(s) not found: {missing_chains}")
-                    result["errors"].append(f"Hint: Available chains (label_asym_id): {available_chain_ids}")
-                    result["errors"].append(f"Hint: For PDB files, try use_author_chains=True with author IDs: {available_author_chains}")
-                    logger.error(f"Requested chains not found: {missing_chains}")
-                    return result
-                selected_chain_ids = set(select_chains)
+            selected_chain_ids: set[str] = set()
+            missing_chains: list[str] = []
+            fallback_used: list[tuple[str, list[str]]] = []
+            for ch in select_chains:
+                # Primary: label_asym_id exact match
+                label_hits = {c["chain_id"] for c in analysis["chains"] if c["chain_id"] == ch}
+                if label_hits:
+                    selected_chain_ids |= label_hits
+                    continue
+                # Fallback: author_chain match (all label IDs under that author)
+                author_hits = {c["chain_id"] for c in analysis["chains"] if c["author_chain"] == ch}
+                if author_hits:
+                    selected_chain_ids |= author_hits
+                    fallback_used.append((ch, sorted(author_hits)))
+                    continue
+                missing_chains.append(ch)
+
+            if missing_chains:
+                result["errors"].append(f"Chain(s) not found: {missing_chains}")
+                result["errors"].append(
+                    f"Hint: Available chain_id (label_asym_id) values: {available_chain_ids}"
+                )
+                result["errors"].append(
+                    f"Hint: Available author_chain (auth_asym_id) values: {available_author_chains}"
+                )
+                result["errors"].append(
+                    f"Hint: label -> author mapping: {label_to_author_map}"
+                )
+                logger.error(
+                    f"Requested chains not found: {missing_chains} "
+                    f"(available labels={available_chain_ids}; authors={available_author_chains})"
+                )
+                return result
+
+            # Suppress fallback warnings when the input is PDB format. For
+            # PDB files the "label_asym_id" that gemmi surfaces is actually
+            # an auto-generated subchain_id (e.g. ``Axp``, ``Ax1``, ``Axw``
+            # for the protein / 1st ligand / water of author chain A), not
+            # something the user would reasonably type. The PDB chain
+            # column is the author_chain, so author-fallback IS the natural
+            # resolution path and need not be flagged.
+            _suffix = structure_path.suffix.lower()
+            _is_pdb_input = _suffix in (".pdb", ".ent")
+            if fallback_used and not _is_pdb_input:
+                for ch, labels in fallback_used:
+                    result["warnings"].append(
+                        f"Chain '{ch}' resolved via author_chain fallback -> label(s) {labels}. "
+                        f"Pass the label_asym_id directly to avoid this fallback."
+                    )
+
+            # Second fallback: if the primary label selection yielded chains
+            # but NONE of them are in include_types, try author-chain match
+            # (including the first-character-of-author shortcut that SabDab
+            # uses — Hchain='F' in a multi-chain mmCIF with auth 'FFF'
+            # corresponds to the chain under auth 'FFF', which is the label
+            # that carries the protein, not label 'F' which in those entries
+            # is a ligand or water subchain).
+            selected_infos = [c for c in analysis["chains"] if c["chain_id"] in selected_chain_ids]
+            if selected_chain_ids and not any(c["chain_type"] in include_types for c in selected_infos):
+                rescue_label_ids: set[str] = set()
+                rescue_hits: list[tuple[str, list[str]]] = []
+                for ch in select_chains:
+                    # Pattern A: exact author_chain match against include_types chains
+                    matches = [
+                        c for c in analysis["chains"]
+                        if c["author_chain"] == ch and c["chain_type"] in include_types
+                    ]
+                    # Pattern B: first-character-of-author match against
+                    # include_types chains (e.g. user passes 'F' and the auth
+                    # 'FFF' owns the protein subchain). Only used when
+                    # single-character input and no exact auth hit.
+                    if not matches and len(ch) == 1:
+                        matches = [
+                            c for c in analysis["chains"]
+                            if c["chain_type"] in include_types
+                            and c["author_chain"]
+                            and c["author_chain"][0] == ch
+                            and c["author_chain"] != ch
+                        ]
+                    if matches:
+                        rescue_label_ids |= {c["chain_id"] for c in matches}
+                        rescue_hits.append((ch, sorted({c["chain_id"] for c in matches})))
+                if rescue_label_ids:
+                    selected_chain_ids = rescue_label_ids
+                    for ch, labels in rescue_hits:
+                        result["warnings"].append(
+                            f"Chain '{ch}' rescued via author-chain fallback (primary "
+                            f"label match had no chains in include_types={include_types}). "
+                            f"Resolved to label(s) {labels}. Common for SabDab 1-char IDs "
+                            f"on mmCIF entries with multi-letter author IDs (e.g. 'F' -> "
+                            f"auth 'FFF')."
+                        )
         else:
             # Default: select all chains (type filtering happens later)
-            # Use chain_id (label_asym_id) from analysis["chains"], not summary
-            # because summary contains author_chain IDs for user display
             selected_chain_ids = set(c["chain_id"] for c in analysis["chains"])
         
         logger.info(f"Chains to export: {sorted(selected_chain_ids)}")
@@ -3964,7 +4107,19 @@ def prepare_complex(
     Args:
         structure_file: Path to mmCIF (.cif) or PDB (.pdb/.ent) file
         output_dir: Output directory (auto-generated if None)
-        select_chains: List of chain IDs to process (None = all chains)
+        select_chains: List of chain IDs to process. **Pass the short
+                       chain ID exactly as it appears in your input file:**
+                       ``chain_id`` (label_asym_id) for mmCIF,
+                       ``author_chain`` (auth_asym_id) for PDB. One unified
+                       matching rule handles both formats — see
+                       ``split_molecules`` for the full chain-ID contract.
+                       Gotcha: for mmCIF, ``author_chain`` can be
+                       multi-letter (e.g. 7QVK ``AAA BBB AbA``) and
+                       occasionally reordered (7NMU ``label C ↔ auth
+                       DDD``) — stick to ``chain_id`` there. For PDB,
+                       gemmi's internal ``chain_id`` is an auto-generated
+                       subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
+                       is not user-facing. None = all chains.
         ph: pH for protonation state (default: 7.4)
         cap_termini: Add ACE/NME caps to protein termini (default: False)
         process_proteins: Whether to clean protein chains (default: True)
@@ -4137,8 +4292,26 @@ def prepare_complex(
             )
             ssbond_pairs = _parse_ssbond_records(structure_path)
             distance_pairs = _detect_disulfide_candidates(structure_path)
+            # Translate select_chains (label_asym_id per Fix B) into the
+            # author_chain values that SSBOND / _struct_conn records
+            # actually carry — gemmi's ``chain.name`` / ``partner.chain_name``
+            # return auth_asym_id for both PDB and mmCIF. Without this
+            # mapping, ``_merge_disulfide_pairs``'s filter silently drops
+            # pairs whose auth_asym_id differs from the user-supplied label
+            # (e.g. 7QVK label "B" ↔ auth "BBB").
+            ss_select_chains: Optional[List[str]] = None
+            if select_chains is not None:
+                chain_id_map = inspection.get("summary", {}).get("chain_id_map", {})
+                author_chains_set = set(chain_id_map.values())
+                ss_select_chains = []
+                for ch in select_chains:
+                    if ch in chain_id_map:
+                        ss_select_chains.append(chain_id_map[ch])   # label -> auth
+                    elif ch in author_chains_set:
+                        ss_select_chains.append(ch)                 # already auth (fallback path)
+                    # else: unknown ID — let split_molecules raise the error.
             disulfide_bonds = _merge_disulfide_pairs(
-                ssbond_pairs, distance_pairs, select_chains=select_chains
+                ssbond_pairs, distance_pairs, select_chains=ss_select_chains
             )
             if disulfide_bonds:
                 logger.info(
@@ -4521,11 +4694,16 @@ def prepare_complex(
                             merge_result["output_file"],
                             result.get("disulfide_bonds", []),
                         )
-                        if reconcile["renamed_to_cys"] or reconcile["renamed_to_cyx"]:
+                        if (
+                            reconcile["renamed_to_cys"]
+                            or reconcile["renamed_to_cyx"]
+                            or reconcile.get("stripped_hg_from_cyx", 0)
+                        ):
                             logger.info(
                                 f"  ↳ CYS/CYX reconciliation: "
                                 f"{reconcile['renamed_to_cyx']} promoted, "
-                                f"{reconcile['renamed_to_cys']} demoted"
+                                f"{reconcile['renamed_to_cys']} demoted, "
+                                f"{reconcile.get('stripped_hg_from_cyx', 0)} HG atoms stripped"
                             )
                             result["cys_cyx_reconciliation"] = reconcile
                     except Exception as e:

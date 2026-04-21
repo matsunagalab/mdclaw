@@ -11,12 +11,16 @@ Provides tools for:
 - Structure file inspection (mdclaw-specific gemmi-based analysis)
 """
 
-import os
-import re
-import sys
+import asyncio
+import contextlib
+import fcntl
 import hashlib
 import json
+import os
+import re
 import shutil
+import sys
+import tempfile
 from pathlib import Path
 from typing import Optional
 
@@ -63,6 +67,116 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write *data* to *path* atomically via tmp file + os.replace.
+
+    Concurrent readers either see the old contents or the new contents — never
+    a partial write. Used for cache files that multiple prep workers may
+    read/write for the same PDB ID.
+    """
+    ensure_directory(path.parent)
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        with open(tmp, "wb") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _atomic_write_text(path: Path, data: str) -> None:
+    _atomic_write_bytes(path, data.encode("utf-8"))
+
+
+@contextlib.contextmanager
+def _cache_lock(cache_entry_dir: Path):
+    """Hold an exclusive flock scoped to one PDB ID's cache directory.
+
+    Serializes concurrent download_structure calls for the same PDB ID across
+    processes (e.g. SLURM array workers). Within-process concurrency is not
+    served by flock, but the CLI entry point runs one download per subprocess.
+    """
+    ensure_directory(cache_entry_dir)
+    lock_path = cache_entry_dir / ".lock"
+    with open(lock_path, "a+") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+
+def _verify_cache(cache_file: Path, cache_meta: Path) -> bool:
+    """Return True iff *cache_file* exists and its sha256 matches *cache_meta*."""
+    if not (cache_file.exists() and cache_meta.exists()):
+        return False
+    try:
+        meta = json.loads(cache_meta.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    expected = meta.get("sha256")
+    if not expected:
+        return False
+    try:
+        return _sha256_file(cache_file) == expected
+    except OSError:
+        return False
+
+
+def _validate_structure_bytes(content: bytes, ext: str) -> tuple[bool, Optional[str]]:
+    """Validate downloaded structure bytes by parsing with gemmi.
+
+    Returns ``(True, None)`` when the content parses to a non-empty structure,
+    ``(False, reason)`` otherwise. When gemmi is not available, falls back to
+    a shape check (PDB requires an ``END`` terminator; CIF requires a minimum
+    size). This is the guard against silently-truncated HTTP responses that
+    otherwise land on disk intact-looking but missing atoms.
+    """
+    if not content:
+        return False, "empty response body"
+    try:
+        import gemmi
+    except ImportError:
+        if ext == "pdb":
+            lines = [L for L in content.splitlines() if L.strip()]
+            if not lines or not lines[-1].startswith(b"END"):
+                return False, "PDB does not end with END record"
+            return True, None
+        if len(content) < 200:
+            return False, f"CIF too short ({len(content)} bytes)"
+        return True, None
+
+    with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
+        tf.write(content)
+        tmp_path = tf.name
+    try:
+        if ext == "cif":
+            doc = gemmi.cif.read(tmp_path)
+            if len(doc) == 0:
+                return False, "CIF contains no data blocks"
+            st = gemmi.make_structure_from_block(doc[0])
+        else:
+            st = gemmi.read_pdb(tmp_path)
+        st.setup_entities()
+        atom_count = sum(1 for m in st for c in m for r in c for a in r)
+        if atom_count == 0:
+            return False, "parsed structure has zero atoms"
+        return True, None
+    except Exception as e:
+        return False, f"gemmi parse error: {type(e).__name__}: {e}"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
 
 
 def _resolve_fetch_artifacts_dir(job_dir: str, node_id: str) -> Path:
@@ -198,7 +312,7 @@ METAL_ELEMENTS = {
 
 async def download_structure(
     pdb_id: str,
-    format: str = "pdb",
+    format: str = "cif",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -207,7 +321,9 @@ async def download_structure(
 
     Args:
         pdb_id: 4-character PDB identifier (e.g., '1AKE')
-        format: Output format - 'pdb' or 'cif' (default: 'pdb')
+        format: Output format - 'cif' (default) or 'pdb'. CIF preserves full
+            author chain identifiers and fails loudly on truncation; PDB is
+            kept as an explicit override.
         output_dir: Directory to save the downloaded file (default: outputs/).
             Ignored in node mode.
         job_dir: Job directory for node-based tracking (schema v3).
@@ -296,61 +412,103 @@ async def download_structure(
         fallback_used = False
         last_modified: Optional[str] = None
 
-        # Cache hit: copy cached file to output_dir without network call
-        if _copy_if_exists(cache_file, output_file):
-            result["file_path"] = str(output_file)
-            result["cache_hit"] = True
-            result["cache_path"] = str(cache_file)
-            if cache_meta.exists():
-                try:
-                    meta = json.loads(cache_meta.read_text(encoding="utf-8"))
-                    result["sha256"] = meta.get("sha256")
-                    source_url = meta.get("source_url", source_url)
-                    last_modified = meta.get("last_modified")
-                except Exception:
-                    pass
-            logger.info(f"Cache hit for {pdb_id}: {cache_file} -> {output_file}")
-        else:
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                r = await client.get(url)
-                if r.status_code != 200:
-                    # Try fallback format
-                    fallback_format = "cif" if format == "pdb" else "pdb"
-                    fallback_url = f"https://files.rcsb.org/download/{pdb_id}.{fallback_format}"
-                    result["warnings"].append(
-                        f"{format.upper()} not available, trying {fallback_format.upper()}"
+        # Lock the per-PDB cache directory so concurrent workers for the same
+        # PDB ID serialize around the download + cache-write critical section.
+        with _cache_lock(cache_entry_dir):
+            # Cache hit requires sha256(cache_file) to match metadata.json.
+            # A shape-only "file exists" check is unsafe — a previously
+            # truncated cache entry would keep poisoning every downstream
+            # worker. On mismatch, fall through to the download branch which
+            # atomically rewrites the cache with validated content.
+            if _verify_cache(cache_file, cache_meta):
+                meta = json.loads(cache_meta.read_text(encoding="utf-8"))
+                _atomic_write_bytes(output_file, cache_file.read_bytes())
+                result["sha256"] = meta.get("sha256")
+                source_url = meta.get("source_url", source_url)
+                last_modified = meta.get("last_modified")
+                result["file_path"] = str(output_file)
+                result["cache_hit"] = True
+                result["cache_path"] = str(cache_file)
+                logger.info(f"Cache hit for {pdb_id}: {cache_file} -> {output_file}")
+            else:
+                if cache_file.exists():
+                    logger.warning(
+                        f"Cache sha256 mismatch for {pdb_id}; ignoring cached file and redownloading"
                     )
-                    r = await client.get(fallback_url)
-                    if r.status_code != 200:
-                        result["errors"].append(f"Structure not found: {pdb_id} (HTTP {r.status_code})")
-                        result["errors"].append("Hint: Verify the PDB ID at https://www.rcsb.org/")
-                        if _node_mode:
-                            fail_node(job_dir, node_id, errors=result["errors"])
-                        return result
-                    ext = fallback_format
-                    result["file_format"] = fallback_format
-                    source_url = fallback_url
-                    fallback_used = True
 
-                content = r.content
-                last_modified = r.headers.get("last-modified")
+                # Download with post-download validation and one retry.
+                # Cloudfront responses from RCSB lack Content-Length, so httpx
+                # cannot detect a truncated chunked stream on its own.
+                content: Optional[bytes] = None
+                validation_reason: Optional[str] = None
+                max_attempts = 2
+                for attempt in range(1, max_attempts + 1):
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        r = await client.get(url)
+                        if r.status_code != 200:
+                            # Try fallback format
+                            fallback_format = "cif" if format == "pdb" else "pdb"
+                            fallback_url = f"https://files.rcsb.org/download/{pdb_id}.{fallback_format}"
+                            result["warnings"].append(
+                                f"{format.upper()} not available, trying {fallback_format.upper()}"
+                            )
+                            r = await client.get(fallback_url)
+                            if r.status_code != 200:
+                                result["errors"].append(
+                                    f"Structure not found: {pdb_id} (HTTP {r.status_code})"
+                                )
+                                result["errors"].append(
+                                    "Hint: Verify the PDB ID at https://www.rcsb.org/"
+                                )
+                                if _node_mode:
+                                    fail_node(job_dir, node_id, errors=result["errors"])
+                                return result
+                            ext = fallback_format
+                            result["file_format"] = fallback_format
+                            source_url = fallback_url
+                            fallback_used = True
+                            # If we fell back to a different extension, recompute paths
+                            if ext != output_file.suffix.lstrip("."):
+                                output_file = save_dir / f"{pdb_id}.{ext}"
+                                cache_file = cache_entry_dir / f"{pdb_id}.{ext}"
 
-                # If we fell back to a different extension, recompute paths
-                if ext != output_file.suffix.lstrip("."):
-                    output_file = save_dir / f"{pdb_id}.{ext}"
-                    cache_file = cache_entry_dir / f"{pdb_id}.{ext}"
+                        candidate = r.content
+                        last_modified = r.headers.get("last-modified")
 
-                # Save to output_dir
-                with open(output_file, "wb") as f:
-                    f.write(content)
+                    ok, reason = _validate_structure_bytes(candidate, ext)
+                    if ok:
+                        content = candidate
+                        break
+                    validation_reason = reason
+                    if attempt < max_attempts:
+                        logger.warning(
+                            f"Downloaded {pdb_id} content failed validation "
+                            f"(attempt {attempt}/{max_attempts}): {reason}; retrying"
+                        )
+                        await asyncio.sleep(0.5 * attempt)
+                    else:
+                        logger.error(
+                            f"Downloaded {pdb_id} content failed validation "
+                            f"(attempt {attempt}/{max_attempts}): {reason}"
+                        )
 
-                # Save to cache and write metadata
-                ensure_directory(cache_entry_dir)
+                if content is None:
+                    result["errors"].append(
+                        f"Downloaded content failed validation for {pdb_id}: {validation_reason}"
+                    )
+                    if _node_mode:
+                        fail_node(job_dir, node_id, errors=result["errors"])
+                    return result
+
                 sha256 = _sha256_bytes(content)
                 result["sha256"] = sha256
-                with open(cache_file, "wb") as f:
-                    f.write(content)
-                cache_meta.write_text(
+                # Atomic: write cache payload first, then metadata, then output.
+                # A concurrent reader that slipped past the flock (same
+                # process, different paths) still sees either both old or
+                # both new thanks to os.replace.
+                _atomic_write_bytes(cache_file, content)
+                _atomic_write_text(
+                    cache_meta,
                     json.dumps(
                         {
                             "pdb_id": pdb_id,
@@ -362,13 +520,15 @@ async def download_structure(
                         },
                         indent=2,
                     ),
-                    encoding="utf-8",
                 )
+                _atomic_write_bytes(output_file, content)
 
                 result["file_path"] = str(output_file)
                 result["cache_hit"] = False
                 result["cache_path"] = str(cache_file)
-                logger.info(f"Downloaded {pdb_id} to {output_file} (cached: {cache_file})")
+                logger.info(
+                    f"Downloaded {pdb_id} to {output_file} (cached: {cache_file})"
+                )
 
         # Ensure file_path is set even on cache hit
         if result["file_path"] is None:
@@ -2102,7 +2262,28 @@ def inspect_molecules(
     - Understand the composition of a structure before splitting
     - Identify which chains are proteins vs ligands vs water vs ions
     - Get molecular names and descriptions from the header
-    - Get chain IDs for selective extraction
+    - Get chain IDs for selective extraction (see Chain ID systems below)
+
+    Chain ID systems (label_asym_id vs auth_asym_id):
+        **Rule of thumb: pass the short chain ID exactly as it appears
+        in your input file.**
+
+        - For **mmCIF** inputs, that's ``chain_id`` (= label_asym_id),
+          the short per-entity ID used by RCSB / SabDab
+          (e.g. ``A``, ``B``, ``C``). The paired ``author_chain`` (=
+          auth_asym_id) is the depositor's original ID and can be
+          multi-letter (``AAA``, ``BBB``, ``AbA``) or reordered from
+          the label (7NMU: label ``C`` ↔ auth ``DDD``).
+        - For **PDB** inputs, that's ``author_chain`` (= the 1-character
+          value in column 22 of the PDB file). gemmi's ``chain_id`` for
+          PDB is an auto-generated subchain ID like ``Axp`` / ``Ax1`` /
+          ``Axw`` — internal to gemmi, not something users write.
+
+        Use ``summary.chain_id_map`` and ``summary.protein_label_ids``
+        when in doubt. ``select_chains`` in ``split_molecules`` /
+        ``prepare_complex`` handles both formats uniformly (it tries
+        label first, falls back to author), so the rule above is all a
+        caller needs to remember.
 
     Args:
         structure_file: Path to the mmCIF (.cif) or PDB (.pdb/.ent) file to inspect.
@@ -2121,8 +2302,16 @@ def inspect_molecules(
             - header: dict
             - entities: list[dict]
             - num_models: int
-            - chains: list[dict]
-            - summary: dict
+            - chains: list[dict] — per chain, includes ``chain_id``
+              (label_asym_id) and ``author_chain`` (auth_asym_id)
+            - summary: dict — chain-level lists in BOTH systems:
+                - ``protein_label_ids`` / ``ligand_label_ids`` = label IDs
+                  (use these for ``select_chains``)
+                - ``protein_chain_ids`` / ``ligand_chain_ids`` = author
+                  IDs (for display / provenance; kept under the historical
+                  field names for backward compatibility)
+                - ``water_chain_ids`` / ``ion_chain_ids`` = label IDs
+                - ``chain_id_map``: ``{label_asym_id: auth_asym_id}``
             - errors: list[str]
             - warnings: list[str]
     """
@@ -2353,20 +2542,26 @@ def inspect_molecules(
             chains_info.append(chain_info)
 
         result["chains"] = chains_info
+        # Build label -> author mapping from per-chain records. gemmi reports
+        # chain_id=label_asym_id and author_chain=auth_asym_id; surfacing the
+        # mapping in summary lets callers disambiguate mmCIF entries where
+        # the two systems disagree (e.g. 7QVK label "B" ↔ auth "BBB").
+        chain_id_map = {c["chain_id"]: c.get("author_chain", c["chain_id"]) for c in chains_info}
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
             "num_ligand_chains": len(ligand_author_chains),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
-            # User-facing chain IDs (auth_asym_id) - use these for select_chains
+            # Author IDs (auth_asym_id) — for display / provenance.
             "protein_chain_ids": protein_author_chains,
             "ligand_chain_ids": ligand_author_chains,
-            # Internal chain IDs (label_asym_id) - for internal processing
+            # Label IDs (label_asym_id) — **pass these to select_chains**.
             "protein_label_ids": protein_chain_ids,
             "ligand_label_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
+            "chain_id_map": chain_id_map,
             "multivalent_metal_residues": multivalent_metal_residues,
         }
 

@@ -205,7 +205,6 @@ class TestStructureServer:
             structure_file=small_pdb,
             select_chains=["A"],
             include_types=["protein"],
-            use_author_chains=True,
         )
         assert result["success"] is True
 
