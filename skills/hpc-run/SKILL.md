@@ -10,7 +10,11 @@ node-based workflow. A SLURM submission in this skill always maps 1:1 to a
 DAG node (`eq_XXX`, `prod_XXX`, …) and is tracked through `node.json`. When
 multiple nodes need to run in parallel — for example `prod_001..prod_N` from
 the same `eq_001`, or one `prod_001` per system across a set of job
-directories — prefer `submit_array_job` over N separate `submit_job` calls.
+directories — pick the shape that matches the campaign: `submit_array_job`
+for small batches of homogeneous, low-failure tasks (Step 3), or per-entry
+`submit_job` + `afterok` chains for larger campaigns where some upstream
+failures are expected (Step 3.5). The two patterns are not interchangeable
+at scale — see the "failure isolation" note in Step 3.5.
 
 Respond in the user's language. Use English for tool parameter values. All
 MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON
@@ -235,11 +239,25 @@ child id and `slurm_array_task_id`.
 
 ### Chaining an array stage after another array (eq → prod across N systems)
 
-When you want to run N `(eq, prod)` pipelines in parallel, the cleanest
-SLURM pattern is **array → array with `aftercorr`**. Each prod array task
-waits for *its own* eq array task (task 0 ↔ task 0, task 1 ↔ task 1, …),
-not for the entire eq array. This keeps the 3 systems independent even
-when one eq runs longer than another.
+When you want to run N `(eq, prod)` pipelines in parallel and **N is
+small (roughly ≤ a few dozen) and failures are not expected**, the
+compact SLURM pattern is **array → array with `aftercorr`**. In the
+documented per-task semantics, each prod array task waits for its own
+eq array task (task 0 ↔ task 0, task 1 ↔ task 1, …), not the entire eq
+array — keeping the systems independent even when one eq runs longer
+than another.
+
+**Caveat observed in practice.** Some SLURM installs hold
+`aftercorr:<parent>_*(unfulfilled)` until the *entire* parent array
+reaches a terminal state. Any task in the parent that ends up in
+`DependencyNeverSatisfied` (typical when an upstream prep array had
+failures) then permanently stalls every dependent child — we have seen
+1147 eq-completed children release only ~10 prod tasks this way. If the
+campaign is large enough that some upstream failures are likely, prefer
+the per-entry pattern in **Step 3.5**; reserve this array-chain only
+for small, clean N. Remediation when stuck:
+`squeue -u $USER -r -h -o '%i %T %R' | awk '$3=="(DependencyNeverSatisfied)"{print $1}' | xargs -r scancel`
+then let SLURM re-evaluate the parent array's terminal state.
 
 **Always set the dependency, regardless of whether the eq array has
 already finished.** You do not need to inspect eq state first — SLURM
@@ -294,9 +312,10 @@ EQ_OUT=$(mdclaw submit_array_job --json-input "$EQ_PAYLOAD")
 EQ_PARENT=$(echo "$EQ_OUT" | jq -r .parent_job_id)   # e.g. "117135"
 
 # 3. Submit the prod array with aftercorr dependency on the eq parent.
-#    aftercorr semantics: prod_i starts after eq_i completes successfully
-#    (task-for-task). Use afterokarray if you want prod_i to wait for the
-#    ENTIRE eq array instead of just its matching child.
+#    aftercorr documented semantics: prod_i starts after eq_i completes
+#    successfully (task-for-task). See the caveat above — some installs
+#    hold on the parent as a whole, so for large/lossy campaigns prefer
+#    Step 3.5's per-entry afterok chain.
 PROD_PAYLOAD=$(python3 - <<'PY'
 import json, os
 jds = ["job_4m3j_B","job_4m3j_A","job_4b50_A"]
@@ -321,17 +340,92 @@ mdclaw submit_array_job \
 ```
 
 Alternative dependency types (pick one per submission):
-- `aftercorr:<parent>` — child task *i* runs after parent task *i*
-  completes with exit 0 (per-task chain — the right choice for N
-  independent eq→prod pipelines).
-- `afterok:<parent>` — the whole prod array waits for the **entire** eq
-  array to finish successfully (every eq child must succeed first).
+- `aftercorr:<parent>` — documented as per-task (child task *i* after
+  parent task *i* exits 0). Fine for small, homogeneous N; see the
+  caveat above before using it on campaigns with expected failures.
+- `afterok:<parent>` — the whole dependent array waits for the
+  **entire** parent array to finish successfully (every parent child
+  must succeed first).
 - `afterany:<parent>` — same as above but any exit code is acceptable.
+
+For per-entry chains (Step 3.5) the same keyword `afterok:<jobid>` is
+used, but `<jobid>` is a *single* SLURM job id instead of an array
+parent — which is exactly what makes the chain independent.
 
 `submit_array_job --json-input` is the only path that currently accepts
 structured `tasks` on the CLI. Pass the same flag names with `--tasks
 '<json>'` directly once you have the list built in your shell — CLI-level
 JSON-string decoding works for list-of-dict arguments too.
+
+## Step 3.5: Per-entry chain (`submit_job` + `afterok`) for campaigns with expected failures
+
+For a campaign of **N independent 3-stage pipelines** (e.g., 1177
+nanobody `prep → eq → prod` entries) where some upstream failures are
+realistic, submit one job per (entry, stage) and chain with
+`--dependency afterok:<prev_jobid>`. The key property is **failure
+isolation**: each entry has its own 3-job chain, so a failed prep only
+prevents *its own* eq and prod from running — the other N-1 entries
+are untouched by SLURM's dependency manager.
+
+Trade-offs vs. the array approach (Step 3):
+
+| Aspect | Array + `aftercorr` | Per-entry `submit_job` + `afterok` |
+|---|---|---|
+| SLURM jobs created | 3 parents × (1…chunks) | 3 × N individual jobs |
+| Submission wallclock (N=1177) | seconds | ~3–4 min per stage |
+| Failure blast radius | whole dep chain can stall (caveat) | strictly per-entry |
+| `MaxArraySize` chunking | required at N > 1000 | not required |
+| `squeue` lines | tidy array parents | N × 3 — use tracker for summary |
+| When to prefer | small, clean N | N > 100, or failures expected |
+
+Pattern (shell for-loop; `mdclaw submit_job` returns `slurm_job_id`):
+
+```bash
+# Each manifest entry has a job_dir and a tag. Prep/eq/prod nodes are
+# pre-created as usual; submit_job stamps each SLURM id into node.json.
+python3 - <<'PY' > /tmp/chain_commands.sh
+import json
+manifest = json.load(open("nano_manifest.json"))
+for e in manifest:
+    jd, tag = e["job_dir"], e["tag"]
+    print(f'PREP_ID=$(mdclaw submit_job '
+          f'--job-dir {jd} --node-id prep_001 '
+          f'--script "bash scripts/run_prep_one_imgt.sh {tag}" '
+          f'--job-name prep_{tag} --partition cpu --cpus-per-task 2 '
+          f'--time-limit "01:00:00" --memory "8G" '
+          f'2>/dev/null | jq -r .slurm_job_id)')
+    print(f'EQ_ID=$(mdclaw submit_job '
+          f'--job-dir {jd} --node-id eq_001 '
+          f'--script "mdclaw --job-dir {jd} --node-id eq_001 run_equilibration '
+          f'--temperature-kelvin 300 --pressure-bar 1.0 --platform CUDA" '
+          f'--dependency afterok:$PREP_ID '
+          f'--job-name eq_{tag} --partition gpu --gpus 1 '
+          f'--time-limit "02:00:00" --memory "6G" '
+          f'2>/dev/null | jq -r .slurm_job_id)')
+    print(f'mdclaw submit_job '
+          f'--job-dir {jd} --node-id prod_001 '
+          f'--script "mdclaw --job-dir {jd} --node-id prod_001 run_production '
+          f'--simulation-time-ns 100 --temperature-kelvin 300 --pressure-bar 1.0 '
+          f'--output-frequency-ps 100 --platform CUDA" '
+          f'--dependency afterok:$EQ_ID '
+          f'--job-name prod_{tag} --partition gpu --gpus 1 '
+          f'--time-limit "3-00:00:00" --memory "6G"')
+PY
+bash /tmp/chain_commands.sh
+```
+
+What you get:
+- 3 × N rows in `.mdclaw_jobs.jsonl`, each with `job_dir`, `node_id`,
+  and the SLURM job id. `mdclaw list_tracked_jobs --sync` reflects
+  terminal states back into `node.json.status` the same way it does
+  for array tasks.
+- If prep for entry *k* fails, SLURM marks the eq and prod for *k*
+  as `DependencyNeverSatisfied` — only those two. Drop them with
+  `squeue | awk '$NF=="(DependencyNeverSatisfied)"{print $1}' | xargs -r scancel`
+  if you want them off the queue; other entries keep flowing.
+- The "What not to do" rule against submit_job-in-a-loop applies only
+  to **small** fan-outs that fit a single array cleanly. For large
+  campaigns the per-entry chain is the robust default.
 
 ### Concurrency: default is no throttle
 
@@ -476,6 +570,8 @@ Common failures and the usual fix:
 | `ModuleNotFoundError` | Wrong container / missing env | Verify `configure_container` points at the right SIF, or use `--environment "module load ..."` |
 | `DUE TO TIME LIMIT` | Wall time exceeded | Increase `--time-limit` and resubmit from the checkpoint — see Step 6 |
 | `slurmstepd: error: Exceeded memory limit` | OOM kill | Increase `--memory` |
+| `invalid number of nodes (-N 4-1)` at sbatch | `--nodes=1` combined with a multi-node `--nodelist=n1,n2,n4,n5` | Use `--exclude=<unwanted nodes>` (or `--gres=gpu:<type>:1` for GPU model targeting) — never pair `--nodes=N` with a longer `--nodelist`. |
+| Downstream tasks stuck at `(Dependency)` / `(DependencyNeverSatisfied)` | `aftercorr`/`afterok` parent array held incomplete by a few failing tasks | `squeue -u $USER -r -h -o '%i %T %R' \| awk '$3=="(DependencyNeverSatisfied)"{print $1}' \| xargs -r scancel`, or rebuild the chain as Step 3.5 per-entry. |
 
 Resubmit the fixed job against the **same** `node_id` — the node's
 status drops back to `queued` on the new sbatch, and
@@ -574,6 +670,8 @@ Cancelling a job leaves the DAG node in whatever state it was in
   the inner `mdclaw` command when the node layout is present — DAG
   auto-resolution is correct, and hand-wiring bypasses the
   `--continue-from` audit trail.
-- Don't run `submit_job` N times in a shell loop when all N tasks fit
-  the array-job shape — you lose the parent job id, the common sbatch
-  script, and per-task log grouping.
+- Don't run `submit_job` N times in a shell loop for **small, clean**
+  fan-outs that fit a single array — you lose the parent job id, the
+  common sbatch script, and per-task log grouping. Large campaigns
+  (N > 100, or failures expected) are the opposite case: the per-entry
+  chain in Step 3.5 is the right choice.
