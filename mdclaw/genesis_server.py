@@ -5,8 +5,6 @@ Provides tools for:
 - AI-driven protein structure prediction using Boltz-2
 - Protein-ligand complex structure prediction with binding affinity
 - SMILES validation and canonicalization using RDKit
-- Chemical name to SMILES conversion using PubChem
-- Similar compound search in PubChem database
 - Drug-likeness assessment (Lipinski's Rule of Five)
 """
 
@@ -28,10 +26,9 @@ import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Dict, Any, Optional  # noqa: E402
 
-import pubchempy as pcp  # noqa: E402
 import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
-from rdkit.Chem import Descriptors  # noqa: E402
+from pubchempy import get_compounds  # noqa: E402
 
 from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
 
@@ -53,7 +50,9 @@ def boltz2_protein_from_seq(
     amino_acid_sequence_list: list[str],
     smiles_list: list[str],
     affinity: bool = False,
+    num_models: int = 1,
     output_dir: Optional[str] = None,
+    msa_path: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -73,9 +72,14 @@ def boltz2_protein_from_seq(
                      Use empty list [] if no ligands are needed.
         affinity: Set to True to predict binding affinity for the first ligand.
                   Default is False.
+        num_models: Number of structure models to generate (default: 1).
+                    Maps to Boltz-2's --diffusion_samples flag.
+                    Higher values increase diversity at the cost of compute time.
         output_dir: Output directory. If None, creates output/boltz/.
                     When provided (e.g., session directory), creates a "boltz"
                     subdirectory within it. Ignored in node mode.
+        msa_path: Path to MSA (Multiple Sequence Alignment) file. If None, uses
+                  Boltz-2 MSA server. If provided, uses the specified MSA file.
         job_dir: Job directory for node-based tracking (schema v3).
         node_id: Fetch node ID. When both ``job_dir`` and ``node_id`` are provided,
                  the top-ranked predicted PDB is copied into
@@ -239,14 +243,19 @@ def boltz2_protein_from_seq(
         return result
 
     # Run Boltz-2
-    # TODO: Add configurable options for use_msa, num_models, etc.
     boltz_command = [
         boltz_executable_path,
         "predict",
         yaml_filename,
-        "--use_msa_server",
-        "--output_format", "pdb"
+        "--output_format", "pdb",
+        "--diffusion_samples", str(num_models)
     ]
+
+    # Add MSA option: use server by default, or specified MSA file
+    if msa_path:
+        boltz_command.extend(["--msa_path", msa_path])
+    else:
+        boltz_command.append("--use_msa_server")
 
     try:
         # Copy environment and set library conflict workaround
@@ -330,6 +339,7 @@ def boltz2_protein_from_seq(
                 "sequences": amino_acid_sequence_list,
                 "smiles_list": smiles_list,
                 "affinity_requested": affinity,
+                "num_models_requested": num_models,
                 "num_predicted_models": len(result["predicted_pdb_files"]),
                 "boltz_output_dir": str(result_dir),
                 "input_yaml": str(yaml_path),
@@ -404,9 +414,8 @@ def _parse_boltz_results(output_dir: Path) -> Dict[str, Any]:
 
 
 # =============================================================================
-# RDKit and PubChem Tools
+# RDKit Tools
 # =============================================================================
-
 
 
 def rdkit_validate_smiles(smiles: str) -> dict:
@@ -454,7 +463,6 @@ def rdkit_validate_smiles(smiles: str) -> dict:
 
 
 
-
 def pubchem_get_smiles_from_name(chemical_name: str) -> dict:
     """Get SMILES string from a chemical compound name using PubChem.
 
@@ -487,7 +495,7 @@ def pubchem_get_smiles_from_name(chemical_name: str) -> dict:
         return result
 
     try:
-        compounds = pcp.get_compounds(chemical_name, 'name')
+        compounds = get_compounds(chemical_name, 'name')
         if not compounds:
             result["errors"].append(f"No compounds named '{chemical_name}' found in PubChem")
             result["errors"].append("Hint: Try alternative names or check spelling")
@@ -504,150 +512,167 @@ def pubchem_get_smiles_from_name(chemical_name: str) -> dict:
         result["errors"].append(f"PubChem search failed: {type(e).__name__}: {str(e)}")
         return result
 
+# =============================================================================
+# PLIP - Protein-Ligand Interaction Profiler
+# =============================================================================
 
 
+def analyze_plip_interactions(pdb_file: str) -> dict:
+    """Analyze protein-ligand interactions using PLIP (Protein-Ligand Interaction Profiler).
 
-
-def pubchem_search_similar(smiles: str, n_results: int = 5, threshold: int = 80) -> dict:
-    """Search PubChem for molecules similar to the input SMILES.
-
-    Performs a structural similarity search in PubChem to find compounds
-    with similar chemical structures. Useful for finding analogs or
-    alternative compounds for drug discovery.
+    This tool uses PLIP to analyze non-covalent interactions between a protein
+    and ligand(s) in a PDB structure. It detects:
+    - Hydrogen bonds
+    - Hydrophobic interactions
+    - π-π stacking
+    - π-cation interactions
+    - Halogen bonds
+    - Salt bridges
+    - Metal coordination
 
     Args:
-        smiles: Reference SMILES string to search against
-        n_results: Maximum number of results to retrieve (default: 5)
-        threshold: Similarity percentage threshold (0-100).
-                   Higher values return only more similar molecules.
-                   Recommended: 80-95 (default: 80)
+        pdb_file: Path to PDB file containing protein-ligand complex
 
     Returns:
         Dict with:
-            - success: bool - True if search completed successfully
-            - query_smiles: str - The input SMILES string
-            - similar_compounds: list[dict] - List of similar compounds, each with:
-              - smiles: str - Canonical SMILES
-              - cid: int - PubChem Compound ID
-            - count: int - Number of compounds found
-            - errors: list[str] - Error messages if search failed
+            - success: bool - True if analysis completed successfully
+            - pdb_file: str - Input PDB file path
+            - ligands: list[dict] - List of ligands detected, each with:
+              - ligand_name: str - Ligand identifier (e.g., 'LIG:B:1')
+              - interactions: dict - Interaction summary:
+                - hydrogen_bonds: list[dict] - HB details
+                - hydrophobic: list[dict] - Hydrophobic contacts
+                - pi_stacking: list[dict] - π-π interactions
+                - salt_bridges: list[dict] - Salt bridge interactions
+            - errors: list[str] - Error messages if analysis failed
     """
-    logger.info(f"Searching similar compounds for: {smiles}")
+    logger.info(f"Analyzing PLIP interactions for: {pdb_file}")
 
     result = {
         "success": False,
-        "query_smiles": smiles,
-        "similar_compounds": [],
-        "count": 0,
+        "pdb_file": pdb_file,
+        "ligands": [],
         "errors": []
     }
 
-    if not smiles or not smiles.strip():
-        result["errors"].append("Empty SMILES string provided")
+    if not pdb_file or not Path(pdb_file).exists():
+        result["errors"].append(f"PDB file not found: {pdb_file}")
         return result
 
     try:
-        compounds = pcp.get_compounds(
-            smiles,
-            namespace='smiles',
-            searchtype='similarity',
-            listkey_count=n_results,
-            threshold=threshold
-        )
+        from plip.structure.preparation import PDBComplex
+    except ImportError:
+        result["errors"].append("PLIP not installed. Install with: conda install -c bioconda plip")
+        return result
 
-        result["similar_compounds"] = [
-            {"smiles": c.canonical_smiles, "cid": c.cid}
-            for c in compounds[:n_results]
-        ]
-        result["count"] = len(result["similar_compounds"])
+    try:
+        # Load protein structure using PLIP 3.0.0 API
+        pdb_complex = PDBComplex()
+        pdb_complex.load_pdb(str(pdb_file))
+        pdb_complex.analyze()  # Required to populate interaction_sets
+        logger.info(f"Loaded PDB complex with {len(pdb_complex.ligands)} ligand(s)")
+
+        # Analyze interactions for each ligand
+        for ligand_obj in pdb_complex.ligands:
+            # Create ligand ID string
+            ligand_id = f"{ligand_obj.hetid}:{ligand_obj.chain}:{ligand_obj.position}"
+            logger.info(f"Analyzing ligand: {ligand_id}")
+
+            interactions_dict = {
+                "ligand_name": ligand_id,
+                "interactions": {
+                    "hydrogen_bonds": [],
+                    "hydrophobic": [],
+                    "pi_stacking": [],
+                    "pi_cation": [],
+                    "halogen_bonds": [],
+                    "salt_bridges": [],
+                    "metal_coordination": []
+                }
+            }
+
+            # Get the binding site for this ligand
+            # interaction_sets uses "HETID:CHAIN:POSITION" string keys
+            interaction_key = f"{ligand_obj.hetid}:{ligand_obj.chain}:{ligand_obj.position}"
+            if interaction_key in pdb_complex.interaction_sets:
+                binding_site = pdb_complex.interaction_sets[interaction_key]
+
+                # Extract hydrogen bonds (combine donor and acceptor types)
+                hbonds = (binding_site.hbonds_ldon if hasattr(binding_site, 'hbonds_ldon') else []) + \
+                         (binding_site.hbonds_pdon if hasattr(binding_site, 'hbonds_pdon') else [])
+                for hbond in hbonds:
+                    interactions_dict["interactions"]["hydrogen_bonds"].append({
+                        "protein_residue": f"{hbond.resnr}{hbond.restype}",
+                        "protein_chain": hbond.reschain,
+                        "distance": round(hbond.distance_ad, 2)
+                    })
+
+                # Extract hydrophobic interactions
+                hydrophobic = binding_site.hydrophobic_contacts if hasattr(binding_site, 'hydrophobic_contacts') else []
+                for hydro in hydrophobic:
+                    interactions_dict["interactions"]["hydrophobic"].append({
+                        "protein_residue": f"{hydro.resnr}{hydro.restype}",
+                        "protein_chain": hydro.reschain,
+                        "distance": round(hydro.distance, 2)
+                    })
+
+                # Extract π-π stacking
+                pi_stacking = binding_site.pistacking if hasattr(binding_site, 'pistacking') else []
+                for pi_stack in pi_stacking:
+                    interactions_dict["interactions"]["pi_stacking"].append({
+                        "protein_residue": f"{pi_stack.resnr}{pi_stack.restype}",
+                        "protein_chain": pi_stack.reschain,
+                        "distance": round(pi_stack.distance, 2)
+                    })
+
+                # Extract π-cation interactions (combine aromatic and ligand aromatic types)
+                pi_cation = (binding_site.pication_laro if hasattr(binding_site, 'pication_laro') else []) + \
+                            (binding_site.pication_paro if hasattr(binding_site, 'pication_paro') else [])
+                for pi_cat in pi_cation:
+                    interactions_dict["interactions"]["pi_cation"].append({
+                        "protein_residue": f"{pi_cat.resnr}{pi_cat.restype}",
+                        "protein_chain": pi_cat.reschain,
+                        "distance": round(pi_cat.distance, 2)
+                    })
+
+                # Extract halogen bonds
+                halogen = binding_site.halogen_bonds if hasattr(binding_site, 'halogen_bonds') else []
+                for halogen_bond in halogen:
+                    interactions_dict["interactions"]["halogen_bonds"].append({
+                        "protein_residue": f"{halogen_bond.resnr}{halogen_bond.restype}",
+                        "protein_chain": halogen_bond.reschain,
+                        "distance": round(halogen_bond.distance, 2)
+                    })
+
+                # Extract salt bridges (combine ligand negative and protein negative types)
+                salt_bridges = (binding_site.saltbridge_lneg if hasattr(binding_site, 'saltbridge_lneg') else []) + \
+                               (binding_site.saltbridge_pneg if hasattr(binding_site, 'saltbridge_pneg') else [])
+                for salt_bridge in salt_bridges:
+                    interactions_dict["interactions"]["salt_bridges"].append({
+                        "protein_residue": f"{salt_bridge.resnr}{salt_bridge.restype}",
+                        "protein_chain": salt_bridge.reschain,
+                        "distance": round(salt_bridge.distance, 2)
+                    })
+
+                # Extract metal coordination
+                metal = binding_site.metal_complexes if hasattr(binding_site, 'metal_complexes') else []
+                for metal_complex in metal:
+                    interactions_dict["interactions"]["metal_coordination"].append({
+                        "protein_residue": f"{metal_complex.resnr}{metal_complex.restype}",
+                        "protein_chain": metal_complex.reschain,
+                        "distance": round(metal_complex.distance, 2)
+                    })
+
+            result["ligands"].append(interactions_dict)
+
         result["success"] = True
-
-        logger.info(f"Found {result['count']} similar compounds")
+        logger.info(f"PLIP analysis completed for {len(result['ligands'])} ligand(s)")
         return result
 
     except Exception as e:
-        logger.error(f"PubChem similarity search failed: {e}")
-        result["errors"].append(f"PubChem search failed: {type(e).__name__}: {str(e)}")
+        logger.error(f"PLIP analysis failed: {e}")
+        result["errors"].append(f"PLIP analysis failed: {type(e).__name__}: {str(e)}")
         return result
-
-
-def rdkit_calc_druglikeness(smiles: str) -> dict:
-    """Calculate drug-likeness properties using Lipinski's Rule of Five.
-
-    Evaluates a molecule's potential as an orally active drug candidate based on
-    Lipinski's Rule of Five criteria. Use this tool to filter out unsuitable
-    candidates before performing computationally expensive simulations like Boltz-2.
-
-    Lipinski's Rule of Five states that poor absorption is more likely when:
-    - Molecular weight > 500 Da
-    - LogP (lipophilicity) > 5
-    - Hydrogen bond donors > 5
-    - Hydrogen bond acceptors > 10
-
-    Args:
-        smiles: SMILES string of the molecule to evaluate
-
-    Returns:
-        Dict with:
-            - success: bool - True if calculation completed
-            - smiles: str - Input SMILES string
-            - properties: dict - Calculated molecular properties:
-              - molecular_weight: float - Molecular weight in Daltons (ideal: <= 500)
-              - logp: float - Partition coefficient (ideal: <= 5)
-              - h_donors: int - Number of H-bond donors (ideal: <= 5)
-              - h_acceptors: int - Number of H-bond acceptors (ideal: <= 10)
-            - passes_lipinski_rule: bool - True if all criteria are met
-            - violations: list[str] - List of violated criteria
-            - errors: list[str] - Error messages if calculation failed
-    """
-    logger.info(f"Calculating drug-likeness for: {smiles}")
-
-    result = {
-        "success": False,
-        "smiles": smiles,
-        "properties": {},
-        "passes_lipinski_rule": False,
-        "violations": [],
-        "errors": []
-    }
-
-    if not smiles or not smiles.strip():
-        result["errors"].append("Empty SMILES string provided")
-        return result
-
-    mol = Chem.MolFromSmiles(smiles)
-    if not mol:
-        result["errors"].append(f"Invalid SMILES: {smiles}")
-        return result
-
-    # Calculate properties
-    mw = Descriptors.MolWt(mol)
-    logp = Descriptors.MolLogP(mol)
-    hbd = Descriptors.NumHDonors(mol)
-    hba = Descriptors.NumHAcceptors(mol)
-
-    result["properties"] = {
-        "molecular_weight": round(mw, 2),
-        "logp": round(logp, 2),
-        "h_donors": hbd,
-        "h_acceptors": hba
-    }
-
-    # Check Lipinski's Rule of Five
-    if mw > 500:
-        result["violations"].append(f"Molecular weight ({mw:.1f}) > 500")
-    if logp > 5:
-        result["violations"].append(f"LogP ({logp:.2f}) > 5")
-    if hbd > 5:
-        result["violations"].append(f"H-bond donors ({hbd}) > 5")
-    if hba > 10:
-        result["violations"].append(f"H-bond acceptors ({hba}) > 10")
-
-    result["passes_lipinski_rule"] = len(result["violations"]) == 0
-    result["success"] = True
-
-    logger.info(f"Drug-likeness: {'PASS' if result['passes_lipinski_rule'] else 'FAIL'}")
-    return result
 
 
 # =============================================================================
@@ -658,6 +683,5 @@ TOOLS = {
     "boltz2_protein_from_seq": boltz2_protein_from_seq,
     "rdkit_validate_smiles": rdkit_validate_smiles,
     "pubchem_get_smiles_from_name": pubchem_get_smiles_from_name,
-    "pubchem_search_similar": pubchem_search_similar,
-    "rdkit_calc_druglikeness": rdkit_calc_druglikeness,
+    "analyze_plip_interactions": analyze_plip_interactions,
 }
