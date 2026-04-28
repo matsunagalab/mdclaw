@@ -71,8 +71,8 @@ Ask the user:
 ### Affinity Prediction (Protein-Ligand Mode Only)
 
 Ask: "Do you want to predict binding affinity for the ligand?"
-- **Yes**: Pass `--affinity true` to Boltz-2
-- **No**: Pass `--affinity false` (faster, structure-only)
+- **Yes**: Pass `--affinity`
+- **No**: Omit the flag, or pass `--no-affinity` explicitly (faster, structure-only)
 
 ### Number of Models
 
@@ -80,6 +80,11 @@ Ask: "How many structure models do you want to generate?"
 - **Default (1)**: Single best-effort model — fastest
 - **Multiple (e.g., 3-5)**: Ensemble of diverse candidates — useful for ranking or selecting different conformations
   Pass `--num-models N` to request N models
+
+If the user wants a **custom MSA file**, note that the current `mdclaw` tool
+accepts a single `--msa-path` value and is best suited to single-protein inputs.
+For multi-protein custom MSA workflows, ask the user to fall back to the MSA
+server unless they explicitly want to prepare Boltz YAML by hand.
 
 ---
 
@@ -107,7 +112,7 @@ mdclaw boltz2_protein_from_seq \
 mdclaw boltz2_protein_from_seq \
   --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
   --smiles-list "CCO" \
-  --affinity true
+  --affinity
 ```
 
 ### Example: Protein-Ligand with Custom MSA File
@@ -117,7 +122,7 @@ mdclaw boltz2_protein_from_seq \
   --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
   --smiles-list "CCO" \
   --msa-path "/path/to/alignment.a3m" \
-  --affinity true
+  --affinity
 ```
 
 ### Example: Multiple Models Ensemble
@@ -126,7 +131,7 @@ mdclaw boltz2_protein_from_seq \
 mdclaw boltz2_protein_from_seq \
   --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
   --smiles-list "CCO" \
-  --affinity true \
+  --affinity \
   --num-models 3
 ```
 
@@ -137,8 +142,12 @@ mdclaw boltz2_protein_from_seq \
 - `--smiles-list`: SMILES strings for ligands
   - Empty `""` for protein-only predictions
   - Should be pre-validated with `rdkit_validate_smiles`
-- `--msa-path`: Optional path to MSA file (if omitted, uses server)
-- `--affinity`: `true` or `false` (only for protein-ligand mode)
+- `--msa-path`: Optional custom MSA file path
+  - Omit it to use the Boltz MSA server
+  - Current `mdclaw` wrapper supports one shared custom MSA path, so this is best for single-protein inputs
+- `--affinity`: Boolean flag (only for protein-ligand mode)
+  - Use `--affinity` to enable
+  - Omit it, or use `--no-affinity`, to disable
 - `--num-models`: Number of structure candidates to generate (default: 1)
   - Single value (1) = fastest, recommended for initial screening
   - Multiple values (3-5) = ensemble for structural diversity
@@ -152,11 +161,12 @@ The tool returns:
 - `job_id`: str — Unique identifier
 - `output_dir`: str — Path to results directory
 - `predicted_pdb_files`: list — Paths to predicted PDB structures
-  - Usually ranked by confidence (highest confidence first)
+  - Collected from the Boltz output directory
+  - Do not assume they are already ranked by confidence
   - Multiple files returned if `--num-models > 1`
-- `affinity_scores`: dict (if `--affinity true`) — Contains:
+- `affinity_scores`: dict (if `--affinity`) — Contains:
   - `affinity_probability_binary`: Higher = more confident binding
-  - `affinity_pred_value`: Lower (more negative) = stronger binding [kcal/mol]
+  - `affinity_pred_value`: Lower = stronger predicted binding; reported as `log10(IC50)` with IC50 in `uM`
 - `warnings`: list — Non-critical warnings
 
 ### Next Steps
@@ -164,17 +174,18 @@ The tool returns:
 Present the predicted PDB file(s) to the user. 
 
 **If multiple models were generated**, show all filenames and suggest:
-- Rank them by confidence score
+- Rank them by confidence score if confidence JSON is available
 - Use the top model for standard MD simulation
 - Alternatively, run MD on multiple models for ensemble analysis
 
 If they want to continue to MD simulation:
 
-> **"To set up MD simulation with the predicted structure, run:**
+> **"To set up MD simulation with the predicted structure:**
 > ```bash
-> /md-prepare
+> mdclaw prepare_complex --structure-file /path/to/predicted_model.pdb
 > ```
-> **and provide the predicted PDB file as input."**
+> **If you are using the Claude/Cursor slash-command workflow, `/md-prepare`
+> is the interactive equivalent."**
 
 ---
 
@@ -184,6 +195,6 @@ If they want to continue to MD simulation:
 |-------|--------|
 | SMILES validation fails | Ask user to check chemical name or provide corrected SMILES |
 | PubChem lookup fails | Ask user to provide SMILES directly |
-| Boltz-2 prediction fails | Check: protein sequences valid (A-Y only), SMILES validated, conda env activated |
+| Boltz-2 prediction fails | Check: protein sequences valid, SMILES validated, conda env activated |
 | MSA file not found | Ask user to verify file path or use MSA server (default) |
 

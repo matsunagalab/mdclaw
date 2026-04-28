@@ -5,7 +5,8 @@ Provides tools for:
 - AI-driven protein structure prediction using Boltz-2
 - Protein-ligand complex structure prediction with binding affinity
 - SMILES validation and canonicalization using RDKit
-- Drug-likeness assessment (Lipinski's Rule of Five)
+- Chemical name to SMILES conversion using PubChem
+- Protein-ligand interaction profiling using PLIP
 """
 
 # Configure logging early to suppress noisy third-party logs
@@ -78,8 +79,10 @@ def boltz2_protein_from_seq(
         output_dir: Output directory. If None, creates output/boltz/.
                     When provided (e.g., session directory), creates a "boltz"
                     subdirectory within it. Ignored in node mode.
-        msa_path: Path to MSA (Multiple Sequence Alignment) file. If None, uses
-                  Boltz-2 MSA server. If provided, uses the specified MSA file.
+        msa_path: Optional path to a custom MSA (Multiple Sequence Alignment)
+                  file. When provided, it is written into the Boltz input YAML
+                  as the protein `msa` field. If None, the Boltz MSA server is
+                  used instead.
         job_dir: Job directory for node-based tracking (schema v3).
         node_id: Fetch node ID. When both ``job_dir`` and ``node_id`` are provided,
                  the top-ranked predicted PDB is copied into
@@ -100,7 +103,8 @@ def boltz2_protein_from_seq(
             - affinity_scores: dict | None - Binding affinity predictions if requested
               Contains:
               - affinity_probability_binary: Higher = more confident binding
-              - affinity_pred_value: Lower (more negative) = stronger binding [kcal/mol]
+              - affinity_pred_value: Lower = stronger predicted binding,
+                reported as log10(IC50) with IC50 expressed in uM
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
 
@@ -165,6 +169,13 @@ def boltz2_protein_from_seq(
         result["errors"].append("At least one amino acid sequence is required")
         return result
 
+    if msa_path and len(amino_acid_sequence_list) > 1:
+        result["errors"].append(
+            "Custom msa_path currently supports only single-protein inputs; "
+            "Boltz expects per-chain msa entries for multi-protein complexes"
+        )
+        return result
+
     if _node_mode:
         begin_node(job_dir, node_id)
 
@@ -188,11 +199,15 @@ def boltz2_protein_from_seq(
             return result
 
         protein_id = chain_ids[id_index]
+        protein_spec = {
+            'id': protein_id,
+            'sequence': sequence,
+        }
+        if msa_path:
+            protein_spec['msa'] = msa_path
+
         yaml_data['sequences'].append({
-            'protein': {
-                'id': protein_id,
-                'sequence': sequence,
-            }
+            'protein': protein_spec
         })
         id_index += 1
 
@@ -251,10 +266,9 @@ def boltz2_protein_from_seq(
         "--diffusion_samples", str(num_models)
     ]
 
-    # Add MSA option: use server by default, or specified MSA file
-    if msa_path:
-        boltz_command.extend(["--msa_path", msa_path])
-    else:
+    # Boltz reads custom MSA paths from the YAML. The CLI flag only controls
+    # whether to auto-generate MSAs server-side when no per-chain MSA is set.
+    if not msa_path:
         boltz_command.append("--use_msa_server")
 
     try:
@@ -340,6 +354,7 @@ def boltz2_protein_from_seq(
                 "smiles_list": smiles_list,
                 "affinity_requested": affinity,
                 "num_models_requested": num_models,
+                "msa_path": msa_path,
                 "num_predicted_models": len(result["predicted_pdb_files"]),
                 "boltz_output_dir": str(result_dir),
                 "input_yaml": str(yaml_path),
