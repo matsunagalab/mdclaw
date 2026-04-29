@@ -15,16 +15,17 @@ This file provides guidance to Claude Code when working with this repository.
 
 ```
 skills/                    # Domain knowledge (platform-agnostic .md)
-  md-prepare/SKILL.md      # Structure → cleaning → solvation → topology
-  md-equilibration/SKILL.md # Energy min → NVT heating → NPT density
-  md-production/SKILL.md    # Production MD runs
-  md-analyze/SKILL.md       # Trajectory analysis
-  hpc-run/SKILL.md          # HPC/SLURM job management
+  boltz-predict/SKILL.md    # AI structure prediction (Boltz-2)
+  md-prepare/SKILL.md       # Structure → cleaning → solvation → topology
+  md-equilibration/SKILL.md  # Energy min → NVT heating → NPT density
+  md-production/SKILL.md     # Production MD runs
+  md-analyze/SKILL.md        # Trajectory analysis
+  hpc-run/SKILL.md           # HPC/SLURM job management
 
 .claude/commands/           # Dev-only: local slash commands (/md-prepare etc.)
   md-prepare.md             #   Thin wrappers that read skills/*/SKILL.md
   md-equilibration.md       #   Not needed when installed as plugin
-  md-production.md          #   (plugin users get /mdclaw:md-prepare etc.)
+  md-production.md
   md-analyze.md
   hpc-run.md
 
@@ -334,11 +335,10 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `create_mutated_structutre(input_pdb, mutation_indices, mutation_residues, name)` - In-silico mutagenesis
 
 ### genesis_server.py
-- `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity)` - Boltz-2
-- `rdkit_validate_smiles(smiles)` - SMILES validation
-- `pubchem_get_smiles_from_name(chemical_name)` - PubChem lookup
-- `pubchem_search_similar(smiles, n_results, threshold)` - Similar compound search
-- `rdkit_calc_druglikeness(smiles)` - Drug-likeness assessment
+- `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity, num_models, output_dir, msa_path, job_dir, node_id)` - Boltz-2 structure prediction
+- `rdkit_validate_smiles(smiles)` - SMILES validation and canonicalization
+- `pubchem_get_smiles_from_name(chemical_name)` - Get SMILES from compound name
+- `analyze_plip_interactions(pdb_file)` - Protein-ligand interaction analysis
 
 ### solvation_server.py
 - `solvate_structure(pdb_file, output_dir, water_model, dist, salt, saltcon, job_dir, node_id)` - Water box. In node mode, `pdb_file` auto-resolved from `prep` ancestor's `merged_pdb`

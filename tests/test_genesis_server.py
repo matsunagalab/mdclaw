@@ -7,7 +7,9 @@ for it. The goal is to verify that predictions land under the fetch
 node's artifacts/ and that the source metadata is recorded correctly.
 """
 
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -152,3 +154,118 @@ class TestBoltz2FetchNodeIntegration:
         assert result["success"], result["errors"]
         assert result["file_path"] is None  # Only populated in node mode
         assert result["predicted_pdb_files"]
+
+    def test_custom_msa_is_written_to_yaml_and_not_passed_as_cli_flag(
+        self, tmp_path, monkeypatch
+    ):
+        from mdclaw import genesis_server as gs
+
+        out = tmp_path / "out"
+        out.mkdir()
+        monkeypatch.setattr(gs.boltz_wrapper, "executable", "/fake/boltz")
+
+        captured = {}
+
+        def fake_run(cmd, cwd=None, env=None, capture_output=False, text=False, check=False):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            yaml_name = cmd[2]
+            ts = Path(yaml_name).stem
+            results_dir = Path(cwd) / f"boltz_results_{ts}" / "predictions" / ts
+            results_dir.mkdir(parents=True, exist_ok=True)
+            (results_dir / f"{ts}_model_0.pdb").write_text(
+                "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n"
+            )
+
+            class _Completed:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _Completed()
+
+        monkeypatch.setattr(gs.subprocess, "run", fake_run)
+
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            smiles_list=[],
+            num_models=3,
+            msa_path="/tmp/custom_alignment.a3m",
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        yaml_text = Path(result["input_yaml_path"]).read_text()
+        assert "msa: /tmp/custom_alignment.a3m" in yaml_text
+        assert "--msa_path" not in captured["cmd"]
+        assert "--use_msa_server" not in captured["cmd"]
+        diff_idx = captured["cmd"].index("--diffusion_samples")
+        assert captured["cmd"][diff_idx + 1] == "3"
+
+    def test_custom_msa_rejects_multimer_input(self, tmp_path, monkeypatch):
+        _stub_boltz(monkeypatch)
+        from mdclaw import genesis_server as gs
+
+        out = tmp_path / "out"
+        out.mkdir()
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK", "MKVLPADQ"],
+            smiles_list=[],
+            msa_path="/tmp/custom_alignment.csv",
+            output_dir=str(out),
+        )
+
+        assert result["success"] is False
+        assert any("per-chain msa entries" in err for err in result["errors"])
+
+
+def test_analyze_plip_interactions_with_mocked_plip(tmp_path, monkeypatch):
+    from mdclaw import genesis_server as gs
+
+    pdb_file = tmp_path / "complex.pdb"
+    pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")
+
+    prep_mod = ModuleType("plip.structure.preparation")
+
+    class FakePDBComplex:
+        def __init__(self):
+            self.ligands = [SimpleNamespace(hetid="LIG", chain="B", position=1)]
+            self.interaction_sets = {
+                "LIG:B:1": SimpleNamespace(
+                    hbonds_ldon=[
+                        SimpleNamespace(resnr=42, restype="SER", reschain="A", distance_ad=2.756)
+                    ],
+                    hbonds_pdon=[],
+                    hydrophobic_contacts=[
+                        SimpleNamespace(resnr=55, restype="LEU", reschain="A", distance=3.987)
+                    ],
+                    pistacking=[],
+                    pication_laro=[],
+                    pication_paro=[],
+                    halogen_bonds=[],
+                    saltbridge_lneg=[],
+                    saltbridge_pneg=[],
+                    metal_complexes=[],
+                )
+            }
+
+        def load_pdb(self, _path):
+            return None
+
+        def analyze(self):
+            return None
+
+    prep_mod.PDBComplex = FakePDBComplex
+    monkeypatch.setitem(sys.modules, "plip", ModuleType("plip"))
+    monkeypatch.setitem(sys.modules, "plip.structure", ModuleType("plip.structure"))
+    monkeypatch.setitem(sys.modules, "plip.structure.preparation", prep_mod)
+
+    result = gs.analyze_plip_interactions(str(pdb_file))
+
+    assert result["success"] is True
+    assert len(result["ligands"]) == 1
+    ligand = result["ligands"][0]
+    assert ligand["ligand_name"] == "LIG:B:1"
+    assert ligand["interactions"]["hydrogen_bonds"][0]["protein_residue"] == "42SER"
+    assert ligand["interactions"]["hydrogen_bonds"][0]["distance"] == 2.76
+    assert ligand["interactions"]["hydrophobic"][0]["distance"] == 3.99
