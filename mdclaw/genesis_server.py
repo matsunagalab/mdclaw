@@ -657,9 +657,24 @@ def create_mutated_structure(
         name: Optional[str] = None,
         output_dir: Optional[str] = None,) -> dict:
     """Create a structure file of mutated protein using FASPR.
+    Generate a mutated structure file of the original protein according to amino acid sequence or sequence .txt file.
+    Mutant pdb is generated with FASPR.
 
+    Args:
+        pdb_file: PDB file of base structure.
+        sequence: Amino acid sequence string of mutant protein
+        seq_file: Sequence file of mutant protein ()
+        name: Optional name prefix for output files
+        output_dir: Output directory
 
+    Returns:
+        Dict with:
+            - success: bool - True if generation completed
+            - output_dir: str - Output directory
+            - output_path: str - Path to output pdb file
+            - errors: list[str] - Error messages if any
 
+    Note: To specify mutetad residues, it is recommended to 
     """
 
     result = {
@@ -669,6 +684,7 @@ def create_mutated_structure(
         "errors": [],
     }
 
+    # Varidate sequence input
     if (sequence and seq_file) or not (sequence or seq_file):
         result["errors"].append("Please enter either sequence or seq_file")
 
@@ -696,6 +712,7 @@ def create_mutated_structure(
             
         output_path = Path(out_dir / f"{pref}mutated.pdb").resolve()
 
+        # Run FASPR
         logger.info("Building mutated structure")
         faspr(input_pdb=str(pdb_path), output_pdb=str(output_path), seq_file=str(seq_path))
 
