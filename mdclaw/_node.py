@@ -12,6 +12,7 @@ Design principle:
 import json
 import logging
 import os
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -20,6 +21,16 @@ from mdclaw._event import write_event
 from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
+
+
+def _sha256_path(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def _atomic_write_json(path: Path, data: dict) -> None:
@@ -350,6 +361,7 @@ def create_node(
             "type": node_type,
             "status": "pending",
             "parents": parents,
+            "dependencies": deps,
         }
         progress["nodes"] = nodes_index
         _atomic_write_json(pj, progress)
@@ -463,9 +475,12 @@ def _apply_status(
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
         nodes = progress.get("nodes", {})
-        if node_id in nodes:
-            nodes[node_id]["status"] = status
-            _atomic_write_json(pj, progress)
+        if node_id not in nodes:
+            raise ValueError(
+                f"Node '{node_id}' exists on disk but is missing from progress.json"
+            )
+        nodes[node_id]["status"] = status
+        _atomic_write_json(pj, progress)
 
 
 def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
@@ -507,15 +522,43 @@ def complete_node(
     *,
     metadata: Optional[dict] = None,
     warnings: Optional[list[str]] = None,
+    skip_missing_artifacts: bool = False,
 ) -> None:
     """Mark a node as ``completed`` and record its outputs.
 
     *artifacts* maps logical names to paths **relative to the node directory**
     (e.g. ``{"solvated_pdb": "artifacts/solvated.pdb"}``).
+
+    By default each registered str-typed artifact path must exist on disk;
+    a missing file raises ``ValueError`` so artifact registration mistakes
+    surface immediately (rather than the previous behaviour of silently
+    dropping the sha256 entry, which hid downstream resolver failures).
+    Pass ``skip_missing_artifacts=True`` for tests/fixtures that only
+    exercise lifecycle wiring.
     """
+    artifact_hashes = {}
+    node_dir = Path(job_dir) / "nodes" / node_id
+    for key, rel_path in artifacts.items():
+        if not isinstance(rel_path, str) or not rel_path:
+            continue
+        full_path = node_dir / rel_path
+        if not full_path.exists():
+            if skip_missing_artifacts:
+                continue
+            raise ValueError(
+                f"complete_node: artifact '{key}' file missing: {rel_path} "
+                f"(expected at {full_path}). "
+                f"Pass skip_missing_artifacts=True to bypass."
+            )
+        digest = _sha256_path(full_path)
+        if digest:
+            artifact_hashes[key] = digest
     payload: dict = {"artifacts": artifacts}
-    if metadata:
-        payload["metadata"] = metadata
+    merged_metadata = dict(metadata or {})
+    if artifact_hashes:
+        merged_metadata["artifact_sha256"] = artifact_hashes
+    if merged_metadata:
+        payload["metadata"] = merged_metadata
     if warnings:
         payload["warnings"] = warnings
 
@@ -614,6 +657,128 @@ def read_node(job_dir: str, node_id: str) -> dict:
     """Read and return a node's ``node.json``."""
     node_json = Path(job_dir) / "nodes" / node_id / "node.json"
     return json.loads(node_json.read_text())
+
+
+_ALLOWED_PARENT_TYPES = {
+    "fetch": frozenset(),
+    # prep can consume a fetch artifact or transform an existing prep node
+    # (mutation/re-preparation branches).
+    "prep": frozenset({"fetch", "prep"}),
+    "solv": frozenset({"prep"}),
+    # explicit-water topo descends from solv; implicit topo skips solv and
+    # descends directly from prep.
+    "topo": frozenset({"solv", "prep"}),
+    "eq": frozenset({"topo"}),
+    "prod": frozenset({"eq", "prod"}),
+    "analyze": frozenset({"prod", "analyze"}),
+}
+
+
+def _values_match(expected, actual) -> bool:
+    if isinstance(expected, (int, float)) and isinstance(actual, (int, float)):
+        return abs(float(expected) - float(actual)) <= 1e-9
+    return expected == actual
+
+
+def validate_node_execution_context(
+    job_dir: str,
+    node_id: str,
+    expected_node_type: str,
+    *,
+    actual_conditions: Optional[dict] = None,
+) -> dict:
+    """Validate that a workflow node is ready to run.
+
+    This is a runtime guard rather than a hard create-time restriction:
+    users may sketch or repair DAGs, but tools refuse to execute against
+    incomplete parents, wrong node types, or declared ``conditions`` that
+    disagree with the actual parameters for this run.
+    """
+    errors: list[str] = []
+    jd = Path(job_dir)
+    node_json = jd / "nodes" / node_id / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "errors": [f"Node '{node_id}' does not exist under {job_dir}"],
+        }
+
+    node = read_node(job_dir, node_id)
+    node_type = node.get("node_type")
+    if node_type != expected_node_type:
+        errors.append(
+            f"Node '{node_id}' has type '{node_type}', expected '{expected_node_type}'"
+        )
+
+    progress = _load_progress_v3(jd / "progress.json")
+    index = (progress or {}).get("nodes", {})
+    if node_id not in index:
+        errors.append(f"Node '{node_id}' is missing from progress.json")
+
+    allowed_parent_types = _ALLOWED_PARENT_TYPES.get(expected_node_type, frozenset())
+    for parent_id in node.get("parent_node_ids", []):
+        parent_entry = index.get(parent_id)
+        parent_type = parent_entry.get("type") if parent_entry else None
+        if parent_type not in allowed_parent_types:
+            errors.append(
+                f"Node '{node_id}' cannot run with parent '{parent_id}' "
+                f"of type '{parent_type}'; expected one of {sorted(allowed_parent_types)}"
+            )
+        if parent_entry is None:
+            errors.append(f"Parent node '{parent_id}' is missing from progress.json")
+            continue
+        if parent_entry.get("status") != "completed":
+            errors.append(
+                f"Parent node '{parent_id}' must be completed before running "
+                f"'{node_id}' (status={parent_entry.get('status')!r})"
+            )
+
+    for dep_id in node.get("dependency_node_ids", []):
+        dep_entry = index.get(dep_id)
+        if dep_entry is None:
+            errors.append(f"Dependency node '{dep_id}' is missing from progress.json")
+            continue
+        if dep_entry.get("status") != "completed":
+            errors.append(
+                f"Dependency node '{dep_id}' must be completed before running "
+                f"'{node_id}' (status={dep_entry.get('status')!r})"
+            )
+
+    if expected_node_type == "fetch":
+        if node.get("parent_node_ids") or node.get("dependency_node_ids"):
+            errors.append("fetch nodes are DAG roots and cannot have parents/dependencies")
+
+    actual_conditions = actual_conditions or {}
+    declared_conditions = node.get("conditions", {}) or {}
+    for key, expected in declared_conditions.items():
+        if key not in actual_conditions:
+            # Strict: a declared condition is a contract the tool must
+            # cross-check. Silently skipping keys absent from
+            # actual_conditions defeats the purpose of declaring them.
+            errors.append(
+                f"Tool did not include declared condition '{key}' in "
+                f"actual_conditions; node declared {key}={expected!r} but "
+                f"the runtime call provided no value to cross-check"
+            )
+            continue
+        actual = actual_conditions[key]
+        if actual is None:
+            # Tools may legitimately pass None for parameters that don't
+            # apply to the current run (e.g. device_index on CPU). Skip
+            # cross-check rather than treat None as a mismatch.
+            continue
+        if not _values_match(expected, actual):
+            errors.append(
+                f"Node condition mismatch for '{key}': declared {expected!r}, "
+                f"actual {actual!r}"
+            )
+
+    return {
+        "success": not errors,
+        "code": "node_execution_context_invalid" if errors else "ok",
+        "errors": errors,
+    }
 
 
 def find_nodes(
@@ -804,6 +969,12 @@ def resolve_node_inputs(
         v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
         if v:
             result["pdb_file"] = v
+        else:
+            # Implicit-solvent topology skips the solv node and consumes the
+            # prepared complex directly from prep.
+            v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+            if v:
+                result["pdb_file"] = v
 
         lp = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_params")
         if lp:
@@ -837,6 +1008,15 @@ def resolve_node_inputs(
             elif isinstance(bd, dict):
                 result["box_dimensions"] = bd
 
+        solv_anc = _find_ancestor_node_id(job_dir, node_id, "solv")
+        if solv_anc is not None:
+            is_membrane = _read_metadata_field(job_dir, solv_anc, "is_membrane")
+            if isinstance(is_membrane, bool):
+                result["is_membrane"] = is_membrane
+            solv_water_model = _read_metadata_field(job_dir, solv_anc, "water_model")
+            if isinstance(solv_water_model, str):
+                result["solvation_water_model"] = solv_water_model
+
     elif node_type == "eq":
         p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
         r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
@@ -844,6 +1024,11 @@ def resolve_node_inputs(
             result["prmtop_file"] = p7
         if r7:
             result["inpcrd_file"] = r7
+        topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
+        if topo_anc is not None:
+            is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
+            if isinstance(is_membrane, bool):
+                result["is_membrane"] = is_membrane
 
     elif node_type == "prod":
         p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
@@ -852,6 +1037,11 @@ def resolve_node_inputs(
             result["prmtop_file"] = p7
         if r7:
             result["inpcrd_file"] = r7
+        topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
+        if topo_anc is not None:
+            is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
+            if isinstance(is_membrane, bool):
+                result["is_membrane"] = is_membrane
 
         # `continued_from` is the strict, user-visible contract: the new
         # node was explicitly marked as extending that specific prod. In

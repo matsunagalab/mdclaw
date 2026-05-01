@@ -245,6 +245,24 @@ ensure_directory(WORKING_DIR)
 packmol_memgen_wrapper = BaseToolWrapper("packmol-memgen")
 
 
+def _write_box_dimensions_json(out_dir: Path, box_dims: dict) -> Optional[Path]:
+    """Persist solvated-box dimensions next to the PDB.
+
+    Both the packmol-memgen path and the OpenMM fallback call this so the
+    on-disk artifact layout is uniform: ``<out_dir>/box_dimensions.json`` is
+    the single canonical location downstream tools (e.g.
+    ``build_amber_system``) resolve. Returns the path on success, ``None`` on
+    OSError so the caller can decide whether to fail or warn.
+    """
+    box_json_path = out_dir / "box_dimensions.json"
+    try:
+        box_json_path.write_text(json.dumps(box_dims, indent=2))
+        return box_json_path
+    except OSError as exc:
+        logger.warning(f"Could not save box_dimensions.json at {box_json_path}: {exc}")
+        return None
+
+
 def _solvate_with_openmm(
     pdb_path: Path,
     result: dict,
@@ -255,10 +273,17 @@ def _solvate_with_openmm(
     salt: bool,
     saltcon: float,
     water_model: str,
+    *,
+    subdirectory: bool = True,
 ) -> dict:
     """Fallback solvation using OpenMM/PDBFixer when packmol-memgen is unavailable.
 
-    Uses OpenMM Modeller.addSolvent() with a padding-based box.
+    Uses OpenMM Modeller.addSolvent() with a padding-based box. When
+    ``subdirectory`` is True (default, used by direct CLI calls) a unique
+    ``solvate_<id>/`` directory is created under ``output_dir``. When False
+    (used by node-mode callers that pass ``output_dir=nodes/<id>/artifacts/``),
+    output files land directly in ``output_dir`` so the artifact paths
+    registered on ``node.json`` match the real on-disk layout.
     """
     logger.info("Using OpenMM/PDBFixer fallback for solvation")
     try:
@@ -269,7 +294,11 @@ def _solvate_with_openmm(
         return result
 
     base_dir = Path(output_dir) if output_dir else WORKING_DIR
-    out_dir = create_unique_subdir(base_dir, "solvate")
+    if subdirectory:
+        out_dir = create_unique_subdir(base_dir, "solvate")
+    else:
+        out_dir = base_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
     result["output_dir"] = str(out_dir)
     output_file = out_dir / f"{output_name}.pdb"
 
@@ -302,6 +331,18 @@ def _solvate_with_openmm(
 
         # Extract box size from PDB
         box_dims = extract_box_size_from_cryst1(str(output_file))
+
+        # Persist box_dimensions.json next to the PDB so downstream tools
+        # (build_amber_system) can resolve it as a node artifact uniformly
+        # across packmol-memgen and OpenMM-fallback paths.
+        if box_dims:
+            box_json_path = _write_box_dimensions_json(out_dir, box_dims)
+            if box_json_path is None:
+                result["errors"].append(
+                    "OpenMM fallback: failed to persist box_dimensions.json"
+                )
+                return result
+            result["box_dimensions_file"] = str(box_json_path)
 
         # Count atoms
         atom_count = count_atoms_in_pdb(str(output_file))
@@ -441,6 +482,25 @@ def solvate_structure(
         )
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
+
+    if job_dir and node_id:
+        from mdclaw._node import validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "solv",
+            actual_conditions={
+                "water_model": water_model,
+                "dist": dist,
+                "cubic": cubic,
+                "salt": salt,
+                "salt_c": salt_c,
+                "salt_a": salt_a,
+                "saltcon": saltcon,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
     
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id and not pdb_file:
@@ -467,7 +527,7 @@ def solvate_structure(
         )
         blocking_results, warning_results = split_guardrail_results(guardrail_results)
         if blocking_results:
-            return {
+            blocked = {
                 **result,
                 **create_validation_error_from_guardrails(
                     "water_model",
@@ -476,9 +536,20 @@ def solvate_structure(
                     actual=water_model,
                 ),
             }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked.get("errors", [blocked.get("message", "")]))
+            return blocked
         result["warnings"].extend(guardrail_messages(warning_results))
         logger.warning("packmol-memgen not available, trying OpenMM fallback")
-        return _solvate_with_openmm(
+        _node_mode = job_dir and node_id
+        if _node_mode:
+            from mdclaw._node import begin_node
+            fallback_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            begin_node(job_dir, node_id)
+            output_dir = str(fallback_dir)
+        fallback_result = _solvate_with_openmm(
             pdb_path=pdb_path,
             result=result,
             output_dir=output_dir,
@@ -488,7 +559,37 @@ def solvate_structure(
             salt=salt,
             saltcon=saltcon,
             water_model=water_model,
+            subdirectory=not _node_mode,
         )
+        if _node_mode:
+            from mdclaw._node import complete_node, fail_node, update_job_summaries
+            if fallback_result.get("success"):
+                if not fallback_result.get("box_dimensions"):
+                    fallback_result["success"] = False
+                    fallback_result["errors"].append(
+                        "OpenMM fallback solvation did not produce box_dimensions"
+                    )
+            if fallback_result.get("success"):
+                complete_node(job_dir, node_id,
+                    artifacts={
+                        "solvated_pdb": f"artifacts/{output_name}.pdb",
+                        "box_dimensions": "artifacts/box_dimensions.json",
+                    },
+                    metadata={
+                        "water_model": water_model,
+                        "backend": "openmm_fallback",
+                        "buffer_distance_angstrom": dist,
+                        "salt_concentration_M": saltcon,
+                        "total_atoms": fallback_result.get("statistics", {}).get("total_atoms"),
+                    },
+                    warnings=fallback_result.get("warnings", []))
+                update_job_summaries(job_dir, params={
+                    "solvation_type": "explicit",
+                    "water_model": water_model,
+                })
+            else:
+                fail_node(job_dir, node_id, errors=fallback_result.get("errors", []))
+        return fallback_result
 
     # Setup output directory
     _node_mode = job_dir and node_id
@@ -607,14 +708,12 @@ def solvate_structure(
             if box_info:
                 result["box_dimensions"] = box_info
                 logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
-                # Auto-save box_dimensions.json next to solvated PDB
-                box_json_path = out_dir / "box_dimensions.json"
-                try:
-                    box_json_path.write_text(json.dumps(box_info, indent=2))
+                box_json_path = _write_box_dimensions_json(out_dir, box_info)
+                if box_json_path is None:
+                    result["warnings"].append("Could not save box_dimensions.json")
+                else:
                     result["box_dimensions_file"] = str(box_json_path)
                     logger.info(f"Saved box dimensions to {box_json_path}")
-                except OSError as e:
-                    result["warnings"].append(f"Could not save box_dimensions.json: {e}")
             else:
                 result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
 
@@ -651,6 +750,13 @@ def solvate_structure(
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success"):
             _box = result.get("box_dimensions", {})
+            if not _box:
+                result["success"] = False
+                result["errors"].append(
+                    "Explicit solvation completed but box_dimensions could not be extracted"
+                )
+                fail_node(job_dir, node_id, errors=result.get("errors", []))
+                return result
             complete_node(job_dir, node_id,
                 artifacts={
                     "solvated_pdb": f"artifacts/{output_name}.pdb",

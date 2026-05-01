@@ -5,7 +5,8 @@ End-to-end test of the schema-v3 node graph:
     prep_001 (prepare_complex) ->
       solv_001 (solvate_structure) ->
         topo_001 (build_amber_system) ->
-          eq_001  (run_equilibration, very short)
+          eq_001  (run_equilibration, very short) ->
+            prod_001 (run_production, very short)
 
 Each step exercises the auto-resolve contract: tools receive only
 ``--job-dir``/``--node-id`` and pull their inputs from DAG ancestors.
@@ -156,6 +157,70 @@ class TestPipeline1AKEDag:
         assert node_data["status"] == "completed"
         assert node_data["artifacts"]["parm7"]
         assert node_data["artifacts"]["rst7"]
+
+    # Step 6: equilibration (auto-resolves topology from topo)
+    def test_step6_equilibration(self, job_dir):
+        from md_simulation_server import run_equilibration
+        from mdclaw._node import create_node, read_node
+
+        node = create_node(
+            str(job_dir),
+            "eq",
+            parent_node_ids=[self.topo_id],
+            conditions={"temperature_kelvin": 300.0, "pressure_bar": 1.0},
+        )
+        assert node["success"]
+        self.__class__.eq_id = node["node_id"]
+
+        result = run_equilibration(
+            job_dir=str(job_dir),
+            node_id=self.eq_id,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=10,
+            npt_steps=10,
+            platform="CPU",
+        )
+        assert result["success"], result.get("errors")
+        node_data = read_node(str(job_dir), self.eq_id)
+        assert node_data["status"] == "completed"
+        assert node_data["artifacts"]["state"].endswith("equilibrated.xml")
+        assert node_data["artifacts"]["checkpoint"].endswith("equilibrated.chk")
+        assert node_data["artifacts"]["nvt_energy"]
+        assert node_data["artifacts"]["npt_energy"]
+        assert node_data["metadata"]["system_signature"]
+        assert node_data["metadata"]["integrator_signature"]
+
+    # Step 7: production (auto-resolves topology + eq state)
+    def test_step7_production(self, job_dir):
+        from md_simulation_server import run_production
+        from mdclaw._node import create_node, read_node
+
+        node = create_node(
+            str(job_dir),
+            "prod",
+            parent_node_ids=[self.eq_id],
+            conditions={"simulation_time_ns": 0.0001, "temperature_kelvin": 300.0},
+        )
+        assert node["success"]
+        self.__class__.prod_id = node["node_id"]
+
+        result = run_production(
+            job_dir=str(job_dir),
+            node_id=self.prod_id,
+            simulation_time_ns=0.0001,
+            temperature_kelvin=300.0,
+            output_frequency_ps=0.1,
+            platform="CPU",
+        )
+        assert result["success"], result.get("errors")
+        node_data = read_node(str(job_dir), self.prod_id)
+        assert node_data["status"] == "completed"
+        assert node_data["artifacts"]["trajectory"]
+        assert node_data["artifacts"]["energy"]
+        assert node_data["metadata"]["final_step"] == result["steps_completed"]
+        assert node_data["metadata"]["system_signature"]
+        assert node_data["metadata"]["integrator_signature"]
 
 
 if __name__ == "__main__":

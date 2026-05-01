@@ -647,6 +647,10 @@ class TestMDSimulationServer:
 
         job_dir = tmp_path / "job_node_mode"
         topo = create_node(str(job_dir), "topo")
+        topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / Path(amber["parm7"]).name).write_bytes(Path(amber["parm7"]).read_bytes())
+        (topo_artifacts / Path(amber["rst7"]).name).write_bytes(Path(amber["rst7"]).read_bytes())
         complete_node(
             str(job_dir),
             topo["node_id"],
@@ -655,21 +659,17 @@ class TestMDSimulationServer:
                 "rst7": f"artifacts/{Path(amber['rst7']).name}",
             },
         )
-        topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
-        topo_artifacts.mkdir(parents=True, exist_ok=True)
-        (topo_artifacts / Path(amber["parm7"]).name).write_bytes(Path(amber["parm7"]).read_bytes())
-        (topo_artifacts / Path(amber["rst7"]).name).write_bytes(Path(amber["rst7"]).read_bytes())
 
         eq = create_node(str(job_dir), "eq", parent_node_ids=[topo["node_id"]])
-        complete_node(
-            str(job_dir),
-            eq["node_id"],
-            artifacts={"checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}"},
-        )
         eq_artifacts = job_dir / "nodes" / eq["node_id"] / "artifacts"
         eq_artifacts.mkdir(parents=True, exist_ok=True)
         (eq_artifacts / Path(equil["checkpoint_file"]).name).write_bytes(
             Path(equil["checkpoint_file"]).read_bytes()
+        )
+        complete_node(
+            str(job_dir),
+            eq["node_id"],
+            artifacts={"checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}"},
         )
 
         prod = create_node(str(job_dir), "prod", parent_node_ids=[eq["node_id"]])

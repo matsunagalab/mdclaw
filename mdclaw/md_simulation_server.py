@@ -18,6 +18,7 @@ from mdclaw._common import setup_logger  # noqa: E402
 logger = setup_logger(__name__)
 
 import json  # noqa: E402
+import hashlib  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
@@ -34,6 +35,90 @@ def _node_artifact_path(path: Optional[str]) -> str:
     if not path:
         return ""
     return f"artifacts/{Path(path).name}"
+
+
+def _sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _system_signature(
+    prmtop_path: Path,
+    inpcrd_path: Path,
+    *,
+    solvent_type: str,
+    ensemble: str,
+    pressure_bar: Optional[float],
+    is_membrane: bool,
+    implicit_solvent: Optional[str],
+    hmr: bool,
+) -> dict:
+    return {
+        "prmtop_sha256": _sha256_file(prmtop_path),
+        "inpcrd_sha256": _sha256_file(inpcrd_path),
+        "solvent_type": solvent_type,
+        "ensemble": ensemble,
+        "pressure_bar": pressure_bar,
+        "is_membrane": bool(is_membrane),
+        "implicit_solvent": implicit_solvent,
+        "hmr": bool(hmr),
+    }
+
+
+def _integrator_signature(
+    *,
+    temperature_kelvin: float,
+    timestep_fs: float,
+    friction_per_ps: float = 1.0,
+) -> dict:
+    return {
+        "integrator": "LangevinMiddleIntegrator",
+        "temperature_kelvin": float(temperature_kelvin),
+        "timestep_fs": float(timestep_fs),
+        "friction_per_ps": float(friction_per_ps),
+    }
+
+
+def _signature_mismatches(expected: dict, actual: dict, keys: tuple[str, ...]) -> list[str]:
+    mismatches = []
+    for key in keys:
+        if key not in expected or key not in actual:
+            continue
+        lhs = expected[key]
+        rhs = actual[key]
+        if isinstance(lhs, (int, float)) and isinstance(rhs, (int, float)):
+            if abs(float(lhs) - float(rhs)) <= 1e-9:
+                continue
+        elif lhs == rhs:
+            continue
+        mismatches.append(f"{key}: restart={lhs!r}, current={rhs!r}")
+    return mismatches
+
+
+def _restart_source_metadata(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    restart_from: Optional[str],
+) -> dict:
+    if not (job_dir and node_id and restart_from):
+        return {}
+    from mdclaw._node import get_ancestors, read_node, resolve_artifact
+    restart_path = str(Path(restart_from).resolve())
+    for anc_id in get_ancestors(job_dir, node_id)[1:]:
+        try:
+            anc = read_node(job_dir, anc_id)
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            continue
+        for artifact_key in ("state", "checkpoint"):
+            rel = anc.get("artifacts", {}).get(artifact_key)
+            if not isinstance(rel, str):
+                continue
+            if str(resolve_artifact(job_dir, anc_id, rel)) == restart_path:
+                return anc.get("metadata", {}) or {}
+    return {}
 
 
 def _detect_ensemble_mismatch(
@@ -170,6 +255,17 @@ def _close_reporter_stream(reporter) -> None:
             out.close()
 
 
+def _count_state_data_rows(path: Path) -> int:
+    if not path.is_file():
+        return 0
+    rows = 0
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            rows += 1
+    return rows
+
+
 def _compute_step_plan(
     simulation_time_ns: float,
     timestep_fs: float,
@@ -304,12 +400,36 @@ def run_equilibration(
     """
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
-        from mdclaw._node import resolve_node_inputs
+        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
         _inputs = resolve_node_inputs(job_dir, node_id, "eq")
         if not prmtop_file and "prmtop_file" in _inputs:
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
             inpcrd_file = _inputs["inpcrd_file"]
+        if not is_membrane and _inputs.get("is_membrane"):
+            is_membrane = True
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "eq",
+            actual_conditions={
+                "temperature_kelvin": temperature_kelvin,
+                "pressure_bar": pressure_bar,
+                "nvt_steps": nvt_steps,
+                "npt_steps": npt_steps,
+                "restraint_atoms": restraint_atoms,
+                "restraint_force_constant": restraint_force_constant,
+                "is_membrane": is_membrane,
+                "implicit_solvent": implicit_solvent,
+                "platform": platform,
+                "device_index": device_index,
+                "random_seed": random_seed,
+                "hmr": hmr,
+                "timestep_fs": timestep_fs,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
 
     if not prmtop_file or not inpcrd_file:
         return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
@@ -346,7 +466,7 @@ def run_equilibration(
     try:
         from openmm.app import (
             AmberPrmtopFile, AmberInpcrdFile, PDBFile,
-            Simulation, PME, NoCutoff, HBonds,
+            Simulation, PME, NoCutoff, HBonds, StateDataReporter,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (
@@ -391,6 +511,17 @@ def run_equilibration(
         inpcrd = AmberInpcrdFile(str(inpcrd_path))
 
         is_periodic = inpcrd.boxVectors is not None
+        if implicit_solvent:
+            solvent_type = "implicit"
+        elif is_periodic:
+            solvent_type = "explicit"
+        else:
+            solvent_type = "vacuum"
+            result["errors"].append(
+                "Non-periodic topology without implicit_solvent would run vacuum equilibration. "
+                "Pass --implicit-solvent for GB simulations or build an explicit-solvent topology."
+            )
+            return result
 
         # HMR kwargs shared by NVT, NPT, and the clean checkpoint System
         # (must mirror run_production's hmr handling so the saved checkpoint
@@ -500,6 +631,20 @@ def run_equilibration(
             sim_nvt = Simulation(prmtop.topology, system_nvt, integrator_nvt)
 
         result["platform"] = sim_nvt.context.getPlatform().getName()
+        nvt_energy_file = out_dir / "nvt_energy.dat"
+        if nvt_steps > 0:
+            sim_nvt.reporters.append(StateDataReporter(
+                str(nvt_energy_file),
+                max(1, nvt_steps // 100),
+                step=True,
+                time=True,
+                potentialEnergy=True,
+                kineticEnergy=True,
+                totalEnergy=True,
+                temperature=True,
+                volume=is_periodic,
+                density=is_periodic,
+            ))
 
         sim_nvt.context.setPositions(positions)
         if is_periodic and inpcrd.boxVectors is not None:
@@ -512,6 +657,8 @@ def run_equilibration(
         # NVT run
         sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
         sim_nvt.step(nvt_steps)
+        for reporter in sim_nvt.reporters:
+            _close_reporter_stream(reporter)
         result["nvt_steps"] = nvt_steps
         logger.info(f"NVT heating complete ({nvt_steps} steps)")
 
@@ -571,9 +718,10 @@ def run_equilibration(
             if is_membrane:
                 system_npt.addForce(MonteCarloMembraneBarostat(
                     pressure_bar * bar, 0.0 * bar * nanometer,
+                    temperature_kelvin * kelvin,
                     MonteCarloMembraneBarostat.XYIsotropic,
                     MonteCarloMembraneBarostat.ZFree,
-                    temperature_kelvin * kelvin,
+                    25,
                 ))
             else:
                 system_npt.addForce(MonteCarloBarostat(
@@ -594,6 +742,19 @@ def run_equilibration(
                                      platform_obj, platform_properties)
             else:
                 sim_npt = Simulation(prmtop.topology, system_npt, integrator_npt)
+            npt_energy_file = out_dir / "npt_energy.dat"
+            sim_npt.reporters.append(StateDataReporter(
+                str(npt_energy_file),
+                max(1, npt_steps // 100),
+                step=True,
+                time=True,
+                potentialEnergy=True,
+                kineticEnergy=True,
+                totalEnergy=True,
+                temperature=True,
+                volume=True,
+                density=True,
+            ))
 
             sim_npt.context.setPositions(nvt_positions)
             sim_npt.context.setVelocities(nvt_velocities)
@@ -601,6 +762,8 @@ def run_equilibration(
                 sim_npt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
             sim_npt.step(npt_steps)
+            for reporter in sim_npt.reporters:
+                _close_reporter_stream(reporter)
             result["npt_steps"] = npt_steps
             logger.info(f"NPT equilibration complete ({npt_steps} steps)")
 
@@ -720,6 +883,39 @@ def run_equilibration(
         result["state_file_prod_ready"] = str(state_file)
         logger.info(f"Saved equilibrated state (cross-node portable): {state_file}")
 
+        final_ensemble = (
+            "NPT" if (pressure_bar and pressure_bar > 0
+                      and npt_steps > 0) else "NVT"
+        )
+        result["system_signature"] = _system_signature(
+            prmtop_path,
+            inpcrd_path,
+            solvent_type=solvent_type,
+            ensemble=final_ensemble,
+            pressure_bar=pressure_bar,
+            is_membrane=is_membrane,
+            implicit_solvent=implicit_solvent,
+            hmr=hmr,
+        )
+        result["integrator_signature"] = _integrator_signature(
+            temperature_kelvin=temperature_kelvin,
+            timestep_fs=timestep_fs,
+        )
+        result["nvt_energy_file"] = str(nvt_energy_file) if nvt_energy_file.exists() else None
+        if npt_steps > 0:
+            result["npt_energy_file"] = str(npt_energy_file) if npt_energy_file.exists() else None
+        missing_eq_logs = []
+        if nvt_steps > 0 and not result["nvt_energy_file"]:
+            missing_eq_logs.append("nvt_energy")
+        if npt_steps > 0 and not result.get("npt_energy_file"):
+            missing_eq_logs.append("npt_energy")
+        if missing_eq_logs:
+            result["errors"].append(
+                "Equilibration reporter outputs missing: " + ", ".join(missing_eq_logs)
+            )
+            result["success"] = False
+            raise RuntimeError(result["errors"][-1])
+
         result["success"] = True
 
     except Exception as e:
@@ -730,13 +926,18 @@ def run_equilibration(
     if _node_mode:
         from mdclaw._node import complete_node, fail_node
         if result.get("success"):
-            complete_node(job_dir, node_id,
-                artifacts={
+            artifacts = {
                     "checkpoint": f"artifacts/{pref}equilibrated.chk",
                     "state": f"artifacts/{pref}equilibrated.xml",
                     "final_structure": _node_artifact_path(result.get("final_structure")),
                     "state_file": _node_artifact_path(result.get("state_file")),
-                },
+            }
+            if result.get("nvt_energy_file"):
+                artifacts["nvt_energy"] = _node_artifact_path(result.get("nvt_energy_file"))
+            if result.get("npt_energy_file"):
+                artifacts["npt_energy"] = _node_artifact_path(result.get("npt_energy_file"))
+            complete_node(job_dir, node_id,
+                artifacts=artifacts,
                 metadata={
                     "platform": result.get("platform"),
                     "nvt_steps": nvt_steps,
@@ -749,11 +950,10 @@ def run_equilibration(
                     # the NPT stage actually ran. Prod's auto-resolver reads
                     # this so a default-config prod inherits eq's ensemble
                     # and the loadState parameter set matches the System.
-                    "final_ensemble": (
-                        "NPT" if (pressure_bar and pressure_bar > 0
-                                  and npt_steps > 0) else "NVT"
-                    ),
+                    "final_ensemble": final_ensemble,
                     "final_step": 0,
+                    "system_signature": result.get("system_signature"),
+                    "integrator_signature": result.get("integrator_signature"),
                 })
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))
@@ -864,35 +1064,12 @@ def run_production(
     _eq_pressure_bar: Optional[float] = None
     _pressure_bar_inherited = False
     if job_dir and node_id:
-        from mdclaw._node import resolve_node_inputs
+        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
-        # Strict continue_from violation — fail before we touch OpenMM so
-        # the user sees a clean error instead of a wrong-checkpoint run.
-        # Mark the node as attempted (begin_node → "running") then failed
-        # so progress.json + the event log reflect the failure; without
-        # this the node would stay "pending" and re-entry would silently
-        # treat it as never-attempted.
-        if not restart_from and "restart_from_error" in _inputs:
-            err = _inputs["restart_from_error"]
-            from mdclaw._node import begin_node, fail_node
-            begin_node(job_dir, node_id)
-            fail_node(job_dir, node_id, errors=[err])
-            return {"success": False, "errors": [err]}
-        if not prmtop_file and "prmtop_file" in _inputs:
-            prmtop_file = _inputs["prmtop_file"]
-        if not inpcrd_file and "inpcrd_file" in _inputs:
-            inpcrd_file = _inputs["inpcrd_file"]
-        if not restart_from and "restart_from" in _inputs:
-            restart_from = _inputs["restart_from"]
+        if not is_membrane and _inputs.get("is_membrane"):
+            is_membrane = True
         _eq_final_ensemble = _inputs.get("eq_final_ensemble")
         _eq_pressure_bar = _inputs.get("eq_pressure_bar")
-        # Inherit eq's ensemble when caller did not specify pressure
-        # explicitly. Without this an NPT-equilibrated state.xml cannot
-        # be loaded into a default-config (NVT) prod context — OpenMM's
-        # loadState fails with
-        # ``setParameter() with invalid parameter name: MonteCarloPressure``
-        # because the saved state references a MonteCarloBarostat that
-        # the new context never received.
         if (pressure_bar is None
                 and _eq_final_ensemble == "NPT"
                 and _eq_pressure_bar is not None):
@@ -902,6 +1079,43 @@ def run_production(
                 f"pressure_bar inherited from eq ancestor "
                 f"(final_ensemble=NPT, {pressure_bar} bar)"
             )
+        # Strict continue_from violation gets the most specific error. It
+        # can happen while the parent prod is still pending/running; reporting
+        # the missing state/checkpoint is clearer than a generic parent-status
+        # guard.
+        if not restart_from and "restart_from_error" in _inputs:
+            err = _inputs["restart_from_error"]
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
+            return {"success": False, "errors": [err]}
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "prod",
+            actual_conditions={
+                "simulation_time_ns": simulation_time_ns,
+                "temperature_kelvin": temperature_kelvin,
+                "pressure_bar": pressure_bar,
+                "timestep_fs": timestep_fs,
+                "output_frequency_ps": output_frequency_ps,
+                "trajectory_format": trajectory_format,
+                "is_membrane": is_membrane,
+                "implicit_solvent": implicit_solvent,
+                "platform": platform,
+                "device_index": device_index,
+                "hmr": hmr,
+                "random_seed": random_seed,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
+        if not prmtop_file and "prmtop_file" in _inputs:
+            prmtop_file = _inputs["prmtop_file"]
+        if not inpcrd_file and "inpcrd_file" in _inputs:
+            inpcrd_file = _inputs["inpcrd_file"]
+        if not restart_from and "restart_from" in _inputs:
+            restart_from = _inputs["restart_from"]
 
     if not prmtop_file or not inpcrd_file:
         return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
@@ -1068,13 +1282,11 @@ def run_production(
             result["solvent_type"] = "explicit"
         else:
             # Non-periodic without implicit model - use NoCutoff (vacuum)
-            system = prmtop.createSystem(
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                **hmr_kwargs,
+            result["errors"].append(
+                "Non-periodic topology without implicit_solvent would run vacuum production. "
+                "Pass --implicit-solvent for GB simulations or build an explicit-solvent topology."
             )
-            logger.warning("Non-periodic system without implicit solvent specified - using NoCutoff (vacuum)")
-            result["solvent_type"] = "vacuum"
+            return result
 
         # Add barostat if NPT (only for periodic explicit solvent systems)
         if pressure_bar is not None and is_periodic and not implicit_solvent:
@@ -1111,6 +1323,22 @@ def run_production(
             ensemble = "NVT"
         result["ensemble"] = ensemble
         result["is_membrane"] = is_membrane
+        current_system_signature = _system_signature(
+            prmtop_path,
+            inpcrd_path,
+            solvent_type=result.get("solvent_type", "unknown"),
+            ensemble=ensemble,
+            pressure_bar=pressure_bar,
+            is_membrane=is_membrane,
+            implicit_solvent=implicit_solvent,
+            hmr=hmr,
+        )
+        current_integrator_signature = _integrator_signature(
+            temperature_kelvin=temperature_kelvin,
+            timestep_fs=timestep_fs,
+        )
+        result["system_signature"] = current_system_signature
+        result["integrator_signature"] = current_integrator_signature
 
         # Create integrator
         integrator = LangevinMiddleIntegrator(
@@ -1160,6 +1388,43 @@ def run_production(
             restart_path = Path(restart_from)
             if not restart_path.is_file():
                 result["errors"].append(f"Restart file not found: {restart_from}")
+                return result
+            restart_meta = _restart_source_metadata(job_dir, node_id, restart_from)
+            restart_system_signature = restart_meta.get("system_signature")
+            restart_integrator_signature = restart_meta.get("integrator_signature")
+            if isinstance(restart_system_signature, dict):
+                mismatches = _signature_mismatches(
+                    restart_system_signature,
+                    current_system_signature,
+                    (
+                        "prmtop_sha256",
+                        "inpcrd_sha256",
+                        "solvent_type",
+                        "ensemble",
+                        "pressure_bar",
+                        "is_membrane",
+                        "implicit_solvent",
+                        "hmr",
+                    ),
+                )
+                if mismatches:
+                    result["errors"].append(
+                        "Restart system signature mismatch: " + "; ".join(mismatches)
+                    )
+            if isinstance(restart_integrator_signature, dict):
+                mismatches = _signature_mismatches(
+                    restart_integrator_signature,
+                    current_integrator_signature,
+                    ("integrator", "temperature_kelvin", "timestep_fs", "friction_per_ps"),
+                )
+                if mismatches:
+                    result["errors"].append(
+                        "Restart integrator signature mismatch: " + "; ".join(mismatches)
+                    )
+            if result["errors"]:
+                if _node_mode:
+                    from mdclaw._node import fail_node
+                    fail_node(job_dir, node_id, errors=result["errors"])
                 return result
             # Prefer saveState (XML) for cross-node portability.
             # saveCheckpoint (binary) is GPU-architecture-specific and
@@ -1330,6 +1595,23 @@ def run_production(
         result["start_step"] = start_step
         result["start_time_ns"] = plan["start_time_ns"]
 
+        if steps_to_run <= 0:
+            result["errors"].append(
+                "simulation_time_ns is too short for the timestep; production would run 0 steps"
+            )
+            raise ValueError(result["errors"][-1])
+        if report_interval <= 0:
+            result["errors"].append(
+                "output_frequency_ps is too small for the timestep; report interval is 0 steps"
+            )
+            raise ValueError(result["errors"][-1])
+        if report_interval > steps_to_run:
+            result["errors"].append(
+                "output_frequency_ps is longer than this production segment; "
+                "trajectory and energy reporters would not emit any frames"
+            )
+            raise ValueError(result["errors"][-1])
+
         logger.info(
             f"Running {steps_to_run} steps "
             f"(start_step={start_step}, target_total={simulation_steps})"
@@ -1406,7 +1688,14 @@ def run_production(
                 + ", ".join(missing_outputs)
             )
         else:
-            result["success"] = True
+            energy_rows = _count_state_data_rows(energy_file)
+            result["energy_rows"] = energy_rows
+            if expected_reports > 0 and energy_rows < expected_reports:
+                result["errors"].append(
+                    f"Energy reporter wrote {energy_rows} rows, expected at least {expected_reports}"
+                )
+            else:
+                result["success"] = True
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
 
@@ -1438,6 +1727,8 @@ def run_production(
                     "start_step": result.get("start_step"),
                     "start_time_ns": result.get("start_time_ns"),
                     "final_step": result.get("steps_completed"),
+                    "system_signature": result.get("system_signature"),
+                    "integrator_signature": result.get("integrator_signature"),
                 })
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))

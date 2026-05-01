@@ -20,11 +20,29 @@ from mdclaw.md_simulation_server import (
 )
 from mdclaw._node import (
     begin_node,
-    complete_node,
     create_node,
     fail_node,
     init_progress_v3,
 )
+from mdclaw._node import complete_node as _real_complete_node
+
+
+def complete_node(job_dir, node_id, artifacts, **kwargs):
+    """Test wrapper that touches placeholder artifact files first.
+
+    Mirrors the wrapper in tests/test_node.py; see its docstring for the
+    rationale. Tests that exercise the strict guard explicitly should call
+    ``_real_complete_node``.
+    """
+    node_dir = Path(job_dir) / "nodes" / node_id
+    for rel_path in artifacts.values():
+        if not isinstance(rel_path, str) or not rel_path:
+            continue
+        full = node_dir / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        if not full.exists():
+            full.touch()
+    return _real_complete_node(job_dir, node_id, artifacts, **kwargs)
 
 
 class TestComputeStepPlan:

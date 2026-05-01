@@ -3,6 +3,7 @@
 Covers: _lock.py, _node.py lifecycle, node_server.py registration.
 """
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -11,7 +12,6 @@ import pytest
 from mdclaw._node import (
     SCHEMA_VERSION,
     begin_node,
-    complete_node,
     create_node,
     fail_node,
     find_ancestor_artifact,
@@ -26,7 +26,31 @@ from mdclaw._node import (
     update_job_summaries,
     update_node,
     update_node_status,
+    validate_node_execution_context,
 )
+from mdclaw._node import complete_node as _real_complete_node
+
+
+def complete_node(job_dir, node_id, artifacts, **kwargs):
+    """Test convenience wrapper around :func:`mdclaw._node.complete_node`.
+
+    The real ``complete_node`` raises if any registered str-typed artifact
+    path does not exist on disk — a strict guard that surfaces registration
+    mistakes immediately. Most tests in this file use placeholder paths
+    and care only about lifecycle wiring, so this wrapper touches the files
+    first to keep the existing test bodies untouched. New tests that
+    explicitly exercise the strict guard call ``_real_complete_node`` (or
+    ``mdclaw._node.complete_node`` via re-import) directly.
+    """
+    node_dir = Path(job_dir) / "nodes" / node_id
+    for rel_path in artifacts.values():
+        if not isinstance(rel_path, str) or not rel_path:
+            continue
+        full = node_dir / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        if not full.exists():
+            full.touch()
+    return _real_complete_node(job_dir, node_id, artifacts, **kwargs)
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
@@ -185,6 +209,177 @@ class TestCreateNode:
         (job_dir / "progress.json").write_text(json.dumps({"schema_version": "2.0"}))
         with pytest.raises(ValueError, match="schema v3 only"):
             create_node(str(job_dir), "prep")
+
+
+# ── Runtime execution-context validation ───────────────────────────────────
+
+
+class TestValidateNodeExecutionContext:
+
+    def test_rejects_unfinished_parent(self, job_dir):
+        create_node(str(job_dir), "prep")
+        result = create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+        assert result["success"]
+
+        ctx = validate_node_execution_context(str(job_dir), "solv_001", "solv")
+
+        assert ctx["success"] is False
+        assert any("must be completed" in e for e in ctx["errors"])
+
+    def test_rejects_wrong_parent_type(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(str(job_dir), "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merged.pdb"})
+        create_node(str(job_dir), "eq", parent_node_ids=["prep_001"])
+
+        ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq")
+
+        assert ctx["success"] is False
+        assert any("expected one of ['topo']" in e for e in ctx["errors"])
+
+    def test_rejects_condition_mismatch(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(
+            str(job_dir),
+            "eq",
+            parent_node_ids=["topo_001"],
+            conditions={"temperature_kelvin": 310.0},
+        )
+
+        ctx = validate_node_execution_context(
+            str(job_dir),
+            "eq_001",
+            "eq",
+            actual_conditions={"temperature_kelvin": 300.0},
+        )
+
+        assert ctx["success"] is False
+        assert any("condition mismatch" in e for e in ctx["errors"])
+
+    def test_accepts_completed_parent_and_matching_conditions(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(
+            str(job_dir),
+            "eq",
+            parent_node_ids=["topo_001"],
+            conditions={"temperature_kelvin": 300.0},
+        )
+
+        ctx = validate_node_execution_context(
+            str(job_dir),
+            "eq_001",
+            "eq",
+            actual_conditions={"temperature_kelvin": 300.0},
+        )
+
+        assert ctx["success"] is True
+
+    def test_rejects_declared_condition_missing_from_actual(self, job_dir):
+        """Strict cross-check: a key declared on node.conditions must be
+        present in the tool's actual_conditions. Silently skipping the
+        check defeats the point of declaring it."""
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(
+            str(job_dir),
+            "eq",
+            parent_node_ids=["topo_001"],
+            conditions={"temperature_kelvin": 300.0, "pressure_bar": 1.0},
+        )
+
+        ctx = validate_node_execution_context(
+            str(job_dir),
+            "eq_001",
+            "eq",
+            actual_conditions={"temperature_kelvin": 300.0},
+        )
+
+        assert ctx["success"] is False
+        assert any("did not include declared condition 'pressure_bar'" in e
+                   for e in ctx["errors"])
+
+    def test_actual_none_skips_cross_check(self, job_dir):
+        """Tools may legitimately pass None for parameters that don't
+        apply (e.g. device_index on CPU). None still satisfies the
+        contract; only missing keys are hard errors."""
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(
+            str(job_dir),
+            "eq",
+            parent_node_ids=["topo_001"],
+            conditions={"temperature_kelvin": 300.0, "device_index": 0},
+        )
+
+        ctx = validate_node_execution_context(
+            str(job_dir),
+            "eq_001",
+            "eq",
+            actual_conditions={"temperature_kelvin": 300.0, "device_index": None},
+        )
+
+        assert ctx["success"] is True
+
+
+# ── complete_node strict artifact validation ──────────────────────────────
+
+
+class TestCompleteNodeStrictArtifacts:
+    """Covers the P1 strict guard: complete_node refuses to record str
+    artifact paths whose files are missing on disk, so registration
+    mistakes (e.g. wrong subdirectory) surface immediately rather than
+    silently dropping the sha256 entry."""
+
+    def test_records_artifact_sha256_for_real_file(self, job_dir):
+        create_node(str(job_dir), "solv")
+        node_id = "solv_001"
+        artifact_file = job_dir / "nodes" / node_id / "artifacts" / "solvated.pdb"
+        artifact_file.parent.mkdir(parents=True, exist_ok=True)
+        artifact_file.write_text("ATOM      1  N   ALA A   1\n")
+        expected_sha = hashlib.sha256(artifact_file.read_bytes()).hexdigest()
+
+        _real_complete_node(
+            str(job_dir),
+            node_id,
+            artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+        )
+
+        node = read_node(str(job_dir), node_id)
+        assert node["metadata"]["artifact_sha256"]["solvated_pdb"] == expected_sha
+
+    def test_raises_on_missing_artifact_file(self, job_dir):
+        create_node(str(job_dir), "solv")
+        with pytest.raises(ValueError, match="artifact 'solvated_pdb' file missing"):
+            _real_complete_node(
+                str(job_dir),
+                "solv_001",
+                artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+            )
+
+    def test_skip_missing_artifacts_opt_out(self, job_dir):
+        """Tests/migrations can opt out of the strict guard."""
+        create_node(str(job_dir), "solv")
+        # No file created; opt-out should accept silently.
+        _real_complete_node(
+            str(job_dir),
+            "solv_001",
+            artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+            skip_missing_artifacts=True,
+        )
+        node = read_node(str(job_dir), "solv_001")
+        assert node["status"] == "completed"
+        # No sha256 recorded for the missing file.
+        assert "artifact_sha256" not in node.get("metadata", {})
 
 
 # ── continue_from sugar (prod extension) ───────────────────────────────────
@@ -569,8 +764,10 @@ class TestStateTransitions:
                       metadata={"platform": "CUDA"})
         node = read_node(str(job_dir), "prod_001")
         assert node["status"] == "completed"
-        # metadata is fresh: only the new key, no leftover errors.
-        assert node["metadata"] == {"platform": "CUDA"}
+        # metadata is fresh: explicit key present, no leftover errors.
+        # (artifact_sha256 may also be auto-recorded by complete_node.)
+        assert node["metadata"]["platform"] == "CUDA"
+        assert "errors" not in node["metadata"]
 
     def test_retry_after_failure_with_no_metadata_errors_is_noop(
         self, job_dir

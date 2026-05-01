@@ -4216,6 +4216,30 @@ def prepare_complex(
         "warnings": []
     }
 
+    if job_dir and node_id:
+        from mdclaw._node import validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "prep",
+            actual_conditions={
+                "select_chains": select_chains,
+                "ph": ph,
+                "cap_termini": cap_termini,
+                "process_proteins": process_proteins,
+                "process_ligands": process_ligands,
+                "run_parameterization": run_parameterization,
+                "include_types": include_types,
+                "include_ligand_ids": include_ligand_ids,
+                "exclude_ligand_ids": exclude_ligand_ids,
+                "charge_method": charge_method,
+                "atom_type": atom_type,
+                "keep_crystal_waters": keep_crystal_waters,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
+
     if not structure_file:
         result["errors"].append(
             "structure_file is required (or pass --job-dir/--node-id with a "
@@ -4953,6 +4977,17 @@ def create_mutated_structure(
         "errors": [],
         "warnings": [],
     }
+
+    if job_dir and node_id:
+        from mdclaw._node import validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "prep",
+            actual_conditions={"sequence": sequence, "seq_file": seq_file, "name": name},
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
 
     # Auto-resolve input from nearest prep ancestor (the cleaned merged.pdb,
     # not the raw fetch download — mutation runs AFTER prepare_complex).

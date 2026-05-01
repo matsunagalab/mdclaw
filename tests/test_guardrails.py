@@ -1,5 +1,6 @@
 """Unit tests for shared guardrail behavior across MDClaw tools."""
 
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -8,6 +9,7 @@ from mdclaw.amber_server import (
     _evaluate_forcefield_water_guardrails,
     build_amber_system,
 )
+from mdclaw._node import create_node, read_node, update_job_params
 from mdclaw.metal_server import (
     SUPPORTED_ION_WATER_MODELS,
     _normalize_water_model_name as metal_canonical_water_model_name,
@@ -18,6 +20,7 @@ from mdclaw.solvation_server import (
     OPENMM_FALLBACK_WATER_MAP,
     OPENMM_FALLBACK_WATER_MODELS,
     _normalize_water_model_name as solvation_canonical_water_model_name,
+    _write_box_dimensions_json,
     solvate_structure,
 )
 
@@ -62,6 +65,22 @@ def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensi
     assert "Unknown water model" in result["message"]
 
 
+def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):
+    job_dir = tmp_path / "job_explicit"
+    update_job_params(str(job_dir), {"solvation_type": "explicit"})
+
+    result = build_amber_system(
+        pdb_file="missing.pdb",
+        box_dimensions={},
+        forcefield="ff19SB",
+        water_model="opc",
+        job_dir=str(job_dir),
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "explicit_solvent_box_dimensions_missing"
+
+
 def test_forcefield_guardrail_warning_for_ff19sb_opc3():
     results = _evaluate_forcefield_water_guardrails("ff19SB", "opc3")
 
@@ -100,6 +119,78 @@ def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):
 
 def test_openmm_fallback_water_model_invariants():
     assert OPENMM_FALLBACK_WATER_MODELS == set(OPENMM_FALLBACK_WATER_MAP)
+
+
+def test_write_box_dimensions_json_roundtrip(tmp_path):
+    box = {"box_a": 50.0, "box_b": 50.0, "box_c": 50.0,
+           "alpha": 90.0, "beta": 90.0, "gamma": 90.0, "is_cubic": True}
+
+    path = _write_box_dimensions_json(tmp_path, box)
+
+    assert path is not None
+    assert path == tmp_path / "box_dimensions.json"
+    assert json.loads(path.read_text()) == box
+
+
+def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(tmp_path):
+    """OpenMM fallback in node mode must place artifacts directly under
+    ``nodes/<id>/artifacts/`` (no ``solvate_<id>/`` subdirectory) so the
+    paths registered on ``node.json`` resolve to real files. Regression
+    guard for the path-mismatch bug where ``_solvate_with_openmm`` ran
+    ``create_unique_subdir`` while the caller registered a flat path.
+    """
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "solv")
+    node_id = "solv_001"
+
+    def _fake_openmm(*, pdb_path, result, output_dir, output_name, dist,
+                     cubic, salt, saltcon, water_model, subdirectory=True):
+        # Stand-in for the real OpenMM solvation: honour the same
+        # subdirectory contract and persist box_dimensions.json so the
+        # caller's complete_node receives matching artifact paths.
+        from mdclaw.solvation_server import (
+            _write_box_dimensions_json as _wbd,
+        )
+        from mdclaw._common import create_unique_subdir
+        base = Path(output_dir)
+        out_dir = create_unique_subdir(base, "solvate") if subdirectory else base
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / f"{output_name}.pdb").write_text("ATOM\nEND\n")
+        box = {"box_a": 40.0, "box_b": 40.0, "box_c": 40.0,
+               "alpha": 90.0, "beta": 90.0, "gamma": 90.0, "is_cubic": True}
+        _wbd(out_dir, box)
+        result["success"] = True
+        result["output_dir"] = str(out_dir)
+        result["output_file"] = str(out_dir / f"{output_name}.pdb")
+        result["box_dimensions"] = box
+        result["statistics"] = {"total_atoms": 1, "method": "fake"}
+        return result
+
+    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+               return_value=False), \
+         patch("mdclaw.solvation_server._solvate_with_openmm",
+               side_effect=_fake_openmm):
+        result = solvate_structure(
+            pdb_file=str(pdb_file),
+            water_model="tip3p",
+            job_dir=str(job_dir),
+            node_id=node_id,
+        )
+
+    assert result["success"] is True, result.get("errors")
+    artifacts_dir = job_dir / "nodes" / node_id / "artifacts"
+    assert (artifacts_dir / "solvated.pdb").exists()
+    assert (artifacts_dir / "box_dimensions.json").exists()
+
+    node_data = read_node(str(job_dir), node_id)
+    assert node_data["status"] == "completed"
+    assert node_data["artifacts"]["solvated_pdb"] == "artifacts/solvated.pdb"
+    assert node_data["artifacts"]["box_dimensions"] == "artifacts/box_dimensions.json"
+    sha = node_data["metadata"]["artifact_sha256"]
+    assert "solvated_pdb" in sha
+    assert "box_dimensions" in sha
 
 
 def test_parameterize_metal_ion_defaults_to_opc(tmp_path):

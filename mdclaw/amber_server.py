@@ -946,9 +946,23 @@ def build_amber_system(
         ...     water_model="opc"
         ... )
     """
+    solvation_water_model = None
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id:
-        from mdclaw._node import resolve_node_inputs
+        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "topo",
+            actual_conditions={
+                "forcefield": forcefield,
+                "water_model": water_model,
+                "is_membrane": is_membrane,
+                "output_name": output_name,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
         _inputs = resolve_node_inputs(job_dir, node_id, "topo")
         if not pdb_file and "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
@@ -960,6 +974,9 @@ def build_amber_system(
             disulfide_bonds = _inputs["disulfide_bonds"]
         if box_dimensions is None and "box_dimensions" in _inputs:
             box_dimensions = _inputs["box_dimensions"]
+        if not is_membrane and _inputs.get("is_membrane"):
+            is_membrane = True
+        solvation_water_model = _inputs.get("solvation_water_model")
 
     if not pdb_file:
         return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
@@ -1011,6 +1028,14 @@ def build_amber_system(
     # This prevents the bug where solvent_type="explicit" but no PBC is set
     box_dim_warning = None
     original_box_dim = box_dimensions  # Store original for warning
+    explicit_requested = False
+    if job_dir:
+        try:
+            progress_path = Path(job_dir) / "progress.json"
+            progress = json.loads(progress_path.read_text())
+            explicit_requested = progress.get("params", {}).get("solvation_type") == "explicit"
+        except (json.JSONDecodeError, OSError):
+            explicit_requested = False
     if box_dimensions is not None:
         if not isinstance(box_dimensions, dict) or not box_dimensions:
             box_dim_warning = f"CRITICAL: box_dimensions was invalid (empty or not dict): {original_box_dim}. Building IMPLICIT solvent system. If you wanted explicit solvent, ensure solvate step returned box_dimensions and it was passed correctly."
@@ -1024,6 +1049,25 @@ def build_amber_system(
             box_dim_warning = f"CRITICAL: box_dimensions has zero or negative values: {original_box_dim}. Building IMPLICIT solvent system."
             logger.warning(box_dim_warning)
             box_dimensions = None
+    if explicit_requested and box_dimensions is None:
+        blocked = {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "explicit_solvent_box_dimensions_missing",
+            "message": (
+                "This job is marked as explicit solvent but build_amber_system "
+                "has no valid box_dimensions. Re-run solvate_structure or fix "
+                "the solv node artifact before building topology."
+            ),
+            "errors": [
+                box_dim_warning or "Explicit solvent topology requires valid box_dimensions"
+            ],
+            "warnings": [box_dim_warning] if box_dim_warning else [],
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
+        return blocked
 
     # Initialize result structure
     job_id = generate_job_id()
@@ -1089,6 +1133,23 @@ def build_amber_system(
         }
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
+
+    if solvation_water_model and solvation_water_model != water_model:
+        blocked = {
+            **result,
+            **create_validation_error(
+                "water_model",
+                "Topology water_model does not match the solv node water_model",
+                expected=solvation_water_model,
+                actual=water_model,
+                warnings=result["warnings"],
+            ),
+            "code": "solvation_topology_water_model_mismatch",
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked.get("errors", [blocked.get("message", "")]))
+        return blocked
 
     # Validate explicit-solvent compatibility before any filesystem or external-tool checks.
     if box_dimensions:
