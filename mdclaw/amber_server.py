@@ -1269,7 +1269,7 @@ def build_amber_system(
     leap_log_file = out_dir / f"{output_name}.leap.log"
     
     # Copy and fix PDB file (fix UNL residue names if needed)
-    working_pdb = out_dir / f"{output_name}_input.pdb"
+    working_pdb = out_dir / f"{output_name}.tleap_input.pdb"
     ligand_res_names = [lig["residue_name"] for lig in valid_ligands] if valid_ligands else []
     
     # Fix ligand residue names (UNL -> correct name)
