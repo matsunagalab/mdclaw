@@ -10,11 +10,81 @@ You are a computational biophysics expert helping users set up MD simulations us
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 
+## Defaults — Source of Truth
+
+This project uses **ff19SB + OPC** as the modern explicit-water default
+(Amber Manual 2024 recommendation), NOT the legacy `ff14SB + tip3p`
+combination commonly seen in AMBER tutorials and training data. The
+pairing is enforced by guardrails — `ff19SB + tip3p` is rejected as a
+structured error (code `forcefield_water_blocked`).
+
+Do **not** infer defaults from prior AMBER knowledge. The authoritative
+default tables live in:
+
+- `skills/md-prepare/setup.md` — "Tool Defaults" section (general,
+  including pH, cap_termini, charge_method)
+- `skills/md-prepare/explicit-water.md` — "Decision Defaults" table
+  (explicit-water specific: forcefield, water model, box geometry,
+  salt)
+- `skills/md-prepare/implicit-water.md` — implicit-solvent defaults
+
+Read the relevant runbook **before** writing any value into the Step 0
+confirmation summary or executing any tool.
+
+## Workflow
+
+The required execution order is **read → confirm → execute**. Do not
+present defaults to the user, and do not run any tool, before the
+runbooks for the relevant solvation mode have been read.
+
+This skill prepares **one physical system per job directory**. Do not
+create multiple fetch roots in the same DAG. Use DAG branching only
+after `prep` to explore variants of the same system — the most common
+variant is **point/multi-mutants** (run `create_mutated_structure` as
+a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
+
+1. Decide `execution_mode` from the user's request:
+   - `execution_mode=autonomous` unless the user explicitly asks for
+     checkpoint-by-checkpoint confirmation.
+   - Persistence to `progress.json` happens after the fetch node is
+     created (see setup.md), via:
+     ```bash
+     mdclaw update_job_params --job-dir <job_dir> \
+       --params '{"execution_mode":"autonomous"}'
+     ```
+2. **Read `skills/md-prepare/setup.md` first** — Step 0 summary scope
+   (which fields to include), structure acquisition, inspection, chain
+   selection, cleaning, protonation, mutation (Step 3.5), metal ion
+   handling, and the HITL confirmation loop.
+3. **Read the solvation-specific runbook** — required before stating
+   any forcefield / water / box default to the user:
+   - Explicit water (default) → `skills/md-prepare/explicit-water.md`
+   - Implicit solvent → `skills/md-prepare/implicit-water.md`
+4. **Now present the Step 0 confirmation summary** (see Step 0 below)
+   to the user. Only the fields enumerated there belong in the table —
+   forcefield, water model, box geometry, etc. are tool-level defaults
+   surfaced from the runbooks read in steps 2–3 and are not part of
+   the user-facing summary unless the user explicitly named them.
+5. Execute prepare_complex / mutate / solv / topo per setup.md and the
+   solvation runbook. Create nodes first, then run workflow tools with
+   both `--job-dir` and `--node-id`.
+6. After `topo_001` completes, hand off: tell the user to invoke
+   `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
+   auto-chain into equilibration — each stage is user-initiated.
+
 ## Step 0: Parse and Confirm
 
-Before executing anything, extract parameters from the user's request and present a summary. The target identifier is the most important parameter — copy it exactly from the user's message without relying on conversation history, because earlier parts of the conversation may mention different systems.
+Run this **after** Workflow steps 2–3 (the runbooks have been read).
 
-Summary to present:
+The summary table includes only the fields listed below. Do **not**
+add forcefield, water model, box geometry, or any other tool-level
+default to this table — those values come from the runbooks and are
+applied silently by the tools unless the user explicitly named one.
+
+The target identifier is the most important parameter — copy it
+exactly from the user's message without relying on conversation
+history; earlier parts of the conversation may mention different
+systems.
 
 | Parameter | Value |
 |-----------|-------|
@@ -23,39 +93,18 @@ Summary to present:
 | Chain(s) | (if specified) |
 | Ligands | include / exclude |
 | Solvation | explicit (default) / implicit |
-| Other | (any non-default parameters) |
+| Mutations | (if any — one-letter notation, e.g. K27A) |
+| Production length | (if specified) |
+| Other | (only parameters the user explicitly named — do not pre-fill defaults here) |
 
-This confirmation step applies to all interaction modes including autonomous. Misidentifying the target cannot be recovered later.
+This confirmation step applies to all interaction modes including
+autonomous. Misidentifying the target cannot be recovered later.
 
-## Workflow
-
-This skill prepares **one physical system per job directory**. Do not create
-multiple fetch roots in the same DAG. Use DAG branching only after `prep`
-to explore variants of the same system — the most common variant is
-**point/multi-mutants** (run `create_mutated_structure` as a post-prep
-prep node; see `setup.md` "Step 3.5: Mutation (optional)").
-
-1. Decide `execution_mode` from the user's request and persist it in
-   `progress.json` once `job_dir` is known:
-   - `execution_mode=autonomous` unless the user explicitly asks for
-     checkpoint-by-checkpoint confirmation.
-   - Persist via:
-     ```bash
-     mdclaw update_job_params --job-dir <job_dir> \
-       --params '{"execution_mode":"autonomous"}'
-     ```
-   - Treat this DAG layout as the only supported workflow state model.
-     Create nodes first, then run workflow tools with both `--job-dir`
-     and `--node-id`.
-2. **Read and follow `skills/md-prepare/setup.md`** — Structure acquisition,
-   inspection, chain selection, cleaning, and protonation. Metal ion
-   handling and the HITL confirmation loop live here too.
-3. **Based on the solvation type**, read the appropriate file:
-   - Explicit water (default) → **Read and follow `skills/md-prepare/explicit-water.md`**
-   - Implicit solvent → **Read and follow `skills/md-prepare/implicit-water.md`**
-4. After `topo_001` completes, hand off: tell the user to invoke
-   `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
-   auto-chain into equilibration — each stage is user-initiated.
+**Common LLM failure mode**: filling this table with training-data
+AMBER defaults (`ff14SB + tip3p`, FF99SB-ILDN, `tip3p` water, etc.).
+This repo's actual default is **ff19SB + OPC** and the guardrail
+rejects mixing them with the legacy water model. Trust the runbooks,
+not your prior knowledge.
 
 ## Interaction Mode
 
