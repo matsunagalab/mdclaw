@@ -23,7 +23,7 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 ## Prerequisites
 
 Read `progress.json` -- find a completed `eq` node.
-(`prmtop_file`, `inpcrd_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool.)
+(`prmtop_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are auto-resolved from DAG ancestors by the tool. The eq node's `metadata.final_ensemble` (`NPT`/`NVT`) determines whether prod adds a matching `MonteCarloBarostat`, so ensemble matches between the two stages by default.)
 
 If no completed eq node exists, suggest `/md-equilibration <job_dir>` first.
 

@@ -28,16 +28,23 @@
 ```bash
 mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --simulation-time-ns <user_specified> \
-  --temperature-kelvin <T> --pressure-bar 1.0 \
+  --temperature-kelvin <T> \
   --output-frequency-ps 10.0
 ```
 
 If the user does not specify a run length and `execution_mode=autonomous`,
 use `--simulation-time-ns 0.1` as the default sanity check.
 
-`prmtop_file`, `inpcrd_file`, and `restart_from` are all auto-resolved from DAG
-ancestors. Topology comes from the `topo` ancestor. The checkpoint rule depends
-on how the prod node was created:
+`prmtop_file`, `inpcrd_file`, `restart_from`, **and `pressure_bar`** are all
+auto-resolved from DAG ancestors. Topology comes from the `topo` ancestor.
+Ensemble is inherited from the `eq` ancestor — when the eq node's
+`metadata.final_ensemble == "NPT"`, prod automatically adds a matching
+`MonteCarloBarostat` at the eq's `pressure_bar` so the saved `state.xml`
+loads cleanly. Pass `--pressure-bar` only to override the inherited value
+(e.g. running NVT prod from an NPT-equilibrated state requires explicitly
+producing a fresh NVT eq state — see Troubleshooting below).
+
+The checkpoint rule depends on how the prod node was created:
 
 - **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
   `checkpoint.chk` (no fallback; missing checkpoint = hard error).
@@ -166,6 +173,7 @@ Prefer the extension-node workflow above.
 | NaN energies | Clashes | Re-equilibrate or re-prepare |
 | Slow performance | GPU not detected | Check `--platform CUDA` |
 | Barostat instability | Temperature mismatch | Match barostat and integrator T |
+| `Ensemble mismatch: ... MonteCarloPressure ...` (structured error) | NPT-equilibrated state.xml loaded into an NVT prod context | Either let prod auto-inherit ensemble (omit `--pressure-bar`) or pass the eq's pressure explicitly. To run NVT prod intentionally, rerun the eq node with `--pressure-bar 0` to produce a barostat-free state. |
 
 ---
 

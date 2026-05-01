@@ -887,6 +887,23 @@ def resolve_node_inputs(
             if src:
                 result["restart_from"] = src
 
+        # Surface the eq ancestor's ensemble so prod can inherit it. Without
+        # this, an NPT eq state cannot be loaded into a default-config
+        # (NVT) prod context — OpenMM raises
+        # ``setParameter() with invalid parameter name: MonteCarloPressure``
+        # because the saved state references a barostat the new context
+        # never received. The prod tool reads ``eq_final_ensemble`` /
+        # ``eq_pressure_bar`` and adds the matching barostat when the
+        # caller hasn't supplied an explicit pressure_bar.
+        eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
+        if eq_anc is not None:
+            fe = _read_metadata_field(job_dir, eq_anc, "final_ensemble")
+            if isinstance(fe, str):
+                result["eq_final_ensemble"] = fe
+            pb = _read_metadata_field(job_dir, eq_anc, "pressure_bar")
+            if isinstance(pb, (int, float)):
+                result["eq_pressure_bar"] = float(pb)
+
     elif node_type == "analyze":
         # Analyze nodes resolve inputs based on how many parents they
         # have and whether those parents are prods or analyze nodes.
@@ -1270,7 +1287,8 @@ def read_ancestor_final_step(job_dir: str, node_id: str) -> Optional[int]:
     """
     continued_from = _read_continued_from(job_dir, node_id)
     if continued_from is not None:
-        return _read_metadata_field(job_dir, continued_from, "final_step")
+        v = _read_metadata_field(job_dir, continued_from, "final_step")
+        return v if isinstance(v, int) else None
 
     # Default path matches resolve_node_inputs: prod ancestor first,
     # then eq ancestor. Walk parents in the same order.
@@ -1279,14 +1297,17 @@ def read_ancestor_final_step(job_dir: str, node_id: str) -> Optional[int]:
         if anc_id is None:
             continue
         v = _read_metadata_field(job_dir, anc_id, "final_step")
-        if v is not None:
+        if isinstance(v, int):
             return v
     return None
 
 
 def _read_metadata_field(
     job_dir: str, node_id: str, field: str
-) -> Optional[int]:
+):
+    """Return ``node.json.metadata[field]`` for *node_id*, or ``None`` if
+    the file/field is missing or unreadable. Type-agnostic — callers cast
+    or ``isinstance``-check as needed."""
     nj = Path(job_dir) / "nodes" / node_id / "node.json"
     if not nj.exists():
         return None
@@ -1294,8 +1315,7 @@ def _read_metadata_field(
         data = json.loads(nj.read_text())
     except (json.JSONDecodeError, OSError):
         return None
-    value = data.get("metadata", {}).get(field)
-    return value if isinstance(value, int) else None
+    return data.get("metadata", {}).get(field)
 
 
 def _find_ancestor_node_id(

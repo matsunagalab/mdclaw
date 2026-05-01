@@ -715,6 +715,14 @@ def run_equilibration(
                     "restraint_count": result.get("restraint_count"),
                     "temperature_kelvin": temperature_kelvin,
                     "pressure_bar": pressure_bar,
+                    # Final ensemble of the saved state.xml — NPT only when
+                    # the NPT stage actually ran. Prod's auto-resolver reads
+                    # this so a default-config prod inherits eq's ensemble
+                    # and the loadState parameter set matches the System.
+                    "final_ensemble": (
+                        "NPT" if (pressure_bar and pressure_bar > 0
+                                  and npt_steps > 0) else "NVT"
+                    ),
                     "final_step": 0,
                 })
         else:
@@ -817,6 +825,9 @@ def run_production(
             - warnings: list[str] - Non-critical warnings
     """
     # Auto-resolve inputs from DAG when in node mode
+    _eq_final_ensemble: Optional[str] = None
+    _eq_pressure_bar: Optional[float] = None
+    _pressure_bar_inherited = False
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
@@ -830,6 +841,24 @@ def run_production(
             inpcrd_file = _inputs["inpcrd_file"]
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+        _eq_final_ensemble = _inputs.get("eq_final_ensemble")
+        _eq_pressure_bar = _inputs.get("eq_pressure_bar")
+        # Inherit eq's ensemble when caller did not specify pressure
+        # explicitly. Without this an NPT-equilibrated state.xml cannot
+        # be loaded into a default-config (NVT) prod context — OpenMM's
+        # loadState fails with
+        # ``setParameter() with invalid parameter name: MonteCarloPressure``
+        # because the saved state references a MonteCarloBarostat that
+        # the new context never received.
+        if (pressure_bar is None
+                and _eq_final_ensemble == "NPT"
+                and _eq_pressure_bar is not None):
+            pressure_bar = _eq_pressure_bar
+            _pressure_bar_inherited = True
+            logger.info(
+                f"pressure_bar inherited from eq ancestor "
+                f"(final_ensemble=NPT, {pressure_bar} bar)"
+            )
 
     if not prmtop_file or not inpcrd_file:
         return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
@@ -1095,6 +1124,48 @@ def run_production(
             # .chk both remain on disk; resolve_node_inputs picks .xml
             # first when available.
             if restart_path.suffix == ".xml":
+                # Guardrail: ensemble mismatch between the saved state and
+                # the current System. OpenMM's loadState restores all
+                # context parameters by name, and rejects unknown ones
+                # with an opaque ``setParameter() with invalid parameter
+                # name: ...`` exception. Detect the common case
+                # (NPT eq state → NVT prod context) up front so the user
+                # sees a structured error and a concrete fix instead of
+                # an internal OpenMM message.
+                state_has_pressure = (
+                    "MonteCarloPressure" in restart_path.read_text()
+                )
+                system_has_barostat = any(
+                    isinstance(f, (MonteCarloBarostat,
+                                   MonteCarloMembraneBarostat))
+                    for f in system.getForces()
+                )
+                if state_has_pressure and not system_has_barostat:
+                    suggested = (
+                        f"--pressure-bar {_eq_pressure_bar}"
+                        if _eq_pressure_bar is not None
+                        else "--pressure-bar 1.0"
+                    )
+                    result["errors"].append(
+                        "Ensemble mismatch: the equilibration state at "
+                        f"{restart_path} contains an NPT barostat "
+                        "(MonteCarloPressure parameter) but this prod "
+                        "context was configured as NVT (no barostat). "
+                        f"Pass {suggested} to add a matching barostat, "
+                        "or rerun equilibration with --pressure-bar 0 to "
+                        "produce an NVT state."
+                    )
+                    if _node_mode:
+                        from mdclaw._node import fail_node
+                        fail_node(job_dir, node_id, errors=result["errors"])
+                    return result
+                if system_has_barostat and not state_has_pressure:
+                    result["warnings"].append(
+                        "Ensemble mismatch (mild): prod has a barostat but "
+                        "the eq state lacks NPT parameters. The initial "
+                        "pressure may not match the eq's final state."
+                    )
+
                 simulation.loadState(str(restart_path))
                 # loadState does NOT restore simulation.currentStep —
                 # it only carries positions/velocities/box. Pull the
@@ -1108,6 +1179,11 @@ def run_production(
                 logger.info(
                     f"Restarted from state XML (step {simulation.currentStep})"
                 )
+                if _pressure_bar_inherited:
+                    result["warnings"].append(
+                        f"pressure_bar={pressure_bar} inherited from eq "
+                        f"ancestor (final_ensemble=NPT)."
+                    )
             else:
                 simulation.loadCheckpoint(str(restart_path))
                 logger.info(
