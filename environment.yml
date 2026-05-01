@@ -12,3 +12,4 @@ dependencies:
   - pip
   - pip:
     - -e .
+    - git+https://github.com/matsunagalab/FASPR

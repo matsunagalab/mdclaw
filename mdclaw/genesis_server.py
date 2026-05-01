@@ -29,6 +29,8 @@ from typing import Dict, Any, Optional  # noqa: E402
 
 import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
+from rdkit.Chem import Descriptors  # noqa: E402
+from py_FASPR import faspr  # noqa: E402
 from pubchempy import get_compounds  # noqa: E402
 
 from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
@@ -690,6 +692,86 @@ def analyze_plip_interactions(pdb_file: str) -> dict:
         return result
 
 
+def create_mutated_structure(
+        pdb_file: str,
+        sequence: Optional[str] = None,
+        seq_file: Optional[str] = None,
+        name: Optional[str] = None,
+        output_dir: Optional[str] = None,) -> dict:
+    """Create a structure file of mutated protein using FASPR.
+    Generate a mutated structure file of the original protein according to amino acid sequence or sequence .txt file.
+    Mutant pdb is generated with FASPR.
+
+    Args:
+        pdb_file: PDB file of base structure.
+        sequence: Amino acid sequence string of mutant protein
+        seq_file: Sequence file of mutant protein ()
+        name: Optional name prefix for output files
+        output_dir: Output directory
+
+    Returns:
+        Dict with:
+            - success: bool - True if generation completed
+            - output_dir: str - Output directory
+            - output_path: str - Path to output pdb file
+            - errors: list[str] - Error messages if any
+
+    Note: To specify mutetad residues, it is recommended to 
+    """
+
+    result = {
+        "success": False,
+        "output_dir": None,
+        "output_path": None,
+        "errors": [],
+    }
+
+    # Varidate sequence input
+    if (sequence and seq_file) or not (sequence or seq_file):
+        result["errors"].append("Please enter either sequence or seq_file")
+
+        return result
+    else:
+
+        pref = f"{name}_" if name else ""
+        base_dir = Path(output_dir) if output_dir else WORKING_DIR
+        out_dir = create_unique_subdir(base_dir, "faspr")
+
+        pdb_path = Path(pdb_file).resolve()
+        if not pdb_path.is_file():
+            result["errors"].append("Input PDB file not found")
+            return result
+        
+        if seq_file:
+            seq_path = Path(seq_file).resolve()
+            if not seq_path.is_file():
+                result["errors"].append("sequence file not found")
+                return result
+        else:
+            seq_path = Path(out_dir / f"{pref}sequence.txt").resolve()
+            with open(seq_path, "w") as f:
+                f.write(sequence)
+            
+        output_path = Path(out_dir / f"{pref}mutated.pdb").resolve()
+
+        # Run FASPR
+        logger.info("Building mutated structure")
+        faspr(input_pdb=str(pdb_path), output_pdb=str(output_path), seq_file=str(seq_path))
+
+        if output_path.is_file():
+            result["output_dir"] = out_dir
+            result["output_path"] = str(output_path)
+            logger.info("FASPR successfully generated mutant structure")
+
+        else:
+            result["errors"].append("FASPR generated no pdb file")
+            return result
+        
+    result["success"] = "true"
+
+    return result
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
@@ -699,4 +781,5 @@ TOOLS = {
     "rdkit_validate_smiles": rdkit_validate_smiles,
     "pubchem_get_smiles_from_name": pubchem_get_smiles_from_name,
     "analyze_plip_interactions": analyze_plip_interactions,
+    "create_mutated_structure": create_mutated_structure,
 }
