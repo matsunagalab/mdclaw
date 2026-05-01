@@ -4482,6 +4482,15 @@ def prepare_complex(
         logger.info("Step 1: Inspecting structure...")
         inspection = _inspect_molecules_impl(str(structure_file))
 
+        # PTM detection (SEP / TPO / PTR). Recorded *before* cleaning, since
+        # PDBFixer's replaceNonstandardResidues will swap them for SER/THR/TYR
+        # in the output merged.pdb. The list lets a follow-up
+        # `phosphorylate_residues --restore-from-detection` re-introduce them
+        # on a branched prep node, and lets `build_amber_system` decide
+        # whether to source `leaprc.phosaa*`.
+        from mdclaw.research_server import detect_ptm_sites
+        detected_ptm_residues = detect_ptm_sites(str(structure_file))
+
         # Token optimization: Store only essential inspection info (not full chains/entities)
         result["inspection"] = {
             "success": inspection["success"],
@@ -5060,6 +5069,8 @@ def prepare_complex(
                             preparation_summary.get("missing_residues_count", 0) + val
                     elif key not in preparation_summary:
                         preparation_summary[key] = val
+        if detected_ptm_residues:
+            preparation_summary["detected_ptm_residues"] = detected_ptm_residues
         result["preparation_summary"] = preparation_summary
 
         # -- confirmation_needed: structured block for HITL review --------
@@ -5390,6 +5401,380 @@ def create_mutated_structure(
 
 
 # =============================================================================
+# Phosphorylation
+# =============================================================================
+
+# Map of phospho residue → its plain (post-PDBFixer) counterpart and the
+# hydroxyl hydrogen atom name we must strip so tleap can rebuild the
+# phosphate from `phosaa*.lib` against the existing OG / OG1 / OH oxygen.
+_PHOSPHO_TARGETS = {
+    "SEP": {"source": "SER", "hydroxyl_h": "HG"},
+    "TPO": {"source": "THR", "hydroxyl_h": "HG1"},
+    "PTR": {"source": "TYR", "hydroxyl_h": "HH"},
+}
+
+
+def _parse_sites_str(sites_str: str) -> list[dict]:
+    """Parse "A:65:SEP,A:178:TPO" into a list of site dicts."""
+    out: list[dict] = []
+    for chunk in sites_str.split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        parts = chunk.split(":")
+        if len(parts) != 3:
+            raise ValueError(
+                f"Invalid site entry '{chunk}': expected 'CHAIN:RESNUM:TARGET'"
+            )
+        chain, resnum_s, target = parts
+        try:
+            resnum = int(resnum_s)
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid resnum in site '{chunk}': '{resnum_s}'"
+            ) from e
+        out.append({"chain": chain.strip(), "resnum": resnum, "target": target.strip().upper()})
+    return out
+
+
+def _apply_phosphorylation_to_pdb(
+    in_path: Path,
+    out_path: Path,
+    sites: list[dict],
+) -> dict:
+    """Rename target residues to SEP/TPO/PTR and strip hydroxyl hydrogens.
+
+    Operates on standard PDB format (cols 18-20 = resName, col 22 = chainID,
+    cols 23-26 = resSeq, cols 13-16 = atom name). `clean_protein` always
+    emits standard PDB so single-character chain IDs are guaranteed.
+
+    Returns a dict with:
+        applied: list of fully-applied sites (chain, resnum, target, source)
+        mismatch: list of sites whose current residue did not match the
+                  expected source residue for the requested target
+        not_found: list of sites whose (chain, resnum) was not found in the PDB
+    """
+    site_map: dict[tuple, str] = {}
+    for s in sites:
+        site_map[(s["chain"], int(s["resnum"]))] = s["target"]
+
+    seen: dict[tuple, str] = {}
+    mismatch: list[dict] = []
+
+    with in_path.open() as fin, out_path.open("w") as fout:
+        for line in fin:
+            if line.startswith(("ATOM  ", "HETATM")):
+                resname = line[17:20].strip()
+                chain = line[21:22].strip()
+                resnum_field = line[22:26].strip()
+                try:
+                    resnum = int(resnum_field)
+                except ValueError:
+                    fout.write(line)
+                    continue
+                atom_name = line[12:16].strip()
+                key = (chain, resnum)
+                if key in site_map:
+                    target = site_map[key]
+                    spec = _PHOSPHO_TARGETS.get(target)
+                    if spec is None:
+                        # Already validated upstream, but be defensive.
+                        fout.write(line)
+                        continue
+                    expected_source = spec["source"]
+                    if resname != expected_source:
+                        if key not in seen:
+                            mismatch.append({
+                                "chain": chain,
+                                "resnum": resnum,
+                                "expected": expected_source,
+                                "actual": resname,
+                                "target": target,
+                            })
+                            seen[key] = "mismatch"
+                        fout.write(line)
+                        continue
+                    seen[key] = target
+                    if atom_name == spec["hydroxyl_h"]:
+                        # Drop the hydroxyl hydrogen — tleap rebuilds the
+                        # phosphate from the phosaa template.
+                        continue
+                    new_line = line[:17] + f"{target:>3}" + line[20:]
+                    fout.write(new_line)
+                    continue
+            fout.write(line)
+
+    applied = [
+        {
+            "chain": chain,
+            "resnum": resnum,
+            "target": target,
+            "source": _PHOSPHO_TARGETS[target]["source"],
+        }
+        for (chain, resnum), target in seen.items()
+        if target != "mismatch"
+    ]
+    not_found = [
+        {"chain": chain, "resnum": resnum, "target": tgt}
+        for (chain, resnum), tgt in site_map.items()
+        if (chain, resnum) not in seen
+    ]
+    return {"applied": applied, "mismatch": mismatch, "not_found": not_found}
+
+
+def phosphorylate_residues(
+    pdb_file: Optional[str] = None,
+    sites: Optional[List[Dict[str, Any]]] = None,
+    sites_str: Optional[str] = None,
+    restore_from_detection: bool = False,
+    name: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Apply phosphorylation (SER→SEP / THR→TPO / TYR→PTR) to a *cleaned* PDB.
+
+    Phosphorylation is a post-prep transformation that runs on a branched
+    ``prep`` node (parallels ``create_mutated_structure``). The DAG shape::
+
+        fetch_001 → prep_001 (prepare_complex) → prep_002 (this tool)
+                                                 → solv_001 → ...
+
+    Three input modes (mutually exclusive):
+
+    - ``restore_from_detection=True`` — reads
+      ``metadata.detected_ptm_residues`` from the nearest prep ancestor
+      (recorded by ``prepare_complex``) and re-introduces the same set of
+      sites. Use when the source PDB carried PTMs and you want them back
+      after PDBFixer's standard nonstandard-residue replacement.
+    - ``sites=[{"chain":"A","resnum":65,"target":"SEP"}, ...]`` — explicit list.
+    - ``sites_str="A:65:SEP,A:178:TPO"`` — CLI sugar for the same.
+
+    Each site's *current* residue (in ``merged_pdb``) must be the standard
+    counterpart of the requested target (``SEP`` requires ``SER`` etc.).
+    The tool renames the residue and strips the hydroxyl hydrogen
+    (``HG`` / ``HG1`` / ``HH``); ``OG`` / ``OG1`` / ``OH`` is kept as the
+    phosphate linkage atom. ``build_amber_system`` then rebuilds the phosphate
+    atoms from ``leaprc.phosaa19SB`` / ``phosaa14SB``.
+
+    Args:
+        pdb_file: Cleaned PDB (output of ``prepare_complex``). Required
+                  unless running in node mode with a resolvable prep ancestor.
+        sites: Explicit site list. See docstring head.
+        sites_str: CLI sugar. See docstring head.
+        restore_from_detection: Use sites recorded by ``prepare_complex``.
+        name: Optional name prefix for output files (e.g. "p_a65_a178").
+        output_dir: Output directory (ignored in node mode).
+        job_dir: DAG job directory (node mode).
+        node_id: Node ID; expected ``node_type=prep`` with a prep parent.
+
+    Returns:
+        Dict with success / output_path / applied_sites / errors / warnings.
+    """
+    result = {
+        "success": False,
+        "output_dir": None,
+        "output_path": None,
+        "applied_sites": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+    # Mutual exclusivity check
+    explicit_modes = sum(
+        1 for v in (sites, sites_str, restore_from_detection) if v
+    )
+    if explicit_modes != 1:
+        result["errors"].append(
+            "Provide exactly one of: --sites (JSON list), --sites-str "
+            "('CHAIN:RESNUM:TARGET,...'), or --restore-from-detection."
+        )
+        return result
+
+    if job_dir and node_id:
+        from mdclaw._node import validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "prep",
+            actual_conditions={
+                "restore_from_detection": restore_from_detection,
+                "explicit_sites": bool(sites or sites_str),
+                "name": name,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
+
+    # Resolve site list
+    resolved_sites: list[dict] = []
+    if restore_from_detection:
+        if not (job_dir and node_id):
+            result["errors"].append(
+                "--restore-from-detection requires --job-dir and --node-id."
+            )
+            return result
+        from mdclaw._node import find_ancestor_metadata
+        detected = find_ancestor_metadata(
+            job_dir, node_id, "prep", "detected_ptm_residues"
+        )
+        if not detected:
+            result["errors"].append(
+                "No detected_ptm_residues metadata on any prep ancestor. "
+                "Was prepare_complex run on a structure with SEP/TPO/PTR?"
+            )
+            return result
+        for d in detected:
+            resolved_sites.append({
+                "chain": d["chain"],
+                "resnum": int(d["resnum"]),
+                "target": d["name"],
+            })
+    elif sites_str:
+        try:
+            resolved_sites = _parse_sites_str(sites_str)
+        except ValueError as e:
+            result["errors"].append(str(e))
+            return result
+    else:
+        for s in sites or []:
+            try:
+                resolved_sites.append({
+                    "chain": s["chain"],
+                    "resnum": int(s["resnum"]),
+                    "target": s.get("target", s.get("name", "")).upper(),
+                })
+            except (KeyError, TypeError, ValueError) as e:
+                result["errors"].append(
+                    f"Invalid site entry {s!r}: {type(e).__name__}: {e}"
+                )
+                return result
+
+    if not resolved_sites:
+        result["errors"].append("Resolved site list is empty.")
+        return result
+
+    invalid = [s for s in resolved_sites if s["target"] not in _PHOSPHO_TARGETS]
+    if invalid:
+        result["errors"].append(
+            f"Unsupported target residue(s): {invalid}. "
+            f"Supported: {sorted(_PHOSPHO_TARGETS)}."
+        )
+        return result
+
+    # Auto-resolve input from nearest prep ancestor
+    if job_dir and node_id and not pdb_file:
+        from mdclaw._node import find_ancestor_artifact
+        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+        if v:
+            pdb_file = v
+
+    if not pdb_file:
+        result["errors"].append(
+            "pdb_file is required (or pass --job-dir/--node-id with a prep "
+            "ancestor that provides a merged_pdb artifact)."
+        )
+        return result
+
+    pdb_path = Path(pdb_file).resolve()
+    if not pdb_path.is_file():
+        result["errors"].append(f"Input PDB file not found: {pdb_file}")
+        return result
+
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import begin_node
+        base_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        base_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    elif output_dir:
+        base_dir = Path(output_dir)
+    else:
+        base_dir = create_unique_subdir(WORKING_DIR, "phospho")
+    ensure_directory(base_dir)
+
+    pref = f"{name}_" if name else ""
+    output_path = (base_dir / f"{pref}phosphorylated.pdb").resolve()
+
+    edit_result = _apply_phosphorylation_to_pdb(
+        pdb_path, output_path, resolved_sites
+    )
+
+    if edit_result["mismatch"]:
+        result["errors"].append(
+            "Residue/target mismatch — refusing to write a partial result. "
+            f"Details: {edit_result['mismatch']}"
+        )
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    if edit_result["not_found"]:
+        result["warnings"].append(
+            "The following sites were not located in the input PDB and were "
+            f"skipped: {edit_result['not_found']}"
+        )
+
+    if not edit_result["applied"]:
+        result["errors"].append(
+            "No sites were applied (input PDB did not contain any of the "
+            "requested residues)."
+        )
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    result["success"] = True
+    result["output_dir"] = str(base_dir)
+    result["output_path"] = str(output_path)
+    result["applied_sites"] = edit_result["applied"]
+    logger.info(
+        "Phosphorylation applied: %s sites -> %s",
+        len(edit_result["applied"]),
+        output_path,
+    )
+
+    if _node_mode:
+        from mdclaw._node import complete_node
+        rel_out = f"artifacts/{output_path.name}"
+        ptm_residues_meta = [
+            {
+                "chain": s["chain"],
+                "resnum": s["resnum"],
+                "name": s["target"],
+                "source": "detected" if restore_from_detection else "introduced",
+            }
+            for s in edit_result["applied"]
+        ]
+        complete_node(
+            job_dir, node_id,
+            artifacts={
+                "merged_pdb": rel_out,
+                "phosphorylated_pdb": rel_out,
+            },
+            metadata={
+                "name": name,
+                "phosphorylation_source_pdb": str(pdb_path),
+                "ptm_residues": ptm_residues_meta,
+                "restore_from_detection": restore_from_detection,
+            },
+            warnings=result.get("warnings", []),
+        )
+
+    return result
+
+
+# =============================================================================
 # Tool Registry
 # =============================================================================
 
@@ -5401,5 +5786,6 @@ TOOLS = {
     "merge_structures": merge_structures,
     "prepare_complex": prepare_complex,
     "create_mutated_structure": create_mutated_structure,
+    "phosphorylate_residues": phosphorylate_residues,
     "download_amber_geostd": download_amber_geostd,
 }

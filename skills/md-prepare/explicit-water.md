@@ -94,6 +94,14 @@ mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex
 `structure_file` is auto-resolved from the `fetch` parent. Pass
 `--structure-file` only to override (e.g., to use a manually edited PDB).
 
+If the input PDB contained SEP / TPO / PTR residues, they are listed
+under `preparation_summary.detected_ptm_residues` and on the prep node's
+metadata. PDBFixer will have replaced them with SER / THR / TYR in
+`merged.pdb` by design — re-introduce them with
+`phosphorylate_residues --restore-from-detection` on a branched prep
+node before solvation. See `setup.md` "Step 3.6: Phosphorylation" for
+details.
+
 ---
 
 ## Step 4: Solvation

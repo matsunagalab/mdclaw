@@ -55,6 +55,16 @@ PROTEIN_FORCEFIELDS = {
     "ff14sbonlysc": "leaprc.protein.ff14SBonlysc",
 }
 
+# Phosphorylated-residue (SEP/TPO/PTR) libraries paired by Amber convention to
+# each protein forcefield. `phosaa19SB` was the Amber 2020+ refit for ff19SB;
+# `phosaa14SB` is the ff14SB-compatible version; `phosaa10` is the older
+# generic library and is used as a fallback.
+PHOSAA_LIBRARY_FOR_FF = {
+    "ff19SB": "leaprc.phosaa19SB",
+    "ff14SB": "leaprc.phosaa14SB",
+    "ff14SBonlysc": "leaprc.phosaa14SB",
+}
+
 WATER_FORCEFIELDS = {
     "tip3p": "leaprc.water.tip3p",
     "opc": "leaprc.water.opc",
@@ -1539,6 +1549,33 @@ def build_amber_system(
         if box_dimensions is None:
             result["implicit_ligand_diagnostics"] = implicit_ligand_diagnostics(valid_ligands)
     
+    # PTM detection: scan the input PDB for SEP/TPO/PTR. If present, source
+    # the matching `leaprc.phosaa*` library after the protein leaprc line so
+    # tleap can rebuild the phosphate atoms from the template against the
+    # OG / OG1 / OH oxygen kept by `phosphorylate_residues`.
+    from mdclaw.research_server import detect_ptm_sites
+    ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
+    phosaa_library = None
+    if ptm_residues_in_input:
+        phosaa_library = PHOSAA_LIBRARY_FOR_FF.get(forcefield)
+        if phosaa_library is None:
+            err = create_validation_error(
+                "forcefield",
+                f"Forcefield '{forcefield}' has no matching `leaprc.phosaa*` "
+                f"library, but the input PDB contains PTM residues "
+                f"({sorted({s['name'] for s in ptm_residues_in_input})}).",
+                expected="ff19SB or ff14SB (which pair with phosaa19SB / phosaa14SB)",
+                actual=forcefield,
+                warnings=result["warnings"],
+                code="phospho_forcefield_unsupported",
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=err.get("errors", []))
+            return {**result, **err}
+        result["parameters"]["phosaa_library"] = phosaa_library
+        result["parameters"]["ptm_residues"] = ptm_residues_in_input
+
     try:
         # Build tleap script
         script_lines = []
@@ -1546,10 +1583,13 @@ def build_amber_system(
         script_lines.append(f"# Job ID: {job_id}")
         script_lines.append(f"# Solvent type: {result['solvent_type']}")
         script_lines.append("")
-        
+
         # Load force fields
         script_lines.append("# Load force fields")
         script_lines.append(f"source {protein_ff}")
+        if phosaa_library:
+            # phosaa* must be sourced AFTER the protein leaprc per Amber docs.
+            script_lines.append(f"source {phosaa_library}")
         script_lines.append("source leaprc.gaff2")
         
         if box_dimensions:
@@ -1830,6 +1870,8 @@ def build_amber_system(
                     "water_model": water_model if solvent_type == "explicit" else None,
                     "solvent_type": solvent_type,
                     "is_membrane": is_membrane,
+                    "phosaa_library": phosaa_library,
+                    "ptm_residues": ptm_residues_in_input or None,
                 })
             summary_params = {
                 "forcefield": forcefield,

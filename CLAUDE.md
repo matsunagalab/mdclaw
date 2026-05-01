@@ -320,7 +320,8 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `get_structure_info(pdb_id)` - Get PDB entry metadata
 - `get_alphafold_structure(uniprot_id, format, output_dir, job_dir, node_id)` - Compatibility wrapper for AlphaFold DB fetch. In node mode, records `source_type=alphafold`, `model_version`, `cached=false` (AlphaFold entries are not locally cached)
 - `register_local_structure(file_path, job_dir, node_id, copy)` - Compatibility wrapper for local file fetch. Default copies the file; `--no-copy` symlinks it (fragile).
-- `inspect_molecules(structure_file, job_dir, node_id)` - Analyze chains, ligands, ions. With `job_dir`/`node_id`, writes `inspection.json` under the node and emits an `inspection_completed` event (read-only — node status unchanged)
+- `inspect_molecules(structure_file, job_dir, node_id)` - Analyze chains, ligands, ions. With `job_dir`/`node_id`, writes `inspection.json` under the node and emits an `inspection_completed` event (read-only — node status unchanged). `summary.ptm_residues` lists any SEP/TPO/PTR sites present, and `notes.ptm_handling` carries the handoff message to `phosphorylate_residues`.
+- `detect_ptm_sites(structure_file)` - Helper used by `prepare_complex` and `build_amber_system` to scan a PDB/CIF for SEP/TPO/PTR sites; returns `[{"chain","resnum","name"}, ...]`.
 - `search_structures(query)` - Search PDB database
 - `search_proteins(query)` / `get_protein_info(uniprot_id)` - UniProt
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
@@ -334,6 +335,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
 - `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
 - `create_mutated_structure(pdb_file, sequence, seq_file, name, output_dir, job_dir, node_id)` - In-silico mutagenesis via FASPR side-chain packing. Pass exactly one of `sequence` (FASPR-format string, lowercase=keep, uppercase=mutate) or `seq_file`. Designed to run AFTER `prepare_complex` as a `prep`-type node: in node mode, `pdb_file` auto-resolves from the nearest prep ancestor's `merged_pdb` artifact, and the mutated PDB is registered as both `merged_pdb` and `mutated_pdb` so the downstream `solv` resolver picks it up automatically. DAG: fetch → prep (clean) → prep (mutate) → solv → topo → eq → prod.
+- `phosphorylate_residues(pdb_file, sites, sites_str, restore_from_detection, name, output_dir, job_dir, node_id)` - Apply phosphorylation (SER→SEP / THR→TPO / TYR→PTR) on a branched `prep` node after `prepare_complex`. Three input modes (mutually exclusive): `restore_from_detection=True` reads `metadata.detected_ptm_residues` from the nearest prep ancestor (re-introduces PTMs that the source PDB carried but PDBFixer stripped); `sites=[{"chain","resnum","target"}, ...]` for explicit sites; `sites_str="A:65:SEP,A:178:TPO"` for the same as a CLI string. Each site's current residue must be the standard counterpart of the target — mismatches return a structured error. The tool renames the residue and strips the hydroxyl H (`HG`/`HG1`/`HH`), keeping `OG`/`OG1`/`OH`; `build_amber_system` then rebuilds the phosphate atoms via `leaprc.phosaa*`. The phosphorylated PDB is registered as both `merged_pdb` and `phosphorylated_pdb` for downstream auto-resolve. DAG: fetch → prep (clean) → prep (phosphorylate) → solv → topo → eq → prod.
 
 ### genesis_server.py
 - `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity, num_models, output_dir, msa_path, job_dir, node_id)` - Boltz-2 structure prediction
@@ -347,7 +349,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `list_available_lipids()` - Available lipid types
 
 ### amber_server.py
-- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane, job_dir, node_id)` - tleap. In node mode, `pdb_file` auto-resolved from `solv` ancestor's `solvated_pdb`. Ligand params are fail-fast validated before tleap, `UNL` residue repair is only allowed for a single unambiguous ligand residue name, and ligand charge/contact diagnostics are recorded without changing the equilibration protocol.
+- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, is_membrane, job_dir, node_id)` - tleap. In node mode, `pdb_file` auto-resolved from `solv` ancestor's `solvated_pdb`. Ligand params are fail-fast validated before tleap, `UNL` residue repair is only allowed for a single unambiguous ligand residue name, and ligand charge/contact diagnostics are recorded without changing the equilibration protocol. PTM auto-load: scans the input PDB for SEP/TPO/PTR via `detect_ptm_sites`, and when present sources `leaprc.phosaa19SB` (ff19SB) / `leaprc.phosaa14SB` (ff14SB) immediately after the protein leaprc line. A forcefield with no paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. The chosen library and the residue list are stamped on the topo node as `metadata.phosaa_library` / `metadata.ptm_residues`.
 
 ### md_simulation_server.py
 - `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - Standard staged minimization + low-temperature NVT warmup + NVT, followed by NPT when applicable. The staged minimization/warmup prelude is used for all NVT equilibration runs (explicit, implicit, apo, ligand-bound) without branching on ligand risk metadata. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
@@ -539,6 +541,40 @@ root. Variant exploration happens by branching from `prep`, `solv`, `topo`,
 `eq`, or `prod` nodes inside that same DAG. Supporting multiple independent
 fetch roots in one job is intentionally out of scope because it makes input
 resolution and system identity ambiguous.
+
+### PTM coverage
+
+v1 covers SEP / TPO / PTR (phospho-Ser/Thr/Tyr). The flow is:
+`prepare_complex` detects them via `detect_ptm_sites` and PDBFixer strips
+them as a normal nonstandard-residue replacement; `phosphorylate_residues`
+then reapplies them on a branched prep node (either from the detected
+list via `--restore-from-detection` or from explicit `--sites`).
+`build_amber_system` auto-loads `phosaa19SB` (ff19SB) / `phosaa14SB`
+(ff14SB) immediately after the protein leaprc.
+
+Deferred — extends naturally from the residue-list-driven design but
+each item needs its own library choice and atom-rewrite logic:
+
+- **Phospho-histidine** (`H1D` / `H2D` / `HEP`; Amber names vary by
+  library generation). Different parameterization story than
+  Ser/Thr/Tyr.
+- **Other PTMs**: O-GlcNAc, acetylation (`ALY`), methylation (`M3L`,
+  etc.), ubiquitination, lipidation (myristoyl / palmitoyl). Each
+  needs its own residue library and atom set.
+- **Alternate phospho protonation states** (SEP `−1` vs `−2`). v1
+  accepts the Amber library default; user-selectable states would need
+  parallel library entries or per-residue overrides.
+- **Crystallographic phosphate-coordinate preservation**. v1 destroys
+  and rebuilds phosphate atoms via tleap templates; OK for MD setup
+  (minimization absorbs it) but a regression for users who care about
+  the original phosphate orientation. A future "preserve_atoms" path
+  could keep the source coords by reading them off the merged.pdb
+  before the strip step in `phosphorylate_residues` and re-injecting
+  after rename.
+- **Per-chain breakdown / PTM-aware roundtrip validation** in
+  `inspect_molecules`. The `summary.ptm_residues` field exists today
+  but is structure-wide; per-chain summaries and a roundtrip-validation
+  block would make multi-chain PTM workflows easier to audit.
 
 ### MMDB database integration
 

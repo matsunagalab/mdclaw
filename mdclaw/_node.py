@@ -916,6 +916,48 @@ def find_ancestor_artifact(
     return None
 
 
+def find_ancestor_metadata(
+    job_dir: str,
+    node_id: str,
+    ancestor_type: str,
+    metadata_key: str,
+):
+    """Walk the DAG upward from *node_id* to find a metadata field.
+
+    Same BFS shape as ``find_ancestor_artifact``, but reads from
+    ``node.json.metadata`` instead of ``node.json.artifacts``. Returns the
+    value as-is from JSON (typically a list or dict), or ``None`` if no
+    matching-type ancestor carries the key.
+    """
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return None
+    nodes_index = progress.get("nodes", {})
+
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        parents = info.get("parents", [])
+        if info.get("type") == ancestor_type:
+            node_json_path = jd / "nodes" / nid / "node.json"
+            if node_json_path.exists():
+                try:
+                    ndata = json.loads(node_json_path.read_text())
+                except (json.JSONDecodeError, OSError):
+                    ndata = {}
+                value = ndata.get("metadata", {}).get(metadata_key)
+                if value is not None:
+                    return value
+        queue.extend(parents)
+    return None
+
+
 def _input_resolution_status_errors(job_dir: str, node_id: str) -> list[str]:
     """Return parent/dependency status errors for resolver auto-discovery.
 

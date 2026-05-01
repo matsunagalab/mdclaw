@@ -276,6 +276,13 @@ COMMON_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", 
 # ion parameters; multivalent cofactors are not.
 MULTIVALENT_METAL_IONS = {"MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
 
+# Phosphorylated amino acid residues recognized by Amber's `phosaa*` libraries.
+# When detected, prepare_complex stamps them on the prep node so a follow-up
+# `phosphorylate_residues` call can re-introduce them after PDBFixer's normal
+# nonstandard-residue replacement, and `build_amber_system` auto-loads the
+# matching `leaprc.phosaa*` library.
+PHOSPHO_RESNAMES = {"SEP", "TPO", "PTR"}
+
 # Amber/protonation/terminal residue name variants that should still count as "protein"
 # for chain classification and for excluding them from ligand detection.
 AMBER_PROTEIN_RESIDUES = {
@@ -2419,6 +2426,56 @@ async def get_protein_info(accession: str) -> dict:
 # =============================================================================
 
 
+def detect_ptm_sites(structure_file: str) -> list[dict]:
+    """Detect SEP/TPO/PTR sites in a PDB or CIF structure.
+
+    Returns a list of ``{"chain", "resnum", "name"}`` dicts where ``chain`` is
+    the author chain id (auth_asym_id). Empty list if none found or the file
+    cannot be read — parsing errors are swallowed because this is used as a
+    pre-cleaning probe and a malformed input will fail more loudly downstream
+    in `prepare_complex`.
+    """
+    try:
+        import gemmi
+    except ImportError:
+        return []
+
+    structure_path = Path(structure_file)
+    if not structure_path.exists():
+        return []
+
+    suffix = structure_path.suffix.lower()
+    try:
+        if suffix == ".cif":
+            doc = gemmi.cif.read(str(structure_path))
+            structure = gemmi.make_structure_from_block(doc[0])
+        else:
+            structure = gemmi.read_pdb(str(structure_path))
+        structure.setup_entities()
+    except Exception:
+        return []
+
+    if not len(structure):
+        return []
+
+    sites: list[dict] = []
+    seen: set[tuple] = set()
+    for chain in structure[0]:
+        for res in chain:
+            name = res.name.strip()
+            if name in PHOSPHO_RESNAMES:
+                key = (chain.name, res.seqid.num, name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                sites.append({
+                    "chain": chain.name,
+                    "resnum": res.seqid.num,
+                    "name": name,
+                })
+    return sites
+
+
 def inspect_molecules(
     structure_file: str,
     job_dir: Optional[str] = None,
@@ -2621,6 +2678,7 @@ def inspect_molecules(
         water_chain_ids = []
         ion_chain_ids = []
         multivalent_metal_residues: list[dict] = []
+        ptm_residues: list[dict] = []
 
         for subchain in model.subchains():
             chain_id = subchain.subchain_id()
@@ -2641,6 +2699,16 @@ def inspect_molecules(
                 residue_names.add(res_name)
                 num_atoms += len(list(res))
 
+                if res_name in PHOSPHO_RESNAMES:
+                    # Capture before falling through to ligand classification —
+                    # SEP/TPO/PTR are not in PROTEIN_RESNAMES, but they live on
+                    # protein chains and we want them on the PTM list with the
+                    # author chain id (resolved a few lines below).
+                    ptm_residues.append({
+                        "_subchain_id": subchain.subchain_id(),
+                        "resnum": res.seqid.num,
+                        "name": res_name,
+                    })
                 if res_name in PROTEIN_RESNAMES:
                     has_protein = True
                     base = res_name
@@ -2726,6 +2794,12 @@ def inspect_molecules(
         # mapping in summary lets callers disambiguate mmCIF entries where
         # the two systems disagree (e.g. 7QVK label "B" ↔ auth "BBB").
         chain_id_map = {c["chain_id"]: c.get("author_chain", c["chain_id"]) for c in chains_info}
+
+        # Resolve PTM residue subchain ids to author chains so callers can
+        # pass them straight back into `phosphorylate_residues --sites-str`.
+        for ptm in ptm_residues:
+            sub_id = ptm.pop("_subchain_id")
+            ptm["chain"] = chain_id_map.get(sub_id, sub_id)
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
             "num_ligand_chains": len(ligand_author_chains),
@@ -2742,6 +2816,7 @@ def inspect_molecules(
             "ion_chain_ids": ion_chain_ids,
             "chain_id_map": chain_id_map,
             "multivalent_metal_residues": multivalent_metal_residues,
+            "ptm_residues": ptm_residues,
         }
 
         result["notes"] = {
@@ -2755,6 +2830,14 @@ def inspect_molecules(
                 "build_amber_system via --metal-params. "
                 "See skills/md-prepare/setup.md 'Metal ion handling' for details."
             ) if multivalent_metal_residues else None,
+            "ptm_handling": (
+                "Phosphorylated residue(s) detected (SEP / TPO / PTR). "
+                "PDBFixer will replace these with SER/THR/TYR during "
+                "prepare_complex. To restore them on a branched prep node, run "
+                "`mdclaw phosphorylate_residues --restore-from-detection` "
+                "after prepare_complex completes. build_amber_system then "
+                "auto-loads `leaprc.phosaa19SB` (ff19SB) / `phosaa14SB` (ff14SB)."
+            ) if ptm_residues else None,
         }
 
         if not chains_info:

@@ -461,6 +461,60 @@ before invoking FASPR.
 
 ---
 
+## Step 3.6: Phosphorylation (optional)
+
+Apply phosphorylation **AFTER** `prepare_complex` finishes. Two
+scenarios share one tool:
+
+- **(a) Restore PTMs from the source PDB** — `prepare_complex` records
+  any SEP / TPO / PTR residues it saw on the prep node's
+  `metadata.detected_ptm_residues` (and surfaces the same list under
+  `preparation_summary.detected_ptm_residues` in the JSON result).
+  PDBFixer replaces them with SER / THR / TYR by design, so the cleaned
+  `merged.pdb` no longer carries the phosphates. Re-introduce them with
+  `--restore-from-detection`.
+- **(b) Introduce a new PTM** — pass an explicit site list via
+  `--sites-str "A:65:SEP,A:178:TPO"` (or via `--json-input` for richer
+  forms). The current residue at each site must be the standard
+  counterpart of the requested target (SER↔SEP, THR↔TPO, TYR↔PTR);
+  mismatches return a structured error.
+
+Branch a new `prep` node off the cleaned prep_001:
+
+```bash
+mdclaw create_node --job-dir <jd> --node-type prep \
+  --parent-node-ids prep_001 --label phospho_restore
+
+# (a) Restore from prepare_complex's detected list
+mdclaw phosphorylate_residues --job-dir <jd> --node-id prep_002 \
+  --restore-from-detection
+
+# (b) Introduce a new site (e.g. K48-adjacent SER on a non-PTM protein)
+mdclaw phosphorylate_residues --job-dir <jd> --node-id prep_003 \
+  --sites-str "A:48:SEP"
+```
+
+The phosphorylated PDB is registered as both `merged_pdb` and
+`phosphorylated_pdb` on the new prep node, so downstream `solv` resolves
+it transparently. `build_amber_system` then auto-loads
+`leaprc.phosaa19SB` (ff19SB) or `leaprc.phosaa14SB` (ff14SB).
+
+**Caveat — phosphate atom positions**: SEP/TPO/PTR enter cleaning, get
+stripped to plain SER/THR/TYR by PDBFixer, then come back via
+`phosphorylate_residues` which renames the residue and drops the
+hydroxyl H (`HG`/`HG1`/`HH`). The phosphate atoms (`P`, `O1P`, `O2P`,
+`O3P`) are **rebuilt by tleap from the `phosaa*.lib` template** — the
+crystallographic phosphate orientation is not preserved. This is fine
+for MD setup (minimization + warmup absorbs the geometry change) but
+is a regression for workflows that need the original phosphate
+coordinates verbatim.
+
+PTM scope today: SEP / TPO / PTR. Phospho-His and other PTMs (O-GlcNAc,
+acetylation, methylation, ubiquitination, lipidation) are out of scope
+— see `CLAUDE.md` "PTM coverage" TODO.
+
+---
+
 ## Tool Defaults (skill-relevant)
 
 Defaults the tools apply silently when the user does not specify. The
@@ -479,6 +533,7 @@ initial summary (Step 0) and otherwise trust these.
 | `charge_method` | `"bcc"` | AM1-BCC; the only well-tested path. `"gas"` available but not recommended |
 | `atom_type` | `"gaff2"` | GAFF2 atom typing; GAFF legacy only |
 | `keep_crystal_waters` | `False` | Crystal waters dropped by default; opt-in via `--keep-crystal-waters` |
+| `detected_ptm_residues` | (auto) | Read-only field. SEP/TPO/PTR sites observed in the source PDB are surfaced under `preparation_summary.detected_ptm_residues` and stamped on the prep node's metadata. PDBFixer replaces them; re-introduce with `phosphorylate_residues --restore-from-detection`. |
 
 `solvate_structure`:
 
@@ -515,6 +570,7 @@ artifact. Pass `--pdb-file` only to override that input.
 | `water_model` | `"opc"` | Must match the water used in `solvate_structure` / `embed_in_membrane` |
 | `is_membrane` | `False` | Set True for `embed_in_membrane` output; downstream tools also read the solv ancestor's `is_membrane` metadata |
 | `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |
+| `phosaa_library` | (auto) | When PTM residues (`SEP`/`TPO`/`PTR`) are present in the input PDB, sourced automatically: `phosaa19SB` for ff19SB, `phosaa14SB` for ff14SB. Not user-selectable. A forcefield without a paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. |
 
 Force field × water compatibility is guardrail-checked — `ff19SB + tip3p`
 is rejected with a structured error (not a warning), and you should
