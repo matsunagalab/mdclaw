@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from mdclaw.amber_server import (
@@ -14,6 +15,10 @@ from mdclaw.metal_server import (
     SUPPORTED_ION_WATER_MODELS,
     _normalize_water_model_name as metal_canonical_water_model_name,
     parameterize_metal_ion,
+)
+from mdclaw.md_simulation_server import (
+    _effective_pressure_bar,
+    _signature_mismatches,
 )
 from mdclaw.slurm_server import _validate_against_policy
 from mdclaw.solvation_server import (
@@ -98,6 +103,73 @@ def test_case_insensitive_water_model_normalization():
     assert amber_canonical_water_model_name("OPC") == "opc"
     assert solvation_canonical_water_model_name("SPC/E") == "spce"
     assert metal_canonical_water_model_name("TIP3P") == "tip3p"
+
+
+def test_implicit_solvent_pressure_signature_uses_zero_bar():
+    assert _effective_pressure_bar(1.0, "GBn2") == 0.0
+    assert _effective_pressure_bar(None, "OBC2") == 0.0
+    assert _effective_pressure_bar(1.0, None) == 1.0
+
+    restart_sig = {
+        "solvent_type": "implicit",
+        "ensemble": "NVT",
+        "pressure_bar": _effective_pressure_bar(1.0, "OBC2"),
+        "implicit_solvent": "OBC2",
+    }
+    prod_sig = {
+        "solvent_type": "implicit",
+        "ensemble": "NVT",
+        "pressure_bar": _effective_pressure_bar(None, "OBC2"),
+        "implicit_solvent": "OBC2",
+    }
+
+    assert _signature_mismatches(
+        restart_sig,
+        prod_sig,
+        ("solvent_type", "ensemble", "pressure_bar", "implicit_solvent"),
+    ) == []
+
+
+def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_path):
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+    job_dir = tmp_path / "job_implicit"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(str(job_dir), "topo")
+    assert node["success"] is True
+
+    def _fake_tleap_run(args, cwd, timeout):
+        del args, timeout
+        out_dir = Path(cwd)
+        (out_dir / "system.parm7").write_text("fake parm7\n")
+        (out_dir / "system.rst7").write_text("fake rst7\n")
+        return SimpleNamespace(stdout="Writing parm file with 1 atoms\n", stderr="")
+
+    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
+         patch("mdclaw.amber_server.tleap_wrapper.run", side_effect=_fake_tleap_run), \
+         patch(
+             "mdclaw.amber_server._add_pdb_info",
+             return_value={"success": False, "errors": [], "flags_added": []},
+         ):
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            forcefield="ff14SB",
+            water_model="opc",
+        )
+
+    assert result["success"] is True
+    assert result["solvent_type"] == "implicit"
+    assert result["parameters"]["water_model"] is None
+    assert result["parameters"]["validated_water_model"] == "opc"
+    assert result["parameters"]["water_model_status"] == "not_used_for_implicit_solvent"
+
+    node_data = read_node(str(job_dir), node["node_id"])
+    assert node_data["metadata"]["water_model"] is None
+    progress = json.loads((job_dir / "progress.json").read_text())
+    assert progress["params"]["water_model"] is None
+    assert progress["params"]["solvation_type"] == "implicit"
 
 
 def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):

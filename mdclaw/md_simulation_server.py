@@ -68,6 +68,21 @@ def _system_signature(
     }
 
 
+def _effective_pressure_bar(
+    pressure_bar: Optional[float],
+    implicit_solvent: Optional[str],
+) -> Optional[float]:
+    """Return the pressure value that defines the actual OpenMM ensemble.
+
+    Implicit-solvent simulations cannot have a barostat, so their runtime
+    ensemble is NVT even though ``run_equilibration`` keeps an explicit-water
+    default of 1 bar for historical CLI compatibility.
+    """
+    if implicit_solvent:
+        return 0.0
+    return pressure_bar
+
+
 def _integrator_signature(
     *,
     temperature_kelvin: float,
@@ -398,6 +413,8 @@ def run_equilibration(
           - errors: list[str]
           - warnings: list[str]
     """
+    pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
+
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs, validate_node_execution_context
@@ -448,6 +465,9 @@ def run_equilibration(
         "npt_steps": 0,
         "restraint_atoms": restraint_atoms,
         "restraint_count": 0,
+        "relaxation_protocol": None,
+        "low_temperature_warmup_steps": 0,
+        "nan_failure_diagnostics": None,
         "platform": None,
         "errors": [],
         "warnings": [],
@@ -650,13 +670,67 @@ def run_equilibration(
         if is_periodic and inpcrd.boxVectors is not None:
             sim_nvt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
-        # Minimize
-        logger.info("Minimizing energy...")
-        sim_nvt.minimizeEnergy()
+        def _finite_energy_check(stage: str) -> dict:
+            state = sim_nvt.context.getState(getEnergy=True, getForces=True)
+            potential = state.getPotentialEnergy().value_in_unit(kilojoules_per_mole)
+            forces = state.getForces(asNumpy=True)
+            force_values = forces.value_in_unit(kilojoules_per_mole / nanometer)
+            max_force = float(np.max(np.linalg.norm(force_values, axis=1))) if len(force_values) else 0.0
+            check = {
+                "stage": stage,
+                "potential_energy_kj_per_mol": float(potential),
+                "max_force_kj_per_mol_nm": max_force,
+                "finite": bool(np.isfinite(potential) and np.isfinite(max_force)),
+            }
+            if not check["finite"]:
+                result["nan_failure_diagnostics"] = {
+                    "stage": stage,
+                    "solvent_type": solvent_type,
+                    "implicit_solvent": implicit_solvent,
+                    "potential_energy_kj_per_mol": check["potential_energy_kj_per_mol"],
+                    "max_force_kj_per_mol_nm": check["max_force_kj_per_mol_nm"],
+                    "recommended_next_action": "inspect/repair the input structure or ligand parameters",
+                }
+                raise RuntimeError(f"Non-finite energy/force detected during {stage}")
+            return check
+
+        # Universal pre-NVT relaxation protocol. This is intentionally not
+        # branched by solvent model, ligand charge, or clash metadata.
+        logger.info("Running standard staged minimization before NVT...")
+        relaxation_checks = []
+        relaxation_checks.append(_finite_energy_check("initial"))
+        for stage_name, max_iterations in (
+            ("staged_minimization_a", 500),
+            ("staged_minimization_b", 2000),
+            ("staged_minimization_c", 5000),
+        ):
+            logger.info(f"{stage_name}: minimizeEnergy(maxIterations={max_iterations})")
+            sim_nvt.minimizeEnergy(maxIterations=max_iterations)
+            relaxation_checks.append(_finite_energy_check(stage_name))
+
+        warmup_steps = min(1000, max(0, nvt_steps // 20))
+        low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
+        if warmup_steps > 0:
+            logger.info(
+                f"Low-temperature NVT warmup: {warmup_steps} steps at {low_temperature:.1f} K"
+            )
+            integrator_nvt.setTemperature(low_temperature * kelvin)
+            sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
+            sim_nvt.step(warmup_steps)
+            relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
+            integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+        result["low_temperature_warmup_steps"] = warmup_steps
+        result["relaxation_protocol"] = {
+            "name": "standard_staged_minimization_low_temperature_warmup",
+            "applies_to": "all_nvt_equilibration",
+            "stages": relaxation_checks,
+            "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
+        }
 
         # NVT run
         sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
         sim_nvt.step(nvt_steps)
+        _finite_energy_check("normal_nvt_complete")
         for reporter in sim_nvt.reporters:
             _close_reporter_stream(reporter)
         result["nvt_steps"] = nvt_steps
@@ -1059,6 +1133,8 @@ def run_production(
             - errors: list[str] - Error messages if any
             - warnings: list[str] - Non-critical warnings
     """
+    pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
+
     # Auto-resolve inputs from DAG when in node mode
     _eq_final_ensemble: Optional[str] = None
     _eq_pressure_bar: Optional[float] = None

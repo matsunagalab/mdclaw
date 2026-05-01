@@ -15,6 +15,11 @@ Implicit solvent models represent water as a continuum dielectric instead of exp
 accurate under GB models; `ff14SB` remains the tested pair for implicit
 solvent runs.
 
+**Ligand note**: GBn2 remains the default starting model, but GBn/GBn2 neck
+corrections can fail for some GAFF or curated ligand atom types. If production
+fails with `Radii must be between 1 and 2 Angstroms for neck lookup`, branch a
+new `eq`/`prod` path from the same topology using `--implicit-solvent OBC2`.
+
 Prepare-time checkpoints (chain selection, ligand inclusion, metal
 handling, confirmation loop) live in `setup.md` and apply identically
 for both explicit- and implicit-solvent paths. The Metal ion handling
@@ -45,6 +50,10 @@ mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
 
 > No `--box-dimensions` or `--water-model` needed for implicit solvent.
 > Ligand parameters are auto-resolved from the `prep` ancestor's artifacts.
+> Highly charged ligands and close contacts are recorded as topology
+> diagnostics. They do not stop the workflow or select a special equilibration
+> branch; `/md-equilibration` uses the same standard staged minimization and
+> low-temperature warmup protocol for all systems.
 
 ### Domain Knowledge
 

@@ -83,6 +83,14 @@ WATER_ION_PARAMS = {
     "spce": "frcmod.ionsjc_spce",
 }
 
+STANDARD_PROTEIN_RESIDUES = {
+    "ALA", "ARG", "ASN", "ASP", "CYS", "CYX", "GLN", "GLU", "GLY", "HIS",
+    "HID", "HIE", "HIP", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER",
+    "THR", "TRP", "TYR", "VAL",
+}
+WATER_RESIDUES = {"HOH", "WAT", "H2O", "TIP", "TIP3", "OPC"}
+POLYPHOSPHATE_LIGANDS = {"AP5", "ATP", "ADP", "AMP", "GTP", "GDP", "NAD", "NAP"}
+
 # =============================================================================
 # Force Field Compatibility (based on Amber Manual 2024)
 # =============================================================================
@@ -233,13 +241,191 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
             errors.append(f"Ligand {i+1}: frcmod file not found: {frcmod}")
             continue
         
-        valid_params.append({
+        valid_param = dict(params)
+        valid_param.update({
             "mol2": str(mol2_path),
             "frcmod": str(frcmod_path),
             "residue_name": residue_name[:3].upper()  # Ensure 3-letter uppercase
         })
+        valid_params.append(valid_param)
     
     return valid_params, errors
+
+
+def _pdb_residue_instance_counts(pdb_path: Path) -> Dict[str, int]:
+    """Return unique residue-instance counts keyed by residue name."""
+    counts: Dict[str, int] = {}
+    seen: set[tuple[str, str, str]] = set()
+    for line in pdb_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < 26:
+            continue
+        resname = line[17:20].strip().upper()
+        if not resname:
+            continue
+        key = (line[21].strip(), line[22:26].strip(), resname)
+        if key in seen:
+            continue
+        seen.add(key)
+        counts[resname] = counts.get(resname, 0) + 1
+    return counts
+
+
+def _guess_pdb_element(atom_name: str, element_field: str = "") -> str:
+    element = (element_field or "").strip()
+    if element:
+        return element.upper()
+    cleaned = re.sub(r"[^A-Za-z]", "", atom_name or "")
+    if not cleaned:
+        return ""
+    two = cleaned[:2].upper()
+    return two if two in {"CL", "BR", "NA", "MG", "ZN", "FE", "MN", "CA", "CU", "CO", "NI"} else cleaned[0].upper()
+
+
+def _pdb_heavy_atoms_for_contacts(pdb_path: Path) -> list[dict]:
+    atoms: list[dict] = []
+    for line in pdb_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < 54:
+            continue
+        atom_name = line[12:16].strip()
+        element = _guess_pdb_element(atom_name, line[76:78] if len(line) >= 78 else "")
+        if element == "H":
+            continue
+        try:
+            x = float(line[30:38])
+            y = float(line[38:46])
+            z = float(line[46:54])
+        except ValueError:
+            continue
+        resname = line[17:20].strip().upper()
+        atoms.append({
+            "atom_name": atom_name,
+            "element": element,
+            "residue_name": resname,
+            "chain_id": line[21].strip(),
+            "resnum": line[22:26].strip(),
+            "record": line[:6].strip(),
+            "coords": (x, y, z),
+        })
+    return atoms
+
+
+def validate_initial_ligand_contacts(
+    pdb_file: str,
+    ligand_residue_names: List[str],
+    min_heavy_distance_angstrom: float = 1.5,
+    top_n: int = 10,
+) -> dict:
+    """Detect close protein-ligand heavy-atom contacts for diagnostics."""
+    ligand_names = {name[:3].upper() for name in ligand_residue_names if name}
+    result = {
+        "success": True,
+        "ligand_residue_names": sorted(ligand_names),
+        "min_heavy_distance_angstrom": None,
+        "threshold_angstrom": min_heavy_distance_angstrom,
+        "ligand_clash_detected": False,
+        "closest_contacts": [],
+        "errors": [],
+        "warnings": [],
+    }
+    if not ligand_names:
+        return result
+    try:
+        atoms = _pdb_heavy_atoms_for_contacts(Path(pdb_file))
+    except OSError as exc:
+        result["success"] = False
+        result["errors"].append(f"Could not read PDB for contact validation: {exc}")
+        return result
+
+    protein_atoms = [a for a in atoms if a["residue_name"] in STANDARD_PROTEIN_RESIDUES]
+    ligand_atoms = [a for a in atoms if a["residue_name"] in ligand_names]
+    contacts: list[dict] = []
+    for lig in ligand_atoms:
+        lx, ly, lz = lig["coords"]
+        for prot in protein_atoms:
+            px, py, pz = prot["coords"]
+            dist = ((lx - px) ** 2 + (ly - py) ** 2 + (lz - pz) ** 2) ** 0.5
+            contacts.append({
+                "distance_angstrom": round(dist, 3),
+                "ligand": {
+                    "residue_name": lig["residue_name"],
+                    "chain_id": lig["chain_id"],
+                    "resnum": lig["resnum"],
+                    "atom_name": lig["atom_name"],
+                    "element": lig["element"],
+                },
+                "protein": {
+                    "residue_name": prot["residue_name"],
+                    "chain_id": prot["chain_id"],
+                    "resnum": prot["resnum"],
+                    "atom_name": prot["atom_name"],
+                    "element": prot["element"],
+                },
+            })
+
+    contacts.sort(key=lambda c: c["distance_angstrom"])
+    if contacts:
+        result["min_heavy_distance_angstrom"] = contacts[0]["distance_angstrom"]
+        result["closest_contacts"] = contacts[:top_n]
+        result["ligand_clash_detected"] = (
+            contacts[0]["distance_angstrom"] < min_heavy_distance_angstrom
+        )
+    return result
+
+
+def implicit_ligand_diagnostics(ligand_params: List[Dict[str, Any]]) -> dict:
+    """Record implicit-solvent ligand risk metadata without changing protocol."""
+    summaries = []
+    charge_risk = False
+    for lig in ligand_params or []:
+        resname = lig.get("residue_name", lig.get("ligand_id", "LIG"))[:3].upper()
+        charge = lig.get("total_charge")
+        if charge is None:
+            charge = lig.get("charge_used")
+        charge_value = float(charge) if charge is not None else None
+        is_polyphosphate = resname in POLYPHOSPHATE_LIGANDS
+        is_high_charge = charge_value is not None and abs(charge_value) >= 3.0
+        charge_risk = charge_risk or is_high_charge or is_polyphosphate
+        summaries.append({
+            "ligand_instance_id": lig.get("ligand_instance_id"),
+            "residue_name": resname,
+            "total_charge": charge_value,
+            "implicit_ligand_charge_risk": bool(is_high_charge or is_polyphosphate),
+            "ligand_risk_class": "high_charge_polyphosphate"
+            if is_polyphosphate else "high_charge" if is_high_charge else "standard",
+        })
+    return {
+        "implicit_ligand_charge_risk": charge_risk,
+        "ligands": summaries,
+    }
+
+
+def validate_ligand_template_coverage(pdb_path: Path, valid_ligands: List[Dict[str, Any]]) -> list[str]:
+    """Fail-fast checks that ligand templates match residue names in the PDB."""
+    errors: list[str] = []
+    if not valid_ligands:
+        return errors
+
+    residue_counts = _pdb_residue_instance_counts(pdb_path)
+    param_counts: Dict[str, int] = {}
+    for lig in valid_ligands:
+        resname = lig.get("residue_name", "").upper()
+        param_counts[resname] = param_counts.get(resname, 0) + 1
+        if residue_counts.get(resname, 0) == 0:
+            instance = lig.get("ligand_instance_id") or resname
+            errors.append(
+                f"Ligand template {instance} residue_name={resname} is not present in {pdb_path}"
+            )
+
+    for resname, count in param_counts.items():
+        if count > 1:
+            expected_instances = residue_counts.get(resname, 0)
+            if expected_instances < count:
+                errors.append(
+                    f"Multiple ligand parameter entries use residue_name={resname} "
+                    f"({count} params, {expected_instances} PDB residue instance(s)). "
+                    "Use unique residue names or preserve per-instance provenance."
+                )
+    return errors
 
 
 def _canonical_forcefield_name(forcefield: Optional[str]) -> Optional[str]:
@@ -315,8 +501,10 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
         Dict with statistics about replacements made
     """
     result = {
+        "success": True,
         "unl_count": 0,
-        "replacements": []
+        "replacements": [],
+        "errors": [],
     }
     
     if not ligand_residue_names:
@@ -325,9 +513,8 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
         shutil.copy(pdb_path, output_path)
         return result
     
-    # Use first ligand name for UNL replacement
-    # TODO: Support multiple different ligands
-    target_residue = ligand_residue_names[0]
+    unique_ligand_names = sorted({name[:3].upper() for name in ligand_residue_names if name})
+    target_residue = unique_ligand_names[0] if len(unique_ligand_names) == 1 else None
     
     lines_out = []
     with open(pdb_path, 'r') as f:
@@ -337,11 +524,20 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
                 res_name = line[17:20].strip()
                 if res_name == 'UNL':
                     result["unl_count"] += 1
-                    # Replace UNL with target residue name (right-padded to 3 chars)
-                    new_line = line[:17] + f"{target_residue:>3}" + line[20:]
-                    lines_out.append(new_line)
-                    continue
+                    if target_residue:
+                        # Replace UNL with target residue name (right-padded to 3 chars)
+                        new_line = line[:17] + f"{target_residue:>3}" + line[20:]
+                        lines_out.append(new_line)
+                        continue
             lines_out.append(line)
+
+    if result["unl_count"] > 0 and not target_residue:
+        result["success"] = False
+        result["errors"].append(
+            "Ambiguous UNL residue repair: input PDB contains UNL but multiple ligand "
+            f"templates are present ({unique_ligand_names}). Refusing to guess."
+        )
+        return result
     
     with open(output_path, 'w') as f:
         f.writelines(lines_out)
@@ -1071,6 +1267,7 @@ def build_amber_system(
 
     # Initialize result structure
     job_id = generate_job_id()
+    solvent_type = "implicit" if box_dimensions is None else "explicit"
     result = {
         "success": False,
         "job_id": job_id,
@@ -1079,10 +1276,15 @@ def build_amber_system(
         "rst7": None,
         "leap_log": None,
         "leap_script": None,
-        "solvent_type": "implicit" if box_dimensions is None else "explicit",
+        "solvent_type": solvent_type,
         "parameters": {
             "forcefield": forcefield,
-            "water_model": water_model,
+            "water_model": water_model if solvent_type == "explicit" else None,
+            "water_model_status": (
+                "used_for_explicit_solvent"
+                if solvent_type == "explicit"
+                else "not_used_for_implicit_solvent"
+            ),
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
             "ligand_count": len(ligand_params) if ligand_params else 0,
@@ -1132,7 +1334,11 @@ def build_amber_system(
             ),
         }
     water_model = canonical_water_model
-    result["parameters"]["water_model"] = water_model
+    result["parameters"]["water_model"] = (
+        water_model if solvent_type == "explicit" else None
+    )
+    if solvent_type == "implicit":
+        result["parameters"]["validated_water_model"] = water_model
 
     if solvation_water_model and solvation_water_model != water_model:
         blocked = {
@@ -1246,9 +1452,14 @@ def build_amber_system(
     if ligand_params:
         valid_ligands, ligand_errors = validate_ligand_params(ligand_params)
         if ligand_errors:
-            for err in ligand_errors:
-                result["warnings"].append(err)
-            logger.warning(f"Ligand validation warnings: {ligand_errors}")
+            result["errors"].extend(ligand_errors)
+            logger.error(f"Ligand validation failed: {ligand_errors}")
+            return {
+                **result,
+                "error_type": "ValidationError",
+                "code": "invalid_ligand_parameters",
+                "message": "Invalid ligand parameter records; refusing to run tleap.",
+            }
     
     # Setup output directory
     _node_mode = job_dir and node_id
@@ -1275,6 +1486,15 @@ def build_amber_system(
     # Fix ligand residue names (UNL -> correct name)
     # Note: N-terminal hydrogen naming is handled by pdb4amber --reduce in structure_server.py
     fix_lig_result = fix_ligand_residue_names(pdb_path, working_pdb, ligand_res_names)
+    if not fix_lig_result.get("success", True):
+        result["errors"].extend(fix_lig_result.get("errors", []))
+        logger.error(f"Ligand residue-name repair failed: {fix_lig_result.get('errors', [])}")
+        return {
+            **result,
+            "error_type": "ValidationError",
+            "code": "ambiguous_ligand_residue_repair",
+            "message": "Ambiguous ligand residue-name repair before tleap.",
+        }
     if fix_lig_result["unl_count"] > 0:
         result["warnings"].extend(fix_lig_result["replacements"])
 
@@ -1293,6 +1513,31 @@ def build_amber_system(
     
     # Use fixed PDB for tleap
     pdb_path = working_pdb
+
+    ligand_coverage_errors = validate_ligand_template_coverage(pdb_path, valid_ligands)
+    if ligand_coverage_errors:
+        result["errors"].extend(ligand_coverage_errors)
+        logger.error(f"Ligand template coverage failed: {ligand_coverage_errors}")
+        return {
+            **result,
+            "error_type": "ValidationError",
+            "code": "ligand_template_coverage_failed",
+            "message": "Ligand parameter residue names do not match the topology input PDB.",
+        }
+
+    if valid_ligands:
+        ligand_contact_diagnostics = validate_initial_ligand_contacts(
+            str(pdb_path),
+            [lig["residue_name"] for lig in valid_ligands],
+        )
+        result["ligand_contact_diagnostics"] = ligand_contact_diagnostics
+        if ligand_contact_diagnostics.get("ligand_clash_detected"):
+            result["warnings"].append(
+                "Ligand-protein close contact detected; standard staged equilibration "
+                "will still be used. See ligand_contact_diagnostics."
+            )
+        if box_dimensions is None:
+            result["implicit_ligand_diagnostics"] = implicit_ligand_diagnostics(valid_ligands)
     
     try:
         # Build tleap script
@@ -1453,6 +1698,23 @@ def build_amber_system(
         
         # Write tleap script
         leap_script = '\n'.join(script_lines)
+        if valid_ligands:
+            missing_loads = []
+            for lig in valid_ligands:
+                if f"loadamberparams {lig['frcmod']}" not in leap_script:
+                    missing_loads.append(f"loadamberparams:{lig.get('ligand_instance_id') or lig['residue_name']}")
+                if f"{lig['residue_name']} = loadmol2 {lig['mol2']}" not in leap_script:
+                    missing_loads.append(f"loadmol2:{lig.get('ligand_instance_id') or lig['residue_name']}")
+            if missing_loads:
+                result["errors"].append(
+                    "tleap ligand parameter load coverage failed: " + ", ".join(missing_loads)
+                )
+                return {
+                    **result,
+                    "error_type": "ValidationError",
+                    "code": "ligand_tleap_script_coverage_failed",
+                    "message": "Generated tleap script is missing ligand parameter load commands.",
+                }
         with open(leap_script_file, 'w') as f:
             f.write(leap_script)
         
@@ -1565,13 +1827,16 @@ def build_amber_system(
                 },
                 metadata={
                     "forcefield": forcefield,
-                    "water_model": water_model,
+                    "water_model": water_model if solvent_type == "explicit" else None,
+                    "solvent_type": solvent_type,
                     "is_membrane": is_membrane,
                 })
-            update_job_summaries(job_dir, params={
+            summary_params = {
                 "forcefield": forcefield,
-                "water_model": water_model,
-            })
+                "solvation_type": solvent_type,
+                "water_model": water_model if solvent_type == "explicit" else None,
+            }
+            update_job_summaries(job_dir, params=summary_params)
         else:
             fail_node(job_dir, node_id, errors=result.get("errors", []))
 

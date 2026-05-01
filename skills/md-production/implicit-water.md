@@ -61,6 +61,43 @@ depends on how the prod node was created:
   ancestor with a checkpoint, or falls through to the `eq` ancestor.
 - **fresh run (eq parent)** → restart from the `eq` ancestor's checkpoint.
 
+### GBn2 Ligand Fallback
+
+GBn2/GBn use neck-correction radii tables that may not cover every GAFF or
+curated ligand atom type. For ligand-containing systems, especially highly
+charged ligands such as AP5/ATP/ADP, OpenMM may fail with:
+
+```text
+Radii must be between 1 and 2 Angstroms for neck lookup
+```
+
+Do not retry the same prod command with identical parameters. Create a new
+`eq` node from the same `topo` parent and run both equilibration and production
+with `OBC2`:
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids topo_001 \
+  --label "300K_OBC2" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 0, "implicit_solvent": "OBC2"}'
+
+mdclaw --job-dir <job_dir> --node-id eq_002 run_equilibration \
+  --temperature-kelvin 300 \
+  --pressure-bar 0 \
+  --implicit-solvent OBC2
+
+mdclaw create_node --job-dir <job_dir> --node-type prod \
+  --parent-node-ids eq_002 \
+  --label "1ns_OBC2" \
+  --conditions '{"simulation_time_ns": 1.0, "pressure_bar": 0, "implicit_solvent": "OBC2"}'
+
+mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
+  --simulation-time-ns 1.0 \
+  --temperature-kelvin 300 \
+  --pressure-bar 0 \
+  --implicit-solvent OBC2
+```
+
 ### SLURM Execution (HPC)
 
 ```bash
