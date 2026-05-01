@@ -4982,11 +4982,19 @@ def prepare_complex(
                     # detection list captured before cleaning. Without this,
                     # `phosphorylate_residues --restore-from-detection` would
                     # look up the source chain id against merged.pdb's
-                    # reassigned ids and either fail or hit the wrong residue.
+                    # reassigned ids and either miss (multi-letter mmCIF
+                    # author chain truncated by split_molecules + reassigned
+                    # by merge_structures) or — worse — silently hit the
+                    # wrong residue.
                     if detected_ptm_residues:
+                        composite_map = _build_source_to_merged_chain_map(
+                            chain_file_info=split_result.get("chain_file_info", []),
+                            proteins=result.get("proteins", []),
+                            merge_chain_mapping=merge_result.get("chain_mapping", {}),
+                        )
                         remapped, dropped = _remap_detected_ptm_chains(
                             detected_ptm_residues,
-                            merge_result.get("chain_mapping", {}),
+                            composite_map,
                         )
                         if dropped:
                             result["warnings"].append(
@@ -5435,47 +5443,92 @@ _PHOSPHO_TARGETS = {
 }
 
 
+def _build_source_to_merged_chain_map(
+    chain_file_info: list[dict],
+    proteins: list[dict],
+    merge_chain_mapping: dict,
+) -> dict:
+    """Build the ``source_author_chain -> merged_chain`` composite map.
+
+    Three pieces are joined on file path:
+
+    - ``chain_file_info`` (from ``split_molecules``) gives ``chain_id`` (the
+      label_asym_id used internally) plus the **full** ``author_chain``
+      (auth_asym_id, possibly multi-letter on mmCIF inputs like ``"BBB"``).
+    - ``proteins`` (from ``prepare_complex``) maps ``chain_id`` to the
+      cleaned ``output_file`` that ``merge_structures`` actually consumed.
+    - ``merge_chain_mapping`` (from ``merge_structures``) maps
+      ``cleaned_file_path -> {1char_in_split: merged_chain}``. The 1-char
+      key is what ``split_molecules`` wrote into the PDB (PDB format only
+      has a 1-character chain column, so multi-letter authors get
+      truncated); we don't use the key directly because ``split_molecules``
+      emits one chain per file so the dict has exactly one entry whose
+      value is what we want.
+
+    The result is keyed by the **full** source author chain so that PTMs
+    coming out of ``detect_ptm_sites`` (which records the source chain as
+    gemmi sees it on the source structure — multi-letter for mmCIF) line
+    up directly with the merged chain id without a brittle truncate-and-
+    pray step.
+    """
+    chain_id_to_author: dict[str, str] = {}
+    for info in chain_file_info or []:
+        cid = info.get("chain_id")
+        if cid is not None:
+            chain_id_to_author[cid] = info.get("author_chain", cid)
+
+    composite: dict[str, str] = {}
+    for p in proteins or []:
+        if not p.get("success"):
+            continue
+        cleaned_file = p.get("output_file")
+        cid = p.get("chain_id")
+        if not cleaned_file or cid is None:
+            continue
+        author = chain_id_to_author.get(cid, cid)
+        per_file = (merge_chain_mapping or {}).get(cleaned_file) or {}
+        if not per_file:
+            continue
+        # split_molecules emits one chain per cleaned file, so the per-file
+        # mapping has exactly one entry. Take its value (the merged id).
+        merged_id = next(iter(per_file.values()))
+        composite[author] = merged_id
+    return composite
+
+
 def _remap_detected_ptm_chains(
     detected_ptm_residues: list[dict],
-    merge_chain_mapping: dict,
+    composite_chain_map: dict,
 ) -> tuple[list[dict], list[dict]]:
-    """Apply ``merge_structures``' chain reassignment to detected PTM sites.
+    """Apply a pre-built ``source_author_chain -> merged_chain`` map to PTM
+    detection results.
 
-    `merge_structures` rewrites chain IDs from a fresh A-Z, a-z, 0-9 pool —
-    the chain id you saw in the source PDB is not necessarily the chain id in
-    ``merged.pdb``. PTM detection runs against the source structure, but
-    `phosphorylate_residues --restore-from-detection` operates on
-    ``merged.pdb``; without remapping, the consumer would hit
-    "wrong residue" or "not found" depending on how the chain pool happened
-    to align.
+    The composite map is built by :func:`_build_source_to_merged_chain_map`
+    inside ``prepare_complex`` because the join needs three sources of
+    information (split's chain_file_info, prepare_complex's proteins[],
+    and merge's chain_mapping). Splitting the helpers keeps this one
+    trivially testable in isolation.
 
     Args:
         detected_ptm_residues: list of ``{"chain","resnum","name"}`` from
-            `detect_ptm_sites` (chain = source author chain).
-        merge_chain_mapping: ``merge_structures`` ``chain_mapping`` field —
-            ``{file_path: {original_chain: merged_chain}}``. ``split_molecules``
-            emits one chain per file so each per-file map has at most one
-            entry; we flatten across files.
+            ``detect_ptm_sites`` — ``chain`` is the **source author chain**
+            (full, possibly multi-letter on mmCIF inputs).
+        composite_chain_map: ``{source_author_chain: merged_chain}``.
 
     Returns:
         ``(remapped, dropped)``. Each remapped entry carries:
             - ``chain``: the merged.pdb chain id (what
-              `phosphorylate_residues` actually looks up).
-            - ``original_chain``: the source chain id (provenance only).
+              ``phosphorylate_residues`` actually looks up).
+            - ``original_chain``: the source author chain (provenance).
             - ``resnum`` / ``name``: unchanged.
-        ``dropped`` collects entries whose source chain was not present in
-        the merge mapping (typically excluded by ``select_chains``).
+        ``dropped`` collects entries whose source chain has no entry in
+        the composite map (typically excluded by ``select_chains``).
     """
-    flat_map: dict[str, str] = {}
-    for file_map in (merge_chain_mapping or {}).values():
-        for original, merged in (file_map or {}).items():
-            flat_map[original] = merged
-
     remapped: list[dict] = []
     dropped: list[dict] = []
     for ptm in detected_ptm_residues or []:
         original = ptm["chain"]
-        merged_chain = flat_map.get(original)
+        merged_chain = (composite_chain_map or {}).get(original)
         if merged_chain is None:
             dropped.append(dict(ptm))
             continue

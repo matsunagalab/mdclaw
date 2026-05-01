@@ -20,6 +20,7 @@ from mdclaw.research_server import PHOSPHO_RESNAMES, detect_ptm_sites
 from mdclaw.structure_server import (
     _PHOSPHO_TARGETS,
     _apply_phosphorylation_to_pdb,
+    _build_source_to_merged_chain_map,
     _parse_sites_str,
     _remap_detected_ptm_chains,
     phosphorylate_residues,
@@ -324,7 +325,126 @@ def test_phosphorylate_residues_node_mode_uses_merged_not_original_chain(tmp_pat
     ]
 
 
-# ---------- _remap_detected_ptm_chains -------------------------------------
+# ---------- composite chain map + _remap_detected_ptm_chains ----------------
+
+
+def _make_protein_entry(chain_id, output_file, success=True):
+    """Shape that prepare_complex's `result["proteins"]` entries take."""
+    return {"chain_id": chain_id, "output_file": output_file, "success": success}
+
+
+def test_build_composite_map_single_letter_authors():
+    """All single-letter source chains, no truncation surprise."""
+    chain_file_info = [
+        {"chain_id": "A", "author_chain": "A", "file": "/x/protein_1.pdb"},
+        {"chain_id": "B", "author_chain": "B", "file": "/x/protein_2.pdb"},
+    ]
+    proteins = [
+        _make_protein_entry("A", "/x/protein_1.amber.pdb"),
+        _make_protein_entry("B", "/x/protein_2.amber.pdb"),
+    ]
+    merge_mapping = {
+        "/x/protein_1.amber.pdb": {"A": "A"},
+        "/x/protein_2.amber.pdb": {"B": "B"},
+    }
+    assert _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    ) == {"A": "A", "B": "B"}
+
+
+def test_build_composite_map_pool_shift_when_no_chain_a():
+    """Source has chains B,C only; merge pool starts at A so B->A, C->B."""
+    chain_file_info = [
+        {"chain_id": "B", "author_chain": "B", "file": "/x/protein_1.pdb"},
+        {"chain_id": "C", "author_chain": "C", "file": "/x/protein_2.pdb"},
+    ]
+    proteins = [
+        _make_protein_entry("B", "/x/protein_1.amber.pdb"),
+        _make_protein_entry("C", "/x/protein_2.amber.pdb"),
+    ]
+    merge_mapping = {
+        "/x/protein_1.amber.pdb": {"B": "A"},
+        "/x/protein_2.amber.pdb": {"C": "B"},
+    }
+    assert _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    ) == {"B": "A", "C": "B"}
+
+
+def test_build_composite_map_multi_letter_mmcif_author_chain():
+    """The case the previous remap implementation missed: an mmCIF source
+    with a multi-letter author chain (e.g. "BBB") gets truncated to "B" by
+    split_molecules' PDB writer, merge_structures sees "B" and reassigns
+    to "A". The composite map must restore the link from the *full* source
+    author "BBB" through to the merged "A"."""
+    chain_file_info = [
+        {"chain_id": "B", "author_chain": "BBB", "file": "/x/protein_1.pdb"},
+    ]
+    proteins = [
+        _make_protein_entry("B", "/x/protein_1.amber.pdb"),
+    ]
+    merge_mapping = {
+        # split_molecules wrote "B" (= "BBB"[0]) into the PDB column;
+        # merge_structures saw "B" and reassigned to "A".
+        "/x/protein_1.amber.pdb": {"B": "A"},
+    }
+    composite = _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    )
+    assert composite == {"BBB": "A"}
+
+
+def test_build_composite_map_multiple_multi_letter_authors():
+    """Two mmCIF chains with multi-letter authors that would otherwise
+    collide when truncated. Joining via the cleaned file path keeps them
+    distinct: BBB -> A, CCC -> B."""
+    chain_file_info = [
+        {"chain_id": "B", "author_chain": "BBB", "file": "/x/p1.pdb"},
+        {"chain_id": "C", "author_chain": "CCC", "file": "/x/p2.pdb"},
+    ]
+    proteins = [
+        _make_protein_entry("B", "/x/p1.amber.pdb"),
+        _make_protein_entry("C", "/x/p2.amber.pdb"),
+    ]
+    merge_mapping = {
+        "/x/p1.amber.pdb": {"B": "A"},  # different files → no collision
+        "/x/p2.amber.pdb": {"C": "B"},
+    }
+    assert _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    ) == {"BBB": "A", "CCC": "B"}
+
+
+def test_build_composite_map_drops_excluded_chain():
+    """If select_chains excluded a chain at split time, it never appears
+    in proteins[] / merge_mapping, so the composite map omits it. The
+    remap then drops the corresponding PTM with a warning."""
+    chain_file_info = [
+        {"chain_id": "A", "author_chain": "A", "file": "/x/protein_1.pdb"},
+    ]
+    proteins = [_make_protein_entry("A", "/x/protein_1.amber.pdb")]
+    merge_mapping = {"/x/protein_1.amber.pdb": {"A": "A"}}
+    composite = _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    )
+    assert composite == {"A": "A"}  # B is missing
+
+
+def test_build_composite_map_skips_failed_protein():
+    """A protein chain whose cleaning failed has success=False. The map
+    must skip it so we never claim it's available for restore."""
+    chain_file_info = [
+        {"chain_id": "A", "author_chain": "A", "file": "/x/p1.pdb"},
+        {"chain_id": "B", "author_chain": "B", "file": "/x/p2.pdb"},
+    ]
+    proteins = [
+        _make_protein_entry("A", "/x/p1.amber.pdb", success=True),
+        _make_protein_entry("B", "/x/p2.amber.pdb", success=False),
+    ]
+    merge_mapping = {"/x/p1.amber.pdb": {"A": "A"}}  # B never reached merge
+    assert _build_source_to_merged_chain_map(
+        chain_file_info, proteins, merge_mapping
+    ) == {"A": "A"}
 
 
 def test_remap_detected_ptm_chains_basic():
@@ -332,11 +452,8 @@ def test_remap_detected_ptm_chains_basic():
         {"chain": "A", "resnum": 65, "name": "SEP"},
         {"chain": "B", "resnum": 178, "name": "TPO"},
     ]
-    chain_mapping = {
-        "/some/path/protein_1.amber.pdb": {"A": "A"},
-        "/some/path/protein_2.amber.pdb": {"B": "B"},
-    }
-    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    composite = {"A": "A", "B": "B"}
+    remapped, dropped = _remap_detected_ptm_chains(detected, composite)
     assert dropped == []
     assert remapped == [
         {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"},
@@ -344,45 +461,101 @@ def test_remap_detected_ptm_chains_basic():
     ]
 
 
-def test_remap_detected_ptm_chains_remapped_when_pool_shifts():
-    """If the source had chains B,C only (no A), merge_structures's pool
-    starts at A, so B->A and C->B. Detected PTMs must be rewritten to the
-    new chain ids."""
+def test_remap_detected_ptm_chains_with_pool_shift():
     detected = [
         {"chain": "B", "resnum": 65, "name": "SEP"},
         {"chain": "C", "resnum": 178, "name": "TPO"},
     ]
-    chain_mapping = {
-        "split_1.pdb": {"B": "A"},
-        "split_2.pdb": {"C": "B"},
-    }
-    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    composite = {"B": "A", "C": "B"}
+    remapped, dropped = _remap_detected_ptm_chains(detected, composite)
     assert dropped == []
     assert {(r["chain"], r["original_chain"]) for r in remapped} == {
         ("A", "B"), ("B", "C"),
     }
 
 
-def test_remap_detected_ptm_chains_drops_excluded_chain():
-    """If select_chains excluded source chain B, the per-file mapping never
-    mentions B and the corresponding PTM has nowhere to go."""
+def test_remap_detected_ptm_chains_with_multi_letter_author():
+    """End-to-end of the bug the user flagged: detected_ptm_residues lists
+    a multi-letter source chain "BBB" (as gemmi reports it on an mmCIF),
+    composite map (from _build_source_to_merged_chain_map) translates that
+    to merged "A", and the remapped record stores merged="A" with the
+    original "BBB" preserved for provenance."""
+    detected = [{"chain": "BBB", "resnum": 65, "name": "SEP"}]
+    composite = {"BBB": "A"}
+    remapped, dropped = _remap_detected_ptm_chains(detected, composite)
+    assert dropped == []
+    assert remapped == [
+        {"chain": "A", "original_chain": "BBB", "resnum": 65, "name": "SEP"}
+    ]
+
+
+def test_remap_detected_ptm_chains_drops_chain_not_in_map():
     detected = [
         {"chain": "A", "resnum": 65, "name": "SEP"},
-        {"chain": "B", "resnum": 178, "name": "TPO"},
+        {"chain": "BBB", "resnum": 178, "name": "TPO"},
     ]
-    chain_mapping = {"split_only_a.pdb": {"A": "A"}}
-    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    composite = {"A": "A"}  # BBB missing (e.g. excluded by select_chains)
+    remapped, dropped = _remap_detected_ptm_chains(detected, composite)
     assert remapped == [
-        {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"}
+        {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"},
     ]
-    assert dropped == [{"chain": "B", "resnum": 178, "name": "TPO"}]
+    assert dropped == [{"chain": "BBB", "resnum": 178, "name": "TPO"}]
 
 
 def test_remap_detected_ptm_chains_empty_inputs():
-    assert _remap_detected_ptm_chains([], {"x.pdb": {"A": "A"}}) == ([], [])
+    assert _remap_detected_ptm_chains([], {"A": "A"}) == ([], [])
     assert _remap_detected_ptm_chains(
         [{"chain": "A", "resnum": 65, "name": "SEP"}], {}
     ) == ([], [{"chain": "A", "resnum": 65, "name": "SEP"}])
+
+
+def test_phosphorylate_residues_node_mode_restore_with_multi_letter_original_chain(tmp_path):
+    """End-to-end consumer-side check for the multi-letter mmCIF case:
+
+    - source mmCIF had a PTM at chain `BBB`, resnum 65 (SEP)
+    - prepare_complex's chain remap stored that as merged chain `A`,
+      original_chain `BBB`
+    - merged.pdb has a SER at chain A, resnum 65
+    - phosphorylate_residues --restore-from-detection picks up the merged
+      chain id "A" (NOT the source "BBB") and produces SEP at chain A
+    """
+    job_dir = tmp_path / "job_phospho_mmcif"
+
+    create_node(str(job_dir), "prep")
+    parent_pdb = job_dir / "nodes" / "prep_001" / "artifacts" / "merge" / "merged.pdb"
+    parent_pdb.parent.mkdir(parents=True, exist_ok=True)
+    _write_ser_pdb(parent_pdb)  # SER at chain A, resnum 65
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        metadata={
+            "detected_ptm_residues": [
+                # The multi-letter mmCIF author chain — this is what
+                # prepare_complex now writes after the fix.
+                {"chain": "A", "original_chain": "BBB",
+                 "resnum": 65, "name": "SEP"},
+            ],
+        },
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["prep_001"])
+
+    res = phosphorylate_residues(
+        job_dir=str(job_dir),
+        node_id="prep_002",
+        restore_from_detection=True,
+    )
+    assert res["success"], res.get("errors")
+    assert res["applied_sites"] == [
+        {"chain": "A", "resnum": 65, "target": "SEP", "source": "SER"}
+    ]
+    node_data = read_node(str(job_dir), "prep_002")
+    assert node_data["status"] == "completed"
+    # The phosphorylated PDB should have SEP at chain A, not "BBB" or "B".
+    out_pdb = job_dir / "nodes" / "prep_002" / "artifacts" / "phosphorylated.pdb"
+    text = out_pdb.read_text()
+    assert " SEP A" in text
+    assert " SEP B" not in text
 
 
 # ---------- not_found is fatal by default ----------------------------------
