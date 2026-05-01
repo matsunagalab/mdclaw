@@ -23,6 +23,7 @@ logger = setup_logger(__name__)
 import json  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
+import math  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
@@ -39,6 +40,210 @@ pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
 obabel_wrapper = BaseToolWrapper("obabel")
+
+
+def _guess_element_from_pdb_atom(atom_name: str, element_field: str = "") -> str:
+    """Best-effort element parsing for PDB/MOL2 round-trip checks."""
+    element = (element_field or "").strip()
+    if element:
+        return element.upper()
+    cleaned = re.sub(r"[^A-Za-z]", "", atom_name or "")
+    if not cleaned:
+        return ""
+    # PDB atom names for organic ligands often start with the element.
+    two = cleaned[:2].capitalize()
+    one = cleaned[0].upper()
+    common_two = {"CL", "BR", "NA", "MG", "ZN", "FE", "MN", "CA", "CU", "CO", "NI"}
+    return two.upper() if two.upper() in common_two else one
+
+
+def _read_pdb_heavy_atoms_for_validation(pdb_file: str) -> List[Dict[str, Any]]:
+    atoms: List[Dict[str, Any]] = []
+    for line in Path(pdb_file).read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        name = line[12:16].strip()
+        element = _guess_element_from_pdb_atom(name, line[76:78] if len(line) >= 78 else "")
+        if element == "H":
+            continue
+        try:
+            coords = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+        except ValueError:
+            coords = None
+        atoms.append({
+            "name": name,
+            "element": element,
+            "residue_name": line[17:20].strip(),
+            "coords": coords,
+        })
+    return atoms
+
+
+def _read_sdf_heavy_atoms_for_validation(sdf_file: str) -> List[Dict[str, Any]]:
+    lines = Path(sdf_file).read_text().splitlines()
+    if len(lines) < 4:
+        return []
+    try:
+        atom_count = int(lines[3][0:3])
+    except ValueError:
+        return []
+    atoms: List[Dict[str, Any]] = []
+    for line in lines[4:4 + atom_count]:
+        if len(line) < 34:
+            continue
+        element = line[31:34].strip().upper()
+        if element == "H":
+            continue
+        try:
+            coords = (float(line[0:10]), float(line[10:20]), float(line[20:30]))
+        except ValueError:
+            coords = None
+        atoms.append({"element": element, "coords": coords})
+    return atoms
+
+
+def _read_mol2_atoms_for_validation(mol2_file: str) -> List[Dict[str, Any]]:
+    atoms: List[Dict[str, Any]] = []
+    in_atoms = False
+    for line in Path(mol2_file).read_text().splitlines():
+        if line.startswith("@<TRIPOS>ATOM"):
+            in_atoms = True
+            continue
+        if line.startswith("@<TRIPOS>") and in_atoms:
+            break
+        if not in_atoms or not line.strip():
+            continue
+        parts = line.split()
+        if len(parts) < 9:
+            continue
+        atom_type = parts[5].split(".")[0]
+        element = _guess_element_from_pdb_atom(parts[1], atom_type)
+        if element == "H":
+            continue
+        try:
+            coords = (float(parts[2]), float(parts[3]), float(parts[4]))
+            charge = float(parts[8])
+        except ValueError:
+            coords = None
+            charge = 0.0
+        atoms.append({
+            "name": parts[1],
+            "element": element,
+            "residue_name": parts[7][:3].upper(),
+            "coords": coords,
+            "charge": charge,
+        })
+    return atoms
+
+
+def _heavy_atom_rmsd(a_atoms: List[Dict[str, Any]], b_atoms: List[Dict[str, Any]]) -> Optional[float]:
+    if len(a_atoms) != len(b_atoms) or not a_atoms:
+        return None
+    total = 0.0
+    for a, b in zip(a_atoms, b_atoms):
+        if a.get("coords") is None or b.get("coords") is None:
+            return None
+        total += sum((a["coords"][i] - b["coords"][i]) ** 2 for i in range(3))
+    return math.sqrt(total / len(a_atoms))
+
+
+def _element_multiset(atoms: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for atom in atoms:
+        element = atom.get("element") or ""
+        counts[element] = counts.get(element, 0) + 1
+    return counts
+
+
+def validate_ligand_roundtrip(
+    input_pdb: str,
+    amber_pdb: str,
+    mol2_file: str,
+    expected_residue_name: str,
+    charge_used: Optional[int] = None,
+    sdf_file: Optional[str] = None,
+    max_heavy_rmsd_angstrom: float = 0.75,
+    charge_tolerance: float = 0.15,
+) -> dict:
+    """Validate that ligand preparation preserved identity, charge, and pose."""
+    result = {
+        "success": False,
+        "errors": [],
+        "warnings": [],
+        "input_heavy_atom_count": 0,
+        "amber_heavy_atom_count": 0,
+        "mol2_heavy_atom_count": 0,
+        "heavy_atom_rmsd_angstrom": None,
+        "mol2_total_charge": None,
+        "expected_charge": charge_used,
+        "expected_residue_name": expected_residue_name[:3].upper(),
+    }
+
+    try:
+        input_atoms = _read_pdb_heavy_atoms_for_validation(input_pdb)
+        amber_atoms = _read_pdb_heavy_atoms_for_validation(amber_pdb)
+        mol2_atoms = _read_mol2_atoms_for_validation(mol2_file)
+        sdf_atoms = _read_sdf_heavy_atoms_for_validation(sdf_file) if sdf_file else []
+    except OSError as exc:
+        result["errors"].append(f"roundtrip file read failed: {exc}")
+        return result
+
+    result["input_heavy_atom_count"] = len(input_atoms)
+    result["amber_heavy_atom_count"] = len(amber_atoms)
+    result["mol2_heavy_atom_count"] = len(mol2_atoms)
+
+    if not input_atoms:
+        result["errors"].append(f"input ligand PDB has no heavy atoms: {input_pdb}")
+    if not amber_atoms:
+        result["errors"].append(f"amber ligand PDB has no heavy atoms: {amber_pdb}")
+    if not mol2_atoms:
+        result["errors"].append(f"mol2 has no heavy atoms: {mol2_file}")
+
+    if len(input_atoms) != len(amber_atoms):
+        result["errors"].append(
+            f"heavy atom count mismatch: input_pdb={len(input_atoms)} amber_pdb={len(amber_atoms)}"
+        )
+    if _element_multiset(input_atoms) != _element_multiset(amber_atoms):
+        result["errors"].append(
+            f"heavy atom element mismatch: input={_element_multiset(input_atoms)} "
+            f"amber={_element_multiset(amber_atoms)}"
+        )
+    if sdf_atoms and _element_multiset(sdf_atoms) != _element_multiset(input_atoms):
+        result["errors"].append(
+            f"SDF element mismatch: input={_element_multiset(input_atoms)} "
+            f"sdf={_element_multiset(sdf_atoms)}"
+        )
+
+    amber_resnames = {a.get("residue_name") for a in amber_atoms if a.get("residue_name")}
+    expected = expected_residue_name[:3].upper()
+    if amber_resnames and amber_resnames != {expected}:
+        result["errors"].append(
+            f"amber PDB residue name mismatch: expected {expected}, found {sorted(amber_resnames)}"
+        )
+
+    if mol2_atoms:
+        total_charge = sum(a.get("charge", 0.0) for a in mol2_atoms)
+        result["mol2_total_charge"] = total_charge
+        if charge_used is not None and abs(total_charge - float(charge_used)) > charge_tolerance:
+            result["errors"].append(
+                f"mol2 charge sum mismatch: expected {charge_used}, found {total_charge:.3f}"
+            )
+        elif charge_used is not None and abs(total_charge - float(charge_used)) > 1e-3:
+            result["warnings"].append(
+                f"mol2 charge sum differs by rounding: expected {charge_used}, found {total_charge:.3f}"
+            )
+
+    rmsd = _heavy_atom_rmsd(input_atoms, amber_atoms)
+    result["heavy_atom_rmsd_angstrom"] = rmsd
+    if rmsd is None:
+        result["warnings"].append("heavy atom RMSD skipped: atom counts or coordinates unavailable")
+    elif rmsd > max_heavy_rmsd_angstrom:
+        result["errors"].append(
+            f"heavy atom RMSD too large: {rmsd:.3f} A > {max_heavy_rmsd_angstrom:.3f} A"
+        )
+
+    result["success"] = not result["errors"]
+    return result
 
 
 def _get_geostd_dir() -> Optional[Path]:
@@ -3226,7 +3431,7 @@ def run_antechamber_robust(
             - pdb: str - Path to atom-name-preserving PDB file (for merge_structures)
             - parameter_source: str - 'amber_geostd' or 'gaff2_antechamber'
             - parameterization_backend: str - 'curated' or 'antechamber_parmchk2'
-            - charge_used: int - Net charge that was used (None for geostd)
+            - charge_used: float - Net charge used for validation / parameterization
             - charge_method: str - Charge method used
             - atom_type: str - Atom type used
             - residue_name: str - Residue name used
@@ -3344,6 +3549,7 @@ def run_antechamber_robust(
             result["charge_confidence"] = "geostd_curated"
             result["charges"] = _parse_mol2_charges(geostd_hit["mol2"])
             result["total_charge"] = sum(result["charges"]) if result["charges"] else 0.0
+            result["charge_used"] = result["total_charge"]
             result["frcmod_validation"] = {
                 "valid": True, "severity": "ok", "source": "amber_geostd",
                 "attn_count": 0, "zero_force_constant_count": 0,
@@ -4078,7 +4284,7 @@ def prepare_complex(
     include_types: Optional[List[str]] = None,
     include_ligand_ids: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
-    optimize_ligands: bool = True,
+    optimize_ligands: bool = False,
     charge_method: str = "bcc",
     atom_type: str = "gaff2",
     structure_analysis: Optional[dict] = None,
@@ -4133,7 +4339,9 @@ def prepare_complex(
                            e.g., ["A:ACP:501"]). If specified, only these ligands are processed.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). These ligands are skipped.
-        optimize_ligands: Run MMFF94 optimization on ligands (default: True)
+        optimize_ligands: Run MMFF94 optimization on ligands (default: False).
+                          Bound-ligand heavy-atom coordinates are preserved unless
+                          this is explicitly enabled.
         charge_method: Antechamber charge method ('bcc' or 'gas') (default: 'bcc')
         atom_type: Antechamber atom type ('gaff' or 'gaff2') (default: 'gaff2')
         structure_analysis: Pre-computed structure analysis from Phase 1. Contains
@@ -4530,14 +4738,30 @@ def prepare_complex(
                     result["warnings"].append(f"Could not determine ligand ID for {ligand_file}")
                     continue
                 
+                cinfo_for_ligand = chain_info_map.get(chain_id, {}) if chain_id else {}
+                ligand_instance_id = cinfo_for_ligand.get("unique_id")
+                author_chain = cinfo_for_ligand.get("author_chain", chain_id)
+                resnum = cinfo_for_ligand.get("resnum")
+                if not ligand_instance_id:
+                    ligand_instance_id = f"{author_chain or chain_id}:{ligand_id}:{resnum or 'UNK'}"
+
                 ligand_result = {
+                    "ligand_instance_id": ligand_instance_id,
                     "chain_id": chain_id,
+                    "author_chain": author_chain,
                     "ligand_id": ligand_id,
+                    "residue_name": ligand_id[:3].upper(),
+                    "resnum": resnum,
                     "input_file": ligand_file,
                     "sdf_file": None,
                     "mol2_file": None,
                     "frcmod_file": None,
+                    "pdb_file": None,
                     "net_charge": None,
+                    "charge_used": None,
+                    "total_charge": None,
+                    "parameter_source": None,
+                    "roundtrip_validation": None,
                     "success": False,
                     "errors": []
                 }
@@ -4604,14 +4828,54 @@ def prepare_complex(
                                 ligand_result["mol2_file"] = param_result["mol2"]
                                 ligand_result["frcmod_file"] = param_result["frcmod"]
                                 ligand_result["pdb_file"] = param_result.get("pdb")  # Amber-compatible PDB
+                                ligand_result["charge_used"] = param_result.get("charge_used")
+                                ligand_result["total_charge"] = param_result.get("total_charge")
                                 ligand_result["charge_confidence"] = param_result.get("charge_confidence")
-                                ligand_result["parameter_source"] = param_result.get("parameter_source", "gaff2_antechamber")
-                                ligand_result["success"] = True
+                                ligand_result["parameter_source"] = param_result.get(
+                                    "parameter_source", "gaff2_antechamber"
+                                )
+                                if param_result.get("pdb"):
+                                    roundtrip = validate_ligand_roundtrip(
+                                        input_pdb=ligand_file,
+                                        sdf_file=clean_result["sdf_file"],
+                                        mol2_file=param_result["mol2"],
+                                        amber_pdb=param_result["pdb"],
+                                        expected_residue_name=ligand_id[:3].upper(),
+                                        charge_used=param_result.get("charge_used")
+                                        if param_result.get("charge_used") is not None
+                                        else clean_result.get("net_charge"),
+                                    )
+                                    ligand_result["roundtrip_validation"] = roundtrip
+                                    if roundtrip.get("warnings"):
+                                        ligand_result.setdefault("warnings", []).extend(
+                                            roundtrip["warnings"]
+                                        )
+                                    if not roundtrip.get("success"):
+                                        ligand_result["errors"].extend(roundtrip.get("errors", []))
+                                        ligand_result["failure_class"] = "ligand_roundtrip_validation_failed"
+                                        ligand_result["recommended_next_action"] = (
+                                            "inspect_or_provide_curated_ligand_parameters"
+                                        )
+                                        result["warnings"].append(
+                                            f"Ligand {ligand_instance_id} round-trip validation failed"
+                                        )
+                                        logger.warning(
+                                            f"    ✗ Round-trip validation failed: {roundtrip.get('errors')}"
+                                        )
+                                    else:
+                                        ligand_result["success"] = True
+                                else:
+                                    ligand_result["errors"].append(
+                                        "Parameterization succeeded but amber-compatible PDB was not produced"
+                                    )
+                                    ligand_result["failure_class"] = "missing_amber_ligand_pdb"
+                                    ligand_result["recommended_next_action"] = "hard_fail"
                                 # Propagate warnings (e.g. LOW_CONFIDENCE_CHARGE, frcmod ATTN)
                                 if param_result.get("warnings"):
                                     ligand_result.setdefault("warnings", []).extend(param_result["warnings"])
                                     result["warnings"].extend(param_result["warnings"])
-                                logger.info(f"    ✓ Parameterized: {param_result['mol2']}")
+                                if ligand_result["success"]:
+                                    logger.info(f"    ✓ Parameterized: {param_result['mol2']}")
                             else:
                                 ligand_result["errors"].extend(param_result.get("errors", []))
                                 # Propagate structured failure fields
@@ -4836,7 +5100,16 @@ def prepare_complex(
                 {
                     "mol2": lig["mol2_file"],
                     "frcmod": lig["frcmod_file"],
-                    "residue_name": lig.get("ligand_id", "LIG")[:3].upper(),
+                    "pdb": lig.get("pdb_file"),
+                    "ligand_instance_id": lig.get("ligand_instance_id"),
+                    "chain_id": lig.get("chain_id"),
+                    "author_chain": lig.get("author_chain"),
+                    "ligand_id": lig.get("ligand_id"),
+                    "residue_name": lig.get("residue_name", lig.get("ligand_id", "LIG")[:3].upper()),
+                    "resnum": lig.get("resnum"),
+                    "charge_used": lig.get("charge_used"),
+                    "charge_confidence": lig.get("charge_confidence"),
+                    "total_charge": lig.get("total_charge"),
                     "parameter_source": lig.get("parameter_source", "gaff2_antechamber"),
                 }
                 for lig in result["ligands"]
@@ -4884,7 +5157,16 @@ def prepare_complex(
                 artifacts["merged_pdb"] = "artifacts/merge/merged.pdb"
             lig_params = [
                 {"mol2": lig.get("mol2_file"), "frcmod": lig.get("frcmod_file"),
-                 "residue_name": lig.get("ligand_id", "LIG")[:3].upper(),
+                 "pdb": lig.get("pdb_file"),
+                 "ligand_instance_id": lig.get("ligand_instance_id"),
+                 "chain_id": lig.get("chain_id"),
+                 "author_chain": lig.get("author_chain"),
+                 "ligand_id": lig.get("ligand_id"),
+                 "residue_name": lig.get("residue_name", lig.get("ligand_id", "LIG")[:3].upper()),
+                 "resnum": lig.get("resnum"),
+                 "charge_used": lig.get("charge_used"),
+                 "charge_confidence": lig.get("charge_confidence"),
+                 "total_charge": lig.get("total_charge"),
                  "parameter_source": lig.get("parameter_source")}
                 for lig in ligands if lig.get("success") and lig.get("mol2_file")
             ]

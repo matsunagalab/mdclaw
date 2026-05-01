@@ -252,6 +252,7 @@ class TestJobIsolation:
 
     def test_output_dir_none_creates_unique_job_dir(self, small_pdb, monkeypatch):
         """Two calls with output_dir=None must produce different directories."""
+        pytest.importorskip("gemmi")
         from mdclaw.structure_server import prepare_complex
 
         # Point WORKING_DIR to a temp location to avoid polluting real outputs/
@@ -694,11 +695,34 @@ class TestPrepareComplexWorkflowStatus:
             "pdb": str(tmp_path / "fake.amber.pdb"),
             "warnings": [],
             "charge_confidence": "default",
+            "charge_used": -1,
+            "total_charge": -1.0,
         }
-        (tmp_path / "fake.mol2").write_text("")
+        (tmp_path / "fake.mol2").write_text(textwrap.dedent("""\
+            @<TRIPOS>MOLECULE
+            LIG
+             4 3 1 0 0
+            SMALL
+            USER_CHARGES
+            @<TRIPOS>ATOM
+                  1 C1          5.0000    5.0000    0.0000 C.3       1 LIG     -0.2500
+                  2 C2          6.5000    5.0000    0.0000 C.2       1 LIG      0.5000
+                  3 O1          7.2000    6.0000    0.0000 O.2       1 LIG     -0.6250
+                  4 O2          7.1000    3.9000    0.0000 O.2       1 LIG     -0.6250
+            @<TRIPOS>BOND
+                 1    1    2 1
+                 2    2    3 2
+                 3    2    4 1
+            @<TRIPOS>SUBSTRUCTURE
+                 1 LIG         1 TEMP              0 ****  ****    0 ROOT
+        """))
         (tmp_path / "fake.frcmod").write_text("")
         (tmp_path / "fake.amber.pdb").write_text(
-            "HETATM    5  C1  LIG B   1       5.0   5.0   5.0  1.00  0.00           C\nEND\n"
+            "HETATM    5  C1  LIG B   1       5.000   5.000   0.000  1.00  0.00           C\n"
+            "HETATM    6  C2  LIG B   1       6.500   5.000   0.000  1.00  0.00           C\n"
+            "HETATM    7  O1  LIG B   1       7.200   6.000   0.000  1.00  0.00           O\n"
+            "HETATM    8  O2  LIG B   1       7.100   3.900   0.000  1.00  0.00           O\n"
+            "END\n"
         )
 
         with patch("mdclaw.structure_server.run_antechamber_robust", return_value=fake_ok):
@@ -867,6 +891,7 @@ class TestGeostdIntegration:
     def test_geostd_hit_skips_antechamber(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
         """When geostd has the residue and PDB generation succeeds,
         antechamber is only called for mol2->PDB conversion (not parameterization)."""
+        pytest.importorskip("rdkit")
         from unittest.mock import MagicMock
         from mdclaw.structure_server import run_antechamber_robust
         monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
@@ -895,6 +920,7 @@ class TestGeostdIntegration:
             assert result["parameter_source"] == "amber_geostd"
             assert result["parameterization_backend"] == "curated"
             assert result["charge_confidence"] == "geostd_curated"
+            assert result["charge_used"] == pytest.approx(result["total_charge"])
             assert Path(result["mol2"]).exists()
             assert Path(result["frcmod"]).exists()
             assert result["pdb"] is not None
@@ -936,6 +962,7 @@ class TestGeostdIntegration:
 
     def test_geostd_hit_populates_all_return_keys(self, fake_geostd_dir, acetic_acid_pdb, tmp_path, monkeypatch):
         """A geostd hit must populate all documented return keys."""
+        pytest.importorskip("rdkit")
         from unittest.mock import MagicMock
         from mdclaw.structure_server import run_antechamber_robust
         monkeypatch.setenv("MDCLAW_GEOSTD_DIR", str(fake_geostd_dir))
@@ -972,6 +999,7 @@ class TestGeostdIntegration:
         """When geostd hits but PDB generation fails, falls back to GAFF2 instead of
         returning success=True without a PDB (which would silently drop the ligand
         from the merged complex)."""
+        pytest.importorskip("rdkit")
         from unittest.mock import MagicMock
         from mdclaw.structure_server import run_antechamber_robust
 
@@ -1104,3 +1132,180 @@ class TestDownloadAmberGeostd:
         result = download_amber_geostd(output_dir=str(existing), force=False)
         assert result["success"] is True
         assert "Already exists" in result["warnings"][0]
+
+
+# ---------------------------------------------------------------------------
+# Level 1: ligand round-trip validation and multi-ligand preflight
+# ---------------------------------------------------------------------------
+
+def _write_simple_ligand_triplet(tmp_path, resname="LIG", charge=0.0):
+    input_pdb = tmp_path / f"{resname}_input.pdb"
+    amber_pdb = tmp_path / f"{resname}.amber.pdb"
+    mol2 = tmp_path / f"{resname}.mol2"
+    sdf = tmp_path / f"{resname}.sdf"
+
+    pdb_text = (
+        f"HETATM    1  C1  {resname} A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        f"HETATM    2  O1  {resname} A   1       1.200   0.000   0.000  1.00  0.00           O\n"
+        "END\n"
+    )
+    input_pdb.write_text(pdb_text)
+    amber_pdb.write_text(pdb_text)
+    mol2.write_text(textwrap.dedent(f"""\
+        @<TRIPOS>MOLECULE
+        {resname}
+         2 1 1 0 0
+        SMALL
+        USER_CHARGES
+        @<TRIPOS>ATOM
+              1 C1          0.0000    0.0000    0.0000 C.3       1 {resname}     {charge / 2:.4f}
+              2 O1          1.2000    0.0000    0.0000 O.2       1 {resname}     {charge / 2:.4f}
+        @<TRIPOS>BOND
+             1    1    2 1
+        @<TRIPOS>SUBSTRUCTURE
+             1 {resname}         1 TEMP              0 ****  ****    0 ROOT
+    """))
+    sdf.write_text(textwrap.dedent("""\
+        test
+          MDClaw
+
+          2  1  0  0  0  0            999 V2000
+            0.0000    0.0000    0.0000 C   0  0  0  0  0  0  0  0  0  0  0  0
+            1.2000    0.0000    0.0000 O   0  0  0  0  0  0  0  0  0  0  0  0
+          1  2  1  0
+        M  END
+        $$$$
+    """))
+    return input_pdb, amber_pdb, mol2, sdf
+
+
+class TestLigandRoundtripValidation:
+    def test_roundtrip_success(self, tmp_path):
+        from mdclaw.structure_server import validate_ligand_roundtrip
+
+        input_pdb, amber_pdb, mol2, sdf = _write_simple_ligand_triplet(tmp_path, charge=0.0)
+        result = validate_ligand_roundtrip(
+            input_pdb=str(input_pdb),
+            amber_pdb=str(amber_pdb),
+            mol2_file=str(mol2),
+            sdf_file=str(sdf),
+            expected_residue_name="LIG",
+            charge_used=0,
+        )
+        assert result["success"], result
+
+    def test_roundtrip_detects_residue_and_charge_mismatch(self, tmp_path):
+        from mdclaw.structure_server import validate_ligand_roundtrip
+
+        input_pdb, amber_pdb, mol2, sdf = _write_simple_ligand_triplet(tmp_path, charge=1.0)
+        amber_pdb.write_text(amber_pdb.read_text().replace(" LIG ", " UNL "))
+        result = validate_ligand_roundtrip(
+            input_pdb=str(input_pdb),
+            amber_pdb=str(amber_pdb),
+            mol2_file=str(mol2),
+            sdf_file=str(sdf),
+            expected_residue_name="LIG",
+            charge_used=0,
+        )
+        assert result["success"] is False
+        joined = " ".join(result["errors"])
+        assert "residue name mismatch" in joined
+        assert "charge sum mismatch" in joined
+
+    def test_prepare_complex_default_preserves_bound_pose(self):
+        import inspect
+        from mdclaw.structure_server import prepare_complex
+
+        assert inspect.signature(prepare_complex).parameters["optimize_ligands"].default is False
+
+
+class TestMultiLigandTopologyPreflight:
+    def test_multi_ligand_unl_repair_fails_without_guessing(self, tmp_path):
+        from mdclaw.amber_server import fix_ligand_residue_names
+
+        pdb = tmp_path / "input.pdb"
+        out = tmp_path / "out.pdb"
+        pdb.write_text(
+            "HETATM    1  C1  UNL A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        result = fix_ligand_residue_names(pdb, out, ["L1A", "L2B"])
+        assert result["success"] is False
+        assert result["unl_count"] == 1
+        assert "Ambiguous UNL" in result["errors"][0]
+
+    def test_single_ligand_unl_repair_still_works(self, tmp_path):
+        from mdclaw.amber_server import fix_ligand_residue_names
+
+        pdb = tmp_path / "input.pdb"
+        out = tmp_path / "out.pdb"
+        pdb.write_text(
+            "HETATM    1  C1  UNL A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        result = fix_ligand_residue_names(pdb, out, ["LIG"])
+        assert result["success"] is True
+        assert "LIG" in out.read_text()
+
+    def test_ligand_template_coverage_requires_pdb_residue(self, tmp_path):
+        from mdclaw.amber_server import validate_ligand_template_coverage
+
+        pdb = tmp_path / "complex.pdb"
+        pdb.write_text(
+            "HETATM    1  C1  LIG A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        errors = validate_ligand_template_coverage(
+            pdb,
+            [{"residue_name": "AP5", "ligand_instance_id": "A:AP5:1"}],
+        )
+        assert errors
+        assert "AP5" in errors[0]
+
+    def test_implicit_ligand_diagnostics_do_not_select_protocol(self):
+        from mdclaw.amber_server import implicit_ligand_diagnostics
+
+        result = implicit_ligand_diagnostics([
+            {"residue_name": "AP5", "total_charge": -5, "ligand_instance_id": "A:AP5:501"}
+        ])
+        assert result["implicit_ligand_charge_risk"] is True
+        assert result["ligands"][0]["ligand_risk_class"] == "high_charge_polyphosphate"
+        assert "protocol" not in result
+
+    def test_ligand_contact_detector_catches_close_contact(self, tmp_path):
+        from mdclaw.amber_server import validate_initial_ligand_contacts
+
+        pdb = tmp_path / "complex.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM    2  P1  AP5 A 501       0.500   0.000   0.000  1.00  0.00           P\n"
+            "END\n"
+        )
+        result = validate_initial_ligand_contacts(str(pdb), ["AP5"])
+        assert result["success"] is True
+        assert result["ligand_clash_detected"] is True
+        assert result["closest_contacts"][0]["distance_angstrom"] == 0.5
+
+    def test_synthetic_two_ligand_residue_smoke_metadata(self, tmp_path):
+        from mdclaw.amber_server import validate_ligand_template_coverage
+
+        pdb = tmp_path / "two_ligands.pdb"
+        pdb.write_text(
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM    2  C1  L1A A 101       4.000   0.000   0.000  1.00  0.00           C\n"
+            "HETATM    3  C1  L2B A 102       6.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        ligand_params = [
+            {"residue_name": "L1A", "ligand_instance_id": "A:L1A:101"},
+            {"residue_name": "L2B", "ligand_instance_id": "A:L2B:102"},
+        ]
+        assert validate_ligand_template_coverage(pdb, ligand_params) == []
+
+    def test_real_pdb_multi_ligand_smoke_candidates_are_documented(self):
+        candidates = {
+            "1PW6": {"organic_inhibitor", "sulfate"},
+            "3PWB": {"benzamidine", "sulfate", "glycerol", "calcium"},
+        }
+        assert "1PW6" in candidates
+        assert "3PWB" in candidates

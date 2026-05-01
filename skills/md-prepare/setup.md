@@ -257,11 +257,25 @@ Check `overall_status` from `prepare_complex` JSON output (not stderr):
 | `failed` | Report error, stop |
 
 **On success**: `prepare_complex` records ligand parameters
-(`{mol2, frcmod, residue_name}` per ligand) as a structured `ligand_params`
+(`{mol2, frcmod, residue_name, ligand_instance_id, charge_used,
+total_charge, parameter_source}` per ligand) as a structured `ligand_params`
 artifact on the `prep` node. Downstream `build_amber_system` auto-resolves
 this from the `prep` ancestor — no manual bookkeeping or path wiring required.
+Each ligand also carries `roundtrip_validation`; failures here mean the ligand
+atom identity, residue name, charge, or bound pose was not preserved and must
+be treated as a blocking ligand failure.
 
 **Parameterization source**: Each ligand result includes `parameter_source` (`amber_geostd` or `gaff2_antechamber`). `run_antechamber_robust` follows this order: (1) metal pre-check — metal-containing ligands hard-fail immediately, (2) **amber_geostd** curated database lookup (exact residue name match; on hit uses pre-computed GAFF2 mol2/frcmod with abcg2 charges), (3) antechamber + parmchk2 GAFF2 fallback. The amber_geostd database covers ~28,000 PDB CCD entries. Install via `mdclaw download_amber_geostd`.
+
+**Curated ligand charges take priority**: pH-based SMILES protonation can
+disagree with a curated CCD/amber_geostd parameter set. For example, a basic
+inhibitor may be protonated to `+1` by Dimorphite at pH 7.4 while the curated
+mol2 entry is neutral. When `parameter_source=amber_geostd`, MDClaw treats the
+curated mol2 partial-charge sum as `charge_used` for round-trip validation and
+downstream topology generation. Do not add a `structure_analysis` charge
+override just to make a curated hit pass; only use explicit overrides when the
+user intentionally wants a different protonation/charge state and accepts the
+need for matching curated or user-supplied parameters.
 
 **Checkpoint: Low-confidence charge** -- If `prepare_complex` output warnings
 contain `LOW_CONFIDENCE_CHARGE`, this is always `stop_and_ask`: present the
@@ -392,6 +406,8 @@ on this field, not on free-text `errors[]`:
 | `parmchk2_failed` | `parmchk2` could not emit a usable frcmod | `use_curated_params` |
 | `zero_bond_angle_params` | frcmod has zero force constants on bond/angle terms — simulation would blow up | `use_curated_params` |
 | `zero_dihe_barriers` | frcmod has zero dihedral barriers — conformational sampling broken | `use_curated_params` or `provide_frcmod` |
+| `ligand_roundtrip_validation_failed` | Prepared ligand no longer matches the input ligand identity, charge, residue name, or pose | `inspect_or_provide_curated_ligand_parameters` |
+| `missing_amber_ligand_pdb` | Parameterization did not produce the Amber-compatible PDB needed for merging | `hard_fail` |
 | `unexpected_error` | Internal error outside the above classes (see `errors[]` for detail) | `hard_fail` |
 
 **Critical**: Never parse stderr or warning strings to decide next steps. Use only the structured fields above.
@@ -459,7 +475,7 @@ initial summary (Step 0) and otherwise trust these.
 | `cap_termini` | `False` | `ACE`/`NME` caps not added; set `--cap-termini` only for explicit termini capping |
 | `process_proteins` | `True` | Run clean_protein on each protein chain |
 | `process_ligands` | `True` | Run ligand cleanup + parameterization on each ligand |
-| `optimize_ligands` | `True` | MMFF94 geometry optimization before antechamber |
+| `optimize_ligands` | `False` | Preserve bound-ligand heavy atom coordinates; only enable explicit optimization when requested |
 | `charge_method` | `"bcc"` | AM1-BCC; the only well-tested path. `"gas"` available but not recommended |
 | `atom_type` | `"gaff2"` | GAFF2 atom typing; GAFF legacy only |
 | `keep_crystal_waters` | `False` | Crystal waters dropped by default; opt-in via `--keep-crystal-waters` |

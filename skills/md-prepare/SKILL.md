@@ -129,13 +129,19 @@ Key fields to check:
 - `workflow_recommendation` — contains `options` (list of valid next actions)
 - `recommended_next_action` — per-ligand: `use_curated_params`, `provide_frcmod`, `hard_fail`
 - `failure_class` — what went wrong. Full enumeration in
-  `setup.md` "Blocking Ligand Failure" (7 classes: `input_error`,
+  `setup.md` "Blocking Ligand Failure" (including `input_error`,
   `metal_atoms`, `antechamber_failed`, `parmchk2_failed`,
-  `zero_bond_angle_params`, `zero_dihe_barriers`, `unexpected_error`)
+  `zero_bond_angle_params`, `zero_dihe_barriers`,
+  `ligand_roundtrip_validation_failed`, `unexpected_error`)
 
 Rules:
 - If `recommended_next_action = use_curated_params`: do NOT retry, do NOT edit frcmod, do NOT change charge method. Present the options from `workflow_recommendation.options` to the user.
 - If `recommended_next_action = hard_fail`: stop immediately. Do not attempt workarounds.
+- If `parameter_source = amber_geostd`, curated mol2/frcmod parameters take
+  priority over pH protonation charge guesses; MDClaw uses the curated mol2
+  charge sum for validation. Do not add `structure_analysis.ligands[].net_charge`
+  unless the user intentionally wants a different charge/protonation state and
+  has matching parameters.
 - Retrying the same command with identical parameters will produce the same error.
 - If stuck, report the structured error fields and ask the user for guidance.
 - The full HITL interaction loop (check `confirmation_needed`, respect

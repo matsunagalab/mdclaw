@@ -2699,12 +2699,19 @@ def inspect_molecules(
 
             entity_info = entity_name_map.get(chain_id, {})
 
+            unique_id = None
+            if chain_type in ("ligand", "ion"):
+                first_res = res_list[0]
+                unique_id = f"{author_chain}:{first_res.name.strip()}:{first_res.seqid.num}"
+
             chain_info = {
                 "chain_id": chain_id,
                 "author_chain": author_chain,
                 "entity_id": entity_info.get("entity_id"),
                 "entity_name": entity_info.get("name"),
                 "chain_type": chain_type,
+                "residue_names": sorted(residue_names),
+                "unique_id": unique_id,
                 "is_protein": has_protein,
                 "is_water": has_water,
                 "num_residues": len(res_list),
