@@ -479,6 +479,18 @@ scenarios share one tool:
   counterpart of the requested target (SER↔SEP, THR↔TPO, TYR↔PTR);
   mismatches return a structured error.
 
+Sites that are not located in the input PDB (typo in `--sites-str`,
+chain-id drift, etc.) cause the run to **fail**, not silently apply a
+subset. Pass `--allow-partial` only if you knowingly want to apply
+whichever subset is present.
+
+`prepare_complex` already remaps detected PTM chain ids onto the merged
+PDB's chain ids (because `merge_structures` reassigns chains from a
+fresh A-Z, a-z, 0-9 pool), and stores the original source chain under
+`original_chain` for provenance. PTMs on chains excluded by
+`select_chains` are dropped with a warning at prepare time, not silently
+carried into restore.
+
 Branch a new `prep` node off the cleaned prep_001:
 
 ```bash

@@ -4973,9 +4973,30 @@ def prepare_complex(
                     result["merge_result"] = {
                         "success": True,
                         "output_file": merge_result["output_file"],
-                        "statistics": merge_result.get("statistics", {})
+                        "statistics": merge_result.get("statistics", {}),
+                        "chain_mapping": merge_result.get("chain_mapping", {}),
                     }
                     logger.info(f"  ✓ Merged: {merge_result['output_file']}")
+
+                    # Apply merge_structures' chain reassignment to the PTM
+                    # detection list captured before cleaning. Without this,
+                    # `phosphorylate_residues --restore-from-detection` would
+                    # look up the source chain id against merged.pdb's
+                    # reassigned ids and either fail or hit the wrong residue.
+                    if detected_ptm_residues:
+                        remapped, dropped = _remap_detected_ptm_chains(
+                            detected_ptm_residues,
+                            merge_result.get("chain_mapping", {}),
+                        )
+                        if dropped:
+                            result["warnings"].append(
+                                "PTM residue(s) on source chains that did not "
+                                "make it into the merged PDB (likely excluded "
+                                f"by select_chains): {dropped}. They will not "
+                                "be available for `phosphorylate_residues "
+                                "--restore-from-detection`."
+                            )
+                        detected_ptm_residues = remapped
 
                     # Reconcile CYS/CYX residue names against the
                     # authoritative disulfide_bonds list. pdb2pqr does its
@@ -5414,6 +5435,59 @@ _PHOSPHO_TARGETS = {
 }
 
 
+def _remap_detected_ptm_chains(
+    detected_ptm_residues: list[dict],
+    merge_chain_mapping: dict,
+) -> tuple[list[dict], list[dict]]:
+    """Apply ``merge_structures``' chain reassignment to detected PTM sites.
+
+    `merge_structures` rewrites chain IDs from a fresh A-Z, a-z, 0-9 pool —
+    the chain id you saw in the source PDB is not necessarily the chain id in
+    ``merged.pdb``. PTM detection runs against the source structure, but
+    `phosphorylate_residues --restore-from-detection` operates on
+    ``merged.pdb``; without remapping, the consumer would hit
+    "wrong residue" or "not found" depending on how the chain pool happened
+    to align.
+
+    Args:
+        detected_ptm_residues: list of ``{"chain","resnum","name"}`` from
+            `detect_ptm_sites` (chain = source author chain).
+        merge_chain_mapping: ``merge_structures`` ``chain_mapping`` field —
+            ``{file_path: {original_chain: merged_chain}}``. ``split_molecules``
+            emits one chain per file so each per-file map has at most one
+            entry; we flatten across files.
+
+    Returns:
+        ``(remapped, dropped)``. Each remapped entry carries:
+            - ``chain``: the merged.pdb chain id (what
+              `phosphorylate_residues` actually looks up).
+            - ``original_chain``: the source chain id (provenance only).
+            - ``resnum`` / ``name``: unchanged.
+        ``dropped`` collects entries whose source chain was not present in
+        the merge mapping (typically excluded by ``select_chains``).
+    """
+    flat_map: dict[str, str] = {}
+    for file_map in (merge_chain_mapping or {}).values():
+        for original, merged in (file_map or {}).items():
+            flat_map[original] = merged
+
+    remapped: list[dict] = []
+    dropped: list[dict] = []
+    for ptm in detected_ptm_residues or []:
+        original = ptm["chain"]
+        merged_chain = flat_map.get(original)
+        if merged_chain is None:
+            dropped.append(dict(ptm))
+            continue
+        remapped.append({
+            "chain": merged_chain,
+            "original_chain": original,
+            "resnum": ptm["resnum"],
+            "name": ptm["name"],
+        })
+    return remapped, dropped
+
+
 def _parse_sites_str(sites_str: str) -> list[dict]:
     """Parse "A:65:SEP,A:178:TPO" into a list of site dicts."""
     out: list[dict] = []
@@ -5527,6 +5601,7 @@ def phosphorylate_residues(
     sites: Optional[List[Dict[str, Any]]] = None,
     sites_str: Optional[str] = None,
     restore_from_detection: bool = False,
+    allow_partial: bool = False,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -5563,6 +5638,11 @@ def phosphorylate_residues(
         sites: Explicit site list. See docstring head.
         sites_str: CLI sugar. See docstring head.
         restore_from_detection: Use sites recorded by ``prepare_complex``.
+        allow_partial: When ``False`` (the default), any requested site that
+                  is not located in the input PDB makes the call fail. This
+                  catches typos in ``--sites-str`` and chain-remap drift in
+                  ``--restore-from-detection``. Set ``True`` only if you
+                  knowingly want to apply whichever subset is present.
         name: Optional name prefix for output files (e.g. "p_a65_a178").
         output_dir: Output directory (ignored in node mode).
         job_dir: DAG job directory (node mode).
@@ -5715,10 +5795,27 @@ def phosphorylate_residues(
         return result
 
     if edit_result["not_found"]:
-        result["warnings"].append(
-            "The following sites were not located in the input PDB and were "
-            f"skipped: {edit_result['not_found']}"
+        message = (
+            "The following sites were not located in the input PDB: "
+            f"{edit_result['not_found']}. Common causes: a typo in "
+            "--sites-str, or a chain-id mismatch between the cleaned merged "
+            "PDB and the detection list (re-run prepare_complex if its "
+            "chain remapping was missing)."
         )
+        if allow_partial:
+            result["warnings"].append(message + " Proceeding because allow_partial=True.")
+        else:
+            result["errors"].append(
+                message + " Pass --allow-partial to apply the rest anyway."
+            )
+            try:
+                output_path.unlink()
+            except FileNotFoundError:
+                pass
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=result["errors"])
+            return result
 
     if not edit_result["applied"]:
         result["errors"].append(

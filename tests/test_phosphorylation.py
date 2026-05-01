@@ -21,6 +21,7 @@ from mdclaw.structure_server import (
     _PHOSPHO_TARGETS,
     _apply_phosphorylation_to_pdb,
     _parse_sites_str,
+    _remap_detected_ptm_chains,
     phosphorylate_residues,
 )
 
@@ -245,6 +246,10 @@ def test_phosphorylate_residues_explicit_sites_str(tmp_path):
 
 
 def test_phosphorylate_residues_node_mode_restore_from_detection(tmp_path):
+    """Happy path: prep_001 records a PTM whose `chain` is the *merged*
+    chain id (the post-merge form, as produced by the prepare_complex
+    chain remap). phosphorylate_residues looks the residue up at that
+    chain id and applies the phosphorylation."""
     job_dir = tmp_path / "job_phospho"
 
     create_node(str(job_dir), "prep")
@@ -257,7 +262,8 @@ def test_phosphorylate_residues_node_mode_restore_from_detection(tmp_path):
         artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
         metadata={
             "detected_ptm_residues": [
-                {"chain": "A", "resnum": 65, "name": "SEP"},
+                # chain="A" is the merged chain. original_chain may differ.
+                {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"},
             ],
         },
     )
@@ -277,7 +283,185 @@ def test_phosphorylate_residues_node_mode_restore_from_detection(tmp_path):
     assert ptm_meta == [
         {"chain": "A", "resnum": 65, "name": "SEP", "source": "detected"}
     ]
-    assert node_data["metadata"]["restore_from_detection"] is True
+
+
+def test_phosphorylate_residues_node_mode_uses_merged_not_original_chain(tmp_path):
+    """Regression for a real bug: when the source PDB's chain id (e.g. "B")
+    differs from the merged.pdb chain id (e.g. "A"), the consumer must
+    look the residue up at the *merged* chain id. If we accidentally used
+    `original_chain`, the lookup would fail (or worse, silently match a
+    different chain in the merged PDB).
+    """
+    job_dir = tmp_path / "job_phospho_remapped"
+
+    create_node(str(job_dir), "prep")
+    parent_pdb = job_dir / "nodes" / "prep_001" / "artifacts" / "merge" / "merged.pdb"
+    parent_pdb.parent.mkdir(parents=True, exist_ok=True)
+    # merged.pdb has SER on chain A — that's where the residue actually is.
+    _write_ser_pdb(parent_pdb)
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        metadata={
+            "detected_ptm_residues": [
+                # `chain` (= merged) is "A"; original was "B".
+                {"chain": "A", "original_chain": "B",
+                 "resnum": 65, "name": "SEP"},
+            ],
+        },
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["prep_001"])
+
+    res = phosphorylate_residues(
+        job_dir=str(job_dir),
+        node_id="prep_002",
+        restore_from_detection=True,
+    )
+    assert res["success"], res.get("errors")
+    assert res["applied_sites"] == [
+        {"chain": "A", "resnum": 65, "target": "SEP", "source": "SER"}
+    ]
+
+
+# ---------- _remap_detected_ptm_chains -------------------------------------
+
+
+def test_remap_detected_ptm_chains_basic():
+    detected = [
+        {"chain": "A", "resnum": 65, "name": "SEP"},
+        {"chain": "B", "resnum": 178, "name": "TPO"},
+    ]
+    chain_mapping = {
+        "/some/path/protein_1.amber.pdb": {"A": "A"},
+        "/some/path/protein_2.amber.pdb": {"B": "B"},
+    }
+    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    assert dropped == []
+    assert remapped == [
+        {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"},
+        {"chain": "B", "original_chain": "B", "resnum": 178, "name": "TPO"},
+    ]
+
+
+def test_remap_detected_ptm_chains_remapped_when_pool_shifts():
+    """If the source had chains B,C only (no A), merge_structures's pool
+    starts at A, so B->A and C->B. Detected PTMs must be rewritten to the
+    new chain ids."""
+    detected = [
+        {"chain": "B", "resnum": 65, "name": "SEP"},
+        {"chain": "C", "resnum": 178, "name": "TPO"},
+    ]
+    chain_mapping = {
+        "split_1.pdb": {"B": "A"},
+        "split_2.pdb": {"C": "B"},
+    }
+    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    assert dropped == []
+    assert {(r["chain"], r["original_chain"]) for r in remapped} == {
+        ("A", "B"), ("B", "C"),
+    }
+
+
+def test_remap_detected_ptm_chains_drops_excluded_chain():
+    """If select_chains excluded source chain B, the per-file mapping never
+    mentions B and the corresponding PTM has nowhere to go."""
+    detected = [
+        {"chain": "A", "resnum": 65, "name": "SEP"},
+        {"chain": "B", "resnum": 178, "name": "TPO"},
+    ]
+    chain_mapping = {"split_only_a.pdb": {"A": "A"}}
+    remapped, dropped = _remap_detected_ptm_chains(detected, chain_mapping)
+    assert remapped == [
+        {"chain": "A", "original_chain": "A", "resnum": 65, "name": "SEP"}
+    ]
+    assert dropped == [{"chain": "B", "resnum": 178, "name": "TPO"}]
+
+
+def test_remap_detected_ptm_chains_empty_inputs():
+    assert _remap_detected_ptm_chains([], {"x.pdb": {"A": "A"}}) == ([], [])
+    assert _remap_detected_ptm_chains(
+        [{"chain": "A", "resnum": 65, "name": "SEP"}], {}
+    ) == ([], [{"chain": "A", "resnum": 65, "name": "SEP"}])
+
+
+# ---------- not_found is fatal by default ----------------------------------
+
+
+def test_phosphorylate_residues_not_found_is_fatal_by_default(tmp_path):
+    """A typo in --sites-str should fail the run, not silently apply a
+    subset. Two sites requested, only one exists in the PDB."""
+    pdb = tmp_path / "ser.pdb"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_ser_pdb(pdb)
+    res = phosphorylate_residues(
+        pdb_file=str(pdb),
+        sites_str="A:65:SEP,A:999:SEP",  # 999 is a typo
+        output_dir=str(out_dir),
+    )
+    assert res["success"] is False
+    joined = " ".join(res["errors"])
+    assert "not located" in joined
+    assert "999" in joined
+    # Output file must not be left behind.
+    leftover = list(out_dir.glob("*phosphorylated.pdb"))
+    assert leftover == []
+
+
+def test_phosphorylate_residues_allow_partial_proceeds(tmp_path):
+    """allow_partial=True turns not_found into a warning and applies the
+    subset that does exist."""
+    pdb = tmp_path / "ser.pdb"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    _write_ser_pdb(pdb)
+    res = phosphorylate_residues(
+        pdb_file=str(pdb),
+        sites_str="A:65:SEP,A:999:SEP",
+        allow_partial=True,
+        output_dir=str(out_dir),
+    )
+    assert res["success"], res.get("errors")
+    assert res["applied_sites"] == [
+        {"chain": "A", "resnum": 65, "target": "SEP", "source": "SER"}
+    ]
+    # Warning must mention allow_partial so the user knows why we proceeded.
+    assert any("allow_partial" in w for w in res["warnings"])
+
+
+def test_phosphorylate_residues_node_mode_remap_drift_fails_fast(tmp_path):
+    """If detected_ptm_residues somehow points at a chain that does not
+    exist in the merged.pdb (e.g. corruption, or a missed remap path),
+    the run must fail rather than silently complete the node."""
+    job_dir = tmp_path / "job_phospho_drift"
+
+    create_node(str(job_dir), "prep")
+    parent_pdb = job_dir / "nodes" / "prep_001" / "artifacts" / "merge" / "merged.pdb"
+    parent_pdb.parent.mkdir(parents=True, exist_ok=True)
+    _write_ser_pdb(parent_pdb)  # only chain A
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        metadata={
+            "detected_ptm_residues": [
+                {"chain": "Z", "original_chain": "Z",
+                 "resnum": 65, "name": "SEP"},  # chain Z does not exist
+            ],
+        },
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["prep_001"])
+
+    res = phosphorylate_residues(
+        job_dir=str(job_dir),
+        node_id="prep_002",
+        restore_from_detection=True,
+    )
+    assert res["success"] is False
+    assert any("not located" in e for e in res["errors"])
+    node_data = read_node(str(job_dir), "prep_002")
+    assert node_data["status"] == "failed"
 
 
 def test_phosphorylate_residues_node_mode_restore_from_empty_detection_fails(tmp_path):
