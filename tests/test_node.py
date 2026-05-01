@@ -306,10 +306,9 @@ class TestValidateNodeExecutionContext:
         assert any("did not include declared condition 'pressure_bar'" in e
                    for e in ctx["errors"])
 
-    def test_actual_none_skips_cross_check(self, job_dir):
-        """Tools may legitimately pass None for parameters that don't
-        apply (e.g. device_index on CPU). None still satisfies the
-        contract; only missing keys are hard errors."""
+    def test_rejects_declared_condition_actual_none(self, job_dir):
+        """A declared condition must be checked against a concrete runtime
+        value. ``None`` is treated as unverifiable, not as a match."""
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
                       artifacts={"parm7": "artifacts/system.parm7",
@@ -328,7 +327,9 @@ class TestValidateNodeExecutionContext:
             actual_conditions={"temperature_kelvin": 300.0, "device_index": None},
         )
 
-        assert ctx["success"] is True
+        assert ctx["success"] is False
+        assert any("actual_conditions['device_index'] is None" in e
+                   for e in ctx["errors"])
 
 
 # ── complete_node strict artifact validation ──────────────────────────────
@@ -365,21 +366,24 @@ class TestCompleteNodeStrictArtifacts:
                 "solv_001",
                 artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
             )
-
-    def test_skip_missing_artifacts_opt_out(self, job_dir):
-        """Tests/migrations can opt out of the strict guard."""
-        create_node(str(job_dir), "solv")
-        # No file created; opt-out should accept silently.
-        _real_complete_node(
-            str(job_dir),
-            "solv_001",
-            artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
-            skip_missing_artifacts=True,
-        )
         node = read_node(str(job_dir), "solv_001")
-        assert node["status"] == "completed"
-        # No sha256 recorded for the missing file.
+        assert node["status"] == "pending"
         assert "artifact_sha256" not in node.get("metadata", {})
+
+    def test_raises_when_artifact_path_is_directory(self, job_dir):
+        create_node(str(job_dir), "solv")
+        artifact_dir = job_dir / "nodes" / "solv_001" / "artifacts" / "solvated.pdb"
+        artifact_dir.mkdir(parents=True)
+
+        with pytest.raises(ValueError, match="artifact 'solvated_pdb' file missing"):
+            _real_complete_node(
+                str(job_dir),
+                "solv_001",
+                artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+            )
+
+        node = read_node(str(job_dir), "solv_001")
+        assert node["status"] == "pending"
 
 
 # ── continue_from sugar (prod extension) ───────────────────────────────────

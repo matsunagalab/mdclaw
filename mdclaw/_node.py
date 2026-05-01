@@ -522,19 +522,15 @@ def complete_node(
     *,
     metadata: Optional[dict] = None,
     warnings: Optional[list[str]] = None,
-    skip_missing_artifacts: bool = False,
 ) -> None:
     """Mark a node as ``completed`` and record its outputs.
 
     *artifacts* maps logical names to paths **relative to the node directory**
     (e.g. ``{"solvated_pdb": "artifacts/solvated.pdb"}``).
 
-    By default each registered str-typed artifact path must exist on disk;
-    a missing file raises ``ValueError`` so artifact registration mistakes
-    surface immediately (rather than the previous behaviour of silently
-    dropping the sha256 entry, which hid downstream resolver failures).
-    Pass ``skip_missing_artifacts=True`` for tests/fixtures that only
-    exercise lifecycle wiring.
+    Each registered str-typed artifact path must exist on disk; a missing
+    file raises ``ValueError`` so artifact registration mistakes surface
+    immediately rather than producing a completed node with broken outputs.
     """
     artifact_hashes = {}
     node_dir = Path(job_dir) / "nodes" / node_id
@@ -542,13 +538,10 @@ def complete_node(
         if not isinstance(rel_path, str) or not rel_path:
             continue
         full_path = node_dir / rel_path
-        if not full_path.exists():
-            if skip_missing_artifacts:
-                continue
+        if not full_path.is_file():
             raise ValueError(
                 f"complete_node: artifact '{key}' file missing: {rel_path} "
-                f"(expected at {full_path}). "
-                f"Pass skip_missing_artifacts=True to bypass."
+                f"(expected at {full_path})"
             )
         digest = _sha256_path(full_path)
         if digest:
@@ -764,9 +757,13 @@ def validate_node_execution_context(
             continue
         actual = actual_conditions[key]
         if actual is None:
-            # Tools may legitimately pass None for parameters that don't
-            # apply to the current run (e.g. device_index on CPU). Skip
-            # cross-check rather than treat None as a mismatch.
+            # A declared condition is only useful if the runtime call can
+            # verify it. ``None`` means the tool did not have a concrete
+            # value to check against the declared contract.
+            errors.append(
+                f"actual_conditions[{key!r}] is None; node declared "
+                f"{key}={expected!r} but the condition cannot be cross-checked"
+            )
             continue
         if not _values_match(expected, actual):
             errors.append(
