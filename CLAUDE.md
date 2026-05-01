@@ -332,7 +332,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `merge_structures(pdb_files, output_name)` - Merge PDB files
 - `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
 - `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
-- `create_mutated_structutre(input_pdb, mutation_indices, mutation_residues, name)` - In-silico mutagenesis
+- `create_mutated_structure(pdb_file, sequence, seq_file, name, output_dir, job_dir, node_id)` - In-silico mutagenesis via FASPR side-chain packing. Pass exactly one of `sequence` (FASPR-format string, lowercase=keep, uppercase=mutate) or `seq_file`. Designed to run AFTER `prepare_complex` as a `prep`-type node: in node mode, `pdb_file` auto-resolves from the nearest prep ancestor's `merged_pdb` artifact, and the mutated PDB is registered as both `merged_pdb` and `mutated_pdb` so the downstream `solv` resolver picks it up automatically. DAG: fetch → prep (clean) → prep (mutate) → solv → topo → eq → prod.
 
 ### genesis_server.py
 - `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity, num_models, output_dir, msa_path, job_dir, node_id)` - Boltz-2 structure prediction

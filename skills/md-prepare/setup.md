@@ -76,6 +76,7 @@ Use `progress.json.params.execution_mode` as the source of truth:
 | Low-confidence charge | `stop_and_ask` | `LOW_CONFIDENCE_CHARGE` warning | None | warning from `prepare_complex` |
 | Blocking ligand failure | `stop_and_ask` | `overall_status=completed_with_blocking_ligand_failure` | None | `workflow_recommendation.options` |
 | SS-bond / HIS state review | `ask_if_missing` | `confirmation_needed` block in `prepare_complex` output | Auto-detected values applied | "keep", "change HIS X to HIE" |
+| Mutation specification | `ask_if_missing` | User said "mutant" without specifying residues | None | "K27A", "C77S/C95S", a full sequence string |
 
 ---
 
@@ -395,6 +396,53 @@ on this field, not on free-text `errors[]`:
 | `unexpected_error` | Internal error outside the above classes (see `errors[]` for detail) | `hard_fail` |
 
 **Critical**: Never parse stderr or warning strings to decide next steps. Use only the structured fields above.
+
+---
+
+## Step 3.5: Mutation (optional)
+
+If the user asked for a mutant (e.g., "K27A", "swap Cys to Ala", a full
+sequence string), apply mutations **AFTER** `prepare_complex` finishes
+successfully. Do NOT mutate before `prepare_complex` — FASPR repacks
+side chains on a structure that has already been cleaned, protonated,
+and (for complexes) merged with parameterized ligands.
+
+Create a new `prep` node whose parent is the prep node that just ran
+`prepare_complex`, then call `create_mutated_structure`. The tool
+auto-resolves its input from the parent prep node's `merged_pdb`
+artifact and writes its output as `merged_pdb` (and a `mutated_pdb`
+alias) so downstream solvation picks the mutated structure transparently.
+
+```bash
+# Branch a new prep node off the cleaned prep ancestor
+mdclaw create_node --job-dir <jd> --node-type prep \
+  --parent-node-ids prep_001 --label prep_mutate
+
+# FASPR sequence convention: lowercase = keep, uppercase = mutate-to-this.
+# Example: 214-residue protein, mutate residue 27 from K to A.
+mdclaw create_mutated_structure --job-dir <jd> --node-id prep_002 \
+  --sequence "$(python -c 'print("a"*26 + "A" + "a"*187)')" \
+  --name k27a
+```
+
+Provenance: `prep_002` records `mutation_source_pdb` (the parent's
+merged_pdb path) and `sequence_file` in `node.json.metadata`, plus
+both `merged_pdb` and `mutated_pdb` artifacts (same file, two keys).
+
+For multiple mutants of the same wild type, branch multiple `prep`
+nodes off the same `prep_001`:
+
+```
+prep_001 (clean wild type)
+   ├─ prep_002 (K27A)        → solv_002 → topo_002 → eq_002 → prod_002
+   ├─ prep_003 (K27R)        → solv_003 → ...
+   └─ prep_004 (K27A_E60Q)   → ...
+```
+
+Mutation is ask-policy `ask_if_missing` — if the user said "mutant"
+without specifying residues, ask. Otherwise proceed in autonomous mode.
+In `human_in_the_loop` mode, confirm the parsed mutation positions
+before invoking FASPR.
 
 ---
 

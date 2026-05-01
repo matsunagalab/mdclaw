@@ -31,7 +31,9 @@ This confirmation step applies to all interaction modes including autonomous. Mi
 
 This skill prepares **one physical system per job directory**. Do not create
 multiple fetch roots in the same DAG. Use DAG branching only after `prep`
-to explore variants of the same system.
+to explore variants of the same system — the most common variant is
+**point/multi-mutants** (run `create_mutated_structure` as a post-prep
+prep node; see `setup.md` "Step 3.5: Mutation (optional)").
 
 1. Decide `execution_mode` from the user's request and persist it in
    `progress.json` once `job_dir` is known:

@@ -23,7 +23,6 @@ logger = setup_logger(__name__)
 import json  # noqa: E402
 import re  # noqa: E402
 import shutil  # noqa: E402
-import tempfile  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
@@ -36,7 +35,6 @@ WORKING_DIR = Path(".")
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
-faspr_wrapper = BaseToolWrapper("FASPR")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
@@ -4895,240 +4893,183 @@ def prepare_complex(
     return result
 
 
-def create_mutated_structutre(input_pdb: str, mutation_indices: str, mutation_residues: str, name: str = 'mutated') -> dict:
-    """Create a mutated protein structure using FASPR.
-    
-    This tool introduces point mutations into a protein structure by:
-    1. Extracting sequence from the input PDB
-    2. Applying specified mutations
-    3. Using FASPR for side-chain packing
-    4. Cleaning the output with PDBFixer
-    
+def create_mutated_structure(
+    pdb_file: Optional[str] = None,
+    sequence: Optional[str] = None,
+    seq_file: Optional[str] = None,
+    name: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Apply a sequence-level mutation to a *cleaned* structure via FASPR.
+
+    Mutation is a post-prep transformation: it expects a structure that has
+    already been cleaned by ``prepare_complex`` (PDBFixer + pdb4amber +
+    protonation + merge). FASPR repacks side chains for residues whose
+    target one-letter code differs from the original.
+
+    FASPR sequence convention: lowercase = keep, uppercase = mutate to that
+    residue type. Length must match the input structure's residue count.
+
+    DAG placement::
+
+        fetch_001 -> prep_001 (prepare_complex) -> prep_002 (this tool)
+                                                   -> solv_001 -> ...
+
+    In node mode (``job_dir`` + ``node_id`` with ``node_type=prep``), the
+    input PDB is auto-resolved from the **nearest prep ancestor's
+    ``merged_pdb`` artifact** (i.e., the cleaned output of
+    ``prepare_complex``). The mutated PDB is registered under both
+    ``merged_pdb`` and ``mutated_pdb`` keys so the downstream ``solv``
+    resolver picks it up automatically without extra wiring.
+
     Args:
-        input_pdb: Input PDB file path
-        mutation_indices: Residue indices to mutate (1-based), comma-separated (e.g., "10,25,100")
-        mutation_residues: One-letter amino acid codes for mutations, comma-separated (e.g., "A,G,W")
-        name: Base name for output file (default: 'mutated')
-    
+        pdb_file: Cleaned PDB. Required unless running in node mode with a
+                  resolvable prep ancestor.
+        sequence: One-letter sequence string in FASPR convention. Mutually
+                  exclusive with ``seq_file``.
+        seq_file: Path to a FASPR sequence text file. Mutually exclusive
+                  with ``sequence``.
+        name: Optional name prefix for output files (e.g. "k27a").
+        output_dir: Output directory (ignored in node mode — artifacts go
+                    to the node directory).
+        job_dir: DAG job directory (node mode).
+        node_id: Node ID inside ``job_dir``; expected ``node_type=prep``
+                 with a prep ancestor as parent.
+
     Returns:
         Dict with:
-            - success: bool - True if mutation completed successfully
-            - output_file: str - Path to mutated PDB file
-            - input_file: str - Original input file path
-            - mutations_applied: list[dict] - Details of each mutation made
-            - original_sequence_length: int - Length of original sequence
-            - errors: list[str] - Error messages (empty if success=True)
-            - warnings: list[str] - Non-critical issues encountered
+            - success: bool
+            - output_dir: str
+            - output_path: str — path to mutated PDB
+            - errors: list[str]
+            - warnings: list[str]
     """
-    logger.info(f"Creating mutated structure from: {input_pdb}")
-    
-    # Initialize result structure for LLM error handling
     result = {
         "success": False,
-        "output_file": None,
-        "input_file": str(input_pdb),
-        "mutations_applied": [],
-        "original_sequence_length": 0,
+        "output_dir": None,
+        "output_path": None,
         "errors": [],
-        "warnings": []
+        "warnings": [],
     }
-    
-    # Validate input file
-    input_path = Path(input_pdb)
-    if not input_path.is_file():
-        result["errors"].append(f"Input PDB file not found: {input_pdb}")
-        logger.error(f"Input PDB file not found: {input_pdb}")
+
+    # Auto-resolve input from nearest prep ancestor (the cleaned merged.pdb,
+    # not the raw fetch download — mutation runs AFTER prepare_complex).
+    if job_dir and node_id and not pdb_file:
+        from mdclaw._node import find_ancestor_artifact
+        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+        if v:
+            pdb_file = v
+
+    # XOR validation on sequence vs. seq_file
+    if (sequence is None) == (seq_file is None):
+        result["errors"].append(
+            "Provide exactly one of `sequence` or `seq_file`."
+        )
         return result
-    
-    output_file = WORKING_DIR / f"{name}.pdb"
-    result["output_file"] = str(output_file)
-    
-    try:
-        # Get the sequence from PDB
-        logger.info("Extracting sequence from PDB")
-        sequence = pdb_to_sequence(input_pdb)
-        result["original_sequence_length"] = len(sequence)
-        
-        if not sequence:
-            result["errors"].append("Could not extract sequence from PDB file")
-            result["errors"].append("Hint: The file may not contain standard amino acids or CA atoms")
-            logger.error("Failed to extract sequence from PDB")
-            return result
-        
-        # Parse and validate mutation input
-        logger.info("Parsing mutation specifications")
-        try:
-            mutation_dict = create_mutation_dict(mutation_indices, mutation_residues)
-        except Exception as e:
-            result["errors"].append(f"Invalid mutation specification: {str(e)}")
-            result["errors"].append("Hint: Use format like mutation_indices='10,25' mutation_residues='A,G'")
-            return result
-        
-        # Validate mutation indices are within sequence range
-        for idx in mutation_dict:
-            if idx < 1 or idx > len(sequence):
-                result["errors"].append(f"Mutation index {idx} is out of range (sequence length: {len(sequence)})")
-                return result
-        
-        # Validate amino acid codes
-        valid_aa = set('ACDEFGHIKLMNPQRSTVWY')
-        for idx, aa in mutation_dict.items():
-            if aa.upper() not in valid_aa:
-                result["errors"].append(f"Invalid amino acid code '{aa}' at index {idx}")
-                result["errors"].append(f"Hint: Valid codes are: {sorted(valid_aa)}")
-                return result
-        
-        # Create mutated sequence
-        mutated_sequence = sequence.copy()
-        for idx, new_aa in mutation_dict.items():
-            original_aa = sequence[idx - 1]
-            mutated_sequence[idx - 1] = new_aa.upper()
-            result["mutations_applied"].append({
-                "index": idx,
-                "original": original_aa,
-                "mutated": new_aa.upper(),
-                "notation": f"{original_aa}{idx}{new_aa.upper()}"
-            })
-            logger.info(f"Mutation: {original_aa}{idx}{new_aa.upper()}")
-        
-        # Check for no-op mutations (same residue)
-        for mut in result["mutations_applied"]:
-            if mut["original"] == mut["mutated"]:
-                result["warnings"].append(
-                    f"Mutation {mut['notation']} is a no-op (same residue)"
-                )
-        
-        # Generate mutated PDB with FASPR
-        logger.info("Running FASPR for side-chain packing")
-        try:
-            mutate_pdb = generate_structure(sequence, mutated_sequence, input_pdb)
-        except FileNotFoundError:
-            result["errors"].append("FASPR executable not found")
-            result["errors"].append("Hint: Ensure FASPR is installed and the path is configured correctly")
-            return result
-        except RuntimeError as e:
-            result["errors"].append(f"FASPR failed: {str(e)}")
-            return result
-        
-        # Clean and save with PDBFixer
-        logger.info("Cleaning mutated structure with PDBFixer")
-        fixer = PDBFixer(mutate_pdb)
-        
-        # Ensure output directory exists
-        output_file.parent.mkdir(parents=True, exist_ok=True)
-        
-        with open(output_file, 'w') as f:
-            PDBFile.writeFile(fixer.topology, fixer.positions, f)
-        
-        result["success"] = True
-        logger.info(f"Successfully created mutated structure: {output_file}")
-        logger.info(f"Applied {len(result['mutations_applied'])} mutation(s)")
-        
-    except Exception as e:
-        error_msg = f"Error during mutation: {type(e).__name__}: {str(e)}"
-        result["errors"].append(error_msg)
-        logger.error(error_msg)
-        
-        # Provide helpful hints for common errors
-        if "FASPR" in str(e):
-            result["errors"].append("Hint: FASPR side-chain packing failed. Check the input structure.")
-        elif "topology" in str(e).lower():
-            result["errors"].append("Hint: PDBFixer could not process the mutated structure.")
-    
-    return result
 
-    
-def pdb_to_sequence(input_pdb: str) -> list:
-    '''
-    Make a one-letter sequence from pdb file
-    '''
-    amino_acid_code = {  #  dictionary of amino acid
-        'ASP': 'D', 'GLU': 'E', 'CYS': 'C', 'ASN': 'N', 
-        'PHE': 'F', 'GLN': 'Q', 'TYR': 'Y', 'SER': 'S', 
-        'MET': 'M', 'TRP': 'W', 'VAL': 'V', 'GLY': 'G',
-        'LEU': 'L', 'ALA': 'A', 'ILE': 'I', 'THR': 'T',
-        'PRO': 'P', 'HIS': 'H', 'LYS': 'K', 'ARG': 'R'
-    }
+    if not pdb_file:
+        result["errors"].append(
+            "pdb_file is required (or pass --job-dir/--node-id with a prep "
+            "ancestor that provides a merged_pdb artifact)."
+        )
+        return result
 
-    sequence = []
-    with open(input_pdb, 'r') as f:  #get amino acid sequence
-        for line in f:
-            args = line.split()
-            
-            if args[0] != 'ATOM':
-                continue
-            if args[2] != 'CA':
-                continue
-            
-            sequence.append(amino_acid_code[args[3]])
+    pdb_path = Path(pdb_file).resolve()
+    if not pdb_path.is_file():
+        result["errors"].append(f"Input PDB file not found: {pdb_file}")
+        return result
 
-    return sequence
-
-
-def create_mutation_dict(mutation_indices: str, mutation_residues: str) -> dict:
-    # インデックスと残基の数の整合チェック入れる
-    mutation_dict = {}
-    indice_list = []
-    residue_list = []
-    if len(mutation_indices) > 1:
-        for indice in mutation_indices.split(','):
-            indice_list.append(int(indice))
-        residue_list = mutation_residues.split(',')
+    # Resolve output base_dir + begin_node
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import begin_node
+        base_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        base_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    elif output_dir:
+        base_dir = Path(output_dir)
     else:
-        indice_list.append(int(mutation_indices))
-        residue_list.append(mutation_residues)
+        base_dir = create_unique_subdir(WORKING_DIR, "faspr")
+    ensure_directory(base_dir)
 
+    pref = f"{name}_" if name else ""
 
-    for indice, residue in zip(indice_list, residue_list):
-        mutation_dict[indice] = residue
+    # Materialize seq_file in base_dir if a string was given
+    if sequence is not None:
+        seq_path = (base_dir / f"{pref}sequence.txt").resolve()
+        seq_path.write_text(sequence)
+    else:
+        seq_path = Path(seq_file).resolve()
+        if not seq_path.is_file():
+            result["errors"].append(f"sequence file not found: {seq_file}")
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=result["errors"])
+            return result
 
-    return mutation_dict
+    output_path = (base_dir / f"{pref}mutated.pdb").resolve()
 
-
-def generate_structure(sequence: list, mutated_sequence: list, input_pdb: str) -> str:
-    """Generate mutated structure using FASPR for side-chain packing.
-    
-    Args:
-        sequence: Original amino acid sequence (list of one-letter codes)
-        mutated_sequence: Mutated amino acid sequence (list of one-letter codes)
-        input_pdb: Path to input PDB file
-    
-    Returns:
-        Path to output mutated PDB file
-    
-    Raises:
-        RuntimeError: If FASPR is not available or fails to produce output
-    """
-    if not faspr_wrapper.is_available():
-        raise RuntimeError("FASPR is not available. Please install FASPR and ensure it is in PATH.")
-    
-    tmpdir = tempfile.mkdtemp(prefix='mcp_faspr')
-    sequence_file = os.path.join(tmpdir, 'sequence.txt')
-    pdb_output = os.path.join(tmpdir, 'mutated.pdb')
-    
-    # Build FASPR sequence format: lowercase for unchanged, uppercase for mutated
-    faspr_sequence = []
-    for wild, mutate in zip(sequence, mutated_sequence):
-        faspr_sequence.append(mutate if mutate != wild else mutate.lower())
-
-    with open(sequence_file, 'w') as f:
-        f.write(''.join(faspr_sequence))
-    
-    # Run FASPR using BaseToolWrapper
+    # Lazy import: keeps structure_server.py importable on machines that
+    # don't have py_FASPR yet (the rest of this module is core MD prep).
     try:
-        faspr_wrapper.run([
-            '-i', input_pdb,
-            '-o', pdb_output,
-            '-s', sequence_file
-        ], cwd=tmpdir)
+        from py_FASPR import faspr as _faspr
+    except ImportError as e:
+        result["errors"].append(
+            f"py_FASPR is not installed: {e}. "
+            "Install via the project environment.yml "
+            "(`pip install git+https://github.com/matsunagalab/FASPR`)."
+        )
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    logger.info(f"Running FASPR: {pdb_path} -> {output_path}")
+    try:
+        _faspr(
+            input_pdb=str(pdb_path),
+            output_pdb=str(output_path),
+            seq_file=str(seq_path),
+        )
     except Exception as e:
+        result["errors"].append(f"FASPR failed: {type(e).__name__}: {e}")
         logger.error(f"FASPR execution failed: {e}")
-        raise RuntimeError(f"FASPR execution failed: {e}")
-    
-    if not os.path.isfile(pdb_output):
-        raise RuntimeError("FASPR did not produce the expected output PDB.")
-    
-    return pdb_output
+
+    if output_path.is_file():
+        result["success"] = True
+        result["output_dir"] = str(base_dir)
+        result["output_path"] = str(output_path)
+        logger.info("FASPR successfully generated mutant structure")
+    elif not result["errors"]:
+        result["errors"].append("FASPR produced no PDB output")
+
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node
+        if result["success"]:
+            rel_out = f"artifacts/{output_path.name}"
+            complete_node(
+                job_dir, node_id,
+                artifacts={
+                    "merged_pdb": rel_out,
+                    "mutated_pdb": rel_out,
+                },
+                metadata={
+                    "name": name,
+                    "mutation_source_pdb": str(pdb_path),
+                    "sequence_file": str(seq_path),
+                },
+                warnings=result.get("warnings", []),
+            )
+        else:
+            fail_node(
+                job_dir, node_id,
+                errors=result["errors"],
+                warnings=result.get("warnings", []),
+            )
+
+    return result
 
 
 # =============================================================================
@@ -5142,6 +5083,6 @@ TOOLS = {
     "run_antechamber_robust": run_antechamber_robust,
     "merge_structures": merge_structures,
     "prepare_complex": prepare_complex,
-    "create_mutated_structutre": create_mutated_structutre,
+    "create_mutated_structure": create_mutated_structure,
     "download_amber_geostd": download_amber_geostd,
 }
