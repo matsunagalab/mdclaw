@@ -413,13 +413,19 @@ def _apply_status(
     status: str,
     *,
     payload: Optional[dict] = None,
+    clear_metadata_keys: Optional[list[str]] = None,
 ) -> None:
     """The sole writer-path for node status.
 
-    1. Merge ``status`` + ``updated_at`` (and any caller-supplied
+    1. Optionally drop stale fields from ``metadata`` (caller-controlled
+       via ``clear_metadata_keys``) — used by :func:`begin_node` to wipe
+       a prior failure's ``metadata.errors`` at the start of a fresh
+       attempt so a subsequent ``complete_node`` doesn't leave the
+       successful node carrying old error strings.
+    2. Merge ``status`` + ``updated_at`` (and any caller-supplied
        ``payload`` — e.g. artifacts / metadata / warnings) into
        ``node.json`` under ``node.lock``.
-    2. Mirror ``status`` into the ``progress.json`` index under
+    3. Mirror ``status`` into the ``progress.json`` index under
        ``progress.lock``.
 
     :func:`update_node_status` (public/CLI), :func:`begin_node`,
@@ -435,6 +441,9 @@ def _apply_status(
     node_json = node_dir / "node.json"
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if clear_metadata_keys and isinstance(data.get("metadata"), dict):
+            for k in clear_metadata_keys:
+                data["metadata"].pop(k, None)
         for key, value in merged.items():
             if key == "_status_write":
                 data["status"] = value
@@ -474,8 +483,20 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
 # ── State transitions (tools call these) ───────────────────────────────────
 
 def begin_node(job_dir: str, node_id: str) -> None:
-    """Mark a node as ``running``.  Called by tools at the start of execution."""
-    _apply_status(job_dir, node_id, "running")
+    """Mark a node as ``running``. Called by tools at the start of execution.
+
+    On re-attempts (a node that was previously marked ``failed`` and is
+    now being retried), ``metadata.errors`` from the prior attempt is
+    cleared. Without this the next ``complete_node`` would leave the
+    successful node carrying stale failure strings — anyone reading the
+    completed node's metadata would think it had failed. Authoritative
+    history of every attempt lives in ``events/`` (one file per
+    ``tool_started`` / ``tool_failed`` / ``tool_completed`` event).
+    """
+    _apply_status(
+        job_dir, node_id, "running",
+        clear_metadata_keys=["errors"],
+    )
     write_event(job_dir, node_id, "tool_started")
 
 

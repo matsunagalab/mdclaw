@@ -13,8 +13,10 @@ from mdclaw.md_simulation_server import (
     _DCD_MAGIC,
     _compute_step_plan,
     _dcd_has_valid_header,
+    _detect_ensemble_mismatch,
     _node_previously_failed,
     _resolve_dcd_append_mode,
+    run_production,
 )
 from mdclaw._node import (
     begin_node,
@@ -308,3 +310,140 @@ class TestResolveDcdAppendMode:
         )
         assert "invalid/empty DCD header" in w_invalid
         assert "failed status" not in w_invalid
+
+
+class TestEnsembleMismatchDetection:
+    """Cover the guardrail that catches an NPT-equilibrated state.xml
+    being loaded into a prod context that has no MonteCarloBarostat —
+    OpenMM's loadState would otherwise raise a confusing
+    ``setParameter() with invalid parameter name: MonteCarloPressure``.
+
+    The helper takes a ``state_xml_path`` (real file) and a
+    ``system_has_barostat`` bool so the test stays free of OpenMM."""
+
+    def _write_state(self, path: Path, *, with_barostat: bool) -> None:
+        body = (
+            '<?xml version="1.0" ?>\n'
+            '<State openmmVersion="8.2.0">\n'
+            '  <Positions>...</Positions>\n'
+        )
+        if with_barostat:
+            body += '  <Parameter name="MonteCarloPressure" value="101325.0"/>\n'
+        body += '</State>\n'
+        path.write_text(body)
+
+    def test_npt_state_into_nvt_system_returns_kind(self, tmp_path):
+        """State has barostat parameters but the System has none →
+        hard-fail kind tag so caller emits a structured error before
+        loadState would explode."""
+        p = tmp_path / "eq_state.xml"
+        self._write_state(p, with_barostat=True)
+        assert (
+            _detect_ensemble_mismatch(p, system_has_barostat=False)
+            == "npt_state_nvt_system"
+        )
+
+    def test_nvt_state_into_npt_system_returns_kind(self, tmp_path):
+        """System has a barostat but state has no NPT parameters →
+        soft-warning kind tag (the simulation can still run; the
+        initial pressure may not match the eq's final state)."""
+        p = tmp_path / "eq_state.xml"
+        self._write_state(p, with_barostat=False)
+        assert (
+            _detect_ensemble_mismatch(p, system_has_barostat=True)
+            == "nvt_state_npt_system"
+        )
+
+    def test_matched_npt_returns_none(self, tmp_path):
+        """Both have a barostat → matched, no warning."""
+        p = tmp_path / "eq_state.xml"
+        self._write_state(p, with_barostat=True)
+        assert (
+            _detect_ensemble_mismatch(p, system_has_barostat=True) is None
+        )
+
+    def test_matched_nvt_returns_none(self, tmp_path):
+        """Neither has a barostat → matched, no warning."""
+        p = tmp_path / "eq_state.xml"
+        self._write_state(p, with_barostat=False)
+        assert (
+            _detect_ensemble_mismatch(p, system_has_barostat=False) is None
+        )
+
+
+class TestRestartFromErrorFailsNode:
+    """Issue 1 regression: ``run_production`` used to early-return
+    ``{"success": False, ...}`` without flipping the prod node out of
+    ``pending`` when ``resolve_node_inputs`` returned a
+    ``restart_from_error``. That left the DAG silently lying about
+    whether the node was attempted, breaking re-entry semantics. The
+    fix calls ``begin_node`` + ``fail_node`` before returning."""
+
+    def test_continue_from_missing_artifact_marks_node_failed(
+        self, tmp_path
+    ):
+        jd = tmp_path / "job"
+        jd.mkdir()
+        init_progress_v3(str(jd))
+        # Build the bare minimum DAG: an "anchor" prod (prod_001) with
+        # parents stubbed via an empty-but-completed chain. We don't
+        # need real parm7/state — the early-return for
+        # restart_from_error fires before any artifact is opened.
+        # parents of prod_001 are required to construct continued_from
+        # validation, so we synthesize a minimal fetch→prep→solv→topo→eq
+        # spine and complete eq with a state artifact (so prod_001 is a
+        # plausible "anchor" prod), then create prod_001 and a child
+        # prod_002 that --continues-from prod_001 *without* prod_001
+        # ever finishing — i.e. prod_001 has no state/checkpoint.
+        for nt, parents in [
+            ("fetch", None),
+            ("prep", ["fetch_001"]),
+            ("solv", ["prep_001"]),
+            ("topo", ["solv_001"]),
+            ("eq", ["topo_001"]),
+        ]:
+            create_node(str(jd), nt, parent_node_ids=parents)
+        complete_node(str(jd), "fetch_001",
+                      artifacts={"structure_file": "x.cif"})
+        complete_node(str(jd), "prep_001",
+                      artifacts={"merged_pdb": "x.pdb"})
+        complete_node(str(jd), "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        complete_node(str(jd), "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        complete_node(str(jd), "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_step": 0})
+        # prod_001 is the anchor — exists but never ran (no artifacts).
+        create_node(str(jd), "prod", parent_node_ids=["eq_001"])
+        # prod_002 continues from prod_001; resolver must surface
+        # restart_from_error because prod_001 has neither state nor
+        # checkpoint registered. (continue_from is sugar for
+        # parent_node_ids and the two cannot be mixed.)
+        create_node(str(jd), "prod", continue_from="prod_001")
+
+        result = run_production(
+            simulation_time_ns=0.001,
+            job_dir=str(jd),
+            node_id="prod_002",
+        )
+
+        # Returned dict reports the failure.
+        assert result["success"] is False
+        assert any("continue_from" in e for e in result["errors"])
+
+        # Node status must reflect the failure (was the bug: status
+        # used to stay "pending"). Read node.json directly. fail_node
+        # stores errors under metadata.errors (no top-level errors key).
+        import json
+        nj = json.loads(
+            (jd / "nodes" / "prod_002" / "node.json").read_text()
+        )
+        assert nj["status"] == "failed"
+        recorded_errors = nj.get("metadata", {}).get("errors", [])
+        assert any("continue_from" in e for e in recorded_errors), (
+            f"node.json metadata.errors should mention continue_from: "
+            f"got {recorded_errors!r}"
+        )

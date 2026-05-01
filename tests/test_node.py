@@ -539,6 +539,51 @@ class TestStateTransitions:
         node = read_node(str(job_dir), "prod_001")
         assert node["status"] == "completed"
 
+    def test_retry_after_failure_clears_stale_errors(self, job_dir):
+        """failed → begin_node → complete_node must NOT carry the
+        previous attempt's metadata.errors. Without the explicit clear
+        in begin_node, _apply_status's dict-merge semantics would leave
+        the stale errors keyed under metadata, making a successful node
+        look like it had failed."""
+        create_node(str(job_dir), "prod")
+
+        # First attempt fails.
+        begin_node(str(job_dir), "prod_001")
+        fail_node(str(job_dir), "prod_001",
+                  errors=["transient OpenMM crash"])
+        node = read_node(str(job_dir), "prod_001")
+        assert node["status"] == "failed"
+        assert node["metadata"]["errors"] == ["transient OpenMM crash"]
+
+        # Retry: a fresh begin_node must wipe the stale errors before
+        # complete_node lands.
+        begin_node(str(job_dir), "prod_001")
+        node = read_node(str(job_dir), "prod_001")
+        assert node["status"] == "running"
+        assert "errors" not in node.get("metadata", {}), (
+            "begin_node did not clear stale metadata.errors from prior failure"
+        )
+
+        complete_node(str(job_dir), "prod_001",
+                      artifacts={"trajectory": "artifacts/trajectory.dcd"},
+                      metadata={"platform": "CUDA"})
+        node = read_node(str(job_dir), "prod_001")
+        assert node["status"] == "completed"
+        # metadata is fresh: only the new key, no leftover errors.
+        assert node["metadata"] == {"platform": "CUDA"}
+
+    def test_retry_after_failure_with_no_metadata_errors_is_noop(
+        self, job_dir
+    ):
+        """First-time begin_node and re-runs of nodes that failed
+        without recording errors must not crash on the clear step."""
+        create_node(str(job_dir), "prod")
+        # First begin_node: there is no prior metadata.errors.
+        begin_node(str(job_dir), "prod_001")  # must not raise
+        node = read_node(str(job_dir), "prod_001")
+        assert node["status"] == "running"
+        assert "metadata" not in node or "errors" not in node.get("metadata", {})
+
 
 # ── update_node / update_node_status ───────────────────────────────────────
 
@@ -921,6 +966,80 @@ class TestDAGAutoResolve:
         fresh prod (eq→prod)."""
         from mdclaw._node import read_ancestor_final_step
         assert read_ancestor_final_step(str(full_dag), "prod_001") is None
+
+    # ------------------------------------------------------------------
+    # eq_final_ensemble / eq_pressure_bar propagation (added with the
+    # eq→prod ensemble auto-inheritance fix). Without these keys,
+    # run_production cannot match its barostat to the eq's saved state
+    # and loadState fails with an opaque OpenMM message.
+    # ------------------------------------------------------------------
+
+    def _build_eq_dag_for_prod(self, jd):
+        """Build prep → solv → topo → eq → prod scaffold; tests stamp
+        eq metadata via complete_node and assert resolve_node_inputs
+        for prod_001."""
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+
+    def test_resolve_node_inputs_prod_surfaces_npt_eq_ensemble(self, job_dir):
+        """NPT eq → prod resolver returns eq_final_ensemble and
+        eq_pressure_bar so run_production can add a matching barostat."""
+        jd = str(job_dir)
+        self._build_eq_dag_for_prod(jd)
+        complete_node(jd, "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_ensemble": "NPT",
+                                "pressure_bar": 1.0,
+                                "final_step": 0})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs.get("eq_final_ensemble") == "NPT"
+        assert inputs.get("eq_pressure_bar") == 1.0
+
+    def test_resolve_node_inputs_prod_nvt_eq_no_pressure_bar(self, job_dir):
+        """NVT eq has pressure_bar=None; resolver returns
+        eq_final_ensemble='NVT' but does NOT include eq_pressure_bar
+        (the float check filters None) so prod's default-None stays."""
+        jd = str(job_dir)
+        self._build_eq_dag_for_prod(jd)
+        complete_node(jd, "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_ensemble": "NVT",
+                                "pressure_bar": None,
+                                "final_step": 0})
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs.get("eq_final_ensemble") == "NVT"
+        assert "eq_pressure_bar" not in inputs
+
+    def test_resolve_node_inputs_prod_legacy_eq_omits_ensemble_keys(
+        self, job_dir
+    ):
+        """Legacy eq nodes (predating the final_ensemble metadata field)
+        complete with no ensemble info; resolver returns neither key so
+        prod auto-inherit becomes a no-op and we fall back to the
+        guardrail at loadState. Backwards compatible."""
+        jd = str(job_dir)
+        self._build_eq_dag_for_prod(jd)
+        complete_node(jd, "eq_001",
+                      artifacts={"state": "artifacts/equilibrated.xml"},
+                      metadata={"final_step": 0})  # no final_ensemble
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert "eq_final_ensemble" not in inputs
+        assert "eq_pressure_bar" not in inputs
 
     def test_analyze_resolves_prod_trajectory_chain_single_prod(
         self, full_dag

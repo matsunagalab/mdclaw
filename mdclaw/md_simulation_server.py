@@ -36,6 +36,36 @@ def _node_artifact_path(path: Optional[str]) -> str:
     return f"artifacts/{Path(path).name}"
 
 
+def _detect_ensemble_mismatch(
+    state_xml_path: Path, system_has_barostat: bool
+) -> Optional[str]:
+    """Detect a barostat / saved-state inconsistency before ``loadState``.
+
+    OpenMM's ``Simulation.loadState`` restores all context parameters by
+    name and rejects unknown ones with the opaque exception
+    ``setParameter() with invalid parameter name: MonteCarloPressure``.
+    That happens whenever an NPT-equilibrated state.xml is loaded into a
+    prod System that has no barostat (the common default-config case
+    before ensemble auto-inheritance landed).
+
+    Returns one of:
+        - ``"npt_state_nvt_system"`` — state has barostat params but
+          System has no barostat. Hard fail.
+        - ``"nvt_state_npt_system"`` — System has a barostat but state
+          lacks the parameters. Soft warning.
+        - ``None`` — matched (NPT/NPT or NVT/NVT) — load freely.
+
+    Caller pairs the kind tag with the message string. Splitting the
+    decision out keeps it unit-testable without an OpenMM Context.
+    """
+    state_has_pressure = "MonteCarloPressure" in state_xml_path.read_text()
+    if state_has_pressure and not system_has_barostat:
+        return "npt_state_nvt_system"
+    if system_has_barostat and not state_has_pressure:
+        return "nvt_state_npt_system"
+    return None
+
+
 # DCD fixed-record-84 + "CORD" magic. OpenMM/CHARMM DCD always emit this
 # as the first 8 bytes, so a file that lacks it cannot be appended to
 # via DCDReporter(append=True).
@@ -792,13 +822,18 @@ def run_production(
                      "auto" (default). "auto" lets OpenMM choose the fastest.
         device_index: GPU device index (e.g. "0", "0,1"). Only used with
                      CUDA or OpenCL platforms.
-        restart_from: Path to checkpoint file (.chk) to restart from. Skips
-                     minimization and runs ``simulation_time_ns`` additional
-                     nanoseconds on top of the restart step count. The
-                     trajectory is written to this node's own ``artifacts/``
-                     directory as a fresh DCD (no cross-node append) — to
-                     stitch trajectories across nodes, concatenate with
-                     mdtraj or similar.
+        restart_from: Path to a state file to restart from. Prefer ``.xml``
+                     (saveState, cross-node portable); ``.chk``
+                     (saveCheckpoint, GPU-architecture-specific) is a
+                     legacy fallback. In node mode this is auto-resolved
+                     via ``resolve_node_inputs`` (state first, checkpoint
+                     second). Skips minimization and runs
+                     ``simulation_time_ns`` additional nanoseconds on top
+                     of the restart step count. The trajectory is written
+                     to this node's own ``artifacts/`` directory as a
+                     fresh DCD (no cross-node append) — to stitch
+                     trajectories across nodes, concatenate with mdtraj
+                     or similar.
         hmr: Enable Hydrogen Mass Repartitioning (hydrogenMass=4 amu).
                      Enabled by default. Allows 4 fs timestep for ~2x throughput.
                      Use --no-hmr to disable (timestep should then be <= 2 fs).
@@ -833,8 +868,16 @@ def run_production(
         _inputs = resolve_node_inputs(job_dir, node_id, "prod")
         # Strict continue_from violation — fail before we touch OpenMM so
         # the user sees a clean error instead of a wrong-checkpoint run.
+        # Mark the node as attempted (begin_node → "running") then failed
+        # so progress.json + the event log reflect the failure; without
+        # this the node would stay "pending" and re-entry would silently
+        # treat it as never-attempted.
         if not restart_from and "restart_from_error" in _inputs:
-            return {"success": False, "errors": [_inputs["restart_from_error"]]}
+            err = _inputs["restart_from_error"]
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
+            return {"success": False, "errors": [err]}
         if not prmtop_file and "prmtop_file" in _inputs:
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
@@ -1124,23 +1167,16 @@ def run_production(
             # .chk both remain on disk; resolve_node_inputs picks .xml
             # first when available.
             if restart_path.suffix == ".xml":
-                # Guardrail: ensemble mismatch between the saved state and
-                # the current System. OpenMM's loadState restores all
-                # context parameters by name, and rejects unknown ones
-                # with an opaque ``setParameter() with invalid parameter
-                # name: ...`` exception. Detect the common case
-                # (NPT eq state → NVT prod context) up front so the user
-                # sees a structured error and a concrete fix instead of
-                # an internal OpenMM message.
-                state_has_pressure = (
-                    "MonteCarloPressure" in restart_path.read_text()
-                )
+                # Guardrail: see _detect_ensemble_mismatch docstring.
                 system_has_barostat = any(
                     isinstance(f, (MonteCarloBarostat,
                                    MonteCarloMembraneBarostat))
                     for f in system.getForces()
                 )
-                if state_has_pressure and not system_has_barostat:
+                _kind = _detect_ensemble_mismatch(
+                    restart_path, system_has_barostat
+                )
+                if _kind == "npt_state_nvt_system":
                     suggested = (
                         f"--pressure-bar {_eq_pressure_bar}"
                         if _eq_pressure_bar is not None
@@ -1159,7 +1195,7 @@ def run_production(
                         from mdclaw._node import fail_node
                         fail_node(job_dir, node_id, errors=result["errors"])
                     return result
-                if system_has_barostat and not state_has_pressure:
+                if _kind == "nvt_state_npt_system":
                     result["warnings"].append(
                         "Ensemble mismatch (mild): prod has a barostat but "
                         "the eq state lacks NPT parameters. The initial "

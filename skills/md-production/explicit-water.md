@@ -44,13 +44,19 @@ loads cleanly. Pass `--pressure-bar` only to override the inherited value
 (e.g. running NVT prod from an NPT-equilibrated state requires explicitly
 producing a fresh NVT eq state — see Troubleshooting below).
 
-The checkpoint rule depends on how the prod node was created:
+The restart rule depends on how the prod node was created. Resolution
+prefers the `state.xml` artifact (saveState, cross-node portable) and
+falls back to `checkpoint.chk` (saveCheckpoint, GPU-architecture-
+specific) only when state.xml is missing — typically a legacy DAG that
+predates the saveState migration.
 
 - **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
-  `checkpoint.chk` (no fallback; missing checkpoint = hard error).
+  saved state (`.xml` preferred, `.chk` legacy fallback). No fallback
+  to a different ancestor; missing both artifacts is a hard error.
 - **plain `--parent-node-ids prod_N`** → BFS picks the nearest prod
-  ancestor with a checkpoint, or falls through to the `eq` ancestor.
-- **fresh run (eq parent)** → restart from the `eq` ancestor's checkpoint.
+  ancestor with a state file, falling through to the `eq` ancestor.
+- **fresh run (eq parent)** → restart from the `eq` ancestor's
+  `state.xml` (or its `checkpoint.chk` for legacy DAGs).
 
 To override any of this, pass the flags explicitly.
 
@@ -110,7 +116,17 @@ Key properties:
 --no-hmr --timestep-fs 2.0
 ```
 
-## Checkpoint / Restart
+## Restart (state file)
+
+Both `eq` and `prod` nodes write two restart artifacts at end-of-run:
+`state.xml` (saveState; positions, velocities, box, context parameters)
+and `checkpoint.chk` (saveCheckpoint; binary, includes integrator
+state). The resolver prefers `state.xml` because it is **cross-node
+portable** — the binary checkpoint encodes GPU-specific context layout
+and silently corrupts when loaded on a different GPU architecture (or
+even CPU↔GPU). `checkpoint.chk` is retained for bit-identical
+reproduction on identical hardware (committor / sensitivity studies)
+and as a legacy fallback for DAGs that predate the saveState migration.
 
 ### Extension: create a new prod node (recommended)
 
@@ -124,27 +140,30 @@ mdclaw create_node --job-dir <job_dir> --node-type prod \
   --continue-from prod_001 --label "+50ns" \
   --conditions '{"simulation_time_ns": 50}'
 
-# Run it — restart_from resolves via the DAG to prod_001's checkpoint
+# Run it — restart_from resolves via the DAG to prod_001's state.xml
+# (or its checkpoint.chk if state.xml is absent in a legacy DAG)
 mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
   --simulation-time-ns 50.0 --platform CUDA
 ```
 
 - `--simulation-time-ns` is the **additional** time to run in this node
   (the `eq→prod` case still behaves as the full production duration
-  because the eq checkpoint is saved with `currentStep=0` by design).
+  because the eq state is written with `final_step=0` /
+  `currentStep=0` by design).
 - With `--continue-from`, `restart_from` resolves to **exactly that
-  prod's checkpoint** — no silent fallback. If the named prod has no
-  checkpoint yet (still running or failed), the run fails cleanly.
+  prod's state file** (`.xml` preferred, `.chk` legacy fallback). No
+  silent fallback to a different ancestor: if the named prod has
+  neither artifact (still running or failed), the run fails cleanly.
 - Without `--continue-from` (plain `--parent-node-ids prod_001`),
-  the resolver does a BFS through prod ancestors that skips same-type
-  ancestors missing a checkpoint and falls through to the next prod
-  back, and finally to the `eq` ancestor. Only use this form if you
-  don't care which prod in the chain is the source.
+  the resolver does a BFS through prod ancestors (state.xml first,
+  checkpoint.chk fallback per node), skipping ancestors that have
+  neither, and finally falls through to the `eq` ancestor. Only use
+  this form if you don't care which prod in the chain is the source.
 - Each prod node keeps its own `trajectory.dcd` under `artifacts/`; there
   is **no cross-node DCD append**. Concatenate with mdtraj / `analyze`
   tools when a continuous trajectory is required.
-- Binary checkpoint is platform-specific (CUDA checkpoint cannot load on
-  CPU, and vice versa).
+- The binary `.chk` is platform-specific (a CUDA checkpoint cannot load
+  on CPU, and vice versa) — this is exactly why `.xml` is preferred.
 
 ### Mid-run restart into the same node (advanced / rare)
 

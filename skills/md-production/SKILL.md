@@ -65,18 +65,20 @@ mdclaw create_node --job-dir <dir> --node-type prod \
   intent explicit in the DAG; it stores `metadata.continued_from` in the
   new `node.json`.
 - When `--continue-from` is used, `restart_from` resolves to **exactly
-  that prod's `checkpoint.chk`** — no silent fallback. If the named
-  prod has no checkpoint yet (e.g. it's still running or failed), the
-  run is refused with a clear error rather than restarting from a
-  different ancestor.
+  that prod's saved state** — `.xml` (saveState, cross-node portable)
+  is preferred and `.chk` (saveCheckpoint, GPU-architecture-specific)
+  is a legacy fallback. No silent fallback to a different ancestor:
+  if the named prod has neither artifact yet (still running or
+  failed), the run is refused with a clear error.
 - Without `--continue-from`, the default path (plain
   `--parent-node-ids prod_001`) still works: the resolver does a BFS
-  through prod ancestors first, then falls back to the `eq` ancestor.
-  Use this form only when you don't care exactly which prod up the
-  chain was the source.
+  through prod ancestors first (state.xml preferred, checkpoint.chk
+  fallback), then falls back to the `eq` ancestor. Use this form only
+  when you don't care exactly which prod up the chain was the source.
 - `simulation_time_ns` is the **additional** time to run in this node
   (the `eq→prod` case keeps its "full production duration" meaning
-  because the eq checkpoint is written with `currentStep=0` by design).
+  because the eq state is written with `final_step=0` / `currentStep=0`
+  by design — see `run_equilibration` for the rationale).
 - Each prod node writes its own `trajectory.dcd` under its `artifacts/` —
   there is **no cross-node DCD append**. Stitch with mdtraj when a full
   trajectory is needed.
