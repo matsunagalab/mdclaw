@@ -64,6 +64,55 @@ class TestResearchServer:
         assert result["success"] is True
         assert Path(result["file_path"]).exists()
 
+    @pytest.mark.asyncio
+    async def test_fetch_structure_dispatches_remote_sources(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import research_server
+
+        async def fake_pdb_fetch(**kwargs):
+            return {
+                "success": True,
+                "file_path": str(tmp_path / "1AKE.cif"),
+                "file_format": kwargs["format"],
+                "errors": [],
+                "warnings": [],
+            }
+
+        async def fake_alphafold_fetch(**kwargs):
+            return {
+                "success": True,
+                "file_path": str(tmp_path / "AF-P12345.cif"),
+                "file_format": kwargs["format"],
+                "errors": [],
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(research_server, "_fetch_pdb_structure", fake_pdb_fetch)
+        monkeypatch.setattr(
+            research_server,
+            "_fetch_alphafold_structure",
+            fake_alphafold_fetch,
+        )
+
+        pdb_result = await research_server.fetch_structure(
+            source="pdb",
+            pdb_id="1AKE",
+        )
+        assert pdb_result["success"] is True
+        assert pdb_result["source"] == "pdb"
+        assert pdb_result["file_format"] == "cif"
+
+        alphafold_result = await research_server.fetch_structure(
+            source="alphafold",
+            uniprot_id="P12345",
+        )
+        assert alphafold_result["success"] is True
+        assert alphafold_result["source"] == "alphafold"
+        assert alphafold_result["file_format"] == "cif"
+
     def test_analyze_structure_details(self, small_pdb):
         from research_server import analyze_structure_details
 
@@ -108,6 +157,40 @@ class TestResearchServer:
         # Status unchanged (still pending — inspection is read-only)
         node_data = read_node(str(job_dir), node["node_id"])
         assert node_data["status"] == "pending"
+
+    @pytest.mark.asyncio
+    async def test_fetch_structure_local_node_mode(self, small_pdb, tmp_path):
+        """fetch_structure(source='local') records local file provenance."""
+        import json
+
+        from mdclaw._node import create_node, read_node
+        from research_server import fetch_structure
+
+        job_dir = tmp_path / "job_fetch_local"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "fetch")
+        assert node["success"]
+
+        result = await fetch_structure(
+            source="local",
+            file_path=small_pdb,
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert result["success"], result.get("errors")
+        assert result["source"] == "local"
+        copied = Path(result["file_path"])
+        assert copied.exists()
+        assert copied.parent.name == "artifacts"
+
+        node_data = read_node(str(job_dir), node["node_id"])
+        assert node_data["status"] == "completed"
+        assert node_data["artifacts"]["structure_file"] == f"artifacts/{copied.name}"
+        assert node_data["metadata"]["source_type"] == "local"
+        assert node_data["metadata"]["source_id"] == copied.name
+        assert node_data["metadata"]["sha256"]
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"][node["node_id"]]["status"] == "completed"
 
     def test_register_local_structure(self, small_pdb, tmp_path):
         """register_local_structure copies the file into a fetch node and

@@ -63,7 +63,7 @@ HPC:
 ```
 
 You can also call `mdclaw <tool>` directly. For DAG workflow tools
-(`download_structure`, `prepare_complex`, `solvate_structure`,
+(`fetch_structure`, `prepare_complex`, `solvate_structure`,
 `build_amber_system`, `run_equilibration`, `run_production`, etc.),
 create a node first and then pass both `--job-dir` and `--node-id`.
 See `mdclaw --list`.

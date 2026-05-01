@@ -261,10 +261,10 @@ mdclaw --list
 mdclaw --version
 
 # Tool help
-mdclaw download_structure --help
+mdclaw fetch_structure --help
 
 # Run a tool (output is JSON on stdout)
-mdclaw download_structure --pdb-id 1AKE                    # CIF by default
+mdclaw fetch_structure --source pdb --pdb-id 1AKE          # CIF by default
 mdclaw inspect_molecules --structure-file 1AKE.cif
 mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 
@@ -315,10 +315,11 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 ## Tool Modules
 
 ### research_server.py
-- `download_structure(pdb_id, format, output_dir, job_dir, node_id)` - Download from RCSB PDB. In node mode (`fetch` node), file is written to `nodes/<node_id>/artifacts/` with `source_type=pdb`, `source_id`, `sha256`, `source_url`, `last_modified`, `cache_hit`, `fallback_used`
+- `fetch_structure(source, pdb_id, uniprot_id, file_path, format, copy, output_dir, job_dir, node_id)` - Preferred structure-acquisition entry point. `source` is `pdb`, `alphafold`, or `local`; in node mode (`fetch` node), file is written to `nodes/<node_id>/artifacts/` with source-specific provenance metadata.
+- `download_structure(pdb_id, format, output_dir, job_dir, node_id)` - Compatibility wrapper for RCSB PDB fetch. In node mode records `source_type=pdb`, `source_id`, `sha256`, `source_url`, `last_modified`, `cache_hit`, `fallback_used`
 - `get_structure_info(pdb_id)` - Get PDB entry metadata
-- `get_alphafold_structure(uniprot_id, format, output_dir, job_dir, node_id)` - AlphaFold DB. In node mode, records `source_type=alphafold`, `model_version`, `cached=false` (AlphaFold entries are not locally cached)
-- `register_local_structure(file_path, job_dir, node_id, copy)` - Register a user-supplied PDB/CIF/ENT as a fetch node artifact. Default copies the file; `--no-copy` symlinks it (fragile).
+- `get_alphafold_structure(uniprot_id, format, output_dir, job_dir, node_id)` - Compatibility wrapper for AlphaFold DB fetch. In node mode, records `source_type=alphafold`, `model_version`, `cached=false` (AlphaFold entries are not locally cached)
+- `register_local_structure(file_path, job_dir, node_id, copy)` - Compatibility wrapper for local file fetch. Default copies the file; `--no-copy` symlinks it (fragile).
 - `inspect_molecules(structure_file, job_dir, node_id)` - Analyze chains, ligands, ions. With `job_dir`/`node_id`, writes `inspection.json` under the node and emits an `inspection_completed` event (read-only — node status unchanged)
 - `search_structures(query)` - Search PDB database
 - `search_proteins(query)` / `get_protein_info(uniprot_id)` - UniProt

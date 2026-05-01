@@ -83,16 +83,16 @@ Use `progress.json.params.execution_mode` as the source of truth:
 ## Step 1: Acquire Structure
 
 **Tools** (all accept `--job-dir <jd> --node-id <fetch_id>` for schema v3):
-- `mdclaw download_structure --pdb-id <ID>` (CIF by default; pass `--format pdb` only when a caller actually needs PDB format)
-- `mdclaw get_alphafold_structure --uniprot-id <ID>`
-- `mdclaw register_local_structure --file-path <path>`
+- `mdclaw fetch_structure --source pdb --pdb-id <ID>` (CIF by default; pass `--format pdb` only when a caller actually needs PDB format)
+- `mdclaw fetch_structure --source alphafold --uniprot-id <ID>`
+- `mdclaw fetch_structure --source local --file-path <path>`
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
 - `mdclaw search_structures --query "<name>"` (no node flags — discovery only)
 
 **Logic** (first rule that matches wins):
-1. PDB ID (4-char like `1AKE`) → `download_structure`
-2. UniProt ID (like `P12345`) → `get_alphafold_structure`
-3. Local file path exists → create a `fetch` node, then `register_local_structure`
+1. PDB ID (4-char like `1AKE`) → `fetch_structure --source pdb`
+2. UniProt ID (like `P12345`) → `fetch_structure --source alphafold`
+3. Local file path exists → create a `fetch` node, then `fetch_structure --source local`
 4. FASTA sequence (+ optional SMILES) and no PDB/UniProt known → `boltz2_protein_from_seq`
 5. Protein name (fuzzy / ambiguous) → `search_structures`, then ask user to pick
 
@@ -102,8 +102,7 @@ structure is almost always the right starting point.
 
 > **Schema v3 workflow**: structure acquisition is always a `fetch` DAG-root
 > node. Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
-> and pass `--node-id fetch_001` to `download_structure`,
-> `get_alphafold_structure`, `register_local_structure`, or
+> and pass `--node-id fetch_001` to `fetch_structure` or
 > `boltz2_protein_from_seq`. The downloaded / registered / predicted file
 > is recorded under `nodes/fetch_001/artifacts/` with provenance metadata
 > (`source_type`, `source_id`, `sha256`, `source_url` or sequence/SMILES).

@@ -42,19 +42,22 @@ mkdir -p job_xxx
 mdclaw create_node --job-dir job_xxx --node-type fetch --label "<source description>"
 ```
 
-Then run the appropriate fetch tool with `--node-id fetch_001`:
+Then fetch the structure with `--node-id fetch_001`:
 
 ```bash
 # PDB
-mdclaw --job-dir job_xxx --node-id fetch_001 download_structure \
+mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+  --source pdb \
   --pdb-id 1AKE
 
 # AlphaFold
-mdclaw --job-dir job_xxx --node-id fetch_001 get_alphafold_structure \
+mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+  --source alphafold \
   --uniprot-id P12345
 
 # Local file (copies into the node's artifacts dir)
-mdclaw --job-dir job_xxx --node-id fetch_001 register_local_structure \
+mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+  --source local \
   --file-path /path/to/input.pdb
 ```
 

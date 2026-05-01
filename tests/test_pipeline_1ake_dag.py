@@ -1,7 +1,7 @@
 """Level 3: Full node-DAG pipeline integration test using PDB 1AKE.
 
 End-to-end test of the schema-v3 node graph:
-  fetch_001 (download_structure) ->
+  fetch_001 (fetch_structure) ->
     prep_001 (prepare_complex) ->
       solv_001 (solvate_structure) ->
         topo_001 (build_amber_system) ->
@@ -37,16 +37,17 @@ class TestPipeline1AKEDag:
     def job_dir(self, tmp_path_factory):
         return tmp_path_factory.mktemp("job_1ake_dag")
 
-    # Step 1: fetch (download_structure under a fetch node)
+    # Step 1: fetch (fetch_structure under a fetch node)
     def test_step1_fetch_pdb(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from research_server import download_structure
+        from research_server import fetch_structure
 
         node = create_node(str(job_dir), "fetch", label="PDB 1AKE")
         assert node["success"]
         self.__class__.fetch_id = node["node_id"]
 
-        result = asyncio.run(download_structure(
+        result = asyncio.run(fetch_structure(
+            source="pdb",
             pdb_id="1AKE",
             format="pdb",
             job_dir=str(job_dir),

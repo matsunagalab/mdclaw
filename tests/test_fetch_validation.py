@@ -1,7 +1,6 @@
 """Unit tests for fetch-tool node validation.
 
-Verifies that ``download_structure`` / ``get_alphafold_structure`` /
-``register_local_structure`` reject:
+Verifies that ``fetch_structure`` and its compatibility wrappers reject:
   - a node_id that doesn't exist
   - a node_id whose node_type is not ``fetch``
 
@@ -15,8 +14,12 @@ import asyncio
 import pytest
 
 from mdclaw._node import create_node, read_node
+
+pytest.importorskip("httpx")
+
 from mdclaw.research_server import (
     download_structure,
+    fetch_structure,
     get_alphafold_structure,
     register_local_structure,
 )
@@ -35,6 +38,38 @@ def prep_node(job_dir):
     result = create_node(str(job_dir), "prep")
     assert result["success"]
     return result["node_id"]
+
+
+# ── fetch_structure ────────────────────────────────────────────────────────
+
+
+class TestFetchStructureValidation:
+
+    def test_missing_node_id(self, job_dir):
+        result = asyncio.run(fetch_structure(
+            source="pdb",
+            pdb_id="1AKE",
+            job_dir=str(job_dir),
+            node_id="fetch_999",
+        ))
+        assert result["success"] is False
+        assert any("does not exist" in e for e in result["errors"])
+
+    def test_wrong_node_type(self, job_dir, prep_node):
+        result = asyncio.run(fetch_structure(
+            source="alphafold",
+            uniprot_id="P12345",
+            job_dir=str(job_dir),
+            node_id=prep_node,
+        ))
+        assert result["success"] is False
+        assert any("expected 'fetch'" in e for e in result["errors"])
+        prep_data = read_node(str(job_dir), prep_node)
+        assert prep_data["status"] == "pending"
+        assert prep_data["artifacts"] == {}
+
+
+# ── compatibility wrappers ─────────────────────────────────────────────────
 
 
 # ── download_structure ─────────────────────────────────────────────────────

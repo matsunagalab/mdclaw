@@ -334,6 +334,7 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 
 # Tools that represent DAG workflow nodes must always run with node context.
 _NODE_REQUIRED_TOOLS = frozenset({
+    "fetch_structure",
     "download_structure",
     "get_alphafold_structure",
     "register_local_structure",

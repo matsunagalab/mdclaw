@@ -310,7 +310,7 @@ METAL_ELEMENTS = {
 # =============================================================================
 
 
-async def download_structure(
+async def _fetch_pdb_structure(
     pdb_id: str,
     format: str = "cif",
     output_dir: Optional[str] = None,
@@ -1810,7 +1810,7 @@ def _calculate_md_suitability_score(
 _ALPHAFOLD_MODEL_VERSION = "v4"
 
 
-async def get_alphafold_structure(
+async def _fetch_alphafold_structure(
     uniprot_id: str,
     format: str = "pdb",
     output_dir: Optional[str] = None,
@@ -1955,7 +1955,7 @@ async def get_alphafold_structure(
     return result
 
 
-def register_local_structure(
+def _fetch_local_structure(
     file_path: str,
     job_dir: str,
     node_id: str,
@@ -2046,6 +2046,178 @@ def register_local_structure(
         fail_node(job_dir, node_id, errors=result["errors"])
 
     return result
+
+
+async def fetch_structure(
+    source: str,
+    pdb_id: Optional[str] = None,
+    uniprot_id: Optional[str] = None,
+    file_path: Optional[str] = None,
+    format: str = "cif",
+    copy: bool = True,
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Fetch a structure into a fetch node from PDB, AlphaFold, or a local file.
+
+    This is the preferred structure-acquisition entry point. It unifies the
+    DAG concept that all structure sources populate a ``fetch`` node while
+    preserving source-specific provenance metadata.
+
+    Args:
+        source: One of ``"pdb"``, ``"alphafold"``, or ``"local"``.
+        pdb_id: Required when ``source="pdb"``.
+        uniprot_id: Required when ``source="alphafold"``.
+        file_path: Required when ``source="local"``.
+        format: Structure format for remote sources. Defaults to CIF for the
+            unified API; legacy wrappers keep their historical defaults.
+        copy: For local files, copy into the fetch node artifacts directory
+            when True; create a symlink when False.
+        output_dir: Non-node output directory for remote fetches. Ignored in
+            node mode. Local fetches require ``job_dir`` and ``node_id``.
+        job_dir: Job directory for node-based tracking (schema v3).
+        node_id: Existing fetch node ID.
+
+    Returns:
+        Source-specific result dict with ``success`` / ``errors`` /
+        ``warnings`` and path/provenance fields.
+    """
+    normalized_source = source.lower().strip() if isinstance(source, str) else ""
+    if normalized_source not in {"pdb", "alphafold", "local"}:
+        return {
+            "success": False,
+            "source": source,
+            "errors": [
+                "Invalid source: "
+                f"{source!r}. Valid sources are: pdb, alphafold, local"
+            ],
+            "warnings": [],
+        }
+
+    if normalized_source == "pdb":
+        if not pdb_id:
+            return {
+                "success": False,
+                "source": "pdb",
+                "errors": ["pdb_id is required when source='pdb'"],
+                "warnings": [],
+            }
+        result = await _fetch_pdb_structure(
+            pdb_id=pdb_id,
+            format=format,
+            output_dir=output_dir,
+            job_dir=job_dir,
+            node_id=node_id,
+        )
+        result["source"] = "pdb"
+        return result
+
+    if normalized_source == "alphafold":
+        if not uniprot_id:
+            return {
+                "success": False,
+                "source": "alphafold",
+                "errors": ["uniprot_id is required when source='alphafold'"],
+                "warnings": [],
+            }
+        result = await _fetch_alphafold_structure(
+            uniprot_id=uniprot_id,
+            format=format,
+            output_dir=output_dir,
+            job_dir=job_dir,
+            node_id=node_id,
+        )
+        result["source"] = "alphafold"
+        return result
+
+    if not file_path:
+        return {
+            "success": False,
+            "source": "local",
+            "errors": ["file_path is required when source='local'"],
+            "warnings": [],
+        }
+    if not (job_dir and node_id):
+        return {
+            "success": False,
+            "source": "local",
+            "errors": [
+                "Local structure fetch requires both job_dir and node_id so "
+                "the file can be recorded under a fetch node"
+            ],
+            "warnings": [],
+        }
+    result = _fetch_local_structure(
+        file_path=file_path,
+        job_dir=job_dir,
+        node_id=node_id,
+        copy=copy,
+    )
+    result["source"] = "local"
+    return result
+
+
+async def download_structure(
+    pdb_id: str,
+    format: str = "cif",
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Compatibility wrapper for fetching RCSB PDB structures.
+
+    Prefer ``fetch_structure(source="pdb", pdb_id=...)`` for new workflows.
+    """
+    return await fetch_structure(
+        source="pdb",
+        pdb_id=pdb_id,
+        format=format,
+        output_dir=output_dir,
+        job_dir=job_dir,
+        node_id=node_id,
+    )
+
+
+async def get_alphafold_structure(
+    uniprot_id: str,
+    format: str = "pdb",
+    output_dir: Optional[str] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Compatibility wrapper for fetching AlphaFold DB structures.
+
+    Prefer ``fetch_structure(source="alphafold", uniprot_id=...)`` for new
+    workflows. This wrapper keeps the historical default ``format="pdb"``.
+    """
+    return await fetch_structure(
+        source="alphafold",
+        uniprot_id=uniprot_id,
+        format=format,
+        output_dir=output_dir,
+        job_dir=job_dir,
+        node_id=node_id,
+    )
+
+
+def register_local_structure(
+    file_path: str,
+    job_dir: str,
+    node_id: str,
+    copy: bool = True,
+) -> dict:
+    """Compatibility wrapper for fetching a local structure file.
+
+    Prefer ``fetch_structure(source="local", file_path=...)`` for new
+    workflows. This wrapper remains synchronous for existing callers.
+    """
+    return _fetch_local_structure(
+        file_path=file_path,
+        job_dir=job_dir,
+        node_id=node_id,
+        copy=copy,
+    )
 
 
 # =============================================================================
@@ -3292,6 +3464,7 @@ def analyze_structure_details(
 # =============================================================================
 
 TOOLS = {
+    "fetch_structure": fetch_structure,
     "download_structure": download_structure,
     "get_structure_info": get_structure_info,
     "search_structures": search_structures,

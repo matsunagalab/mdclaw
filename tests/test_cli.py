@@ -55,10 +55,12 @@ class TestToolDiscovery:
 
         tools = _discover_tools()
         if _dependency_available("httpx"):
+            assert "fetch_structure" in tools
+            assert tools["fetch_structure"]["is_async"] is True
             assert "download_structure" in tools
             assert tools["download_structure"]["is_async"] is True
         else:
-            pytest.skip("download_structure unavailable because research server dependencies are missing")
+            pytest.skip("fetch tools unavailable because research server dependencies are missing")
 
         sync_tool = _pick_existing_tool(tools, "inspect_molecules", "solvate_structure", "build_amber_system")
         assert tools[sync_tool]["is_async"] is False
@@ -69,6 +71,7 @@ class TestToolDiscovery:
         tools = _discover_tools()
 
         if _dependency_available("httpx"):
+            assert "fetch_structure" in tools
             assert "download_structure" in tools
         if _dependency_available("pdbfixer"):
             assert "split_molecules" in tools
@@ -103,7 +106,13 @@ class TestArgparseConstruction:
 
         tools = _discover_tools()
         parser = _build_parser(tools)
-        tool_name = _pick_existing_tool(tools, "download_structure", "solvate_structure", "build_amber_system")
+        tool_name = _pick_existing_tool(
+            tools,
+            "fetch_structure",
+            "download_structure",
+            "solvate_structure",
+            "build_amber_system",
+        )
 
         # Parser should have subparsers with all tool names
         # Test by parsing a known tool with --help (should not raise)
@@ -115,9 +124,9 @@ class TestArgparseConstruction:
         """Missing required params causes non-zero exit via main()."""
         from mdclaw._cli import main
 
-        # download_structure requires --pdb-id; omitting it should exit non-zero
+        # fetch_structure requires --source; omitting it should exit non-zero
         with pytest.raises(SystemExit) as exc_info:
-            main(["download_structure"])
+            main(["fetch_structure"])
         assert exc_info.value.code != 0
 
     def test_workflow_tools_require_node_context(self):
@@ -125,10 +134,10 @@ class TestArgparseConstruction:
         from mdclaw._cli import main
 
         if not _dependency_available("httpx"):
-            pytest.skip("download_structure unavailable because research server dependencies are missing")
+            pytest.skip("fetch_structure unavailable because research server dependencies are missing")
 
         with pytest.raises(SystemExit) as exc_info:
-            main(["download_structure", "--pdb-id", "1AKE"])
+            main(["fetch_structure", "--source", "pdb", "--pdb-id", "1AKE"])
         assert exc_info.value.code != 0
 
     def test_optional_params_have_defaults(self):
@@ -674,12 +683,14 @@ class TestNodeCLIParameters:
         subparser also declares ``--job-dir``/``--node-id`` whenever the
         tool signature has those parameters, so the CLI must forward the
         global values into the per-tool namespace before the missing-args
-        check runs. Otherwise tools like ``register_local_structure`` that
-        declare ``job_dir`` / ``node_id`` as required parameters error out
-        even when the global flags were supplied.
+        check runs. Otherwise node-required tools like ``fetch_structure``
+        error out even when the global flags were supplied.
         """
         from mdclaw._cli import main
         from mdclaw._node import create_node
+
+        if not _dependency_available("httpx"):
+            pytest.skip("fetch_structure unavailable because research server dependencies are missing")
 
         create_node(str(tmp_path), "fetch")
         src = tmp_path / "input.pdb"
@@ -689,7 +700,8 @@ class TestNodeCLIParameters:
             main([
                 "--job-dir", str(tmp_path),
                 "--node-id", "fetch_001",
-                "register_local_structure",
+                "fetch_structure",
+                "--source", "local",
                 "--file-path", str(src),
             ])
         assert exc_info.value.code == 0

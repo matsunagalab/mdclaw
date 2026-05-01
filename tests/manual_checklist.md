@@ -9,9 +9,9 @@ Run these manually after all automated tests pass.
 
 ## CLI Tools
 
-- [ ] `mdclaw --list` shows all 37 tools grouped by server
+- [ ] `mdclaw --list` shows all tools grouped by server
 - [ ] `mdclaw --version` shows version
-- [ ] `mdclaw download_structure --help` shows tool-specific help
+- [ ] `mdclaw fetch_structure --help` shows tool-specific help
 
 ## Claude Code Interactive Mode
 
