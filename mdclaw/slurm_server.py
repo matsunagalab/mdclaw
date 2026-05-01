@@ -54,65 +54,134 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _get_jobs_path() -> Path:
-    """Return the path to the JSONL job tracker file."""
-    return Path.cwd() / _JOBS_JSONL
+def _get_jobs_path(base_dir: Optional[str | Path] = None) -> Path:
+    """Return the default JSONL job tracker path.
+
+    ``MDCLAW_JOBS_FILE`` gives operators one stable tracker path that is not
+    tied to the directory the agent happened to run from. Without it, keep the
+    historical cwd-local tracker for backwards compatibility.
+    """
+    env_path = os.getenv("MDCLAW_JOBS_FILE")
+    if env_path:
+        return Path(env_path).expanduser().resolve()
+    root = Path(base_dir).expanduser() if base_dir is not None else Path.cwd()
+    return root.resolve() / _JOBS_JSONL
+
+
+def _candidate_job_paths(
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> list[Path]:
+    """Return tracker files that may contain the requested job records."""
+    paths: list[Path] = []
+
+    def add(path: Path) -> None:
+        resolved = path.expanduser().resolve()
+        if resolved not in paths:
+            paths.append(resolved)
+
+    env_path = os.getenv("MDCLAW_JOBS_FILE")
+    if env_path:
+        add(Path(env_path))
+        return paths
+
+    add(_get_jobs_path())
+    if output_dir:
+        add(_get_jobs_path(output_dir))
+    if job_dir:
+        add(_get_jobs_path(job_dir))
+    return paths
 
 
 def _append_job_record(record: dict) -> None:
-    """Append a job record to the JSONL tracker."""
-    try:
-        with open(_get_jobs_path(), "a") as f:
-            f.write(json.dumps(record, default=str) + "\n")
-    except OSError as e:
-        logger.warning("Could not write to job tracker: %s", e)
+    """Append a job record to all relevant JSONL trackers."""
+    paths = _candidate_job_paths(
+        job_dir=record.get("job_dir"),
+        output_dir=record.get("output_dir"),
+    )
+    for path in paths:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "a") as f:
+                f.write(json.dumps(record, default=str) + "\n")
+        except OSError as e:
+            logger.warning("Could not write to job tracker %s: %s", path, e)
 
 
-def _read_job_records() -> list[dict]:
-    """Read all job records from the JSONL tracker."""
-    path = _get_jobs_path()
-    if not path.exists():
-        return []
+def _read_job_records(
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> list[dict]:
+    """Read job records from candidate JSONL trackers, de-duplicated."""
     records = []
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if line:
+    seen: set[tuple[str, str, str]] = set()
+    for path in _candidate_job_paths(job_dir=job_dir, output_dir=output_dir):
+        if not path.exists():
+            continue
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                records.append(json.loads(line))
+                rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            key = (
+                str(rec.get("job_id", "")),
+                str(rec.get("job_dir", "")),
+                str(rec.get("node_id", "")),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(rec)
     return records
 
 
-def _update_job_record(job_id: str, updates: dict) -> None:
+def _record_matches_job_id(rec: dict, job_id: str) -> bool:
+    """Match tracker records against the exact SLURM job id."""
+    return str(rec.get("job_id")) == str(job_id)
+
+
+def _update_job_record(
+    job_id: str,
+    updates: dict,
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> None:
     """Update fields of a tracked job in-place.
 
-    Matches on ``job_id``. When SLURM returns an array child in ``JOBID_TASKID``
-    form, records keyed by either the full child id or the parent id are
-    updated: each array child stamps its own row by ``slurm_job_id`` equal to
-    the child id, so callers pass that to this function.
+    Matches on ``job_id``.
     """
-    path = _get_jobs_path()
-    if not path.exists():
-        return
-    lines = path.read_text().splitlines()
-    updated = []
-    for line in lines:
-        try:
-            rec = json.loads(line)
-            if str(rec.get("job_id")) == str(job_id):
-                rec.update(updates)
-                rec["checked_at"] = datetime.now(timezone.utc).isoformat()
-            updated.append(json.dumps(rec, default=str))
-        except json.JSONDecodeError:
-            updated.append(line)
-    path.write_text("\n".join(updated) + "\n")
+    for path in _candidate_job_paths(job_dir=job_dir, output_dir=output_dir):
+        if not path.exists():
+            continue
+        lines = path.read_text().splitlines()
+        updated = []
+        for line in lines:
+            try:
+                rec = json.loads(line)
+                if _record_matches_job_id(rec, job_id):
+                    rec.update(updates)
+                    rec["checked_at"] = datetime.now(timezone.utc).isoformat()
+                updated.append(json.dumps(rec, default=str))
+            except json.JSONDecodeError:
+                updated.append(line)
+        path.write_text("\n".join(updated) + "\n")
 
 
-def _find_record_by_job_id(job_id: str) -> Optional[dict]:
+def _find_record_by_job_id(
+    job_id: str,
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> Optional[dict]:
     """Return the first tracker record whose ``job_id`` matches."""
-    for rec in _read_job_records():
-        if str(rec.get("job_id")) == str(job_id):
+    for rec in _read_job_records(job_dir=job_dir, output_dir=output_dir):
+        if _record_matches_job_id(rec, job_id):
             return rec
     return None
 
@@ -189,10 +258,9 @@ def _sync_slurm_state_to_node(
       roll back from a tool-owned completed/failed state).
     - FAILED / TIMEOUT / OUT_OF_MEMORY / CANCELLED → node.status=failed via
       ``fail_node`` with stderr tail captured in metadata.
-    - COMPLETED / success → do nothing here: the tool running inside the job
-      is responsible for transitioning to ``completed`` once its work is done.
-      SLURM exit 0 only means the wrapper script exited cleanly, which is
-      a weaker signal than the tool's own completion hook.
+    - COMPLETED / success → leave already-completed nodes alone. If the DAG
+      node is still queued/running, mark it failed as a zombie: SLURM says the
+      wrapper exited, but the tool never recorded ``complete_node``.
     """
     node_json = Path(job_dir) / "nodes" / node_id / "node.json"
     if not node_json.exists():
@@ -248,7 +316,50 @@ def _sync_slurm_state_to_node(
             return f"could not fail node {node_id}: {e}"
         return None
 
-    # COMPLETED / other states: leave node.status alone (tool owns it).
+    if state == "COMPLETED":
+        meta: dict = {"slurm_state": state}
+        if exit_code:
+            meta["slurm_exit_code"] = exit_code
+        if elapsed:
+            meta["slurm_elapsed"] = elapsed
+        try:
+            update_node(str(job_dir), node_id, {"metadata": meta})
+        except Exception as e:
+            return f"could not annotate node {node_id}: {e}"
+
+        if current == "completed":
+            return None
+        if current == "failed":
+            return None
+
+        try:
+            fail_node(
+                str(job_dir),
+                node_id,
+                errors=[
+                    "SLURM state: COMPLETED",
+                    (
+                        "DAG node did not record completion before the SLURM "
+                        f"job exited (node_status={current!r}); treating as a zombie."
+                    ),
+                ],
+            )
+            update_node(str(job_dir), node_id, {
+                "metadata": {
+                    "slurm_state": state,
+                    "slurm_zombie_detected": True,
+                    **({"slurm_exit_code": exit_code} if exit_code else {}),
+                    **({"slurm_elapsed": elapsed} if elapsed else {}),
+                }
+            })
+        except Exception as e:
+            return f"could not fail zombie node {node_id}: {e}"
+        return (
+            f"node {node_id} marked failed: SLURM completed but the tool did "
+            "not record node completion"
+        )
+
+    # Other non-terminal states: leave node.status alone.
     return None
 
 
@@ -1139,7 +1250,10 @@ def submit_job(
                 "gpus": gpus,
                 "time_limit": time_limit,
                 "script": script,
+                "script_file": str(script_file),
                 "output_dir": str(out_dir),
+                "stdout_log": result["stdout_log"],
+                "stderr_log": result["stderr_log"],
             }
             if job_dir:
                 tracker_record["job_dir"] = str(Path(job_dir).resolve())
@@ -1602,7 +1716,11 @@ def submit_array_job(
     return result
 
 
-def check_job(job_id: str) -> dict:
+def check_job(
+    job_id: str,
+    job_dir: Optional[str] = None,
+    output_dir: Optional[str] = None,
+) -> dict:
     """Check the status of a SLURM job.
 
     Queries squeue for running/pending jobs and sacct for completed jobs.
@@ -1610,6 +1728,10 @@ def check_job(job_id: str) -> dict:
 
     Args:
         job_id: SLURM job ID to check.
+        job_dir: Optional schema-v3 job directory used to find a tracker file
+            even when the current working directory is different.
+        output_dir: Optional SLURM output directory used to find tracker and
+            metadata files independent of the current working directory.
 
     Returns:
         dict with:
@@ -1661,7 +1783,9 @@ def check_job(job_id: str) -> dict:
                 result["elapsed"] = str(time_info)
 
             result["success"] = True
-            _check_job_finalize(result, str(job_id))
+            _check_job_finalize(
+                result, str(job_id), job_dir=job_dir, output_dir=output_dir,
+            )
             return result
 
     except (subprocess.CalledProcessError, json.JSONDecodeError):
@@ -1678,7 +1802,9 @@ def check_job(job_id: str) -> dict:
                 result["elapsed"] = parts[1] if len(parts) > 1 else None
                 result["node"] = parts[2] if len(parts) > 2 else None
                 result["success"] = True
-                _check_job_finalize(result, str(job_id))
+                _check_job_finalize(
+                    result, str(job_id), job_dir=job_dir, output_dir=output_dir,
+                )
                 return result
         except subprocess.CalledProcessError:
             pass  # Job not in queue, try sacct
@@ -1740,19 +1866,35 @@ def check_job(job_id: str) -> dict:
         result["errors"].append(f"Job {job_id} not in queue and sacct not available")
         return result
 
-    _check_job_finalize(result, str(job_id))
+    _check_job_finalize(result, str(job_id), job_dir=job_dir, output_dir=output_dir)
     return result
 
 
-def _check_job_finalize(result: dict, job_id: str) -> None:
+def _check_job_finalize(
+    result: dict,
+    job_id: str,
+    *,
+    job_dir: Optional[str | Path] = None,
+    output_dir: Optional[str | Path] = None,
+) -> None:
     """Shared tail of :func:`check_job`: capture stderr tail for failures,
     update the JSONL tracker, and reflect SLURM state onto any linked DAG
     node. Called from every exit point of :func:`check_job` so queue-hit
     (RUNNING/PENDING via squeue) and archive-hit (COMPLETED/FAILED via
     sacct) paths both sync consistently.
     """
+    rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+
     # Auto-retrieve stderr tail for failed/timed-out jobs
     if result.get("state") in ("FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"):
+        if rec:
+            stderr_path = rec.get("stderr_log")
+            if stderr_path and Path(stderr_path).exists():
+                try:
+                    lines = Path(stderr_path).read_text().splitlines()
+                    result["stderr_tail"] = "\n".join(lines[-50:])
+                except OSError:
+                    pass
         meta = _find_job_metadata(job_id)
         if meta:
             stderr_path = meta.get("stderr_log")
@@ -1764,14 +1906,24 @@ def _check_job_finalize(result: dict, job_id: str) -> None:
                     pass
         if not result.get("stderr_tail"):
             # Try slurm default pattern
-            for pattern in [f"slurm-{job_id}.err", f"*_{job_id}.err"]:
-                matches = list(Path.cwd().glob(pattern))
-                if matches:
-                    try:
-                        lines = matches[0].read_text().splitlines()
-                        result["stderr_tail"] = "\n".join(lines[-50:])
-                    except OSError:
-                        pass
+            search_dirs = [Path.cwd()]
+            if output_dir:
+                search_dirs.append(Path(output_dir))
+            if rec and rec.get("output_dir"):
+                search_dirs.append(Path(rec["output_dir"]))
+            for search_dir in search_dirs:
+                if not search_dir.exists():
+                    continue
+                for pattern in [f"slurm-{job_id}.err", f"*_{job_id}.err"]:
+                    matches = list(search_dir.glob(pattern))
+                    if matches:
+                        try:
+                            lines = matches[0].read_text().splitlines()
+                            result["stderr_tail"] = "\n".join(lines[-50:])
+                        except OSError:
+                            pass
+                        break
+                if result.get("stderr_tail"):
                     break
 
     # Update job tracker
@@ -1785,10 +1937,14 @@ def _check_job_finalize(result: dict, job_id: str) -> None:
         updates["elapsed"] = result["elapsed"]
     if result.get("exit_code"):
         updates["exit_code"] = result["exit_code"]
-    _update_job_record(job_id, updates)
+    _update_job_record(
+        job_id,
+        updates,
+        job_dir=job_dir or (rec or {}).get("job_dir"),
+        output_dir=output_dir or (rec or {}).get("output_dir"),
+    )
 
     # Reflect SLURM state onto the linked DAG node (if any).
-    rec = _find_record_by_job_id(job_id)
     if rec and rec.get("job_dir") and rec.get("node_id"):
         sync_err = _sync_slurm_state_to_node(
             rec["job_dir"],
@@ -1926,6 +2082,8 @@ def check_job_log(
     job_id: str,
     log_type: str = "stderr",
     tail_lines: int = 100,
+    job_dir: Optional[str] = None,
+    output_dir: Optional[str] = None,
 ) -> dict:
     """Read log file for a SLURM job.
 
@@ -1935,6 +2093,8 @@ def check_job_log(
         job_id: SLURM job ID.
         log_type: "stderr" or "stdout" (default: stderr).
         tail_lines: Number of lines to return from the end (default: 100).
+        job_dir: Optional schema-v3 job directory used to find the tracker.
+        output_dir: Optional SLURM output directory used to find logs.
 
     Returns:
         dict with:
@@ -1957,11 +2117,17 @@ def check_job_log(
     }
 
     log_path = None
+    key = "stderr_log" if log_type == "stderr" else "stdout_log"
+
+    rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
+    if rec:
+        candidate = rec.get(key)
+        if candidate and Path(candidate).exists():
+            log_path = Path(candidate)
 
     # Try metadata first
     meta = _find_job_metadata(str(job_id))
-    if meta:
-        key = "stderr_log" if log_type == "stderr" else "stdout_log"
+    if not log_path and meta:
         candidate = meta.get(key)
         if candidate and Path(candidate).exists():
             log_path = Path(candidate)
@@ -1974,21 +2140,34 @@ def check_job_log(
             f"*_{job_id}{ext}",
             f"*{job_id}*{ext}",
         ]
-        for pattern in patterns:
-            matches = list(Path.cwd().glob(pattern))
-            if matches:
-                log_path = matches[0]
+        search_dirs = [Path.cwd()]
+        if output_dir:
+            search_dirs.append(Path(output_dir))
+        if rec and rec.get("output_dir"):
+            search_dirs.append(Path(rec["output_dir"]))
+        for search_dir in search_dirs:
+            for pattern in patterns:
+                matches = list(search_dir.glob(pattern))
+                if matches:
+                    log_path = matches[0]
+                    break
+            if log_path:
                 break
 
         # Also check subdirectories one level deep
         if not log_path:
-            for subdir in Path.cwd().iterdir():
-                if not subdir.is_dir() or subdir.name.startswith("."):
+            for search_dir in search_dirs:
+                if not search_dir.exists():
                     continue
-                for pattern in patterns:
-                    matches = list(subdir.glob(pattern))
-                    if matches:
-                        log_path = matches[0]
+                for subdir in search_dir.iterdir():
+                    if not subdir.is_dir() or subdir.name.startswith("."):
+                        continue
+                    for pattern in patterns:
+                        matches = list(subdir.glob(pattern))
+                        if matches:
+                            log_path = matches[0]
+                            break
+                    if log_path:
                         break
                 if log_path:
                     break
@@ -2257,11 +2436,14 @@ def list_tracked_jobs(
         "success": False,
         "jobs": [],
         "total": 0,
-        "tracker_file": str(_get_jobs_path()),
+        "tracker_file": str(_get_jobs_path(job_dir) if job_dir else _get_jobs_path()),
+        "tracker_files": [
+            str(p) for p in _candidate_job_paths(job_dir=job_dir)
+        ],
         "errors": [],
     }
 
-    records = _read_job_records()
+    records = _read_job_records(job_dir=job_dir)
     if not records:
         result["success"] = True
         return result
@@ -2272,11 +2454,15 @@ def list_tracked_jobs(
         for rec in records:
             if rec.get("status") not in terminal and rec.get("job_id"):
                 try:
-                    check_job(rec["job_id"])
+                    check_job(
+                        rec["job_id"],
+                        job_dir=rec.get("job_dir"),
+                        output_dir=rec.get("output_dir"),
+                    )
                 except Exception:
                     pass
         # Re-read after sync
-        records = _read_job_records()
+        records = _read_job_records(job_dir=job_dir)
 
     # Filters
     if job_dir is not None:

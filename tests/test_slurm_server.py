@@ -1470,10 +1470,10 @@ class TestCheckJobNodeSync:
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
-    def test_completed_state_leaves_node_alone(self, mock_run, mock_check, tmp_path, monkeypatch):
-        """SLURM COMPLETED does NOT mark the DAG node completed — the tool
-        running inside the job is solely responsible for that transition.
-        """
+    def test_completed_state_without_node_completion_marks_zombie_failed(
+        self, mock_run, mock_check, tmp_path, monkeypatch,
+    ):
+        """SLURM COMPLETED with a still-running node is a zombie wrapper exit."""
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_ok", ["prod_001"])
 
@@ -1508,11 +1508,44 @@ class TestCheckJobNodeSync:
             }))
         mock_run.side_effect = side_effect
 
-        check_job("88888")
+        result = check_job("88888")
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
-        # Node status untouched — this is the whole point: SLURM success only
-        # means the wrapper script exited 0; the tool's own complete_node hook
-        # is the source of truth for "completed".
+        assert node["status"] == "failed"
+        assert node["metadata"]["slurm_state"] == "COMPLETED"
+        assert node["metadata"]["slurm_zombie_detected"] is True
+        assert any("marked failed" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_tracker_lookup_can_use_job_dir_not_cwd(
+        self, mock_run, mock_check, tmp_path, monkeypatch,
+    ):
+        monitor_dir = tmp_path / "monitor"
+        monitor_dir.mkdir()
+        monkeypatch.chdir(monitor_dir)
+        jd = _make_job_with_nodes(tmp_path, "job_tracker_elsewhere", ["prod_001"])
+
+        # Simulate a tracker written next to the job_dir, not in cwd.
+        (jd / ".mdclaw_jobs.jsonl").write_text(json.dumps({
+            "job_id": "77788",
+            "status": "SUBMITTED",
+            "job_dir": str(jd),
+            "node_id": "prod_001",
+        }) + "\n")
+
+        mock_run.return_value = _mock_run_command(stdout=json.dumps({
+            "jobs": [{
+                "job_id": 77788,
+                "job_state": ["RUNNING"],
+                "nodes": "compute04",
+                "time": {"elapsed": "00:00:20"},
+            }]
+        }))
+
+        result = check_job("77788", job_dir=str(jd))
+        assert result["success"] is True
+        assert result["state"] == "RUNNING"
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "running"
 
 
