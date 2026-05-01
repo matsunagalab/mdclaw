@@ -518,9 +518,10 @@ class TestContinueFromStrictEnforcement:
 
         inputs = resolve_node_inputs(jd, "prod_002", "prod")
         assert "restart_from" not in inputs
-        assert "restart_from_error" in inputs
-        assert "prod_001" in inputs["restart_from_error"]
-        assert "checkpoint" in inputs["restart_from_error"]
+        assert "restart_from_error" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prod_001" in inputs["input_resolution_error"]
+        assert "pending" in inputs["input_resolution_error"]
 
     def test_does_not_pull_sibling_prod_checkpoint(self, full_dag_with_prod):
         """prod_003 is a sibling branched off eq_001 (completed, has a
@@ -537,19 +538,21 @@ class TestContinueFromStrictEnforcement:
 
         inputs = resolve_node_inputs(jd, "prod_003", "prod")
         assert "restart_from" not in inputs
-        assert "restart_from_error" in inputs
+        assert "restart_from_error" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prod_001" in inputs["input_resolution_error"]
 
-    def test_plain_parent_ids_still_fallbacks(self, full_dag_with_prod):
-        """Regression guard: the default (non-continue_from) path keeps
-        its BFS + eq fallback. Here prod_001 has no checkpoint but the
-        walk should reach eq_001's checkpoint."""
+    def test_plain_parent_ids_reject_unfinished_parent(self, full_dag_with_prod):
+        """The default (non-continue_from) resolver also refuses to auto-resolve
+        through an unfinished direct parent, even if eq has a usable checkpoint."""
         jd = full_dag_with_prod
         create_node(jd, "prod", parent_node_ids=["prod_001"])
 
         inputs = resolve_node_inputs(jd, "prod_002", "prod")
         assert "restart_from_error" not in inputs
-        assert "restart_from" in inputs
-        assert inputs["restart_from"].endswith("equilibrated.chk")
+        assert "restart_from" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prod_001" in inputs["input_resolution_error"]
 
 
 # ── update_node_status tool ────────────────────────────────────────────────
@@ -975,6 +978,55 @@ class TestDAGAutoResolve:
         result = find_ancestor_artifact(jd, "prep_001", "topo", "parm7")
         assert result is None
 
+    def test_resolve_node_inputs_blocks_pending_parent(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+
+        inputs = resolve_node_inputs(jd, "solv_001", "solv")
+
+        assert "pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prep_001" in inputs["input_resolution_error"]
+        assert "pending" in inputs["input_resolution_error"]
+
+    def test_resolve_node_inputs_blocks_failed_parent_with_artifacts(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "topo")
+        complete_node(jd, "topo_001",
+                      artifacts={"parm7": "artifacts/system.parm7",
+                                 "rst7": "artifacts/system.rst7"})
+        fail_node(jd, "topo_001", errors=["topology invalid"])
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+
+        assert "prmtop_file" not in inputs
+        assert "inpcrd_file" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "topo_001" in inputs["input_resolution_error"]
+        assert "failed" in inputs["input_resolution_error"]
+
+    def test_resolve_node_inputs_blocks_pending_dependency(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(jd, "topo")
+        create_node(
+            jd,
+            "solv",
+            parent_node_ids=["prep_001"],
+            dependency_node_ids=["topo_001"],
+        )
+
+        inputs = resolve_node_inputs(jd, "solv_001", "solv")
+
+        assert "pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "topo_001" in inputs["input_resolution_error"]
+        assert "Dependency node" in inputs["input_resolution_error"]
+
     def test_resolve_node_inputs_eq(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "eq_001", "eq")
@@ -1006,13 +1058,9 @@ class TestDAGAutoResolve:
         # topo inputs still resolve to the shared topo ancestor
         assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
 
-    def test_resolve_node_inputs_prod_chain(self, full_dag):
-        """Deep chain prod_003 → prod_002 → prod_001 → eq_001: when prod_002
-        (the nearest prod) has no checkpoint artifact (e.g. still running /
-        failed), the BFS must keep walking and return prod_001's checkpoint
-        rather than the eq one — otherwise chained extensions silently
-        restart from the wrong state.
-        """
+    def test_resolve_node_inputs_prod_chain_blocks_unfinished_parent(self, full_dag):
+        """Deep chain prod_003 → prod_002 → prod_001 → eq_001: unfinished
+        direct parents block auto-resolution rather than being skipped."""
         jd = str(full_dag)
         # prod_001 is the only prod with a saved checkpoint
         complete_node(jd, "prod_001",
@@ -1020,15 +1068,14 @@ class TestDAGAutoResolve:
                                  "trajectory": "artifacts/trajectory.dcd"})
         # prod_002 exists but never completed — no checkpoint artifact
         create_node(jd, "prod", parent_node_ids=["prod_001"])
-        # prod_003 continues; even though prod_002 is nearest, its checkpoint
-        # key is absent, so BFS must fall through to prod_001.
+        # prod_003 continues; prod_002 is nearest but unfinished, so resolver
+        # must not skip it and auto-restart from an older ancestor.
         create_node(jd, "prod", parent_node_ids=["prod_002"])
 
         inputs = resolve_node_inputs(jd, "prod_003", "prod")
-        assert "restart_from" in inputs
-        assert inputs["restart_from"].endswith(
-            "prod_001/artifacts/checkpoint.chk"
-        ), "BFS must skip artifact-less prod_002 and return prod_001's checkpoint"
+        assert "restart_from" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prod_002" in inputs["input_resolution_error"]
 
     def test_resolve_node_inputs_prod_falls_back_to_eq(self, full_dag):
         """With no intermediate prod ancestor on the path, resolve falls back
@@ -1338,12 +1385,10 @@ class TestDAGAutoResolve:
         assert "prod_002/artifacts" in chain[1]
         assert "prod_003/artifacts" in chain[2]
 
-    def test_analyze_skips_prod_ancestor_without_trajectory_artifact(
+    def test_analyze_blocks_prod_parent_without_trajectory_artifact(
         self, full_dag
     ):
-        """A prod ancestor that never completed (no `trajectory` artifact)
-        must be skipped — the chain should still terminate correctly, and
-        the completed prods above it should appear in the returned list."""
+        """A prod parent that never completed must block auto-resolution."""
         from mdclaw._node import resolve_node_inputs
         jd = str(full_dag)
         complete_node(jd, "prod_001",
@@ -1352,9 +1397,9 @@ class TestDAGAutoResolve:
         create_node(jd, "prod", continue_from="prod_001")
         create_node(jd, "analyze", parent_node_ids=["prod_002"])
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
-        chain = inputs["trajectory_chain"]
-        assert len(chain) == 1
-        assert "prod_001/artifacts/trajectory.dcd" in chain[0]
+        assert "trajectory_chain" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prod_002" in inputs["input_resolution_error"]
 
     def test_analyze_parent_analyze_resolves_combined_trajectory(
         self, full_dag

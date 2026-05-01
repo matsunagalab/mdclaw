@@ -436,10 +436,8 @@ class TestRestartFromErrorFailsNode:
                       metadata={"final_step": 0})
         # prod_001 is the anchor — exists but never ran (no artifacts).
         create_node(str(jd), "prod", parent_node_ids=["eq_001"])
-        # prod_002 continues from prod_001; resolver must surface
-        # restart_from_error because prod_001 has neither state nor
-        # checkpoint registered. (continue_from is sugar for
-        # parent_node_ids and the two cannot be mixed.)
+        # prod_002 continues from prod_001; resolver must refuse to auto-resolve
+        # because prod_001 is not completed.
         create_node(str(jd), "prod", continue_from="prod_001")
 
         result = run_production(
@@ -450,7 +448,7 @@ class TestRestartFromErrorFailsNode:
 
         # Returned dict reports the failure.
         assert result["success"] is False
-        assert any("continue_from" in e for e in result["errors"])
+        assert any("prod_001" in e and "completed" in e for e in result["errors"])
 
         # Node status must reflect the failure (was the bug: status
         # used to stay "pending"). Read node.json directly. fail_node
@@ -461,7 +459,7 @@ class TestRestartFromErrorFailsNode:
         )
         assert nj["status"] == "failed"
         recorded_errors = nj.get("metadata", {}).get("errors", [])
-        assert any("continue_from" in e for e in recorded_errors), (
-            f"node.json metadata.errors should mention continue_from: "
+        assert any("prod_001" in e and "completed" in e for e in recorded_errors), (
+            f"node.json metadata.errors should mention the unfinished parent: "
             f"got {recorded_errors!r}"
         )

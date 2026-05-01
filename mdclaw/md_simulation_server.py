@@ -1079,12 +1079,16 @@ def run_production(
                 f"pressure_bar inherited from eq ancestor "
                 f"(final_ensemble=NPT, {pressure_bar} bar)"
             )
-        # Strict continue_from violation gets the most specific error. It
-        # can happen while the parent prod is still pending/running; reporting
-        # the missing state/checkpoint is clearer than a generic parent-status
-        # guard.
+        # Resolver-level failures are recorded on the node so a failed
+        # extension does not remain pending after the tool exits.
         if not restart_from and "restart_from_error" in _inputs:
             err = _inputs["restart_from_error"]
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
+            return {"success": False, "errors": [err]}
+        if "input_resolution_error" in _inputs:
+            err = _inputs["input_resolution_error"]
             from mdclaw._node import begin_node, fail_node
             begin_node(job_dir, node_id)
             fail_node(job_dir, node_id, errors=[err])

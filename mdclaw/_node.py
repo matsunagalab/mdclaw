@@ -916,6 +916,45 @@ def find_ancestor_artifact(
     return None
 
 
+def _input_resolution_status_errors(job_dir: str, node_id: str) -> list[str]:
+    """Return parent/dependency status errors for resolver auto-discovery.
+
+    ``resolve_node_inputs`` is intentionally non-throwing so callers can
+    still fall back to explicit parameters. The resolver must nevertheless
+    avoid trusting artifacts through an incomplete DAG edge.
+    """
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return [f"progress.json is missing or invalid under {job_dir}"]
+
+    nodes_index = progress.get("nodes", {})
+    node_entry = nodes_index.get(node_id)
+    if node_entry is None:
+        return [f"Node '{node_id}' is missing from progress.json"]
+
+    errors: list[str] = []
+    refs = [
+        ("Parent", pid) for pid in node_entry.get("parents", [])
+    ] + [
+        ("Dependency", did) for did in node_entry.get("dependencies", [])
+    ]
+    for ref_label, ref_id in refs:
+        ref_entry = nodes_index.get(ref_id)
+        if ref_entry is None:
+            errors.append(
+                f"{ref_label} node '{ref_id}' is missing from progress.json"
+            )
+            continue
+        status = ref_entry.get("status")
+        if status != "completed":
+            errors.append(
+                f"{ref_label} node '{ref_id}' must be completed before "
+                f"resolving inputs for '{node_id}' (status={status!r})"
+            )
+    return errors
+
+
 def resolve_node_inputs(
     job_dir: str,
     node_id: str,
@@ -939,6 +978,12 @@ def resolve_node_inputs(
                 ``checkpoint`` from nearest ``eq`` ancestor (parent)
     """
     result: dict = {}
+    status_errors = _input_resolution_status_errors(job_dir, node_id)
+    if status_errors:
+        return {
+            "input_resolution_error": status_errors[0],
+            "input_resolution_errors": status_errors,
+        }
 
     if node_type == "prep":
         ancestors = get_ancestors(job_dir, node_id)
