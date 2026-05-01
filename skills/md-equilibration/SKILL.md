@@ -1,6 +1,6 @@
 ---
 name: MD Equilibration
-description: "Equilibration (energy minimization -> NVT heating -> NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and produces equilibrated.chk for production handoff."
+description: "Equilibration (standard staged minimization -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and produces equilibrated.chk for production handoff."
 ---
 
 # MD Equilibration
@@ -26,6 +26,10 @@ Extract parameters from the user's request and present a summary.
 
 Read `progress.json` -- find a completed `topo` node.
 (`prmtop_file` and `inpcrd_file` are auto-resolved from the `topo` ancestor by the tool.)
+If topology metadata contains ligand charge or clash diagnostics, record them
+for reporting, but do not choose a different equilibration protocol. All NVT
+equilibration runs use the same standard staged minimization and low-temperature
+warmup before normal NVT.
 
 ## Node Setup
 

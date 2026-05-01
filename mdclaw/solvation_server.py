@@ -780,7 +780,7 @@ def solvate_structure(
 
 
 def embed_in_membrane(
-    pdb_file: str,
+    pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
     output_name: str = "membrane",
     lipids: str = "POPC",
@@ -797,8 +797,8 @@ def embed_in_membrane(
     overwrite: bool = True,
     notprotonate: bool = True,
     keepligs: bool = True,
-    nloop: int = 50,
-    nloop_all: int = 200,
+    nloop: int = 10,
+    nloop_all: int = 20,
     water_model: str = "opc",
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
@@ -815,7 +815,9 @@ def embed_in_membrane(
     generate Amber topology files for membrane MD simulation.
     
     Args:
-        pdb_file: Input PDB file path (e.g., merged.pdb from merge_structures)
+        pdb_file: Input PDB file path (e.g., merged.pdb from merge_structures).
+                  In node mode, auto-resolves from the prep ancestor's
+                  merged_pdb artifact when omitted.
         output_dir: Output directory (auto-generated if None)
         output_name: Base name for output file (default: "membrane")
         lipids: Lipid composition (default: "POPC")
@@ -869,6 +871,13 @@ def embed_in_membrane(
         ...     ratio="1",
         ...     preoriented=True
         ... )
+        >>>
+        >>> # Node mode: pdb_file auto-resolves from prep -> merged_pdb
+        >>> result = embed_in_membrane(
+        ...     lipids="POPC",
+        ...     job_dir="job_xxx",
+        ...     node_id="solv_001",
+        ... )
         
         >>> # Mixed lipid membrane (bacterial-like)
         >>> result = embed_in_membrane(
@@ -918,6 +927,49 @@ def embed_in_membrane(
         )
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
+
+    if job_dir and node_id:
+        from mdclaw._node import validate_node_execution_context
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "solv",
+            actual_conditions={
+                "water_model": water_model,
+                "lipids": lipids,
+                "ratio": ratio,
+                "dist": dist,
+                "dist_wat": dist_wat,
+                "leaflet": leaflet,
+                "preoriented": preoriented,
+                "salt": salt,
+                "salt_c": salt_c,
+                "salt_a": salt_a,
+                "saltcon": saltcon,
+                "salt_override": salt_override,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
+
+    # Auto-resolve input from DAG when in node mode and pdb_file not provided
+    if job_dir and node_id and not pdb_file:
+        from mdclaw._node import resolve_node_inputs
+        _inputs = resolve_node_inputs(job_dir, node_id, "solv")
+        if "pdb_file" in _inputs:
+            pdb_file = _inputs["pdb_file"]
+        elif "input_resolution_errors" in _inputs:
+            result["errors"].extend(_inputs["input_resolution_errors"])
+        elif "input_resolution_error" in _inputs:
+            result["errors"].append(_inputs["input_resolution_error"])
+
+    if not pdb_file:
+        result["errors"].append(
+            "pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"
+        )
+        return result
+
+    result["input_file"] = str(pdb_file)
     
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()

@@ -150,6 +150,18 @@ class TestArgparseConstruction:
         assert args.pdb_file == "test.pdb"
         assert args.water_model == "opc"  # default
 
+    def test_embed_in_membrane_pdb_file_is_optional_for_autoresolve(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        _pick_existing_tool(tools, "embed_in_membrane")
+        parser = _build_parser(tools)
+
+        args = parser.parse_args(["embed_in_membrane", "--lipids", "POPC"])
+        assert args.pdb_file is None
+        assert args.lipids == "POPC"
+        assert args.water_model == "opc"  # default
+
     def test_bool_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
@@ -254,7 +266,7 @@ class TestParameterCoercion:
         assert _is_list_of_dict(str) is False
 
     def test_takes_json(self):
-        from typing import Dict, List, Optional
+        from typing import Dict
         from mdclaw._cli import _takes_json
 
         assert _takes_json(dict) is True

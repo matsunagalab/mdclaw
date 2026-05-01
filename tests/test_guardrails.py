@@ -10,7 +10,7 @@ from mdclaw.amber_server import (
     _evaluate_forcefield_water_guardrails,
     build_amber_system,
 )
-from mdclaw._node import create_node, read_node, update_job_params
+from mdclaw._node import complete_node, create_node, read_node, update_job_params
 from mdclaw.metal_server import (
     SUPPORTED_ION_WATER_MODELS,
     _normalize_water_model_name as metal_canonical_water_model_name,
@@ -26,6 +26,7 @@ from mdclaw.solvation_server import (
     OPENMM_FALLBACK_WATER_MODELS,
     _normalize_water_model_name as solvation_canonical_water_model_name,
     _write_box_dimensions_json,
+    embed_in_membrane,
     solvate_structure,
 )
 
@@ -263,6 +264,56 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
     sha = node_data["metadata"]["artifact_sha256"]
     assert "solvated_pdb" in sha
     assert "box_dimensions" in sha
+
+
+def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
+    job_dir = tmp_path / "job_membrane"
+    create_node(str(job_dir), "prep")
+    merged_pdb = job_dir / "nodes" / "prep_001" / "artifacts" / "merge" / "merged.pdb"
+    merged_pdb.parent.mkdir(parents=True, exist_ok=True)
+    _write_minimal_pdb(merged_pdb)
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+    )
+    create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+
+    def _fake_packmol_memgen(args, cwd=None, timeout=None):
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   40.000   41.000   42.000  90.00  90.00  90.00 P 1           1\n"
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+            "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+               return_value=True), \
+         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+               side_effect=_fake_packmol_memgen):
+        result = embed_in_membrane(
+            job_dir=str(job_dir),
+            node_id="solv_001",
+            lipids="POPC",
+            ratio="1",
+            water_model="opc",
+        )
+
+    assert result["success"] is True, result.get("errors")
+    assert result["input_file"] == str(merged_pdb)
+
+    artifacts_dir = job_dir / "nodes" / "solv_001" / "artifacts"
+    assert (artifacts_dir / "membrane.pdb").exists()
+    assert (artifacts_dir / "box_dimensions.json").exists()
+
+    node_data = read_node(str(job_dir), "solv_001")
+    assert node_data["status"] == "completed"
+    assert node_data["artifacts"]["solvated_pdb"] == "artifacts/membrane.pdb"
+    assert node_data["artifacts"]["box_dimensions"] == "artifacts/box_dimensions.json"
+    assert node_data["metadata"]["is_membrane"] is True
+    assert node_data["metadata"]["water_model"] == "opc"
+    assert node_data["metadata"]["lipid_type"] == "POPC"
 
 
 def test_parameterize_metal_ion_defaults_to_opc(tmp_path):

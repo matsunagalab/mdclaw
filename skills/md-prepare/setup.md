@@ -491,13 +491,29 @@ initial summary (Step 0) and otherwise trust these.
 | `cubic` | `True` | Cubic box; set False for elongated proteins to reduce water count |
 | `notprotonate` | `True` | `prepare_complex` already protonated; solvation step does not re-run pdb2pqr |
 
+`embed_in_membrane`:
+
+| Parameter | Default | Notes |
+|---|---|---|
+| `lipids` | `"POPC"` | Lipid composition; use `:` for mixed lipids and `//` for leaflet-specific composition |
+| `ratio` | `"1"` | Ratio matching `lipids`, e.g. `"3:1"` for `DOPE:DOPG` |
+| `water_model` | `"opc"` | Must match the water used in `build_amber_system` |
+| `dist` | 15.0 | Protein-to-membrane boundary distance (A) |
+| `dist_wat` | 17.5 | Water layer thickness above and below the membrane (A) |
+| `preoriented` | `False` | Set True for OPM/PPM/pre-oriented inputs |
+| `nloop` | 10 | packmol per-segment retries; small budget is fine for an MD initial structure (minimization + warmup absorbs residual clashes). Lower bound is the packmol-memgen `--writeout` value (default 10) |
+| `nloop_all` | 20 | packmol global retries; raise (e.g. 50/200) only if packing fails |
+
+In node mode, `pdb_file` auto-resolves from the `prep` ancestor's `merged_pdb`
+artifact. Pass `--pdb-file` only to override that input.
+
 `build_amber_system`:
 
 | Parameter | Default | Notes |
 |---|---|---|
 | `forcefield` | `"ff19SB"` | Modern protein FF, requires OPC water (tleap ff14SB+tip3p legacy pair still supported) |
-| `water_model` | `"opc"` | Must match the water used in solvate_structure |
-| `is_membrane` | `False` | Set True for `embed_in_membrane` output |
+| `water_model` | `"opc"` | Must match the water used in `solvate_structure` / `embed_in_membrane` |
+| `is_membrane` | `False` | Set True for `embed_in_membrane` output; downstream tools also read the solv ancestor's `is_membrane` metadata |
 | `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |
 
 Force field × water compatibility is guardrail-checked — `ff19SB + tip3p`

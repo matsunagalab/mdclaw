@@ -2,9 +2,11 @@
 
 ## Equilibration Protocol
 
-NVT heating followed by NPT density equilibration, both with CA positional
-restraints. Both stages use 4 fs + HMR so the final checkpoint is compatible
-with production settings.
+Restrained staged minimization and low-temperature NVT warmup, followed by
+normal-temperature NVT heating and NPT density equilibration, with CA positional
+restraints. The same staged minimization + warmup prelude is used for implicit
+and explicit systems. Both stages use 4 fs + HMR so the final checkpoint is
+compatible with production settings.
 
 ### Run Equilibration
 
@@ -20,6 +22,8 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 
 ### Domain Knowledge
 
+- Equilibration starts with standard staged minimization and low-temperature
+  warmup for all systems, then proceeds to normal NVT/NPT
 - Equilibration uses positional restraints on CA atoms to prevent structural collapse
 - NVT stage: 250000 steps at 4 fs (1 ns, default) -- heats from 0 to target temperature
 - NPT stage: 250000 steps at 4 fs (1 ns, default) -- equilibrates density at target pressure

@@ -98,6 +98,8 @@ mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex
 
 ## Step 4: Solvation
 
+### Bulk Water
+
 ```bash
 mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
 mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
@@ -106,6 +108,22 @@ mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
 
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
 To override, pass `--pdb-file` explicitly.
+
+### Membrane
+
+Use the same `solv` node type for membrane embedding:
+
+```bash
+mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
+mdclaw --job-dir job_xxx --node-id solv_001 embed_in_membrane \
+  --lipids POPC --ratio 1 --dist 15.0 --dist-wat 17.5 \
+  --salt --saltcon 0.15
+```
+
+`pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
+Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
+On success, the solv node records `is_membrane=true` for downstream topology,
+equilibration, and production.
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images
@@ -123,6 +141,8 @@ mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
 ```
 
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
+For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
+instead of `--no-is-membrane`.
 To intentionally use the legacy pair, override both sides together: `build_amber_system --forcefield ff14SB --water-model tip3p`.
 
 ### Protonation Notes
