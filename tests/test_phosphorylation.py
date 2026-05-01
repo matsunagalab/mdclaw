@@ -394,25 +394,37 @@ def test_build_composite_map_multi_letter_mmcif_author_chain():
     assert composite == {"BBB": "A"}
 
 
-def test_build_composite_map_multiple_multi_letter_authors():
-    """Two mmCIF chains with multi-letter authors that would otherwise
-    collide when truncated. Joining via the cleaned file path keeps them
-    distinct: BBB -> A, CCC -> B."""
+def test_build_composite_map_truncation_collision_resolved_by_file_path():
+    """The motivating case for the file-path join: two mmCIF author
+    chains whose first characters collide under split_molecules' PDB
+    truncation. ``"BBB"[0] == "BCC"[0] == "B"``, so both cleaned PDBs
+    declare an internal chain ``"B"``. ``merge_structures`` then
+    reassigns each to a distinct merged id (``A`` and ``B``) based on
+    arrival order. The composite builder must distinguish the two
+    sources via the cleaned file path — not via the (colliding)
+    truncated chain id — and produce ``{BBB: A, BCC: B}``.
+    """
     chain_file_info = [
+        # gemmi's label_asym_id for these chains may be different, so
+        # chain_id can be "B" / "C" while the author chains are "BBB"
+        # / "BCC". Both author chains truncate to "B" in the split PDB.
         {"chain_id": "B", "author_chain": "BBB", "file": "/x/p1.pdb"},
-        {"chain_id": "C", "author_chain": "CCC", "file": "/x/p2.pdb"},
+        {"chain_id": "C", "author_chain": "BCC", "file": "/x/p2.pdb"},
     ]
     proteins = [
         _make_protein_entry("B", "/x/p1.amber.pdb"),
         _make_protein_entry("C", "/x/p2.amber.pdb"),
     ]
     merge_mapping = {
-        "/x/p1.amber.pdb": {"B": "A"},  # different files → no collision
-        "/x/p2.amber.pdb": {"C": "B"},
+        # Both cleaned PDBs internally declare chain "B" (the collision).
+        # merge_structures reassigns them to A and B by arrival order.
+        # Joining on the cleaned file path keeps the two sources distinct.
+        "/x/p1.amber.pdb": {"B": "A"},
+        "/x/p2.amber.pdb": {"B": "B"},
     }
     assert _build_source_to_merged_chain_map(
         chain_file_info, proteins, merge_mapping
-    ) == {"BBB": "A", "CCC": "B"}
+    ) == {"BBB": "A", "BCC": "B"}
 
 
 def test_build_composite_map_drops_excluded_chain():
