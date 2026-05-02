@@ -32,6 +32,10 @@ from mdclaw._common import (  # noqa: E402
     normalize_choice, split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
+from mdclaw.research_server import (  # noqa: E402
+    STANDARD_DNA_RESNAMES,
+    STANDARD_RNA_RESNAMES,
+)
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -100,6 +104,10 @@ STANDARD_PROTEIN_RESIDUES = {
 }
 WATER_RESIDUES = {"HOH", "WAT", "H2O", "TIP", "TIP3", "OPC"}
 POLYPHOSPHATE_LIGANDS = {"AP5", "ATP", "ADP", "AMP", "GTP", "GDP", "NAD", "NAP"}
+NUCLEIC_FORCEFIELDS = {
+    "dna": "leaprc.DNA.OL15",
+    "rna": "leaprc.RNA.OL3",
+}
 
 # =============================================================================
 # Force Field Compatibility (based on Amber Manual 2024)
@@ -213,6 +221,70 @@ def parse_leap_log(log_path: Path) -> Dict[str, Any]:
         logger.warning(f"Could not parse leap log: {e}")
     
     return result
+
+
+def detect_nucleic_content(pdb_path: Path) -> dict:
+    """Detect standard and unsupported nucleic residues in a PDB input."""
+    residues: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for line in pdb_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        resname = line[17:20].strip().upper()
+        chain = line[21].strip() or "A"
+        resnum = line[22:26].strip()
+        icode = line[26].strip()
+        key = (chain, resnum, icode)
+        entry = residues.setdefault(
+            key,
+            {"chain": chain, "resnum": resnum, "resname": resname, "atoms": set()},
+        )
+        entry["atoms"].add(line[12:16].strip())
+
+    standard_names = set()
+    subtypes = set()
+    unsupported = []
+    has_protein = False
+    sugar_phosphate_markers = {"P", "O3'", "C3'", "C4'", "C5'", "O5'", "C1'"}
+
+    for residue in residues.values():
+        resname = residue["resname"]
+        if resname in STANDARD_PROTEIN_RESIDUES:
+            has_protein = True
+            continue
+        if resname in STANDARD_DNA_RESNAMES:
+            standard_names.add(resname)
+            subtypes.add("dna")
+            continue
+        if resname in STANDARD_RNA_RESNAMES:
+            standard_names.add(resname)
+            subtypes.add("rna")
+            continue
+        atoms = residue["atoms"]
+        if len(atoms & sugar_phosphate_markers) >= 4 and resname not in (
+            STANDARD_PROTEIN_RESIDUES | WATER_RESIDUES | POLYPHOSPHATE_LIGANDS
+        ):
+            unsupported.append({
+                "chain": residue["chain"],
+                "resnum": residue["resnum"],
+                "resname": resname,
+            })
+
+    subtype = None
+    if subtypes == {"dna"}:
+        subtype = "dna"
+    elif subtypes == {"rna"}:
+        subtype = "rna"
+    elif subtypes:
+        subtype = "hybrid"
+
+    return {
+        "has_nucleic": bool(subtypes or unsupported),
+        "nucleic_subtype": subtype,
+        "subtypes": sorted(subtypes),
+        "standard_residue_names": sorted(standard_names),
+        "unsupported_modified_residues": unsupported,
+        "has_protein": has_protein,
+    }
 
 
 def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
@@ -1061,6 +1133,7 @@ def build_amber_system(
     box_dimensions: Optional[Dict[str, float]] = None,
     forcefield: str = "ff19SB",
     water_model: str = "opc",
+    nucleic_forcefield: str = "auto",
     is_membrane: bool = False,
     output_name: str = "system",
     output_dir: Optional[str] = None,
@@ -1113,6 +1186,9 @@ def build_amber_system(
                      Options: "tip3p", "opc", "tip4pew"
                      Only used when box_dimensions is provided.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
+        nucleic_forcefield: Standard nucleic acid force-field loading policy.
+                            "auto" loads DNA OL15 and/or RNA OL3 when standard
+                            nucleic residues are present; "none" disables this.
         is_membrane: Set True for membrane systems to load lipid21 force field.
                      Only used when box_dimensions is provided. (default: False)
         output_name: Base name for output files (default: "system").
@@ -1163,6 +1239,7 @@ def build_amber_system(
             actual_conditions={
                 "forcefield": forcefield,
                 "water_model": water_model,
+                "nucleic_forcefield": nucleic_forcefield,
                 "is_membrane": is_membrane,
                 "output_name": output_name,
             },
@@ -1289,6 +1366,7 @@ def build_amber_system(
         "solvent_type": solvent_type,
         "parameters": {
             "forcefield": forcefield,
+            "nucleic_forcefield": nucleic_forcefield,
             "water_model": water_model if solvent_type == "explicit" else None,
             "water_model_status": (
                 "used_for_explicit_solvent"
@@ -1384,11 +1462,32 @@ def build_amber_system(
             }
         result["warnings"].extend(guardrail_messages(warning_results))
 
-    # Validate input PDB file
+    # Validate input PDB file and detect standard nucleic content after
+    # parameter guardrails, preserving existing error precedence.
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():
         logger.error(f"Input PDB file not found: {pdb_file}")
         return create_file_not_found_error(str(pdb_file), "Input PDB file")
+
+    nucleic_content = detect_nucleic_content(pdb_path)
+    result["nucleic_content"] = nucleic_content
+    result["parameters"]["nucleic_subtypes"] = nucleic_content["subtypes"]
+    result["parameters"]["nucleic_residue_names"] = nucleic_content["standard_residue_names"]
+    if nucleic_content["unsupported_modified_residues"]:
+        err = create_validation_error(
+            "pdb_file",
+            "Unsupported modified nucleic residue(s) detected. Standard DNA/RNA support "
+            "does not parameterize modified nucleotides; use modXNA parameters in a "
+            "follow-up workflow.",
+            expected="Standard DNA/RNA residues only",
+            actual=nucleic_content["unsupported_modified_residues"],
+            warnings=result["warnings"],
+        )
+        err["code"] = "unsupported_modified_nucleic_residue"
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=err.get("errors", []))
+        return {**result, **err}
 
     # Check tleap availability
     if not tleap_wrapper.is_available():
@@ -1456,6 +1555,32 @@ def build_amber_system(
             result["parameters"]["requested_water_model"] = water_model
     else:
         result["parameters"]["water_model"] = None
+
+    nucleic_mode = (nucleic_forcefield or "auto").lower()
+    nucleic_libraries = []
+    if nucleic_mode in {"none", "off", "false", "no"}:
+        nucleic_libraries = []
+    elif nucleic_mode == "auto":
+        if "dna" in nucleic_content["subtypes"]:
+            nucleic_libraries.append(NUCLEIC_FORCEFIELDS["dna"])
+        if "rna" in nucleic_content["subtypes"]:
+            nucleic_libraries.append(NUCLEIC_FORCEFIELDS["rna"])
+    elif nucleic_mode in {"dna", "rna"}:
+        nucleic_libraries.append(NUCLEIC_FORCEFIELDS[nucleic_mode])
+    elif nucleic_mode in {"both", "dna,rna", "rna,dna"}:
+        nucleic_libraries.extend([NUCLEIC_FORCEFIELDS["dna"], NUCLEIC_FORCEFIELDS["rna"]])
+    else:
+        return {
+            **result,
+            **create_validation_error(
+                "nucleic_forcefield",
+                f"Unknown nucleic_forcefield: {nucleic_forcefield}",
+                expected="'auto', 'none', 'dna', 'rna', or 'both'",
+                actual=nucleic_forcefield,
+                warnings=result["warnings"],
+            ),
+        }
+    result["parameters"]["nucleic_libraries"] = nucleic_libraries
 
     # Validate ligand parameters
     valid_ligands = []
@@ -1586,10 +1711,13 @@ def build_amber_system(
 
         # Load force fields
         script_lines.append("# Load force fields")
-        script_lines.append(f"source {protein_ff}")
+        if protein_ff:
+            script_lines.append(f"source {protein_ff}")
         if phosaa_library:
             # phosaa* must be sourced AFTER the protein leaprc per Amber docs.
             script_lines.append(f"source {phosaa_library}")
+        for nucleic_library in nucleic_libraries:
+            script_lines.append(f"source {nucleic_library}")
         script_lines.append("source leaprc.gaff2")
         
         if box_dimensions:
@@ -1866,15 +1994,18 @@ def build_amber_system(
                     "leap_log": f"artifacts/{output_name}.leap.log",
                 },
                 metadata={
-                    "forcefield": forcefield,
+                    "forcefield": result["parameters"].get("forcefield"),
                     "water_model": water_model if solvent_type == "explicit" else None,
                     "solvent_type": solvent_type,
                     "is_membrane": is_membrane,
+                    "nucleic_libraries": nucleic_libraries or None,
+                    "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
                     "phosaa_library": phosaa_library,
                     "ptm_residues": ptm_residues_in_input or None,
                 })
             summary_params = {
-                "forcefield": forcefield,
+                "forcefield": result["parameters"].get("forcefield"),
+                "nucleic_libraries": nucleic_libraries or None,
                 "solvation_type": solvent_type,
                 "water_model": water_model if solvent_type == "explicit" else None,
             }

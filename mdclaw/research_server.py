@@ -300,6 +300,13 @@ AMBER_PROTEIN_RESIDUES = {
 PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
 PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}
 
+# Standard nucleic-acid residue names supported by Amber's DNA/RNA leaprc files.
+# Modified nucleotides are intentionally detected but not parameterized in this
+# first-pass standard NA path.
+STANDARD_DNA_RESNAMES = {"DA", "DC", "DG", "DT", "DI"}
+STANDARD_RNA_RESNAMES = {"A", "C", "G", "U", "I"}
+STANDARD_NUCLEIC_RESNAMES = STANDARD_DNA_RESNAMES | STANDARD_RNA_RESNAMES
+
 # Elements supported by GAFF/GAFF2 for parameterization
 GAFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"}
 
@@ -310,6 +317,48 @@ METAL_ELEMENTS = {
     "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs", "Ba", "La", "Hf", "Ta",
     "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
 }
+
+
+def _polymer_type_suggests_nucleic(polymer_type: str | None) -> bool:
+    if not polymer_type:
+        return False
+    lowered = polymer_type.lower()
+    return any(
+        token in lowered
+        for token in ("dna", "rna", "ribonucleotide", "deoxyribonucleotide")
+    )
+
+
+def classify_nucleic_residues(
+    residue_names: set[str] | list[str] | tuple[str, ...],
+    polymer_type: str | None = None,
+) -> dict:
+    """Classify standard DNA/RNA residue sets without treating them as ligands."""
+    names = {name.strip().upper() for name in residue_names if name}
+    standard_dna = names & STANDARD_DNA_RESNAMES
+    standard_rna = names & STANDARD_RNA_RESNAMES
+    polymer_is_nucleic = _polymer_type_suggests_nucleic(polymer_type)
+    residue_pattern_is_nucleic = bool(names) and names <= STANDARD_NUCLEIC_RESNAMES
+    is_nucleic = polymer_is_nucleic or residue_pattern_is_nucleic
+
+    if standard_dna and standard_rna:
+        subtype = "hybrid"
+    elif standard_dna:
+        subtype = "dna"
+    elif standard_rna:
+        subtype = "rna"
+    elif polymer_is_nucleic:
+        subtype = "unknown"
+    else:
+        subtype = None
+
+    modified = sorted(names - STANDARD_NUCLEIC_RESNAMES) if is_nucleic else []
+    return {
+        "is_nucleic": is_nucleic,
+        "subtype": subtype,
+        "standard_residue_names": sorted(names & STANDARD_NUCLEIC_RESNAMES),
+        "modified_residue_names": modified,
+    }
 
 
 # =============================================================================
@@ -2673,6 +2722,10 @@ def inspect_molecules(
         chains_info = []
         protein_chain_ids = []  # label_asym_id (internal use)
         protein_author_chains = []  # auth_asym_id (user-facing)
+        nucleic_chain_ids = []
+        nucleic_author_chains = []
+        nucleic_subtypes: dict[str, str] = {}
+        modified_nucleic_residues: list[dict] = []
         ligand_chain_ids = []
         ligand_author_chains = []
         water_chain_ids = []
@@ -2747,12 +2800,31 @@ def inspect_molecules(
             if author_chain is None:
                 author_chain = chain_id
 
+            entity_info = entity_name_map.get(chain_id, {})
+            nucleic_info = classify_nucleic_residues(
+                residue_names,
+                entity_info.get("polymer_type"),
+            )
+
             # Classify chain type
             if has_protein:
                 chain_type = "protein"
                 protein_chain_ids.append(chain_id)
                 if author_chain not in protein_author_chains:
                     protein_author_chains.append(author_chain)
+            elif nucleic_info["is_nucleic"]:
+                chain_type = "nucleic"
+                nucleic_chain_ids.append(chain_id)
+                nucleic_subtype = nucleic_info["subtype"]
+                if nucleic_subtype:
+                    nucleic_subtypes[chain_id] = nucleic_subtype
+                if author_chain not in nucleic_author_chains:
+                    nucleic_author_chains.append(author_chain)
+                for res_name in nucleic_info["modified_residue_names"]:
+                    modified_nucleic_residues.append({
+                        "chain": author_chain,
+                        "resname": res_name,
+                    })
             elif has_water:
                 chain_type = "water"
                 water_chain_ids.append(chain_id)
@@ -2764,8 +2836,6 @@ def inspect_molecules(
                 ligand_chain_ids.append(chain_id)
                 if author_chain not in ligand_author_chains:
                     ligand_author_chains.append(author_chain)
-
-            entity_info = entity_name_map.get(chain_id, {})
 
             unique_id = None
             if chain_type in ("ligand", "ion"):
@@ -2781,6 +2851,11 @@ def inspect_molecules(
                 "residue_names": sorted(residue_names),
                 "unique_id": unique_id,
                 "is_protein": has_protein,
+                "is_nucleic": chain_type == "nucleic",
+                "nucleic_subtype": nucleic_info["subtype"] if chain_type == "nucleic" else None,
+                "modified_nucleic_residue_names": (
+                    nucleic_info["modified_residue_names"] if chain_type == "nucleic" else []
+                ),
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
@@ -2802,21 +2877,26 @@ def inspect_molecules(
             ptm["chain"] = chain_id_map.get(sub_id, sub_id)
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
+            "num_nucleic_chains": len(nucleic_author_chains),
             "num_ligand_chains": len(ligand_author_chains),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
             # Author IDs (auth_asym_id) — for display / provenance.
             "protein_chain_ids": protein_author_chains,
+            "nucleic_chain_ids": nucleic_author_chains,
             "ligand_chain_ids": ligand_author_chains,
             # Label IDs (label_asym_id) — **pass these to select_chains**.
             "protein_label_ids": protein_chain_ids,
+            "nucleic_label_ids": nucleic_chain_ids,
             "ligand_label_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
             "chain_id_map": chain_id_map,
             "multivalent_metal_residues": multivalent_metal_residues,
             "ptm_residues": ptm_residues,
+            "nucleic_subtypes": nucleic_subtypes,
+            "modified_nucleic_residues": modified_nucleic_residues,
         }
 
         result["notes"] = {

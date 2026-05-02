@@ -155,7 +155,7 @@ into the fetch node's artifacts dir. The node's status is unchanged
    silent; for mmCIF the fallback fires only when you accidentally
    pass a long author ID and triggers a warning asking you to pass
    the label instead. Use `inspect_molecules` → `summary.chain_id_map`
-   and `summary.protein_label_ids` when in doubt.
+   and `summary.protein_label_ids` / `summary.nucleic_label_ids` when in doubt.
 2. **Checkpoint: Chain selection** — If multiple chains and user hasn't
    specified, ask in `human_in_the_loop` mode and in `autonomous` only when
    chain intent is missing (present `chain_id` / label values). Otherwise
@@ -165,8 +165,9 @@ into the fetch node's artifacts dir. The node's status is unchanged
    ligand intent is missing. Otherwise use the user's choice or default to
    include all detected ligands.
 4. Determine `include_types`:
-   - With ligands and ions: `protein ligand ion`
-   - No ligands, no ions: `protein`
+   - With standard DNA/RNA: include `nucleic`
+   - With ligands and ions: `protein nucleic ligand ion`
+   - No ligands, no ions: `protein nucleic` when nucleic chains are present, otherwise `protein`
 5. **Checkpoint: Multivalent metal ions** — Read
    `summary.multivalent_metal_residues` and `notes.metal_parameterization_required`
    from `inspect_molecules` output. If non-empty, the structure carries
@@ -221,11 +222,25 @@ mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --no-cap-termini
 ```
 
+**With standard DNA/RNA**:
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --select-chains A B \
+  --include-types protein nucleic ion \
+  --ph 7.4 \
+  --no-cap-termini
+```
+
+Standard DNA/RNA chains are passed through unchanged and recorded under
+`result.nucleics`; they are not protein-cleaned or ligand-parameterized.
+Modified nucleotides require a later modXNA parameter workflow and should not
+be treated as standard `nucleic` support.
+
 **With ligands** (add `--process-ligands`):
 ```bash
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --select-chains A B \
-  --include-types protein ligand ion \
+  --include-types protein nucleic ligand ion \
   --process-ligands \
   --ph 7.4 \
   --no-cap-termini
@@ -236,7 +251,7 @@ arguments are still auto-resolved, so the JSON only carries decision
 parameters):
 ```bash
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
-  --json-input '{"select_chains": ["A"], "include_types": ["protein","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
+  --json-input '{"select_chains": ["A"], "include_types": ["protein","nucleic","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
 ```
 
 > `--select-chains` values are `chain_id` (label_asym_id); the tool
@@ -541,6 +556,7 @@ initial summary (Step 0) and otherwise trust these.
 | `cap_termini` | `False` | `ACE`/`NME` caps not added; set `--cap-termini` only for explicit termini capping |
 | `process_proteins` | `True` | Run clean_protein on each protein chain |
 | `process_ligands` | `True` | Run ligand cleanup + parameterization on each ligand |
+| `nucleics` | (auto) | Standard DNA/RNA pass-through records; downstream topology auto-loads OL15/OL3 |
 | `optimize_ligands` | `False` | Preserve bound-ligand heavy atom coordinates; only enable explicit optimization when requested |
 | `charge_method` | `"bcc"` | AM1-BCC; the only well-tested path. `"gas"` available but not recommended |
 | `atom_type` | `"gaff2"` | GAFF2 atom typing; GAFF legacy only |
@@ -580,6 +596,7 @@ artifact. Pass `--pdb-file` only to override that input.
 |---|---|---|
 | `forcefield` | `"ff19SB"` | Modern protein FF, requires OPC water (tleap ff14SB+tip3p legacy pair still supported) |
 | `water_model` | `"opc"` | Must match the water used in `solvate_structure` / `embed_in_membrane` |
+| `nucleic_forcefield` | `"auto"` | Loads `leaprc.DNA.OL15` and/or `leaprc.RNA.OL3` when standard DNA/RNA residues are present |
 | `is_membrane` | `False` | Set True for `embed_in_membrane` output; downstream tools also read the solv ancestor's `is_membrane` metadata |
 | `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |
 | `phosaa_library` | (auto) | When PTM residues (`SEP`/`TPO`/`PTR`) are present in the input PDB, sourced automatically: `phosaa19SB` for ff19SB, `phosaa14SB` for ff14SB. Not user-selectable. A forcefield without a paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. |

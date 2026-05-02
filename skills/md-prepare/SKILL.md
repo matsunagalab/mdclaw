@@ -1,6 +1,6 @@
 ---
 name: MD Prepare
-description: "Molecular dynamics simulation preparation using MDClaw CLI tools. Covers structure acquisition, chain/ligand selection, structure cleaning, solvation, and topology generation."
+description: "Molecular dynamics simulation preparation using MDClaw CLI tools. Covers structure acquisition, protein/nucleic/ligand selection, structure cleaning, solvation, and topology generation."
 ---
 
 # MD Prepare

@@ -30,6 +30,7 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
+from mdclaw.research_server import classify_nucleic_residues  # noqa: E402
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
@@ -1623,11 +1624,13 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         "chains": [],
         "summary": {
             "num_protein_chains": 0,
+            "num_nucleic_chains": 0,
             "num_ligand_chains": 0,
             "num_water_chains": 0,
             "num_ion_chains": 0,
             "total_chains": 0,
             "protein_chain_ids": [],
+            "nucleic_chain_ids": [],
             "ligand_chain_ids": [],
             "water_chain_ids": [],
             "ion_chain_ids": []
@@ -1758,9 +1761,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         
         chains_info = []
         protein_chain_ids = []
+        nucleic_chain_ids = []
         ligand_chain_ids = []
         water_chain_ids = []
         ion_chain_ids = []
+        nucleic_subtypes = {}
+        modified_nucleic_residues = []
         
         for subchain in model.subchains():
             chain_id = subchain.subchain_id()  # label_asym_id - unique identifier
@@ -1802,6 +1808,14 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             
             if author_chain is None:
                 author_chain = chain_id  # Fallback
+
+            # Get entity information before classification so polymer_type can
+            # distinguish real nucleic polymers from one-letter ligand names.
+            entity_info = entity_name_map.get(chain_id, {})
+            nucleic_info = classify_nucleic_residues(
+                residue_names,
+                entity_info.get("polymer_type"),
+            )
             
             # Classify chain type.
             # The *_chain_ids lists store author_chain (auth_asym_id); they
@@ -1813,6 +1827,17 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 chain_type = "protein"
                 if author_chain not in protein_chain_ids:
                     protein_chain_ids.append(author_chain)
+            elif nucleic_info["is_nucleic"]:
+                chain_type = "nucleic"
+                if author_chain not in nucleic_chain_ids:
+                    nucleic_chain_ids.append(author_chain)
+                if nucleic_info["subtype"]:
+                    nucleic_subtypes[chain_id] = nucleic_info["subtype"]
+                for res_name in nucleic_info["modified_residue_names"]:
+                    modified_nucleic_residues.append({
+                        "chain": author_chain,
+                        "resname": res_name,
+                    })
             elif has_water:
                 chain_type = "water"
                 if author_chain not in water_chain_ids:
@@ -1825,9 +1850,6 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 chain_type = "ligand"
                 if author_chain not in ligand_chain_ids:
                     ligand_chain_ids.append(author_chain)
-            
-            # Get entity information for this chain
-            entity_info = entity_name_map.get(chain_id, {})
             
             # Token optimization: Truncate residue_names and replace sequence with length
             unique_residues = sorted(list(residue_names))
@@ -1857,6 +1879,11 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "entity_name": entity_info.get("name"),
                 "chain_type": chain_type,
                 "is_protein": has_protein,
+                "is_nucleic": chain_type == "nucleic",
+                "nucleic_subtype": nucleic_info["subtype"] if chain_type == "nucleic" else None,
+                "modified_nucleic_residue_names": (
+                    nucleic_info["modified_residue_names"] if chain_type == "nucleic" else []
+                ),
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
@@ -1878,27 +1905,33 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         #   - `chain_id_map` = {chain_id -> author_chain} so surprising
         #     pairings (e.g. 7NMU has label C ↔ auth DDD) are visible.
         protein_label_ids = [c["chain_id"] for c in chains_info if c["chain_type"] == "protein"]
+        nucleic_label_ids = [c["chain_id"] for c in chains_info if c["chain_type"] == "nucleic"]
         ligand_label_ids  = [c["chain_id"] for c in chains_info if c["chain_type"] == "ligand"]
         water_label_ids   = [c["chain_id"] for c in chains_info if c["chain_type"] == "water"]
         ion_label_ids     = [c["chain_id"] for c in chains_info if c["chain_type"] == "ion"]
         chain_id_map = {c["chain_id"]: c["author_chain"] for c in chains_info}
         result["summary"] = {
             "num_protein_chains": len(protein_chain_ids),
+            "num_nucleic_chains": len(nucleic_chain_ids),
             "num_ligand_chains": len(ligand_chain_ids),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
             "total_chains": len(chains_info),
             # author_chain (auth_asym_id) lists — for display.
             "protein_chain_ids": protein_chain_ids,
+            "nucleic_chain_ids": nucleic_chain_ids,
             "ligand_chain_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
             # chain_id (label_asym_id) lists — pass these to select_chains.
             "protein_label_ids": protein_label_ids,
+            "nucleic_label_ids": nucleic_label_ids,
             "ligand_label_ids": ligand_label_ids,
             "water_label_ids": water_label_ids,
             "ion_label_ids": ion_label_ids,
             "chain_id_map": chain_id_map,
+            "nucleic_subtypes": nucleic_subtypes,
+            "modified_nucleic_residues": modified_nucleic_residues,
         }
         
         # Check if any chains were found
@@ -1908,8 +1941,11 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         
         result["success"] = True
         logger.info(f"Successfully inspected structure: {len(chains_info)} chains found")
-        logger.info(f"  Proteins: {len(protein_chain_ids)}, Ligands: {len(ligand_chain_ids)}, "
-                   f"Waters: {len(water_chain_ids)}, Ions: {len(ion_chain_ids)}")
+        logger.info(
+            f"  Proteins: {len(protein_chain_ids)}, Nucleics: {len(nucleic_chain_ids)}, "
+            f"Ligands: {len(ligand_chain_ids)}, Waters: {len(water_chain_ids)}, "
+            f"Ions: {len(ion_chain_ids)}"
+        )
         
     except Exception as e:
         error_msg = f"Error during structure inspection: {type(e).__name__}: {str(e)}"
@@ -1934,8 +1970,9 @@ def split_molecules(
     """Split an mmCIF or PDB structure file into separate chain files.
 
     This tool splits a structure into chain files by molecular type:
-    protein, ligand, ion, and water. Output files are always in PDB format.
-    Files are named as protein_1.pdb, ligand_1.pdb, ion_1.pdb, water_1.pdb, etc.
+    protein, nucleic, ligand, ion, and water. Output files are always in PDB
+    format. Files are named as protein_1.pdb, nucleic_1.pdb, ligand_1.pdb,
+    ion_1.pdb, water_1.pdb, etc.
 
     Chain Selection — label_asym_id vs auth_asym_id:
         **Rule of thumb: pass the short chain ID exactly as it appears
@@ -1978,7 +2015,8 @@ def split_molecules(
 
     Type Filtering:
         Use include_types to filter by molecular type. By default (None), all
-        types except water are included. Valid types: "protein", "ligand", "ion", "water".
+        types except water are included. Valid types: "protein", "nucleic",
+        "ligand", "ion", "water".
 
     Tip: Use inspect_molecules first to understand the structure and identify
     which chains you want to extract. It shows both chain_id (label_asym_id)
@@ -1994,8 +2032,8 @@ def split_molecules(
                        entries. Use inspect_molecules to find available
                        IDs. If None, extracts all chains.
         include_types: List of molecular types to include. Valid values:
-                       "protein", "ligand", "ion", "water".
-                       If None (default), includes ["protein", "ligand", "ion"].
+                       "protein", "nucleic", "ligand", "ion", "water".
+                       If None (default), includes ["protein", "nucleic", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters are excluded even if "water"
                             is in include_types). For most MD simulations, crystal waters
@@ -2015,6 +2053,7 @@ def split_molecules(
             - source_file: str - Original input file path
             - file_format: str - Output format (always 'pdb')
             - protein_files: list[str] - Paths to protein chain files (protein_*.pdb)
+            - nucleic_files: list[str] - Paths to nucleic chain files (nucleic_*.pdb)
             - ligand_files: list[str] - Paths to ligand chain files (ligand_*.pdb)
             - ion_files: list[str] - Paths to ion chain files (ion_*.pdb)
             - water_files: list[str] - Paths to water chain files (water_*.pdb)
@@ -2028,10 +2067,10 @@ def split_molecules(
     
     # Set default include_types (exclude water by default)
     if include_types is None:
-        include_types = ["protein", "ligand", "ion"]
+        include_types = ["protein", "nucleic", "ligand", "ion"]
 
     # Validate include_types
-    valid_types = {"protein", "ligand", "ion", "water"}
+    valid_types = {"protein", "nucleic", "ligand", "ion", "water"}
     invalid_types = set(include_types) - valid_types
     if invalid_types:
         logger.warning(f"Invalid include_types ignored: {invalid_types}. Valid: {valid_types}")
@@ -2053,6 +2092,7 @@ def split_molecules(
         "source_file": str(structure_file),
         "file_format": "pdb",
         "protein_files": [],
+        "nucleic_files": [],
         "ligand_files": [],
         "ion_files": [],
         "water_files": [],
@@ -2215,10 +2255,12 @@ def split_molecules(
         
         # Write each chain to a separate PDB file
         protein_files = []
+        nucleic_files = []
         ligand_files = []
         ion_files = []
         water_files = []
         protein_idx = 1
+        nucleic_idx = 1
         ligand_idx = 1
         ion_idx = 1
         water_idx = 1
@@ -2314,6 +2356,10 @@ def split_molecules(
                     out_file = out_dir / f"protein_{protein_idx}.pdb"
                     protein_files.append(str(out_file))
                     protein_idx += 1
+                elif chain_type == "nucleic":
+                    out_file = out_dir / f"nucleic_{nucleic_idx}.pdb"
+                    nucleic_files.append(str(out_file))
+                    nucleic_idx += 1
                 elif chain_type == "ligand":
                     # Use descriptive naming: ligand_{resname}_{chain}{resnum}.pdb
                     if resnum is not None:
@@ -2346,6 +2392,7 @@ def split_molecules(
                     "chain_id": chain_id,
                     "author_chain": info.get("author_chain", chain_id),
                     "chain_type": chain_type,
+                    "nucleic_subtype": info.get("nucleic_subtype"),
                     "resnum": resnum,
                     "unique_id": info.get("unique_id"),
                     "file": str(out_file),
@@ -2353,13 +2400,20 @@ def split_molecules(
                 })
         
         result["protein_files"] = protein_files
+        result["nucleic_files"] = nucleic_files
         result["ligand_files"] = ligand_files
         result["ion_files"] = ion_files
         result["water_files"] = water_files
         result["chain_file_info"] = chain_file_info
         
         # Warn if no files were generated
-        total_files = len(protein_files) + len(ligand_files) + len(ion_files) + len(water_files)
+        total_files = (
+            len(protein_files)
+            + len(nucleic_files)
+            + len(ligand_files)
+            + len(ion_files)
+            + len(water_files)
+        )
         if total_files == 0:
             result["warnings"].append("No output files were generated")
             result["warnings"].append("Hint: All chains may have been filtered out by selection or water exclusion")
@@ -2370,7 +2424,11 @@ def split_molecules(
             json.dump(result, f, indent=2)
         
         result["success"] = True
-        logger.info(f"Successfully split structure: {len(protein_files)} protein, {len(ligand_files)} ligand, {len(ion_files)} ion, {len(water_files)} water files")
+        logger.info(
+            f"Successfully split structure: {len(protein_files)} protein, "
+            f"{len(nucleic_files)} nucleic, {len(ligand_files)} ligand, "
+            f"{len(ion_files)} ion, {len(water_files)} water files"
+        )
         
     except Exception as e:
         error_msg = f"Error during structure splitting: {type(e).__name__}: {str(e)}"
@@ -4300,9 +4358,10 @@ def prepare_complex(
     1. Inspect the structure to identify chains
     2. Split the structure into individual chain files
     3. Clean protein chains (PDBFixer + pdb4amber)
-    4. Clean ligand chains (SMILES template matching)
-    5. Parameterize ligands with antechamber (GAFF2 + AM1-BCC)
-    6. Merge all prepared structures into a single PDB file
+    4. Pass standard DNA/RNA chains through unchanged
+    5. Clean ligand chains (SMILES template matching)
+    6. Parameterize ligands with antechamber (GAFF2 + AM1-BCC)
+    7. Merge all prepared structures into a single PDB file
 
     This is the recommended one-step workflow for preparing structures from
     PDB or Boltz-2 predictions for MD simulation. The output merged_pdb can be
@@ -4331,7 +4390,7 @@ def prepare_complex(
         run_parameterization: Whether to run antechamber for ligands (default: True)
         ligand_smiles: Dict mapping ligand_id to SMILES (e.g., {"SAH": "Nc1ncnc..."})
                        If not provided, SMILES will be fetched from PDB CCD
-        include_types: List of molecular types to include: "protein", "ligand", "ion", "water".
+        include_types: List of molecular types to include: "protein", "nucleic", "ligand", "ion", "water".
                        Default (None) includes ["protein", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
@@ -4373,6 +4432,12 @@ def prepare_complex(
                 - output_file: str (cleaned .amber.pdb)
                 - success: bool
                 - statistics: dict
+            - nucleics: list[dict] - Standard DNA/RNA chains passed through:
+                - chain_id: str
+                - input_file: str
+                - output_file: str
+                - nucleic_subtype: str
+                - success: bool
             - ligands: list[dict] - Results for each ligand chain:
                 - chain_id: str
                 - ligand_id: str (residue name)
@@ -4419,6 +4484,7 @@ def prepare_complex(
         "inspection": None,
         "split": None,
         "proteins": [],
+        "nucleics": [],
         "ligands": [],
         "errors": [],
         "warnings": []
@@ -4506,6 +4572,7 @@ def prepare_complex(
 
         summary = inspection["summary"]
         logger.info(f"Found: {summary['num_protein_chains']} proteins, "
+                   f"{summary.get('num_nucleic_chains', 0)} nucleics, "
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
@@ -4581,6 +4648,7 @@ def prepare_complex(
         result["split"] = {
             "success": split_result["success"],
             "protein_files": split_result.get("protein_files", []),
+            "nucleic_files": split_result.get("nucleic_files", []),
             "ligand_files": split_result.get("ligand_files", []),
             "ion_files": split_result.get("ion_files", []),
             "water_files": split_result.get("water_files", []),
@@ -4709,10 +4777,33 @@ def prepare_complex(
                     logger.error(f"  ✗ Protein {chain_id} error: {e}")
 
                 result["proteins"].append(protein_result)
-        
-        # Step 4: Process ligands
+
+        # Step 4: Pass standard DNA/RNA chains through unchanged. tleap will
+        # apply the appropriate NA force field in build_amber_system.
+        if split_result.get("nucleic_files"):
+            logger.info(f"Step 4: Passing through {len(split_result['nucleic_files'])} nucleic chain(s)...")
+            for nucleic_file in split_result["nucleic_files"]:
+                chain_id = None
+                cinfo_for_nucleic = {}
+                for cid, cinfo in chain_info_map.items():
+                    if cinfo.get("file") == nucleic_file:
+                        chain_id = cid
+                        cinfo_for_nucleic = cinfo
+                        break
+                result["nucleics"].append({
+                    "chain_id": chain_id,
+                    "author_chain": cinfo_for_nucleic.get("author_chain", chain_id),
+                    "input_file": nucleic_file,
+                    "output_file": nucleic_file,
+                    "nucleic_subtype": cinfo_for_nucleic.get("nucleic_subtype"),
+                    "success": True,
+                    "warnings": [],
+                })
+                logger.info(f"  ✓ Nucleic {chain_id}: {nucleic_file}")
+
+        # Step 5: Process ligands
         if process_ligands and split_result.get("ligand_files"):
-            logger.info(f"Step 4: Processing {len(split_result['ligand_files'])} ligand(s)...")
+            logger.info(f"Step 5: Processing {len(split_result['ligand_files'])} ligand(s)...")
             
             for ligand_file in split_result["ligand_files"]:
                 # Find chain info for this file
@@ -4910,8 +5001,10 @@ def prepare_complex(
                 result["ligands"].append(ligand_result)
         
         # Determine overall success
-        # Success if at least one protein or ligand was processed successfully
+        # Success if requested protein/ligand processing succeeded; nucleic
+        # chains are pass-through inputs and only fail if split omitted them.
         proteins_ok = any(p["success"] for p in result["proteins"]) if result["proteins"] else True
+        nucleics_ok = all(nuc["success"] for nuc in result["nucleics"]) if result["nucleics"] else True
         ligands_ok = any(lig["success"] for lig in result["ligands"]) if result["ligands"] else True
         
         if process_proteins and not result["proteins"]:
@@ -4919,15 +5012,21 @@ def prepare_complex(
         if process_ligands and not result["ligands"]:
             ligands_ok = not split_result.get("ligand_files")  # OK if no ligands to process
         
-        # Step 5: Merge structures if we have successful outputs
-        if proteins_ok or ligands_ok:
-            logger.info("Step 5: Merging structures...")
+        # Step 6: Merge structures if we have successful outputs
+        if proteins_ok or nucleics_ok or ligands_ok:
+            logger.info("Step 6: Merging structures...")
             pdb_files_to_merge = []
             
             # Add protein files
             for p in result["proteins"]:
                 if p["success"] and p.get("output_file"):
                     pdb_files_to_merge.append(p["output_file"])
+
+            # Add nucleic files as-is; topology generation loads DNA/RNA
+            # force fields instead of treating these chains as ligands.
+            for nuc in result["nucleics"]:
+                if nuc["success"] and nuc.get("output_file"):
+                    pdb_files_to_merge.append(nuc["output_file"])
             
             # Add ligand files (use amber.pdb from parameterization for correct atom names)
             for lig in result["ligands"]:
@@ -5041,15 +5140,16 @@ def prepare_complex(
             else:
                 result["warnings"].append("No files available to merge")
         
-        result["success"] = proteins_ok and ligands_ok
+        result["success"] = proteins_ok and nucleics_ok and ligands_ok
         result["protein_preparation_success"] = proteins_ok
+        result["nucleic_preparation_success"] = nucleics_ok
         result["ligand_preparation_success"] = ligands_ok
 
         # -- overall_status: workflow-level status for skill dispatch ------
         failed_ligands = [
             lig for lig in result.get("ligands", []) if not lig.get("success")
         ]
-        if proteins_ok and ligands_ok:
+        if proteins_ok and nucleics_ok and ligands_ok:
             result["overall_status"] = "success"
         elif proteins_ok and not ligands_ok:
             result["overall_status"] = "completed_with_blocking_ligand_failure"
@@ -5098,6 +5198,32 @@ def prepare_complex(
                             preparation_summary.get("missing_residues_count", 0) + val
                     elif key not in preparation_summary:
                         preparation_summary[key] = val
+        if result.get("nucleics"):
+            successful_nucleics = [n for n in result["nucleics"] if n.get("success")]
+            preparation_summary["has_nucleic"] = bool(successful_nucleics)
+            preparation_summary["nucleic_subtypes"] = sorted({
+                n.get("nucleic_subtype")
+                for n in successful_nucleics
+                if n.get("nucleic_subtype")
+            })
+            preparation_summary["nucleic_chains"] = [
+                {
+                    "chain_id": n.get("chain_id"),
+                    "author_chain": n.get("author_chain"),
+                    "nucleic_subtype": n.get("nucleic_subtype"),
+                }
+                for n in successful_nucleics
+            ]
+            residue_names = set()
+            for info in split_result.get("chain_file_info", []):
+                if info.get("chain_type") == "nucleic":
+                    chain_data = chain_info_map.get(info.get("chain_id"), {}).get("all_chain_data", {})
+                    res_data = chain_data.get("residue_names", {})
+                    if isinstance(res_data, dict):
+                        residue_names.update(res_data.get("unique_residues", []))
+                    elif isinstance(res_data, list):
+                        residue_names.update(res_data)
+            preparation_summary["nucleic_residue_names"] = sorted(residue_names)
         if detected_ptm_residues:
             preparation_summary["detected_ptm_residues"] = detected_ptm_residues
         result["preparation_summary"] = preparation_summary
@@ -5173,9 +5299,11 @@ def prepare_complex(
             json.dump(result, f, indent=2, default=str)
 
         n_prot = sum(1 for p in result['proteins'] if p['success'])
+        n_nuc = sum(1 for nuc in result['nucleics'] if nuc['success'])
         n_lig = sum(1 for lig in result['ligands'] if lig['success'])
         logger.info(f"Complex preparation: overall_status={result['overall_status']}")
         logger.info(f"  Proteins: {n_prot}/{len(result['proteins'])}")
+        logger.info(f"  Nucleics: {n_nuc}/{len(result['nucleics'])}")
         logger.info(f"  Ligands: {n_lig}/{len(result['ligands'])}")
         if result.get("merged_pdb"):
             logger.info(f"  Merged PDB: {result['merged_pdb']}")
@@ -5191,6 +5319,7 @@ def prepare_complex(
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success") or result.get("overall_status") == "success":
             proteins = result.get("proteins", [])
+            nucleics = result.get("nucleics", [])
             ligands = result.get("ligands", [])
             artifacts = {}
             if result.get("merged_pdb"):
@@ -5224,10 +5353,21 @@ def prepare_complex(
             update_job_summaries(job_dir,
                 system={
                     "pdb_id": result.get("pdb_id"),
-                    "chains": [p.get("chain_id", "") for p in proteins],
+                    "chains": [
+                        p.get("chain_id", "") for p in proteins
+                    ] + [
+                        n.get("chain_id", "") for n in nucleics
+                    ],
                     "num_residues": sum(
                         p.get("statistics", {}).get("final_residues", 0)
                         for p in proteins if p.get("success")),
+                    "nucleics": [
+                        {
+                            "chain_id": n.get("chain_id"),
+                            "nucleic_subtype": n.get("nucleic_subtype"),
+                        }
+                        for n in nucleics if n.get("success")
+                    ],
                     "ligands": [lig["ligand_id"] for lig in ligands if lig.get("success")],
                 },
                 preparation=result.get("preparation_summary", {}))
