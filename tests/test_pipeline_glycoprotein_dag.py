@@ -39,7 +39,7 @@ class TestPipelineGlycoproteinDag:
             job_dir=str(job_dir),
             node_id=self.prep_id,
             include_types=["protein", "glycan"],
-            process_proteins=False,
+            process_proteins=True,
             process_ligands=False,
             cap_termini=False,
         )
@@ -67,14 +67,13 @@ class TestPipelineGlycoproteinDag:
             forcefield="ff14SB",
             water_model="tip3p",
         )
-        if not result["success"] and any("tleap" in error for error in result.get("errors", [])):
-            pytest.xfail(
-                "Current GLYCAM path records glycan artifacts but does not yet translate "
-                "PDB NAG residue names into GLYCAM-typed templates for real tleap."
-            )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
         assert topo_node["artifacts"]["parm7"]
+        assert topo_node["artifacts"]["glycam_prepared_pdb"] == "artifacts/system.glycam.pdb"
+        assert topo_node["artifacts"]["glycam_prepareforleap_pdb"] == "artifacts/system.prepareforleap.pdb"
+        assert topo_node["artifacts"]["glycam_prepareforleap_leap"] == "artifacts/system.glycam.leap.in"
         assert topo_node["metadata"]["glycan_library"] == "leaprc.GLYCAM_06j-1"
         assert topo_node["metadata"]["glycan_content"]["has_glycan"] is True
         assert topo_node["metadata"]["glycan_linkage_plan"] is not None
+        assert topo_node["metadata"]["glycam_prepareforleap"]["prepared_pdb"].endswith("system.glycam.pdb")

@@ -44,6 +44,7 @@ ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers
 tleap_wrapper = BaseToolWrapper("tleap")
+cpptraj_wrapper = BaseToolWrapper("cpptraj")
 
 
 # =============================================================================
@@ -117,6 +118,7 @@ GLYCAN_FORCEFIELDS = {
     "glycam_06j-1": "leaprc.GLYCAM_06j-1",
     "GLYCAM_06j-1": "leaprc.GLYCAM_06j-1",
 }
+GLYCAM_LINKED_PROTEIN_RESNAMES = {"NLN", "OLS", "OLT", "OLP", "HYP"}
 
 # =============================================================================
 # Force Field Compatibility (based on Amber Manual 2024)
@@ -1363,6 +1365,269 @@ def _plan_glycan_tleap_bonds(
     return plan
 
 
+def _format_pdb_link_line(
+    atom1: str,
+    resname1: str,
+    chain1: str,
+    resnum1: Any,
+    icode1: str,
+    atom2: str,
+    resname2: str,
+    chain2: str,
+    resnum2: Any,
+    icode2: str,
+) -> str:
+    """Format a minimal PDB LINK record for cpptraj prepareforleap."""
+    return (
+        f"LINK        {atom1[:4]:>4} {resname1[:3]:>3} {chain1[:1] or ' ':1}{str(resnum1)[:4]:>4}{(icode1 or ' ')[:1]:1}"
+        f"               {atom2[:4]:>4} {resname2[:3]:>3} {chain2[:1] or ' ':1}{str(resnum2)[:4]:>4}{(icode2 or ' ')[:1]:1}"
+        "     1555   1555        "
+    )
+
+
+def _write_pdb_with_glycan_link_records(
+    pdb_path: Path,
+    output_path: Path,
+    glycan_linkages: Optional[List[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """Reinject remapped glycoprotein connectivity before prepareforleap."""
+    result: Dict[str, Any] = {
+        "path": str(output_path),
+        "link_records": [],
+        "conect_records": [],
+        "warnings": [],
+    }
+    atoms: dict[tuple[str, str, str, str, str], int] = {}
+    contents = pdb_path.read_text(encoding="utf-8").splitlines()
+    for line in contents:
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < 27:
+            continue
+        serial = line[6:11].strip()
+        if not serial.isdigit():
+            continue
+        key = (
+            line[21].strip() or "A",
+            line[22:26].strip(),
+            line[26].strip(),
+            line[17:20].strip().upper(),
+            line[12:16].strip(),
+        )
+        atoms[key] = int(serial)
+
+    link_lines: list[str] = []
+    conect_lines: list[str] = []
+    for linkage in glycan_linkages or []:
+        protein = linkage.get("protein") or {}
+        glycan = linkage.get("glycan") or {}
+        protein_chain = str(protein.get("merged_chain") or protein.get("chain") or "")
+        protein_resnum = protein.get("merged_resnum") or protein.get("resnum")
+        protein_icode = str(protein.get("merged_icode") or protein.get("icode") or "")
+        glycan_chain = str(glycan.get("merged_chain") or glycan.get("chain") or "")
+        glycan_resnum = glycan.get("merged_resnum") or glycan.get("resnum")
+        glycan_icode = str(glycan.get("merged_icode") or glycan.get("icode") or "")
+        if not all([protein.get("atom"), protein.get("resname"), protein_chain, protein_resnum,
+                    glycan.get("atom"), glycan.get("resname"), glycan_chain, glycan_resnum]):
+            result["warnings"].append(f"Skipped incomplete glycan LINK record: {linkage}")
+            continue
+        line = _format_pdb_link_line(
+            atom1=str(protein["atom"]),
+            resname1=str(protein["resname"]),
+            chain1=protein_chain,
+            resnum1=protein_resnum,
+            icode1=protein_icode,
+            atom2=str(glycan["atom"]),
+            resname2=str(glycan["resname"]),
+            chain2=glycan_chain,
+            resnum2=glycan_resnum,
+            icode2=glycan_icode,
+        )
+        link_lines.append(line)
+        protein_atom_key = (
+            protein_chain,
+            str(protein_resnum),
+            protein_icode,
+            str(protein["resname"]).upper(),
+            str(protein["atom"]),
+        )
+        glycan_atom_key = (
+            glycan_chain,
+            str(glycan_resnum),
+            glycan_icode,
+            str(glycan["resname"]).upper(),
+            str(glycan["atom"]),
+        )
+        protein_serial = atoms.get(protein_atom_key)
+        glycan_serial = atoms.get(glycan_atom_key)
+        if protein_serial is None or glycan_serial is None:
+            result["warnings"].append(
+                f"Could not add glycan CONECT record; atom not found: {protein_atom_key} - {glycan_atom_key}"
+            )
+            continue
+        conect_lines.append(f"CONECT{protein_serial:5d}{glycan_serial:5d}")
+        conect_lines.append(f"CONECT{glycan_serial:5d}{protein_serial:5d}")
+
+    insert_at = next(
+        (i for i, line in enumerate(contents) if line.startswith(("ATOM", "HETATM", "MODEL"))),
+        len(contents),
+    )
+    conect_at = next(
+        (i for i, line in enumerate(contents) if line.startswith("END")),
+        len(contents),
+    )
+    output_lines = contents[:insert_at] + link_lines + contents[insert_at:conect_at] + conect_lines + contents[conect_at:]
+    output_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
+    result["link_records"] = link_lines
+    result["conect_records"] = conect_lines
+    return result
+
+
+def _prepare_glycam_pdb_with_cpptraj(
+    pdb_path: Path,
+    out_dir: Path,
+    output_name: str,
+    glycan_linkages: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Use cpptraj prepareforleap to convert PDB glycans to GLYCAM notation.
+
+    This is intentionally scoped to the carbohydrate conversion step. Protein
+    protonation, missing-residue handling, and disulfide planning stay in the
+    existing MDClaw preparation path.
+    """
+    result: Dict[str, Any] = {
+        "success": False,
+        "prepared_pdb": None,
+        "leap_script": None,
+        "cpptraj_input": None,
+        "cpptraj_pdb_input": None,
+        "cpptraj_log": None,
+        "link_records": [],
+        "errors": [],
+        "warnings": [],
+    }
+    if not cpptraj_wrapper.is_available():
+        result["errors"].append("cpptraj is required for GLYCAM glycan preparation")
+        return result
+
+    prepared_pdb = out_dir / f"{output_name}.glycam.pdb"
+    generated_leap = out_dir / f"{output_name}.glycam.leap.in"
+    cpptraj_input = out_dir / f"{output_name}.prepareforleap.in"
+    cpptraj_pdb_input = out_dir / f"{output_name}.prepareforleap.pdb"
+    cpptraj_log = out_dir / f"{output_name}.prepareforleap.log"
+    linked_pdb = _write_pdb_with_glycan_link_records(
+        pdb_path=pdb_path,
+        output_path=cpptraj_pdb_input,
+        glycan_linkages=glycan_linkages,
+    )
+    result["warnings"].extend(linked_pdb["warnings"])
+    result["link_records"] = linked_pdb["link_records"]
+    result["conect_records"] = linked_pdb["conect_records"]
+    pdb_path = cpptraj_pdb_input
+
+    cpptraj_input.write_text(
+        "\n".join([
+            f"parm {pdb_path}",
+            f"loadcrd {pdb_path} name MDClawCrd",
+            (
+                "prepareforleap crdset MDClawCrd name MDClawPrepared "
+                f"out {generated_leap} leapunitname mol pdbout {prepared_pdb} "
+                "skiperrors nowat noh keepaltloc highestocc nohisdetect nodisulfides"
+            ),
+            "go",
+            "quit",
+            "",
+        ]),
+        encoding="utf-8",
+    )
+
+    try:
+        proc_result = cpptraj_wrapper.run(
+            ["-i", str(cpptraj_input)],
+            cwd=out_dir,
+            timeout=get_timeout("amber"),
+        )
+    except Exception as e:
+        result["errors"].append(f"cpptraj prepareforleap failed: {type(e).__name__}: {e}")
+        return result
+
+    cpptraj_log.write_text(
+        (proc_result.stdout or "")
+        + ("\n--- STDERR ---\n" + proc_result.stderr if proc_result.stderr else ""),
+        encoding="utf-8",
+    )
+
+    result.update({
+        "prepared_pdb": str(prepared_pdb),
+        "leap_script": str(generated_leap),
+        "cpptraj_input": str(cpptraj_input),
+        "cpptraj_pdb_input": str(cpptraj_pdb_input),
+        "cpptraj_log": str(cpptraj_log),
+    })
+    if not prepared_pdb.exists():
+        result["errors"].append("cpptraj prepareforleap completed but prepared PDB was not created")
+    if not generated_leap.exists():
+        result["errors"].append("cpptraj prepareforleap completed but LEaP command file was not created")
+    if result["errors"]:
+        return result
+
+    result["success"] = True
+    return result
+
+
+def _prepareforleap_tleap_lines(
+    prepared_pdb: Path,
+    generated_leap: Path,
+) -> tuple[list[str], list[str]]:
+    """Return vetted prepareforleap LEaP lines and warnings.
+
+    cpptraj can infer close-contact protein-glycan bonds that are not valid
+    GLYCAM linkages, such as ASN.OD1-C1 contacts. Keep bonds only when the
+    protein residue was converted to a GLYCAM linker residue (e.g. NLN).
+    """
+    warnings: list[str] = []
+    residues: dict[int, dict[str, Any]] = {}
+    unit_index = 0
+    last_key: tuple[str, str, str, str] | None = None
+    for pdb_line in prepared_pdb.read_text(encoding="utf-8").splitlines():
+        if not pdb_line.startswith(("ATOM", "HETATM")) or len(pdb_line) < 27:
+            continue
+        key = (
+            pdb_line[21].strip() or "A",
+            pdb_line[22:26].strip(),
+            pdb_line[26].strip(),
+            pdb_line[17:20].strip().upper(),
+        )
+        if key != last_key:
+            unit_index += 1
+            residues[unit_index] = {"resname": key[3]}
+            last_key = key
+
+    filtered: list[str] = []
+    bond_pattern = re.compile(r"^\s*bond\s+mol\.(\d+)\.([^\s]+)\s+mol\.(\d+)\.([^\s]+)")
+    for line in generated_leap.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower() == "quit":
+            continue
+        match = bond_pattern.match(stripped)
+        if match:
+            idx1 = int(match.group(1))
+            idx2 = int(match.group(3))
+            res1 = residues.get(idx1, {}).get("resname")
+            res2 = residues.get(idx2, {}).get("resname")
+            is_glycan1 = is_glycan_residue_name(res1)
+            is_glycan2 = is_glycan_residue_name(res2)
+            if is_glycan1 != is_glycan2:
+                protein_resname = res2 if is_glycan1 else res1
+                if protein_resname not in GLYCAM_LINKED_PROTEIN_RESNAMES:
+                    warnings.append(
+                        "Skipped prepareforleap protein-glycan bond to "
+                        f"{protein_resname or 'unknown'}; residue was not converted "
+                        "to a GLYCAM linked-protein template."
+                    )
+                    continue
+        filtered.append(line)
+    return filtered, warnings
+
+
 def _add_pdb_info(
     parm7_path: Path,
     pdb_path: Path,
@@ -2174,6 +2439,34 @@ def build_amber_system(
         result["parameters"]["phosaa_library"] = phosaa_library
         result["parameters"]["ptm_residues"] = ptm_residues_in_input
 
+    glycam_prepare = None
+    if glycan_content["has_glycan"] and glycan_library:
+        glycam_prepare = _prepare_glycam_pdb_with_cpptraj(
+            pdb_path=pdb_path,
+            out_dir=out_dir,
+            output_name=output_name,
+            glycan_linkages=glycan_linkages,
+        )
+        if not glycam_prepare["success"]:
+            result["errors"].extend(glycam_prepare.get("errors", []))
+            result["warnings"].extend(glycam_prepare.get("warnings", []))
+            blocked = {
+                **result,
+                "error_type": "ToolExecutionError",
+                "code": "glycam_prepareforleap_failed",
+                "message": "cpptraj prepareforleap failed while converting PDB glycans to GLYCAM notation.",
+            }
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
+            return blocked
+        result["glycam_prepareforleap"] = glycam_prepare
+        result["parameters"]["glycam_prepareforleap"] = {
+            "prepared_pdb": glycam_prepare["prepared_pdb"],
+            "leap_script": glycam_prepare["leap_script"],
+        }
+        pdb_path = Path(glycam_prepare["prepared_pdb"]).resolve()
+
     try:
         # Build tleap script
         script_lines = []
@@ -2256,7 +2549,18 @@ def build_amber_system(
 
         # Load structure
         script_lines.append("# Load structure")
-        script_lines.append(f"mol = loadpdb {pdb_path}")
+        if glycam_prepare:
+            prepareforleap_lines, prepareforleap_warnings = _prepareforleap_tleap_lines(
+                prepared_pdb=Path(glycam_prepare["prepared_pdb"]),
+                generated_leap=Path(glycam_prepare["leap_script"]),
+            )
+            if prepareforleap_warnings:
+                result["warnings"].extend(prepareforleap_warnings)
+                for w in prepareforleap_warnings:
+                    logger.warning(w)
+            script_lines.extend(prepareforleap_lines)
+        else:
+            script_lines.append(f"mol = loadpdb {pdb_path}")
         script_lines.append("")
 
         # Explicit disulfide bonds: merged.pdb already has CYX on the SS
@@ -2275,7 +2579,7 @@ def build_amber_system(
                     logger.warning(w)
             result["disulfide_bond_plan"] = ss_plan["resolved"]
 
-        if glycan_linkages:
+        if glycan_linkages and not glycam_prepare:
             glycan_plan = _plan_glycan_tleap_bonds(Path(pdb_path), glycan_linkages)
             if glycan_plan["bond_lines"]:
                 script_lines.append("# Protein-glycan linkages (from prepare_complex)")
@@ -2286,6 +2590,11 @@ def build_amber_system(
                 for w in glycan_plan["warnings"]:
                     logger.warning(w)
             result["glycan_linkage_plan"] = glycan_plan["resolved"]
+        elif glycan_linkages and glycam_prepare:
+            result["glycan_linkage_plan"] = [{
+                **linkage,
+                "status": "handled_by_prepareforleap",
+            } for linkage in glycan_linkages]
 
         # Set box dimensions for explicit solvent
         if box_dimensions:
@@ -2478,13 +2787,22 @@ def build_amber_system(
     if _node_mode:
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success"):
+            artifacts = {
+                "parm7": f"artifacts/{output_name}.parm7",
+                "rst7": f"artifacts/{output_name}.rst7",
+                "leap_script": f"artifacts/{output_name}.leap.in",
+                "leap_log": f"artifacts/{output_name}.leap.log",
+            }
+            if glycam_prepare:
+                artifacts.update({
+                    "glycam_prepared_pdb": f"artifacts/{output_name}.glycam.pdb",
+                    "glycam_prepareforleap_pdb": f"artifacts/{output_name}.prepareforleap.pdb",
+                    "glycam_prepareforleap_script": f"artifacts/{output_name}.prepareforleap.in",
+                    "glycam_prepareforleap_leap": f"artifacts/{output_name}.glycam.leap.in",
+                    "glycam_prepareforleap_log": f"artifacts/{output_name}.prepareforleap.log",
+                })
             complete_node(job_dir, node_id,
-                artifacts={
-                    "parm7": f"artifacts/{output_name}.parm7",
-                    "rst7": f"artifacts/{output_name}.rst7",
-                    "leap_script": f"artifacts/{output_name}.leap.in",
-                    "leap_log": f"artifacts/{output_name}.leap.log",
-                },
+                artifacts=artifacts,
                 metadata={
                     "forcefield": result["parameters"].get("forcefield"),
                     "water_model": water_model if solvent_type == "explicit" else None,
@@ -2495,6 +2813,7 @@ def build_amber_system(
                     "glycan_library": glycan_library,
                     "glycan_content": glycan_content if glycan_content.get("has_glycan") else None,
                     "glycan_linkage_plan": result.get("glycan_linkage_plan"),
+                    "glycam_prepareforleap": result.get("parameters", {}).get("glycam_prepareforleap"),
                     "modxna_params": valid_modxna_params or None,
                     "phosaa_library": phosaa_library,
                     "ptm_residues": ptm_residues_in_input or None,

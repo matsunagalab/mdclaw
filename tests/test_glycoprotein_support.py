@@ -79,6 +79,34 @@ def test_prepare_complex_passes_glycans_through_without_ligand_params(tmp_path):
 def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path):
     from mdclaw import amber_server
 
+    class FakeCpptraj:
+        def is_available(self):
+            return True
+
+        def run(self, args, cwd=None, timeout=None):
+            cwd_path = Path(cwd)
+            input_path = Path(args[1])
+            script = input_path.read_text(encoding="utf-8")
+            assert "prepareforleap crdset MDClawCrd" in script
+            assert "skiperrors" in script
+            assert "nohisdetect nodisulfides" in script
+            assert "keepaltloc highestocc" in script
+            cpptraj_pdb = cwd_path / "system.prepareforleap.pdb"
+            cpptraj_pdb_text = cpptraj_pdb.read_text(encoding="utf-8")
+            assert "LINK" in cpptraj_pdb_text
+            assert "ND2 ASN A   1" in cpptraj_pdb_text
+            assert "CONECT    8    9" in cpptraj_pdb_text
+            assert "CONECT    9    8" in cpptraj_pdb_text
+            prepared_pdb = cwd_path / "system.glycam.pdb"
+            generated_leap = cwd_path / "system.glycam.leap.in"
+            prepared_pdb.write_text(_GLYCOPROTEIN_PDB.replace("ASN A   1", "NLN A   1"), encoding="utf-8")
+            generated_leap.write_text(
+                f"mol = loadpdb {prepared_pdb}\n"
+                "bond mol.1.ND2 mol.2.C1\n",
+                encoding="utf-8",
+            )
+            return type("ProcResult", (), {"stdout": "prepareforleap ok", "stderr": ""})()
+
     class FakeTLeap:
         def is_available(self):
             return True
@@ -88,11 +116,14 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
             script_path = cwd_path / args[1]
             script = script_path.read_text(encoding="utf-8")
             assert "source leaprc.GLYCAM_06j-1" in script
+            assert "mol = loadpdb" in script
+            assert "system.glycam.pdb" in script
             assert "bond mol.1.ND2 mol.2.C1" in script
             (cwd_path / "system.parm7").write_text("%FLAG TITLE\n", encoding="utf-8")
             (cwd_path / "system.rst7").write_text("rst\n", encoding="utf-8")
             return type("ProcResult", (), {"stdout": "2 residues", "stderr": ""})()
 
+    monkeypatch.setattr(amber_server, "cpptraj_wrapper", FakeCpptraj())
     monkeypatch.setattr(amber_server, "tleap_wrapper", FakeTLeap())
     glycan_linkages = [{
         "source": "pdb_link",
@@ -124,4 +155,5 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
 
     assert result["success"], result.get("errors")
     assert result["parameters"]["glycan_library"] == "leaprc.GLYCAM_06j-1"
-    assert result["glycan_linkage_plan"][0]["status"] == "emitted"
+    assert result["glycan_linkage_plan"][0]["status"] == "handled_by_prepareforleap"
+    assert result["glycam_prepareforleap"]["prepared_pdb"].endswith("system.glycam.pdb")
