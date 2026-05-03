@@ -6,6 +6,7 @@ from mdclaw._node import (
     clear_node_need,
     create_node,
     rebuild_progress_index,
+    record_node_need_attempt,
     release_node_claim,
     update_job_params,
     update_node_status,
@@ -20,4 +21,5 @@ TOOLS = {
     "release_node_claim": release_node_claim,
     "add_node_need": add_node_need,
     "clear_node_need": clear_node_need,
+    "record_node_need_attempt": record_node_need_attempt,
 }

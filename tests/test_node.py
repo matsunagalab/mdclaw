@@ -25,6 +25,7 @@ from mdclaw._node import (
     init_progress_v3,
     read_node,
     rebuild_progress_index,
+    record_node_need_attempt,
     release_node_claim,
     resolve_artifact,
     resolve_node_inputs,
@@ -1073,10 +1074,66 @@ class TestNodeNeeds:
         assert result["success"] is True
         node = read_node(jd, "eq_001")
         assert node["metadata"]["open_needs"][0]["need_type"] == "prod_extension"
+        assert node["metadata"]["open_needs"][0]["attempts"] == []
         progress = json.loads((job_dir / "progress.json").read_text())
         entry = progress["nodes"]["eq_001"]
         assert entry["open_needs_count"] == 1
         assert entry["open_need_types"] == ["prod_extension"]
+
+    def test_record_node_need_attempt_updates_metadata_and_progress(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production by 100 ns",
+                "rationale": "RMSD has not converged yet.",
+                "preferred_node_type": "prod",
+            },
+        )
+
+        result = record_node_need_attempt(
+            jd,
+            "eq_001",
+            0,
+            {
+                "node_id": "prod_002",
+                "agent_id": "agent-b",
+                "status": "completed",
+            },
+        )
+
+        assert result["success"] is True
+        assert result["attempt_index"] == 0
+        node = read_node(jd, "eq_001")
+        attempt = node["metadata"]["open_needs"][0]["attempts"][0]
+        assert attempt["node_id"] == "prod_002"
+        assert attempt["agent_id"] == "agent-b"
+        assert attempt["status"] == "completed"
+        progress = json.loads((job_dir / "progress.json").read_text())
+        entry = progress["nodes"]["eq_001"]
+        assert entry["open_need_attempts_count"] == 1
+        assert entry["attempted_node_ids"] == ["prod_002"]
+
+    def test_record_node_need_attempt_rejects_invalid_attempt(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production",
+                "rationale": "Additional sampling would improve confidence.",
+            },
+        )
+
+        result = record_node_need_attempt(jd, "eq_001", 0, {"agent_id": "agent-b"})
+
+        assert result["success"] is False
+        assert result["code"] == "invalid_need_attempt"
 
     def test_clear_node_need_removes_one_or_all_needs(self, job_dir):
         jd = str(job_dir)
@@ -2022,6 +2079,7 @@ class TestNodeServerRegistration:
             "release_node_claim",
             "add_node_need",
             "clear_node_need",
+            "record_node_need_attempt",
         ):
             assert tool_name in TOOLS
 

@@ -227,9 +227,28 @@ def _node_progress_summary(node_data: dict) -> dict:
             for n in open_needs
             if isinstance(n, dict) and (n.get("need_type") or n.get("artifact_type"))
         })
+        attempt_node_ids: set[str] = set()
+        attempt_count = 0
+        for need in open_needs:
+            if not isinstance(need, dict):
+                continue
+            attempts = need.get("attempts", [])
+            if not isinstance(attempts, list):
+                continue
+            attempt_count += len(attempts)
+            for attempt in attempts:
+                if not isinstance(attempt, dict):
+                    continue
+                attempt_node_id = attempt.get("node_id")
+                if isinstance(attempt_node_id, str) and attempt_node_id:
+                    attempt_node_ids.add(attempt_node_id)
         entry["open_needs_count"] = len(open_needs)
         if need_types:
             entry["open_need_types"] = need_types
+        if attempt_count:
+            entry["open_need_attempts_count"] = attempt_count
+        if attempt_node_ids:
+            entry["attempted_node_ids"] = sorted(attempt_node_ids)
 
     claimed_by = metadata.get("claimed_by")
     claim_expires_at = metadata.get("claim_expires_at")
@@ -846,6 +865,21 @@ def _normalize_need(need: dict) -> dict:
     normalized["need_type"] = need_type
     normalized.setdefault("preferred_node_type", need.get("node_type"))
     normalized.setdefault("max_variants", 1)
+    normalized.setdefault("attempts", [])
+    normalized.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    return normalized
+
+
+def _normalize_need_attempt(attempt: dict) -> dict:
+    if not isinstance(attempt, dict):
+        raise TypeError("attempt must be a dict")
+    attempt_node_id = attempt.get("node_id") or attempt.get("attempt_node_id")
+    if not isinstance(attempt_node_id, str) or not attempt_node_id:
+        raise ValueError("attempt.node_id is required")
+
+    normalized = dict(attempt)
+    normalized["node_id"] = attempt_node_id
+    normalized.setdefault("status", "recorded")
     normalized.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     return normalized
 
@@ -961,6 +995,85 @@ def clear_node_need(
         "node_id": node_id,
         "cleared": cleared,
         "remaining_open_needs": len(data.get("metadata", {}).get("open_needs", [])),
+    }
+
+
+def record_node_need_attempt(
+    job_dir: str,
+    node_id: str,
+    need_index: int,
+    attempt: dict,
+) -> dict:
+    """Record an attempted fulfillment without marking the need resolved."""
+    try:
+        normalized_attempt = _normalize_need_attempt(attempt)
+    except (TypeError, ValueError) as exc:
+        return {
+            "success": False,
+            "code": "invalid_need_attempt",
+            "error": str(exc),
+        }
+
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        open_needs = metadata.get("open_needs", [])
+        if not isinstance(open_needs, list):
+            open_needs = []
+            metadata["open_needs"] = open_needs
+        if need_index < 0 or need_index >= len(open_needs):
+            return {
+                "success": False,
+                "code": "need_index_out_of_range",
+                "node_id": node_id,
+                "error": (
+                    f"need_index {need_index} is out of range "
+                    f"for {len(open_needs)} open needs"
+                ),
+            }
+        need = open_needs[need_index]
+        if not isinstance(need, dict):
+            need = {}
+            open_needs[need_index] = need
+        attempts = need.setdefault("attempts", [])
+        if not isinstance(attempts, list):
+            attempts = []
+            need["attempts"] = attempts
+        attempts.append(normalized_attempt)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        attempt_index = len(attempts) - 1
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_need_attempt_recorded",
+        success=True,
+        details={
+            "need_index": need_index,
+            "attempt_index": attempt_index,
+            "attempt_node_id": normalized_attempt["node_id"],
+            "agent_id": normalized_attempt.get("agent_id"),
+            "status": normalized_attempt.get("status"),
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "need_index": need_index,
+        "attempt_index": attempt_index,
+        "attempt": normalized_attempt,
     }
 
 
