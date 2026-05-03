@@ -87,14 +87,16 @@ Use `progress.json.params.execution_mode` as the source of truth:
 - `mdclaw fetch_structure --source alphafold --uniprot-id <ID>`
 - `mdclaw fetch_structure --source local --file-path <path>`
 - `mdclaw boltz2_protein_from_seq --amino-acid-sequence-list SEQ1 SEQ2 --smiles-list SMI1`
+- `mdclaw modeller_from_alignment --template-pdb TEMPLATE.pdb --target-sequence SEQ --num-models 5`
 - `mdclaw search_structures --query "<name>"` (no node flags — discovery only)
 
 **Logic** (first rule that matches wins):
 1. PDB ID (4-char like `1AKE`) → `fetch_structure --source pdb`
 2. UniProt ID (like `P12345`) → `fetch_structure --source alphafold`
 3. Local file path exists → create a `fetch` node, then `fetch_structure --source local`
-4. FASTA sequence (+ optional SMILES) and no PDB/UniProt known → `boltz2_protein_from_seq`
-5. Protein name (fuzzy / ambiguous) → `search_structures`, then ask user to pick
+4. FASTA sequence + user-provided homolog template PDB → `modeller_from_alignment`
+5. FASTA sequence (+ optional SMILES) and no PDB/UniProt known → `boltz2_protein_from_seq`
+6. Protein name (fuzzy / ambiguous) → `search_structures`, then ask user to pick
 
 If the user gives **both** a PDB ID and a sequence, prefer the PDB ID and
 ask whether Boltz-2 prediction is still wanted — the experimental
@@ -116,6 +118,16 @@ structure is almost always the right starting point.
 > it would for a PDB-derived complex. A collaborator-maintained Boltz-2
 > CLI/skill set may also be in use — either path populates the same fetch
 > node layout.
+>
+> **MODELLER note**: `modeller_from_alignment` is an optional comparative
+> modeling path when the user has a target sequence and a template PDB.
+> MODELLER is not bundled with MDClaw; the user should install it separately
+> (for example `conda install salilab::modeller`) and export their own
+> license key via `KEY_MODELLER10v8` before running. By default the tool
+> derives `template_code` from the template filename, creates a seed
+> alignment internally, calls MODELLER `auto_align()`, and records the best
+> DOPE-scored model as the fetch node's `structure_file`. Advanced users may
+> pass `--alignment-file` plus matching `--template-code` / `--target-code`.
 
 ---
 

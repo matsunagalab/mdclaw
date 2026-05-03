@@ -7,6 +7,9 @@ for it. The goal is to verify that predictions land under the fetch
 node's artifacts/ and that the source metadata is recorded correctly.
 """
 
+import json
+import importlib.util
+import os
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -217,6 +220,244 @@ class TestBoltz2FetchNodeIntegration:
 
         assert result["success"] is False
         assert any("per-chain msa entries" in err for err in result["errors"])
+
+
+def _write_template_pdb(path: Path):
+    path.write_text(
+        "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1       1.0   0.0   0.0  1.00  0.00           C\n"
+        "END\n"
+    )
+    return path
+
+
+def _write_modeller_template_pdb(path: Path):
+    atom_id = 1
+    lines = []
+    for resid in range(1, 6):
+        x0 = float(resid * 3)
+        for name, dx, element in (
+            ("N", 0.0, "N"),
+            ("CA", 1.2, "C"),
+            ("C", 2.4, "C"),
+            ("O", 3.2, "O"),
+        ):
+            lines.append(
+                f"ATOM  {atom_id:5d} {name:<4} ALA A{resid:4d}    "
+                f"{x0 + dx:8.3f}{0.0:8.3f}{0.0:8.3f}"
+                f"{1.00:6.2f}{20.00:6.2f}           {element:>2}\n"
+            )
+            atom_id += 1
+    lines.append("TER\nEND\n")
+    path.write_text("".join(lines))
+    return path
+
+
+def _write_modeller_alignment(path: Path):
+    path.write_text(
+        ">P1;tmpl\n"
+        "structureX:tmpl:1:A:5:A:template:synthetic:2.00:0.00\n"
+        "AAAAA*\n"
+        ">P1;target\n"
+        "sequence:target:1:A:5:A:target:synthetic:-1.00:-1.00\n"
+        "AAAAA*\n"
+    )
+    return path
+
+
+def _stub_modeller(monkeypatch):
+    """Patch MODELLER subprocess execution with a fake result JSON."""
+    from mdclaw import genesis_server
+
+    monkeypatch.setenv("KEY_MODELLER10v8", "dummy-license")
+    captured = {}
+
+    def fake_run(cmd, cwd=None, env=None, capture_output=False, text=False, check=False):
+        captured["cmd"] = cmd
+        captured["cwd"] = cwd
+        config = json.loads((Path(cwd) / cmd[2]).read_text())
+        captured["config"] = config
+        model_a = Path(cwd) / f"{config['target_code']}.B99990001.pdb"
+        model_b = Path(cwd) / f"{config['target_code']}.B99990002.pdb"
+        model_a.write_text(
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n"
+        )
+        model_b.write_text(
+            "ATOM      1  N   ALA A   1       2.0   0.0   0.0  1.00  0.00           N\nEND\n"
+        )
+        result = {
+            "all_models": [
+                {
+                    "name": model_a.name,
+                    "path": str(model_a),
+                    "failure": None,
+                    "molpdf": 10.0,
+                    "DOPE score": -10.0,
+                    "GA341 score": 0.5,
+                },
+                {
+                    "name": model_b.name,
+                    "path": str(model_b),
+                    "failure": None,
+                    "molpdf": 5.0,
+                    "DOPE score": -20.0,
+                    "GA341 score": 0.7,
+                },
+            ],
+            "successful_models": [
+                {
+                    "name": model_b.name,
+                    "path": str(model_b),
+                    "failure": None,
+                    "molpdf": 5.0,
+                    "DOPE score": -20.0,
+                    "GA341 score": 0.7,
+                },
+                {
+                    "name": model_a.name,
+                    "path": str(model_a),
+                    "failure": None,
+                    "molpdf": 10.0,
+                    "DOPE score": -10.0,
+                    "GA341 score": 0.5,
+                },
+            ],
+            "selected_model": {
+                "name": model_b.name,
+                "path": str(model_b),
+                "failure": None,
+                "molpdf": 5.0,
+                "DOPE score": -20.0,
+                "GA341 score": 0.7,
+            },
+            "selection_reason": "lowest_dope_score",
+        }
+        (Path(cwd) / config["result_json"]).write_text(json.dumps(result))
+
+        class _Completed:
+            returncode = 0
+            stdout = "ok"
+            stderr = ""
+
+        return _Completed()
+
+    monkeypatch.setattr(genesis_server.subprocess, "run", fake_run)
+    return genesis_server, captured
+
+
+class TestModellerFetchNodeIntegration:
+    """Verify MODELLER predictions can populate fetch nodes without MODELLER installed."""
+
+    def test_node_mode_writes_artifact_and_metadata(
+        self, job_with_fetch_node, tmp_path, monkeypatch
+    ):
+        job_dir, node_id = job_with_fetch_node
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequence="MVLSPADK",
+            num_models=2,
+            job_dir=job_dir,
+            node_id=node_id,
+        )
+
+        assert result["success"], result["errors"]
+        artifacts_dir = Path(job_dir) / "nodes" / node_id / "artifacts"
+        assert Path(result["file_path"]).parent == artifacts_dir
+        assert Path(result["file_path"]).name == "modeller_prediction_target.pdb"
+        assert captured["config"]["auto_align"] is True
+        assert captured["config"]["template_code"] == "template"
+        assert captured["config"]["num_models"] == 2
+
+        node = read_node(job_dir, node_id)
+        assert node["status"] == "completed"
+        assert node["artifacts"]["structure_file"] == "artifacts/modeller_prediction_target.pdb"
+        meta = node["metadata"]
+        assert meta["source_type"] == "modeller"
+        assert meta["template_code"] == "template"
+        assert meta["target_code"] == "target"
+        assert meta["target_sequence"] == "MVLSPADK"
+        assert meta["auto_align"] is True
+        assert meta["selected_model"]["selection_reason"] == "lowest_dope_score"
+        assert meta["selected_model"]["DOPE score"] == -20.0
+
+    def test_invalid_node_type_rejected_before_run(
+        self, job_with_fetch_node, tmp_path, monkeypatch
+    ):
+        job_dir, fetch_id = job_with_fetch_node
+        prep = create_node(job_dir, "prep", parent_node_ids=[fetch_id])
+        assert prep["success"]
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, _captured = _stub_modeller(monkeypatch)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("subprocess.run must not run on invalid node")
+
+        monkeypatch.setattr(genesis_server.subprocess, "run", forbidden)
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequence="MVLSPADK",
+            job_dir=job_dir,
+            node_id=prep["node_id"],
+        )
+
+        assert result["success"] is False
+        assert any("expected 'fetch'" in e for e in result["errors"])
+
+    def test_non_node_mode_still_works(self, tmp_path, monkeypatch):
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequence="MVLSPADK",
+            num_models=2,
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        assert result["file_path"] is None
+        assert result["selected_model"]["selection_reason"] == "lowest_dope_score"
+        assert result["all_models"]
+        assert Path(result["output_dir"]).parent == out.resolve()
+        assert captured["config"]["auto_align"] is True
+
+
+@pytest.mark.integration
+def test_modeller_from_alignment_real_optional(tmp_path):
+    """Run MODELLER itself when installed and licensed via the environment."""
+    if not any(k.startswith("KEY_MODELLER") and v for k, v in os.environ.items()):
+        pytest.skip("MODELLER license environment variable is not set")
+
+    if importlib.util.find_spec("modeller") is None:
+        pytest.skip("MODELLER package is not installed")
+    from mdclaw import genesis_server as gs
+
+    template = _write_modeller_template_pdb(tmp_path / "tmpl.pdb")
+    alignment = _write_modeller_alignment(tmp_path / "align.ali")
+    out = tmp_path / "out"
+    out.mkdir()
+
+    result = gs.modeller_from_alignment(
+        template_pdb=str(template),
+        alignment_file=str(alignment),
+        template_code="tmpl",
+        target_code="target",
+        num_models=1,
+        output_dir=str(out),
+    )
+
+    assert result["success"], result["errors"]
+    assert result["file_path"] is None
+    assert result["all_models"]
+    selected = result["selected_model"]
+    assert selected["failure"] is None
+    assert Path(selected["path"]).exists()
 
 
 def test_analyze_plip_interactions_with_mocked_plip(tmp_path, monkeypatch):

@@ -429,6 +429,436 @@ def _parse_boltz_results(output_dir: Path) -> Dict[str, Any]:
 
 
 # =============================================================================
+# MODELLER Comparative Modeling
+# =============================================================================
+
+
+def _has_modeller_license_env() -> bool:
+    """Return True when the user provided a MODELLER license via env vars."""
+    return any(
+        key.startswith("KEY_MODELLER") and bool(str(value).strip())
+        for key, value in os.environ.items()
+    )
+
+
+def _sanitize_modeller_code(value: str, fallback: str) -> str:
+    """Make a MODELLER-safe identifier from a filename stem or user value."""
+    raw = (value or fallback).strip() or fallback
+    cleaned = "".join(ch if ch.isalnum() or ch == "_" else "_" for ch in raw)
+    return cleaned or fallback
+
+
+def _wrap_modeller_sequence(sequence: str, width: int = 75) -> str:
+    """Wrap a sequence for PIR/SEG alignment files."""
+    compact = "".join(sequence.split())
+    return "\n".join(compact[i:i + width] for i in range(0, len(compact), width))
+
+
+def _write_modeller_seed_alignment(
+    path: Path,
+    *,
+    target_code: str,
+    target_sequence: str,
+    template_code: str,
+) -> None:
+    """Write the minimal SEG/PIR seed file consumed by AutoModel.auto_align()."""
+    wrapped_sequence = _wrap_modeller_sequence(target_sequence)
+    path.write_text(
+        "\n".join([
+            f">P1;{target_code}",
+            f"sequence:{target_code}:::::target:synthetic:-1.00:-1.00",
+            f"{wrapped_sequence}*",
+            f">P1;{template_code}",
+            f"structureX:{template_code}:FIRST:@:LAST:@:template:synthetic:-1.00:-1.00",
+            "*",
+            "",
+        ])
+    )
+
+
+def _write_modeller_runner(path: Path) -> None:
+    """Write the isolated MODELLER runner script used by the wrapper tool."""
+    path.write_text(
+        r'''import json
+import os
+import re
+import sys
+import types
+import importlib.util
+from pathlib import Path
+
+license_key = next(
+    (value for key, value in os.environ.items() if key.startswith("KEY_MODELLER") and value),
+    None,
+)
+spec = importlib.util.find_spec("modeller")
+if spec is None:
+    raise ModuleNotFoundError("No module named 'modeller'")
+
+install_dir = None
+search_locations = list(spec.submodule_search_locations or [])
+if search_locations:
+    config_path = Path(search_locations[0]) / "config.py"
+    if config_path.exists():
+        match = re.search(
+            r"install_dir\s*=\s*r?['\"]([^'\"]+)['\"]",
+            config_path.read_text(),
+        )
+        if match:
+            install_dir = match.group(1)
+
+if license_key:
+    cfg = types.ModuleType("modeller.config")
+    cfg.license = license_key
+    if install_dir:
+        cfg.install_dir = install_dir
+    sys.modules["modeller.config"] = cfg
+
+from modeller import Environ, log
+from modeller.automodel import AutoModel, assess
+
+
+def _jsonable(value):
+    if value is None:
+        return None
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)
+
+
+config = json.loads(Path(sys.argv[1]).read_text())
+log.verbose()
+
+if config.get("random_seed") is None:
+    env = Environ()
+else:
+    env = Environ(rand_seed=int(config["random_seed"]))
+
+env.io.atom_files_directory = ["."]
+env.io.hetatm = bool(config.get("hetatm", False))
+
+model = AutoModel(
+    env,
+    alnfile=config["alignment_file"],
+    knowns=config["template_code"],
+    sequence=config["target_code"],
+    assess_methods=(assess.DOPE, assess.GA341),
+)
+model.starting_model = 1
+model.ending_model = int(config["num_models"])
+
+if config.get("auto_align"):
+    model.auto_align()
+
+model.make()
+
+models = []
+for output in model.outputs:
+    item = {
+        "name": _jsonable(output.get("name")),
+        "failure": _jsonable(output.get("failure")),
+        "molpdf": _jsonable(output.get("molpdf")),
+        "DOPE score": _jsonable(output.get("DOPE score")),
+        "GA341 score": _jsonable(output.get("GA341 score")),
+    }
+    if item["name"]:
+        item["path"] = str(Path(item["name"]).resolve())
+    models.append(item)
+
+ok_models = [item for item in models if item.get("failure") is None and item.get("name")]
+if not ok_models:
+    raise RuntimeError("MODELLER did not produce any successful models")
+
+if all(item.get("DOPE score") is not None for item in ok_models):
+    ok_models.sort(key=lambda item: item["DOPE score"])
+    selection_reason = "lowest_dope_score"
+else:
+    selection_reason = "first_successful_model"
+
+selected = ok_models[0]
+Path(config["result_json"]).write_text(json.dumps({
+    "all_models": models,
+    "successful_models": ok_models,
+    "selected_model": selected,
+    "selection_reason": selection_reason,
+}, indent=2))
+'''
+    )
+
+
+def modeller_from_alignment(
+    template_pdb: str,
+    target_sequence: Optional[str] = None,
+    num_models: int = 1,
+    template_code: Optional[str] = None,
+    target_code: str = "target",
+    alignment_file: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    hetatm: bool = False,
+    random_seed: Optional[int] = None,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Build a comparative model with MODELLER and optionally attach it to a fetch node.
+
+    MODELLER is an optional dependency. Users install it separately (for example,
+    ``conda install salilab::modeller``) and provide their license via a
+    ``KEY_MODELLER*`` environment variable.
+    """
+    logger.info("Starting MODELLER comparative modeling job")
+    job_id = generate_job_id()
+
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw.research_server import (
+            _resolve_fetch_artifacts_dir,
+            _validate_fetch_node,
+        )
+        from mdclaw._node import begin_node, fail_node
+
+        _node_err = _validate_fetch_node(job_dir, node_id)
+        if _node_err:
+            return {
+                "success": False,
+                "job_id": job_id,
+                "output_dir": None,
+                "file_path": None,
+                "all_models": [],
+                "selected_model": None,
+                "errors": [_node_err],
+                "warnings": [],
+            }
+
+    base_dir = _resolve_fetch_artifacts_dir(job_dir, node_id) if _node_mode else (
+        Path(output_dir) if output_dir else WORKING_DIR
+    )
+    out_dir = create_unique_subdir(base_dir, "modeller")
+
+    result = {
+        "success": False,
+        "job_id": job_id,
+        "output_dir": str(out_dir),
+        "file_path": None,
+        "all_models": [],
+        "selected_model": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    template_path = Path(template_pdb).expanduser()
+    if not template_path.exists():
+        result["errors"].append(f"template_pdb does not exist: {template_pdb}")
+        return result
+
+    if num_models < 1:
+        result["errors"].append("num_models must be >= 1")
+        return result
+
+    if not alignment_file and not target_sequence:
+        result["errors"].append(
+            "target_sequence is required when alignment_file is not provided"
+        )
+        return result
+
+    if not _has_modeller_license_env():
+        result["errors"].append(
+            "MODELLER license environment variable not found "
+            "(expected KEY_MODELLER10v8 or another KEY_MODELLER* variable)"
+        )
+        result["errors"].append(
+            "Install MODELLER separately (for example: conda install salilab::modeller) "
+            "and export KEY_MODELLER10v8=<your license key> before running"
+        )
+        result["code"] = "modeller_license_env_missing"
+        return result
+
+    template_code_clean = _sanitize_modeller_code(
+        template_code or template_path.stem, "template"
+    )
+    target_code_clean = _sanitize_modeller_code(target_code or "target", "target")
+
+    template_copy = out_dir / f"{template_code_clean}.pdb"
+    shutil.copy2(template_path, template_copy)
+
+    auto_align = alignment_file is None
+    if alignment_file:
+        src_alignment = Path(alignment_file).expanduser()
+        if not src_alignment.exists():
+            result["errors"].append(f"alignment_file does not exist: {alignment_file}")
+            return result
+        alignment_text = src_alignment.read_text()
+        for code in (template_code_clean, target_code_clean):
+            if f">P1;{code}" not in alignment_text:
+                result["errors"].append(
+                    f"alignment_file does not contain MODELLER entry '>P1;{code}'"
+                )
+        if result["errors"]:
+            return result
+        alignment_path = out_dir / src_alignment.name
+        shutil.copy2(src_alignment, alignment_path)
+    else:
+        alignment_path = out_dir / f"{target_code_clean}_{template_code_clean}_seed.ali"
+        _write_modeller_seed_alignment(
+            alignment_path,
+            target_code=target_code_clean,
+            target_sequence=target_sequence or "",
+            template_code=template_code_clean,
+        )
+
+    if _node_mode:
+        begin_node(job_dir, node_id)
+
+    runner_path = out_dir / "run_modeller.py"
+    config_path = out_dir / "modeller_config.json"
+    result_json = out_dir / "modeller_result.json"
+    _write_modeller_runner(runner_path)
+    config = {
+        "alignment_file": alignment_path.name,
+        "template_code": template_code_clean,
+        "target_code": target_code_clean,
+        "num_models": num_models,
+        "hetatm": hetatm,
+        "random_seed": random_seed,
+        "auto_align": auto_align,
+        "result_json": result_json.name,
+    }
+    config_path.write_text(json.dumps(config, indent=2))
+
+    try:
+        completed = subprocess.run(
+            [sys.executable, runner_path.name, config_path.name],
+            cwd=out_dir,
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if completed.stdout:
+            (out_dir / "modeller.stdout").write_text(completed.stdout)
+        if completed.stderr:
+            (out_dir / "modeller.stderr").write_text(completed.stderr)
+    except subprocess.CalledProcessError as e:
+        stderr = e.stderr or ""
+        stdout = e.stdout or ""
+        msg = (
+            "MODELLER modeling failed. "
+            f"stdout: {stdout[:1000]} stderr: {stderr[:2000]}"
+        )
+        result["errors"].append(msg)
+        if "No module named 'modeller'" in stderr:
+            result["code"] = "modeller_not_installed"
+            result["errors"].append(
+                "Install MODELLER separately with: conda install salilab::modeller"
+            )
+        else:
+            result["code"] = "modeller_execution_failed"
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+    except Exception as e:
+        msg = f"MODELLER modeling failed: {type(e).__name__}: {e}"
+        result["errors"].append(msg)
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    if not result_json.exists():
+        msg = "MODELLER runner did not write modeller_result.json"
+        result["errors"].append(msg)
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    try:
+        parsed = json.loads(result_json.read_text())
+    except json.JSONDecodeError as e:
+        msg = f"Could not parse MODELLER result JSON: {e}"
+        result["errors"].append(msg)
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    successful_models = parsed.get("successful_models") or []
+    selected_model = parsed.get("selected_model")
+    if not successful_models or not selected_model:
+        msg = "MODELLER produced no successful models"
+        result["errors"].append(msg)
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    result["all_models"] = successful_models
+    result["selected_model"] = {
+        **selected_model,
+        "selection_reason": parsed.get("selection_reason", "unknown"),
+    }
+
+    selected_path = Path(selected_model.get("path") or selected_model.get("name", ""))
+    if not selected_path.is_absolute():
+        selected_path = (out_dir / selected_path).resolve()
+    if not selected_path.exists():
+        msg = f"Selected MODELLER model does not exist: {selected_path}"
+        result["errors"].append(msg)
+        if _node_mode:
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    if _node_mode:
+        try:
+            from mdclaw.research_server import (
+                _complete_fetch_node,
+                _resolve_fetch_artifacts_dir,
+            )
+
+            artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            primary_dst = artifacts_dir / f"modeller_prediction_{target_code_clean}.pdb"
+            shutil.copy2(selected_path, primary_dst)
+
+            digest = hashlib.sha256()
+            digest.update(template_copy.read_bytes())
+            digest.update(alignment_path.read_bytes())
+            digest.update(str(num_models).encode())
+            source_digest = digest.hexdigest()[:12]
+            extra = {
+                "template_pdb": str(template_path),
+                "template_code": template_code_clean,
+                "target_code": target_code_clean,
+                "target_sequence": target_sequence,
+                "alignment_file": str(Path(alignment_file).expanduser()) if alignment_file else None,
+                "generated_alignment": str(alignment_path),
+                "auto_align": auto_align,
+                "num_models_requested": num_models,
+                "num_successful_models": len(successful_models),
+                "modeller_output_dir": str(out_dir),
+                "selected_model": result["selected_model"],
+                "hetatm": hetatm,
+                "random_seed": random_seed,
+            }
+            _complete_fetch_node(
+                job_dir,
+                node_id,
+                primary_dst,
+                source_type="modeller",
+                source_id=f"modeller_{source_digest}",
+                file_format="pdb",
+                extra_metadata=extra,
+            )
+            result["file_path"] = str(primary_dst)
+        except Exception as e:
+            msg = f"Failed to attach MODELLER prediction to fetch node: {type(e).__name__}: {e}"
+            logger.error(msg)
+            result["errors"].append(msg)
+            fail_node(job_dir, node_id, errors=[msg])
+            return result
+
+    result["success"] = True
+    logger.info("MODELLER job %s finished successfully", job_id)
+    return result
+
+
+# =============================================================================
 # RDKit Tools
 # =============================================================================
 
@@ -696,6 +1126,7 @@ def analyze_plip_interactions(pdb_file: str) -> dict:
 
 TOOLS = {
     "boltz2_protein_from_seq": boltz2_protein_from_seq,
+    "modeller_from_alignment": modeller_from_alignment,
     "rdkit_validate_smiles": rdkit_validate_smiles,
     "pubchem_get_smiles_from_name": pubchem_get_smiles_from_name,
     "analyze_plip_interactions": analyze_plip_interactions,
