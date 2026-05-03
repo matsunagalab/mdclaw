@@ -138,7 +138,13 @@ job_XXXXXXXX/
       artifacts/
         split/                        # split_molecules output
         merge/merged.pdb              # merge_structures output
+        residue_mapping.json          # source→merged nucleic residue mapping
         ligand_params.json
+    prep_002/                         # optional branch: modified nucleic prep
+      artifacts/
+        modified_nucleic.pdb
+        modxna_params.json
+        residue_mapping.json
     solv_001/
       node.json
       node.lock
@@ -327,7 +333,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
 
 ### structure_server.py
-- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor. Standard DNA/RNA chains pass through unchanged as `nucleics` and are merged with cleaned proteins / parameterized ligands; they are not sent through PDBFixer protein cleaning or antechamber. Chain-ID rule for `select_chains`: **pass the short chain ID as it appears in your input file** — `chain_id` (label_asym_id) for mmCIF, `author_chain` (auth_asym_id, = column 22) for PDB. See "Chain ID mapping" in `skills/md-prepare/setup.md` for why the two can disagree in mmCIF (e.g. 7QVK label `B` ↔ author `BBB`) and why gemmi's PDB `chain_id` is an internal artifact (`Axp` / `Ax1` / `Axw`) you never type
+- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor. Standard DNA/RNA chains pass through unchanged as `nucleics` and are merged with cleaned proteins / parameterized ligands; they are not sent through PDBFixer protein cleaning or antechamber. Writes `residue_mapping.json` for nucleic residues so a follow-up modified-nucleic prep node can resolve source PDB/mmCIF chain/resnum to merged PDB chain/resnum. Chain-ID rule for `select_chains`: **pass the short chain ID as it appears in your input file** — `chain_id` (label_asym_id) for mmCIF, `author_chain` (auth_asym_id, = column 22) for PDB. See "Chain ID mapping" in `skills/md-prepare/setup.md` for why the two can disagree in mmCIF (e.g. 7QVK label `B` ↔ author `BBB`) and why gemmi's PDB `chain_id` is an internal artifact (`Axp` / `Ax1` / `Axw`) you never type
 - `clean_protein(pdb_file, ...)` - PDBFixer + pdb2pqr protonation
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components (`protein`, `nucleic`, `ligand`, `ion`, `water`; same "pass what's in your file" chain-ID rule as `prepare_complex`)
@@ -335,6 +341,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
 - `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
 - `create_mutated_structure(pdb_file, sequence, seq_file, name, output_dir, job_dir, node_id)` - In-silico mutagenesis via FASPR side-chain packing. Pass exactly one of `sequence` (FASPR-format string, lowercase=keep, uppercase=mutate) or `seq_file`. Designed to run AFTER `prepare_complex` as a `prep`-type node: in node mode, `pdb_file` auto-resolves from the nearest prep ancestor's `merged_pdb` artifact, and the mutated PDB is registered as both `merged_pdb` and `mutated_pdb` so the downstream `solv` resolver picks it up automatically. DAG: fetch → prep (clean) → prep (mutate) → solv → topo → eq → prod.
+- `prepare_modified_nucleic(modifications, modxna_dir, job_dir, node_id)` - Generate modXNA parameters on a branched `prep` node after `prepare_complex`. Node mode only: input PDB auto-resolves from the nearest prep ancestor's `merged_pdb`, and source-coordinate targets resolve through ancestor `residue_mapping`. Each modification needs `chain`, `resnum`, `source_resname`, and explicit `backbone` / `sugar` / `base` fragment IDs. The tool runs `modxna.sh -i in.modxna`, records generated `.lib` + `frcmod.modxna` as `modxna_params`, renames only the resolved residue in `modified_nucleic.pdb`, and registers that file as downstream `merged_pdb`. Terminal 5′/3′ modifications are blocked in the initial implementation.
 - `phosphorylate_residues(pdb_file, sites, sites_str, restore_from_detection, allow_partial, name, output_dir, job_dir, node_id)` - Apply phosphorylation (SER→SEP / THR→TPO / TYR→PTR) on a branched `prep` node after `prepare_complex`. Three input modes (mutually exclusive): `restore_from_detection=True` reads `metadata.detected_ptm_residues` from the nearest prep ancestor (re-introduces PTMs that the source PDB carried but PDBFixer stripped); `sites=[{"chain","resnum","target"}, ...]` for explicit sites; `sites_str="A:65:SEP,A:178:TPO"` for the same as a CLI string. Each site's current residue must be the standard counterpart of the target — mismatches return a structured error. Sites that cannot be located in the input PDB (typo, chain-id drift) are **fatal by default**; pass `allow_partial=True` to convert to a warning. The tool renames the residue and strips the hydroxyl H (`HG`/`HG1`/`HH`), keeping `OG`/`OG1`/`OH`; `build_amber_system` then rebuilds the phosphate atoms via `leaprc.phosaa*`. The phosphorylated PDB is registered as both `merged_pdb` and `phosphorylated_pdb` for downstream auto-resolve. DAG: fetch → prep (clean) → prep (phosphorylate) → solv → topo → eq → prod.
 
 ### genesis_server.py
@@ -349,7 +356,7 @@ pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
 - `list_available_lipids()` - Available lipid types
 
 ### amber_server.py
-- `build_amber_system(pdb_file, ligand_params, metal_params, box_dimensions, forcefield, water_model, nucleic_forcefield, is_membrane, job_dir, node_id)` - tleap. In node mode, `pdb_file` auto-resolved from `solv` ancestor's `solvated_pdb`. Standard DNA/RNA residues auto-load `leaprc.DNA.OL15` and/or `leaprc.RNA.OL3` before `loadpdb` (`nucleic_forcefield="auto"` by default); modified nucleic-like residues return guardrail code `unsupported_modified_nucleic_residue` until modXNA params are wired in. Ligand params are fail-fast validated before tleap, `UNL` residue repair is only allowed for a single unambiguous ligand residue name, and ligand charge/contact diagnostics are recorded without changing the equilibration protocol. PTM auto-load: scans the input PDB for SEP/TPO/PTR via `detect_ptm_sites`, and when present sources `leaprc.phosaa19SB` (ff19SB) / `leaprc.phosaa14SB` (ff14SB) immediately after the protein leaprc line. A forcefield with no paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. The chosen library and the residue list are stamped on the topo node as `metadata.phosaa_library` / `metadata.ptm_residues`.
+- `build_amber_system(pdb_file, ligand_params, modxna_params, metal_params, box_dimensions, forcefield, water_model, nucleic_forcefield, is_membrane, job_dir, node_id)` - tleap. In node mode, `pdb_file` auto-resolves from `solv` ancestor's `solvated_pdb` or nearest prep `merged_pdb`, and `modxna_params` auto-resolves from the nearest prep ancestor. Standard DNA/RNA residues auto-load `leaprc.DNA.OL15` and/or `leaprc.RNA.OL3` before `loadpdb` (`nucleic_forcefield="auto"` by default). modXNA `.lib/.off` and `frcmod` records are fail-fast validated against PDB residue names and inserted as `loadamberparams` / `loadoff` before `loadpdb`; modified nucleic-like residues only remain blocking when no matching modXNA params are loaded. Ligand params are fail-fast validated before tleap, `UNL` residue repair is only allowed for a single unambiguous ligand residue name, and ligand charge/contact diagnostics are recorded without changing the equilibration protocol. PTM auto-load: scans the input PDB for SEP/TPO/PTR via `detect_ptm_sites`, and when present sources `leaprc.phosaa19SB` (ff19SB) / `leaprc.phosaa14SB` (ff14SB) immediately after the protein leaprc line. A forcefield with no paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. The chosen library and the residue list are stamped on the topo node as `metadata.phosaa_library` / `metadata.ptm_residues`.
 
 ### md_simulation_server.py
 - `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - Standard staged minimization + low-temperature NVT warmup + NVT, followed by NPT when applicable. The staged minimization/warmup prelude is used for all NVT equilibration runs (explicit, implicit, apo, ligand-bound) without branching on ligand risk metadata. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
@@ -468,6 +475,7 @@ export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_LOG_LEVEL=WARNING
 export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"  # curated ligand parameter database
+export MDCLAW_MODXNA_DIR="/path/to/modXNA"  # directory containing modxna.sh and dat/frcmod.modxna
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"  # HPC module load commands
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"  # module init script path
 ```

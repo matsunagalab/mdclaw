@@ -423,7 +423,6 @@ def main(argv: list[str] | None = None) -> None:
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
     effective_job_dir = _global_job_dir or kwargs.get("job_dir")
     effective_node_id = _global_node_id or kwargs.get("node_id")
-    node_mode = effective_node_id is not None
 
     if effective_node_id and not effective_job_dir:
         parser.error("--node-id requires --job-dir")

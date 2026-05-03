@@ -16,7 +16,6 @@ never by loading the whole trajectory into a single array.
 from __future__ import annotations
 
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
@@ -132,7 +131,7 @@ def concat_trajectory(
 
     # DAG auto-resolution
     if _node_mode:
-        from mdclaw._node import begin_node, complete_node, fail_node, resolve_node_inputs
+        from mdclaw._node import begin_node, fail_node, resolve_node_inputs
 
         resolved = resolve_node_inputs(job_dir, node_id, "analyze")
         if prmtop_file is None:

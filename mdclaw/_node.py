@@ -15,7 +15,7 @@ import os
 import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from mdclaw._event import write_event
 from mdclaw._lock import file_lock
@@ -1067,6 +1067,16 @@ def resolve_node_inputs(
         mp = find_ancestor_artifact(job_dir, node_id, "prep", "metal_params")
         if mp:
             result["metal_params"] = mp
+
+        mx = find_ancestor_artifact(job_dir, node_id, "prep", "modxna_params")
+        if mx:
+            if isinstance(mx, str) and mx.endswith(".json"):
+                try:
+                    result["modxna_params"] = json.loads(Path(mx).read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif isinstance(mx, list):
+                result["modxna_params"] = mx
 
         db = find_ancestor_artifact(job_dir, node_id, "prep", "disulfide_bonds")
         if db:

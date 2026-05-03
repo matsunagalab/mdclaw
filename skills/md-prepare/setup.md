@@ -235,6 +235,8 @@ Standard DNA/RNA chains are passed through unchanged and recorded under
 `result.nucleics`; they are not protein-cleaned or ligand-parameterized.
 Modified nucleotides require a later modXNA parameter workflow and should not
 be treated as standard `nucleic` support.
+`prepare_complex` also writes `residue_mapping.json` for nucleic residues so
+source PDB/mmCIF chain/resnum targets can be resolved after chain remapping.
 
 **With ligands** (add `--process-ligands`):
 ```bash
@@ -542,6 +544,48 @@ acetylation, methylation, ubiquitination, lipidation) are out of scope
 
 ---
 
+## Step 3.7: Modified Nucleic Acids via modXNA (optional)
+
+Use this only when the user explicitly wants a modified DNA/RNA residue that
+is not covered by standard OL15/OL3 residue names. Do **not** infer fragment
+IDs from a PDB residue name. Ask the user for the source-structure target and
+the three modXNA fragment IDs.
+
+Required user input per modification:
+
+```json
+{
+  "chain": "A",
+  "resnum": 6,
+  "source_resname": "5CM",
+  "backbone": "DPO",
+  "sugar": "DC2",
+  "base": "M5C"
+}
+```
+
+Procedure:
+
+```bash
+mdclaw create_node --job-dir <jd> --node-type prep --parent-node-ids prep_001
+mdclaw --job-dir <jd> --node-id prep_002 prepare_modified_nucleic \
+  --json-input '{"modifications":[{"chain":"A","resnum":6,"source_resname":"5CM","backbone":"DPO","sugar":"DC2","base":"M5C"}]}'
+```
+
+`chain` / `resnum` are normally the source PDB/mmCIF values. The tool reads
+`prep_001`'s `residue_mapping.json`, resolves the merged PDB residue, runs
+`modxna.sh -i in.modxna`, renames only that residue to the generated 3-letter
+code, and registers both `merged_pdb` and `modxna_params` on the new prep node.
+Downstream `solvate_structure` and `build_amber_system` auto-resolve these.
+
+Guardrails: missing mapping returns `modxna_target_residue_not_found` with
+`source_candidates`; stale merged coordinates return
+`modxna_residue_mapping_stale`; terminal 5′/3′ modifications return
+`modxna_terminal_residue_unsupported`; missing modXNA/AmberTools helpers return
+`modxna_tool_unavailable`.
+
+---
+
 ## Tool Defaults (skill-relevant)
 
 Defaults the tools apply silently when the user does not specify. The
@@ -597,6 +641,7 @@ artifact. Pass `--pdb-file` only to override that input.
 | `forcefield` | `"ff19SB"` | Modern protein FF, requires OPC water (tleap ff14SB+tip3p legacy pair still supported) |
 | `water_model` | `"opc"` | Must match the water used in `solvate_structure` / `embed_in_membrane` |
 | `nucleic_forcefield` | `"auto"` | Loads `leaprc.DNA.OL15` and/or `leaprc.RNA.OL3` when standard DNA/RNA residues are present |
+| `modxna_params` | (auto) | In node mode, loads nearest prep ancestor's `modxna_params` with `loadamberparams` / `loadoff` before `loadpdb` |
 | `is_membrane` | `False` | Set True for `embed_in_membrane` output; downstream tools also read the solv ancestor's `is_membrane` metadata |
 | `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |
 | `phosaa_library` | (auto) | When PTM residues (`SEP`/`TPO`/`PTR`) are present in the input PDB, sourced automatically: `phosaa19SB` for ff19SB, `phosaa14SB` for ff14SB. Not user-selectable. A forcefield without a paired phosaa library while PTMs are present returns guardrail code `phospho_forcefield_unsupported`. |

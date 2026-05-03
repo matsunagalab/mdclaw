@@ -334,6 +334,70 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
     return valid_params, errors
 
 
+def validate_modxna_params(
+    modxna_params: List[Dict[str, Any]],
+    pdb_path: Path,
+) -> tuple[list[dict], list[str]]:
+    """Validate modXNA LEaP library/frcmod records against the input PDB."""
+    valid_params = []
+    errors = []
+    pdb_residue_counts = _pdb_residue_instance_counts(pdb_path)
+
+    for i, params in enumerate(modxna_params):
+        residue_name = str(params.get("residue_name", "")).strip().upper()
+        lib = params.get("lib") or params.get("off")
+        frcmod = params.get("frcmod")
+        label = params.get("label") or residue_name or f"entry {i + 1}"
+
+        if not residue_name:
+            errors.append(f"modXNA {label}: residue_name is required")
+            continue
+        if not lib:
+            errors.append(f"modXNA {label}: lib/off path is required")
+            continue
+        if not frcmod:
+            errors.append(f"modXNA {label}: frcmod path is required")
+            continue
+
+        lib_path = Path(lib).resolve()
+        frcmod_path = Path(frcmod).resolve()
+        if not lib_path.exists():
+            errors.append(f"modXNA {label}: library file not found: {lib}")
+            continue
+        if not frcmod_path.exists():
+            errors.append(f"modXNA {label}: frcmod file not found: {frcmod}")
+            continue
+
+        if lib_path.suffix.lower() not in {".lib", ".off"}:
+            errors.append(f"modXNA {label}: library must be .lib or .off: {lib_path.name}")
+            continue
+
+        lib_residue_name = lib_path.stem.upper()[:3]
+        if lib_residue_name != residue_name:
+            errors.append(
+                f"modXNA {label}: residue_name '{residue_name}' does not match "
+                f"library residue code '{lib_residue_name}' from {lib_path.name}"
+            )
+            continue
+
+        if pdb_residue_counts.get(residue_name, 0) == 0:
+            errors.append(
+                f"modXNA {label}: residue_name '{residue_name}' is not present "
+                "in the topology input PDB"
+            )
+            continue
+
+        valid = dict(params)
+        valid.update({
+            "residue_name": residue_name,
+            "lib": str(lib_path),
+            "frcmod": str(frcmod_path),
+        })
+        valid_params.append(valid)
+
+    return valid_params, errors
+
+
 def _pdb_residue_instance_counts(pdb_path: Path) -> Dict[str, int]:
     """Return unique residue-instance counts keyed by residue name."""
     counts: Dict[str, int] = {}
@@ -1128,6 +1192,7 @@ def _add_pdb_info(
 def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_params: Optional[List[Dict[str, str]]] = None,
+    modxna_params: Optional[List[Dict[str, Any]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
     disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
@@ -1171,6 +1236,10 @@ def build_amber_system(
                        - frcmod: Path to force field modification file
                        - residue_name: 3-letter residue name (e.g., "LIG")
                        Example: [{"mol2": "lig.mol2", "frcmod": "lig.frcmod", "residue_name": "LIG"}]
+        modxna_params: List of modified-nucleic parameter dicts. Each dict should have:
+                       - residue_name: 3-letter residue name in the input PDB
+                       - lib/off: Path to modXNA-generated LEaP library
+                       - frcmod: Path to modXNA frcmod file
         metal_params: List of metal parameter dicts from parameterize_metal_ion.
                       Each dict should have:
                       - mol2: Path to metal mol2 file (from metalpdb2mol2.py)
@@ -1251,6 +1320,8 @@ def build_amber_system(
             pdb_file = _inputs["pdb_file"]
         if ligand_params is None and "ligand_params" in _inputs:
             ligand_params = _inputs["ligand_params"]
+        if modxna_params is None and "modxna_params" in _inputs:
+            modxna_params = _inputs["modxna_params"]
         if metal_params is None and "metal_params" in _inputs:
             metal_params = _inputs["metal_params"]
         if disulfide_bonds is None and "disulfide_bonds" in _inputs:
@@ -1376,6 +1447,7 @@ def build_amber_system(
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
             "ligand_count": len(ligand_params) if ligand_params else 0,
+            "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "metal_count": len(metal_params) if metal_params else 0
         },
         "statistics": {},
@@ -1473,14 +1545,37 @@ def build_amber_system(
     result["nucleic_content"] = nucleic_content
     result["parameters"]["nucleic_subtypes"] = nucleic_content["subtypes"]
     result["parameters"]["nucleic_residue_names"] = nucleic_content["standard_residue_names"]
-    if nucleic_content["unsupported_modified_residues"]:
+
+    valid_modxna_params = []
+    if modxna_params:
+        valid_modxna_params, modxna_errors = validate_modxna_params(modxna_params, pdb_path)
+        if modxna_errors:
+            result["errors"].extend(modxna_errors)
+            blocked = {
+                **result,
+                "error_type": "ValidationError",
+                "code": "invalid_modxna_parameters",
+                "message": "Invalid modXNA parameter records; refusing to run tleap.",
+            }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
+            return blocked
+    modxna_residue_names = {p["residue_name"] for p in valid_modxna_params}
+    result["parameters"]["modxna_params"] = valid_modxna_params
+
+    unsupported_modified = [
+        r for r in nucleic_content["unsupported_modified_residues"]
+        if r.get("resname") not in modxna_residue_names
+    ]
+    if unsupported_modified:
         err = create_validation_error(
             "pdb_file",
             "Unsupported modified nucleic residue(s) detected. Standard DNA/RNA support "
             "does not parameterize modified nucleotides; use modXNA parameters in a "
             "follow-up workflow.",
             expected="Standard DNA/RNA residues only",
-            actual=nucleic_content["unsupported_modified_residues"],
+            actual=unsupported_modified,
             warnings=result["warnings"],
         )
         err["code"] = "unsupported_modified_nucleic_residue"
@@ -1719,6 +1814,13 @@ def build_amber_system(
         for nucleic_library in nucleic_libraries:
             script_lines.append(f"source {nucleic_library}")
         script_lines.append("source leaprc.gaff2")
+        loaded_modxna_frcmods = set()
+        for params in valid_modxna_params:
+            frcmod = params["frcmod"]
+            if frcmod not in loaded_modxna_frcmods:
+                script_lines.append(f"loadamberparams {frcmod}")
+                loaded_modxna_frcmods.add(frcmod)
+            script_lines.append(f"loadoff {params['lib']}")
         
         if box_dimensions:
             # Explicit solvent: check for crystal waters (shouldn't be here if solvate_structure was used)
@@ -2000,6 +2102,7 @@ def build_amber_system(
                     "is_membrane": is_membrane,
                     "nucleic_libraries": nucleic_libraries or None,
                     "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
+                    "modxna_params": valid_modxna_params or None,
                     "phosaa_library": phosaa_library,
                     "ptm_residues": ptm_residues_in_input or None,
                 })
