@@ -12,6 +12,7 @@ from mdclaw.amber_server import (
 )
 from mdclaw._node import complete_node, create_node, read_node, update_job_params
 from mdclaw.metal_server import (
+    ION_FRCMODS_BY_SET,
     SUPPORTED_ION_WATER_MODELS,
     _normalize_water_model_name as metal_canonical_water_model_name,
     parameterize_metal_ion,
@@ -342,21 +343,81 @@ def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
     assert result["success"] is True
     assert result["water_model"] == "opc"
     assert result["ion_frcmod"] == "frcmod.ionslm_126_opc"
+    assert result["ion_frcmods"] == ["frcmod.ionslm_126_opc"]
+    assert result["ion_parameter_set"] == "normal"
 
 
-def test_parameterize_metal_ion_rejects_canonical_but_unsupported_water_model(tmp_path):
+def test_parameterize_metal_ion_supports_opc3_normal_set(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    def _fake_metalpdb2mol2(pdb_path, mol2_path, charge, timeout=60):
+        from pathlib import Path as _P
+        _P(mol2_path).write_text(
+            "@<TRIPOS>MOLECULE\nZN\n    1     0     1     0     0\nSMALL\nNO_CHARGES\n"
+            "@<TRIPOS>ATOM\n"
+            f"      1 ZN          0.0000    0.0000    0.0000 ZN         1 ZN        {float(charge):.4f}\n"
+            "@<TRIPOS>SUBSTRUCTURE\n     1 ZN          1 ****              0 ****  ****    0 ROOT\n"
+        )
+        return {"success": True, "mol2_file": mol2_path}
+
+    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
+        result = parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "metal_out"),
+            water_model="opc3",
+        )
+
+    assert result["success"] is True
+    assert result["ion_frcmod"] == "frcmod.ionslm_126_opc3"
+
+
+def test_parameterize_metal_ion_selects_iod_and_hfe_sets(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    def _fake_metalpdb2mol2(pdb_path, mol2_path, charge, timeout=60):
+        from pathlib import Path as _P
+        _P(mol2_path).write_text(
+            "@<TRIPOS>MOLECULE\nZN\n    1     0     1     0     0\nSMALL\nNO_CHARGES\n"
+            "@<TRIPOS>ATOM\n"
+            f"      1 ZN          0.0000    0.0000    0.0000 ZN         1 ZN        {float(charge):.4f}\n"
+            "@<TRIPOS>SUBSTRUCTURE\n     1 ZN          1 ****              0 ****  ****    0 ROOT\n"
+        )
+        return {"success": True, "mol2_file": mol2_path}
+
+    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
+        iod = parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "iod"),
+            water_model="opc",
+            ion_parameter_set="iod",
+        )
+        hfe = parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "hfe"),
+            water_model="opc",
+            ion_parameter_set="hfe",
+        )
+
+    assert iod["success"] is True
+    assert iod["ion_frcmod"] == "frcmod.ionslm_iod_opc"
+    assert hfe["success"] is True
+    assert hfe["ion_frcmod"] == "frcmod.ionslm_hfe_opc"
+
+
+def test_parameterize_metal_ion_rejects_1264_until_parmed_step_exists(tmp_path):
     pdb_file = tmp_path / "metal.pdb"
     _write_minimal_metal_pdb(pdb_file)
 
     result = parameterize_metal_ion(
         pdb_file=str(pdb_file),
         output_dir=str(tmp_path / "metal_out"),
-        water_model="opc3",
+        ion_parameter_set="12_6_4",
     )
 
     assert result["success"] is False
-    assert result["error_type"] == "ValidationError"
-    assert "does not currently support 'opc3'" in result["message"]
+    assert result["code"] == "metal_1264_requires_parmed"
 
 
 def test_parameterize_metal_ion_rejects_unknown_water_model(tmp_path):
@@ -375,7 +436,33 @@ def test_parameterize_metal_ion_rejects_unknown_water_model(tmp_path):
 
 
 def test_metal_water_model_invariants():
-    assert set(SUPPORTED_ION_WATER_MODELS).issubset(set(OPENMM_FALLBACK_WATER_MAP) | {"opc"})
+    assert set(SUPPORTED_ION_WATER_MODELS).issubset(set(OPENMM_FALLBACK_WATER_MAP) | {"opc", "opc3"})
+    assert ION_FRCMODS_BY_SET["normal"]["opc"] == "frcmod.ionslm_126_opc"
+    assert ION_FRCMODS_BY_SET["normal"]["opc3"] == "frcmod.ionslm_126_opc3"
+
+
+def test_build_amber_system_rejects_invalid_metal_params_before_tleap(tmp_path):
+    pdb_file = tmp_path / "metal.pdb"
+    _write_minimal_metal_pdb(pdb_file)
+
+    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
+         patch("mdclaw.amber_server.tleap_wrapper.run") as fake_run:
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "topo"),
+            forcefield="ff14SB",
+            water_model="opc",
+            metal_params=[{
+                "mol2": str(tmp_path / "missing.mol2"),
+                "frcmod": "frcmod.ionslm_126_opc",
+                "residue_name": "ZN",
+            }],
+        )
+
+    assert result["success"] is False
+    assert result["code"] == "invalid_metal_parameters"
+    assert any("mol2 file not found" in e for e in result["errors"])
+    fake_run.assert_not_called()
 
 
 def test_policy_unparseable_time_and_memory_are_warnings():

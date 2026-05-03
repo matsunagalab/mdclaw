@@ -58,12 +58,52 @@ METAL_ELEMENTS: set[str] = {
     "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",  # Third-row transition
 }
 
-SUPPORTED_ION_WATER_MODELS = {
-    "tip3p": "frcmod.ionslm_126_tip3p",
-    "opc": "frcmod.ionslm_126_opc",
-    "tip4pew": "frcmod.ionslm_126_tip4pew",
-    "spce": "frcmod.ionslm_126_spce",
+# Li/Merz ion frcmods for metal cofactors. Amber's OPC/OPC3/FB files cover
+# -1 through +4 in one frcmod; TIP3P/SPC/E/TIP4PEW split +1 and +2..+4 ions.
+# The default "normal" set is Amber Manual's normal-MD recommendation.
+ION_PARAMETER_SET_ALIASES = {
+    "normal": "normal",
+    "12_6": "normal",
+    "126": "normal",
+    "cm": "normal",
+    "hfe": "hfe",
+    "iod": "iod",
+    "12_6_4": "12_6_4",
+    "1264": "12_6_4",
 }
+
+ION_FRCMODS_BY_SET = {
+    "normal": {
+        "tip3p": {1: "frcmod.ions1lm_126_tip3p", 2: "frcmod.ions234lm_126_tip3p"},
+        "spce": {1: "frcmod.ions1lm_126_spce", 2: "frcmod.ions234lm_126_spce"},
+        "tip4pew": {1: "frcmod.ions1lm_126_tip4pew", 2: "frcmod.ions234lm_126_tip4pew"},
+        "opc": "frcmod.ionslm_126_opc",
+        "opc3": "frcmod.ionslm_126_opc3",
+    },
+    "hfe": {
+        "tip3p": {1: "frcmod.ions1lm_126_tip3p", 2: "frcmod.ions234lm_hfe_tip3p"},
+        "spce": {1: "frcmod.ions1lm_126_spce", 2: "frcmod.ions234lm_hfe_spce"},
+        "tip4pew": {1: "frcmod.ions1lm_126_tip4pew", 2: "frcmod.ions234lm_hfe_tip4pew"},
+        "opc": "frcmod.ionslm_hfe_opc",
+        "opc3": "frcmod.ionslm_hfe_opc3",
+    },
+    "iod": {
+        "tip3p": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_tip3p"},
+        "spce": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_spce"},
+        "tip4pew": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_tip4pew"},
+        "opc": "frcmod.ionslm_iod_opc",
+        "opc3": "frcmod.ionslm_iod_opc3",
+    },
+    "12_6_4": {
+        "tip3p": {1: "frcmod.ions1lm_1264_tip3p", 2: "frcmod.ions234lm_1264_tip3p"},
+        "spce": {1: "frcmod.ions1lm_1264_spce", 2: "frcmod.ions234lm_1264_spce"},
+        "tip4pew": {1: "frcmod.ions1lm_1264_tip4pew", 2: "frcmod.ions234lm_1264_tip4pew"},
+        "opc": "frcmod.ionslm_1264_opc",
+        "opc3": "frcmod.ionslm_1264_opc3",
+    },
+}
+
+SUPPORTED_ION_WATER_MODELS = ION_FRCMODS_BY_SET["normal"]
 
 
 def _amber_ion_atom_type(element: str, charge: int) -> str:
@@ -132,18 +172,24 @@ def _find_metal_atoms(pdb_file: str) -> list[dict]:
         for line in f:
             if line.startswith(("ATOM", "HETATM")):
                 # Parse PDB ATOM/HETATM record
-                atom_id = int(line[6:11].strip())
-                atname = line[12:16].strip()
-                resname = line[17:20].strip()
-                x = float(line[30:38].strip())
-                y = float(line[38:46].strip())
-                z = float(line[46:54].strip())
+                try:
+                    atom_id = int(line[6:11].strip())
+                    atname = line[12:16].strip()
+                    resname = line[17:20].strip()
+                    x = float(line[30:38].strip())
+                    y = float(line[38:46].strip())
+                    z = float(line[46:54].strip())
+                except (ValueError, IndexError):
+                    logger.warning("Skipping malformed PDB atom record during metal detection: %s", line.rstrip())
+                    continue
 
                 # Get element from columns 76-78 or infer from atom name
                 element = line[76:78].strip() if len(line) > 76 else ""
                 if not element:
                     # Infer from atom name (first 1-2 chars that are letters)
                     element = "".join(c for c in atname if c.isalpha())[:2].capitalize()
+                else:
+                    element = element[:1].upper() + element[1:].lower() if len(element) > 1 else element.upper()
 
                 # Check if this is a metal
                 if element in METAL_ELEMENTS or resname.upper() in METAL_CHARGES:
@@ -214,37 +260,72 @@ def _normalize_water_model_name(water_model: str | None) -> str | None:
     return normalize_choice(water_model, CANONICAL_WATER_MODELS)
 
 
-def _evaluate_metal_water_model_guardrails(water_model: str) -> list[dict]:
+def _normalize_ion_parameter_set(value: str | None) -> str | None:
+    """Normalize the requested Amber ion parameter set."""
+    return normalize_choice(value or "normal", ION_PARAMETER_SET_ALIASES)
+
+
+def _evaluate_metal_ion_guardrails(
+    water_model: str,
+    ion_parameter_set: str,
+) -> list[dict]:
     """Return structured guardrails for metal ion water-model support."""
-    if water_model in SUPPORTED_ION_WATER_MODELS:
-        return []
+    results = []
+    if water_model not in ION_FRCMODS_BY_SET["normal"]:
+        results.append(create_guardrail_result(
+            "water_model",
+            f"Metal ion parameter selection does not currently support '{water_model}'.",
+            severity="error",
+            actual=water_model,
+            expected=f"One of: {sorted(ION_FRCMODS_BY_SET['normal'])}",
+            suggested_fix="Use tip3p, opc, opc3, tip4pew, or spce for metal ion parameterization.",
+            code="metal_unsupported_water_model",
+        ))
 
-    return [create_guardrail_result(
-        "water_model",
-        f"Metal ion parameter selection does not currently support '{water_model}'.",
-        severity="error",
-        actual=water_model,
-        expected=f"One of: {sorted(SUPPORTED_ION_WATER_MODELS)}",
-        suggested_fix=(
-            "Use tip3p, opc, tip4pew, or spce for metal ion parameterization. "
-            "If you need opc3, add the matching ion frcmod mapping first."
-        ),
-        code="metal_unsupported_water_model",
-    )]
+    if ion_parameter_set == "12_6_4":
+        results.append(create_guardrail_result(
+            "ion_parameter_set",
+            "12-6-4 ion parameters require a ParmEd add12_6_4 post-processing step.",
+            severity="error",
+            actual=ion_parameter_set,
+            expected="normal, hfe, or iod until MDClaw owns the add12_6_4 topology step",
+            suggested_fix=(
+                "Use ion_parameter_set='normal' for routine MD, or implement the ParmEd "
+                "add12_6_4 step and topology validation before enabling 12_6_4."
+            ),
+            code="metal_1264_requires_parmed",
+        ))
+
+    return results
 
 
-def _get_ion_frcmod(water_model: str = "opc") -> str:
-    """Get the appropriate ion frcmod file for the water model.
+def _get_ion_frcmods(
+    water_model: str = "opc",
+    ion_parameter_set: str = "normal",
+    charges: list[int] | None = None,
+) -> list[str]:
+    """Get Amber ion frcmod file(s) for a water model and ion charges.
 
     Args:
         water_model: Water model name (tip3p, opc, tip4pew, etc.)
+        ion_parameter_set: Amber ion set ("normal", "hfe", or "iod").
+        charges: Metal charges present. Split Li/Merz files for TIP3P/SPC/E/
+            TIP4PEW require one frcmod for +1 and another for +2..+4.
 
     Returns:
-        Name of the frcmod file to load in tleap
+        Names of frcmod files to load in tleap.
     """
-    # Map water models to ion parameter files
-    # Using Li/Merz ion parameters (12-6 model)
-    return SUPPORTED_ION_WATER_MODELS[water_model.lower()]
+    mapping = ION_FRCMODS_BY_SET[ion_parameter_set][water_model.lower()]
+    if isinstance(mapping, str):
+        return [mapping]
+
+    frcmods = []
+    for charge in charges or [2]:
+        bucket = 1 if abs(charge) == 1 else 2
+        frcmod = mapping[bucket]
+        if frcmod not in frcmods:
+            frcmods.append(frcmod)
+    return frcmods
 
 
 # =============================================================================
@@ -269,7 +350,14 @@ def detect_metal_ions(pdb_file: str) -> dict:
     """
     pdb_path = Path(pdb_file)
     if not pdb_path.exists():
-        raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+        err = create_validation_error(
+            "pdb_file",
+            f"PDB file not found: {pdb_file}",
+            expected="Existing PDB file",
+            actual=pdb_file,
+        )
+        err["code"] = "metal_pdb_file_not_found"
+        return err
 
     metals = _find_metal_atoms(pdb_file)
 
@@ -289,6 +377,7 @@ def parameterize_metal_ion(
     metal_resname: str | None = None,
     metal_charge: int | None = None,
     water_model: str = "opc",
+    ion_parameter_set: str = "normal",
     job_dir: str | None = None,
     node_id: str | None = None,
 ) -> dict:
@@ -316,11 +405,13 @@ def parameterize_metal_ion(
                        If None, all detected metals are parameterized.
         metal_charge: Charge of the metal ion (e.g., 2 for Zn2+).
                       If None, charge is inferred from residue name.
-        water_model: Water model for selecting ion parameters (default: opc)
-                     Options: tip3p, opc, opc3, tip4pew, spce
-                     Note: opc3 is recognized canonically but currently rejected
-                     because metal ion frcmod mappings are only available for
-                     tip3p, opc, tip4pew, and spce.
+        water_model: Water model for selecting ion parameters (default: opc).
+                     Options: tip3p, opc, opc3, tip4pew, spce.
+        ion_parameter_set: Amber Li/Merz ion set. "normal" is the Amber Manual
+                     recommendation for routine MD; "iod" is for structural
+                     refinement; "hfe" targets hydration free energy. "12_6_4"
+                     is recognized but rejected until MDClaw owns the ParmEd
+                     add12_6_4 topology post-processing step.
         job_dir: Job directory (schema v3).
         node_id: Prep node ID. When both ``job_dir`` and ``node_id`` are
                  provided, outputs land under the prep node's artifacts
@@ -400,25 +491,48 @@ def parameterize_metal_ion(
 
     pdb_path = Path(pdb_file)
     if not pdb_path.exists():
-        raise FileNotFoundError(f"PDB file not found: {pdb_file}")
+        err = create_validation_error(
+            "pdb_file",
+            f"PDB file not found: {pdb_file}",
+            expected="Existing PDB file",
+            actual=pdb_file,
+        )
+        err["code"] = "metal_pdb_file_not_found"
+        return err
 
     canonical_water_model = _normalize_water_model_name(water_model)
     if not canonical_water_model:
-        return create_validation_error(
+        err = create_validation_error(
             "water_model",
             f"Unknown water model: {water_model}",
             expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
             actual=water_model,
         )
+        err["code"] = "unknown_water_model"
+        return err
     water_model = canonical_water_model
-    guardrail_results = _evaluate_metal_water_model_guardrails(water_model)
-    if guardrail_results:
-        return create_validation_error_from_guardrails(
-            "water_model",
-            guardrail_results,
-            summary=guardrail_results[0]["message"],
-            actual=water_model,
+    canonical_ion_parameter_set = _normalize_ion_parameter_set(ion_parameter_set)
+    if not canonical_ion_parameter_set:
+        err = create_validation_error(
+            "ion_parameter_set",
+            f"Unknown ion parameter set: {ion_parameter_set}",
+            expected=f"One of: {sorted(set(ION_PARAMETER_SET_ALIASES.values()))}",
+            actual=ion_parameter_set,
         )
+        err["code"] = "unknown_metal_ion_parameter_set"
+        return err
+    ion_parameter_set = canonical_ion_parameter_set
+    guardrail_results = _evaluate_metal_ion_guardrails(water_model, ion_parameter_set)
+    if guardrail_results:
+        first = guardrail_results[0]
+        err = create_validation_error_from_guardrails(
+            first.get("field", "water_model"),
+            guardrail_results,
+            summary=first["message"],
+            actual=first.get("actual"),
+        )
+        err["code"] = first.get("code")
+        return err
 
     output_path = Path(output_dir)
     ensure_directory(output_path)
@@ -432,7 +546,11 @@ def parameterize_metal_ion(
     if not metals:
         return {
             "success": False,
-            "error": "No metal ions found in PDB file",
+            "error_type": "ValidationError",
+            "code": "metal_ions_not_found",
+            "message": "No metal ions found in PDB file",
+            "errors": ["pdb_file: No metal ions found in PDB file"],
+            "warnings": [],
             "metals_parameterized": [],
         }
 
@@ -442,17 +560,29 @@ def parameterize_metal_ion(
         if not metals:
             return {
                 "success": False,
-                "error": f"No metal with residue name '{metal_resname}' found",
+                "error_type": "ValidationError",
+                "code": "requested_metal_residue_not_found",
+                "message": f"No metal with residue name '{metal_resname}' found",
+                "errors": [f"metal_resname: No metal with residue name '{metal_resname}' found"],
+                "warnings": [],
                 "metals_parameterized": [],
             }
+
+    if metal_charge is not None and len(metals) > 1:
+        err = create_validation_error(
+            "metal_charge",
+            "A single metal_charge would be applied to multiple metal ions.",
+            expected="Omit metal_charge for inferred charges, filter with metal_resname, or parameterize one metal at a time",
+            actual=str(metal_charge),
+            context_extra={"metal_count": len(metals), "metals": metals},
+        )
+        err["code"] = "single_metal_charge_for_multiple_metals"
+        return err
 
     logger.info(f"Parameterizing {len(metals)} metal ion(s): {[m['resname'] for m in metals]}")
 
     # Step 2 & 3: Extract metals and convert to mol2
-    ion_ids = []
-    ion_mol2files = []
-    ion_info_list = []
-    mol2_outputs = []
+    metal_records = []
 
     for i, metal in enumerate(metals):
         atom_id = metal["atom_id"]
@@ -466,49 +596,85 @@ def parameterize_metal_ion(
         else:
             charge = METAL_CHARGES.get(resname.upper(), 2)  # Default to +2
 
-        # Extract metal to separate PDB
-        metal_pdb = str(metal_dir / f"metal_{i}_{resname}.pdb")
-        _extract_metal_to_pdb(pdb_file, atom_id, metal_pdb)
+        try:
+            # Extract metal to separate PDB
+            metal_pdb = str(metal_dir / f"metal_{i}_{resname}.pdb")
+            _extract_metal_to_pdb(pdb_file, atom_id, metal_pdb)
 
-        # Convert to mol2
-        metal_mol2 = str(metal_dir / f"metal_{i}_{resname}.mol2")
-        _run_metalpdb2mol2(metal_pdb, metal_mol2, charge)
+            # Convert to mol2
+            metal_mol2 = str(metal_dir / f"metal_{i}_{resname}.mol2")
+            _run_metalpdb2mol2(metal_pdb, metal_mol2, charge)
 
-        # metalpdb2mol2.py writes the raw PDB element as the atom_type
-        # (e.g. "ZN"), but Amber's ionslm/hfe frcmod files key vdW
-        # parameters by "Zn2+"/"Mg2+"/... — without this rewrite tleap
-        # aborts with "could not find vdW parameters for type (ZN)".
-        _rewrite_mol2_atom_type(metal_mol2, _amber_ion_atom_type(element, charge))
+            # metalpdb2mol2.py writes the raw PDB element as the atom_type
+            # (e.g. "ZN"), but Amber's ionslm/hfe frcmod files key vdW
+            # parameters by "Zn2+"/"Mg2+"/... — without this rewrite tleap
+            # aborts with "could not find vdW parameters for type (ZN)".
+            atom_type = _amber_ion_atom_type(element, charge)
+            _rewrite_mol2_atom_type(metal_mol2, atom_type)
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            return {
+                "success": False,
+                "error_type": type(exc).__name__,
+                "code": "metal_parameterization_failed",
+                "message": f"Failed to parameterize metal {resname} atom {atom_id}: {exc}",
+                "errors": [f"metal_params: Failed to parameterize {resname} atom {atom_id}: {exc}"],
+                "warnings": [],
+                "metals_parameterized": [],
+            }
 
-        ion_ids.append(atom_id)
-        ion_mol2files.append(metal_mol2)
-        ion_info_list.append(f"{resname} {atname} {element} {charge}")
-        mol2_outputs.append(metal_mol2)
+        metal_records.append({
+            **metal,
+            "charge": charge,
+            "mol2": metal_mol2,
+            "atom_type": atom_type,
+            "ion_info": f"{resname} {atname} {element} {charge}",
+        })
 
         logger.info(f"Processed metal {i}: {resname} (atom {atom_id}, charge +{charge})")
 
     # Step 4: Get appropriate ion frcmod file
-    ion_frcmod = _get_ion_frcmod(water_model)
+    ion_frcmods = _get_ion_frcmods(
+        water_model,
+        ion_parameter_set,
+        [m["charge"] for m in metal_records],
+    )
 
     metal_params_list = [
         {
-            "mol2": mol2_path,
+            "mol2": metal["mol2"],
             "residue_name": metal["resname"],
-            "charge": metal_charge if metal_charge is not None
-                      else METAL_CHARGES.get(metal["resname"].upper(), 2),
+            "charge": metal["charge"],
+            "element": metal["element"],
+            "atom_name": metal["atname"],
+            "atom_id": metal["atom_id"],
+            "atom_type": metal["atom_type"],
+            "ion_info": metal["ion_info"],
+            "frcmod": ion_frcmods[0] if len(ion_frcmods) == 1 else None,
+            "frcmods": ion_frcmods,
+            "ion_parameter_set": ion_parameter_set,
         }
-        for mol2_path, metal in zip(mol2_outputs, metals)
+        for metal in metal_records
     ]
 
     result = {
         "success": True,
-        "metal_mol2_files": mol2_outputs,
-        "ion_frcmod": ion_frcmod,  # Name of Amber's built-in ion parameter file
+        "metal_mol2_files": [m["mol2"] for m in metal_records],
+        "ion_frcmod": ion_frcmods[0] if len(ion_frcmods) == 1 else None,
+        "ion_frcmods": ion_frcmods,
+        "ion_parameter_set": ion_parameter_set,
         "water_model": water_model,
         "metal_params": metal_params_list,
         "metals_parameterized": [
-            {"resname": m["resname"], "atom_id": m["atom_id"], "element": m["element"], "charge": METAL_CHARGES.get(m["resname"].upper(), 2)}
-            for m in metals
+            {
+                "resname": m["resname"],
+                "atom_id": m["atom_id"],
+                "atom_name": m["atname"],
+                "element": m["element"],
+                "charge": m["charge"],
+                "atom_type": m["atom_type"],
+                "ion_info": m["ion_info"],
+            }
+            for m in metal_records
         ],
         "message": f"Successfully prepared {len(metals)} metal ion(s) for simulation (nonbonded model)",
     }
@@ -529,6 +695,8 @@ def parameterize_metal_ion(
                 "num_metals": len(metal_params_list),
                 "residues": [m["residue_name"] for m in metal_params_list],
                 "water_model": water_model,
+                "ion_parameter_set": ion_parameter_set,
+                "ion_frcmods": ion_frcmods,
             },
         )
 

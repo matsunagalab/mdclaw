@@ -190,14 +190,27 @@ mdclaw --job-dir <jd> --node-id prep_001 parameterize_metal_ion \
   --water-model opc
 ```
 
+Amber Manual 2024/2025 guidance:
+- The default `--ion-parameter-set normal` uses the Li/Merz 12-6 normal
+  usage set (e.g. `frcmod.ionslm_126_opc`) and is the routine-MD default.
+- Use `--ion-parameter-set iod` only for structural refinement or
+  structure-oriented investigations, and `--ion-parameter-set hfe` when
+  hydration-free-energy matching is the priority.
+- `--ion-parameter-set 12_6_4` is recognized but intentionally blocked until
+  MDClaw owns the required ParmEd `add12_6_4` topology post-processing and
+  validation step. OpenMM's Amber prmtop reader can consume a correctly
+  post-processed 12-6-4 topology; the missing piece is MDClaw generating and
+  auditing that topology end-to-end.
+
 With `--job-dir` + `--node-id` (a prep node), `parameterize_metal_ion`:
 - Auto-resolves `pdb_file` from the prep node's `merged_pdb` artifact.
 - Writes mol2 files into `nodes/prep_001/artifacts/metal_params/` and
   rewrites each atom type to Amber's `Zn2+` / `Mg2+` / ... convention so
   tleap resolves vdW parameters against the ion frcmod.
 - Registers a structured `metal_params` artifact (list of
-  `{mol2, residue_name, charge}` dicts) on the prep node. The node's
-  `status` is **not** changed — it simply extends an already-completed prep.
+  `{mol2, residue_name, charge, frcmods, ion_parameter_set}` dicts) on the
+  prep node. The node's `status` is **not** changed — it simply extends an
+  already-completed prep.
 - Emits a `metal_params_attached` event for auditability.
 
 `build_amber_system` walks the DAG and picks up `metal_params` from the

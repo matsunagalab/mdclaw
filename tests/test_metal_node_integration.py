@@ -31,6 +31,15 @@ HETATM    6 ZN    ZN A 101       5.000   5.000   5.000  1.00 15.00          ZN
 END
 """)
 
+ZN_MG_PROTEIN_PDB = textwrap.dedent("""\
+ATOM      1  N   ALA A   1       1.000   1.000   1.000  1.00 10.00           N
+ATOM      2  CA  ALA A   1       2.450   1.000   1.000  1.00 10.00           C
+TER
+HETATM    3 ZN    ZN A 101       5.000   5.000   5.000  1.00 15.00          ZN
+HETATM    4 MG    MG A 102       7.000   7.000   7.000  1.00 15.00          MG
+END
+""")
+
 
 @pytest.fixture
 def prep_node_with_merged_pdb(tmp_path):
@@ -108,6 +117,9 @@ class TestParameterizeMetalIonNodeIntegration:
         zn_entry = result["metal_params"][0]
         assert zn_entry["residue_name"] == "ZN"
         assert zn_entry["charge"] == 2
+        assert zn_entry["frcmod"] == "frcmod.ionslm_126_opc"
+        assert zn_entry["ion_parameter_set"] == "normal"
+        assert zn_entry["ion_info"] == "ZN ZN Zn 2"
         assert zn_entry["mol2"].endswith(".mol2")
 
         # Verify the artifact was registered on the prep node
@@ -186,3 +198,36 @@ class TestParameterizeMetalIonNodeIntegration:
         result = ms.parameterize_metal_ion(water_model="opc")
         assert result["success"] is False
         assert any("pdb_file is required" in e for e in result["errors"])
+
+    def test_single_charge_override_rejected_for_multiple_metals(self, tmp_path, monkeypatch):
+        pdb_file = tmp_path / "zn_mg.pdb"
+        pdb_file.write_text(ZN_MG_PROTEIN_PDB)
+        _stub_metalpdb2mol2(monkeypatch)
+        from mdclaw import metal_server as ms
+
+        result = ms.parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "out"),
+            metal_charge=2,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "single_metal_charge_for_multiple_metals"
+
+    def test_charge_metadata_uses_override_consistently(self, tmp_path, monkeypatch):
+        pdb_file = tmp_path / "zn.pdb"
+        pdb_file.write_text(ZN_PROTEIN_PDB)
+        _stub_metalpdb2mol2(monkeypatch)
+        from mdclaw import metal_server as ms
+
+        result = ms.parameterize_metal_ion(
+            pdb_file=str(pdb_file),
+            output_dir=str(tmp_path / "out"),
+            metal_charge=3,
+        )
+
+        assert result["success"] is True, result.get("errors")
+        assert result["metal_params"][0]["charge"] == 3
+        assert result["metal_params"][0]["atom_type"] == "Zn3+"
+        assert result["metals_parameterized"][0]["charge"] == 3
+        assert result["metals_parameterized"][0]["atom_type"] == "Zn3+"

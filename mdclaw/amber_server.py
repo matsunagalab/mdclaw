@@ -334,6 +334,143 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
     return valid_params, errors
 
 
+def _is_builtin_amber_frcmod(value: str) -> bool:
+    """Return True for AmberTools frcmod names loadable by tleap search paths."""
+    return value.strip().startswith("frcmod.")
+
+
+def _validate_frcmod_reference(value: str, label: str) -> tuple[str | None, str | None]:
+    """Validate a frcmod reference and return (normalized_value, error)."""
+    if not value:
+        return None, f"{label}: frcmod path/name is empty"
+    if _is_builtin_amber_frcmod(value):
+        return value.strip(), None
+    path = Path(value).resolve()
+    if not path.exists():
+        return None, f"{label}: frcmod file not found: {value}"
+    return str(path), None
+
+
+def _mol2_atom_types(mol2_path: Path) -> list[str]:
+    """Read atom types from a Tripos mol2 ATOM section."""
+    atom_types: list[str] = []
+    in_atom_block = False
+    for line in mol2_path.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("@<TRIPOS>"):
+            in_atom_block = stripped == "@<TRIPOS>ATOM"
+            continue
+        if not in_atom_block or not stripped:
+            continue
+        parts = stripped.split()
+        if len(parts) >= 6:
+            atom_types.append(parts[5])
+    return atom_types
+
+
+def validate_metal_params(
+    metal_params: List[Dict[str, Any]],
+    pdb_path: Path,
+) -> tuple[list[dict], list[str]]:
+    """Validate metal ion parameter records before generating a tleap script."""
+    valid_params: list[dict] = []
+    errors: list[str] = []
+    pdb_residue_counts = _pdb_residue_instance_counts(pdb_path)
+    residue_templates: dict[str, tuple] = {}
+
+    for i, params in enumerate(metal_params):
+        residue_name = str(params.get("residue_name", "")).strip().upper()
+        label = residue_name or params.get("label") or f"metal {i + 1}"
+        mol2 = params.get("mol2")
+
+        if not residue_name:
+            errors.append(f"Metal {i + 1}: residue_name is required")
+            continue
+        if not mol2:
+            errors.append(f"Metal {label}: mol2 path is required")
+            continue
+
+        mol2_path = Path(mol2).resolve()
+        if not mol2_path.exists():
+            errors.append(f"Metal {label}: mol2 file not found: {mol2}")
+            continue
+        if pdb_residue_counts.get(residue_name, 0) == 0:
+            errors.append(
+                f"Metal {label}: residue_name '{residue_name}' is not present "
+                "in the topology input PDB"
+            )
+            continue
+
+        try:
+            atom_types = _mol2_atom_types(mol2_path)
+        except OSError as exc:
+            errors.append(f"Metal {label}: failed to read mol2 file: {exc}")
+            continue
+        if not atom_types:
+            errors.append(f"Metal {label}: mol2 file has no @<TRIPOS>ATOM atom types")
+            continue
+
+        expected_atom_type = str(params.get("atom_type", "")).strip()
+        if expected_atom_type and expected_atom_type not in atom_types:
+            errors.append(
+                f"Metal {label}: expected atom_type '{expected_atom_type}' not found "
+                f"in mol2 atom types {sorted(set(atom_types))}"
+            )
+            continue
+        if not all(re.match(r"^[A-Z][a-z]?(?:[1-8])?[+-]?$", atom_type) for atom_type in atom_types):
+            errors.append(
+                f"Metal {label}: mol2 atom types do not look like Amber ion atom types: "
+                f"{sorted(set(atom_types))}"
+            )
+            continue
+
+        frcmod_values: list[str] = []
+        for key in ("frcmod",):
+            if params.get(key):
+                frcmod_values.append(str(params[key]))
+        if isinstance(params.get("frcmods"), list):
+            frcmod_values.extend(str(v) for v in params["frcmods"] if v)
+        normalized_frcmods: list[str] = []
+        for frcmod in frcmod_values:
+            normalized, error = _validate_frcmod_reference(frcmod, f"Metal {label}")
+            if error:
+                errors.append(error)
+                continue
+            if normalized and normalized not in normalized_frcmods:
+                normalized_frcmods.append(normalized)
+        if not normalized_frcmods:
+            errors.append(f"Metal {label}: at least one frcmod/frcmods entry is required")
+            continue
+
+        charge = params.get("charge")
+        template_signature = (
+            tuple(sorted(set(atom_types))),
+            charge,
+            tuple(normalized_frcmods),
+        )
+        previous = residue_templates.get(residue_name)
+        if previous is not None and previous != template_signature:
+            errors.append(
+                f"Metal {label}: residue_name '{residue_name}' is reused with "
+                "inconsistent atom types, charge, or frcmods"
+            )
+            continue
+        residue_templates[residue_name] = template_signature
+
+        valid = dict(params)
+        valid.update({
+            "mol2": str(mol2_path),
+            "residue_name": residue_name,
+            "frcmods": normalized_frcmods,
+            "atom_types": atom_types,
+        })
+        if normalized_frcmods:
+            valid["frcmod"] = normalized_frcmods[0]
+        valid_params.append(valid)
+
+    return valid_params, errors
+
+
 def validate_modxna_params(
     modxna_params: List[Dict[str, Any]],
     pdb_path: Path,
@@ -1744,6 +1881,24 @@ def build_amber_system(
     # Use fixed PDB for tleap
     pdb_path = working_pdb
 
+    valid_metal_params = []
+    if metal_params:
+        valid_metal_params, metal_errors = validate_metal_params(metal_params, pdb_path)
+        if metal_errors:
+            result["errors"].extend(metal_errors)
+            logger.error(f"Metal parameter validation failed: {metal_errors}")
+            blocked = {
+                **result,
+                "error_type": "ValidationError",
+                "code": "invalid_metal_parameters",
+                "message": "Invalid metal parameter records; refusing to run tleap.",
+            }
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
+            return blocked
+    result["parameters"]["metal_params"] = valid_metal_params
+
     ligand_coverage_errors = validate_ligand_template_coverage(pdb_path, valid_ligands)
     if ligand_coverage_errors:
         result["errors"].extend(ligand_coverage_errors)
@@ -1859,21 +2014,19 @@ def build_amber_system(
             script_lines.append("")
 
         # Load metal parameters (from MCPB.py or metalpdb2mol2.py)
-        if metal_params:
+        if valid_metal_params:
             script_lines.append("# Load metal ion parameters")
-            # Load frcmod files first (if any)
-            for metal in metal_params:
-                if metal.get("frcmod"):
-                    frcmod_path = Path(metal["frcmod"])
-                    if frcmod_path.exists():
-                        script_lines.append(f"loadamberparams {metal['frcmod']}")
+            # Load frcmod files first.
+            loaded_metal_frcmods = set()
+            for metal in valid_metal_params:
+                for frcmod in metal.get("frcmods", []):
+                    if frcmod not in loaded_metal_frcmods:
+                        script_lines.append(f"loadamberparams {frcmod}")
+                        loaded_metal_frcmods.add(frcmod)
             # Load mol2 files
-            for metal in metal_params:
-                if metal.get("mol2"):
-                    mol2_path = Path(metal["mol2"])
-                    if mol2_path.exists():
-                        resname = metal.get("residue_name", "MET")
-                        script_lines.append(f"{resname} = loadmol2 {metal['mol2']}")
+            for metal in valid_metal_params:
+                resname = metal.get("residue_name", "MET")
+                script_lines.append(f"{resname} = loadmol2 {metal['mol2']}")
             script_lines.append("")
 
         # Load structure
