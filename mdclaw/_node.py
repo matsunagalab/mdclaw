@@ -13,7 +13,7 @@ import json
 import logging
 import os
 import hashlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -173,6 +173,91 @@ def _resolve_structured_artifact_paths(
             for key, item in value.items()
         }
     return value
+
+
+def _parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _node_progress_summary(node_data: dict) -> dict:
+    """Build the lightweight ``progress.json.nodes`` entry for a node.
+
+    ``node.json`` remains the source of truth. The progress entry is a
+    discoverability index for agents, so it intentionally carries only small
+    fields that help choose work without duplicating full artifacts/metadata.
+    """
+    metadata = node_data.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    artifacts = node_data.get("artifacts", {})
+    if not isinstance(artifacts, dict):
+        artifacts = {}
+
+    entry = {
+        "type": node_data.get("node_type"),
+        "status": node_data.get("status"),
+        "parents": node_data.get("parent_node_ids", []),
+        "dependencies": node_data.get("dependency_node_ids", []),
+    }
+
+    label = node_data.get("label")
+    if label is not None:
+        entry["label"] = label
+
+    conditions = node_data.get("conditions")
+    if isinstance(conditions, dict) and conditions:
+        entry["conditions"] = conditions
+
+    if artifacts:
+        entry["artifact_keys"] = sorted(artifacts.keys())
+
+    producer_agent = metadata.get("producer_agent")
+    if isinstance(producer_agent, str) and producer_agent:
+        entry["producer_agent"] = producer_agent
+
+    open_needs = metadata.get("open_needs")
+    if isinstance(open_needs, list) and open_needs:
+        need_types = sorted({
+            str(n.get("need_type") or n.get("artifact_type") or "")
+            for n in open_needs
+            if isinstance(n, dict) and (n.get("need_type") or n.get("artifact_type"))
+        })
+        entry["open_needs_count"] = len(open_needs)
+        if need_types:
+            entry["open_need_types"] = need_types
+
+    claimed_by = metadata.get("claimed_by")
+    claim_expires_at = metadata.get("claim_expires_at")
+    if isinstance(claimed_by, str) and claimed_by:
+        entry["claim"] = {
+            "claimed_by": claimed_by,
+            "claim_expires_at": claim_expires_at,
+        }
+
+    return entry
+
+
+def _read_node_json_path(node_json: Path) -> Optional[dict]:
+    try:
+        return json.loads(node_json.read_text())
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _sync_progress_node_entry(job_dir: str, node_id: str, node_data: dict) -> None:
+    """Refresh one node's lightweight entry in ``progress.json``."""
+    jd = Path(job_dir)
+    with file_lock(jd / "progress.lock"):
+        pj = jd / "progress.json"
+        progress = _load_progress_v3(pj, create_if_missing=True)
+        nodes = progress.setdefault("nodes", {})
+        nodes[node_id] = _node_progress_summary(node_data)
+        _atomic_write_json(pj, progress)
 
 
 # ── Progress JSON helpers ──────────────────────────────────────────────────
@@ -483,12 +568,7 @@ def create_node(
         _atomic_write_json(node_dir / "node.json", node_data)
 
         # Register in progress.json
-        nodes_index[node_id] = {
-            "type": node_type,
-            "status": "pending",
-            "parents": parents,
-            "dependencies": deps,
-        }
+        nodes_index[node_id] = _node_progress_summary(node_data)
         progress["nodes"] = nodes_index
         _atomic_write_json(pj, progress)
 
@@ -577,6 +657,7 @@ def _apply_status(
 
     node_dir = Path(job_dir) / "nodes" / node_id
     node_json = node_dir / "node.json"
+    data = None
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
         if clear_metadata_keys and isinstance(data.get("metadata"), dict):
@@ -600,12 +681,8 @@ def _apply_status(
     with file_lock(jd / "progress.lock"):
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
-        nodes = progress.get("nodes", {})
-        if node_id not in nodes:
-            raise ValueError(
-                f"Node '{node_id}' exists on disk but is missing from progress.json"
-            )
-        nodes[node_id]["status"] = status
+        nodes = progress.setdefault("nodes", {})
+        nodes[node_id] = _node_progress_summary(data)
         _atomic_write_json(pj, progress)
 
 
@@ -619,6 +696,272 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
     """
     _apply_status(job_dir, node_id, status)
     return {"success": True, "node_id": node_id, "status": status}
+
+
+def claim_node(
+    job_dir: str,
+    node_id: str,
+    agent_id: str,
+    lease_seconds: int = 3600,
+) -> dict:
+    """Claim a node for one agent with an expiring lease."""
+    if not agent_id:
+        return {
+            "success": False,
+            "code": "agent_id_required",
+            "error": "agent_id is required to claim a node",
+        }
+    if lease_seconds <= 0:
+        return {
+            "success": False,
+            "code": "invalid_lease_seconds",
+            "error": "lease_seconds must be positive",
+        }
+
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        claimed_by = metadata.get("claimed_by")
+        claim_expires_at = metadata.get("claim_expires_at")
+        expiry = _parse_iso_datetime(claim_expires_at)
+        claim_active = expiry is not None and expiry > now
+        if claimed_by and claimed_by != agent_id and claim_active:
+            return {
+                "success": False,
+                "code": "node_already_claimed",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "claim_expires_at": claim_expires_at,
+                "error": (
+                    f"Node '{node_id}' is already claimed by '{claimed_by}' "
+                    f"until {claim_expires_at}"
+                ),
+            }
+        metadata["claimed_by"] = agent_id
+        metadata["claim_expires_at"] = expires_at
+        data["updated_at"] = now.isoformat()
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_claimed",
+        success=True,
+        details={
+            "agent_id": agent_id,
+            "lease_seconds": int(lease_seconds),
+            "claim_expires_at": expires_at,
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "claimed_by": agent_id,
+        "claim_expires_at": expires_at,
+    }
+
+
+def release_node_claim(
+    job_dir: str,
+    node_id: str,
+    agent_id: Optional[str] = None,
+) -> dict:
+    """Release a node claim, optionally requiring the current claimant."""
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        claimed_by = metadata.get("claimed_by")
+        if agent_id and claimed_by and claimed_by != agent_id:
+            return {
+                "success": False,
+                "code": "claim_owner_mismatch",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "error": (
+                    f"Node '{node_id}' is claimed by '{claimed_by}', "
+                    f"not '{agent_id}'"
+                ),
+            }
+        metadata.pop("claimed_by", None)
+        metadata.pop("claim_expires_at", None)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_claim_released",
+        success=True,
+        details={
+            "agent_id": agent_id,
+            "previous_claimed_by": claimed_by,
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "released": True,
+        "previous_claimed_by": claimed_by,
+    }
+
+
+def _normalize_need(need: dict) -> dict:
+    if not isinstance(need, dict):
+        raise TypeError("need must be a dict")
+    need_type = need.get("need_type") or need.get("artifact_type")
+    query = need.get("query")
+    rationale = need.get("rationale")
+    if not isinstance(need_type, str) or not need_type:
+        raise ValueError("need.need_type is required")
+    if not isinstance(query, str) or not query:
+        raise ValueError("need.query is required")
+    if not isinstance(rationale, str) or not rationale:
+        raise ValueError("need.rationale is required")
+
+    normalized = dict(need)
+    normalized["need_type"] = need_type
+    normalized.setdefault("preferred_node_type", need.get("node_type"))
+    normalized.setdefault("max_variants", 1)
+    normalized.setdefault("created_at", datetime.now(timezone.utc).isoformat())
+    return normalized
+
+
+def add_node_need(job_dir: str, node_id: str, need: dict) -> dict:
+    """Append an open need to ``node.json.metadata.open_needs``."""
+    try:
+        normalized_need = _normalize_need(need)
+    except (TypeError, ValueError) as exc:
+        return {
+            "success": False,
+            "code": "invalid_need",
+            "error": str(exc),
+        }
+
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        open_needs = metadata.setdefault("open_needs", [])
+        if not isinstance(open_needs, list):
+            open_needs = []
+            metadata["open_needs"] = open_needs
+        open_needs.append(normalized_need)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        need_index = len(open_needs) - 1
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_need_added",
+        success=True,
+        details={
+            "need_index": need_index,
+            "need_type": normalized_need["need_type"],
+            "query": normalized_need["query"],
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "need_index": need_index,
+        "need": normalized_need,
+    }
+
+
+def clear_node_need(
+    job_dir: str,
+    node_id: str,
+    need_index: Optional[int] = None,
+) -> dict:
+    """Clear one open need, or all open needs when ``need_index`` is omitted."""
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        open_needs = metadata.get("open_needs", [])
+        if not isinstance(open_needs, list):
+            open_needs = []
+        if need_index is None:
+            cleared = len(open_needs)
+            metadata["open_needs"] = []
+        else:
+            if need_index < 0 or need_index >= len(open_needs):
+                return {
+                    "success": False,
+                    "code": "need_index_out_of_range",
+                    "node_id": node_id,
+                    "error": (
+                        f"need_index {need_index} is out of range "
+                        f"for {len(open_needs)} open needs"
+                    ),
+                }
+            open_needs.pop(need_index)
+            metadata["open_needs"] = open_needs
+            cleared = 1
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_need_cleared",
+        success=True,
+        details={
+            "need_index": need_index,
+            "cleared": cleared,
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "cleared": cleared,
+        "remaining_open_needs": len(data.get("metadata", {}).get("open_needs", [])),
+    }
 
 
 # ── State transitions (tools call these) ───────────────────────────────────
@@ -768,6 +1111,77 @@ def update_job_params(job_dir: str, params: dict) -> dict:
         "job_dir": str(jd),
         "progress_file": str(jd / "progress.json"),
         "params": progress.get("params", {}),
+    }
+
+
+def rebuild_progress_index(job_dir: str) -> dict:
+    """Rebuild ``progress.json.nodes`` from on-disk ``node.json`` files.
+
+    This keeps ``progress.json`` useful as a multi-agent global view while
+    making it repairable from the per-node source of truth.
+    """
+    jd = Path(job_dir).resolve()
+    nodes_dir = jd / "nodes"
+    warnings: list[str] = []
+    rebuilt_nodes: dict[str, dict] = {}
+
+    if nodes_dir.is_dir():
+        for node_dir in sorted(nodes_dir.iterdir()):
+            if not node_dir.is_dir():
+                continue
+            node_json = node_dir / "node.json"
+            if not node_json.exists():
+                warnings.append(f"missing node.json for {node_dir.name}")
+                continue
+            data = _read_node_json_path(node_json)
+            if data is None:
+                warnings.append(f"unreadable node.json for {node_dir.name}")
+                continue
+            node_id = data.get("node_id") or node_dir.name
+            if node_id != node_dir.name:
+                warnings.append(
+                    f"node_id mismatch for {node_dir.name}: node.json says {node_id}"
+                )
+            rebuilt_nodes[str(node_id)] = _node_progress_summary(data)
+    else:
+        warnings.append(f"nodes directory missing under {jd}")
+
+    with file_lock(jd / "progress.lock"):
+        pj = jd / "progress.json"
+        if pj.exists():
+            progress = _load_progress_v3(pj)
+        else:
+            progress = {
+                "schema_version": SCHEMA_VERSION,
+                "job_id": jd.name,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "system": {},
+                "preparation": {},
+                "params": {},
+                "warnings": [],
+            }
+        progress["nodes"] = rebuilt_nodes
+        if warnings:
+            progress.setdefault("warnings", []).extend(warnings)
+        progress["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(pj, progress)
+
+    write_event(
+        str(jd),
+        "progress",
+        "progress_index_rebuilt",
+        success=True,
+        details={
+            "num_nodes": len(rebuilt_nodes),
+            "warnings": warnings,
+        },
+    )
+    return {
+        "success": True,
+        "job_dir": str(jd),
+        "progress_file": str(jd / "progress.json"),
+        "num_nodes": len(rebuilt_nodes),
+        "warnings": warnings,
     }
 
 

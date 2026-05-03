@@ -5,13 +5,17 @@ Covers: _lock.py, _node.py lifecycle, node_server.py registration.
 
 import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from mdclaw._node import (
     SCHEMA_VERSION,
+    add_node_need,
     begin_node,
+    claim_node,
+    clear_node_need,
     create_node,
     fail_node,
     find_ancestor_artifact,
@@ -20,6 +24,8 @@ from mdclaw._node import (
     get_children,
     init_progress_v3,
     read_node,
+    rebuild_progress_index,
+    release_node_claim,
     resolve_artifact,
     resolve_node_inputs,
     update_job_params,
@@ -914,6 +920,197 @@ class TestReadHelpers:
         path = resolve_artifact(str(job_dir), "eq_001", "artifacts/equilibrated.chk")
         expected = job_dir / "nodes" / "eq_001" / "artifacts" / "equilibrated.chk"
         assert path == expected.resolve()
+
+
+# ── Multi-agent global index helpers ───────────────────────────────────────
+
+
+class TestProgressIndexRebuild:
+
+    def test_rebuild_progress_index_from_node_json(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep", label="protein_only")
+        complete_node(
+            jd,
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+            metadata={"producer_agent": "agent-a"},
+        )
+        add_node_need(
+            jd,
+            "prep_001",
+            {
+                "need_type": "solvation",
+                "query": "solvate prepared structure",
+                "rationale": "Topology requires a solvated system.",
+                "preferred_node_type": "solv",
+            },
+        )
+
+        progress_path = job_dir / "progress.json"
+        progress = json.loads(progress_path.read_text())
+        progress["nodes"] = {"stale_999": {"type": "prep", "status": "failed"}}
+        progress_path.write_text(json.dumps(progress))
+
+        result = rebuild_progress_index(jd)
+
+        assert result["success"] is True
+        rebuilt = json.loads(progress_path.read_text())["nodes"]
+        assert list(rebuilt) == ["prep_001"]
+        assert rebuilt["prep_001"]["type"] == "prep"
+        assert rebuilt["prep_001"]["status"] == "completed"
+        assert rebuilt["prep_001"]["label"] == "protein_only"
+        assert rebuilt["prep_001"]["producer_agent"] == "agent-a"
+        assert rebuilt["prep_001"]["artifact_keys"] == ["merged_pdb"]
+        assert rebuilt["prep_001"]["open_needs_count"] == 1
+        assert rebuilt["prep_001"]["open_need_types"] == ["solvation"]
+
+    def test_rebuild_progress_index_warns_on_unreadable_node(self, job_dir):
+        create_node(str(job_dir), "prep")
+        bad_dir = job_dir / "nodes" / "bad_001"
+        bad_dir.mkdir(parents=True)
+        (bad_dir / "node.json").write_text("{not json")
+
+        result = rebuild_progress_index(str(job_dir))
+
+        assert result["success"] is True
+        assert any("unreadable node.json" in w for w in result["warnings"])
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert "prep_001" in progress["nodes"]
+        assert "bad_001" not in progress["nodes"]
+
+
+class TestNodeClaim:
+
+    def test_claim_node_sets_metadata_and_progress_summary(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+
+        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        assert result["success"] is True
+        node = read_node(jd, "prod_001")
+        assert node["metadata"]["claimed_by"] == "agent-a"
+        assert node["metadata"]["claim_expires_at"] == result["claim_expires_at"]
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"]["prod_001"]["claim"]["claimed_by"] == "agent-a"
+
+    def test_claim_node_rejects_active_other_agent_claim(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
+
+        assert result["success"] is False
+        assert result["code"] == "node_already_claimed"
+        assert result["claimed_by"] == "agent-a"
+
+    def test_claim_node_allows_expired_claim_override(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        expired = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
+        update_node(
+            jd,
+            "prod_001",
+            {
+                "metadata": {
+                    "claimed_by": "agent-a",
+                    "claim_expires_at": expired,
+                }
+            },
+        )
+
+        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
+
+        assert result["success"] is True
+        node = read_node(jd, "prod_001")
+        assert node["metadata"]["claimed_by"] == "agent-b"
+
+    def test_release_node_claim_removes_metadata_and_progress_summary(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        result = release_node_claim(jd, "prod_001", agent_id="agent-a")
+
+        assert result["success"] is True
+        node = read_node(jd, "prod_001")
+        assert "claimed_by" not in node["metadata"]
+        assert "claim_expires_at" not in node["metadata"]
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert "claim" not in progress["nodes"]["prod_001"]
+
+    def test_release_node_claim_rejects_wrong_owner(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        result = release_node_claim(jd, "prod_001", agent_id="agent-b")
+
+        assert result["success"] is False
+        assert result["code"] == "claim_owner_mismatch"
+
+
+class TestNodeNeeds:
+
+    def test_add_node_need_updates_metadata_and_progress_summary(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+
+        result = add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production by 100 ns",
+                "rationale": "RMSD has not converged yet.",
+                "preferred_node_type": "prod",
+                "max_variants": 2,
+            },
+        )
+
+        assert result["success"] is True
+        node = read_node(jd, "eq_001")
+        assert node["metadata"]["open_needs"][0]["need_type"] == "prod_extension"
+        progress = json.loads((job_dir / "progress.json").read_text())
+        entry = progress["nodes"]["eq_001"]
+        assert entry["open_needs_count"] == 1
+        assert entry["open_need_types"] == ["prod_extension"]
+
+    def test_clear_node_need_removes_one_or_all_needs(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        for need_type in ("prod_extension", "replicate"):
+            add_node_need(
+                jd,
+                "eq_001",
+                {
+                    "need_type": need_type,
+                    "query": f"{need_type} request",
+                    "rationale": "Additional sampling would improve confidence.",
+                },
+            )
+
+        one = clear_node_need(jd, "eq_001", need_index=0)
+        assert one["success"] is True
+        assert one["remaining_open_needs"] == 1
+        node = read_node(jd, "eq_001")
+        assert node["metadata"]["open_needs"][0]["need_type"] == "replicate"
+
+        all_needs = clear_node_need(jd, "eq_001")
+        assert all_needs["success"] is True
+        assert all_needs["cleared"] == 1
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert "open_needs_count" not in progress["nodes"]["eq_001"]
+
+    def test_add_node_need_rejects_invalid_need(self, job_dir):
+        create_node(str(job_dir), "eq")
+
+        result = add_node_need(str(job_dir), "eq_001", {"query": "missing type"})
+
+        assert result["success"] is False
+        assert result["code"] == "invalid_need"
 
 
 # ── DAG auto-resolve ──────────────────────────────────────────────────────
@@ -1816,6 +2013,17 @@ class TestNodeServerRegistration:
     def test_create_node_in_tools(self):
         from mdclaw.node_server import TOOLS
         assert "create_node" in TOOLS
+
+    def test_multi_agent_node_tools_registered(self):
+        from mdclaw.node_server import TOOLS
+        for tool_name in (
+            "rebuild_progress_index",
+            "claim_node",
+            "release_node_claim",
+            "add_node_need",
+            "clear_node_need",
+        ):
+            assert tool_name in TOOLS
 
     def test_registry_has_node(self):
         from mdclaw._registry import SERVER_REGISTRY
