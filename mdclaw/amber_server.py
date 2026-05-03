@@ -29,6 +29,7 @@ from mdclaw._common import (  # noqa: E402
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_guardrail_result, create_validation_error,
     create_validation_error_from_guardrails, guardrail_messages,
+    is_glycan_residue_name,
     normalize_choice, split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
@@ -107,6 +108,14 @@ POLYPHOSPHATE_LIGANDS = {"AP5", "ATP", "ADP", "AMP", "GTP", "GDP", "NAD", "NAP"}
 NUCLEIC_FORCEFIELDS = {
     "dna": "leaprc.DNA.OL15",
     "rna": "leaprc.RNA.OL3",
+}
+GLYCAN_FORCEFIELDS = {
+    "auto": "leaprc.GLYCAM_06j-1",
+    "glycam06j": "leaprc.GLYCAM_06j-1",
+    "glycam_06j": "leaprc.GLYCAM_06j-1",
+    "glycam06j-1": "leaprc.GLYCAM_06j-1",
+    "glycam_06j-1": "leaprc.GLYCAM_06j-1",
+    "GLYCAM_06j-1": "leaprc.GLYCAM_06j-1",
 }
 
 # =============================================================================
@@ -284,6 +293,35 @@ def detect_nucleic_content(pdb_path: Path) -> dict:
         "standard_residue_names": sorted(standard_names),
         "unsupported_modified_residues": unsupported,
         "has_protein": has_protein,
+    }
+
+
+def detect_glycan_content(pdb_path: Path) -> dict:
+    """Detect glycan residues in a PDB input."""
+    residues: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for line in pdb_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        resname = line[17:20].strip().upper()
+        if not is_glycan_residue_name(resname):
+            continue
+        chain = line[21].strip() or "A"
+        resnum = line[22:26].strip()
+        icode = line[26].strip()
+        key = (chain, resnum, icode, resname)
+        residues.setdefault(
+            key,
+            {
+                "chain": chain,
+                "resnum": int(resnum) if resnum.lstrip("-").isdigit() else resnum,
+                "icode": icode,
+                "resname": resname,
+            },
+        )
+    return {
+        "has_glycan": bool(residues),
+        "residue_names": sorted({r["resname"] for r in residues.values()}),
+        "residues": list(residues.values()),
     }
 
 
@@ -1234,6 +1272,97 @@ def _plan_disulfide_tleap_bonds(
     return plan
 
 
+def _plan_glycan_tleap_bonds(
+    pdb_path: Path,
+    glycan_linkages: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Map prepared protein-glycan linkages onto tleap unit indices."""
+    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    if not glycan_linkages:
+        return plan
+
+    unit_index = 0
+    residues: Dict[Tuple[str, str, str, str], Dict[str, Any]] = {}
+    last_key: Optional[Tuple[str, str, str, str]] = None
+    try:
+        with open(pdb_path, "r") as fh:
+            for line in fh:
+                if not line.startswith(("ATOM", "HETATM")) or len(line) < 27:
+                    continue
+                resname = line[17:20].strip()
+                chain = line[21].strip() or "A"
+                resnum = line[22:26].strip()
+                icode = line[26].strip()
+                key = (chain, resnum, icode, resname)
+                if key != last_key:
+                    unit_index += 1
+                    residues[key] = {
+                        "unit_index": unit_index,
+                        "atoms": set(),
+                    }
+                    last_key = key
+                residues[key]["atoms"].add(line[12:16].strip())
+    except OSError as e:
+        plan["warnings"].append(f"Could not read PDB for glycan linkage mapping: {e}")
+        return plan
+
+    emitted_pairs: set[frozenset[int]] = set()
+    for linkage in glycan_linkages:
+        protein = linkage.get("protein") or {}
+        glycan = linkage.get("glycan") or {}
+        protein_key = (
+            str(protein.get("merged_chain") or protein.get("chain") or ""),
+            str(protein.get("merged_resnum") or protein.get("resnum") or ""),
+            str(protein.get("merged_icode") or protein.get("icode") or ""),
+            str(protein.get("resname") or ""),
+        )
+        glycan_key = (
+            str(glycan.get("merged_chain") or glycan.get("chain") or ""),
+            str(glycan.get("merged_resnum") or glycan.get("resnum") or ""),
+            str(glycan.get("merged_icode") or glycan.get("icode") or ""),
+            str(glycan.get("resname") or ""),
+        )
+        record = {
+            "protein": protein,
+            "glycan": glycan,
+            "source": linkage.get("source"),
+            "tleap_residues": None,
+            "status": "unresolved",
+        }
+        protein_residue = residues.get(protein_key)
+        glycan_residue = residues.get(glycan_key)
+        protein_atom = str(protein.get("atom") or "")
+        glycan_atom = str(glycan.get("atom") or "")
+        if protein_residue is None or glycan_residue is None:
+            plan["warnings"].append(
+                f"Glycan linkage skipped: residue not found in {pdb_path.name}: "
+                f"{protein_key} - {glycan_key}"
+            )
+            plan["resolved"].append(record)
+            continue
+        if protein_atom not in protein_residue["atoms"] or glycan_atom not in glycan_residue["atoms"]:
+            plan["warnings"].append(
+                f"Glycan linkage skipped: atom not found in {pdb_path.name}: "
+                f"{protein_key}.{protein_atom} - {glycan_key}.{glycan_atom}"
+            )
+            plan["resolved"].append(record)
+            continue
+        idx1 = protein_residue["unit_index"]
+        idx2 = glycan_residue["unit_index"]
+        bond_key = frozenset({idx1, idx2})
+        if bond_key in emitted_pairs:
+            record["status"] = "emitted_duplicate"
+            plan["resolved"].append(record)
+            continue
+        emitted_pairs.add(bond_key)
+        plan["bond_lines"].append(f"bond mol.{idx1}.{protein_atom} mol.{idx2}.{glycan_atom}")
+        record["status"] = "emitted"
+        record["tleap_residues"] = [[idx1, idx2]]
+        plan["resolved"].append(record)
+
+    return plan
+
+
 def _add_pdb_info(
     parm7_path: Path,
     pdb_path: Path,
@@ -1332,10 +1461,13 @@ def build_amber_system(
     modxna_params: Optional[List[Dict[str, Any]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
     disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
+    glycan_metadata: Optional[Dict[str, Any]] = None,
+    glycan_linkages: Optional[List[Dict[str, Any]]] = None,
     box_dimensions: Optional[Dict[str, float]] = None,
     forcefield: str = "ff19SB",
     water_model: str = "opc",
     nucleic_forcefield: str = "auto",
+    glycan_forcefield: str = "auto",
     is_membrane: bool = False,
     output_name: str = "system",
     output_dir: Optional[str] = None,
@@ -1446,6 +1578,7 @@ def build_amber_system(
                 "forcefield": forcefield,
                 "water_model": water_model,
                 "nucleic_forcefield": nucleic_forcefield,
+                "glycan_forcefield": glycan_forcefield,
                 "is_membrane": is_membrane,
                 "output_name": output_name,
             },
@@ -1463,6 +1596,10 @@ def build_amber_system(
             metal_params = _inputs["metal_params"]
         if disulfide_bonds is None and "disulfide_bonds" in _inputs:
             disulfide_bonds = _inputs["disulfide_bonds"]
+        if glycan_metadata is None and "glycan_metadata" in _inputs:
+            glycan_metadata = _inputs["glycan_metadata"]
+        if glycan_linkages is None and "glycan_linkages" in _inputs:
+            glycan_linkages = _inputs["glycan_linkages"]
         if box_dimensions is None and "box_dimensions" in _inputs:
             box_dimensions = _inputs["box_dimensions"]
         if not is_membrane and _inputs.get("is_membrane"):
@@ -1502,6 +1639,32 @@ def build_amber_system(
                     )
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning(f"Found {ss_json} but could not read: {e}")
+                break
+
+    # Auto-detect glycan prep artifacts if not provided.
+    if glycan_metadata is None:
+        pdb_path = Path(pdb_file)
+        for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
+            gly_json = search_dir / "glycan_metadata.json"
+            if gly_json.exists():
+                try:
+                    glycan_metadata = json.loads(gly_json.read_text())
+                    logger.info(f"Auto-loaded glycan_metadata from {gly_json}")
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Found {gly_json} but could not read: {e}")
+                break
+    if glycan_linkages is None:
+        pdb_path = Path(pdb_file)
+        for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
+            gly_link_json = search_dir / "glycan_linkages.json"
+            if gly_link_json.exists():
+                try:
+                    glycan_linkages = json.loads(gly_link_json.read_text())
+                    logger.info(
+                        f"Auto-loaded glycan_linkages ({len(glycan_linkages)} linkages) from {gly_link_json}"
+                    )
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Found {gly_link_json} but could not read: {e}")
                 break
 
     # Auto-detect box_dimensions.json if not provided
@@ -1575,6 +1738,7 @@ def build_amber_system(
         "parameters": {
             "forcefield": forcefield,
             "nucleic_forcefield": nucleic_forcefield,
+            "glycan_forcefield": glycan_forcefield,
             "water_model": water_model if solvent_type == "explicit" else None,
             "water_model_status": (
                 "used_for_explicit_solvent"
@@ -1585,6 +1749,8 @@ def build_amber_system(
             "is_membrane": is_membrane if box_dimensions else False,
             "ligand_count": len(ligand_params) if ligand_params else 0,
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
+            "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
+            "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
             "metal_count": len(metal_params) if metal_params else 0
         },
         "statistics": {},
@@ -1682,6 +1848,9 @@ def build_amber_system(
     result["nucleic_content"] = nucleic_content
     result["parameters"]["nucleic_subtypes"] = nucleic_content["subtypes"]
     result["parameters"]["nucleic_residue_names"] = nucleic_content["standard_residue_names"]
+    glycan_content = detect_glycan_content(pdb_path)
+    result["glycan_content"] = glycan_content
+    result["parameters"]["glycan_residue_names"] = glycan_content["residue_names"]
 
     valid_modxna_params = []
     if modxna_params:
@@ -1813,6 +1982,60 @@ def build_amber_system(
             ),
         }
     result["parameters"]["nucleic_libraries"] = nucleic_libraries
+
+    glycan_library = None
+    glycan_mode = (glycan_forcefield or "auto").lower()
+    if glycan_mode in {"none", "off", "false", "no"}:
+        glycan_library = None
+    elif glycan_mode == "auto":
+        glycan_library = GLYCAN_FORCEFIELDS["auto"] if glycan_content["has_glycan"] else None
+    elif glycan_mode in GLYCAN_FORCEFIELDS:
+        glycan_library = GLYCAN_FORCEFIELDS[glycan_mode]
+    else:
+        return {
+            **result,
+            **create_validation_error(
+                "glycan_forcefield",
+                f"Unknown glycan_forcefield: {glycan_forcefield}",
+                expected="'auto', 'none', or 'glycam06j-1'",
+                actual=glycan_forcefield,
+                warnings=result["warnings"],
+            ),
+        }
+    if glycan_content["has_glycan"] and not glycan_library:
+        return {
+            **result,
+            **create_validation_error(
+                "glycan_forcefield",
+                "Glycan residues are present, but glycan force-field loading is disabled.",
+                expected="'auto' or a GLYCAM force field",
+                actual=glycan_forcefield,
+                warnings=result["warnings"],
+            ),
+            "code": "glycan_forcefield_disabled",
+        }
+    if glycan_metadata and isinstance(glycan_metadata, dict):
+        metadata_residues = {
+            str(r.get("source_resname") or r.get("resname") or "").upper()
+            for r in glycan_metadata.get("residue_mapping", [])
+        }
+        unsupported_glycans = sorted(
+            name for name in metadata_residues
+            if name and not is_glycan_residue_name(name)
+        )
+        if unsupported_glycans:
+            return {
+                **result,
+                **create_validation_error(
+                    "glycan_metadata",
+                    "Unsupported glycan residue(s) detected; refusing to treat them as GAFF ligands.",
+                    expected="Known PDB glycan or GLYCAM residue names",
+                    actual=unsupported_glycans,
+                    warnings=result["warnings"],
+                ),
+                "code": "unsupported_glycan_residue",
+            }
+    result["parameters"]["glycan_library"] = glycan_library
 
     # Validate ligand parameters
     valid_ligands = []
@@ -1968,6 +2191,8 @@ def build_amber_system(
             script_lines.append(f"source {phosaa_library}")
         for nucleic_library in nucleic_libraries:
             script_lines.append(f"source {nucleic_library}")
+        if glycan_library:
+            script_lines.append(f"source {glycan_library}")
         script_lines.append("source leaprc.gaff2")
         loaded_modxna_frcmods = set()
         for params in valid_modxna_params:
@@ -2049,6 +2274,18 @@ def build_amber_system(
                 for w in ss_plan["warnings"]:
                     logger.warning(w)
             result["disulfide_bond_plan"] = ss_plan["resolved"]
+
+        if glycan_linkages:
+            glycan_plan = _plan_glycan_tleap_bonds(Path(pdb_path), glycan_linkages)
+            if glycan_plan["bond_lines"]:
+                script_lines.append("# Protein-glycan linkages (from prepare_complex)")
+                script_lines.extend(glycan_plan["bond_lines"])
+                script_lines.append("")
+            if glycan_plan["warnings"]:
+                result["warnings"].extend(glycan_plan["warnings"])
+                for w in glycan_plan["warnings"]:
+                    logger.warning(w)
+            result["glycan_linkage_plan"] = glycan_plan["resolved"]
 
         # Set box dimensions for explicit solvent
         if box_dimensions:
@@ -2255,6 +2492,9 @@ def build_amber_system(
                     "is_membrane": is_membrane,
                     "nucleic_libraries": nucleic_libraries or None,
                     "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
+                    "glycan_library": glycan_library,
+                    "glycan_content": glycan_content if glycan_content.get("has_glycan") else None,
+                    "glycan_linkage_plan": result.get("glycan_linkage_plan"),
                     "modxna_params": valid_modxna_params or None,
                     "phosaa_library": phosaa_library,
                     "ptm_residues": ptm_residues_in_input or None,
@@ -2262,6 +2502,7 @@ def build_amber_system(
             summary_params = {
                 "forcefield": result["parameters"].get("forcefield"),
                 "nucleic_libraries": nucleic_libraries or None,
+                "glycan_library": glycan_library,
                 "solvation_type": solvent_type,
                 "water_model": water_model if solvent_type == "explicit" else None,
             }

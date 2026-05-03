@@ -28,7 +28,11 @@ import httpx
 
 # Configure logging
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from mdclaw._common import setup_logger, ensure_directory  # noqa: E402
+from mdclaw._common import (  # noqa: E402
+    classify_glycan_residues,
+    ensure_directory,
+    setup_logger,
+)
 
 logger = setup_logger(__name__)
 
@@ -2605,11 +2609,15 @@ def inspect_molecules(
         "chains": [],
         "summary": {
             "num_protein_chains": 0,
+            "num_nucleic_chains": 0,
+            "num_glycan_chains": 0,
             "num_ligand_chains": 0,
             "num_water_chains": 0,
             "num_ion_chains": 0,
             "total_chains": 0,
             "protein_chain_ids": [],
+            "nucleic_chain_ids": [],
+            "glycan_chain_ids": [],
             "ligand_chain_ids": [],
             "water_chain_ids": [],
             "ion_chain_ids": [],
@@ -2726,6 +2734,9 @@ def inspect_molecules(
         nucleic_author_chains = []
         nucleic_subtypes: dict[str, str] = {}
         modified_nucleic_residues: list[dict] = []
+        glycan_chain_ids = []
+        glycan_author_chains = []
+        glycan_residues: list[dict] = []
         ligand_chain_ids = []
         ligand_author_chains = []
         water_chain_ids = []
@@ -2805,6 +2816,12 @@ def inspect_molecules(
                 residue_names,
                 entity_info.get("polymer_type"),
             )
+            glycan_info = classify_glycan_residues(
+                residue_names,
+                entity_info.get("entity_type"),
+                entity_info.get("polymer_type"),
+                entity_info.get("name"),
+            )
 
             # Classify chain type
             if has_protein:
@@ -2822,6 +2839,16 @@ def inspect_molecules(
                     nucleic_author_chains.append(author_chain)
                 for res_name in nucleic_info["modified_residue_names"]:
                     modified_nucleic_residues.append({
+                        "chain": author_chain,
+                        "resname": res_name,
+                    })
+            elif glycan_info["is_glycan"]:
+                chain_type = "glycan"
+                glycan_chain_ids.append(chain_id)
+                if author_chain not in glycan_author_chains:
+                    glycan_author_chains.append(author_chain)
+                for res_name in glycan_info["residue_names"]:
+                    glycan_residues.append({
                         "chain": author_chain,
                         "resname": res_name,
                     })
@@ -2856,6 +2883,10 @@ def inspect_molecules(
                 "modified_nucleic_residue_names": (
                     nucleic_info["modified_residue_names"] if chain_type == "nucleic" else []
                 ),
+                "is_glycan": chain_type == "glycan",
+                "glycan_residue_names": (
+                    glycan_info["residue_names"] if chain_type == "glycan" else []
+                ),
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
@@ -2878,6 +2909,7 @@ def inspect_molecules(
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
             "num_nucleic_chains": len(nucleic_author_chains),
+            "num_glycan_chains": len(glycan_author_chains),
             "num_ligand_chains": len(ligand_author_chains),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
@@ -2885,10 +2917,12 @@ def inspect_molecules(
             # Author IDs (auth_asym_id) — for display / provenance.
             "protein_chain_ids": protein_author_chains,
             "nucleic_chain_ids": nucleic_author_chains,
+            "glycan_chain_ids": glycan_author_chains,
             "ligand_chain_ids": ligand_author_chains,
             # Label IDs (label_asym_id) — **pass these to select_chains**.
             "protein_label_ids": protein_chain_ids,
             "nucleic_label_ids": nucleic_chain_ids,
+            "glycan_label_ids": glycan_chain_ids,
             "ligand_label_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
@@ -2897,6 +2931,7 @@ def inspect_molecules(
             "ptm_residues": ptm_residues,
             "nucleic_subtypes": nucleic_subtypes,
             "modified_nucleic_residues": modified_nucleic_residues,
+            "glycan_residues": glycan_residues,
         }
 
         result["notes"] = {

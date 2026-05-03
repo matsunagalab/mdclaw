@@ -30,7 +30,14 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
+from mdclaw._common import (  # noqa: E402
+    classify_glycan_residues,
+    ensure_directory,
+    create_unique_subdir,
+    generate_job_id,
+    is_glycan_residue_name,
+    BaseToolWrapper,
+)
 from mdclaw.research_server import classify_nucleic_residues  # noqa: E402
 
 # Default working directory for prepare_complex when output_dir is not specified
@@ -1534,6 +1541,10 @@ AMINO_ACIDS = {
     'ILE', 'LEU', 'LYS', 'MET', 'PHE', 'PRO', 'SER', 'THR', 'TRP', 
     'TYR', 'VAL', 'SEC', 'PYL'
 }
+AMBER_PROTEIN_RESIDUES = {
+    "HID", "HIE", "HIP", "HSD", "HSE", "HSP", "CYX", "CYM",
+    "ASH", "GLH", "LYN", "ACE", "NME",
+}
 WATER_NAMES = {'HOH', 'WAT', 'H2O', 'DOD', 'D2O'}
 
 
@@ -1626,12 +1637,14 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         "summary": {
             "num_protein_chains": 0,
             "num_nucleic_chains": 0,
+            "num_glycan_chains": 0,
             "num_ligand_chains": 0,
             "num_water_chains": 0,
             "num_ion_chains": 0,
             "total_chains": 0,
             "protein_chain_ids": [],
             "nucleic_chain_ids": [],
+            "glycan_chain_ids": [],
             "ligand_chain_ids": [],
             "water_chain_ids": [],
             "ion_chain_ids": []
@@ -1764,10 +1777,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         protein_chain_ids = []
         nucleic_chain_ids = []
         ligand_chain_ids = []
+        glycan_chain_ids = []
         water_chain_ids = []
         ion_chain_ids = []
         nucleic_subtypes = {}
         modified_nucleic_residues = []
+        glycan_residues = []
         
         for subchain in model.subchains():
             chain_id = subchain.subchain_id()  # label_asym_id - unique identifier
@@ -1817,6 +1832,12 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 residue_names,
                 entity_info.get("polymer_type"),
             )
+            glycan_info = classify_glycan_residues(
+                residue_names,
+                entity_info.get("entity_type"),
+                entity_info.get("polymer_type"),
+                entity_info.get("name"),
+            )
             
             # Classify chain type.
             # The *_chain_ids lists store author_chain (auth_asym_id); they
@@ -1836,6 +1857,15 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                     nucleic_subtypes[chain_id] = nucleic_info["subtype"]
                 for res_name in nucleic_info["modified_residue_names"]:
                     modified_nucleic_residues.append({
+                        "chain": author_chain,
+                        "resname": res_name,
+                    })
+            elif glycan_info["is_glycan"]:
+                chain_type = "glycan"
+                if author_chain not in glycan_chain_ids:
+                    glycan_chain_ids.append(author_chain)
+                for res_name in glycan_info["residue_names"]:
+                    glycan_residues.append({
                         "chain": author_chain,
                         "resname": res_name,
                     })
@@ -1885,6 +1915,10 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                 "modified_nucleic_residue_names": (
                     nucleic_info["modified_residue_names"] if chain_type == "nucleic" else []
                 ),
+                "is_glycan": chain_type == "glycan",
+                "glycan_residue_names": (
+                    glycan_info["residue_names"] if chain_type == "glycan" else []
+                ),
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
@@ -1907,6 +1941,7 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         #     pairings (e.g. 7NMU has label C ↔ auth DDD) are visible.
         protein_label_ids = [c["chain_id"] for c in chains_info if c["chain_type"] == "protein"]
         nucleic_label_ids = [c["chain_id"] for c in chains_info if c["chain_type"] == "nucleic"]
+        glycan_label_ids  = [c["chain_id"] for c in chains_info if c["chain_type"] == "glycan"]
         ligand_label_ids  = [c["chain_id"] for c in chains_info if c["chain_type"] == "ligand"]
         water_label_ids   = [c["chain_id"] for c in chains_info if c["chain_type"] == "water"]
         ion_label_ids     = [c["chain_id"] for c in chains_info if c["chain_type"] == "ion"]
@@ -1914,6 +1949,7 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         result["summary"] = {
             "num_protein_chains": len(protein_chain_ids),
             "num_nucleic_chains": len(nucleic_chain_ids),
+            "num_glycan_chains": len(glycan_chain_ids),
             "num_ligand_chains": len(ligand_chain_ids),
             "num_water_chains": len(water_chain_ids),
             "num_ion_chains": len(ion_chain_ids),
@@ -1921,18 +1957,21 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             # author_chain (auth_asym_id) lists — for display.
             "protein_chain_ids": protein_chain_ids,
             "nucleic_chain_ids": nucleic_chain_ids,
+            "glycan_chain_ids": glycan_chain_ids,
             "ligand_chain_ids": ligand_chain_ids,
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
             # chain_id (label_asym_id) lists — pass these to select_chains.
             "protein_label_ids": protein_label_ids,
             "nucleic_label_ids": nucleic_label_ids,
+            "glycan_label_ids": glycan_label_ids,
             "ligand_label_ids": ligand_label_ids,
             "water_label_ids": water_label_ids,
             "ion_label_ids": ion_label_ids,
             "chain_id_map": chain_id_map,
             "nucleic_subtypes": nucleic_subtypes,
             "modified_nucleic_residues": modified_nucleic_residues,
+            "glycan_residues": glycan_residues,
         }
         
         # Check if any chains were found
@@ -2017,7 +2056,7 @@ def split_molecules(
     Type Filtering:
         Use include_types to filter by molecular type. By default (None), all
         types except water are included. Valid types: "protein", "nucleic",
-        "ligand", "ion", "water".
+        "glycan", "ligand", "ion", "water".
 
     Tip: Use inspect_molecules first to understand the structure and identify
     which chains you want to extract. It shows both chain_id (label_asym_id)
@@ -2033,8 +2072,8 @@ def split_molecules(
                        entries. Use inspect_molecules to find available
                        IDs. If None, extracts all chains.
         include_types: List of molecular types to include. Valid values:
-                       "protein", "nucleic", "ligand", "ion", "water".
-                       If None (default), includes ["protein", "nucleic", "ligand", "ion"].
+                       "protein", "nucleic", "glycan", "ligand", "ion", "water".
+                       If None (default), includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters are excluded even if "water"
                             is in include_types). For most MD simulations, crystal waters
@@ -2055,6 +2094,7 @@ def split_molecules(
             - file_format: str - Output format (always 'pdb')
             - protein_files: list[str] - Paths to protein chain files (protein_*.pdb)
             - nucleic_files: list[str] - Paths to nucleic chain files (nucleic_*.pdb)
+            - glycan_files: list[str] - Paths to glycan chain files (glycan_*.pdb)
             - ligand_files: list[str] - Paths to ligand chain files (ligand_*.pdb)
             - ion_files: list[str] - Paths to ion chain files (ion_*.pdb)
             - water_files: list[str] - Paths to water chain files (water_*.pdb)
@@ -2068,10 +2108,10 @@ def split_molecules(
     
     # Set default include_types (exclude water by default)
     if include_types is None:
-        include_types = ["protein", "nucleic", "ligand", "ion"]
+        include_types = ["protein", "nucleic", "glycan", "ligand", "ion"]
 
     # Validate include_types
-    valid_types = {"protein", "nucleic", "ligand", "ion", "water"}
+    valid_types = {"protein", "nucleic", "glycan", "ligand", "ion", "water"}
     invalid_types = set(include_types) - valid_types
     if invalid_types:
         logger.warning(f"Invalid include_types ignored: {invalid_types}. Valid: {valid_types}")
@@ -2094,6 +2134,7 @@ def split_molecules(
         "file_format": "pdb",
         "protein_files": [],
         "nucleic_files": [],
+        "glycan_files": [],
         "ligand_files": [],
         "ion_files": [],
         "water_files": [],
@@ -2257,11 +2298,13 @@ def split_molecules(
         # Write each chain to a separate PDB file
         protein_files = []
         nucleic_files = []
+        glycan_files = []
         ligand_files = []
         ion_files = []
         water_files = []
         protein_idx = 1
         nucleic_idx = 1
+        glycan_idx = 1
         ligand_idx = 1
         ion_idx = 1
         water_idx = 1
@@ -2361,6 +2404,13 @@ def split_molecules(
                     out_file = out_dir / f"nucleic_{nucleic_idx}.pdb"
                     nucleic_files.append(str(out_file))
                     nucleic_idx += 1
+                elif chain_type == "glycan":
+                    if resnum is not None:
+                        out_file = out_dir / f"glycan_{res_name}_{author_chain_id}{resnum}.pdb"
+                    else:
+                        out_file = out_dir / f"glycan_{glycan_idx}.pdb"
+                    glycan_files.append(str(out_file))
+                    glycan_idx += 1
                 elif chain_type == "ligand":
                     # Use descriptive naming: ligand_{resname}_{chain}{resnum}.pdb
                     if resnum is not None:
@@ -2402,6 +2452,7 @@ def split_molecules(
         
         result["protein_files"] = protein_files
         result["nucleic_files"] = nucleic_files
+        result["glycan_files"] = glycan_files
         result["ligand_files"] = ligand_files
         result["ion_files"] = ion_files
         result["water_files"] = water_files
@@ -2411,6 +2462,7 @@ def split_molecules(
         total_files = (
             len(protein_files)
             + len(nucleic_files)
+            + len(glycan_files)
             + len(ligand_files)
             + len(ion_files)
             + len(water_files)
@@ -2427,7 +2479,8 @@ def split_molecules(
         result["success"] = True
         logger.info(
             f"Successfully split structure: {len(protein_files)} protein, "
-            f"{len(nucleic_files)} nucleic, {len(ligand_files)} ligand, "
+            f"{len(nucleic_files)} nucleic, {len(glycan_files)} glycan, "
+            f"{len(ligand_files)} ligand, "
             f"{len(ion_files)} ion, {len(water_files)} water files"
         )
         
@@ -4393,6 +4446,153 @@ def _build_nucleic_residue_mapping(
     return mapping
 
 
+def _build_residue_mapping_for_type(
+    split_result: dict,
+    merge_result: dict,
+    chain_type: str,
+) -> list[dict]:
+    """Map source residues of one split chain type onto merged.pdb residue IDs."""
+    mapping = []
+    merge_chain_mapping = merge_result.get("chain_mapping", {})
+    for info in split_result.get("chain_file_info", []):
+        if info.get("chain_type") != chain_type:
+            continue
+        chain_file = info.get("file")
+        if not chain_file:
+            continue
+        file_map = (
+            merge_chain_mapping.get(chain_file)
+            or merge_chain_mapping.get(str(Path(chain_file)))
+            or merge_chain_mapping.get(str(Path(chain_file).resolve()))
+            or {}
+        )
+        for residue in _read_pdb_unique_residues(chain_file):
+            split_chain = residue["chain"]
+            merged_chain = file_map.get(split_chain, split_chain)
+            mapping.append({
+                "source_chain": info.get("author_chain", split_chain),
+                "source_label_chain": info.get("chain_id"),
+                "source_resnum": residue["resnum"],
+                "source_icode": residue["icode"],
+                "source_resname": residue["resname"],
+                "merged_chain": merged_chain,
+                "merged_resnum": residue["resnum"],
+                "merged_icode": residue["icode"],
+                "merged_resname": residue["resname"],
+                "chain_file": chain_file,
+            })
+    return mapping
+
+
+def _parse_pdb_glycan_link_records(structure_path: Path) -> list[dict]:
+    """Parse PDB LINK records that connect a protein residue to a glycan."""
+    linkages: list[dict] = []
+    try:
+        lines = structure_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return linkages
+
+    protein_resnames = AMINO_ACIDS | AMBER_PROTEIN_RESIDUES
+    for line in lines:
+        if not line.startswith("LINK"):
+            continue
+        atom1 = line[12:16].strip()
+        res1 = line[17:20].strip()
+        chain1 = line[21].strip() or "A"
+        resnum1 = line[22:26].strip()
+        icode1 = line[26].strip()
+        atom2 = line[42:46].strip()
+        res2 = line[47:50].strip()
+        chain2 = line[51].strip() or "A"
+        resnum2 = line[52:56].strip()
+        icode2 = line[56].strip()
+
+        side1_is_glycan = is_glycan_residue_name(res1)
+        side2_is_glycan = is_glycan_residue_name(res2)
+        side1_is_protein = res1 in protein_resnames
+        side2_is_protein = res2 in protein_resnames
+        if side1_is_protein and side2_is_glycan:
+            protein = (atom1, res1, chain1, resnum1, icode1)
+            glycan = (atom2, res2, chain2, resnum2, icode2)
+        elif side2_is_protein and side1_is_glycan:
+            protein = (atom2, res2, chain2, resnum2, icode2)
+            glycan = (atom1, res1, chain1, resnum1, icode1)
+        else:
+            continue
+
+        linkages.append({
+            "source": "pdb_link",
+            "protein": {
+                "atom": protein[0],
+                "resname": protein[1],
+                "chain": protein[2],
+                "resnum": int(protein[3]) if protein[3].lstrip("-").isdigit() else protein[3],
+                "icode": protein[4],
+            },
+            "glycan": {
+                "atom": glycan[0],
+                "resname": glycan[1],
+                "chain": glycan[2],
+                "resnum": int(glycan[3]) if glycan[3].lstrip("-").isdigit() else glycan[3],
+                "icode": glycan[4],
+            },
+        })
+    return linkages
+
+
+def _remap_glycan_linkages(
+    linkages: list[dict],
+    protein_chain_map: dict,
+    glycan_residue_mapping: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Resolve source LINK endpoints onto merged.pdb chain/residue IDs."""
+    glycan_by_source = {
+        (
+            str(r["source_chain"]),
+            str(r["source_resnum"]),
+            str(r.get("source_icode", "") or ""),
+            str(r["source_resname"]).upper(),
+        ): r
+        for r in glycan_residue_mapping or []
+    }
+    remapped: list[dict] = []
+    dropped: list[dict] = []
+    for link in linkages or []:
+        protein = dict(link.get("protein") or {})
+        glycan = dict(link.get("glycan") or {})
+        protein_chain = protein_chain_map.get(protein.get("chain"))
+        glycan_key = (
+            str(glycan.get("chain")),
+            str(glycan.get("resnum")),
+            str(glycan.get("icode", "") or ""),
+            str(glycan.get("resname", "")).upper(),
+        )
+        glycan_map = glycan_by_source.get(glycan_key)
+        if protein_chain is None or glycan_map is None:
+            dropped.append(dict(link))
+            continue
+        protein.update({
+            "original_chain": protein.get("chain"),
+            "chain": protein_chain,
+            "merged_chain": protein_chain,
+            "merged_resnum": protein.get("resnum"),
+        })
+        glycan.update({
+            "original_chain": glycan.get("chain"),
+            "chain": glycan_map["merged_chain"],
+            "merged_chain": glycan_map["merged_chain"],
+            "merged_resnum": glycan_map["merged_resnum"],
+            "merged_icode": glycan_map.get("merged_icode", ""),
+        })
+        remapped.append({
+            **link,
+            "protein": protein,
+            "glycan": glycan,
+            "status": "remapped",
+        })
+    return remapped, dropped
+
+
 def prepare_complex(
     structure_file: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -4454,8 +4654,8 @@ def prepare_complex(
         run_parameterization: Whether to run antechamber for ligands (default: True)
         ligand_smiles: Dict mapping ligand_id to SMILES (e.g., {"SAH": "Nc1ncnc..."})
                        If not provided, SMILES will be fetched from PDB CCD
-        include_types: List of molecular types to include: "protein", "nucleic", "ligand", "ion", "water".
-                       Default (None) includes ["protein", "ligand", "ion"].
+        include_types: List of molecular types to include: "protein", "nucleic", "glycan", "ligand", "ion", "water".
+                       Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
         include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
@@ -4501,6 +4701,12 @@ def prepare_complex(
                 - input_file: str
                 - output_file: str
                 - nucleic_subtype: str
+                - success: bool
+            - glycans: list[dict] - Glycan chains passed through for GLYCAM:
+                - chain_id: str
+                - input_file: str
+                - output_file: str
+                - residue_names: list[str]
                 - success: bool
             - ligands: list[dict] - Results for each ligand chain:
                 - chain_id: str
@@ -4549,6 +4755,7 @@ def prepare_complex(
         "split": None,
         "proteins": [],
         "nucleics": [],
+        "glycans": [],
         "ligands": [],
         "errors": [],
         "warnings": []
@@ -4620,6 +4827,7 @@ def prepare_complex(
         # whether to source `leaprc.phosaa*`.
         from mdclaw.research_server import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
+        detected_glycan_linkages = _parse_pdb_glycan_link_records(Path(structure_file))
 
         # Token optimization: Store only essential inspection info (not full chains/entities)
         result["inspection"] = {
@@ -4637,6 +4845,7 @@ def prepare_complex(
         summary = inspection["summary"]
         logger.info(f"Found: {summary['num_protein_chains']} proteins, "
                    f"{summary.get('num_nucleic_chains', 0)} nucleics, "
+                   f"{summary.get('num_glycan_chains', 0)} glycans, "
                    f"{summary['num_ligand_chains']} ligands, "
                    f"{summary['num_ion_chains']} ions")
 
@@ -4713,6 +4922,7 @@ def prepare_complex(
             "success": split_result["success"],
             "protein_files": split_result.get("protein_files", []),
             "nucleic_files": split_result.get("nucleic_files", []),
+            "glycan_files": split_result.get("glycan_files", []),
             "ligand_files": split_result.get("ligand_files", []),
             "ion_files": split_result.get("ion_files", []),
             "water_files": split_result.get("water_files", []),
@@ -4864,6 +5074,34 @@ def prepare_complex(
                     "warnings": [],
                 })
                 logger.info(f"  ✓ Nucleic {chain_id}: {nucleic_file}")
+
+        # Step 4.5: Pass glycan chains through unchanged. GLYCAM support is
+        # applied during build_amber_system; these should not be parameterized
+        # as GAFF ligands.
+        if split_result.get("glycan_files"):
+            logger.info(f"Step 4.5: Passing through {len(split_result['glycan_files'])} glycan chain(s)...")
+            for glycan_file in split_result["glycan_files"]:
+                chain_id = None
+                cinfo_for_glycan = {}
+                for cid, cinfo in chain_info_map.items():
+                    if cinfo.get("file") == glycan_file:
+                        chain_id = cid
+                        cinfo_for_glycan = cinfo
+                        break
+                chain_data = cinfo_for_glycan.get("all_chain_data", {})
+                residue_names = chain_data.get("glycan_residue_names") or chain_data.get("residue_names", [])
+                if isinstance(residue_names, dict):
+                    residue_names = residue_names.get("unique_residues", [])
+                result["glycans"].append({
+                    "chain_id": chain_id,
+                    "author_chain": cinfo_for_glycan.get("author_chain", chain_id),
+                    "input_file": glycan_file,
+                    "output_file": glycan_file,
+                    "residue_names": sorted(set(residue_names or [])),
+                    "success": True,
+                    "warnings": [],
+                })
+                logger.info(f"  ✓ Glycan {chain_id}: {glycan_file}")
 
         # Step 5: Process ligands
         if process_ligands and split_result.get("ligand_files"):
@@ -5069,6 +5307,7 @@ def prepare_complex(
         # chains are pass-through inputs and only fail if split omitted them.
         proteins_ok = any(p["success"] for p in result["proteins"]) if result["proteins"] else True
         nucleics_ok = all(nuc["success"] for nuc in result["nucleics"]) if result["nucleics"] else True
+        glycans_ok = all(gly["success"] for gly in result["glycans"]) if result["glycans"] else True
         ligands_ok = any(lig["success"] for lig in result["ligands"]) if result["ligands"] else True
         
         if process_proteins and not result["proteins"]:
@@ -5077,7 +5316,7 @@ def prepare_complex(
             ligands_ok = not split_result.get("ligand_files")  # OK if no ligands to process
         
         # Step 6: Merge structures if we have successful outputs
-        if proteins_ok or nucleics_ok or ligands_ok:
+        if proteins_ok or nucleics_ok or glycans_ok or ligands_ok:
             logger.info("Step 6: Merging structures...")
             pdb_files_to_merge = []
             
@@ -5091,6 +5330,12 @@ def prepare_complex(
             for nuc in result["nucleics"]:
                 if nuc["success"] and nuc.get("output_file"):
                     pdb_files_to_merge.append(nuc["output_file"])
+
+            # Add glycan files as-is; topology generation loads GLYCAM and
+            # applies recorded protein-glycan linkages.
+            for gly in result["glycans"]:
+                if gly["success"] and gly.get("output_file"):
+                    pdb_files_to_merge.append(gly["output_file"])
             
             # Add ligand files (use amber.pdb from parameterization for correct atom names)
             for lig in result["ligands"]:
@@ -5153,6 +5398,51 @@ def prepare_complex(
                         result["residue_mapping_file"] = str(residue_mapping_json)
                         logger.info(
                             f"  ↳ Wrote residue_mapping.json ({len(residue_mapping)} nucleic residues)"
+                        )
+
+                    glycan_residue_mapping = _build_residue_mapping_for_type(
+                        split_result=split_result,
+                        merge_result=merge_result,
+                        chain_type="glycan",
+                    )
+                    result["glycan_residue_mapping"] = glycan_residue_mapping
+                    glycan_metadata = {
+                        "glycans": result.get("glycans", []),
+                        "residue_mapping": glycan_residue_mapping,
+                    }
+                    if glycan_residue_mapping:
+                        glycan_metadata_json = base_dir / "glycan_metadata.json"
+                        with open(glycan_metadata_json, "w") as f:
+                            json.dump(glycan_metadata, f, indent=2)
+                        result["glycan_metadata_file"] = str(glycan_metadata_json)
+                        logger.info(
+                            f"  ↳ Wrote glycan_metadata.json ({len(glycan_residue_mapping)} glycan residues)"
+                        )
+
+                    if result.get("glycans"):
+                        protein_chain_map_for_glycans = _build_source_to_merged_chain_map(
+                            chain_file_info=split_result.get("chain_file_info", []),
+                            proteins=result.get("proteins", []),
+                            merge_chain_mapping=merge_result.get("chain_mapping", {}),
+                        )
+                        remapped_links, dropped_links = _remap_glycan_linkages(
+                            detected_glycan_linkages,
+                            protein_chain_map_for_glycans,
+                            glycan_residue_mapping,
+                        )
+                        result["glycan_linkages"] = remapped_links
+                        if dropped_links:
+                            result["warnings"].append(
+                                "Glycan LINK record(s) could not be mapped onto merged.pdb "
+                                f"and will not be bonded by tleap: {dropped_links}"
+                            )
+                            result["unmapped_glycan_linkages"] = dropped_links
+                        glycan_linkages_json = base_dir / "glycan_linkages.json"
+                        with open(glycan_linkages_json, "w") as f:
+                            json.dump(remapped_links, f, indent=2)
+                        result["glycan_linkages_file"] = str(glycan_linkages_json)
+                        logger.info(
+                            f"  ↳ Wrote glycan_linkages.json ({len(remapped_links)} linkages)"
                         )
 
                     # Apply merge_structures' chain reassignment to the PTM
@@ -5218,16 +5508,17 @@ def prepare_complex(
             else:
                 result["warnings"].append("No files available to merge")
         
-        result["success"] = proteins_ok and nucleics_ok and ligands_ok
+        result["success"] = proteins_ok and nucleics_ok and glycans_ok and ligands_ok
         result["protein_preparation_success"] = proteins_ok
         result["nucleic_preparation_success"] = nucleics_ok
+        result["glycan_preparation_success"] = glycans_ok
         result["ligand_preparation_success"] = ligands_ok
 
         # -- overall_status: workflow-level status for skill dispatch ------
         failed_ligands = [
             lig for lig in result.get("ligands", []) if not lig.get("success")
         ]
-        if proteins_ok and nucleics_ok and ligands_ok:
+        if proteins_ok and nucleics_ok and glycans_ok and ligands_ok:
             result["overall_status"] = "success"
         elif proteins_ok and not ligands_ok:
             result["overall_status"] = "completed_with_blocking_ligand_failure"
@@ -5302,6 +5593,22 @@ def prepare_complex(
                     elif isinstance(res_data, list):
                         residue_names.update(res_data)
             preparation_summary["nucleic_residue_names"] = sorted(residue_names)
+        if result.get("glycans"):
+            successful_glycans = [g for g in result["glycans"] if g.get("success")]
+            preparation_summary["has_glycan"] = bool(successful_glycans)
+            preparation_summary["glycan_chains"] = [
+                {
+                    "chain_id": g.get("chain_id"),
+                    "author_chain": g.get("author_chain"),
+                    "residue_names": g.get("residue_names", []),
+                }
+                for g in successful_glycans
+            ]
+            glycan_residue_names = set()
+            for gly in successful_glycans:
+                glycan_residue_names.update(gly.get("residue_names", []))
+            preparation_summary["glycan_residue_names"] = sorted(glycan_residue_names)
+            preparation_summary["glycan_linkage_count"] = len(result.get("glycan_linkages", []))
         if detected_ptm_residues:
             preparation_summary["detected_ptm_residues"] = detected_ptm_residues
         result["preparation_summary"] = preparation_summary
@@ -5378,10 +5685,12 @@ def prepare_complex(
 
         n_prot = sum(1 for p in result['proteins'] if p['success'])
         n_nuc = sum(1 for nuc in result['nucleics'] if nuc['success'])
+        n_gly = sum(1 for gly in result['glycans'] if gly['success'])
         n_lig = sum(1 for lig in result['ligands'] if lig['success'])
         logger.info(f"Complex preparation: overall_status={result['overall_status']}")
         logger.info(f"  Proteins: {n_prot}/{len(result['proteins'])}")
         logger.info(f"  Nucleics: {n_nuc}/{len(result['nucleics'])}")
+        logger.info(f"  Glycans: {n_gly}/{len(result['glycans'])}")
         logger.info(f"  Ligands: {n_lig}/{len(result['ligands'])}")
         if result.get("merged_pdb"):
             logger.info(f"  Merged PDB: {result['merged_pdb']}")
@@ -5398,6 +5707,7 @@ def prepare_complex(
         if result.get("success") or result.get("overall_status") == "success":
             proteins = result.get("proteins", [])
             nucleics = result.get("nucleics", [])
+            glycans = result.get("glycans", [])
             ligands = result.get("ligands", [])
             artifacts = {}
             if result.get("merged_pdb"):
@@ -5426,6 +5736,10 @@ def prepare_complex(
                 artifacts["disulfide_bonds"] = "artifacts/disulfide_bonds.json"
             if (base_dir / "residue_mapping.json").exists():
                 artifacts["residue_mapping"] = "artifacts/residue_mapping.json"
+            if (base_dir / "glycan_metadata.json").exists():
+                artifacts["glycan_metadata"] = "artifacts/glycan_metadata.json"
+            if (base_dir / "glycan_linkages.json").exists():
+                artifacts["glycan_linkages"] = "artifacts/glycan_linkages.json"
             complete_node(job_dir, node_id,
                 artifacts=artifacts,
                 metadata=result.get("preparation_summary", {}),
@@ -5437,6 +5751,8 @@ def prepare_complex(
                         p.get("chain_id", "") for p in proteins
                     ] + [
                         n.get("chain_id", "") for n in nucleics
+                    ] + [
+                        g.get("chain_id", "") for g in glycans
                     ],
                     "num_residues": sum(
                         p.get("statistics", {}).get("final_residues", 0)
@@ -5447,6 +5763,13 @@ def prepare_complex(
                             "nucleic_subtype": n.get("nucleic_subtype"),
                         }
                         for n in nucleics if n.get("success")
+                    ],
+                    "glycans": [
+                        {
+                            "chain_id": g.get("chain_id"),
+                            "residue_names": g.get("residue_names", []),
+                        }
+                        for g in glycans if g.get("success")
                     ],
                     "ligands": [lig["ligand_id"] for lig in ligands if lig.get("success")],
                 },

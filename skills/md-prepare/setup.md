@@ -155,7 +155,8 @@ into the fetch node's artifacts dir. The node's status is unchanged
    silent; for mmCIF the fallback fires only when you accidentally
    pass a long author ID and triggers a warning asking you to pass
    the label instead. Use `inspect_molecules` → `summary.chain_id_map`
-   and `summary.protein_label_ids` / `summary.nucleic_label_ids` when in doubt.
+   and `summary.protein_label_ids` / `summary.nucleic_label_ids` /
+   `summary.glycan_label_ids` when in doubt.
 2. **Checkpoint: Chain selection** — If multiple chains and user hasn't
    specified, ask in `human_in_the_loop` mode and in `autonomous` only when
    chain intent is missing (present `chain_id` / label values). Otherwise
@@ -166,8 +167,9 @@ into the fetch node's artifacts dir. The node's status is unchanged
    include all detected ligands.
 4. Determine `include_types`:
    - With standard DNA/RNA: include `nucleic`
-   - With ligands and ions: `protein nucleic ligand ion`
-   - No ligands, no ions: `protein nucleic` when nucleic chains are present, otherwise `protein`
+   - With glycoproteins: include `glycan`
+   - With ligands and ions: `protein nucleic glycan ligand ion`
+   - No ligands, no ions: `protein nucleic glycan` when nucleic/glycan chains are present, otherwise `protein`
 5. **Checkpoint: Multivalent metal ions** — Read
    `summary.multivalent_metal_residues` and `notes.metal_parameterization_required`
    from `inspect_molecules` output. If non-empty, the structure carries
@@ -251,11 +253,26 @@ be treated as standard `nucleic` support.
 `prepare_complex` also writes `residue_mapping.json` for nucleic residues so
 source PDB/mmCIF chain/resnum targets can be resolved after chain remapping.
 
+**With glycoproteins / glycans**:
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --select-chains A B \
+  --include-types protein glycan ion \
+  --ph 7.4 \
+  --no-cap-termini
+```
+
+Glycan chains are passed through unchanged and recorded under
+`result.glycans`; they are not ligand-cleaned or GAFF/antechamber
+parameterized. `prepare_complex` writes `glycan_metadata.json` and
+`glycan_linkages.json` so `build_amber_system` can auto-load GLYCAM and emit
+protein-glycan `bond` commands from PDB `LINK` records when present.
+
 **With ligands** (add `--process-ligands`):
 ```bash
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --select-chains A B \
-  --include-types protein nucleic ligand ion \
+  --include-types protein nucleic glycan ligand ion \
   --process-ligands \
   --ph 7.4 \
   --no-cap-termini
@@ -266,7 +283,7 @@ arguments are still auto-resolved, so the JSON only carries decision
 parameters):
 ```bash
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
-  --json-input '{"select_chains": ["A"], "include_types": ["protein","nucleic","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
+  --json-input '{"select_chains": ["A"], "include_types": ["protein","nucleic","glycan","ligand","ion"], "process_ligands": true, "ph": 7.4, "ligand_smiles": {"ATP": "c1nc(...)N"}}'
 ```
 
 > `--select-chains` values are `chain_id` (label_asym_id); the tool
@@ -654,6 +671,7 @@ artifact. Pass `--pdb-file` only to override that input.
 | `forcefield` | `"ff19SB"` | Modern protein FF, requires OPC water (tleap ff14SB+tip3p legacy pair still supported) |
 | `water_model` | `"opc"` | Must match the water used in `solvate_structure` / `embed_in_membrane` |
 | `nucleic_forcefield` | `"auto"` | Loads `leaprc.DNA.OL15` and/or `leaprc.RNA.OL3` when standard DNA/RNA residues are present |
+| `glycan_forcefield` | `"auto"` | Loads `leaprc.GLYCAM_06j-1` when glycan residues are present; `none` blocks glycan topology with a guardrail |
 | `modxna_params` | (auto) | In node mode, loads nearest prep ancestor's `modxna_params` with `loadamberparams` / `loadoff` before `loadpdb` |
 | `is_membrane` | `False` | Set True for `embed_in_membrane` output; downstream tools also read the solv ancestor's `is_membrane` metadata |
 | `output_name` | `"system"` | Produces `system.parm7` / `system.rst7` |

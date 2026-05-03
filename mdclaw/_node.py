@@ -1090,6 +1090,26 @@ def resolve_node_inputs(
             elif isinstance(db, list):
                 result["disulfide_bonds"] = db
 
+        gm = find_ancestor_artifact(job_dir, node_id, "prep", "glycan_metadata")
+        if gm:
+            if isinstance(gm, str) and gm.endswith(".json"):
+                try:
+                    result["glycan_metadata"] = json.loads(Path(gm).read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif isinstance(gm, dict):
+                result["glycan_metadata"] = gm
+
+        gl = find_ancestor_artifact(job_dir, node_id, "prep", "glycan_linkages")
+        if gl:
+            if isinstance(gl, str) and gl.endswith(".json"):
+                try:
+                    result["glycan_linkages"] = json.loads(Path(gl).read_text())
+                except (json.JSONDecodeError, OSError):
+                    pass
+            elif isinstance(gl, list):
+                result["glycan_linkages"] = gl
+
         bd = find_ancestor_artifact(job_dir, node_id, "solv", "box_dimensions")
         if bd:
             # box_dimensions is stored as a path to a JSON file; load inline

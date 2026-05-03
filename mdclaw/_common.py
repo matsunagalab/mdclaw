@@ -23,6 +23,73 @@ CANONICAL_WATER_MODELS = {
 }
 
 
+# Common PDB Chemical Component Dictionary residue names for monosaccharides
+# and glycan capping/derivative residues seen in glycoprotein structures.
+COMMON_GLYCAN_RESNAMES = {
+    "NAG", "NDG", "BMA", "MAN", "GAL", "GLC", "FUC", "FUL", "SIA", "SLB",
+    "NAN", "NGC", "SGN", "GCU", "GLA", "IDR", "IDS", "RAM", "RHA", "ARA",
+    "XYS", "XYP", "FRU", "LBT", "MMA", "A2G", "6SIA", "KDN", "KDO", "KO",
+    "SOE", "SOF", "T6T", "G6D", "G6S", "M6P",
+}
+
+GLYCAN_ENTITY_KEYWORDS = (
+    "carbohydrate",
+    "saccharide",
+    "polysaccharide",
+    "oligosaccharide",
+    "glycan",
+    "glycoprotein",
+)
+
+
+def _clean_residue_name(name: str | None) -> str:
+    return (name or "").strip().upper()
+
+
+def is_glycan_residue_name(name: str | None) -> bool:
+    """Return True for common glycan residue names in PDB/mmCIF inputs."""
+    cleaned = _clean_residue_name(name)
+    if cleaned in COMMON_GLYCAN_RESNAMES:
+        return True
+    # GLYCAM-style residue/template names are often compact three-character
+    # codes with a numeric linkage/anomer prefix. Accept these only as a
+    # fallback so ordinary ligands such as ATP/NAD are not reclassified.
+    if len(cleaned) == 3 and cleaned[0].isdigit() and cleaned[1:].isalpha():
+        return True
+    return False
+
+
+def entity_suggests_glycan(entity_type: str | None = None, polymer_type: str | None = None,
+                           entity_name: str | None = None) -> bool:
+    """Use mmCIF/PDB entity metadata as a secondary glycan signal."""
+    text = " ".join(
+        str(value).lower()
+        for value in (entity_type, polymer_type, entity_name)
+        if value
+    )
+    return any(keyword in text for keyword in GLYCAN_ENTITY_KEYWORDS)
+
+
+def classify_glycan_residues(
+    residue_names: set[str] | list[str] | tuple[str, ...],
+    entity_type: str | None = None,
+    polymer_type: str | None = None,
+    entity_name: str | None = None,
+) -> dict[str, Any]:
+    """Classify carbohydrate/glycan residue sets without treating them as ligands."""
+    names = {_clean_residue_name(name) for name in residue_names if name}
+    glycan_names = sorted(name for name in names if is_glycan_residue_name(name))
+    metadata_signal = entity_suggests_glycan(entity_type, polymer_type, entity_name)
+    is_glycan = bool(glycan_names) or (metadata_signal and bool(names))
+    unsupported = sorted(names - set(glycan_names)) if metadata_signal and is_glycan else []
+    return {
+        "is_glycan": is_glycan,
+        "residue_names": glycan_names or sorted(names),
+        "unsupported_residue_names": unsupported,
+        "metadata_signal": metadata_signal,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
