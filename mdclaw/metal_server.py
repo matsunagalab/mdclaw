@@ -683,9 +683,19 @@ def parameterize_metal_ion(
     # build_amber_system's DAG auto-resolution can pick it up. Status is
     # intentionally NOT mutated — this extends an existing prep node.
     if _node_mode:
-        from mdclaw._node import update_node
+        from mdclaw._node import normalize_artifact_paths, update_node
         from mdclaw._event import write_event
-        update_node(job_dir, node_id, {"artifacts": {"metal_params": metal_params_list}})
+        update_node(
+            job_dir,
+            node_id,
+            {
+                "artifacts": normalize_artifact_paths(
+                    job_dir,
+                    node_id,
+                    {"metal_params": metal_params_list},
+                )
+            },
+        )
         write_event(
             job_dir,
             node_id,

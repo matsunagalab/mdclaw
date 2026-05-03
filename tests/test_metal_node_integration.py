@@ -8,6 +8,7 @@ is exercised in the end-to-end integration test.
 """
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -126,6 +127,8 @@ class TestParameterizeMetalIonNodeIntegration:
         prep_node = read_node(job_dir, prep_id)
         assert "metal_params" in prep_node["artifacts"]
         assert isinstance(prep_node["artifacts"]["metal_params"], list)
+        stored_mol2 = prep_node["artifacts"]["metal_params"][0]["mol2"]
+        assert stored_mol2.startswith("artifacts/")
         # merged_pdb must still be there — we only extended
         assert prep_node["artifacts"]["merged_pdb"] == "artifacts/merge/merged.pdb"
         # Status must not have been mutated
@@ -152,6 +155,7 @@ class TestParameterizeMetalIonNodeIntegration:
         assert mp is not None
         assert isinstance(mp, list)
         assert mp[0]["residue_name"] == "ZN"
+        assert Path(mp[0]["mol2"]).is_absolute()
 
         # And through resolve_node_inputs (what build_amber_system uses)
         inputs = resolve_node_inputs(job_dir, topo_id, "topo")

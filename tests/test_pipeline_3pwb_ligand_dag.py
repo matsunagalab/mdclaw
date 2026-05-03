@@ -131,10 +131,16 @@ class TestPipeline3PWBLigandDag:
         ligand_params = node_data["artifacts"].get("ligand_params")
         assert ligand_params and len(ligand_params) == 2
         assert {lig["residue_name"] for lig in ligand_params} == {"BEN", "GOL"}
-        assert {lig["ligand_instance_id"] for lig in ligand_params} == {"A:BEN:481", "A:GOL:483"}
+        assert {lig["ligand_instance_id"] for lig in ligand_params} == {
+            "A:BEN:481",
+            "A:GOL:483",
+        }
+        prep_node_dir = job_dir / "nodes" / self.prep_id
         for ligand in ligand_params:
-            assert Path(ligand["mol2"]).exists()
-            assert Path(ligand["frcmod"]).exists()
+            assert not Path(ligand["mol2"]).is_absolute()
+            assert not Path(ligand["frcmod"]).is_absolute()
+            assert (prep_node_dir / ligand["mol2"]).exists()
+            assert (prep_node_dir / ligand["frcmod"]).exists()
 
     # Step 4: solvate (auto-resolves merged_pdb from prep)
     def test_step4_solvate(self, job_dir):

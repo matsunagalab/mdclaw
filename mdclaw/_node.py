@@ -48,6 +48,132 @@ NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod", "analyze"
 
 SCHEMA_VERSION = 3
 
+_STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
+    "mol2",
+    "mol2_file",
+    "frcmod",
+    "frcmod_file",
+    "frcmods",
+    "pdb",
+    "pdb_file",
+    "combined_trajectory",
+    "combined_energy",
+    "fitted_trajectory",
+    "trajectory",
+    "trajectory_file",
+    "energy",
+    "energy_file",
+    "reference_pdb",
+    "selection_indices",
+    "overlay_plot",
+    "source_trajectories",
+    "source_energy_files",
+    "rmsd_timeseries",
+    "rmsd_csv",
+    "rmsd_plot",
+    "distance_timeseries",
+    "distance_csv",
+    "distance_plot",
+    "q_timeseries",
+    "q_csv",
+    "q_plot",
+})
+
+
+def _relpath_if_inside_job(value: str, job_dir: Path, node_dir: Path) -> str:
+    """Return a node-relative path for absolute paths inside ``job_dir``."""
+    try:
+        p = Path(value).expanduser()
+    except (TypeError, ValueError):
+        return value
+    if not p.is_absolute():
+        return value
+    resolved = p.resolve(strict=False)
+    job_root = job_dir.resolve(strict=False)
+    try:
+        resolved.relative_to(job_root)
+    except ValueError:
+        return value
+    return os.path.relpath(resolved, node_dir.resolve(strict=False))
+
+
+def _make_artifact_value_portable(value: Any, job_dir: Path, node_dir: Path) -> Any:
+    """Recursively convert artifact file references to node-relative paths.
+
+    Only absolute paths located under ``job_dir`` are rewritten. External
+    references are preserved because MDClaw cannot infer a portable copy target.
+    """
+    if isinstance(value, str):
+        return _relpath_if_inside_job(value, job_dir, node_dir)
+    if isinstance(value, list):
+        return [
+            _make_artifact_value_portable(item, job_dir, node_dir)
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _make_artifact_value_portable(item, job_dir, node_dir)
+            for key, item in value.items()
+        }
+    return value
+
+
+def normalize_artifact_paths(job_dir: str, node_id: str, artifacts: dict) -> dict:
+    """Normalize artifact path strings for storage in ``node.json``.
+
+    The on-disk contract is portable: any file reference under ``job_dir`` is
+    stored relative to ``nodes/<node_id>/``. This applies recursively to
+    structured artifacts such as ``ligand_params`` and ``branches``.
+    """
+    jd = Path(job_dir).resolve()
+    node_dir = jd / "nodes" / node_id
+    return _make_artifact_value_portable(artifacts, jd, node_dir)
+
+
+def _looks_like_stored_relative_path(value: str) -> bool:
+    return (
+        value.startswith("artifacts/")
+        or value.startswith("./")
+        or value.startswith("../")
+    )
+
+
+def _resolve_structured_artifact_paths(
+    value: Any,
+    node_dir: Path,
+    *,
+    parent_key: Optional[str] = None,
+) -> Any:
+    """Resolve stored node-relative paths inside structured artifacts.
+
+    Structured artifacts can contain ordinary identifiers next to file paths
+    (for example ``residue_name="AP5"`` or Amber built-in ``frcmod`` names).
+    To avoid turning those into fake paths, only known path-bearing fields are
+    resolved, and only when the stored value has relative-path syntax.
+    """
+    if isinstance(value, str):
+        if (
+            parent_key in _STRUCTURED_ARTIFACT_PATH_KEYS
+            and _looks_like_stored_relative_path(value)
+        ):
+            return str((node_dir / value).resolve())
+        return value
+    if isinstance(value, list):
+        return [
+            _resolve_structured_artifact_paths(
+                item, node_dir, parent_key=parent_key
+            )
+            for item in value
+        ]
+    if isinstance(value, dict):
+        return {
+            key: _resolve_structured_artifact_paths(
+                item, node_dir, parent_key=key
+            )
+            for key, item in value.items()
+        }
+    return value
+
 
 # ── Progress JSON helpers ──────────────────────────────────────────────────
 
@@ -532,6 +658,7 @@ def complete_node(
     file raises ``ValueError`` so artifact registration mistakes surface
     immediately rather than producing a completed node with broken outputs.
     """
+    artifacts = normalize_artifact_paths(job_dir, node_id, artifacts)
     artifact_hashes = {}
     node_dir = Path(job_dir) / "nodes" / node_id
     for key, rel_path in artifacts.items():
@@ -853,8 +980,9 @@ def find_ancestor_artifact(
 
     - **string** → treated as a *path artifact*, resolved relative to the
       ancestor node's directory; the absolute path is returned as ``str``.
-    - **list or dict** → treated as a *structured artifact* (inline data, or a
-      list of absolute-path dicts such as ``ligand_params``). Returned as-is.
+    - **list or dict** → treated as a *structured artifact*. Stored
+      node-relative path fields are resolved back to absolute paths for tool
+      execution; non-path strings are returned unchanged.
     - missing / ``None`` → search continues upward (not treated as a match).
 
     The BFS returns the artifact from the *nearest* ancestor of the given type
@@ -909,8 +1037,10 @@ def find_ancestor_artifact(
                     if isinstance(value, str):
                         # path artifact → resolve relative to ancestor node dir
                         return str((jd / "nodes" / nid / value).resolve())
-                    # structured artifact (list/dict) → return as-is
-                    return value
+                    # structured artifact → resolve known stored path fields
+                    return _resolve_structured_artifact_paths(
+                        value, jd / "nodes" / nid
+                    )
         # Keep searching upward regardless of whether the type matched.
         queue.extend(parents)
     return None
@@ -1579,8 +1709,9 @@ def _read_artifact_from_node(
     """Read a single artifact directly from *node_id*'s node.json.
 
     Mirrors :func:`find_ancestor_artifact`'s value contract (path artifacts
-    are resolved to absolute strings; structured artifacts are returned
-    as-is) but scoped to a specific node instead of walking the DAG.
+    are resolved to absolute strings; structured artifacts have known stored
+    path fields resolved) but scoped to a specific node instead of walking the
+    DAG.
     """
     jd = Path(job_dir)
     nj = jd / "nodes" / node_id / "node.json"
@@ -1595,7 +1726,7 @@ def _read_artifact_from_node(
         return None
     if isinstance(value, str):
         return str((jd / "nodes" / node_id / value).resolve())
-    return value
+    return _resolve_structured_artifact_paths(value, jd / "nodes" / node_id)
 
 
 def read_ancestor_final_step(job_dir: str, node_id: str) -> Optional[int]:

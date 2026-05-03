@@ -910,7 +910,7 @@ class TestReadHelpers:
         assert get_children(str(job_dir), "prep_001") == []
 
     def test_resolve_artifact(self, job_dir):
-        result = create_node(str(job_dir), "eq")
+        create_node(str(job_dir), "eq")
         path = resolve_artifact(str(job_dir), "eq_001", "artifacts/equilibrated.chk")
         expected = job_dir / "nodes" / "eq_001" / "artifacts" / "equilibrated.chk"
         assert path == expected.resolve()
@@ -1520,10 +1520,13 @@ class TestStructuredArtifactPropagation:
     def dag_with_ligand(self, job_dir):
         """prep (with ligand_params) -> solv (with box_dimensions.json) -> topo."""
         jd = str(job_dir)
+        prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
+        mol2_path = prep_artifacts / "split" / "AP5.mol2"
+        frcmod_path = prep_artifacts / "split" / "AP5.frcmod"
         ligand_params = [
             {
-                "mol2": "/abs/path/to/AP5.mol2",
-                "frcmod": "/abs/path/to/AP5.frcmod",
+                "mol2": str(mol2_path),
+                "frcmod": str(frcmod_path),
                 "residue_name": "AP5",
                 "parameter_source": "amber_geostd",
             }
@@ -1568,12 +1571,15 @@ class TestStructuredArtifactPropagation:
 
     def test_find_ancestor_returns_list_for_structured_artifact(self,
                                                                 dag_with_ligand):
-        """Contract: list/dict artifacts are returned as-is."""
+        """Structured artifacts are stored relative and resolved for execution."""
         job_dir, lp, _box = dag_with_ligand
+        stored = read_node(str(job_dir), "prep_001")["artifacts"]["ligand_params"]
+        assert stored[0]["mol2"] == "artifacts/split/AP5.mol2"
+        assert stored[0]["frcmod"] == "artifacts/split/AP5.frcmod"
         result = find_ancestor_artifact(str(job_dir), "topo_001", "prep",
                                         "ligand_params")
         assert isinstance(result, list)
-        assert result == lp  # absolute paths preserved, no path-join applied
+        assert result == lp
 
     def test_find_ancestor_missing_structured(self, dag_with_ligand):
         """Absent structured artifact still returns None."""
@@ -1592,7 +1598,7 @@ class TestStructuredArtifactPropagation:
         assert "pdb_file" in inputs
         assert inputs["pdb_file"].endswith("solvated.pdb")
 
-        # ligand_params from prep grandparent (structured pass-through)
+        # ligand_params from prep grandparent (stored relative, resolved absolute)
         assert "ligand_params" in inputs
         assert inputs["ligand_params"] == lp
 
