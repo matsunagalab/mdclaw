@@ -72,7 +72,7 @@ tests/                      # 4-level test suite
   test_cli.py               # Level 1: CLI unit tests
   test_guardrails.py        # Level 1: Structured guardrails (ff/water, OpenMM fallback, SLURM policy)
   test_server_smoke.py      # Level 2: Server smoke tests
-  test_pipeline_1ake_dag.py # Level 3: Full 1AKE DAG integration
+  test_pipeline_prod_continue_dag.py # Level 3: Full 1AKE DAG + prod continuation integration
   test_literature_server.py  # PubMed server tests
   test_research_server_structure_analysis.py  # Structure analysis tests
   test_slurm_server.py      # SLURM server mock tests
@@ -301,14 +301,14 @@ pytest tests/ -v -m "not slow and not integration"
 # Level 2: Server smoke tests (requires conda env with scientific packages)
 pytest tests/test_server_smoke.py -v
 
-# Level 3: Full 1AKE DAG pipeline integration (network + full conda env, ~1-2 min)
-pytest tests/test_pipeline_1ake_dag.py -v
+# Level 3: Full 1AKE DAG + prod continuation integration (network + full conda env)
+pytest tests/test_pipeline_prod_continue_dag.py -v
 
 # All tests
 pytest tests/ -v
 
 # Keep pipeline artifacts for inspection
-pytest tests/test_pipeline_1ake_dag.py -v --basetemp=./test_output
+pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 ```
 
 **Markers**: `slow` (Level 2+), `integration` (Level 3). Configured in `pyproject.toml`.
