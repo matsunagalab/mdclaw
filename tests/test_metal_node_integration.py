@@ -49,22 +49,22 @@ def prep_node_with_merged_pdb(tmp_path):
     jd.mkdir()
     init_progress_v3(str(jd), "job_metal")
 
-    # fetch node (root)
-    fetch = create_node(str(jd), "fetch")
-    assert fetch["success"]
-    fetch_id = fetch["node_id"]
-    (jd / "nodes" / fetch_id / "artifacts").mkdir(parents=True, exist_ok=True)
-    struct = jd / "nodes" / fetch_id / "artifacts" / "zn_protein.pdb"
+    # source node (root)
+    source = create_node(str(jd), "source")
+    assert source["success"]
+    source_id = source["node_id"]
+    (jd / "nodes" / source_id / "artifacts").mkdir(parents=True, exist_ok=True)
+    struct = jd / "nodes" / source_id / "artifacts" / "zn_protein.pdb"
     struct.write_text(ZN_PROTEIN_PDB)
     complete_node(
         str(jd),
-        fetch_id,
+        source_id,
         artifacts={"structure_file": "artifacts/zn_protein.pdb"},
         metadata={"source_type": "local"},
     )
 
     # prep node (child) with a merged_pdb artifact
-    prep = create_node(str(jd), "prep", parent_node_ids=[fetch_id])
+    prep = create_node(str(jd), "prep", parent_node_ids=[source_id])
     assert prep["success"]
     prep_id = prep["node_id"]
     merge_dir = jd / "nodes" / prep_id / "artifacts" / "merge"
@@ -77,7 +77,7 @@ def prep_node_with_merged_pdb(tmp_path):
         artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
     )
 
-    return str(jd), fetch_id, prep_id
+    return str(jd), source_id, prep_id
 
 
 def _stub_metalpdb2mol2(monkeypatch):
@@ -104,7 +104,7 @@ class TestParameterizeMetalIonNodeIntegration:
     def test_node_mode_registers_metal_params(
         self, prep_node_with_merged_pdb, monkeypatch
     ):
-        job_dir, _fetch_id, prep_id = prep_node_with_merged_pdb
+        job_dir, _source_id, prep_id = prep_node_with_merged_pdb
         metal_server = _stub_metalpdb2mol2(monkeypatch)
 
         result = metal_server.parameterize_metal_ion(
@@ -138,7 +138,7 @@ class TestParameterizeMetalIonNodeIntegration:
         self, prep_node_with_merged_pdb, monkeypatch
     ):
         """build_amber_system DAG resolution should find metal_params via find_ancestor_artifact."""
-        job_dir, _fetch_id, prep_id = prep_node_with_merged_pdb
+        job_dir, _source_id, prep_id = prep_node_with_merged_pdb
         metal_server = _stub_metalpdb2mol2(monkeypatch)
 
         metal_server.parameterize_metal_ion(
@@ -165,12 +165,12 @@ class TestParameterizeMetalIonNodeIntegration:
     def test_non_prep_node_rejected(
         self, prep_node_with_merged_pdb, monkeypatch
     ):
-        job_dir, fetch_id, _prep_id = prep_node_with_merged_pdb
+        job_dir, source_id, _prep_id = prep_node_with_merged_pdb
         _stub_metalpdb2mol2(monkeypatch)
         from mdclaw import metal_server as ms
 
         result = ms.parameterize_metal_ion(
-            job_dir=job_dir, node_id=fetch_id, water_model="opc"
+            job_dir=job_dir, node_id=source_id, water_model="opc"
         )
         assert result["success"] is False
         assert any("expected 'prep'" in e for e in result["errors"])
@@ -179,9 +179,9 @@ class TestParameterizeMetalIonNodeIntegration:
         jd = tmp_path / "job_bare"
         jd.mkdir()
         init_progress_v3(str(jd), "job_bare")
-        fetch = create_node(str(jd), "fetch")
+        source = create_node(str(jd), "source")
         prep = create_node(
-            str(jd), "prep", parent_node_ids=[fetch["node_id"]]
+            str(jd), "prep", parent_node_ids=[source["node_id"]]
         )
         # prep exists but has NO merged_pdb artifact
 

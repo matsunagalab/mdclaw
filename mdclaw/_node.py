@@ -44,7 +44,7 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-NODE_TYPES = frozenset({"fetch", "prep", "solv", "topo", "eq", "prod", "analyze"})
+NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze"})
 
 SCHEMA_VERSION = 3
 
@@ -417,16 +417,16 @@ def create_node(
     parents = parent_node_ids or []
     deps = dependency_node_ids or []
 
-    # Invariant: ``fetch`` is the DAG root for structure acquisition. It
-    # records the original source (PDB/AlphaFold/local file) and must not
-    # depend on any other node. A job_dir is also limited to a single fetch
+    # Invariant: ``source`` is the DAG root for structure acquisition. It
+    # records the original source (PDB/AlphaFold/local file/prediction) and must not
+    # depend on any other node. A job_dir is also limited to a single source
     # root so one DAG always describes one physical system.
-    if node_type == "fetch":
+    if node_type == "source":
         if parents:
             return {
                 "success": False,
                 "error": (
-                    "fetch nodes are DAG roots and cannot have "
+                    "source nodes are DAG roots and cannot have "
                     f"parent_node_ids (got {parents})"
                 ),
             }
@@ -434,7 +434,7 @@ def create_node(
             return {
                 "success": False,
                 "error": (
-                    "fetch nodes are DAG roots and cannot have "
+                    "source nodes are DAG roots and cannot have "
                     f"dependency_node_ids (got {deps})"
                 ),
             }
@@ -465,17 +465,17 @@ def create_node(
                     ),
                 }
 
-        existing_fetch_nodes = [
+        existing_source_nodes = [
             nid for nid, info in nodes_index.items()
-            if info.get("type") == "fetch"
+            if info.get("type") == "source"
         ]
-        if node_type == "fetch" and existing_fetch_nodes:
+        if node_type == "source" and existing_source_nodes:
             return {
                 "success": False,
                 "error": (
-                    "job_dir already has a fetch root "
-                    f"({existing_fetch_nodes[0]}). Use prep/solv/topo/eq/prod "
-                    "branches for variants instead of adding another fetch node."
+                    "job_dir already has a source root "
+                    f"({existing_source_nodes[0]}). Use prep/solv/topo/eq/prod "
+                    "branches for variants instead of adding another source node."
                 ),
             }
 
@@ -536,7 +536,7 @@ def create_node(
                 }
 
         if node_type == "prep":
-            fetch_lineages = set()
+            source_lineages = set()
             queue = list(parents)
             seen = set()
             while queue:
@@ -545,15 +545,15 @@ def create_node(
                     continue
                 seen.add(ref)
                 info = nodes_index.get(ref, {})
-                if info.get("type") == "fetch":
-                    fetch_lineages.add(ref)
+                if info.get("type") == "source":
+                    source_lineages.add(ref)
                 queue.extend(info.get("parents", []))
-            if len(fetch_lineages) > 1:
+            if len(source_lineages) > 1:
                 return {
                     "success": False,
                     "error": (
-                        "prep nodes must descend from at most one fetch root; "
-                        f"got multiple fetch ancestors {sorted(fetch_lineages)}"
+                        "prep nodes must descend from at most one source root; "
+                        f"got multiple source ancestors {sorted(source_lineages)}"
                     ),
                 }
 
@@ -1307,10 +1307,10 @@ def read_node(job_dir: str, node_id: str) -> dict:
 
 
 _ALLOWED_PARENT_TYPES = {
-    "fetch": frozenset(),
-    # prep can consume a fetch artifact or transform an existing prep node
+    "source": frozenset(),
+    # prep can consume a source artifact or transform an existing prep node
     # (mutation/re-preparation branches).
-    "prep": frozenset({"fetch", "prep"}),
+    "prep": frozenset({"source", "prep"}),
     "solv": frozenset({"prep"}),
     # explicit-water topo descends from solv; implicit topo skips solv and
     # descends directly from prep.
@@ -1392,9 +1392,9 @@ def validate_node_execution_context(
                 f"'{node_id}' (status={dep_entry.get('status')!r})"
             )
 
-    if expected_node_type == "fetch":
+    if expected_node_type == "source":
         if node.get("parent_node_ids") or node.get("dependency_node_ids"):
-            errors.append("fetch nodes are DAG roots and cannot have parents/dependencies")
+            errors.append("source nodes are DAG roots and cannot have parents/dependencies")
 
     actual_conditions = actual_conditions or {}
     declared_conditions = node.get("conditions", {}) or {}
@@ -1666,7 +1666,7 @@ def resolve_node_inputs(
 
     Mappings:
 
-    - ``prep``: ``structure_file`` from the job's single ``fetch`` root,
+    - ``prep``: ``structure_file`` from the job's single ``source`` root,
                 when one exists.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
@@ -1690,13 +1690,13 @@ def resolve_node_inputs(
         progress = _load_progress_v3(pj)
         if progress is not None:
             nodes_index = progress.get("nodes", {})
-            fetch_ancestors = [
+            source_ancestors = [
                 nid for nid in ancestors
-                if nodes_index.get(nid, {}).get("type") == "fetch"
+                if nodes_index.get(nid, {}).get("type") == "source"
             ]
-            if len(fetch_ancestors) == 1:
+            if len(source_ancestors) == 1:
                 v = find_ancestor_artifact(
-                    job_dir, node_id, "fetch", "structure_file"
+                    job_dir, node_id, "source", "structure_file"
                 )
                 if v:
                     result["structure_file"] = v

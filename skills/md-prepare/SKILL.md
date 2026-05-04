@@ -38,7 +38,7 @@ present defaults to the user, and do not run any tool, before the
 runbooks for the relevant solvation mode have been read.
 
 This skill prepares **one physical system per job directory**. Do not
-create multiple fetch roots in the same DAG. Use DAG branching only
+create multiple source roots in the same DAG. Use DAG branching only
 after `prep` to explore variants of the same system — the most common
 variant is **point/multi-mutants** (run `create_mutated_structure` as
 a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
@@ -46,7 +46,7 @@ a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
 1. Decide `execution_mode` from the user's request:
    - `execution_mode=autonomous` unless the user explicitly asks for
      checkpoint-by-checkpoint confirmation.
-   - Persistence to `progress.json` happens after the fetch node is
+   - Persistence to `progress.json` happens after the source node is
      created (see setup.md), via:
      ```bash
      mdclaw update_job_params --job-dir <job_dir> \

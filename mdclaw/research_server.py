@@ -183,20 +183,20 @@ def _validate_structure_bytes(content: bytes, ext: str) -> tuple[bool, Optional[
             pass
 
 
-def _resolve_fetch_artifacts_dir(job_dir: str, node_id: str) -> Path:
-    """Return the artifacts dir for a fetch node, creating it if absent."""
+def _resolve_source_artifacts_dir(job_dir: str, node_id: str) -> Path:
+    """Return the artifacts dir for a source node, creating it if absent."""
     out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
 
-def _validate_fetch_node(job_dir: str, node_id: str) -> Optional[str]:
-    """Verify *node_id* exists under *job_dir* and is a ``fetch`` node.
+def _validate_source_node(job_dir: str, node_id: str) -> Optional[str]:
+    """Verify *node_id* exists under *job_dir* and is a ``source`` node.
 
     Returns an error message string when invalid; ``None`` when usable.
     Callers MUST short-circuit on a non-None return *before* calling
     ``begin_node`` — otherwise a typo or wrong-type ID would silently
-    record fetch metadata against an unrelated node (e.g. a prep node).
+    record source metadata against an unrelated node (e.g. a prep node).
 
     Note: this never mutates node state. The bad node_id is returned to
     the caller as a structured error in the tool's result dict; we do not
@@ -209,7 +209,7 @@ def _validate_fetch_node(job_dir: str, node_id: str) -> Optional[str]:
         return (
             f"Node '{node_id}' does not exist under {job_dir}. "
             "Create it first with: "
-            f"`mdclaw create_node --job-dir {job_dir} --node-type fetch`"
+            f"`mdclaw create_node --job-dir {job_dir} --node-type source`"
         )
     try:
         node = read_node(job_dir, node_id)
@@ -217,15 +217,15 @@ def _validate_fetch_node(job_dir: str, node_id: str) -> Optional[str]:
         return f"Could not read node.json for '{node_id}': {e}"
 
     nt = node.get("node_type")
-    if nt != "fetch":
+    if nt != "source":
         return (
-            f"Node '{node_id}' has type '{nt}', expected 'fetch'. "
-            "Structure-acquisition tools may only run under a fetch node."
+            f"Node '{node_id}' has type '{nt}', expected 'source'. "
+            "Structure-acquisition tools may only run under a source node."
         )
     return None
 
 
-def _complete_fetch_node(
+def _complete_source_node(
     job_dir: str,
     node_id: str,
     file_path: Path,
@@ -235,7 +235,7 @@ def _complete_fetch_node(
     file_format: str,
     extra_metadata: Optional[dict] = None,
 ) -> dict:
-    """Record a fetch artifact + metadata and mark the node completed.
+    """Record a source artifact + metadata and mark the node completed.
 
     Returns the artifact dict that was written (relative path under the node).
     """
@@ -423,10 +423,10 @@ async def _fetch_pdb_structure(
     _node_mode = bool(job_dir and node_id)
     if _node_mode:
         from mdclaw._node import begin_node, fail_node
-        # Verify the node_id refers to an existing fetch node BEFORE we
+        # Verify the node_id refers to an existing source node BEFORE we
         # touch any node state. A typo or wrong-type ID must not write
-        # fetch metadata onto an unrelated node (e.g. prep_001).
-        _node_err = _validate_fetch_node(job_dir, node_id)
+        # source metadata onto an unrelated node (e.g. prep_001).
+        _node_err = _validate_source_node(job_dir, node_id)
         if _node_err:
             result["errors"].append(_node_err)
             return result
@@ -456,7 +456,7 @@ async def _fetch_pdb_structure(
     try:
         # Resolve output file path
         if _node_mode:
-            save_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            save_dir = _resolve_source_artifacts_dir(job_dir, node_id)
         else:
             save_dir = Path(output_dir) if output_dir else WORKING_DIR
             ensure_directory(save_dir)
@@ -640,7 +640,7 @@ async def _fetch_pdb_structure(
             }
             if last_modified:
                 extras["last_modified"] = last_modified
-            _complete_fetch_node(
+            _complete_source_node(
                 job_dir,
                 node_id,
                 Path(result["file_path"]),
@@ -1919,7 +1919,7 @@ async def _fetch_alphafold_structure(
     _node_mode = bool(job_dir and node_id)
     if _node_mode:
         from mdclaw._node import begin_node, fail_node
-        _node_err = _validate_fetch_node(job_dir, node_id)
+        _node_err = _validate_source_node(job_dir, node_id)
         if _node_err:
             result["errors"].append(_node_err)
             return result
@@ -1956,7 +1956,7 @@ async def _fetch_alphafold_structure(
 
         # Save file
         if _node_mode:
-            save_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            save_dir = _resolve_source_artifacts_dir(job_dir, node_id)
         else:
             save_dir = Path(output_dir) if output_dir else WORKING_DIR
             ensure_directory(save_dir)
@@ -2000,7 +2000,7 @@ async def _fetch_alphafold_structure(
             }
             if last_modified:
                 extras["last_modified"] = last_modified
-            _complete_fetch_node(
+            _complete_source_node(
                 job_dir,
                 node_id,
                 Path(result["file_path"]),
@@ -2021,7 +2021,7 @@ def _fetch_local_structure(
     node_id: str,
     copy: bool = True,
 ) -> dict:
-    """Register a user-supplied local structure file as a fetch node artifact.
+    """Register a user-supplied local structure file as a source node artifact.
 
     Use this to make local PDB/CIF files first-class DAG roots, alongside
     ``download_structure`` (PDB) and ``get_alphafold_structure`` (AlphaFold).
@@ -2029,7 +2029,7 @@ def _fetch_local_structure(
     Args:
         file_path: Absolute or relative path to a .pdb/.cif/.ent file.
         job_dir: Job directory (schema v3).
-        node_id: Existing fetch node ID (create with ``create_node --node-type fetch``).
+        node_id: Existing source node ID (create with ``create_node --node-type source``).
         copy: When True (default), copy the file into the node's artifacts
             directory. When False, create a symlink instead — fragile if the
             source moves, so use only for read-only datasets.
@@ -2048,8 +2048,8 @@ def _fetch_local_structure(
         "warnings": [],
     }
 
-    # Verify the target is actually a fetch node before we touch any state.
-    _node_err = _validate_fetch_node(job_dir, node_id)
+    # Verify the target is actually a source node before we touch any state.
+    _node_err = _validate_source_node(job_dir, node_id)
     if _node_err:
         result["errors"].append(_node_err)
         return result
@@ -2072,7 +2072,7 @@ def _fetch_local_structure(
     begin_node(job_dir, node_id)
 
     try:
-        artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+        artifacts_dir = _resolve_source_artifacts_dir(job_dir, node_id)
         dst = artifacts_dir / src.name
 
         if copy:
@@ -2082,7 +2082,7 @@ def _fetch_local_structure(
                 dst.unlink()
             os.symlink(src, dst)
 
-        info = _complete_fetch_node(
+        info = _complete_source_node(
             job_dir,
             node_id,
             dst,
@@ -2119,10 +2119,10 @@ async def fetch_structure(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
-    """Fetch a structure into a fetch node from PDB, AlphaFold, or a local file.
+    """Fetch a structure into a source node from PDB, AlphaFold, or a local file.
 
     This is the preferred structure-acquisition entry point. It unifies the
-    DAG concept that all structure sources populate a ``fetch`` node while
+    DAG concept that all structure sources populate a ``source`` node while
     preserving source-specific provenance metadata.
 
     Args:
@@ -2132,12 +2132,12 @@ async def fetch_structure(
         file_path: Required when ``source="local"``.
         format: Structure format for remote sources. Defaults to CIF for the
             unified API; legacy wrappers keep their historical defaults.
-        copy: For local files, copy into the fetch node artifacts directory
+        copy: For local files, copy into the source node artifacts directory
             when True; create a symlink when False.
         output_dir: Non-node output directory for remote fetches. Ignored in
             node mode. Local fetches require ``job_dir`` and ``node_id``.
         job_dir: Job directory for node-based tracking (schema v3).
-        node_id: Existing fetch node ID.
+        node_id: Existing source node ID.
 
     Returns:
         Source-specific result dict with ``success`` / ``errors`` /
@@ -2204,7 +2204,7 @@ async def fetch_structure(
             "source": "local",
             "errors": [
                 "Local structure fetch requires both job_dir and node_id so "
-                "the file can be recorded under a fetch node"
+                "the file can be recorded under a source node"
             ],
             "warnings": [],
         }
@@ -2970,7 +2970,7 @@ def inspect_molecules(
             result["errors"].append("Hint: The structure file may be corrupted or in an unsupported format")
 
     # Optionally record the inspection result under a node (read-only — do not
-    # mutate node status). Useful when called against a fetch node so chain
+    # mutate node status). Useful when called against a source node so chain
     # selection decisions made afterwards are auditable.
     if job_dir and node_id:
         try:

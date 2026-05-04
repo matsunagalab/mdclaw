@@ -1,7 +1,6 @@
 """Tests for append-only event logging."""
 
 import json
-from pathlib import Path
 
 import pytest
 

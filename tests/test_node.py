@@ -401,7 +401,7 @@ class TestContinueFromSugar:
 
     @pytest.fixture
     def job_with_prod(self, job_dir):
-        """Build fetch→prep→solv→topo→eq→prod_001 and return (job_dir,
+        """Build source→prep→solv→topo→eq→prod_001 and return (job_dir,
         prod_001_id). prod_001 is marked completed with a checkpoint
         artifact."""
         jd = str(job_dir)
@@ -486,7 +486,7 @@ class TestContinueFromStrictEnforcement:
 
     @pytest.fixture
     def full_dag_with_prod(self, job_dir):
-        """fetch-less DAG: prep→solv→topo→eq→prod_001 (no checkpoint yet)."""
+        """source-less DAG: prep→solv→topo→eq→prod_001 (no checkpoint yet)."""
         jd = str(job_dir)
         create_node(jd, "prep")
         complete_node(jd, "prep_001",
@@ -1919,53 +1919,53 @@ class TestNodeEvents:
         assert ev["details"]["errors"] == ["boom"]
 
 
-# ── Fetch node (DAG root) ──────────────────────────────────────────────────
+# ── Source node (DAG root) ──────────────────────────────────────────────────
 
 
-class TestFetchNode:
-    """Fetch is the DAG-root node type for structure acquisition."""
+class TestSourceNode:
+    """Source is the DAG-root node type for structure acquisition."""
 
-    def test_fetch_is_valid_node_type(self, job_dir):
-        result = create_node(str(job_dir), "fetch")
+    def test_source_is_valid_node_type(self, job_dir):
+        result = create_node(str(job_dir), "source")
         assert result["success"] is True
-        assert result["node_id"] == "fetch_001"
+        assert result["node_id"] == "source_001"
 
-    def test_fetch_as_dag_root_no_parent(self, job_dir):
-        result = create_node(str(job_dir), "fetch")
+    def test_source_as_dag_root_no_parent(self, job_dir):
+        result = create_node(str(job_dir), "source")
         node = read_node(str(job_dir), result["node_id"])
         assert node["parent_node_ids"] == []
 
-    def test_fetch_rejects_parent_node_ids(self, job_dir):
-        """fetch is the DAG root — parents are forbidden by invariant."""
+    def test_source_rejects_parent_node_ids(self, job_dir):
+        """source is the DAG root — parents are forbidden by invariant."""
         jd = str(job_dir)
         # Build a valid existing node first (so the rejection isn't from
         # a missing-reference error)
-        create_node(jd, "fetch")
-        result = create_node(jd, "fetch", parent_node_ids=["fetch_001"])
+        create_node(jd, "source")
+        result = create_node(jd, "source", parent_node_ids=["source_001"])
         assert result["success"] is False
         assert "DAG root" in result["error"]
         assert "parent_node_ids" in result["error"]
-        # Index unchanged: only the original fetch_001 exists
+        # Index unchanged: only the original source_001 exists
         progress = json.loads((job_dir / "progress.json").read_text())
-        assert list(progress["nodes"].keys()) == ["fetch_001"]
+        assert list(progress["nodes"].keys()) == ["source_001"]
 
-    def test_fetch_rejects_dependency_node_ids(self, job_dir):
+    def test_source_rejects_dependency_node_ids(self, job_dir):
         jd = str(job_dir)
-        create_node(jd, "fetch")
-        result = create_node(jd, "fetch", dependency_node_ids=["fetch_001"])
+        create_node(jd, "source")
+        result = create_node(jd, "source", dependency_node_ids=["source_001"])
         assert result["success"] is False
         assert "DAG root" in result["error"]
         assert "dependency_node_ids" in result["error"]
         progress = json.loads((job_dir / "progress.json").read_text())
-        assert list(progress["nodes"].keys()) == ["fetch_001"]
+        assert list(progress["nodes"].keys()) == ["source_001"]
 
-    def test_fetch_lifecycle(self, job_dir):
+    def test_source_lifecycle(self, job_dir):
         jd = str(job_dir)
-        create_node(jd, "fetch", label="PDB 1AKE")
-        begin_node(jd, "fetch_001")
+        create_node(jd, "source", label="PDB 1AKE")
+        begin_node(jd, "source_001")
         complete_node(
             jd,
-            "fetch_001",
+            "source_001",
             artifacts={"structure_file": "artifacts/1AKE.pdb"},
             metadata={
                 "source_type": "pdb",
@@ -1973,93 +1973,93 @@ class TestFetchNode:
                 "sha256": "deadbeef",
             },
         )
-        node = read_node(jd, "fetch_001")
+        node = read_node(jd, "source_001")
         assert node["status"] == "completed"
         assert node["label"] == "PDB 1AKE"
         assert node["artifacts"]["structure_file"] == "artifacts/1AKE.pdb"
         assert node["metadata"]["source_type"] == "pdb"
 
-    def test_prep_resolves_structure_file_from_fetch(self, job_dir):
+    def test_prep_resolves_structure_file_from_source(self, job_dir):
         jd = str(job_dir)
-        create_node(jd, "fetch")
+        create_node(jd, "source")
         # Create the actual file so resolve gives a usable path
-        (job_dir / "nodes" / "fetch_001" / "artifacts" / "1AKE.pdb").write_text("HEADER\n")
+        (job_dir / "nodes" / "source_001" / "artifacts" / "1AKE.pdb").write_text("HEADER\n")
         complete_node(
             jd,
-            "fetch_001",
+            "source_001",
             artifacts={"structure_file": "artifacts/1AKE.pdb"},
         )
-        create_node(jd, "prep", parent_node_ids=["fetch_001"])
+        create_node(jd, "prep", parent_node_ids=["source_001"])
         inputs = resolve_node_inputs(jd, "prep_001", "prep")
         assert "structure_file" in inputs
-        assert inputs["structure_file"].endswith("fetch_001/artifacts/1AKE.pdb")
+        assert inputs["structure_file"].endswith("source_001/artifacts/1AKE.pdb")
 
-    def test_prep_omits_structure_file_when_no_fetch_ancestor(self, job_dir):
+    def test_prep_omits_structure_file_when_no_source_ancestor(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "prep")
         inputs = resolve_node_inputs(jd, "prep_001", "prep")
         assert "structure_file" not in inputs
 
-    def test_rejects_second_fetch_root(self, job_dir):
+    def test_rejects_second_source_root(self, job_dir):
         jd = str(job_dir)
-        assert create_node(jd, "fetch")["success"] is True
-        result = create_node(jd, "fetch")
+        assert create_node(jd, "source")["success"] is True
+        result = create_node(jd, "source")
         assert result["success"] is False
-        assert "already has a fetch root" in result["error"]
+        assert "already has a source root" in result["error"]
 
-    def test_rejects_prep_with_multiple_fetch_lineages(self, job_dir):
+    def test_rejects_prep_with_multiple_source_lineages(self, job_dir):
         jd = str(job_dir)
-        create_node(jd, "fetch")
-        complete_node(jd, "fetch_001",
+        create_node(jd, "source")
+        complete_node(jd, "source_001",
                       artifacts={"structure_file": "artifacts/a.pdb"})
-        # Simulate a legacy/hand-edited second fetch lineage in progress.json.
+        # Simulate a legacy/hand-edited second source lineage in progress.json.
         progress_path = job_dir / "progress.json"
         progress = json.loads(progress_path.read_text())
-        progress["nodes"]["fetch_002"] = {
-            "type": "fetch",
+        progress["nodes"]["source_002"] = {
+            "type": "source",
             "status": "completed",
             "parents": [],
         }
         progress_path.write_text(json.dumps(progress))
-        result = create_node(jd, "prep", parent_node_ids=["fetch_001", "fetch_002"])
+        result = create_node(jd, "prep", parent_node_ids=["source_001", "source_002"])
         assert result["success"] is False
-        assert "multiple fetch ancestors" in result["error"]
+        assert "multiple source ancestors" in result["error"]
 
-    def test_prep_with_single_fetch_through_intermediate_ignored(self, job_dir):
-        """If only one fetch ancestor exists, resolve still works even when
-        there are non-fetch siblings on the parent list."""
+    def test_prep_with_single_source_through_intermediate_ignored(self, job_dir):
+        """If only one source ancestor exists, resolve still works even when
+        there are non-source siblings on the parent list."""
         jd = str(job_dir)
-        create_node(jd, "fetch")
-        (job_dir / "nodes" / "fetch_001" / "artifacts" / "src.pdb").write_text("X")
-        complete_node(jd, "fetch_001",
+        create_node(jd, "source")
+        (job_dir / "nodes" / "source_001" / "artifacts" / "src.pdb").write_text("X")
+        complete_node(jd, "source_001",
                       artifacts={"structure_file": "artifacts/src.pdb"})
-        # A second prep without a fetch parent (e.g. legacy)
+        # A second prep without a source parent (e.g. legacy)
         create_node(jd, "prep")
         complete_node(jd, "prep_001",
                       artifacts={"merged_pdb": "artifacts/merged.pdb"})
-        # New prep: single fetch ancestor
-        create_node(jd, "prep", parent_node_ids=["fetch_001"])
+        # New prep: single source ancestor
+        create_node(jd, "prep", parent_node_ids=["source_001"])
         inputs = resolve_node_inputs(jd, "prep_002", "prep")
-        assert inputs.get("structure_file", "").endswith("fetch_001/artifacts/src.pdb")
+        assert inputs.get("structure_file", "").endswith("source_001/artifacts/src.pdb")
 
-    def test_single_fetch_can_branch_into_multiple_preps(self, job_dir):
+    def test_single_source_can_branch_into_multiple_preps(self, job_dir):
         jd = str(job_dir)
-        create_node(jd, "fetch")
-        (job_dir / "nodes" / "fetch_001" / "artifacts" / "src.pdb").write_text("X")
+        create_node(jd, "source")
+        (job_dir / "nodes" / "source_001" / "artifacts" / "src.pdb").write_text("X")
         complete_node(
             jd,
-            "fetch_001",
+            "source_001",
             artifacts={"structure_file": "artifacts/src.pdb"},
         )
-        first = create_node(jd, "prep", parent_node_ids=["fetch_001"], label="protein_only")
-        second = create_node(jd, "prep", parent_node_ids=["fetch_001"], label="protein_ligand")
+        first = create_node(jd, "prep", parent_node_ids=["source_001"], label="protein_only")
+        second = create_node(jd, "prep", parent_node_ids=["source_001"], label="protein_ligand")
         assert first["success"] is True
         assert second["success"] is True
 
         first_inputs = resolve_node_inputs(jd, "prep_001", "prep")
         second_inputs = resolve_node_inputs(jd, "prep_002", "prep")
-        assert first_inputs["structure_file"].endswith("fetch_001/artifacts/src.pdb")
-        assert second_inputs["structure_file"].endswith("fetch_001/artifacts/src.pdb")
+        assert first_inputs["structure_file"].endswith("source_001/artifacts/src.pdb")
+        assert second_inputs["structure_file"].endswith("source_001/artifacts/src.pdb")
 
 
 # ── Tool registration ─────────────────────────────────────────────────────

@@ -5,8 +5,6 @@ These tests validate the tool registry, server imports, and configuration system
 """
 
 import importlib
-import sys
-from pathlib import Path
 
 import pytest
 

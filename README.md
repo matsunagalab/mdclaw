@@ -105,7 +105,7 @@ state file, and artifacts. Parent-child relationships form a DAG:
 job_a1b2c3d4/
   progress.json                ← thin index of nodes + cached summaries
   nodes/
-    fetch_001/                 ← structure acquisition root
+    source_001/                 ← structure acquisition root
       node.json
       artifacts/
         1AKE.pdb
@@ -143,7 +143,7 @@ The same topology node can be reused for multiple equilibrations at
 different temperatures. Each equilibration can branch into multiple
 productions (different seeds, lengths, etc.).
 
-One `job_dir` represents one physical system. Keep a single `fetch` root per
+One `job_dir` represents one physical system. Keep a single `source` root per
 job and use branching after `prep` to explore preparation, equilibration, and
 production variants.
 

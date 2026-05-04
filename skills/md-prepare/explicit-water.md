@@ -28,50 +28,50 @@ and apply identically for both explicit- and implicit-solvent paths.
 Each step: `create_node` -> run tool with `--job-dir`/`--node-id`.
 Tools auto-resolve input files from DAG ancestors and self-update state.
 
-The DAG root is a `fetch` node that records the source of the structure
+The DAG root is a `source` node that records the source of the structure
 (PDB ID, UniProt ID, or local file) plus its sha256 / source URL so the run
 is reproducible and re-fetchable. `prep` then auto-resolves
-`structure_file` from its `fetch` parent.
+`structure_file` from its `source` parent.
 
 ---
 
-## Step 1: Acquire Structure (fetch node)
+## Step 1: Acquire Structure (source node)
 
 ```bash
 mkdir -p job_xxx
-mdclaw create_node --job-dir job_xxx --node-type fetch --label "<source description>"
+mdclaw create_node --job-dir job_xxx --node-type source --label "<source description>"
 ```
 
-Then fetch the structure with `--node-id fetch_001`:
+Then fetch the structure with `--node-id source_001`:
 
 ```bash
 # PDB
-mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
   --source pdb \
   --pdb-id 1AKE
 
 # AlphaFold
-mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
   --source alphafold \
   --uniprot-id P12345
 
 # Local file (copies into the node's artifacts dir)
-mdclaw --job-dir job_xxx --node-id fetch_001 fetch_structure \
+mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
   --source local \
   --file-path /path/to/input.pdb
 ```
 
-The structure file is written under `job_xxx/nodes/fetch_001/artifacts/` and
+The structure file is written under `job_xxx/nodes/source_001/artifacts/` and
 the node's `metadata` records `source_type`, `source_id`, `sha256`, and
 `source_url` (when applicable).
 
 ---
 
-## Step 2: Inspect (read-only, optional event under fetch node)
+## Step 2: Inspect (read-only, optional event under source node)
 
 ```bash
-mdclaw --job-dir job_xxx --node-id fetch_001 inspect_molecules \
-  --structure-file job_xxx/nodes/fetch_001/artifacts/<file>
+mdclaw --job-dir job_xxx --node-id source_001 inspect_molecules \
+  --structure-file job_xxx/nodes/source_001/artifacts/<file>
 ```
 
 This writes `inspection.json` next to the structure file and appends an
@@ -87,11 +87,11 @@ non-empty, follow the "Metal ion handling" section of `setup.md` —
 ## Step 3: Prepare Complex (prep node)
 
 ```bash
-mdclaw create_node --job-dir job_xxx --node-type prep --parent-node-ids fetch_001
+mdclaw create_node --job-dir job_xxx --node-type prep --parent-node-ids source_001
 mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex
 ```
 
-`structure_file` is auto-resolved from the `fetch` parent. Pass
+`structure_file` is auto-resolved from the `source` parent. Pass
 `--structure-file` only to override (e.g., to use a manually edited PDB).
 
 If the input PDB contained SEP / TPO / PTR residues, they are listed

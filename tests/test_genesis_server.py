@@ -1,9 +1,9 @@
 """Tests for genesis_server.boltz2_protein_from_seq node integration.
 
-These tests exercise the fetch-node wiring without invoking the real
+These tests exercise the source-node wiring without invoking the real
 Boltz-2 binary: the executable lookup and subprocess run are stubbed,
 and a fake prediction PDB is written where _parse_boltz_results looks
-for it. The goal is to verify that predictions land under the fetch
+for it. The goal is to verify that predictions land under the source
 node's artifacts/ and that the source metadata is recorded correctly.
 """
 
@@ -20,12 +20,12 @@ from mdclaw._node import create_node, init_progress_v3, read_node
 
 
 @pytest.fixture
-def job_with_fetch_node(tmp_path):
-    """Empty job_dir with a single pending fetch node."""
+def job_with_source_node(tmp_path):
+    """Empty job_dir with a single pending source node."""
     jd = tmp_path / "job_boltz"
     jd.mkdir()
     init_progress_v3(str(jd), "job_boltz")
-    r = create_node(str(jd), "fetch")
+    r = create_node(str(jd), "source")
     assert r["success"]
     return str(jd), r["node_id"]
 
@@ -58,13 +58,13 @@ def _stub_boltz(monkeypatch, out_dir_name_pattern: str = "boltz_results_"):
     return genesis_server
 
 
-class TestBoltz2FetchNodeIntegration:
-    """Verify boltz2_protein_from_seq writes fetch node artifacts + metadata."""
+class TestBoltz2SourceNodeIntegration:
+    """Verify boltz2_protein_from_seq writes source node artifacts + metadata."""
 
     def test_node_mode_writes_artifact_and_metadata(
-        self, job_with_fetch_node, monkeypatch
+        self, job_with_source_node, monkeypatch
     ):
-        job_dir, node_id = job_with_fetch_node
+        job_dir, node_id = job_with_source_node
         genesis_server = _stub_boltz(monkeypatch)
 
         result = genesis_server.boltz2_protein_from_seq(
@@ -96,11 +96,11 @@ class TestBoltz2FetchNodeIntegration:
         assert node["artifacts"]["structure_file"].startswith("artifacts/")
 
     def test_invalid_node_type_rejected_before_run(
-        self, job_with_fetch_node, monkeypatch
+        self, job_with_source_node, monkeypatch
     ):
-        """Pointing at a non-fetch node must not mutate any state."""
-        job_dir, _fetch_id = job_with_fetch_node
-        prep = create_node(job_dir, "prep", parent_node_ids=[_fetch_id])
+        """Pointing at a non-source node must not mutate any state."""
+        job_dir, _source_id = job_with_source_node
+        prep = create_node(job_dir, "prep", parent_node_ids=[_source_id])
         assert prep["success"]
 
         genesis_server = _stub_boltz(monkeypatch)
@@ -121,13 +121,13 @@ class TestBoltz2FetchNodeIntegration:
         )
 
         assert result["success"] is False
-        assert any("expected 'fetch'" in e for e in result["errors"])
+        assert any("expected 'source'" in e for e in result["errors"])
         assert call_log == []
 
     def test_missing_sequence_fails_before_run(
-        self, job_with_fetch_node, monkeypatch
+        self, job_with_source_node, monkeypatch
     ):
-        job_dir, node_id = job_with_fetch_node
+        job_dir, node_id = job_with_source_node
         _stub_boltz(monkeypatch)
 
         from mdclaw import genesis_server as gs
@@ -345,13 +345,13 @@ def _stub_modeller(monkeypatch):
     return genesis_server, captured
 
 
-class TestModellerFetchNodeIntegration:
-    """Verify MODELLER predictions can populate fetch nodes without MODELLER installed."""
+class TestModellerSourceNodeIntegration:
+    """Verify MODELLER predictions can populate source nodes without MODELLER installed."""
 
     def test_node_mode_writes_artifact_and_metadata(
-        self, job_with_fetch_node, tmp_path, monkeypatch
+        self, job_with_source_node, tmp_path, monkeypatch
     ):
-        job_dir, node_id = job_with_fetch_node
+        job_dir, node_id = job_with_source_node
         template = _write_template_pdb(tmp_path / "template.pdb")
         genesis_server, captured = _stub_modeller(monkeypatch)
 
@@ -384,10 +384,10 @@ class TestModellerFetchNodeIntegration:
         assert meta["selected_model"]["DOPE score"] == -20.0
 
     def test_invalid_node_type_rejected_before_run(
-        self, job_with_fetch_node, tmp_path, monkeypatch
+        self, job_with_source_node, tmp_path, monkeypatch
     ):
-        job_dir, fetch_id = job_with_fetch_node
-        prep = create_node(job_dir, "prep", parent_node_ids=[fetch_id])
+        job_dir, source_id = job_with_source_node
+        prep = create_node(job_dir, "prep", parent_node_ids=[source_id])
         assert prep["success"]
         template = _write_template_pdb(tmp_path / "template.pdb")
         genesis_server, _captured = _stub_modeller(monkeypatch)
@@ -405,7 +405,7 @@ class TestModellerFetchNodeIntegration:
         )
 
         assert result["success"] is False
-        assert any("expected 'fetch'" in e for e in result["errors"])
+        assert any("expected 'source'" in e for e in result["errors"])
 
     def test_non_node_mode_still_works(self, tmp_path, monkeypatch):
         template = _write_template_pdb(tmp_path / "template.pdb")

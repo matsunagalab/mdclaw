@@ -408,20 +408,20 @@ class TestRestartFromErrorFailsNode:
         # need real parm7/state — the early-return for
         # restart_from_error fires before any artifact is opened.
         # parents of prod_001 are required to construct continued_from
-        # validation, so we synthesize a minimal fetch→prep→solv→topo→eq
+        # validation, so we synthesize a minimal source→prep→solv→topo→eq
         # spine and complete eq with a state artifact (so prod_001 is a
         # plausible "anchor" prod), then create prod_001 and a child
         # prod_002 that --continues-from prod_001 *without* prod_001
         # ever finishing — i.e. prod_001 has no state/checkpoint.
         for nt, parents in [
-            ("fetch", None),
-            ("prep", ["fetch_001"]),
+            ("source", None),
+            ("prep", ["source_001"]),
             ("solv", ["prep_001"]),
             ("topo", ["solv_001"]),
             ("eq", ["topo_001"]),
         ]:
             create_node(str(jd), nt, parent_node_ids=parents)
-        complete_node(str(jd), "fetch_001",
+        complete_node(str(jd), "source_001",
                       artifacts={"structure_file": "x.cif"})
         complete_node(str(jd), "prep_001",
                       artifacts={"merged_pdb": "x.pdb"})

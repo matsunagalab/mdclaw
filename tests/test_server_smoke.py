@@ -65,7 +65,7 @@ class TestResearchServer:
         assert Path(result["file_path"]).exists()
 
     @pytest.mark.asyncio
-    async def test_fetch_structure_dispatches_remote_sources(
+    async def test_source_structure_dispatches_remote_sources(
         self,
         monkeypatch,
         tmp_path,
@@ -135,7 +135,7 @@ class TestResearchServer:
 
         job_dir = tmp_path / "job_inspect"
         job_dir.mkdir()
-        node = create_node(str(job_dir), "fetch")
+        node = create_node(str(job_dir), "source")
 
         result = inspect_molecules(
             structure_file=small_pdb,
@@ -159,7 +159,7 @@ class TestResearchServer:
         assert node_data["status"] == "pending"
 
     @pytest.mark.asyncio
-    async def test_fetch_structure_local_node_mode(self, small_pdb, tmp_path):
+    async def test_source_structure_local_node_mode(self, small_pdb, tmp_path):
         """fetch_structure(source='local') records local file provenance."""
         import json
 
@@ -168,7 +168,7 @@ class TestResearchServer:
 
         job_dir = tmp_path / "job_fetch_local"
         job_dir.mkdir()
-        node = create_node(str(job_dir), "fetch")
+        node = create_node(str(job_dir), "source")
         assert node["success"]
 
         result = await fetch_structure(
@@ -193,7 +193,7 @@ class TestResearchServer:
         assert progress["nodes"][node["node_id"]]["status"] == "completed"
 
     def test_register_local_structure(self, small_pdb, tmp_path):
-        """register_local_structure copies the file into a fetch node and
+        """register_local_structure copies the file into a source node and
         records sha256 + source metadata."""
         import json
 
@@ -202,7 +202,7 @@ class TestResearchServer:
 
         job_dir = tmp_path / "job_local"
         job_dir.mkdir()
-        node = create_node(str(job_dir), "fetch")
+        node = create_node(str(job_dir), "source")
         assert node["success"]
 
         result = register_local_structure(
@@ -231,7 +231,7 @@ class TestResearchServer:
 
         job_dir = tmp_path / "job_missing"
         job_dir.mkdir()
-        node = create_node(str(job_dir), "fetch")
+        node = create_node(str(job_dir), "source")
 
         result = register_local_structure(
             file_path=str(tmp_path / "no_such_file.pdb"),
@@ -252,7 +252,7 @@ class TestResearchServer:
 
         job_dir = tmp_path / "job_dl"
         job_dir.mkdir()
-        node = create_node(str(job_dir), "fetch")
+        node = create_node(str(job_dir), "source")
 
         result = await download_structure(
             pdb_id="1AKE",
@@ -261,7 +261,7 @@ class TestResearchServer:
             node_id=node["node_id"],
         )
         assert result["success"], result.get("errors")
-        # File landed under the fetch node's artifacts dir
+        # File landed under the source node's artifacts dir
         assert Path(result["file_path"]).parent.name == "artifacts"
 
         node_data = read_node(str(job_dir), node["node_id"])

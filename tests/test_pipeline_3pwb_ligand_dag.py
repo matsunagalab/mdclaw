@@ -1,7 +1,7 @@
 """Level 3: Full node-DAG pipeline integration test using PDB 3PWB ligands.
 
 End-to-end test of the schema-v3 node graph for a holo, multi-ligand case:
-  fetch_001 (fetch_structure) ->
+  source_001 (fetch_structure) ->
     prep_001 (prepare_complex with BEN + GOL ligands) ->
       solv_001 (solvate_structure) ->
         topo_001 (build_amber_system) ->
@@ -31,32 +31,32 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipeline3PWBLigandDag:
-    """Full node-based holo pipeline: fetch -> prep -> solv -> topo -> eq -> prod."""
+    """Full node-based holo pipeline: source -> prep -> solv -> topo -> eq -> prod."""
 
     @pytest.fixture(scope="class")
     def job_dir(self, tmp_path_factory):
         return tmp_path_factory.mktemp("job_3pwb_ligand_dag")
 
-    # Step 1: fetch (fetch_structure under a fetch node)
+    # Step 1: source acquisition (fetch_structure under a source node)
     def test_step1_fetch_pdb(self, job_dir):
         from mdclaw._node import create_node, read_node
         from research_server import fetch_structure
 
-        node = create_node(str(job_dir), "fetch", label="PDB 3PWB")
+        node = create_node(str(job_dir), "source", label="PDB 3PWB")
         assert node["success"]
-        self.__class__.fetch_id = node["node_id"]
+        self.__class__.source_id = node["node_id"]
 
         result = asyncio.run(fetch_structure(
             source="pdb",
             pdb_id="3PWB",
             format="pdb",
             job_dir=str(job_dir),
-            node_id=self.fetch_id,
+            node_id=self.source_id,
         ))
         assert result["success"], result.get("errors")
         assert Path(result["file_path"]).parent.name == "artifacts"
 
-        node_data = read_node(str(job_dir), self.fetch_id)
+        node_data = read_node(str(job_dir), self.source_id)
         assert node_data["status"] == "completed"
         assert node_data["artifacts"]["structure_file"] == "artifacts/3PWB.pdb"
         meta = node_data["metadata"]
@@ -64,16 +64,16 @@ class TestPipeline3PWBLigandDag:
         assert meta["source_id"] == "3PWB"
         assert meta["sha256"]
 
-    # Step 2: inspect (read-only, records under fetch node)
+    # Step 2: inspect (read-only, records under source node)
     def test_step2_inspect_multi_ligand(self, job_dir):
         from mdclaw._node import read_node
         from research_server import inspect_molecules
 
-        fetch_artifacts = job_dir / "nodes" / self.fetch_id / "artifacts"
+        fetch_artifacts = job_dir / "nodes" / self.source_id / "artifacts"
         result = inspect_molecules(
             structure_file=str(fetch_artifacts / "3PWB.pdb"),
             job_dir=str(job_dir),
-            node_id=self.fetch_id,
+            node_id=self.source_id,
         )
         assert result["success"], result.get("errors")
         assert (fetch_artifacts / "inspection.json").exists()
@@ -85,9 +85,9 @@ class TestPipeline3PWBLigandDag:
         }
         assert {"A:BEN:481", "A:SO4:482", "A:GOL:483"}.issubset(ligand_ids)
         assert len(result["summary"]["ligand_label_ids"]) >= 3
-        assert read_node(str(job_dir), self.fetch_id)["status"] == "completed"
+        assert read_node(str(job_dir), self.source_id)["status"] == "completed"
 
-    # Step 3: prep (auto-resolves structure_file from fetch ancestor)
+    # Step 3: prep (auto-resolves structure_file from source ancestor)
     def test_step3_prep_multi_ligand(self, job_dir):
         from mdclaw._node import create_node, read_node
         from structure_server import prepare_complex
@@ -95,7 +95,7 @@ class TestPipeline3PWBLigandDag:
         node = create_node(
             str(job_dir),
             "prep",
-            parent_node_ids=[self.fetch_id],
+            parent_node_ids=[self.source_id],
         )
         assert node["success"]
         self.__class__.prep_id = node["node_id"]
@@ -115,8 +115,8 @@ class TestPipeline3PWBLigandDag:
             cap_termini=False,
         )
         assert result["success"], result.get("errors")
-        assert result["source_file"].endswith("fetch_001/artifacts/3PWB.pdb") or \
-               result["source_file"].endswith(f"{self.fetch_id}/artifacts/3PWB.pdb")
+        assert result["source_file"].endswith("source_001/artifacts/3PWB.pdb") or \
+               result["source_file"].endswith(f"{self.source_id}/artifacts/3PWB.pdb")
         assert Path(result["merged_pdb"]).exists()
 
         successful_ligands = {

@@ -704,14 +704,14 @@ class TestNodeCLIParameters:
         if not _dependency_available("httpx"):
             pytest.skip("fetch_structure unavailable because research server dependencies are missing")
 
-        create_node(str(tmp_path), "fetch")
+        create_node(str(tmp_path), "source")
         src = tmp_path / "input.pdb"
         src.write_text("HEADER    test\nEND\n")
 
         with pytest.raises(SystemExit) as exc_info:
             main([
                 "--job-dir", str(tmp_path),
-                "--node-id", "fetch_001",
+                "--node-id", "source_001",
                 "fetch_structure",
                 "--source", "local",
                 "--file-path", str(src),

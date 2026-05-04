@@ -4735,7 +4735,7 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['mol2_file']}")
     """
-    # Auto-resolve structure_file from a fetch ancestor when in node mode.
+    # Auto-resolve structure_file from a source ancestor when in node mode.
     if job_dir and node_id and not structure_file:
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "prep")
@@ -4788,7 +4788,7 @@ def prepare_complex(
     if not structure_file:
         result["errors"].append(
             "structure_file is required (or pass --job-dir/--node-id with a "
-            "fetch ancestor that provides it)"
+            "source ancestor that provides it)"
         )
         return result
 
@@ -5803,7 +5803,7 @@ def create_mutated_structure(
 
     DAG placement::
 
-        fetch_001 -> prep_001 (prepare_complex) -> prep_002 (this tool)
+        source_001 -> prep_001 (prepare_complex) -> prep_002 (this tool)
                                                    -> solv_001 -> ...
 
     In node mode (``job_dir`` + ``node_id`` with ``node_type=prep``), the
@@ -5855,7 +5855,7 @@ def create_mutated_structure(
             return {"success": False, "error_type": "ValidationError", **_ctx}
 
     # Auto-resolve input from nearest prep ancestor (the cleaned merged.pdb,
-    # not the raw fetch download — mutation runs AFTER prepare_complex).
+    # not the raw source structure — mutation runs AFTER prepare_complex).
     if job_dir and node_id and not pdb_file:
         from mdclaw._node import find_ancestor_artifact
         v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
@@ -6208,7 +6208,7 @@ def phosphorylate_residues(
     Phosphorylation is a post-prep transformation that runs on a branched
     ``prep`` node (parallels ``create_mutated_structure``). The DAG shape::
 
-        fetch_001 → prep_001 (prepare_complex) → prep_002 (this tool)
+        source_001 → prep_001 (prepare_complex) → prep_002 (this tool)
                                                  → solv_001 → ...
 
     Three input modes (mutually exclusive):

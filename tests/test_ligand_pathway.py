@@ -462,7 +462,10 @@ class TestWarningPropagation:
         )
 
         # 2. Warning must appear in the ligand's own warnings
-        atp_ligands = [l for l in result.get("ligands", []) if l.get("ligand_id") == "ATP"]
+        atp_ligands = [
+            ligand for ligand in result.get("ligands", [])
+            if ligand.get("ligand_id") == "ATP"
+        ]
         if atp_ligands:
             lig_warnings = atp_ligands[0].get("warnings", [])
             has_lig_warning = any("LOW_CONFIDENCE_CHARGE" in w for w in lig_warnings)
@@ -502,7 +505,7 @@ class TestLigandClassification:
         assert cls["curated_params_recommended"] is False
 
     def test_metal_containing(self):
-        from mdclaw.structure_server import _classify_ligand, METAL_ELEMENTS
+        from mdclaw.structure_server import _classify_ligand
         cls = _classify_ligand("HEM", heavy_atom_count=43, element_set={"C", "N", "Fe"})
         assert cls["ligand_class"] == "metal_containing"
         assert cls["auto_parameterization_quality"] == "unsupported"

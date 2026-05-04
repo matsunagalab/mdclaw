@@ -9,11 +9,11 @@ import pytest
 
 
 def fetch_pdb_node(job_dir: Path, pdb_id: str, label: str | None = None) -> str:
-    """Create a fetch node and populate it with an RCSB PDB structure."""
+    """Create a source node and populate it with an RCSB PDB structure."""
     from mdclaw._node import create_node, read_node
     from mdclaw.research_server import fetch_structure
 
-    node = create_node(str(job_dir), "fetch", label=label or f"PDB {pdb_id}")
+    node = create_node(str(job_dir), "source", label=label or f"PDB {pdb_id}")
     assert node["success"], node
     node_id = node["node_id"]
     result = asyncio.run(

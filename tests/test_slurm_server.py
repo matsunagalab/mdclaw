@@ -14,13 +14,10 @@ from mdclaw.slurm_server import (
     _append_job_record,
     _build_singularity_command,
     _extract_bind_paths,
-    _get_jobs_path,
     _is_partition_allowed,
     _parse_memory_bytes,
     _parse_time_limit_seconds,
     _read_job_records,
-    _stamp_slurm_on_node,
-    _sync_slurm_state_to_node,
     _update_job_record,
     _validate_against_policy,
     cancel_job,
@@ -1658,8 +1655,10 @@ class TestListTrackedJobsFilters:
 
     def test_filter_by_job_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        jd_a = tmp_path / "a"; jd_a.mkdir()
-        jd_b = tmp_path / "b"; jd_b.mkdir()
+        jd_a = tmp_path / "a"
+        jd_a.mkdir()
+        jd_b = tmp_path / "b"
+        jd_b.mkdir()
         _append_job_record({"job_id": "1", "job_dir": str(jd_a.resolve()), "node_id": "prod_001"})
         _append_job_record({"job_id": "2", "job_dir": str(jd_b.resolve()), "node_id": "prod_001"})
         _append_job_record({"job_id": "3", "job_dir": str(jd_a.resolve()), "node_id": "prod_002"})

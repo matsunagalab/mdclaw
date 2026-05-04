@@ -3,7 +3,7 @@
 ## Progress Tracking (schema v3, node-based)
 
 `progress.json` is a thin **index** over the job's nodes. Each pipeline step
-(`fetch`, `prep`, `solv`, `topo`, `eq`, `prod`) is a separate node with its own
+(`source`, `prep`, `solv`, `topo`, `eq`, `prod`) is a separate node with its own
 `node.json`, lock, and `artifacts/` directory. Tools self-update both their
 `node.json` and the `progress.json` index — the skill never writes state
 manually.
@@ -22,8 +22,8 @@ Read `progress.json` to see which nodes exist and their status; read a specific
     "execution_mode": "autonomous"
   },
   "nodes": {
-    "fetch_001": {"type": "fetch", "status": "completed", "parents": []},
-    "prep_001":  {"type": "prep",  "status": "completed", "parents": ["fetch_001"]},
+    "source_001": {"type": "source", "status": "completed", "parents": []},
+    "prep_001":  {"type": "prep",  "status": "completed", "parents": ["source_001"]},
     "solv_001":  {"type": "solv",  "status": "completed", "parents": ["prep_001"]},
     "topo_001":  {"type": "topo",  "status": "completed", "parents": ["solv_001"]}
   },
@@ -38,7 +38,7 @@ job_XXXXXXXX/
   progress.json
   progress.lock
   nodes/
-    fetch_001/
+    source_001/
       node.json
       node.lock
       artifacts/        ← downloaded structure, inspection.json
@@ -82,7 +82,7 @@ Use `progress.json.params.execution_mode` as the source of truth:
 
 ## Step 1: Acquire Structure
 
-**Tools** (all accept `--job-dir <jd> --node-id <fetch_id>` for schema v3):
+**Tools** (all accept `--job-dir <jd> --node-id <source_id>` for schema v3):
 - `mdclaw fetch_structure --source pdb --pdb-id <ID>` (CIF by default; pass `--format pdb` only when a caller actually needs PDB format)
 - `mdclaw fetch_structure --source alphafold --uniprot-id <ID>`
 - `mdclaw fetch_structure --source local --file-path <path>`
@@ -93,7 +93,7 @@ Use `progress.json.params.execution_mode` as the source of truth:
 **Logic** (first rule that matches wins):
 1. PDB ID (4-char like `1AKE`) → `fetch_structure --source pdb`
 2. UniProt ID (like `P12345`) → `fetch_structure --source alphafold`
-3. Local file path exists → create a `fetch` node, then `fetch_structure --source local`
+3. Local file path exists → create a `source` node, then `fetch_structure --source local`
 4. FASTA sequence + user-provided homolog template PDB → `modeller_from_alignment`
 5. FASTA sequence (+ optional SMILES) and no PDB/UniProt known → `boltz2_protein_from_seq`
 6. Protein name (fuzzy / ambiguous) → `search_structures`, then ask user to pick
@@ -102,21 +102,21 @@ If the user gives **both** a PDB ID and a sequence, prefer the PDB ID and
 ask whether Boltz-2 prediction is still wanted — the experimental
 structure is almost always the right starting point.
 
-> **Schema v3 workflow**: structure acquisition is always a `fetch` DAG-root
-> node. Create it first (`mdclaw create_node --job-dir <jd> --node-type fetch`)
-> and pass `--node-id fetch_001` to `fetch_structure` or
+> **Schema v3 workflow**: structure acquisition is always a `source` DAG-root
+> node. Create it first (`mdclaw create_node --job-dir <jd> --node-type source`)
+> and pass `--node-id source_001` to `fetch_structure` or
 > `boltz2_protein_from_seq`. The downloaded / registered / predicted file
-> is recorded under `nodes/fetch_001/artifacts/` with provenance metadata
+> is recorded under `nodes/source_001/artifacts/` with provenance metadata
 > (`source_type`, `source_id`, `sha256`, `source_url` or sequence/SMILES).
 > See `explicit-water.md` for the full runbook.
 >
 > **Boltz-2 note**: `boltz2_protein_from_seq` takes its ligands via
 > `--smiles-list` — SMILES handling is entirely Boltz-2's responsibility
 > and `prepare_complex` does **not** take novel SMILES. The predicted
-> complex (protein + embedded ligand coordinates) becomes the fetch node's
+> complex (protein + embedded ligand coordinates) becomes the source node's
 > structure, and `prepare_complex` parameterizes the ligand the same way
 > it would for a PDB-derived complex. A collaborator-maintained Boltz-2
-> CLI/skill set may also be in use — either path populates the same fetch
+> CLI/skill set may also be in use — either path populates the same source
 > node layout.
 >
 > **MODELLER note**: `modeller_from_alignment` is an optional comparative
@@ -126,7 +126,7 @@ structure is almost always the right starting point.
 > license key via `KEY_MODELLER10v8` before running. By default the tool
 > derives `template_code` from the template filename, creates a seed
 > alignment internally, calls MODELLER `auto_align()`, and records the best
-> DOPE-scored model as the fetch node's `structure_file`. Advanced users may
+> DOPE-scored model as the source node's `structure_file`. Advanced users may
 > pass `--alignment-file` plus matching `--template-code` / `--target-code`.
 
 ---
@@ -134,12 +134,12 @@ structure is almost always the right starting point.
 ## Step 2: Inspect & Decide
 
 ```bash
-mdclaw --job-dir <jd> --node-id fetch_001 inspect_molecules \
+mdclaw --job-dir <jd> --node-id source_001 inspect_molecules \
   --structure-file <file>
 ```
 
 This records an `inspection_completed` event and writes `inspection.json`
-into the fetch node's artifacts dir. The node's status is unchanged
+into the source node's artifacts dir. The node's status is unchanged
 (read-only).
 
 1. **Chain ID mapping (label_asym_id vs auth_asym_id)**: structures
@@ -235,13 +235,13 @@ prep ancestor — no manual `--json-input` wiring required. The explicit
 
 ## Step 3: Prepare Complex
 
-Create a `prep` node with the `fetch` node as parent, then invoke
+Create a `prep` node with the `source` node as parent, then invoke
 `prepare_complex` in the schema v3 workflow. `structure_file` is auto-resolved from the
-single `fetch` ancestor, and output goes to `nodes/prep_001/artifacts/`.
+single `source` ancestor, and output goes to `nodes/prep_001/artifacts/`.
 
 **Without ligands** (protein only):
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids fetch_001
+mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids source_001
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --select-chains A \
   --include-types protein \

@@ -126,7 +126,7 @@ job_XXXXXXXX/
   progress.json                       # schema v3: thin index of nodes + cached summaries
   progress.lock                       # flock for concurrent writes
   nodes/
-    fetch_001/                        # DAG root: structure acquisition
+    source_001/                        # DAG root: structure acquisition
       node.json                       # records source_type/source_id/sha256/source_url
       node.lock
       artifacts/
@@ -321,7 +321,7 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 ## Tool Modules
 
 ### research_server.py
-- `fetch_structure(source, pdb_id, uniprot_id, file_path, format, copy, output_dir, job_dir, node_id)` - Preferred structure-acquisition entry point. `source` is `pdb`, `alphafold`, or `local`; in node mode (`fetch` node), file is written to `nodes/<node_id>/artifacts/` with source-specific provenance metadata.
+- `fetch_structure(source, pdb_id, uniprot_id, file_path, format, copy, output_dir, job_dir, node_id)` - Preferred structure-acquisition entry point. `source` is `pdb`, `alphafold`, or `local`; in node mode (`source` node), file is written to `nodes/<node_id>/artifacts/` with source-specific provenance metadata.
 - `download_structure(pdb_id, format, output_dir, job_dir, node_id)` - Compatibility wrapper for RCSB PDB fetch. In node mode records `source_type=pdb`, `source_id`, `sha256`, `source_url`, `last_modified`, `cache_hit`, `fallback_used`
 - `get_structure_info(pdb_id)` - Get PDB entry metadata
 - `get_alphafold_structure(uniprot_id, format, output_dir, job_dir, node_id)` - Compatibility wrapper for AlphaFold DB fetch. In node mode, records `source_type=alphafold`, `model_version`, `cached=false` (AlphaFold entries are not locally cached)
@@ -333,16 +333,16 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 - `analyze_structure_details(structure_file, ph)` - HIS/SS-bond analysis
 
 ### structure_server.py
-- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `fetch` ancestor. Standard DNA/RNA chains pass through unchanged as `nucleics` and are merged with cleaned proteins / parameterized ligands; glycan chains pass through unchanged as `glycans` and are not sent through ligand cleaning or antechamber. Writes `residue_mapping.json` for nucleic residues, plus `glycan_metadata.json` / `glycan_linkages.json` for glycoprotein GLYCAM topology and LINK-derived protein-glycan bonds. Chain-ID rule for `select_chains`: **pass the short chain ID as it appears in your input file** — `chain_id` (label_asym_id) for mmCIF, `author_chain` (auth_asym_id, = column 22) for PDB. See "Chain ID mapping" in `skills/md-prepare/setup.md` for why the two can disagree in mmCIF (e.g. 7QVK label `B` ↔ author `BBB`) and why gemmi's PDB `chain_id` is an internal artifact (`Axp` / `Ax1` / `Axw`) you never type
+- `prepare_complex(structure_file, output_dir, ..., job_dir, node_id)` - Full preparation pipeline. In node mode, `structure_file` auto-resolves from the job's single `source` ancestor. Standard DNA/RNA chains pass through unchanged as `nucleics` and are merged with cleaned proteins / parameterized ligands; glycan chains pass through unchanged as `glycans` and are not sent through ligand cleaning or antechamber. Writes `residue_mapping.json` for nucleic residues, plus `glycan_metadata.json` / `glycan_linkages.json` for glycoprotein GLYCAM topology and LINK-derived protein-glycan bonds. Chain-ID rule for `select_chains`: **pass the short chain ID as it appears in your input file** — `chain_id` (label_asym_id) for mmCIF, `author_chain` (auth_asym_id, = column 22) for PDB. See "Chain ID mapping" in `skills/md-prepare/setup.md` for why the two can disagree in mmCIF (e.g. 7QVK label `B` ↔ author `BBB`) and why gemmi's PDB `chain_id` is an internal artifact (`Axp` / `Ax1` / `Axw`) you never type
 - `clean_protein(pdb_file, ...)` - PDBFixer + pdb2pqr protonation
 - `clean_ligand(pdb_file, ...)` - Ligand parameterization
 - `split_molecules(structure_file, select_chains, include_types)` - Extract components (`protein`, `nucleic`, `glycan`, `ligand`, `ion`, `water`; same "pass what's in your file" chain-ID rule as `prepare_complex`)
 - `merge_structures(pdb_files, output_name)` - Merge PDB files
 - `run_antechamber_robust(mol2_file, ...)` - Ligand parameterization: metal pre-check → amber_geostd → GAFF2 fallback
 - `download_amber_geostd(output_dir, force)` - Download curated ligand parameter database (~28k entries)
-- `create_mutated_structure(pdb_file, sequence, seq_file, name, output_dir, job_dir, node_id)` - In-silico mutagenesis via FASPR side-chain packing. Pass exactly one of `sequence` (FASPR-format string, lowercase=keep, uppercase=mutate) or `seq_file`. Designed to run AFTER `prepare_complex` as a `prep`-type node: in node mode, `pdb_file` auto-resolves from the nearest prep ancestor's `merged_pdb` artifact, and the mutated PDB is registered as both `merged_pdb` and `mutated_pdb` so the downstream `solv` resolver picks it up automatically. DAG: fetch → prep (clean) → prep (mutate) → solv → topo → eq → prod.
+- `create_mutated_structure(pdb_file, sequence, seq_file, name, output_dir, job_dir, node_id)` - In-silico mutagenesis via FASPR side-chain packing. Pass exactly one of `sequence` (FASPR-format string, lowercase=keep, uppercase=mutate) or `seq_file`. Designed to run AFTER `prepare_complex` as a `prep`-type node: in node mode, `pdb_file` auto-resolves from the nearest prep ancestor's `merged_pdb` artifact, and the mutated PDB is registered as both `merged_pdb` and `mutated_pdb` so the downstream `solv` resolver picks it up automatically. DAG: source → prep (clean) → prep (mutate) → solv → topo → eq → prod.
 - `prepare_modified_nucleic(modifications, modxna_dir, job_dir, node_id)` - Generate modXNA parameters on a branched `prep` node after `prepare_complex`. Node mode only: input PDB auto-resolves from the nearest prep ancestor's `merged_pdb`, and source-coordinate targets resolve through ancestor `residue_mapping`. Each modification needs `chain`, `resnum`, `source_resname`, and explicit `backbone` / `sugar` / `base` fragment IDs. The tool runs `modxna.sh -i in.modxna`, records generated `.lib` + `frcmod.modxna` as `modxna_params`, renames only the resolved residue in `modified_nucleic.pdb`, and registers that file as downstream `merged_pdb`. Terminal 5′/3′ modifications are blocked in the initial implementation.
-- `phosphorylate_residues(pdb_file, sites, sites_str, restore_from_detection, allow_partial, name, output_dir, job_dir, node_id)` - Apply phosphorylation (SER→SEP / THR→TPO / TYR→PTR) on a branched `prep` node after `prepare_complex`. Three input modes (mutually exclusive): `restore_from_detection=True` reads `metadata.detected_ptm_residues` from the nearest prep ancestor (re-introduces PTMs that the source PDB carried but PDBFixer stripped); `sites=[{"chain","resnum","target"}, ...]` for explicit sites; `sites_str="A:65:SEP,A:178:TPO"` for the same as a CLI string. Each site's current residue must be the standard counterpart of the target — mismatches return a structured error. Sites that cannot be located in the input PDB (typo, chain-id drift) are **fatal by default**; pass `allow_partial=True` to convert to a warning. The tool renames the residue and strips the hydroxyl H (`HG`/`HG1`/`HH`), keeping `OG`/`OG1`/`OH`; `build_amber_system` then rebuilds the phosphate atoms via `leaprc.phosaa*`. The phosphorylated PDB is registered as both `merged_pdb` and `phosphorylated_pdb` for downstream auto-resolve. DAG: fetch → prep (clean) → prep (phosphorylate) → solv → topo → eq → prod.
+- `phosphorylate_residues(pdb_file, sites, sites_str, restore_from_detection, allow_partial, name, output_dir, job_dir, node_id)` - Apply phosphorylation (SER→SEP / THR→TPO / TYR→PTR) on a branched `prep` node after `prepare_complex`. Three input modes (mutually exclusive): `restore_from_detection=True` reads `metadata.detected_ptm_residues` from the nearest prep ancestor (re-introduces PTMs that the source PDB carried but PDBFixer stripped); `sites=[{"chain","resnum","target"}, ...]` for explicit sites; `sites_str="A:65:SEP,A:178:TPO"` for the same as a CLI string. Each site's current residue must be the standard counterpart of the target — mismatches return a structured error. Sites that cannot be located in the input PDB (typo, chain-id drift) are **fatal by default**; pass `allow_partial=True` to convert to a warning. The tool renames the residue and strips the hydroxyl H (`HG`/`HG1`/`HH`), keeping `OG`/`OG1`/`OH`; `build_amber_system` then rebuilds the phosphate atoms via `leaprc.phosaa*`. The phosphorylated PDB is registered as both `merged_pdb` and `phosphorylated_pdb` for downstream auto-resolve. DAG: source → prep (clean) → prep (phosphorylate) → solv → topo → eq → prod.
 
 ### genesis_server.py
 - `boltz2_protein_from_seq(amino_acid_sequence_list, smiles_list, affinity, num_models, output_dir, msa_path, job_dir, node_id)` - Boltz-2 structure prediction
@@ -384,7 +384,7 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 - `configure_container(image, bind_paths, extra_flags, disable)` - Configure Singularity container for SLURM jobs
 
 ### node_server.py
-- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `fetch` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's `state` / `checkpoint` artifact (no silent fallback); if neither is present, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
+- `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `source` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's `state` / `checkpoint` artifact (no silent fallback); if neither is present, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
 - `update_job_params(job_dir, params)` - Merge job-level metadata into `progress.json.params`. Use this to persist workflow-wide settings such as `execution_mode` (`autonomous` / `human_in_the_loop`) without hand-editing progress files.
 - `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
 
@@ -542,12 +542,12 @@ Two-tier strategy:
 
 ## TODO
 
-### Single-fetch DAG principle
+### Single-source DAG principle
 
-Each `job_dir` should contain one physical system with exactly one `fetch`
+Each `job_dir` should contain one physical system with exactly one `source`
 root. Variant exploration happens by branching from `prep`, `solv`, `topo`,
 `eq`, or `prod` nodes inside that same DAG. Supporting multiple independent
-fetch roots in one job is intentionally out of scope because it makes input
+source roots in one job is intentionally out of scope because it makes input
 resolution and system identity ambiguous.
 
 ### PTM coverage

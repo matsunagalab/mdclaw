@@ -84,9 +84,9 @@ def boltz2_protein_from_seq(
                   as the protein `msa` field. If None, the Boltz MSA server is
                   used instead.
         job_dir: Job directory for node-based tracking (schema v3).
-        node_id: Fetch node ID. When both ``job_dir`` and ``node_id`` are provided,
+        node_id: Source node ID. When both ``job_dir`` and ``node_id`` are provided,
                  the top-ranked predicted PDB is copied into
-                 ``<job_dir>/nodes/<node_id>/artifacts/`` and the fetch node is
+                 ``<job_dir>/nodes/<node_id>/artifacts/`` and the source node is
                  marked completed with ``source_type="boltz2"`` plus sequence
                  and SMILES metadata. Additional prediction models remain under
                  the boltz output directory for inspection.
@@ -99,7 +99,7 @@ def boltz2_protein_from_seq(
             - input_yaml_path: str - Path to Boltz-2 input YAML file
             - predicted_pdb_files: list[str] - Paths to predicted PDB structure files
             - file_path: str | None - Path to the primary PDB copied under the
-              fetch node artifacts (node mode only)
+              source node artifacts (node mode only)
             - affinity_scores: dict | None - Binding affinity predictions if requested
               Contains:
               - affinity_probability_binary: Higher = more confident binding
@@ -122,16 +122,16 @@ def boltz2_protein_from_seq(
     job_id = generate_job_id()
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
 
-    # Node-mode setup: validate fetch node before touching state, then use the
+    # Node-mode setup: validate source node before touching state, then use the
     # node artifacts dir as the boltz output root so predictions land under it.
     _node_mode = bool(job_dir and node_id)
     if _node_mode:
         from mdclaw.research_server import (
-            _validate_fetch_node,
-            _resolve_fetch_artifacts_dir,
+            _validate_source_node,
+            _resolve_source_artifacts_dir,
         )
         from mdclaw._node import begin_node, fail_node
-        _node_err = _validate_fetch_node(job_dir, node_id)
+        _node_err = _validate_source_node(job_dir, node_id)
         if _node_err:
             return {
                 "success": False,
@@ -147,7 +147,7 @@ def boltz2_protein_from_seq(
 
     # Setup output directory with human-readable name
     if _node_mode:
-        base_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+        base_dir = _resolve_source_artifacts_dir(job_dir, node_id)
     else:
         base_dir = Path(output_dir) if output_dir else WORKING_DIR
     out_dir = create_unique_subdir(base_dir, "boltz")
@@ -326,23 +326,23 @@ def boltz2_protein_from_seq(
         else:
             result["warnings"].append("Affinity file not found in output")
 
-    # Node integration: promote the top-ranked predicted PDB as the fetch
+    # Node integration: promote the top-ranked predicted PDB as the source
     # node's primary structure artifact. Additional models stay under
     # out_dir for inspection.
     if _node_mode:
         if not result["predicted_pdb_files"]:
             result["errors"].append(
-                "Boltz-2 produced no PDB files; cannot complete fetch node"
+                "Boltz-2 produced no PDB files; cannot complete source node"
             )
             fail_node(job_dir, node_id, errors=result["errors"])
             return result
         try:
             from mdclaw.research_server import (
-                _complete_fetch_node,
-                _resolve_fetch_artifacts_dir,
+                _complete_source_node,
+                _resolve_source_artifacts_dir,
             )
             primary_src = Path(result["predicted_pdb_files"][0])
-            artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            artifacts_dir = _resolve_source_artifacts_dir(job_dir, node_id)
             primary_dst = artifacts_dir / f"boltz2_prediction_{primary_src.name}"
             shutil.copy2(primary_src, primary_dst)
 
@@ -361,7 +361,7 @@ def boltz2_protein_from_seq(
             }
             if result.get("affinity_scores"):
                 extra["affinity_scores"] = result["affinity_scores"]
-            _complete_fetch_node(
+            _complete_source_node(
                 job_dir,
                 node_id,
                 primary_dst,
@@ -372,7 +372,7 @@ def boltz2_protein_from_seq(
             )
             result["file_path"] = str(primary_dst)
         except Exception as e:
-            msg = f"Failed to attach Boltz-2 prediction to fetch node: {type(e).__name__}: {e}"
+            msg = f"Failed to attach Boltz-2 prediction to source node: {type(e).__name__}: {e}"
             logger.error(msg)
             result["errors"].append(msg)
             fail_node(job_dir, node_id, errors=[msg])
@@ -601,7 +601,7 @@ def modeller_from_alignment(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
-    """Build a comparative model with MODELLER and optionally attach it to a fetch node.
+    """Build a comparative model with MODELLER and optionally attach it to a source node.
 
     MODELLER is an optional dependency. Users install it separately (for example,
     ``conda install salilab::modeller``) and provide their license via a
@@ -613,12 +613,12 @@ def modeller_from_alignment(
     _node_mode = bool(job_dir and node_id)
     if _node_mode:
         from mdclaw.research_server import (
-            _resolve_fetch_artifacts_dir,
-            _validate_fetch_node,
+            _resolve_source_artifacts_dir,
+            _validate_source_node,
         )
         from mdclaw._node import begin_node, fail_node
 
-        _node_err = _validate_fetch_node(job_dir, node_id)
+        _node_err = _validate_source_node(job_dir, node_id)
         if _node_err:
             return {
                 "success": False,
@@ -631,7 +631,7 @@ def modeller_from_alignment(
                 "warnings": [],
             }
 
-    base_dir = _resolve_fetch_artifacts_dir(job_dir, node_id) if _node_mode else (
+    base_dir = _resolve_source_artifacts_dir(job_dir, node_id) if _node_mode else (
         Path(output_dir) if output_dir else WORKING_DIR
     )
     out_dir = create_unique_subdir(base_dir, "modeller")
@@ -808,11 +808,11 @@ def modeller_from_alignment(
     if _node_mode:
         try:
             from mdclaw.research_server import (
-                _complete_fetch_node,
-                _resolve_fetch_artifacts_dir,
+                _complete_source_node,
+                _resolve_source_artifacts_dir,
             )
 
-            artifacts_dir = _resolve_fetch_artifacts_dir(job_dir, node_id)
+            artifacts_dir = _resolve_source_artifacts_dir(job_dir, node_id)
             primary_dst = artifacts_dir / f"modeller_prediction_{target_code_clean}.pdb"
             shutil.copy2(selected_path, primary_dst)
 
@@ -836,7 +836,7 @@ def modeller_from_alignment(
                 "hetatm": hetatm,
                 "random_seed": random_seed,
             }
-            _complete_fetch_node(
+            _complete_source_node(
                 job_dir,
                 node_id,
                 primary_dst,
@@ -847,7 +847,7 @@ def modeller_from_alignment(
             )
             result["file_path"] = str(primary_dst)
         except Exception as e:
-            msg = f"Failed to attach MODELLER prediction to fetch node: {type(e).__name__}: {e}"
+            msg = f"Failed to attach MODELLER prediction to source node: {type(e).__name__}: {e}"
             logger.error(msg)
             result["errors"].append(msg)
             fail_node(job_dir, node_id, errors=[msg])
