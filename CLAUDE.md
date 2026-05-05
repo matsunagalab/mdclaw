@@ -39,6 +39,9 @@ bin/                         # Plugin CLI wrapper (auto-added to PATH)
 hooks/                       # Plugin lifecycle hooks
   hooks.json                 # SessionStart -> auto-download SIF
 
+examples/                    # Lightweight examples and CLI usage skeletons
+  study/                     # Optional study_dir campaign examples
+
 scripts/                     # Setup & maintenance scripts
   setup-container.sh         # Download versioned SIF from GHCR
 
@@ -67,6 +70,8 @@ container/                  # Docker/Singularity containerization
   Dockerfile                # Multi-stage build (mambaforge -> conda-pack -> slim)
   scripts/entrypoint.sh     # Container entrypoint (conda activate + exec)
   scripts/test-container.sh # Container verification script
+
+ref/                        # Local reference PDFs/manuals (gitignored)
 
 tests/                      # 4-level test suite
   conftest.py               # Shared fixtures (small_pdb, etc.)
@@ -176,6 +181,9 @@ job_XXXXXXXX/
         state.xml                   # saveState (end-of-run + periodic)
         checkpoint.chk              # saveCheckpoint (end-of-run + periodic)
         energy.dat
+    evidence/                         # optional generated reports
+      mdclaw_methods_<job>_<node>.md
+      md_evidence_report.json
     prod_002/                         # branch 2 from eq_001
       node.json
       artifacts/
@@ -209,6 +217,8 @@ study_XXXXXXXX/
   token_ledger.jsonl           # optional LLM/token accounting
   annotations/                 # optional external context
   evidence/                    # optional study-level evidence reports
+    mdclaw_study_methods_<study>.md
+    study_evidence_report.json
   jobs/
     wt/
       progress.json
@@ -221,6 +231,10 @@ study_XXXXXXXX/
 `study_server.py` manages the study index and append-only logs. It is a thin
 file contract only: it does not execute OpenMM, mutate node DAG semantics, or
 require agent-specific runtime support.
+
+See `examples/study/` for a runnable WT-vs-mutant campaign scaffold. The example
+creates a `study_dir`, registers planned `jobs/wt` and `jobs/v148a` directories,
+and records a study question, decision, and token usage without running MD.
 
 ### Pre-commit Checklist
 
@@ -392,7 +406,7 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 
 ### md_simulation_server.py
 - `run_equilibration(prmtop_file, inpcrd_file, temperature_kelvin, pressure_bar, nvt_steps, npt_steps, restraint_atoms, restraint_force_constant, ..., job_dir, node_id)` - Standard staged minimization + low-temperature NVT warmup + NVT, followed by NPT when applicable. The staged minimization/warmup prelude is used for all NVT equilibration runs (explicit, implicit, apo, ligand-bound) without branching on ligand risk metadata. In node mode, `prmtop_file`/`inpcrd_file` auto-resolved from `topo` ancestor
-- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode: `prmtop_file`/`inpcrd_file` resolve from the `topo` ancestor; `restart_from` walks the DAG upward and **prefers the ancestor's `state` artifact (XML, cross-node portable); falls back to `checkpoint` (binary, same-GPU-only) for legacy DAGs that predate the saveState migration**. Resolution picks the nearest `prod` ancestor with a `state`/`checkpoint` artifact (extension case), falling through to the `eq` ancestor if no prod ancestor has one (fresh production). On load, `.xml` triggers `Simulation.loadState` and `simulation.currentStep` is restored from `node.json.metadata.final_step` of that ancestor (saveState does not persist the step counter); `.chk` triggers `Simulation.loadCheckpoint` which carries the step counter itself. Both formats are saved at end-of-run and periodically (via two `CheckpointReporter` instances, one with `writeState=True`); the `.chk` remains on disk as an escape hatch for bit-identical reproduction cases (committor / sensitivity analyses), but no code path reads it when a `.xml` is also present. `simulation_time_ns` is the time to run **in this call** — it is added on top of the restart state's `currentStep`, so `eq→prod` keeps its "full production length" meaning (the eq state is written with `final_step=0` by design) while `prod→prod` cleanly extends by the requested duration. The node records `start_step` / `start_time_ns` / `final_step` so analysis tools can place each segment on the right timeline, and DCDs are never appended across nodes
+- `run_production(prmtop_file, inpcrd_file, simulation_time_ns, ..., platform, device_index, restart_from, hmr, random_seed, output_frequency_ps, job_dir, node_id)` - Production MD (HMR + 4fs default). In node mode: `prmtop_file`/`inpcrd_file` resolve from the `topo` ancestor; `restart_from` walks the DAG upward and **prefers the ancestor's `state` artifact (XML, cross-node portable); falls back to `checkpoint` (binary, same-GPU-only) for legacy DAGs that predate the saveState migration**. Resolution picks the nearest `prod` ancestor with a `state`/`checkpoint` artifact (extension case), falling through to the `eq` ancestor if no prod ancestor has one (fresh production). On load, `.xml` triggers `Simulation.loadState` and `simulation.currentStep` is restored from `node.json.metadata.final_step` of that ancestor (saveState does not persist the step counter); `.chk` triggers `Simulation.loadCheckpoint` which carries the step counter itself. Both formats are saved at end-of-run and periodically (via two `CheckpointReporter` instances, one with `writeState=True`); the `.chk` remains on disk as an escape hatch for bit-identical reproduction cases (committor / sensitivity analyses), but no code path reads it when a `.xml` is also present. `simulation_time_ns` is the time to run **in this call** — it is added on top of the restart state's `currentStep`, so `eq→prod` keeps its "full production length" meaning (the eq state is written with `final_step=0` by design) while `prod→prod` cleanly extends by the requested duration. The node records `start_step` / `start_time_ns` / `final_step` / `output_frequency_ps` so analysis and Methods reports can place each segment on the right timeline and recover reporter cadence, and DCDs are never appended across nodes
 
 ### literature_server.py
 - `pubmed_search(query, retmax, sort)` - Search PubMed
@@ -428,13 +442,15 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 
 ### evidence_server.py
 - `generate_md_evidence_report(job_dir, evidence_type, question, summary, target, output_dir, output_name)` - Generate a minimal JSON evidence report from one `job_dir`, summarizing completed nodes, available analyze metrics, artifacts, limitations, and provenance.
+- `generate_md_methods_report(job_dir, node_id, output_dir, output_name, citation_inventory)` - Generate a manuscript-oriented Markdown Methods draft from one job lineage. If `node_id` is omitted, selects a completed leaf node, preferring `analyze` then `prod`. Output includes 2-3 Methods paragraphs, an LLM-friendly template, a Mermaid workflow schematic, lineage facts, citation keys, and BibTeX entries selected from `docs/research/mdclaw_citation_inventory.md` (or a supplied inventory path).
+- `generate_study_methods_report(study_dir, output_name, citation_inventory, terminal_node_ids)` - Generate a study-level Methods Markdown report by collecting one terminal lineage per registered study job. `terminal_node_ids` is an optional JSON dict keyed by `job_id`, `label`, or `role` when automatic terminal-node selection is not desired.
 - `generate_study_evidence_report(study_dir, evidence_type, question, summary, output_name)` - Generate a study-level JSON evidence report across jobs registered in `study.json`.
 
 ## CLI Interface
 
 `mdclaw/_cli.py` provides `mdclaw` CLI that auto-discovers all tools from `SERVER_REGISTRY` in `_registry.py` and exposes them as argparse subcommands. Output is always JSON on stdout; logs go to stderr.
 
-**Global flags**: `--job-dir` and `--node-id` provide node-based state tracking (schema v3). Workflow tools require both flags; the CLI injects them into tool kwargs before execution.
+**Global flags**: `--job-dir` and `--node-id` provide node-based state tracking (schema v3). Workflow tools require both flags; the CLI injects them into tool kwargs before execution. `add_study_job` is intentionally excluded from this injection path: its `job_dir` argument is data being registered under a `study_dir`, so relative paths such as `jobs/wt` are preserved relative to the study instead of being resolved as the active execution context.
 
 **Parameter mapping**: `snake_case` params become `--kebab-case` flags. `bool` uses `--flag`/`--no-flag`. `List[str]` uses `nargs='+'`. `Dict` accepts JSON strings. `--json-input '{...}'` passes all params as JSON.
 

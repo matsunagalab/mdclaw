@@ -174,6 +174,34 @@ Use `mdclaw init_study`, `mdclaw add_study_job`,
 this layer. It is intentionally optional: ordinary one-system MD workflows do
 not need a `study_dir`.
 
+For a runnable skeleton, see `examples/study/`:
+
+```bash
+bash examples/study/mutation_campaign.sh
+```
+
+The example creates a WT-vs-mutant campaign scaffold, registers two planned
+`job_dir`s, and records a question, decision, and token-ledger entry without
+running molecular dynamics.
+
+### Evidence And Methods Reports
+
+MDClaw can emit lightweight evidence and manuscript-oriented Methods reports
+from completed DAG state:
+
+```bash
+mdclaw generate_md_evidence_report --job-dir job_a1b2c3d4
+mdclaw generate_md_methods_report --job-dir job_a1b2c3d4
+
+mdclaw generate_study_evidence_report --study-dir study_mutation_screen
+mdclaw generate_study_methods_report --study-dir study_mutation_screen
+```
+
+Evidence reports are JSON summaries for downstream tools or notebooks. Methods
+reports are Markdown drafts that trace the selected node lineage, include a
+Mermaid workflow schematic, and select BibTeX entries from
+`docs/research/mdclaw_citation_inventory.md` when available.
+
 ### State Management
 
 - **Skills** decide what to run (orchestration only, no state mutation)
@@ -212,6 +240,9 @@ the repo — no plugin install needed. In this dev mode, slash commands
 have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-equilibration`,
 `/md-production`, `/md-analyze`, `/hpc-run` (the `/mdclaw:*` form only
 exists when installed as a plugin).
+
+Local reference PDFs or manuals can be kept under `ref/`. That directory is
+ignored by git and is intended for developer reference material only.
 
 ### Daily Cycle
 
