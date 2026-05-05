@@ -31,6 +31,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
     classify_glycan_residues,
     ensure_directory,
+    sha256_file,
     setup_logger,
 )
 
@@ -63,14 +64,6 @@ def _copy_if_exists(src: Path, dst: Path) -> bool:
     ensure_directory(dst.parent)
     shutil.copy2(src, dst)
     return True
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
@@ -130,7 +123,7 @@ def _verify_cache(cache_file: Path, cache_meta: Path) -> bool:
     if not expected:
         return False
     try:
-        return _sha256_file(cache_file) == expected
+        return sha256_file(cache_file) == expected
     except OSError:
         return False
 
@@ -248,7 +241,7 @@ def _complete_source_node(
         "source_type": source_type,
         "source_id": source_id,
         "format": file_format,
-        "sha256": _sha256_file(file_path),
+        "sha256": sha256_file(file_path),
         "file_size_bytes": file_path.stat().st_size,
         "fetched_at": datetime.now(timezone.utc).isoformat(),
     }

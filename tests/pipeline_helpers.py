@@ -43,6 +43,26 @@ def node_artifact(job_dir: Path, node_id: str, artifact_key: str) -> Path:
     return path
 
 
+def complete_node_with_placeholders(job_dir, node_id, artifacts, **kwargs):
+    """Complete a node after creating placeholder files for string artifacts.
+
+    The production ``complete_node`` deliberately rejects missing artifact
+    paths. Many lifecycle tests care about DAG wiring rather than file contents,
+    so they use this helper and reserve the real function for strict-guard tests.
+    """
+    from mdclaw._node import complete_node
+
+    node_dir = Path(job_dir) / "nodes" / node_id
+    for rel_path in artifacts.values():
+        if not isinstance(rel_path, str) or not rel_path:
+            continue
+        full = node_dir / rel_path
+        full.parent.mkdir(parents=True, exist_ok=True)
+        if not full.exists():
+            full.touch()
+    return complete_node(job_dir, node_id, artifacts, **kwargs)
+
+
 def require_tleap() -> None:
     from mdclaw.amber_server import tleap_wrapper
 

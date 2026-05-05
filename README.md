@@ -77,7 +77,7 @@ branch with `prepare_modified_nucleic`, which requires `MDCLAW_MODXNA_DIR`
 unless the environment already provides `modxna.sh` and `dat/frcmod.modxna`.
 MDClaw can auto-fill curated modXNA fragment presets such as `5CM`, while
 unknown modifications still require explicit `backbone` / `sugar` / `base`
-fragment IDs. See `skills/md-prepare/setup.md` Step 3.7 for the full workflow.
+fragment IDs. See `skills/md-prepare/branches.md` for the workflow.
 
 ### Execution Mode
 
@@ -278,32 +278,21 @@ ignored by git and is intended for developer reference material only.
 
 ```
 1. Edit code in mdclaw/ or skills/
-2. ruff check mdclaw/
-3. pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
+2. conda run -n mdclaw ruff check mdclaw/
+3. conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 4. Test skills in a new Claude Code conversation
 5. Commit
 ```
 
-See **CLAUDE.md** for: tool list, architecture details, adding tools/servers,
-test levels, container build internals, and full configuration reference.
+See `CLAUDE.md` for the short agent guide and `docs/developer/` for tool
+reference, architecture details, test levels, container internals, release
+steps, and configuration.
 
 ### Release
 
 ```bash
-# 1. Bump version in 4 files (must match):
-#    mdclaw/__init__.py, pyproject.toml,
-#    .claude-plugin/plugin.json, .claude-plugin/marketplace.json
-
-# 2. Tag and push
-git add -A && git commit -m "release: vX.Y.Z"
-git tag vX.Y.Z && git push origin main --tags
-
-# 3. Build, test, push to GHCR
-docker build -f container/Dockerfile -t mdclaw:latest .
-docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
-docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
-docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z
-docker push ghcr.io/matsunagalab/mdclaw:latest
+# Full version-sync, container test, and GHCR publish flow:
+# docs/developer/release.md
 ```
 
 Users update via `/plugin update mdclaw@mdclaw`. SessionStart hook

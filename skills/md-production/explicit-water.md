@@ -42,36 +42,16 @@ extension/retry details, read `skills/md-production/restart.md`.
 
 ### SLURM Execution (HPC)
 
-For long runs, multi-replicate sweeps, or fan-out across many systems,
-hand off to the `/hpc-run` skill instead of writing the sbatch here. The
-short version:
+For long runs, multi-replicate sweeps, or fan-out across many systems, hand off
+to `/hpc-run`. Do not duplicate sbatch patterns here; use the focused runbooks:
 
-```bash
-# Single node, linked to the DAG (note --job-dir / --node-id on submit_job
-# — they stamp slurm_job_id onto nodes/prod_001/node.json and let
-# check_job sync state back):
-mdclaw submit_job \
-  --job-dir <job_dir> --node-id prod_001 \
-  --script "mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
-    --simulation-time-ns <user_specified> \
-    --temperature-kelvin <T> --pressure-bar 1.0 --platform CUDA" \
-  --partition gpu --gpus 1 --time-limit <estimated> --memory "32G"
+- `skills/hpc-run/submit-single.md`
+- `skills/hpc-run/submit-array.md`
+- `skills/hpc-run/prod-extension.md`
+- `skills/hpc-run/monitor-recover.md`
 
-# Many prod nodes in parallel (replicates or cross-system): one sbatch
-# with --array=0-N-1 via submit_array_job — prefer this over a shell loop
-# of submit_job calls. See /hpc-run for the full pattern.
-mdclaw submit_array_job --tasks "$TASKS_JSON" --partition gpu --gpus 1 ...
-```
-
-Key properties:
-- `--job-dir` / `--node-id` on `submit_job` and `submit_array_job` link the
-  SLURM job id into `node.json.metadata` and track it in
-  `.mdclaw_jobs.jsonl`. `check_job` then reflects SLURM state onto the DAG
-  (RUNNING → `queued→running`, FAILED/TIMEOUT → `failed` + stderr tail).
-- Inside the job script, omit `--prmtop-file` / `--inpcrd-file` /
-  `--restart-from` — DAG auto-resolution takes care of all three.
-- Full runbook (cluster inspection, policy, container config, monitoring
-  with `/loop`, checkpoint extension): `/hpc-run`.
+Inside the job script, omit `--prmtop-file`, `--inpcrd-file`, and
+`--restart-from` in normal DAG flows. DAG auto-resolution handles them.
 
 ---
 

@@ -340,6 +340,6 @@ Erlang の supervision tree + actor model が一番近い。ただし「各 acto
 - `mdclaw/_node.py:121-314` — `create_node` 実装
 - `mdclaw/_node.py:605-677` — `find_ancestor_artifact` (BFS で祖先 artifact 探索)
 - `mdclaw/_node.py:680-813` — `resolve_node_inputs` (型別入力解決、ハードコード分岐)
-- `CLAUDE.md` — プロジェクト全体像、schema v3 の説明
+- `CLAUDE.md` / `docs/developer/architecture.md` — プロジェクト全体像、schema v3 の説明
 - `mdclaw/_event.py` — append-only イベントログ（将来 REMD 交換ログに転用可能）
 - `mdclaw/_lock.py` — ファイルロック（マルチプロセス前提の設計）

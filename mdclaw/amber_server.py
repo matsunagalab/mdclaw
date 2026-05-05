@@ -29,6 +29,7 @@ from mdclaw._common import (  # noqa: E402
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_guardrail_result, create_validation_error,
     create_validation_error_from_guardrails, guardrail_messages,
+    guess_pdb_element,
     is_glycan_residue_name,
     normalize_choice, split_guardrail_results,
 )
@@ -649,24 +650,13 @@ def _pdb_residue_instance_counts(pdb_path: Path) -> Dict[str, int]:
     return counts
 
 
-def _guess_pdb_element(atom_name: str, element_field: str = "") -> str:
-    element = (element_field or "").strip()
-    if element:
-        return element.upper()
-    cleaned = re.sub(r"[^A-Za-z]", "", atom_name or "")
-    if not cleaned:
-        return ""
-    two = cleaned[:2].upper()
-    return two if two in {"CL", "BR", "NA", "MG", "ZN", "FE", "MN", "CA", "CU", "CO", "NI"} else cleaned[0].upper()
-
-
 def _pdb_heavy_atoms_for_contacts(pdb_path: Path) -> list[dict]:
     atoms: list[dict] = []
     for line in pdb_path.read_text().splitlines():
         if not line.startswith(("ATOM", "HETATM")) or len(line) < 54:
             continue
         atom_name = line[12:16].strip()
-        element = _guess_pdb_element(atom_name, line[76:78] if len(line) >= 78 else "")
+        element = guess_pdb_element(atom_name, line[76:78] if len(line) >= 78 else "")
         if element == "H":
             continue
         try:
@@ -1776,6 +1766,49 @@ def _add_pdb_info(
     return result
 
 
+def _resolve_build_amber_node_inputs(
+    *,
+    job_dir: str,
+    node_id: str,
+    actual_conditions: dict,
+    pdb_file: Optional[str],
+    ligand_params: Optional[List[Dict[str, str]]],
+    modxna_params: Optional[List[Dict[str, Any]]],
+    metal_params: Optional[List[Dict[str, str]]],
+    disulfide_bonds: Optional[List[Dict[str, Any]]],
+    glycan_metadata: Optional[Dict[str, Any]],
+    glycan_linkages: Optional[List[Dict[str, Any]]],
+    box_dimensions: Optional[Dict[str, float]],
+    is_membrane: bool,
+) -> dict:
+    """Validate and merge DAG-resolved inputs for ``build_amber_system``."""
+    from mdclaw._node import resolve_node_inputs, validate_node_execution_context
+
+    ctx = validate_node_execution_context(
+        job_dir,
+        node_id,
+        "topo",
+        actual_conditions=actual_conditions,
+    )
+    if not ctx["success"]:
+        return {"success": False, "error_type": "ValidationError", **ctx}
+
+    inputs = resolve_node_inputs(job_dir, node_id, "topo")
+    return {
+        "success": True,
+        "pdb_file": pdb_file or inputs.get("pdb_file"),
+        "ligand_params": ligand_params if ligand_params is not None else inputs.get("ligand_params"),
+        "modxna_params": modxna_params if modxna_params is not None else inputs.get("modxna_params"),
+        "metal_params": metal_params if metal_params is not None else inputs.get("metal_params"),
+        "disulfide_bonds": disulfide_bonds if disulfide_bonds is not None else inputs.get("disulfide_bonds"),
+        "glycan_metadata": glycan_metadata if glycan_metadata is not None else inputs.get("glycan_metadata"),
+        "glycan_linkages": glycan_linkages if glycan_linkages is not None else inputs.get("glycan_linkages"),
+        "box_dimensions": box_dimensions if box_dimensions is not None else inputs.get("box_dimensions"),
+        "is_membrane": is_membrane or bool(inputs.get("is_membrane")),
+        "solvation_water_model": inputs.get("solvation_water_model"),
+    }
+
+
 def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_params: Optional[List[Dict[str, str]]] = None,
@@ -1890,11 +1923,9 @@ def build_amber_system(
     solvation_water_model = None
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id:
-        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
-        _ctx = validate_node_execution_context(
-            job_dir,
-            node_id,
-            "topo",
+        _resolved = _resolve_build_amber_node_inputs(
+            job_dir=job_dir,
+            node_id=node_id,
             actual_conditions={
                 "forcefield": forcefield,
                 "water_model": water_model,
@@ -1903,29 +1934,28 @@ def build_amber_system(
                 "is_membrane": is_membrane,
                 "output_name": output_name,
             },
+            pdb_file=pdb_file,
+            ligand_params=ligand_params,
+            modxna_params=modxna_params,
+            metal_params=metal_params,
+            disulfide_bonds=disulfide_bonds,
+            glycan_metadata=glycan_metadata,
+            glycan_linkages=glycan_linkages,
+            box_dimensions=box_dimensions,
+            is_membrane=is_membrane,
         )
-        if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
-        _inputs = resolve_node_inputs(job_dir, node_id, "topo")
-        if not pdb_file and "pdb_file" in _inputs:
-            pdb_file = _inputs["pdb_file"]
-        if ligand_params is None and "ligand_params" in _inputs:
-            ligand_params = _inputs["ligand_params"]
-        if modxna_params is None and "modxna_params" in _inputs:
-            modxna_params = _inputs["modxna_params"]
-        if metal_params is None and "metal_params" in _inputs:
-            metal_params = _inputs["metal_params"]
-        if disulfide_bonds is None and "disulfide_bonds" in _inputs:
-            disulfide_bonds = _inputs["disulfide_bonds"]
-        if glycan_metadata is None and "glycan_metadata" in _inputs:
-            glycan_metadata = _inputs["glycan_metadata"]
-        if glycan_linkages is None and "glycan_linkages" in _inputs:
-            glycan_linkages = _inputs["glycan_linkages"]
-        if box_dimensions is None and "box_dimensions" in _inputs:
-            box_dimensions = _inputs["box_dimensions"]
-        if not is_membrane and _inputs.get("is_membrane"):
-            is_membrane = True
-        solvation_water_model = _inputs.get("solvation_water_model")
+        if not _resolved["success"]:
+            return _resolved
+        pdb_file = _resolved["pdb_file"]
+        ligand_params = _resolved["ligand_params"]
+        modxna_params = _resolved["modxna_params"]
+        metal_params = _resolved["metal_params"]
+        disulfide_bonds = _resolved["disulfide_bonds"]
+        glycan_metadata = _resolved["glycan_metadata"]
+        glycan_linkages = _resolved["glycan_linkages"]
+        box_dimensions = _resolved["box_dimensions"]
+        is_membrane = _resolved["is_membrane"]
+        solvation_water_model = _resolved["solvation_water_model"]
 
     if not pdb_file:
         return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}

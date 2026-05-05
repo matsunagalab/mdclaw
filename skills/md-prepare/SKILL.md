@@ -7,8 +7,9 @@ description: "Molecular dynamics simulation preparation using MDClaw CLI tools. 
 
 You are a computational biophysics expert helping users set up MD simulations using the MDClaw CLI tools.
 
-Respond in the user's language. Use English for tool parameter values.
-All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
+`skills/common/defaults.md`, and `skills/common/node-cli-patterns.md` before
+acting.
 
 ## Defaults — Source of Truth
 
@@ -21,8 +22,8 @@ structured error (code `forcefield_water_blocked`).
 Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
 guardrails are authoritative; the runbooks provide quick references:
 
-- `skills/md-prepare/setup.md` — "Quick Default Reference" section (general,
-  including pH, cap_termini, charge_method)
+- `skills/md-prepare/defaults-and-guardrails.md` — preparation defaults,
+  guardrails, and ligand failure policy
 - `skills/md-prepare/explicit-water.md` — "Decision Defaults" table
   (explicit-water specific: forcefield, water model, box geometry,
   salt)
@@ -41,7 +42,7 @@ This skill prepares **one physical system per job directory**. Do not
 create multiple source roots in the same DAG. Use DAG branching only
 after `prep` to explore variants of the same system — the most common
 variant is **point/multi-mutants** (run `create_mutated_structure` as
-a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
+a post-prep prep node; see `skills/md-prepare/branches.md`).
 
 1. Decide `execution_mode` from the user's request:
    - `execution_mode=autonomous` unless the user explicitly asks for
@@ -52,10 +53,8 @@ a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
      mdclaw update_job_params --job-dir <job_dir> \
        --params '{"execution_mode":"autonomous"}'
      ```
-2. **Read `skills/md-prepare/setup.md` first** — Step 0 summary scope
-   (which fields to include), structure acquisition, inspection, chain
-   selection, cleaning, protonation, mutation (Step 3.5), metal ion
-   handling, and the HITL confirmation loop.
+2. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
+   setup runbooks for acquisition, inspection, cleaning, branches, and resume.
 3. **Read the solvation-specific runbook** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
@@ -114,7 +113,7 @@ not your prior knowledge.
   decision.
 - **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
   next action with the user. The full checkpoint list and the confirmation
-  loop are documented in `setup.md`.
+  loop is summarized in `skills/md-prepare/checkpoints.md`.
 
 ## Error Handling
 
@@ -125,11 +124,10 @@ Key fields to check:
 - `parameter_source` — per-ligand: `amber_geostd` (curated) or `gaff2_antechamber` (auto-generated)
 - `workflow_recommendation` — contains `options` (list of valid next actions)
 - `recommended_next_action` — per-ligand: `use_curated_params`, `provide_frcmod`, `hard_fail`
-- `failure_class` — what went wrong. Full enumeration in
-  `setup.md` "Blocking Ligand Failure" (including `input_error`,
+- `failure_class` — what went wrong. Common classes include `input_error`,
   `metal_atoms`, `antechamber_failed`, `parmchk2_failed`,
   `zero_bond_angle_params`, `zero_dihe_barriers`,
-  `ligand_roundtrip_validation_failed`, `unexpected_error`)
+  `ligand_roundtrip_validation_failed`, and `unexpected_error`.
 
 Rules:
 - If `recommended_next_action = use_curated_params`: do NOT retry, do NOT edit frcmod, do NOT change charge method. Present the options from `workflow_recommendation.options` to the user.
@@ -143,4 +141,4 @@ Rules:
 - If stuck, report the structured error fields and ask the user for guidance.
 - The full HITL interaction loop (check `confirmation_needed`, respect
   `source`, re-run with overrides if needed) is documented in
-  `setup.md` under "Confirmation Loop".
+  `skills/md-prepare/checkpoints.md`.

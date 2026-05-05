@@ -263,6 +263,99 @@ def _write_box_dimensions_json(out_dir: Path, box_dims: dict) -> Optional[Path]:
         return None
 
 
+def _run_packmol_if_needed(
+    *,
+    output_file: Path,
+    packmol_inp_file: Path,
+    packmol_path: Optional[str],
+    out_dir: Path,
+    output_name: str,
+    timeout: int,
+    result: dict,
+) -> None:
+    """Run packmol manually when packmol-memgen only generated the input file."""
+    if output_file.exists() or not packmol_inp_file.exists():
+        return
+
+    if not packmol_path:
+        result["errors"].append("packmol-memgen generated input but packmol executable was not found")
+        logger.error("packmol input exists but packmol executable was not found")
+        return
+
+    logger.info("packmol-memgen didn't run packmol, running it manually...")
+    try:
+        with open(packmol_inp_file, "r") as f:
+            packmol_result = subprocess.run(
+                [packmol_path],
+                stdin=f,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=out_dir,
+                timeout=timeout,
+                check=True,
+            )
+        packmol_log = out_dir / f"{output_name}_packmol.log"
+        packmol_log.write_text(packmol_result.stdout)
+        logger.info(f"Packmol completed, log saved to {packmol_log}")
+    except subprocess.CalledProcessError as e:
+        result["errors"].append(f"Packmol failed: {e.stderr[:500]}")
+        logger.error(f"Packmol failed: {e.stderr}")
+    except subprocess.TimeoutExpired:
+        result["errors"].append(f"Packmol timed out after {timeout}s")
+        logger.error("Packmol timed out")
+
+
+def _record_packmol_memgen_output(
+    *,
+    output_file: Path,
+    packmol_inp_file: Path,
+    out_dir: Path,
+    output_name: str,
+    proc_result,
+    result: dict,
+    success_message: str,
+) -> None:
+    """Record output artifacts and diagnostics for packmol-memgen based tools."""
+    if not output_file.exists():
+        result["errors"].append("packmol-memgen completed but output file not created")
+        result["errors"].append("Hint: Check packmol log for details")
+        logger.error("Output file not created")
+        if proc_result.stderr:
+            result["errors"].append(f"stderr: {proc_result.stderr[:500]}")
+        return
+
+    result["output_file"] = str(output_file)
+    result["success"] = True
+
+    try:
+        result["statistics"]["total_atoms"] = count_atoms_in_pdb(output_file)
+    except Exception as e:
+        result["warnings"].append(f"Could not count atoms: {e}")
+
+    box_info = extract_box_size(
+        str(output_file),
+        str(packmol_inp_file) if packmol_inp_file.exists() else None,
+    )
+    if box_info:
+        result["box_dimensions"] = box_info
+        logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
+        box_json_path = _write_box_dimensions_json(out_dir, box_info)
+        if box_json_path is None:
+            result["warnings"].append("Could not save box_dimensions.json")
+        else:
+            result["box_dimensions_file"] = str(box_json_path)
+            logger.info(f"Saved box dimensions to {box_json_path}")
+    else:
+        result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
+
+    log_file = out_dir / f"{output_name}_packmol.log"
+    if log_file.exists():
+        result["packmol_log"] = str(log_file)
+
+    logger.info(f"{success_message}: {output_file}")
+
+
 def _solvate_with_openmm(
     pdb_path: Path,
     result: dict,
@@ -660,77 +753,25 @@ def solvate_structure(
         solvation_timeout = get_timeout("solvation")
         proc_result = packmol_memgen_wrapper.run(args, cwd=out_dir, timeout=solvation_timeout)
 
-        # If output file wasn't created, try running packmol manually
         packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
-        if not output_file.exists() and packmol_inp_file.exists():
-            logger.info("packmol-memgen didn't run packmol, running it manually...")
-            try:
-                with open(packmol_inp_file, 'r') as f:
-                    packmol_result = subprocess.run(
-                        [packmol_path],
-                        stdin=f,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        cwd=out_dir,
-                        timeout=solvation_timeout,
-                        check=True
-                    )
-                # Save packmol output
-                packmol_log = out_dir / f"{output_name}_packmol.log"
-                packmol_log.write_text(packmol_result.stdout)
-                logger.info(f"Packmol completed, log saved to {packmol_log}")
-            except subprocess.CalledProcessError as e:
-                result["errors"].append(f"Packmol failed: {e.stderr[:500]}")
-                logger.error(f"Packmol failed: {e.stderr}")
-            except subprocess.TimeoutExpired:
-                result["errors"].append(f"Packmol timed out after {solvation_timeout}s")
-                logger.error("Packmol timed out")
-
-        # Check if output was created
-        if output_file.exists():
-            result["output_file"] = str(output_file)
-            result["success"] = True
-
-            # Get statistics
-            try:
-                atom_count = count_atoms_in_pdb(output_file)
-                result["statistics"]["total_atoms"] = atom_count
-            except Exception as e:
-                result["warnings"].append(f"Could not count atoms: {e}")
-
-            # Extract box dimensions from CRYST1 record or packmol input
-            packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
-            box_info = extract_box_size(
-                str(output_file),
-                str(packmol_inp_file) if packmol_inp_file.exists() else None
-            )
-            if box_info:
-                result["box_dimensions"] = box_info
-                logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
-                box_json_path = _write_box_dimensions_json(out_dir, box_info)
-                if box_json_path is None:
-                    result["warnings"].append("Could not save box_dimensions.json")
-                else:
-                    result["box_dimensions_file"] = str(box_json_path)
-                    logger.info(f"Saved box dimensions to {box_json_path}")
-            else:
-                result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
-
-            # Find packmol log
-            log_file = out_dir / f"{output_name}_packmol.log"
-            if log_file.exists():
-                result["packmol_log"] = str(log_file)
-
-            logger.info(f"Successfully solvated structure: {output_file}")
-        else:
-            result["errors"].append("packmol-memgen completed but output file not created")
-            result["errors"].append("Hint: Check packmol log for details")
-            logger.error("Output file not created")
-            
-            # Try to capture any error output
-            if proc_result.stderr:
-                result["errors"].append(f"stderr: {proc_result.stderr[:500]}")
+        _run_packmol_if_needed(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            packmol_path=packmol_path,
+            out_dir=out_dir,
+            output_name=output_name,
+            timeout=solvation_timeout,
+            result=result,
+        )
+        _record_packmol_memgen_output(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            out_dir=out_dir,
+            output_name=output_name,
+            proc_result=proc_result,
+            result=result,
+            success_message="Successfully solvated structure",
+        )
         
     except Exception as e:
         error_msg = f"Error during solvation: {type(e).__name__}: {str(e)}"
@@ -1073,79 +1114,25 @@ def embed_in_membrane(
         membrane_timeout = get_timeout("membrane")
         proc_result = packmol_memgen_wrapper.run(args, cwd=out_dir, timeout=membrane_timeout)
 
-        # If output file wasn't created, try running packmol manually
         packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
-        if not output_file.exists() and packmol_inp_file.exists():
-            logger.info("packmol-memgen didn't run packmol, running it manually...")
-            try:
-                with open(packmol_inp_file, 'r') as f:
-                    packmol_result = subprocess.run(
-                        [packmol_path],
-                        stdin=f,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True,
-                        cwd=out_dir,
-                        timeout=membrane_timeout,
-                        check=True
-                    )
-                # Save packmol output
-                packmol_log = out_dir / f"{output_name}_packmol.log"
-                packmol_log.write_text(packmol_result.stdout)
-                logger.info(f"Packmol completed, log saved to {packmol_log}")
-            except subprocess.CalledProcessError as e:
-                result["errors"].append(f"Packmol failed: {e.stderr[:500]}")
-                logger.error(f"Packmol failed: {e.stderr}")
-            except subprocess.TimeoutExpired:
-                result["errors"].append(f"Packmol timed out after {membrane_timeout}s")
-                logger.error("Packmol timed out")
-
-        # Check if output was created
-        if output_file.exists():
-            result["output_file"] = str(output_file)
-            result["success"] = True
-
-            # Get statistics
-            try:
-                atom_count = count_atoms_in_pdb(output_file)
-                result["statistics"]["total_atoms"] = atom_count
-            except Exception as e:
-                result["warnings"].append(f"Could not count atoms: {e}")
-
-            # Extract box dimensions from CRYST1 record or packmol input
-            packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
-            box_info = extract_box_size(
-                str(output_file),
-                str(packmol_inp_file) if packmol_inp_file.exists() else None
-            )
-            if box_info:
-                result["box_dimensions"] = box_info
-                logger.info(f"Box dimensions: {box_info['box_a']:.2f} x {box_info['box_b']:.2f} x {box_info['box_c']:.2f} Å")
-                # Auto-save box_dimensions.json next to output PDB
-                box_json_path = out_dir / "box_dimensions.json"
-                try:
-                    box_json_path.write_text(json.dumps(box_info, indent=2))
-                    result["box_dimensions_file"] = str(box_json_path)
-                    logger.info(f"Saved box dimensions to {box_json_path}")
-                except OSError as e:
-                    result["warnings"].append(f"Could not save box_dimensions.json: {e}")
-            else:
-                result["warnings"].append("Could not extract box dimensions from output PDB or packmol input")
-
-            # Find packmol log
-            log_file = out_dir / f"{output_name}_packmol.log"
-            if log_file.exists():
-                result["packmol_log"] = str(log_file)
-
-            logger.info(f"Successfully embedded structure in membrane: {output_file}")
-        else:
-            result["errors"].append("packmol-memgen completed but output file not created")
-            result["errors"].append("Hint: Check packmol log for details")
-            logger.error("Output file not created")
-            
-            # Try to capture any error output
-            if proc_result.stderr:
-                result["errors"].append(f"stderr: {proc_result.stderr[:500]}")
+        _run_packmol_if_needed(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            packmol_path=packmol_path,
+            out_dir=out_dir,
+            output_name=output_name,
+            timeout=membrane_timeout,
+            result=result,
+        )
+        _record_packmol_memgen_output(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            out_dir=out_dir,
+            output_name=output_name,
+            proc_result=proc_result,
+            result=result,
+            success_message="Successfully embedded structure in membrane",
+        )
         
     except Exception as e:
         error_msg = f"Error during membrane embedding: {type(e).__name__}: {str(e)}"

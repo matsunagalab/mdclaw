@@ -18,12 +18,11 @@ from mdclaw._common import setup_logger  # noqa: E402
 logger = setup_logger(__name__)
 
 import json  # noqa: E402
-import hashlib  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, sha256_file  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -35,14 +34,6 @@ def _node_artifact_path(path: Optional[str]) -> str:
     if not path:
         return ""
     return f"artifacts/{Path(path).name}"
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _system_signature(
@@ -57,8 +48,8 @@ def _system_signature(
     hmr: bool,
 ) -> dict:
     return {
-        "prmtop_sha256": _sha256_file(prmtop_path),
-        "inpcrd_sha256": _sha256_file(inpcrd_path),
+        "prmtop_sha256": sha256_file(prmtop_path),
+        "inpcrd_sha256": sha256_file(inpcrd_path),
         "solvent_type": solvent_type,
         "ensemble": ensemble,
         "pressure_bar": pressure_bar,
@@ -308,6 +299,52 @@ def _compute_step_plan(
         "steps_to_run": steps_to_run,
         "num_steps": current_step + steps_to_run,
     }
+
+
+def _record_production_node_result(
+    *,
+    result: dict,
+    job_dir: str,
+    node_id: str,
+    simulation_time_ns: float,
+    temperature_kelvin: float,
+    pressure_bar: Optional[float],
+    platform: str,
+    hmr: bool,
+    timestep_fs: float,
+    output_frequency_ps: float,
+    random_seed: Optional[int],
+) -> None:
+    """Persist production artifacts and metadata to the DAG node."""
+    from mdclaw._node import complete_node, fail_node
+
+    if result.get("success"):
+        complete_node(job_dir, node_id,
+            artifacts={
+                "trajectory": _node_artifact_path(result.get("trajectory_file")),
+                "final_structure": _node_artifact_path(result.get("final_structure")),
+                "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
+                "state": _node_artifact_path(result.get("state_file")),
+                "energy": _node_artifact_path(result.get("energy_file")),
+            },
+            metadata={
+                "simulation_time_ns": simulation_time_ns,
+                "temperature_kelvin": temperature_kelvin,
+                "pressure_bar": pressure_bar,
+                "platform": result.get("platform") or platform,
+                "hmr": hmr,
+                "timestep_fs": timestep_fs,
+                "output_frequency_ps": output_frequency_ps,
+                "random_seed": random_seed,
+                "num_steps": result.get("steps_completed"),
+                "start_step": result.get("start_step"),
+                "start_time_ns": result.get("start_time_ns"),
+                "final_step": result.get("steps_completed"),
+                "system_signature": result.get("system_signature"),
+                "integrator_signature": result.get("integrator_signature"),
+            })
+    else:
+        fail_node(job_dir, node_id, errors=result.get("errors", []))
 
 
 def run_equilibration(
@@ -1785,34 +1822,19 @@ def run_production(
 
     # Node state update
     if _node_mode:
-        from mdclaw._node import complete_node, fail_node
-        if result.get("success"):
-            complete_node(job_dir, node_id,
-                artifacts={
-                    "trajectory": _node_artifact_path(result.get("trajectory_file")),
-                    "final_structure": _node_artifact_path(result.get("final_structure")),
-                    "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
-                    "state": _node_artifact_path(result.get("state_file")),
-                    "energy": _node_artifact_path(result.get("energy_file")),
-                },
-                metadata={
-                    "simulation_time_ns": simulation_time_ns,
-                    "temperature_kelvin": temperature_kelvin,
-                    "pressure_bar": pressure_bar,
-                    "platform": result.get("platform"),
-                    "hmr": hmr,
-                    "timestep_fs": timestep_fs,
-                    "output_frequency_ps": output_frequency_ps,
-                    "random_seed": random_seed,
-                    "num_steps": result.get("steps_completed"),
-                    "start_step": result.get("start_step"),
-                    "start_time_ns": result.get("start_time_ns"),
-                    "final_step": result.get("steps_completed"),
-                    "system_signature": result.get("system_signature"),
-                    "integrator_signature": result.get("integrator_signature"),
-                })
-        else:
-            fail_node(job_dir, node_id, errors=result.get("errors", []))
+        _record_production_node_result(
+            result=result,
+            job_dir=job_dir,
+            node_id=node_id,
+            simulation_time_ns=simulation_time_ns,
+            temperature_kelvin=temperature_kelvin,
+            pressure_bar=pressure_bar,
+            platform=platform,
+            hmr=hmr,
+            timestep_fs=timestep_fs,
+            output_frequency_ps=output_frequency_ps,
+            random_seed=random_seed,
+        )
 
     return result
 

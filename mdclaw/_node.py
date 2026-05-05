@@ -1675,6 +1675,120 @@ def _input_resolution_status_errors(job_dir: str, node_id: str) -> list[str]:
     return errors
 
 
+def _load_json_artifact(value: Any, expected_type: type) -> Any:
+    """Load JSON path artifacts while preserving already-structured values."""
+    if isinstance(value, str) and value.endswith(".json"):
+        try:
+            loaded = json.loads(Path(value).read_text())
+        except (json.JSONDecodeError, OSError):
+            return None
+        return loaded if isinstance(loaded, expected_type) else None
+    if isinstance(value, expected_type):
+        return value
+    return None
+
+
+def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
+    result: dict = {}
+    p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+    r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
+    if p7:
+        result["prmtop_file"] = p7
+    if r7:
+        result["inpcrd_file"] = r7
+    return result
+
+
+def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
+    result: dict = {}
+    v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
+    if v:
+        result["pdb_file"] = v
+    else:
+        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+        if v:
+            result["pdb_file"] = v
+
+    for result_key, artifact_key in (
+        ("ligand_params", "ligand_params"),
+        ("metal_params", "metal_params"),
+    ):
+        value = find_ancestor_artifact(job_dir, node_id, "prep", artifact_key)
+        if value:
+            result[result_key] = value
+
+    for result_key, artifact_key, expected_type in (
+        ("modxna_params", "modxna_params", list),
+        ("disulfide_bonds", "disulfide_bonds", list),
+        ("glycan_metadata", "glycan_metadata", dict),
+        ("glycan_linkages", "glycan_linkages", list),
+    ):
+        value = find_ancestor_artifact(job_dir, node_id, "prep", artifact_key)
+        loaded = _load_json_artifact(value, expected_type)
+        if loaded is not None:
+            result[result_key] = loaded
+
+    bd = find_ancestor_artifact(job_dir, node_id, "solv", "box_dimensions")
+    loaded_box = _load_json_artifact(bd, dict)
+    if loaded_box is not None:
+        result["box_dimensions"] = loaded_box
+
+    solv_anc = _find_ancestor_node_id(job_dir, node_id, "solv")
+    if solv_anc is not None:
+        is_membrane = _read_metadata_field(job_dir, solv_anc, "is_membrane")
+        if isinstance(is_membrane, bool):
+            result["is_membrane"] = is_membrane
+        solv_water_model = _read_metadata_field(job_dir, solv_anc, "water_model")
+        if isinstance(solv_water_model, str):
+            result["solvation_water_model"] = solv_water_model
+    return result
+
+
+def _resolve_prod_restart(job_dir: str, node_id: str) -> dict:
+    result: dict = {}
+    continued_from = _read_continued_from(job_dir, node_id)
+    if continued_from is not None:
+        src = _read_artifact_from_node(job_dir, continued_from, "state")
+        if src is None:
+            src = _read_artifact_from_node(job_dir, continued_from, "checkpoint")
+        if src is not None:
+            result["restart_from"] = src
+        else:
+            result["restart_from_error"] = (
+                f"continue_from='{continued_from}' but that node has neither a "
+                f"'state' nor 'checkpoint' artifact — extension cannot start. "
+                f"Wait for that prod to finish (or fix the DAG to point at a "
+                f"completed prod ancestor)."
+            )
+        return result
+
+    for ancestor_type, artifact_key in (
+        ("prod", "state"),
+        ("prod", "checkpoint"),
+        ("eq", "state"),
+        ("eq", "checkpoint"),
+    ):
+        src = find_ancestor_artifact(job_dir, node_id, ancestor_type, artifact_key)
+        if src:
+            result["restart_from"] = src
+            break
+    return result
+
+
+def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
+    result: dict = {}
+    eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
+    if eq_anc is None:
+        return result
+    fe = _read_metadata_field(job_dir, eq_anc, "final_ensemble")
+    if isinstance(fe, str):
+        result["eq_final_ensemble"] = fe
+    pb = _read_metadata_field(job_dir, eq_anc, "pressure_bar")
+    if isinstance(pb, (int, float)):
+        result["eq_pressure_bar"] = float(pb)
+    return result
+
+
 def resolve_node_inputs(
     job_dir: str,
     node_id: str,
@@ -1728,94 +1842,10 @@ def resolve_node_inputs(
             result["pdb_file"] = v
 
     elif node_type == "topo":
-        v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
-        if v:
-            result["pdb_file"] = v
-        else:
-            # Implicit-solvent topology skips the solv node and consumes the
-            # prepared complex directly from prep.
-            v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
-            if v:
-                result["pdb_file"] = v
-
-        lp = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_params")
-        if lp:
-            result["ligand_params"] = lp
-
-        mp = find_ancestor_artifact(job_dir, node_id, "prep", "metal_params")
-        if mp:
-            result["metal_params"] = mp
-
-        mx = find_ancestor_artifact(job_dir, node_id, "prep", "modxna_params")
-        if mx:
-            if isinstance(mx, str) and mx.endswith(".json"):
-                try:
-                    result["modxna_params"] = json.loads(Path(mx).read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif isinstance(mx, list):
-                result["modxna_params"] = mx
-
-        db = find_ancestor_artifact(job_dir, node_id, "prep", "disulfide_bonds")
-        if db:
-            # Stored as a path to disulfide_bonds.json; load inline so
-            # build_amber_system receives the list it expects.
-            if isinstance(db, str) and db.endswith(".json"):
-                try:
-                    result["disulfide_bonds"] = json.loads(Path(db).read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif isinstance(db, list):
-                result["disulfide_bonds"] = db
-
-        gm = find_ancestor_artifact(job_dir, node_id, "prep", "glycan_metadata")
-        if gm:
-            if isinstance(gm, str) and gm.endswith(".json"):
-                try:
-                    result["glycan_metadata"] = json.loads(Path(gm).read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif isinstance(gm, dict):
-                result["glycan_metadata"] = gm
-
-        gl = find_ancestor_artifact(job_dir, node_id, "prep", "glycan_linkages")
-        if gl:
-            if isinstance(gl, str) and gl.endswith(".json"):
-                try:
-                    result["glycan_linkages"] = json.loads(Path(gl).read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif isinstance(gl, list):
-                result["glycan_linkages"] = gl
-
-        bd = find_ancestor_artifact(job_dir, node_id, "solv", "box_dimensions")
-        if bd:
-            # box_dimensions is stored as a path to a JSON file; load inline
-            # so downstream tools receive the dict they expect.
-            if isinstance(bd, str) and bd.endswith(".json"):
-                try:
-                    result["box_dimensions"] = json.loads(Path(bd).read_text())
-                except (json.JSONDecodeError, OSError):
-                    pass
-            elif isinstance(bd, dict):
-                result["box_dimensions"] = bd
-
-        solv_anc = _find_ancestor_node_id(job_dir, node_id, "solv")
-        if solv_anc is not None:
-            is_membrane = _read_metadata_field(job_dir, solv_anc, "is_membrane")
-            if isinstance(is_membrane, bool):
-                result["is_membrane"] = is_membrane
-            solv_water_model = _read_metadata_field(job_dir, solv_anc, "water_model")
-            if isinstance(solv_water_model, str):
-                result["solvation_water_model"] = solv_water_model
+        result.update(_resolve_topo_inputs(job_dir, node_id))
 
     elif node_type == "eq":
-        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-        r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
-        if p7:
-            result["prmtop_file"] = p7
-        if r7:
-            result["inpcrd_file"] = r7
+        result.update(_resolve_topology_files(job_dir, node_id))
         topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
         if topo_anc is not None:
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
@@ -1823,72 +1853,13 @@ def resolve_node_inputs(
                 result["is_membrane"] = is_membrane
 
     elif node_type == "prod":
-        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-        r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
-        if p7:
-            result["prmtop_file"] = p7
-        if r7:
-            result["inpcrd_file"] = r7
+        result.update(_resolve_topology_files(job_dir, node_id))
         topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
         if topo_anc is not None:
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
-
-        # `continued_from` is the strict, user-visible contract: the new
-        # node was explicitly marked as extending that specific prod. In
-        # that mode we restart *only* from that prod's artifact — any
-        # silent fallback (to another prod up the chain, or to eq) would
-        # defeat the purpose of the explicit marker, so the caller gets
-        # a structured error instead and must fix the DAG.
-        #
-        # Preference order for the restart source: saveState (XML,
-        # cross-node portable) → saveCheckpoint (binary, legacy).
-        # OpenMM binary checkpoints encode GPU-specific context and
-        # silently corrupt when loaded on a different GPU architecture;
-        # XML State is public (positions, velocities, box) and safe
-        # across any CUDA device.
-        continued_from = _read_continued_from(job_dir, node_id)
-        if continued_from is not None:
-            src = _read_artifact_from_node(
-                job_dir, continued_from, "state"
-            )
-            if src is None:
-                src = _read_artifact_from_node(
-                    job_dir, continued_from, "checkpoint"
-                )
-            if src is not None:
-                result["restart_from"] = src
-            else:
-                result["restart_from_error"] = (
-                    f"continue_from='{continued_from}' but that node has "
-                    f"neither a 'state' nor 'checkpoint' artifact — "
-                    f"extension cannot start. Wait for that prod to "
-                    f"finish (or fix the DAG to point at a completed "
-                    f"prod ancestor)."
-                )
-        else:
-            # Default (no explicit continue_from): prefer a prod
-            # parent's state/checkpoint so `--parent-node-ids prod_001`
-            # still chains correctly; fall back to the eq ancestor for
-            # fresh prod runs.
-            src = find_ancestor_artifact(
-                job_dir, node_id, "prod", "state"
-            )
-            if src is None:
-                src = find_ancestor_artifact(
-                    job_dir, node_id, "prod", "checkpoint"
-                )
-            if src is None:
-                src = find_ancestor_artifact(
-                    job_dir, node_id, "eq", "state"
-                )
-            if src is None:
-                src = find_ancestor_artifact(
-                    job_dir, node_id, "eq", "checkpoint"
-                )
-            if src:
-                result["restart_from"] = src
+        result.update(_resolve_prod_restart(job_dir, node_id))
 
         # Surface the eq ancestor's ensemble so prod can inherit it. Without
         # this, an NPT eq state cannot be loaded into a default-config
@@ -1898,14 +1869,7 @@ def resolve_node_inputs(
         # never received. The prod tool reads ``eq_final_ensemble`` /
         # ``eq_pressure_bar`` and adds the matching barostat when the
         # caller hasn't supplied an explicit pressure_bar.
-        eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
-        if eq_anc is not None:
-            fe = _read_metadata_field(job_dir, eq_anc, "final_ensemble")
-            if isinstance(fe, str):
-                result["eq_final_ensemble"] = fe
-            pb = _read_metadata_field(job_dir, eq_anc, "pressure_bar")
-            if isinstance(pb, (int, float)):
-                result["eq_pressure_bar"] = float(pb)
+        result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
 
     elif node_type == "analyze":
         # Analyze nodes resolve inputs based on how many parents they

@@ -10,6 +10,7 @@ Primary repository sources checked:
 - `skills/*/SKILL.md`
 - `README.md`
 - `CLAUDE.md`
+- `docs/developer/*.md`
 - `environment.yml`
 - `pyproject.toml`
 - `container/Dockerfile`

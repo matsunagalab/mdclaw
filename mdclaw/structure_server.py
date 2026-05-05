@@ -31,6 +31,7 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
+    guess_pdb_element,
     classify_glycan_residues,
     ensure_directory,
     create_unique_subdir,
@@ -51,28 +52,13 @@ parmchk2_wrapper = BaseToolWrapper("parmchk2")
 obabel_wrapper = BaseToolWrapper("obabel")
 
 
-def _guess_element_from_pdb_atom(atom_name: str, element_field: str = "") -> str:
-    """Best-effort element parsing for PDB/MOL2 round-trip checks."""
-    element = (element_field or "").strip()
-    if element:
-        return element.upper()
-    cleaned = re.sub(r"[^A-Za-z]", "", atom_name or "")
-    if not cleaned:
-        return ""
-    # PDB atom names for organic ligands often start with the element.
-    two = cleaned[:2].capitalize()
-    one = cleaned[0].upper()
-    common_two = {"CL", "BR", "NA", "MG", "ZN", "FE", "MN", "CA", "CU", "CO", "NI"}
-    return two.upper() if two.upper() in common_two else one
-
-
 def _read_pdb_heavy_atoms_for_validation(pdb_file: str) -> List[Dict[str, Any]]:
     atoms: List[Dict[str, Any]] = []
     for line in Path(pdb_file).read_text().splitlines():
         if not line.startswith(("ATOM", "HETATM")):
             continue
         name = line[12:16].strip()
-        element = _guess_element_from_pdb_atom(name, line[76:78] if len(line) >= 78 else "")
+        element = guess_pdb_element(name, line[76:78] if len(line) >= 78 else "")
         if element == "H":
             continue
         try:
@@ -126,7 +112,7 @@ def _read_mol2_atoms_for_validation(mol2_file: str) -> List[Dict[str, Any]]:
         if len(parts) < 9:
             continue
         atom_type = parts[5].split(".")[0]
-        element = _guess_element_from_pdb_atom(parts[1], atom_type)
+        element = guess_pdb_element(parts[1], atom_type)
         if element == "H":
             continue
         try:
@@ -4603,6 +4589,78 @@ def _remap_glycan_linkages(
     return remapped, dropped
 
 
+def _resolve_prepare_node_structure_file(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    structure_file: Optional[str],
+) -> Optional[str]:
+    """Resolve prep input structure from the DAG when not provided explicitly."""
+    if not (job_dir and node_id) or structure_file:
+        return structure_file
+    from mdclaw._node import resolve_node_inputs
+
+    inputs = resolve_node_inputs(job_dir, node_id, "prep")
+    return inputs.get("structure_file", structure_file)
+
+
+def _validate_prepare_node_context(
+    *,
+    job_dir: str,
+    node_id: str,
+    select_chains: Optional[List[str]],
+    ph: float,
+    cap_termini: bool,
+    process_proteins: bool,
+    process_ligands: bool,
+    run_parameterization: bool,
+    include_types: Optional[List[str]],
+    include_ligand_ids: Optional[List[str]],
+    exclude_ligand_ids: Optional[List[str]],
+    charge_method: str,
+    atom_type: str,
+    keep_crystal_waters: bool,
+) -> dict:
+    """Validate declared prep-node conditions against runtime parameters."""
+    from mdclaw._node import validate_node_execution_context
+
+    return validate_node_execution_context(
+        job_dir,
+        node_id,
+        "prep",
+        actual_conditions={
+            "select_chains": select_chains,
+            "ph": ph,
+            "cap_termini": cap_termini,
+            "process_proteins": process_proteins,
+            "process_ligands": process_ligands,
+            "run_parameterization": run_parameterization,
+            "include_types": include_types,
+            "include_ligand_ids": include_ligand_ids,
+            "exclude_ligand_ids": exclude_ligand_ids,
+            "charge_method": charge_method,
+            "atom_type": atom_type,
+            "keep_crystal_waters": keep_crystal_waters,
+        },
+    )
+
+
+def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) -> dict:
+    return {
+        "success": False,
+        "job_id": job_id,
+        "output_dir": None,
+        "source_file": str(structure_file) if structure_file else None,
+        "inspection": None,
+        "split": None,
+        "proteins": [],
+        "nucleics": [],
+        "glycans": [],
+        "ligands": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+
 def prepare_complex(
     structure_file: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -4745,52 +4803,32 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['mol2_file']}")
     """
-    # Auto-resolve structure_file from a source ancestor when in node mode.
-    if job_dir and node_id and not structure_file:
-        from mdclaw._node import resolve_node_inputs
-        _inputs = resolve_node_inputs(job_dir, node_id, "prep")
-        if "structure_file" in _inputs:
-            structure_file = _inputs["structure_file"]
+    structure_file = _resolve_prepare_node_structure_file(
+        job_dir, node_id, structure_file
+    )
 
     logger.info(f"Preparing complex: {structure_file}")
 
     # Initialize result structure
     job_id = generate_job_id()
-    result = {
-        "success": False,
-        "job_id": job_id,
-        "output_dir": None,
-        "source_file": str(structure_file) if structure_file else None,
-        "inspection": None,
-        "split": None,
-        "proteins": [],
-        "nucleics": [],
-        "glycans": [],
-        "ligands": [],
-        "errors": [],
-        "warnings": []
-    }
+    result = _prepare_complex_initial_result(job_id, structure_file)
 
     if job_dir and node_id:
-        from mdclaw._node import validate_node_execution_context
-        _ctx = validate_node_execution_context(
-            job_dir,
-            node_id,
-            "prep",
-            actual_conditions={
-                "select_chains": select_chains,
-                "ph": ph,
-                "cap_termini": cap_termini,
-                "process_proteins": process_proteins,
-                "process_ligands": process_ligands,
-                "run_parameterization": run_parameterization,
-                "include_types": include_types,
-                "include_ligand_ids": include_ligand_ids,
-                "exclude_ligand_ids": exclude_ligand_ids,
-                "charge_method": charge_method,
-                "atom_type": atom_type,
-                "keep_crystal_waters": keep_crystal_waters,
-            },
+        _ctx = _validate_prepare_node_context(
+            job_dir=job_dir,
+            node_id=node_id,
+            select_chains=select_chains,
+            ph=ph,
+            cap_termini=cap_termini,
+            process_proteins=process_proteins,
+            process_ligands=process_ligands,
+            run_parameterization=run_parameterization,
+            include_types=include_types,
+            include_ligand_ids=include_ligand_ids,
+            exclude_ligand_ids=exclude_ligand_ids,
+            charge_method=charge_method,
+            atom_type=atom_type,
+            keep_crystal_waters=keep_crystal_waters,
         )
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}

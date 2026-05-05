@@ -36,28 +36,7 @@ from mdclaw._node import (
     validate_node_execution_context,
 )
 from mdclaw._node import complete_node as _real_complete_node
-
-
-def complete_node(job_dir, node_id, artifacts, **kwargs):
-    """Test convenience wrapper around :func:`mdclaw._node.complete_node`.
-
-    The real ``complete_node`` raises if any registered str-typed artifact
-    path does not exist on disk — a strict guard that surfaces registration
-    mistakes immediately. Most tests in this file use placeholder paths
-    and care only about lifecycle wiring, so this wrapper touches the files
-    first to keep the existing test bodies untouched. New tests that
-    explicitly exercise the strict guard call ``_real_complete_node`` (or
-    ``mdclaw._node.complete_node`` via re-import) directly.
-    """
-    node_dir = Path(job_dir) / "nodes" / node_id
-    for rel_path in artifacts.values():
-        if not isinstance(rel_path, str) or not rel_path:
-            continue
-        full = node_dir / rel_path
-        full.parent.mkdir(parents=True, exist_ok=True)
-        if not full.exists():
-            full.touch()
-    return _real_complete_node(job_dir, node_id, artifacts, **kwargs)
+from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────

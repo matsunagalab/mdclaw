@@ -3,8 +3,10 @@
 Provides: logging, directory management, external tool wrappers, error helpers.
 """
 
+import hashlib
 import logging
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -187,6 +189,28 @@ def count_atoms_in_pdb(pdb_path: Union[str, Path]) -> int:
             if line.startswith(("ATOM", "HETATM")):
                 count += 1
     return count
+
+
+def sha256_file(path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:
+    """Return the SHA-256 digest for a file."""
+    h = hashlib.sha256()
+    with Path(path).open("rb") as fh:
+        for chunk in iter(lambda: fh.read(chunk_size), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def guess_pdb_element(atom_name: str, element_field: str = "") -> str:
+    """Best-effort element parsing for PDB/MOL2 round-trip checks."""
+    element = (element_field or "").strip()
+    if element:
+        return element.upper()
+    cleaned = re.sub(r"[^A-Za-z]", "", atom_name or "")
+    if not cleaned:
+        return ""
+    two = cleaned[:2].upper()
+    common_two = {"CL", "BR", "NA", "MG", "ZN", "FE", "MN", "CA", "CU", "CO", "NI"}
+    return two if two in common_two else cleaned[0].upper()
 
 
 # ---------------------------------------------------------------------------
