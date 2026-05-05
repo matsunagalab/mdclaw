@@ -351,6 +351,12 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "analyze_q_value",
 })
 
+# For these tools, ``job_dir`` is data being registered or inspected rather
+# than the active schema-v3 execution context. Preserve it exactly as provided.
+_JOB_DIR_DATA_TOOLS = frozenset({
+    "add_study_job",
+})
+
 
 def main(argv: list[str] | None = None) -> None:
     _configure_logging()
@@ -421,7 +427,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
-    effective_job_dir = _global_job_dir or kwargs.get("job_dir")
+    effective_job_dir = (
+        None
+        if tool_name in _JOB_DIR_DATA_TOOLS
+        else _global_job_dir or kwargs.get("job_dir")
+    )
     effective_node_id = _global_node_id or kwargs.get("node_id")
 
     if effective_node_id and not effective_job_dir:

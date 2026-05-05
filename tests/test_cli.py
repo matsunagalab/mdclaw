@@ -782,6 +782,29 @@ class TestStudyAndEvidenceCLIParameters:
         assert exc_info.value.code == 0
         assert (tmp_path / "study" / "study.json").is_file()
 
+    def test_add_study_job_preserves_relative_job_dir(self, tmp_path):
+        from mdclaw._cli import main
+
+        study_dir = tmp_path / "study"
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "init_study",
+                "--study-dir", str(study_dir),
+                "--title", "screen",
+            ])
+        assert exc_info.value.code == 0
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "add_study_job",
+                "--study-dir", str(study_dir),
+                "--job-id", "wt",
+                "--job-dir", "jobs/wt",
+                "--create-job-dir",
+            ])
+        assert exc_info.value.code == 0
+        assert (study_dir / "jobs" / "wt").is_dir()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
