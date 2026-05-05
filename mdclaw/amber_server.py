@@ -1779,7 +1779,7 @@ def _resolve_build_amber_node_inputs(
     glycan_metadata: Optional[Dict[str, Any]],
     glycan_linkages: Optional[List[Dict[str, Any]]],
     box_dimensions: Optional[Dict[str, float]],
-    is_membrane: bool,
+    is_membrane: Optional[bool],
 ) -> dict:
     """Validate and merge DAG-resolved inputs for ``build_amber_system``."""
     from mdclaw._node import resolve_node_inputs, validate_node_execution_context
@@ -1804,7 +1804,7 @@ def _resolve_build_amber_node_inputs(
         "glycan_metadata": glycan_metadata if glycan_metadata is not None else inputs.get("glycan_metadata"),
         "glycan_linkages": glycan_linkages if glycan_linkages is not None else inputs.get("glycan_linkages"),
         "box_dimensions": box_dimensions if box_dimensions is not None else inputs.get("box_dimensions"),
-        "is_membrane": is_membrane or bool(inputs.get("is_membrane")),
+        "is_membrane": is_membrane if is_membrane is not None else bool(inputs.get("is_membrane")),
         "solvation_water_model": inputs.get("solvation_water_model"),
     }
 
@@ -1822,7 +1822,7 @@ def build_amber_system(
     water_model: str = "opc",
     nucleic_forcefield: str = "auto",
     glycan_forcefield: str = "auto",
-    is_membrane: bool = False,
+    is_membrane: Optional[bool] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -1882,7 +1882,8 @@ def build_amber_system(
                             "auto" loads DNA OL15 and/or RNA OL3 when standard
                             nucleic residues are present; "none" disables this.
         is_membrane: Set True for membrane systems to load lipid21 force field.
-                     Only used when box_dimensions is provided. (default: False)
+                     If omitted in node mode, resolved from DAG metadata.
+                     Only used when box_dimensions is provided. (default: auto/False)
         output_name: Base name for output files (default: "system").
                      Creates {output_name}.parm7 and {output_name}.rst7
         output_dir: Output directory (auto-generated if None)
@@ -1956,6 +1957,9 @@ def build_amber_system(
         box_dimensions = _resolved["box_dimensions"]
         is_membrane = _resolved["is_membrane"]
         solvation_water_model = _resolved["solvation_water_model"]
+
+    if is_membrane is None:
+        is_membrane = False
 
     if not pdb_file:
         return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}

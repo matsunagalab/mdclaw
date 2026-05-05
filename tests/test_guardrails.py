@@ -8,6 +8,7 @@ from unittest.mock import patch
 from mdclaw.amber_server import (
     _canonical_water_model_name as amber_canonical_water_model_name,
     _evaluate_forcefield_water_guardrails,
+    _resolve_build_amber_node_inputs,
     build_amber_system,
 )
 from mdclaw._node import complete_node, create_node, read_node, update_job_params
@@ -172,6 +173,60 @@ def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_p
     progress = json.loads((job_dir / "progress.json").read_text())
     assert progress["params"]["water_model"] is None
     assert progress["params"]["solvation_type"] == "implicit"
+
+
+def test_build_amber_system_explicit_false_overrides_membrane_dag_metadata():
+    with patch(
+        "mdclaw._node.validate_node_execution_context",
+        return_value={"success": True},
+    ), patch(
+        "mdclaw._node.resolve_node_inputs",
+        return_value={"is_membrane": True, "pdb_file": "/tmp/solvated.pdb"},
+    ):
+        result = _resolve_build_amber_node_inputs(
+            job_dir="/tmp/job",
+            node_id="topo_001",
+            actual_conditions={},
+            pdb_file=None,
+            ligand_params=None,
+            modxna_params=None,
+            metal_params=None,
+            disulfide_bonds=None,
+            glycan_metadata=None,
+            glycan_linkages=None,
+            box_dimensions=None,
+            is_membrane=False,
+        )
+
+    assert result["success"] is True
+    assert result["is_membrane"] is False
+
+
+def test_build_amber_system_unspecified_membrane_uses_dag_metadata():
+    with patch(
+        "mdclaw._node.validate_node_execution_context",
+        return_value={"success": True},
+    ), patch(
+        "mdclaw._node.resolve_node_inputs",
+        return_value={"is_membrane": True, "pdb_file": "/tmp/solvated.pdb"},
+    ):
+        result = _resolve_build_amber_node_inputs(
+            job_dir="/tmp/job",
+            node_id="topo_001",
+            actual_conditions={},
+            pdb_file=None,
+            ligand_params=None,
+            modxna_params=None,
+            metal_params=None,
+            disulfide_bonds=None,
+            glycan_metadata=None,
+            glycan_linkages=None,
+            box_dimensions=None,
+            is_membrane=None,
+        )
+
+    assert result["success"] is True
+    assert result["is_membrane"] is True
 
 
 def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):
