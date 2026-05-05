@@ -876,6 +876,75 @@ def _render_methods_markdown(
     ])
 
 
+def _build_job_methods_material(
+    job_dir: str | Path,
+    node_id: str | None = None,
+    citation_inventory: str | None = None,
+) -> dict:
+    """Collect lineage facts and draft material for one MDClaw job."""
+    material: dict[str, Any] = {
+        "success": False,
+        "job_dir": None,
+        "terminal_node_id": None,
+        "candidate_terminal_nodes": [],
+        "lineage": [],
+        "facts": None,
+        "methods_paragraphs": [],
+        "mermaid": "",
+        "citation_keys": [],
+        "bibtex_entries": [],
+        "missing_citations": [],
+        "errors": [],
+        "warnings": [],
+    }
+
+    jd, progress, nodes = _read_job(job_dir)
+    material["job_dir"] = str(jd)
+    if not (jd / "progress.json").exists():
+        material["errors"].append(f"progress.json not found under {jd}")
+        return material
+    if not nodes:
+        material["errors"].append(f"No nodes found under {jd / 'nodes'}")
+        return material
+
+    terminal_node_id, candidates, selection_errors = _choose_terminal_node(nodes, node_id)
+    material["candidate_terminal_nodes"] = candidates
+    if selection_errors:
+        material["errors"].extend(selection_errors)
+    if terminal_node_id is None:
+        return material
+
+    lineage, lineage_errors = _lineage_for_terminal(nodes, terminal_node_id)
+    if lineage_errors:
+        material["errors"].extend(lineage_errors)
+        return material
+
+    events = _events_for_lineage(jd, [lineage_node_id for lineage_node_id, _node in lineage])
+    facts = _extract_method_facts(jd, progress, lineage, events)
+    methods_paragraphs = _draft_methods_paragraphs(facts)
+    mermaid = _mermaid_workflow(lineage)
+    citation_keys, bibtex_entries, missing_citations = _selected_bibtex_entries(
+        lineage, facts, citation_inventory
+    )
+    if missing_citations:
+        material["warnings"].append(
+            "Missing citation inventory entries: " + ", ".join(missing_citations)
+        )
+
+    material.update({
+        "success": True,
+        "terminal_node_id": terminal_node_id,
+        "lineage": facts["lineage"],
+        "facts": facts,
+        "methods_paragraphs": methods_paragraphs,
+        "mermaid": mermaid,
+        "citation_keys": citation_keys,
+        "bibtex_entries": bibtex_entries,
+        "missing_citations": missing_citations,
+    })
+    return material
+
+
 def generate_md_evidence_report(
     job_dir: str,
     evidence_type: str = "md_job_summary",
@@ -995,37 +1064,16 @@ def generate_md_methods_report(
         "warnings": [],
     }
     try:
-        jd, progress, nodes = _read_job(job_dir)
-        if not (jd / "progress.json").exists():
-            result["errors"].append(f"progress.json not found under {jd}")
-            return result
-        if not nodes:
-            result["errors"].append(f"No nodes found under {jd / 'nodes'}")
-            return result
-
-        terminal_node_id, candidates, selection_errors = _choose_terminal_node(nodes, node_id)
-        result["candidate_terminal_nodes"] = candidates
-        if selection_errors:
-            result["errors"].extend(selection_errors)
-        if terminal_node_id is None:
+        material = _build_job_methods_material(job_dir, node_id, citation_inventory)
+        result["candidate_terminal_nodes"] = material["candidate_terminal_nodes"]
+        result["warnings"].extend(material["warnings"])
+        if not material["success"]:
+            result["errors"].extend(material["errors"])
             return result
 
-        lineage, lineage_errors = _lineage_for_terminal(nodes, terminal_node_id)
-        if lineage_errors:
-            result["errors"].extend(lineage_errors)
-            return result
-        events = _events_for_lineage(jd, [node_id for node_id, _node in lineage])
-        facts = _extract_method_facts(jd, progress, lineage, events)
-        methods_paragraphs = _draft_methods_paragraphs(facts)
-        mermaid = _mermaid_workflow(lineage)
-        citation_keys, bibtex_entries, missing_citations = _selected_bibtex_entries(
-            lineage, facts, citation_inventory
-        )
-        if missing_citations:
-            result["warnings"].append(
-                "Missing citation inventory entries: " + ", ".join(missing_citations)
-            )
-
+        jd = Path(material["job_dir"])
+        terminal_node_id = str(material["terminal_node_id"])
+        facts = material["facts"]
         safe_job_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(facts["job_id"]))
         safe_node_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", terminal_node_id)
         default_name = f"mdclaw_methods_{safe_job_id}_{safe_node_id}.md"
@@ -1035,12 +1083,12 @@ def generate_md_methods_report(
             job_dir=jd,
             terminal_node_id=terminal_node_id,
             facts=facts,
-            methods_paragraphs=methods_paragraphs,
-            mermaid=mermaid,
-            citation_keys=citation_keys,
-            bibtex_entries=bibtex_entries,
-            missing_citations=missing_citations,
-            candidate_terminal_nodes=candidates,
+            methods_paragraphs=material["methods_paragraphs"],
+            mermaid=material["mermaid"],
+            citation_keys=material["citation_keys"],
+            bibtex_entries=material["bibtex_entries"],
+            missing_citations=material["missing_citations"],
+            candidate_terminal_nodes=material["candidate_terminal_nodes"],
         )
         _atomic_write_text(methods_file, markdown)
 
@@ -1050,9 +1098,9 @@ def generate_md_methods_report(
             "terminal_node_id": terminal_node_id,
             "lineage": facts["lineage"],
             "facts": facts,
-            "methods_paragraphs": methods_paragraphs,
-            "citation_keys": citation_keys,
-            "bibtex_entries": bibtex_entries,
+            "methods_paragraphs": material["methods_paragraphs"],
+            "citation_keys": material["citation_keys"],
+            "bibtex_entries": material["bibtex_entries"],
         })
         return result
     except Exception as exc:  # noqa: BLE001
@@ -1076,6 +1124,308 @@ def _resolve_study_job_dir(study_dir: Path, job_dir: str) -> Path:
     if path.is_absolute():
         return path.resolve()
     return (study_dir / path).resolve()
+
+
+def _safe_filename_part(value: Any) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value))
+    return safe.strip("_") or "report"
+
+
+def _study_job_display(job: dict) -> str:
+    job_id = str(job.get("job_id") or "job")
+    pieces = [f"{job_id}"]
+    role = job.get("role")
+    label = job.get("label")
+    if role:
+        pieces.append(f"role={role}")
+    if label:
+        pieces.append(f"label={label}")
+    metadata = job.get("metadata", {})
+    if isinstance(metadata, dict):
+        for key in ("mutation", "variant", "condition"):
+            if metadata.get(key):
+                pieces.append(f"{key}={metadata[key]}")
+    return " (".join([pieces[0], ", ".join(pieces[1:]) + ")"]) if len(pieces) > 1 else pieces[0]
+
+
+def _terminal_node_for_study_job(
+    job: dict,
+    terminal_node_ids: dict | None,
+) -> str | None:
+    if not isinstance(terminal_node_ids, dict):
+        return None
+    for key in (job.get("job_id"), job.get("label"), job.get("role")):
+        if key is not None and str(key) in terminal_node_ids:
+            value = terminal_node_ids[str(key)]
+            return str(value) if value else None
+    return None
+
+
+def _field_by_job(job_reports: list[dict], field: str) -> str:
+    values = []
+    for report in job_reports:
+        facts = report["facts"]
+        values.append((str(report["job_id"]), _format_value(facts.get(field))))
+    unique_values = {value for _job_id, value in values}
+    if len(unique_values) == 1:
+        return values[0][1]
+    return "; ".join(f"{job_id}: {value}" for job_id, value in values)
+
+
+def _study_methods_paragraphs(study: dict, job_reports: list[dict]) -> list[str]:
+    title = study.get("title") or "MDClaw study"
+    objective = study.get("objective")
+    objective_sentence = f" to address {objective}" if objective else ""
+    job_descriptions = "; ".join(_study_job_display(report["study_job"]) for report in job_reports)
+    source_summary = _field_by_job(job_reports, "source_description")
+    design_para = (
+        f"The MDClaw study {title} organized {len(job_reports)} independent molecular dynamics "
+        f"job(s){objective_sentence}. The registered systems were {job_descriptions}. "
+        f"Input structures were recorded as {source_summary}. Each registered job was treated "
+        f"as an independent physical system with its own source-rooted MDClaw DAG."
+    )
+
+    prep_tools = _field_by_job(job_reports, "preparation_tools")
+    ph = _field_by_job(job_reports, "ph")
+    water_model = _field_by_job(job_reports, "water_model")
+    box_description = _field_by_job(job_reports, "box_description")
+    salt_description = _field_by_job(job_reports, "salt_description")
+    forcefield = _field_by_job(job_reports, "forcefield")
+    special_components = _field_by_job(job_reports, "special_components")
+    protocol_para = (
+        f"Structures were prepared with {prep_tools}, with protonation states assigned at pH "
+        f"{ph}. Special components were recorded as {special_components}. Prepared systems "
+        f"were solvated using {water_model} water with {box_description}, and ions were added "
+        f"according to {salt_description}. Amber topology and coordinate files were generated "
+        f"with AmberTools/tleap using {forcefield}."
+    )
+
+    equilibration = _field_by_job(job_reports, "equilibration_protocol")
+    simulation_time = _field_by_job(job_reports, "simulation_time")
+    temperature = _field_by_job(job_reports, "temperature")
+    timestep = _field_by_job(job_reports, "timestep")
+    output_frequency = _field_by_job(job_reports, "output_frequency")
+    hmr = _field_by_job(job_reports, "constraints_or_hmr")
+    lineage_summary = "; ".join(
+        f"{report['job_id']}: {' -> '.join(report['lineage'])}" for report in job_reports
+    )
+    md_para = (
+        f"Molecular dynamics simulations were performed with OpenMM. Equilibration protocols "
+        f"were recorded as {equilibration}. Production simulations were run for "
+        f"{simulation_time} at {temperature} K using {timestep} timesteps and {hmr}. "
+        f"Trajectory and energy output frequency was recorded as {output_frequency}. "
+        f"The per-job workflow lineages were {lineage_summary}."
+    )
+
+    return [design_para, protocol_para, md_para]
+
+
+def _study_mermaid(job_reports: list[dict]) -> str:
+    lines = [
+        "flowchart LR",
+        '    StudyInput["study.json"] --> JobList["Registered jobs"]',
+    ]
+    for index, report in enumerate(job_reports):
+        job_node = f"Job{index}"
+        label = f"{report['job_id']}: {report['terminal_node_id']}"
+        lines.append(f'    JobList --> {job_node}["{label}"]')
+        previous = job_node
+        for lineage_index, node_id in enumerate(report["lineage"]):
+            lineage_node = f"Job{index}Node{lineage_index}"
+            lines.append(f'    {lineage_node}["{node_id}"]')
+            lines.append(f"    {previous} --> {lineage_node}")
+            previous = lineage_node
+        lines.append(f"    {previous} --> StudyMethods")
+    lines.extend([
+        '    StudyMethods["Study Methods Markdown"] --> StudyBibTeX["Union BibTeX citations"]',
+    ])
+    return "\n".join(lines)
+
+
+def _union_citations(
+    job_reports: list[dict],
+    citation_inventory: str | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    entries_by_key = _read_citation_inventory(citation_inventory)
+    citation_keys: list[str] = []
+    missing: list[str] = []
+    for report in job_reports:
+        for key in report["citation_keys"]:
+            if key not in citation_keys:
+                citation_keys.append(key)
+            if key not in entries_by_key and key not in missing:
+                missing.append(key)
+    entries = [entries_by_key[key] for key in citation_keys if key in entries_by_key]
+    return citation_keys, entries, missing
+
+
+def _study_job_table(job_reports: list[dict]) -> str:
+    lines = [
+        "| Job | Role | Label | Terminal Node | Lineage |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for report in job_reports:
+        job = report["study_job"]
+        lines.append(
+            f"| `{report['job_id']}` | {job.get('role') or '-'} | {job.get('label') or '-'} | "
+            f"`{report['terminal_node_id']}` | {' -> '.join(f'`{n}`' for n in report['lineage'])} |"
+        )
+    return "\n".join(lines)
+
+
+def _render_study_methods_markdown(
+    *,
+    study_dir: Path,
+    study: dict,
+    job_reports: list[dict],
+    methods_paragraphs: list[str],
+    mermaid: str,
+    citation_keys: list[str],
+    bibtex_entries: list[str],
+    missing_citations: list[str],
+) -> str:
+    missing_text = ""
+    if missing_citations:
+        missing_text = (
+            "\n\n> Citation inventory entries not found for keys: "
+            + ", ".join(f"`{key}`" for key in missing_citations)
+        )
+    jobs_text = ", ".join(f"`{report['job_id']}`" for report in job_reports)
+    return "\n\n".join([
+        f"# MDClaw Study Methods Draft: {study.get('title') or study_dir.name}",
+        "## Study Methods Draft",
+        "\n\n".join(methods_paragraphs),
+        "## Study Workflow Schematic",
+        "```mermaid\n" + mermaid + "\n```",
+        "## Registered Job Lineages",
+        _study_job_table(job_reports),
+        "## Citation Keys",
+        ", ".join(f"`{key}`" for key in citation_keys) or "_No citations selected._",
+        "## BibTeX",
+        "```bibtex\n" + "\n\n".join(bibtex_entries) + "\n```" + missing_text,
+        "## Provenance",
+        "\n".join([
+            f"- Study directory: `{study_dir}`",
+            f"- Study file: `{study_dir / 'study.json'}`",
+            f"- Objective: {study.get('objective') or 'not recorded'}",
+            f"- Jobs: {jobs_text}",
+        ]),
+        "",
+    ])
+
+
+def _collect_study_job_reports(
+    study_dir: Path,
+    jobs: list[dict],
+    terminal_node_ids: dict | None,
+    citation_inventory: str | None,
+) -> tuple[list[dict], list[str], list[str]]:
+    job_reports: list[dict] = []
+    errors: list[str] = []
+    warnings: list[str] = []
+    for job in jobs:
+        job_id = str(job.get("job_id") or "")
+        if not job_id:
+            errors.append("Study job entry is missing job_id")
+            continue
+        abs_job_dir = _resolve_study_job_dir(study_dir, str(job.get("job_dir", "")))
+        terminal_node_id = _terminal_node_for_study_job(job, terminal_node_ids)
+        material = _build_job_methods_material(abs_job_dir, terminal_node_id, citation_inventory)
+        warnings.extend(f"{job_id}: {warning}" for warning in material["warnings"])
+        if not material["success"]:
+            errors.extend(f"{job_id}: {error}" for error in material["errors"])
+            continue
+        job_reports.append({
+            "job_id": job_id,
+            "study_job": job,
+            "job_dir": str(abs_job_dir),
+            "terminal_node_id": material["terminal_node_id"],
+            "lineage": material["lineage"],
+            "facts": material["facts"],
+            "citation_keys": material["citation_keys"],
+        })
+    return job_reports, errors, warnings
+
+
+def generate_study_methods_report(
+    study_dir: str,
+    output_name: Optional[str] = None,
+    citation_inventory: Optional[str] = None,
+    terminal_node_ids: Optional[dict] = None,
+) -> dict:
+    """Generate a manuscript-oriented Methods draft for a multi-job MDClaw study."""
+    result: dict[str, Any] = {
+        "success": False,
+        "methods_file": None,
+        "study_dir": None,
+        "job_reports": [],
+        "methods_paragraphs": [],
+        "citation_keys": [],
+        "bibtex_entries": [],
+        "errors": [],
+        "warnings": [],
+    }
+    try:
+        sd = Path(study_dir).expanduser().resolve()
+        study = _load_study(sd)
+        jobs = [job for job in study.get("jobs", []) if isinstance(job, dict)]
+        if not jobs:
+            result["errors"].append("Study has no registered jobs.")
+            return result
+
+        job_reports, errors, warnings = _collect_study_job_reports(
+            sd, jobs, terminal_node_ids, citation_inventory
+        )
+        result["warnings"].extend(warnings)
+        if errors:
+            result["errors"].extend(errors)
+            return result
+        if not job_reports:
+            result["errors"].append("No study jobs could be converted to Methods facts.")
+            return result
+
+        methods_paragraphs = _study_methods_paragraphs(study, job_reports)
+        mermaid = _study_mermaid(job_reports)
+        citation_keys, bibtex_entries, missing_citations = _union_citations(
+            job_reports, citation_inventory
+        )
+        if missing_citations:
+            result["warnings"].append(
+                "Missing citation inventory entries: " + ", ".join(missing_citations)
+            )
+
+        safe_study_name = _safe_filename_part(study.get("title") or sd.name)
+        methods_file = sd / "evidence" / (
+            output_name or f"mdclaw_study_methods_{safe_study_name}.md"
+        )
+        markdown = _render_study_methods_markdown(
+            study_dir=sd,
+            study=study,
+            job_reports=job_reports,
+            methods_paragraphs=methods_paragraphs,
+            mermaid=mermaid,
+            citation_keys=citation_keys,
+            bibtex_entries=bibtex_entries,
+            missing_citations=missing_citations,
+        )
+        _atomic_write_text(methods_file, markdown)
+
+        result.update({
+            "success": True,
+            "methods_file": str(methods_file),
+            "study_dir": str(sd),
+            "job_reports": job_reports,
+            "methods_paragraphs": methods_paragraphs,
+            "citation_keys": citation_keys,
+            "bibtex_entries": bibtex_entries,
+        })
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"generate_study_methods_report failed: {exc}")
+        result["errors"].append(
+            f"generate_study_methods_report failed: {type(exc).__name__}: {exc}"
+        )
+        return result
 
 
 def generate_study_evidence_report(
@@ -1180,5 +1530,6 @@ def generate_study_evidence_report(
 TOOLS = {
     "generate_md_evidence_report": generate_md_evidence_report,
     "generate_md_methods_report": generate_md_methods_report,
+    "generate_study_methods_report": generate_study_methods_report,
     "generate_study_evidence_report": generate_study_evidence_report,
 }
