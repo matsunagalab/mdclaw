@@ -1,6 +1,6 @@
 [project]
 name = "mdclaw"
-version = "0.5.0"
+version = "0.5.1"
 description = "MDClaw - AI-powered Molecular Dynamics Setup"
 readme = "README.md"
 requires-python = ">=3.12"
