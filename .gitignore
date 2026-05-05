@@ -57,6 +57,7 @@ test_4ake_n5_10ns/
 output/
 outputs/
 .mdclaw_cache/
+ref/
 *.pdb
 *.mol2
 *.prmtop
