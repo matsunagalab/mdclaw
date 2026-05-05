@@ -8,6 +8,7 @@ import pytest
 from mdclaw.analyze_server import (
     analyze_contact_frequency,
     analyze_rmsf,
+    detect_equilibration,
     register_analysis_result,
 )
 
@@ -93,6 +94,59 @@ def test_register_analysis_result_fails_on_missing_artifact(tmp_path):
     node = json.loads((job_dir / "nodes" / "analyze_001" / "node.json").read_text())
     assert node["status"] == "failed"
     assert "missing.csv" in node["metadata"]["errors"][0]
+
+
+def test_detect_equilibration_direct_writes_artifacts(tmp_path):
+    pytest.importorskip("pymbar")
+    rng = np.random.default_rng(20260505)
+    transient = rng.normal(loc=3.0, scale=0.05, size=40)
+    production = rng.normal(loc=0.0, scale=0.05, size=160)
+    series = np.concatenate([transient, production])
+    series_path = tmp_path / "observable.npy"
+    np.save(series_path, series)
+
+    result = detect_equilibration(
+        timeseries_file=str(series_path),
+        fast=True,
+        nskip=5,
+        output_name="equilibration_test",
+        _out_dir_override=str(tmp_path / "equilibration"),
+    )
+
+    assert result["success"] is True
+    assert 0 <= result["t0"] < series.size
+    assert result["g"] >= 1.0
+    assert result["Neff_max"] > 0.0
+    assert result["n_samples"] == series.size
+    assert result["n_equilibrated_samples"] == series.size - result["t0"]
+    assert (tmp_path / "equilibration" / "equilibration_test.json").is_file()
+    assert (tmp_path / "equilibration" / "equilibration_test.csv").is_file()
+
+
+def test_detect_equilibration_direct_selects_2d_npy_column(tmp_path):
+    pytest.importorskip("pymbar")
+    series = np.linspace(0.0, 1.0, 60)
+    data = np.column_stack([np.zeros_like(series), series])
+    series_path = tmp_path / "two_column.npy"
+    np.save(series_path, data)
+
+    result = detect_equilibration(
+        timeseries_file=str(series_path),
+        column=1,
+        fast=True,
+        nskip=4,
+        output_name="two_column_equilibration",
+        _out_dir_override=str(tmp_path / "equilibration_2d"),
+    )
+
+    assert result["success"] is True
+    assert result["source_shape"] == [60, 2]
+    assert result["column_index"] == 1
+    assert result["n_samples"] == 60
+    report = json.loads(
+        (tmp_path / "equilibration_2d" / "two_column_equilibration.json").read_text()
+    )
+    assert report["column_index"] == 1
 
 
 @pytest.fixture
