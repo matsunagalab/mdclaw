@@ -24,6 +24,11 @@ _ANALYZE_METRIC_KEYS = {
     "mean_q",
     "final_q",
     "n_series",
+    "mean_rmsf_nm",
+    "max_rmsf_nm",
+    "mean_contact_frequency",
+    "max_contact_frequency",
+    "n_contacts_observed",
 }
 
 _LEAF_PRIORITY = {
@@ -311,17 +316,33 @@ def _analyze_metrics(nodes: dict[str, dict]) -> dict:
         metadata = node.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
+        custom_metrics = metadata.get("metrics", {})
+        if not isinstance(custom_metrics, dict):
+            custom_metrics = {}
         picked = {
             key: metadata[key]
             for key in sorted(_ANALYZE_METRIC_KEYS)
             if key in metadata
         }
+        picked.update(custom_metrics)
         if picked:
-            analyses.append({
+            entry = {
                 "node_id": node_id,
                 "label": node.get("label"),
                 "metrics": picked,
-            })
+            }
+            for key in (
+                "analysis_type",
+                "analysis_name",
+                "summary",
+                "method",
+                "provenance",
+                "producer_agent",
+                "tool",
+            ):
+                if key in metadata:
+                    entry[key] = metadata[key]
+            analyses.append(entry)
     if analyses:
         metrics["analyze"] = analyses
     return metrics

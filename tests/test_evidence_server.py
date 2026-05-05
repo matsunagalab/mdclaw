@@ -146,6 +146,49 @@ def test_generate_md_evidence_report_includes_analyze_metrics(tmp_path):
     assert result["report"]["status"] == "complete"
 
 
+def test_generate_md_evidence_report_includes_custom_analyze_metrics(tmp_path):
+    from mdclaw._node import complete_node, create_node
+
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "prod")
+    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"trajectory": "artifacts/trajectory.dcd"},
+    )
+    create_node(str(job_dir), "analyze", parent_node_ids=["prod_001"])
+    _write_artifact(job_dir, "analyze_001", "artifacts/result.json")
+    complete_node(
+        str(job_dir),
+        "analyze_001",
+        artifacts={"result_json": "artifacts/result.json"},
+        metadata={
+            "tool": "register_analysis_result",
+            "analysis_type": "custom",
+            "analysis_name": "ligand_contacts",
+            "summary": "Custom contact analysis.",
+            "metrics": {
+                "mean_contact_occupancy": 0.75,
+                "n_frames": 20,
+            },
+            "method": {"library": "mdtraj"},
+            "producer_agent": "test-agent",
+        },
+    )
+
+    result = generate_md_evidence_report(str(job_dir))
+
+    assert result["success"] is True
+    analyze_metrics = result["report"]["metrics"]["analyze"][0]
+    assert analyze_metrics["analysis_type"] == "custom"
+    assert analyze_metrics["analysis_name"] == "ligand_contacts"
+    assert analyze_metrics["summary"] == "Custom contact analysis."
+    assert analyze_metrics["metrics"]["mean_contact_occupancy"] == 0.75
+    assert analyze_metrics["metrics"]["n_frames"] == 20
+    assert analyze_metrics["method"]["library"] == "mdtraj"
+
+
 def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
     from mdclaw._node import complete_node, create_node
 

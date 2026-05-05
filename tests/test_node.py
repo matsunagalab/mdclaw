@@ -2061,6 +2061,44 @@ class TestSourceNode:
         assert first_inputs["structure_file"].endswith("source_001/artifacts/src.pdb")
         assert second_inputs["structure_file"].endswith("source_001/artifacts/src.pdb")
 
+    def test_custom_analysis_structured_artifact_paths_resolve(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        (job_dir / "nodes" / "prod_001" / "artifacts" / "trajectory.dcd").write_text("DCD")
+        complete_node(
+            jd,
+            "prod_001",
+            artifacts={"trajectory": "artifacts/trajectory.dcd"},
+        )
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        artifacts_dir = job_dir / "nodes" / "analyze_001" / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        (artifacts_dir / "result.json").write_text("{}")
+        (artifacts_dir / "analysis_manifest.json").write_text("{}")
+        complete_node(
+            jd,
+            "analyze_001",
+            artifacts={
+                "result_json": "artifacts/result.json",
+                "analysis_manifest": "artifacts/analysis_manifest.json",
+                "report": {"result_json": "artifacts/result.json"},
+            },
+        )
+        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+
+        result_json = find_ancestor_artifact(
+            jd, "analyze_002", "analyze", "result_json"
+        )
+        manifest = find_ancestor_artifact(
+            jd, "analyze_002", "analyze", "analysis_manifest"
+        )
+        report = find_ancestor_artifact(
+            jd, "analyze_002", "analyze", "report"
+        )
+        assert result_json.endswith("analyze_001/artifacts/result.json")
+        assert manifest.endswith("analyze_001/artifacts/analysis_manifest.json")
+        assert report["result_json"].endswith("analyze_001/artifacts/result.json")
+
 
 # ── Tool registration ─────────────────────────────────────────────────────
 

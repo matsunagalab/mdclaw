@@ -149,8 +149,10 @@ prod_001 ─ analyze_001 (concat, parent=prod)
              ├─ analyze_002 (rmsd,     parent=analyze_001)
              ├─ analyze_003 (distance, parent=analyze_001)
              ├─ analyze_004 (q_value,  parent=analyze_001)
-             └─ analyze_005 (fit,      parent=analyze_001)
-                  └─ analyze_006 (rmsd on fitted.dcd — chainable)
+             ├─ analyze_005 (rmsf,     parent=analyze_001)
+             ├─ analyze_006 (contacts, parent=analyze_001)
+             └─ analyze_007 (fit,      parent=analyze_001)
+                  └─ analyze_008 (rmsd on fitted.dcd — chainable)
 ```
 
 **Node constraints**:
@@ -255,6 +257,111 @@ pairs.
 Artifacts: `q_timeseries` (`.npy`, shape (N,)), `q_csv`, `q_plot`,
 `native_contacts` (JSON with the native pair list for reproducibility).
 
+### Tool 5: `analyze_rmsf`
+
+```bash
+mdclaw --job-dir <job_dir> --node-id analyze_005 analyze_rmsf \
+  --selection "protein" \
+  --align-selection "backbone" \
+  --by-residue
+```
+
+RMSF is computed after streaming Kabsch alignment to the first frame.
+`--by-residue` reports the mean atom RMSF per residue; `--no-by-residue`
+reports per-atom values. This is the standard "which regions are mobile?"
+analysis and should remain lightweight.
+
+Artifacts: `rmsf_values` (`.npy`), `rmsf_csv`, `rmsf_plot`,
+`rmsf_metadata`.
+
+### Tool 6: `analyze_contact_frequency`
+
+```bash
+# Residue-residue contact map within a selection:
+mdclaw --job-dir <job_dir> --node-id analyze_006 analyze_contact_frequency \
+  --selection-group1 "protein" \
+  --cutoff-nm 0.45 \
+  --mode residue \
+  --by-residue
+
+# Group-group contact occupancy:
+mdclaw --job-dir <job_dir> --node-id analyze_006 analyze_contact_frequency \
+  --selection-group1 "resid 10 to 30" \
+  --selection-group2 "resid 80 to 100" \
+  --cutoff-nm 0.45 \
+  --mode group
+```
+
+Residue mode records a residue-pair contact-frequency matrix. Group mode
+records the fraction of frames in which any atom pair across the two
+groups is within `cutoff_nm`.
+
+Artifacts: `contact_frequency_matrix` (`.npy`), `contact_frequency_csv`,
+`contact_frequency_plot`, `contact_pairs_metadata`.
+
+## Custom analysis registration
+
+For analyses that are too system-specific to standardize (PCA/tICA/MSM,
+ligand-specific scores, bespoke collective variables, custom plots), let
+the Coding Agent or Harness write code freely, but register the result as
+an `analyze` node so the DAG and evidence report remain reproducible.
+
+Recommended flow:
+
+1. Create a parent `analyze` node with `concat_trajectory` so every custom
+   analysis consumes a compact DCD + matching `reference_pdb`.
+2. Create another `analyze` node parented on that combined node.
+3. Have the Coding Agent / Harness write outputs under
+   `nodes/<custom_analyze_id>/artifacts/`.
+4. Write an `analysis_manifest.json` that records artifacts, metrics,
+   method details, and input provenance.
+5. Call `register_analysis_result`.
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type analyze \
+  --parent-node-ids analyze_001 \
+  --label "ligand-contact-occupancy"
+
+mdclaw --job-dir <job_dir> --node-id analyze_009 register_analysis_result \
+  --manifest-file <job_dir>/nodes/analyze_009/artifacts/analysis_manifest.json
+```
+
+Minimal manifest:
+
+```json
+{
+  "analysis_type": "custom",
+  "name": "ligand_contact_occupancy",
+  "summary": "Ligand contact occupancy remained stable after equilibration.",
+  "metrics": {
+    "mean_contact_occupancy": 0.73,
+    "n_frames": 2500
+  },
+  "artifacts": {
+    "analysis_manifest": "artifacts/analysis_manifest.json",
+    "result_json": "artifacts/result.json",
+    "contact_csv": "artifacts/contact_occupancy.csv",
+    "contact_plot": "artifacts/contact_occupancy.png",
+    "analysis_script": "artifacts/analyze_contacts.py"
+  },
+  "method": {
+    "library": "mdtraj",
+    "distance_cutoff_nm": 0.45,
+    "selection": "protein"
+  },
+  "provenance": {
+    "input_node_id": "analyze_001",
+    "trajectory_artifact": "combined_trajectory",
+    "topology_artifact": "reference_pdb"
+  }
+}
+```
+
+`register_analysis_result` does not run arbitrary code. It only validates
+that registered artifacts exist, marks the node completed, records SHA-256
+hashes through the normal DAG writer, and exposes metrics to evidence
+reports.
+
 ## Phase 2 troubleshooting
 
 | Symptom | Cause | Fix |
@@ -268,7 +375,7 @@ Artifacts: `q_timeseries` (`.npy`, shape (N,)), `q_csv`, `q_plot`,
 
 - PCA / tICA dimensionality reduction
 - Multi-trajectory comparison (replicate-to-replicate alignment)
-- H-bond timeseries, per-residue contact frequencies
+- H-bond timeseries
 - Secondary-structure timeseries (DSSP / STRIDE)
 - HMM / MSM analysis
 
