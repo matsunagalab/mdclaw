@@ -775,6 +775,7 @@ class TestMDSimulationServer:
         assert prod_node["artifacts"]["final_structure"] == "artifacts/final_structure.pdb"
         assert prod_node["artifacts"]["checkpoint"] == "artifacts/checkpoint.chk"
         assert prod_node["artifacts"]["energy"] == "artifacts/energy.dat"
+        assert prod_node["metadata"]["output_frequency_ps"] == 0.5
 
     def test_run_md_with_hmr(self, small_pdb, tmp_path):
         """Run MD with HMR enabled and 4fs timestep."""

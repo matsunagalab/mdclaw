@@ -513,7 +513,9 @@ def _production_description(prod_node: dict | None) -> dict[str, str]:
         "temperature": _format_value(metadata.get("temperature_kelvin")),
         "timestep": _format_value(metadata.get("timestep_fs"), " fs"),
         "constraints_or_hmr": constraints_or_hmr,
-        "output_frequency": _format_value(metadata.get("output_frequency_ps"), " ps"),
+        "output_frequency": _format_value(
+            metadata.get("output_frequency_ps", conditions.get("output_frequency_ps")), " ps"
+        ),
         "platform": _format_value(metadata.get("platform")),
     }
 

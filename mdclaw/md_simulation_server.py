@@ -1802,6 +1802,7 @@ def run_production(
                     "platform": result.get("platform"),
                     "hmr": hmr,
                     "timestep_fs": timestep_fs,
+                    "output_frequency_ps": output_frequency_ps,
                     "random_seed": random_seed,
                     "num_steps": result.get("steps_completed"),
                     "start_step": result.get("start_step"),
