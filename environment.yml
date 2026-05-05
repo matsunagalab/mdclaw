@@ -8,6 +8,7 @@ dependencies:
   - pdbfixer>=1.9
   - rdkit>=2023.9.1
   - openblas
+  - matplotlib
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip
   - pip:

@@ -1,0 +1,10 @@
+{
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/evidence_report.json",
+    "submission/methods.md",
+    "submission/provenance.json",
+    "submission/decision_log.jsonl"
+  ],
+  "task_id": "study_wt_mutant_methods"
+}

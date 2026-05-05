@@ -1,0 +1,61 @@
+{
+  "category": "experimental_ground_truth",
+  "execution_mode": "plan_only",
+  "failure_policy": {
+    "blocked_by_missing_input_allowed": false,
+    "insufficient_information_allowed": false
+  },
+  "inputs": {
+    "curated_source_pool": "SKEMPI",
+    "ligands": [],
+    "provided_metrics": [],
+    "provided_trajectories": [],
+    "structures": []
+  },
+  "not_scored_here": [],
+  "primary_score": "scientific_answer",
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/provenance.json",
+    "submission/evidence_report.json"
+  ],
+  "schema_version": "0.1",
+  "scoring": {
+    "deterministic_checks": [],
+    "ground_truth_checks": [
+      {
+        "check_id": "effect_direction",
+        "expected_direction": "weakened_binding",
+        "weight": 1.0
+      }
+    ],
+    "llm_judge_rubrics": [
+      "confidence_calibration",
+      "limitations"
+    ]
+  },
+  "secondary_scores": [
+    "evidence_communication"
+  ],
+  "task_id": "ppi_chymotrypsin_bpti_hotspot",
+  "task_intent": "Test whether the agent can interpret an interface hotspot mutation against curated SKEMPI or ASEdb binding data. Curated source pool: SKEMPI.",
+  "tier": "lite",
+  "time_limit_minutes": 180,
+  "truth": {
+    "expected_direction": "weakened_binding",
+    "experimental_values": [
+      {
+        "direction": "weakened_binding",
+        "quantity": "binding_ddg_direction",
+        "source_pool": "SKEMPI/ASEdb"
+      }
+    ],
+    "references": [
+      {
+        "note": "Concrete structure IDs and values are pinned in task/input manifests.",
+        "source": "SKEMPI"
+      }
+    ],
+    "truth_type": "experimental"
+  }
+}

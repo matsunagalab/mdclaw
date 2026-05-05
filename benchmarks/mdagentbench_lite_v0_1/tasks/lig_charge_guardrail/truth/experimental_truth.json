@@ -1,0 +1,11 @@
+{
+  "expected_direction": "structured_failure",
+  "experimental_values": [],
+  "references": [
+    {
+      "note": "Concrete structure IDs and values are pinned in task/input manifests.",
+      "source": "synthetic ligand"
+    }
+  ],
+  "truth_type": "synthetic"
+}

@@ -1,0 +1,10 @@
+{
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/prepared_structure.pdb",
+    "submission/metrics.json",
+    "submission/provenance.json",
+    "submission/evidence_report.json"
+  ],
+  "task_id": "prep_ligand_pose_bace1"
+}

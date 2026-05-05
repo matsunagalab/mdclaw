@@ -1,0 +1,15 @@
+{
+  "expected_direction": "preserve_bound_pose",
+  "experimental_values": [],
+  "references": [
+    {
+      "note": "BACE1 includes co-crystal structures and IC50 ranking data.",
+      "source": "D3R Grand Challenge 4 BACE1"
+    },
+    {
+      "note": "Concrete structure IDs and values are pinned in task/input manifests.",
+      "source": "D3R GC4 BACE1"
+    }
+  ],
+  "truth_type": "structural"
+}

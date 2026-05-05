@@ -1,0 +1,8 @@
+{
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/provenance.json",
+    "submission/evidence_report.json"
+  ],
+  "task_id": "lig_cathepsin_s_affinity"
+}

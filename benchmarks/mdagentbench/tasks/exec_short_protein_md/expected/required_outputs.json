@@ -1,0 +1,9 @@
+{
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/metrics.json",
+    "submission/provenance.json",
+    "submission/evidence_report.json"
+  ],
+  "task_id": "exec_short_protein_md"
+}

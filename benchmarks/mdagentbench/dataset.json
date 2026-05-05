@@ -1,0 +1,20 @@
+{
+  "benchmark_version": "MDAgentBench-Lite-v0.1",
+  "created_at": "2026-05-05T07:27:59.037074Z",
+  "notes": [
+    "This pilot is intentionally light-weight and artifact based.",
+    "Inputs are skeletons; each task can be populated with concrete files from the cited curated source."
+  ],
+  "schema_version": "0.1",
+  "task_count": 8,
+  "task_ids": [
+    "prep_ligand_pose_bace1",
+    "prep_guardrail_bad_ligand",
+    "exec_short_protein_md",
+    "exec_restart_continue",
+    "answer_stability_mutation",
+    "answer_ppi_hotspot",
+    "communicate_rmsd_rmsf_contacts",
+    "study_wt_mutant_methods"
+  ]
+}

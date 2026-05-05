@@ -1,0 +1,10 @@
+{
+  "required_outputs": [
+    "submission/manifest.json",
+    "submission/metrics.json",
+    "submission/figures",
+    "submission/evidence_report.json",
+    "submission/provenance.json"
+  ],
+  "task_id": "conf_fastfold_q_value"
+}

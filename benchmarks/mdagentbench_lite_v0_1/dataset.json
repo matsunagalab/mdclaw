@@ -1,0 +1,42 @@
+{
+  "benchmark_version": "MDAgentBench-Lite-v0.1",
+  "created_at": "2026-05-05T07:28:42.817236Z",
+  "notes": [
+    "MDAgentBench-Lite v0.1 expands the pilot to 30 task contracts.",
+    "Concrete files can be filled from the pinned curated source pools."
+  ],
+  "schema_version": "0.1",
+  "task_count": 30,
+  "task_ids": [
+    "stab_snase_v66l",
+    "stab_snase_v66a",
+    "stab_ci2_core_mutation",
+    "stab_barnase_core_mutation",
+    "stab_gb1_surface_mutation",
+    "stab_t4_lysozyme_core",
+    "stab_symmetry_pair_a",
+    "stab_symmetry_pair_b",
+    "ppi_barnase_barstar_hotspot",
+    "ppi_trypsin_bpti_hotspot",
+    "ppi_chymotrypsin_bpti_hotspot",
+    "ppi_antibody_antigen_hotspot",
+    "ppi_asedb_alanine_scan",
+    "ppi_neutral_interface_control",
+    "lig_bace1_pose_01",
+    "lig_bace1_pose_02",
+    "lig_bace1_affinity_direction",
+    "lig_cathepsin_s_affinity",
+    "lig_platinum_mutation_effect",
+    "lig_casf_pose_preservation",
+    "lig_moad_cofactor_guardrail",
+    "lig_charge_guardrail",
+    "conf_adk_open_closed",
+    "conf_adk_domain_distance",
+    "conf_calmodulin_peptide",
+    "conf_fastfold_q_value",
+    "evidence_rmsd_rmsf_overlay",
+    "evidence_contact_frequency",
+    "evidence_wt_mutant_study",
+    "evidence_restart_methods"
+  ]
+}

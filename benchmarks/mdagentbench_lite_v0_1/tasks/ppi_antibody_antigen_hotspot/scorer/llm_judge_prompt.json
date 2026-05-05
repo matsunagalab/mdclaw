@@ -1,0 +1,24 @@
+{
+  "instructions": [
+    "Read only the task contract and submitted artifacts.",
+    "Do not reward claims that are unsupported by submitted metrics.",
+    "Return JSON only."
+  ],
+  "judge_role": "structured scientific communication judge",
+  "output_schema": {
+    "enabled": true,
+    "rationale": "",
+    "scores": {
+      "faithfulness_to_data": "0..1",
+      "limitations": "0..1",
+      "publication_readiness": "0..1"
+    },
+    "violations": []
+  },
+  "rubrics": [
+    "confidence_calibration",
+    "limitations"
+  ],
+  "schema_version": "0.1",
+  "task_id": "ppi_antibody_antigen_hotspot"
+}

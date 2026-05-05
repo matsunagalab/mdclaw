@@ -1,0 +1,29 @@
+{
+  "deterministic_checks": [
+    {
+      "check_id": "md_completed",
+      "equals": true,
+      "json_file": "submission/metrics.json",
+      "json_path": "execution.completed",
+      "weight": 0.4
+    },
+    {
+      "check_id": "finite_energy",
+      "equals": true,
+      "json_file": "submission/metrics.json",
+      "json_path": "execution.finite_energy",
+      "weight": 0.3
+    },
+    {
+      "check_id": "no_nan",
+      "equals": true,
+      "json_file": "submission/metrics.json",
+      "json_path": "execution.no_nan",
+      "weight": 0.3
+    }
+  ],
+  "ground_truth_checks": [],
+  "llm_judge_rubrics": [
+    "limitations"
+  ]
+}

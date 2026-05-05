@@ -1,0 +1,18 @@
+{
+  "errors": [],
+  "limitations": [],
+  "outputs": {
+    "decision_log": "decision_log.jsonl",
+    "evidence_report": "evidence_report.json",
+    "figures": [],
+    "methods": null,
+    "metrics": "metrics.json",
+    "prepared_structure": null,
+    "provenance": "provenance.json",
+    "topology": []
+  },
+  "run_id": "",
+  "schema_version": "0.1",
+  "status": "completed",
+  "task_id": ""
+}

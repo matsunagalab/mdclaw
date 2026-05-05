@@ -232,6 +232,25 @@ This means:
 - **Parallel agents** can work on different nodes concurrently (lock files prevent conflicts)
 - **Direct CLI use** still updates state correctly as long as workflow tools run with `--job-dir` and `--node-id`
 
+### MDAgentBench
+
+MDClaw includes a tool-agnostic benchmark contract for evaluating MD agents
+across preparation, execution, scientific interpretation, and publication-ready
+evidence packaging. The checked-in pilot is under `benchmarks/mdagentbench/`,
+with a 30-task Lite v0.1 skeleton under `benchmarks/mdagentbench_lite_v0_1/`.
+
+Useful commands:
+
+```bash
+mdclaw create_pilot_benchmark --benchmark-dir benchmarks/mdagentbench --overwrite
+mdclaw init_benchmark_run --output-dir benchmark_runs --execution-mode dry_run
+mdclaw score_benchmark_submission --task-file benchmarks/mdagentbench/tasks/exec_short_protein_md/task.json --submission-dir submission
+mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
+```
+
+See `docs/benchmark/README.md` for the task schema, submission contract,
+structured LLM judge format, append-only result ledgers, and MDClaw adapter.
+
 ---
 
 ## For Developers

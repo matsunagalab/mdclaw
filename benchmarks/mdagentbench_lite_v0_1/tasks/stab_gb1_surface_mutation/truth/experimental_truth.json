@@ -1,0 +1,17 @@
+{
+  "expected_direction": "destabilizing",
+  "experimental_values": [
+    {
+      "direction": "destabilizing",
+      "quantity": "ddg_or_delta_tm_direction",
+      "source_pool": "S669/Ssym/FireProtDB/VariBench"
+    }
+  ],
+  "references": [
+    {
+      "note": "Concrete structure IDs and values are pinned in task/input manifests.",
+      "source": "FireProtDB"
+    }
+  ],
+  "truth_type": "experimental"
+}

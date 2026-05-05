@@ -1,0 +1,25 @@
+{
+  "deterministic_checks": [
+    {
+      "check_id": "required_files_present",
+      "required_outputs": [
+        "submission/prepared_structure.pdb",
+        "submission/metrics.json",
+        "submission/provenance.json"
+      ],
+      "weight": 0.4
+    },
+    {
+      "check_id": "ligand_pose_metric_present",
+      "json_file": "submission/metrics.json",
+      "json_path": "preparation.ligand_heavy_atom_rmsd_angstrom",
+      "max_value": 0.5,
+      "weight": 0.6
+    }
+  ],
+  "ground_truth_checks": [],
+  "llm_judge_rubrics": [
+    "overclaim_detection",
+    "limitations"
+  ]
+}

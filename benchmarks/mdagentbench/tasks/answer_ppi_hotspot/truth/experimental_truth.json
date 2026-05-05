@@ -1,0 +1,12 @@
+{
+  "expected_direction": "weakened_binding",
+  "experimental_values": [
+    {
+      "direction": "weakened_binding",
+      "quantity": "binding_ddg_direction",
+      "source_pool": "SKEMPI/ASEdb"
+    }
+  ],
+  "references": [],
+  "truth_type": "experimental"
+}
