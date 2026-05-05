@@ -60,6 +60,8 @@ mdclaw/                    # All Python code consolidated here
   metal_server.py           # Metal ion parameterization
   slurm_server.py           # SLURM job submission & management
   node_server.py            # Node management tools (create_node)
+  study_server.py           # Optional multi-job study/campaign index
+  evidence_server.py        # Lightweight MD/job/study evidence reports
 
 container/                  # Docker/Singularity containerization
   Dockerfile                # Multi-stage build (mambaforge -> conda-pack -> slim)
@@ -79,6 +81,8 @@ tests/                      # 4-level test suite
   test_ligand_pathway.py    # Ligand parameterization tests (L1-L3)
   test_node.py              # Node system unit tests (lifecycle, IDs, events)
   test_event.py             # Event system tests
+  test_study_server.py      # Optional study/campaign helpers
+  test_evidence_server.py   # Evidence report helpers
   manual_checklist.md       # Level 4: Manual Claude Code tests
 ```
 
@@ -189,6 +193,34 @@ job_XXXXXXXX/
 - Events are append-only files in `events/` (no JSON array race conditions)
 - Workflow tools receive `job_dir` + `node_id`, call `begin_node`/`complete_node`/`fail_node`
 - CLI `--job-dir`/`--node-id` global flags inject these into tool kwargs, and workflow nodes require both flags
+
+**Optional study directories (campaign wrapper):**
+
+A `job_dir` remains one physical MD system with a single `source` root. When a
+scientific question spans multiple systems (WT vs mutant, apo vs holo, multiple
+input structures, or a large SLURM campaign), use an optional `study_dir` above
+the jobs instead of adding multiple `source` roots to one DAG:
+
+```
+study_XXXXXXXX/
+  study.json
+  decisions.jsonl              # optional cross-job scientific/operational decisions
+  question_history.jsonl       # optional question refinement history
+  token_ledger.jsonl           # optional LLM/token accounting
+  annotations/                 # optional external context
+  evidence/                    # optional study-level evidence reports
+  jobs/
+    wt/
+      progress.json
+      nodes/source_001/...
+    mut_v148a/
+      progress.json
+      nodes/source_001/...
+```
+
+`study_server.py` manages the study index and append-only logs. It is a thin
+file contract only: it does not execute OpenMM, mutate node DAG semantics, or
+require agent-specific runtime support.
 
 ### Pre-commit Checklist
 
@@ -387,6 +419,16 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 - `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `source` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's `state` / `checkpoint` artifact (no silent fallback); if neither is present, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
 - `update_job_params(job_dir, params)` - Merge job-level metadata into `progress.json.params`. Use this to persist workflow-wide settings such as `execution_mode` (`autonomous` / `human_in_the_loop`) without hand-editing progress files.
 - `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
+
+### study_server.py
+- `init_study(study_dir, title, objective, description, metadata, overwrite)` - Create an optional study/campaign directory with `study.json`, `jobs/`, `annotations/`, and `evidence/`. This never creates workflow nodes and never relaxes the single-source `job_dir` invariant.
+- `add_study_job(study_dir, job_id, job_dir, role, label, description, metadata, create_job_dir)` - Register one existing or planned MDClaw `job_dir` under a study. Job paths are stored relative to `study_dir` when possible.
+- `list_study_jobs(study_dir, include_progress)` / `summarize_study(study_dir)` - Read registered jobs and optionally include each job's `progress.json` summary.
+- `record_study_decision(...)`, `record_study_question(...)`, `record_token_usage(...)` - Append harness-independent JSONL records to `decisions.jsonl`, `question_history.jsonl`, and `token_ledger.jsonl`.
+
+### evidence_server.py
+- `generate_md_evidence_report(job_dir, evidence_type, question, summary, target, output_dir, output_name)` - Generate a minimal JSON evidence report from one `job_dir`, summarizing completed nodes, available analyze metrics, artifacts, limitations, and provenance.
+- `generate_study_evidence_report(study_dir, evidence_type, question, summary, output_name)` - Generate a study-level JSON evidence report across jobs registered in `study.json`.
 
 ## CLI Interface
 

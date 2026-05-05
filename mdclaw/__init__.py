@@ -13,4 +13,6 @@ __all__ = [
     "md_simulation_server",
     "slurm_server",
     "analyze_server",
+    "study_server",
+    "evidence_server",
 ]

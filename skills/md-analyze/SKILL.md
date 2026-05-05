@@ -42,10 +42,11 @@ mdclaw create_node --job-dir <job_dir> --node-type analyze \
   --label "protein-only"
 ```
 
-- `analyze` is a new DAG leaf type (introduced in this phase). Its
-  parent is **always exactly one prod node** — multiple analyses of
-  the same trajectory are expressed as sibling analyze nodes
-  (`analyze_001`, `analyze_002`, ...), not as multi-parent analyze.
+- `analyze` is a DAG leaf type. Its parent is usually one prod node.
+  Multi-parent analyze nodes are also supported when all parents are
+  homogeneous: either all `prod` nodes (independent branches/replicates)
+  or all `analyze` nodes (downstream comparison of already-combined
+  branches). Do not mix `prod` and `analyze` parents.
 - DAG resolution for an analyze node walks its prod ancestor chain
   (via `metadata.continued_from`, falling back to `parent_node_ids`)
   and assembles the `trajectory` artifacts in chronological order
@@ -154,10 +155,13 @@ prod_001 ─ analyze_001 (concat, parent=prod)
 
 **Node constraints**:
 
-- Analyze nodes are single-parent. Branching = multiple sibling
-  analyze nodes. Multi-parent is rejected at `create_node` time.
+- Analyze nodes may have one or more parents, but all parents must be
+  homogeneous: all `prod` or all `analyze`.
 - Parent must be `prod` (Phase 1 = concat entry) or `analyze`
   (Phase 2 downstream analyses). Any other parent type is rejected.
+- Multi-prod parents are interpreted as independent branches/replicates;
+  `concat_trajectory` produces per-branch combined trajectories and
+  downstream analysis tools emit branch-aware metrics/overlays.
 - When a parent analyze node exposes both `combined_trajectory` and
   `fitted_trajectory`, `fitted_trajectory` wins — so `fit → rmsd`
   chains pick up the aligned frames automatically.

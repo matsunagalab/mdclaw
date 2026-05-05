@@ -12,4 +12,6 @@ SERVER_REGISTRY = {
     "slurm": "mdclaw.slurm_server",
     "node": "mdclaw.node_server",
     "analyze": "mdclaw.analyze_server",
+    "study": "mdclaw.study_server",
+    "evidence": "mdclaw.evidence_server",
 }

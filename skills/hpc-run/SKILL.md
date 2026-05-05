@@ -50,6 +50,31 @@ downstream depend on.
 
 ---
 
+## Study Campaigns
+
+An optional `study_dir` may group multiple ordinary MDClaw `job_dir`s. Do not
+create multiple `source` roots inside one job. For cross-system campaigns
+(WT/mutant, apo/holo, multiple sources, or many candidate systems), read
+`study.json`, then submit the ready nodes from each registered job.
+
+Typical campaign loop:
+
+1. Read `study.json` and resolve each `jobs[].job_dir` relative to the
+   `study_dir`.
+2. For each job, read `progress.json` and identify ready `eq` or `prod`
+   nodes.
+3. Use `submit_array_job` for homogeneous, low-failure batches:
+   `tasks=[{"job_dir": "...", "node_id": "...", "command": "mdclaw --job-dir ... --node-id ... run_production ..."}, ...]`.
+4. Use per-node `submit_job` with dependencies when failures or runtime
+   heterogeneity are expected.
+5. During heartbeat / monitoring, use `list_tracked_jobs --sync` per job
+   directory. The SLURM tracker remains job-scoped; the `study_dir` is only
+   the campaign index.
+6. Record high-level campaign decisions with `mdclaw record_study_decision`
+   when available; keep SLURM state itself in each node's metadata.
+
+---
+
 ## Step 1: Cluster Discovery
 
 ```bash

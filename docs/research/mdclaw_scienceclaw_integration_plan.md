@@ -74,18 +74,22 @@ ScienceClaw / Cell Simulator Agent
 }
 ```
 
-Study Layer が内部で作る DAG の例:
+Study Layer が内部で束ねる job の例:
 
 ```text
 WT:
-  fetch_wt -> prep_wt -> solv_wt -> topo_wt -> eq_wt -> prod_wt_rep1/2/3
+  job_wt/source_001 -> prep_001 -> solv_001 -> topo_001 -> eq_001 -> prod_rep1/2/3
 
 Mutant:
-  fetch_wt -> prep_wt -> mutate_V148A -> solv_mut -> topo_mut -> eq_mut -> prod_mut_rep1/2/3
+  job_mut/source_001 -> prep_001 -> mutate_V148A -> solv_001 -> topo_001 -> eq_001 -> prod_rep1/2/3
 
 Analysis:
-  analyze_stability_comparison
+  study/evidence/study_evidence_report.json
 ```
+
+重要: `job_dir` 内に複数 `source` root は作らない。`job_dir` は 1 physical
+system の durable execution unit として保ち、複数 source / 複数 system の
+比較は optional な `study_dir` が複数 `job_dir` を束ねて表現する。
 
 実装候補:
 
@@ -93,21 +97,19 @@ Analysis:
 mdclaw/study_server.py
 ```
 
-最初に置く高レベル tool の例:
+最初に置く低レベル study-index tool の例:
 
 ```python
-def run_mutation_stability_study(
-    uniprot_id: str | None = None,
-    pdb_id: str | None = None,
-    mutation: str | None = None,
-    simulation_time_ns: float = 20.0,
-    replicates: int = 3,
-    job_dir: str | None = None,
-) -> dict:
-    ...
+init_study(study_dir, title=None, objective=None)
+add_study_job(study_dir, job_id, job_dir, role=None)
+record_study_decision(study_dir, phase, decision, reason)
+summarize_study(study_dir)
 ```
 
-Study Layer は OpenMM を直接触らず、既存の execution tools を組み合わせる。
+Study Layer は OpenMM を直接触らず、既存の execution tools と `job_dir`
+DAGを組み合わせる。Mutation stability などの高レベル自律workflowは、
+この薄い study-index contract の上で、skill / harness / 外部agent が
+実行する。
 
 優先 study type:
 
@@ -227,15 +229,15 @@ Study Layer はまだ作らず、既存の `prod` / `analyze` node から report
 generate_md_evidence_report(job_dir, report_type="stability")
 ```
 
-### Step 3: 最小 Study Layer を1つ作る
+### Step 3: 最小 Study Layer を作る
 
-最初は `mutation_stability_study` がよい。
+最初は特定の科学workflowを固定せず、`study_dir` の薄いファイル契約を作る。
 
 理由:
 
-- FASPR mutation workflow と接続しやすい
-- WT vs mutant comparison が細胞モデルに意味を持ちやすい
-- RMSD/RMSF/replicate consistency で evidence report を作りやすい
+- 普通のMD研究（WT vs mutant, apo vs holo, forcefield comparison）にも使える
+- AlphaGenome/Evo2/トランスクリプトーム等の連携を optional annotation にできる
+- `job_dir` の single-source invariant を壊さない
 
 ### Step 4: ScienceClaw / 細胞エージェント向け request schema を追加する
 

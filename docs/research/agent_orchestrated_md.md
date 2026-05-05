@@ -65,7 +65,7 @@ SNS で観測された議論:
 ### 3.1 `NODE_TYPES` 列挙 — `mdclaw/_node.py:36`
 
 ```python
-NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod"})
+NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze"})
 ```
 
 ここにない型は `create_node` が弾く（`_node.py:148-152`）。また型ごとのバリデーション
@@ -96,13 +96,19 @@ elif node_type == "prod":
 |---|---|
 | パラメータのバリエーション（温度、圧力、restraint） | **コード変更不要**（`conditions` に入れるだけ） |
 | 同じフローで変種を増やす | **コード変更不要**（既存型で分岐） |
-| 新しい**ステップ型**（analyze, fep_window） | `NODE_TYPES` + `resolve_node_inputs` に追記、新 tool 追加 |
+| 新しい**ステップ型**（fep_window など） | `NODE_TYPES` + `resolve_node_inputs` に追記、新 tool 追加 |
 | 新しい**データフロー形状**（多対一、横方向交換） | `find_ancestor_artifact`（単一祖先型を上に辿る BFS）の前提ごと書き直し |
 | 非 DAG 的な構造（REMD の相互交換） | DAG モデルを捨てる必要あり |
 
 ---
 
 ## 4. DAG 緩和の 5 Levels — 次の研究の足場
+
+補足（2026-05）: 複数 source / 複数 physical system を 1 つの `job_dir` に
+入れる方向ではなく、`job_dir` は single-source execution unit として維持し、
+optional な `study_dir` が複数 `job_dir` を束ねる方針に寄せる。これにより
+普通のMD研究での単純さを保ちながら、agentic campaign や AI for Science
+連携を上位レイヤで扱える。
 
 > **問い**: アーティファクト系譜 DAG の最小限の拡張で、FEP / REMD / アンサンブル解析 /
 > 適応的サンプリングをカバーできるか？ 制御フロー DAG に退化せずに。

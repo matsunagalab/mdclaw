@@ -147,6 +147,33 @@ One `job_dir` represents one physical system. Keep a single `source` root per
 job and use branching after `prep` to explore preparation, equilibration, and
 production variants.
 
+### Optional Study Directories
+
+For multi-system or campaign-level work, keep the per-system `job_dir`
+contract above and add an optional `study_dir` that indexes multiple jobs:
+
+```text
+study_mutation_screen/
+  study.json
+  decisions.jsonl             # optional cross-job decision log
+  question_history.jsonl      # optional question/revision history
+  token_ledger.jsonl          # optional LLM/token accounting
+  annotations/                # optional external model or user context
+  evidence/                   # optional study-level evidence reports
+  jobs/
+    wt/
+      progress.json
+      nodes/source_001/...
+    mut_v148a/
+      progress.json
+      nodes/source_001/...
+```
+
+Use `mdclaw init_study`, `mdclaw add_study_job`,
+`mdclaw record_study_decision`, and `mdclaw summarize_study` to maintain
+this layer. It is intentionally optional: ordinary one-system MD workflows do
+not need a `study_dir`.
+
 ### State Management
 
 - **Skills** decide what to run (orchestration only, no state mutation)

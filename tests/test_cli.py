@@ -719,5 +719,69 @@ class TestNodeCLIParameters:
         assert exc_info.value.code == 0
 
 
+class TestStudyAndEvidenceCLIParameters:
+    """Argparse-level guards for optional study/evidence tools."""
+
+    def test_init_study_accepts_metadata_json(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "init_study",
+            "--study-dir", "/tmp/study",
+            "--title", "screen",
+            "--metadata", '{"owner":"lab"}',
+        ])
+        assert args.study_dir == "/tmp/study"
+        assert args.title == "screen"
+        assert args.metadata == '{"owner":"lab"}'
+
+    def test_record_study_decision_accepts_list_args(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "record_study_decision",
+            "--study-dir", "/tmp/study",
+            "--phase", "plan",
+            "--decision", "run",
+            "--reason", "test",
+            "--inputs", "study.json", "progress.json",
+            "--outputs", "plan.json",
+        ])
+        assert args.inputs == ["study.json", "progress.json"]
+        assert args.outputs == ["plan.json"]
+
+    def test_generate_md_evidence_report_parses_target_json(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "generate_md_evidence_report",
+            "--job-dir", "/tmp/job",
+            "--target", '{"protein":"P12345"}',
+        ])
+        assert args.job_dir == "/tmp/job"
+        assert args.target == '{"protein":"P12345"}'
+
+    def test_init_study_end_to_end(self, tmp_path):
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "init_study",
+                "--study-dir", str(tmp_path / "study"),
+                "--title", "screen",
+            ])
+        assert exc_info.value.code == 0
+        assert (tmp_path / "study" / "study.json").is_file()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
