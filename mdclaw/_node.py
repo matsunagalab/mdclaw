@@ -45,8 +45,21 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 # ── Constants ──────────────────────────────────────────────────────────────
 
 NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze"})
+NODE_STATUSES = frozenset({"pending", "queued", "running", "completed", "failed"})
+NODE_STATUS_ALIASES = {
+    "submitted": "queued",
+}
 
 SCHEMA_VERSION = 3
+
+
+def _normalize_node_status(status: str) -> Optional[str]:
+    """Return a canonical node status, accepting a small compatibility alias set."""
+    if not isinstance(status, str):
+        return None
+    normalized = status.strip().lower()
+    normalized = NODE_STATUS_ALIASES.get(normalized, normalized)
+    return normalized if normalized in NODE_STATUSES else None
 
 _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "mol2",
@@ -691,8 +704,13 @@ def _apply_status(
     that status edits *cannot* hit one file without the other, and so
     the invariant is enforceable from a single function.
     """
+    canonical_status = _normalize_node_status(status)
+    if canonical_status is None:
+        raise ValueError(
+            f"Invalid node status {status!r}. Must be one of: {sorted(NODE_STATUSES)}"
+        )
     merged: dict = dict(payload or {})
-    merged["_status_write"] = status  # sentinel the node.json writer recognises
+    merged["_status_write"] = canonical_status  # sentinel the node.json writer recognises
     merged["updated_at"] = datetime.now(timezone.utc).isoformat()
 
     node_dir = Path(job_dir) / "nodes" / node_id
@@ -734,8 +752,36 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
     ``{"success": True, "node_id", "status"}`` so it can be exposed as
     a CLI tool.
     """
-    _apply_status(job_dir, node_id, status)
-    return {"success": True, "node_id": node_id, "status": status}
+    canonical_status = _normalize_node_status(status)
+    if canonical_status is None:
+        return {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "invalid_node_status",
+            "message": (
+                f"Invalid node status {status!r}. Must be one of: "
+                f"{sorted(NODE_STATUSES)}"
+            ),
+            "errors": [
+                f"status: Invalid node status {status!r}. Must be one of: "
+                f"{sorted(NODE_STATUSES)}"
+            ],
+            "warnings": [],
+            "hints": [
+                "Use one of the canonical statuses: pending, queued, running, completed, failed",
+                "The legacy status 'submitted' is accepted as an alias for 'queued'.",
+            ],
+            "context": {
+                "field": "status",
+                "actual": status,
+                "expected": sorted(NODE_STATUSES),
+                "aliases": NODE_STATUS_ALIASES,
+                "code": "invalid_node_status",
+            },
+            "recoverable": True,
+        }
+    _apply_status(job_dir, node_id, canonical_status)
+    return {"success": True, "node_id": node_id, "status": canonical_status}
 
 
 def claim_node(
@@ -1688,26 +1734,81 @@ def _load_json_artifact(value: Any, expected_type: type) -> Any:
     return None
 
 
+def _record_input_resolution_error(result: dict, error: str) -> None:
+    result.setdefault("input_resolution_errors", []).append(error)
+    result.setdefault("input_resolution_error", error)
+
+
+def _nearest_ancestor_artifact_or_error(
+    job_dir: str,
+    node_id: str,
+    ancestor_type: str,
+    artifact_key: str,
+):
+    """Resolve a required artifact from the nearest ancestor of a given type.
+
+    Unlike ``find_ancestor_artifact``, this helper does not walk past a nearest
+    same-type ancestor with a missing artifact. For required workflow inputs,
+    doing so can silently bind an older branch's artifact after a weak agent
+    created an incomplete nearer node.
+    """
+    ancestor_id = _find_ancestor_node_id(job_dir, node_id, ancestor_type)
+    if ancestor_id is None:
+        return None, None, None
+    value = _read_artifact_from_node(job_dir, ancestor_id, artifact_key)
+    if value is None:
+        return (
+            None,
+            ancestor_id,
+            f"Nearest {ancestor_type} ancestor '{ancestor_id}' is completed "
+            f"but missing required artifact '{artifact_key}' for '{node_id}'",
+        )
+    return value, ancestor_id, None
+
+
 def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     result: dict = {}
-    p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-    r7 = find_ancestor_artifact(job_dir, node_id, "topo", "rst7")
+    p7, topo_id, p7_error = _nearest_ancestor_artifact_or_error(
+        job_dir, node_id, "topo", "parm7"
+    )
+    r7, _, r7_error = _nearest_ancestor_artifact_or_error(
+        job_dir, node_id, "topo", "rst7"
+    )
+    for error in (p7_error, r7_error):
+        if error:
+            _record_input_resolution_error(result, error)
     if p7:
         result["prmtop_file"] = p7
     if r7:
         result["inpcrd_file"] = r7
+    if topo_id:
+        result["topology_resolved_from_node_id"] = topo_id
     return result
 
 
 def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
     result: dict = {}
-    v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
-    if v:
-        result["pdb_file"] = v
-    else:
-        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+    solv_anc = _find_ancestor_node_id(job_dir, node_id, "solv")
+    if solv_anc is not None:
+        v = _read_artifact_from_node(job_dir, solv_anc, "solvated_pdb")
         if v:
             result["pdb_file"] = v
+            result["pdb_resolved_from_node_id"] = solv_anc
+        else:
+            _record_input_resolution_error(
+                result,
+                f"Nearest solv ancestor '{solv_anc}' is completed but missing "
+                f"required artifact 'solvated_pdb' for '{node_id}'",
+            )
+    else:
+        v, prep_id, error = _nearest_ancestor_artifact_or_error(
+            job_dir, node_id, "prep", "merged_pdb"
+        )
+        if error:
+            _record_input_resolution_error(result, error)
+        if v:
+            result["pdb_file"] = v
+            result["pdb_resolved_from_node_id"] = prep_id
 
     for result_key, artifact_key in (
         ("ligand_params", "ligand_params"),
@@ -1733,7 +1834,6 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
     if loaded_box is not None:
         result["box_dimensions"] = loaded_box
 
-    solv_anc = _find_ancestor_node_id(job_dir, node_id, "solv")
     if solv_anc is not None:
         is_membrane = _read_metadata_field(job_dir, solv_anc, "is_membrane")
         if isinstance(is_membrane, bool):
@@ -1830,16 +1930,24 @@ def resolve_node_inputs(
                 if nodes_index.get(nid, {}).get("type") == "source"
             ]
             if len(source_ancestors) == 1:
-                v = find_ancestor_artifact(
+                v, source_id, error = _nearest_ancestor_artifact_or_error(
                     job_dir, node_id, "source", "structure_file"
                 )
+                if error:
+                    _record_input_resolution_error(result, error)
                 if v:
                     result["structure_file"] = v
+                    result["structure_resolved_from_node_id"] = source_id
 
     elif node_type == "solv":
-        v = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
+        v, prep_id, error = _nearest_ancestor_artifact_or_error(
+            job_dir, node_id, "prep", "merged_pdb"
+        )
+        if error:
+            _record_input_resolution_error(result, error)
         if v:
             result["pdb_file"] = v
+            result["pdb_resolved_from_node_id"] = prep_id
 
     elif node_type == "topo":
         result.update(_resolve_topo_inputs(job_dir, node_id))

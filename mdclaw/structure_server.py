@@ -31,13 +31,14 @@ from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
-    guess_pdb_element,
-    classify_glycan_residues,
-    ensure_directory,
-    create_unique_subdir,
-    generate_job_id,
-    is_glycan_residue_name,
     BaseToolWrapper,
+    classify_glycan_residues,
+    create_unique_subdir,
+    create_validation_error,
+    ensure_directory,
+    generate_job_id,
+    guess_pdb_element,
+    is_glycan_residue_name,
 )
 from mdclaw.research_server import classify_nucleic_residues  # noqa: E402
 
@@ -4593,14 +4594,18 @@ def _resolve_prepare_node_structure_file(
     job_dir: Optional[str],
     node_id: Optional[str],
     structure_file: Optional[str],
-) -> Optional[str]:
+) -> dict:
     """Resolve prep input structure from the DAG when not provided explicitly."""
     if not (job_dir and node_id) or structure_file:
-        return structure_file
+        return {"structure_file": structure_file}
     from mdclaw._node import resolve_node_inputs
 
     inputs = resolve_node_inputs(job_dir, node_id, "prep")
-    return inputs.get("structure_file", structure_file)
+    return {
+        "structure_file": inputs.get("structure_file", structure_file),
+        "input_resolution_error": inputs.get("input_resolution_error"),
+        "input_resolution_errors": inputs.get("input_resolution_errors", []),
+    }
 
 
 def _validate_prepare_node_context(
@@ -4803,15 +4808,31 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['mol2_file']}")
     """
-    structure_file = _resolve_prepare_node_structure_file(
+    _resolved_structure = _resolve_prepare_node_structure_file(
         job_dir, node_id, structure_file
     )
+    structure_file = _resolved_structure["structure_file"]
 
     logger.info(f"Preparing complex: {structure_file}")
 
     # Initialize result structure
     job_id = generate_job_id()
     result = _prepare_complex_initial_result(job_id, structure_file)
+
+    if _resolved_structure.get("input_resolution_error"):
+        return {
+            **result,
+            **create_validation_error(
+                "job_dir/node_id",
+                _resolved_structure["input_resolution_error"],
+                expected="Completed source ancestor with structure_file artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _resolved_structure.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            ),
+        }
 
     if job_dir and node_id:
         _ctx = _validate_prepare_node_context(
@@ -4834,11 +4855,17 @@ def prepare_complex(
             return {"success": False, "error_type": "ValidationError", **_ctx}
 
     if not structure_file:
-        result["errors"].append(
-            "structure_file is required (or pass --job-dir/--node-id with a "
-            "source ancestor that provides it)"
-        )
-        return result
+        return {
+            **result,
+            **create_validation_error(
+                "structure_file",
+                "structure_file is required",
+                expected="Explicit structure path, or --job-dir/--node-id with a source ancestor",
+                actual=structure_file,
+                hints=["Run fetch_structure first or execute in node mode from a prep node."],
+                code="missing_structure_file",
+            ),
+        }
 
     # Validate input file
     structure_path = Path(structure_file)

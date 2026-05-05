@@ -30,6 +30,7 @@ import httpx
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import (  # noqa: E402
     classify_glycan_residues,
+    create_validation_error,
     ensure_directory,
     sha256_file,
     setup_logger,
@@ -2138,24 +2139,27 @@ async def fetch_structure(
     """
     normalized_source = source.lower().strip() if isinstance(source, str) else ""
     if normalized_source not in {"pdb", "alphafold", "local"}:
-        return {
-            "success": False,
-            "source": source,
-            "errors": [
-                "Invalid source: "
-                f"{source!r}. Valid sources are: pdb, alphafold, local"
-            ],
-            "warnings": [],
-        }
+        err = create_validation_error(
+            "source",
+            f"Invalid source: {source!r}",
+            expected="One of: pdb, alphafold, local",
+            actual=source,
+            code="invalid_source",
+        )
+        err["source"] = source
+        return err
 
     if normalized_source == "pdb":
         if not pdb_id:
-            return {
-                "success": False,
-                "source": "pdb",
-                "errors": ["pdb_id is required when source='pdb'"],
-                "warnings": [],
-            }
+            err = create_validation_error(
+                "pdb_id",
+                "pdb_id is required when source='pdb'",
+                expected="4-character PDB ID",
+                actual=pdb_id,
+                code="missing_pdb_id",
+            )
+            err["source"] = "pdb"
+            return err
         result = await _fetch_pdb_structure(
             pdb_id=pdb_id,
             format=format,
@@ -2168,12 +2172,15 @@ async def fetch_structure(
 
     if normalized_source == "alphafold":
         if not uniprot_id:
-            return {
-                "success": False,
-                "source": "alphafold",
-                "errors": ["uniprot_id is required when source='alphafold'"],
-                "warnings": [],
-            }
+            err = create_validation_error(
+                "uniprot_id",
+                "uniprot_id is required when source='alphafold'",
+                expected="UniProt accession",
+                actual=uniprot_id,
+                code="missing_uniprot_id",
+            )
+            err["source"] = "alphafold"
+            return err
         result = await _fetch_alphafold_structure(
             uniprot_id=uniprot_id,
             format=format,
@@ -2185,22 +2192,25 @@ async def fetch_structure(
         return result
 
     if not file_path:
-        return {
-            "success": False,
-            "source": "local",
-            "errors": ["file_path is required when source='local'"],
-            "warnings": [],
-        }
+        err = create_validation_error(
+            "file_path",
+            "file_path is required when source='local'",
+            expected="Path to an existing local structure file",
+            actual=file_path,
+            code="missing_local_file_path",
+        )
+        err["source"] = "local"
+        return err
     if not (job_dir and node_id):
-        return {
-            "success": False,
-            "source": "local",
-            "errors": [
-                "Local structure fetch requires both job_dir and node_id so "
-                "the file can be recorded under a source node"
-            ],
-            "warnings": [],
-        }
+        err = create_validation_error(
+            "job_dir/node_id",
+            "Local structure fetch requires both job_dir and node_id so the file can be recorded under a source node",
+            expected="Both job_dir and node_id",
+            actual=f"job_dir={job_dir!r}, node_id={node_id!r}",
+            code="missing_node_context",
+        )
+        err["source"] = "local"
+        return err
     result = _fetch_local_structure(
         file_path=file_path,
         job_dir=job_dir,

@@ -453,6 +453,7 @@ def create_validation_error(
     hints: Optional[list[str]] = None,
     context_extra: Optional[dict[str, Any]] = None,
     warnings: Optional[list[str]] = None,
+    code: Optional[str] = None,
 ) -> dict:
     """Standardized validation error dict."""
     error_hints = [f"Check the '{field}' parameter"]
@@ -463,9 +464,11 @@ def create_validation_error(
     if hints:
         error_hints.extend(hints)
     context = {"field": field, "expected": expected, "actual": actual}
+    if code:
+        context["code"] = code
     if context_extra:
         context.update(context_extra)
-    return {
+    error = {
         "success": False, "error_type": "ValidationError",
         "message": f"Validation failed for '{field}': {message}",
         "hints": _dedupe_strings(error_hints),
@@ -474,6 +477,9 @@ def create_validation_error(
         "errors": [f"{field}: {message}"],
         "warnings": warnings or [],
     }
+    if code:
+        error["code"] = code
+    return error
 
 
 def create_validation_error_from_guardrails(
@@ -509,6 +515,7 @@ def create_validation_error_from_guardrails(
         hints=_dedupe_strings(hint_items),
         context_extra={"guardrail_results": results},
         warnings=guardrail_messages(warnings),
+        code=blocking[0].get("code"),
     )
 
 

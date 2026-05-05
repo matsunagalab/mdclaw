@@ -309,6 +309,52 @@ def _run_tool(fn, is_async: bool, kwargs: dict):
     return fn(**kwargs)
 
 
+def _cli_validation_error(
+    field: str,
+    message: str,
+    *,
+    code: str,
+    actual: str | None = None,
+    expected: str | None = None,
+) -> dict:
+    context = {"field": field, "actual": actual, "expected": expected, "code": code}
+    hints = [f"Check the '{field}' parameter"]
+    if expected:
+        hints.append(f"Expected: {expected}")
+    return {
+        "success": False,
+        "error_type": "ValidationError",
+        "code": code,
+        "message": f"Validation failed for '{field}': {message}",
+        "hints": hints,
+        "context": context,
+        "recoverable": True,
+        "errors": [f"{field}: {message}"],
+        "warnings": [],
+    }
+
+
+def _json_error_and_exit(error: dict) -> None:
+    json.dump(error, sys.stdout, indent=2, default=str)
+    print()
+    sys.exit(1)
+
+
+def _load_json_cli(value: str, field: str):
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError as e:
+        _json_error_and_exit(
+            _cli_validation_error(
+                field,
+                f"Invalid JSON: {e.msg}",
+                code="invalid_json_input",
+                actual=value,
+                expected="Valid JSON object or array as required by the argument",
+            )
+        )
+
+
 # ---------------------------------------------------------------------------
 # --list output
 # ---------------------------------------------------------------------------
@@ -386,7 +432,7 @@ def main(argv: list[str] | None = None) -> None:
 
     # Build kwargs
     if args.json_input:
-        kwargs = json.loads(args.json_input)
+        kwargs = _load_json_cli(args.json_input, "--json-input")
     else:
         sig = inspect.signature(fn)
         hints = {}
@@ -419,7 +465,7 @@ def main(argv: list[str] | None = None) -> None:
             if value is None:
                 continue
             if _takes_json(_unwrap_optional(hint)[0]) and isinstance(value, str):
-                value = json.loads(value)
+                value = _load_json_cli(value, f"--{pname.replace('_', '-')}")
             kwargs[pname] = value
 
         if missing:
@@ -468,6 +514,7 @@ def main(argv: list[str] | None = None) -> None:
             "success": False,
             "error": str(e),
             "error_type": type(e).__name__,
+            "code": "unhandled_exception",
         }
         json.dump(error_out, sys.stdout, indent=2, default=str)
         print()

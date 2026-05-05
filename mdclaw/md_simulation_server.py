@@ -22,7 +22,13 @@ from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, sha256_file  # noqa: E402
+from mdclaw._common import (  # noqa: E402
+    create_unique_subdir,
+    create_validation_error,
+    ensure_directory,
+    generate_job_id,
+    sha256_file,
+)
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -456,6 +462,17 @@ def run_equilibration(
     if job_dir and node_id:
         from mdclaw._node import resolve_node_inputs, validate_node_execution_context
         _inputs = resolve_node_inputs(job_dir, node_id, "eq")
+        if "input_resolution_error" in _inputs:
+            return create_validation_error(
+                "job_dir/node_id",
+                _inputs["input_resolution_error"],
+                expected="Completed topo ancestor with parm7/rst7 artifacts",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _inputs.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            )
         if not prmtop_file and "prmtop_file" in _inputs:
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
@@ -486,7 +503,14 @@ def run_equilibration(
             return {"success": False, "error_type": "ValidationError", **_ctx}
 
     if not prmtop_file or not inpcrd_file:
-        return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
+        return create_validation_error(
+            "prmtop_file/inpcrd_file",
+            "prmtop_file and inpcrd_file are required",
+            expected="Explicit topology paths, or --job-dir/--node-id for DAG auto-resolve",
+            actual=f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}",
+            hints=["Run build_amber_system first or execute in node mode from an eq node."],
+            code="missing_topology_inputs",
+        )
 
     logger.info(f"Starting equilibration at {temperature_kelvin}K")
 
@@ -1199,13 +1223,28 @@ def run_production(
             from mdclaw._node import begin_node, fail_node
             begin_node(job_dir, node_id)
             fail_node(job_dir, node_id, errors=[err])
-            return {"success": False, "errors": [err]}
+            return create_validation_error(
+                "restart_from",
+                err,
+                expected="Completed continue_from prod node with state or checkpoint artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                code="restart_from_unavailable",
+            )
         if "input_resolution_error" in _inputs:
             err = _inputs["input_resolution_error"]
             from mdclaw._node import begin_node, fail_node
             begin_node(job_dir, node_id)
             fail_node(job_dir, node_id, errors=[err])
-            return {"success": False, "errors": [err]}
+            return create_validation_error(
+                "job_dir/node_id",
+                err,
+                expected="Completed topo and restart ancestors with required artifacts",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _inputs.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            )
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,
@@ -1235,7 +1274,14 @@ def run_production(
             restart_from = _inputs["restart_from"]
 
     if not prmtop_file or not inpcrd_file:
-        return {"success": False, "errors": ["prmtop_file and inpcrd_file are required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
+        return create_validation_error(
+            "prmtop_file/inpcrd_file",
+            "prmtop_file and inpcrd_file are required",
+            expected="Explicit topology paths, or --job-dir/--node-id for DAG auto-resolve",
+            actual=f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}",
+            hints=["Run build_amber_system and run_equilibration first or execute in node mode from a prod node."],
+            code="missing_topology_inputs",
+        )
 
     logger.info(f"Starting MD simulation: {simulation_time_ns}ns at {temperature_kelvin}K")
 

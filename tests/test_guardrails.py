@@ -21,6 +21,7 @@ from mdclaw.metal_server import (
 from mdclaw.md_simulation_server import (
     _effective_pressure_bar,
     _signature_mismatches,
+    run_equilibration,
 )
 from mdclaw.slurm_server import _validate_against_policy
 from mdclaw.solvation_server import (
@@ -57,6 +58,8 @@ def test_build_amber_system_blocks_ff19sb_tip3p():
 
     assert result["success"] is False
     assert result["error_type"] == "ValidationError"
+    assert result["code"] == "forcefield_water_blocked"
+    assert result["context"]["guardrail_results"][0]["code"] == "forcefield_water_blocked"
     assert "ff19SB + tip3p" in result["message"]
     assert any("forcefield='ff14SB' with water_model='tip3p'" in hint for hint in result["hints"])
 
@@ -73,6 +76,18 @@ def test_build_amber_system_rejects_unknown_water_model_even_without_box_dimensi
     assert "Unknown water model" in result["message"]
 
 
+def test_workflow_missing_inputs_are_structured():
+    solvate = solvate_structure(pdb_file=None)
+    assert solvate["success"] is False
+    assert solvate["error_type"] == "ValidationError"
+    assert solvate["code"] == "missing_pdb_file"
+
+    eq = run_equilibration(prmtop_file=None, inpcrd_file=None)
+    assert eq["success"] is False
+    assert eq["error_type"] == "ValidationError"
+    assert eq["code"] == "missing_topology_inputs"
+
+
 def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):
     job_dir = tmp_path / "job_explicit"
     update_job_params(str(job_dir), {"solvation_type": "explicit"})
@@ -87,6 +102,29 @@ def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):
 
     assert result["success"] is False
     assert result["code"] == "explicit_solvent_box_dimensions_missing"
+
+
+def test_build_amber_system_phospho_forcefield_unsupported_has_code(tmp_path):
+    pdb_file = tmp_path / "phospho.pdb"
+    pdb_file.write_text(
+        "ATOM      1  N   SEP A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+        "ATOM      2  CA  SEP A   1      12.104  13.207  12.011  1.00 20.00           C\n"
+        "ATOM      3  C   SEP A   1      13.104  13.207  12.011  1.00 20.00           C\n"
+        "ATOM      4  O   SEP A   1      14.104  13.207  12.011  1.00 20.00           O\n"
+        "ATOM      5  OG  SEP A   1      12.104  14.207  12.011  1.00 20.00           O\n"
+        "END\n"
+    )
+
+    with patch.dict("mdclaw.amber_server.PHOSAA_LIBRARY_FOR_FF", {}, clear=True):
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            forcefield="ff14SB",
+            water_model="tip3p",
+        )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert result["code"] == "phospho_forcefield_unsupported"
 
 
 def test_forcefield_guardrail_warning_for_ff19sb_opc3():

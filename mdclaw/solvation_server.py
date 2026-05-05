@@ -599,11 +599,29 @@ def solvate_structure(
     if job_dir and node_id and not pdb_file:
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "solv")
+        if "input_resolution_error" in _inputs:
+            return create_validation_error(
+                "job_dir/node_id",
+                _inputs["input_resolution_error"],
+                expected="Completed prep ancestor with merged_pdb artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _inputs.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            )
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
 
     if not pdb_file:
-        return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
+        return create_validation_error(
+            "pdb_file",
+            "pdb_file is required",
+            expected="Explicit PDB path, or --job-dir/--node-id for DAG auto-resolve",
+            actual=pdb_file,
+            hints=["Run prepare_complex first or execute in node mode from a solv node."],
+            code="missing_pdb_file",
+        )
 
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()

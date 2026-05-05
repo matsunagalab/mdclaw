@@ -1794,6 +1794,17 @@ def _resolve_build_amber_node_inputs(
         return {"success": False, "error_type": "ValidationError", **ctx}
 
     inputs = resolve_node_inputs(job_dir, node_id, "topo")
+    if "input_resolution_error" in inputs:
+        return create_validation_error(
+            "job_dir/node_id",
+            inputs["input_resolution_error"],
+            expected="Completed solv/prep ancestor with topology input artifacts",
+            actual=f"job_dir={job_dir}, node_id={node_id}",
+            context_extra={
+                "input_resolution_errors": inputs.get("input_resolution_errors", []),
+            },
+            code="input_resolution_blocked",
+        )
     return {
         "success": True,
         "pdb_file": pdb_file or inputs.get("pdb_file"),
@@ -1962,7 +1973,14 @@ def build_amber_system(
         is_membrane = False
 
     if not pdb_file:
-        return {"success": False, "errors": ["pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"]}
+        return create_validation_error(
+            "pdb_file",
+            "pdb_file is required",
+            expected="Explicit PDB path, or --job-dir/--node-id for DAG auto-resolve",
+            actual=pdb_file,
+            hints=["Run solvate_structure first for explicit solvent, or prepare_complex for implicit topology."],
+            code="missing_pdb_file",
+        )
 
     logger.info(f"Building Amber system from: {pdb_file}")
 

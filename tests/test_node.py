@@ -552,13 +552,13 @@ class TestUpdateNodeStatusTool:
         create_node(str(job_dir), "prep")
         result = update_node_status(str(job_dir), "prep_001", "submitted")
         assert result == {"success": True, "node_id": "prep_001",
-                          "status": "submitted"}
+                          "status": "queued"}
 
         node = read_node(str(job_dir), "prep_001")
-        assert node["status"] == "submitted"
+        assert node["status"] == "queued"
 
         pj = json.loads((job_dir / "progress.json").read_text())
-        assert pj["nodes"]["prep_001"]["status"] == "submitted"
+        assert pj["nodes"]["prep_001"]["status"] == "queued"
 
     def test_bumps_updated_at(self, job_dir):
         create_node(str(job_dir), "prep")
@@ -579,8 +579,21 @@ class TestUpdateNodeStatusTool:
             update_node_status(str(job_dir), "prod_001", status)
             node = read_node(str(job_dir), "prod_001")
             pj = json.loads((job_dir / "progress.json").read_text())
-            assert node["status"] == status
-            assert pj["nodes"]["prod_001"]["status"] == status
+            expected = "queued" if status == "submitted" else status
+            assert node["status"] == expected
+            assert pj["nodes"]["prod_001"]["status"] == expected
+
+    def test_rejects_invalid_status_without_mutating_node(self, job_dir):
+        create_node(str(job_dir), "prep")
+
+        result = update_node_status(str(job_dir), "prep_001", "done")
+
+        assert result["success"] is False
+        assert result["code"] == "invalid_node_status"
+        node = read_node(str(job_dir), "prep_001")
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert node["status"] == "pending"
+        assert pj["nodes"]["prep_001"]["status"] == "pending"
 
     def test_unknown_node_raises(self, job_dir):
         create_node(str(job_dir), "prep")
@@ -1222,6 +1235,29 @@ class TestDAGAutoResolve:
         assert "input_resolution_error" in inputs
         assert "prep_001" in inputs["input_resolution_error"]
         assert "pending" in inputs["input_resolution_error"]
+
+    def test_resolve_node_inputs_does_not_skip_nearest_completed_prep_missing_artifact(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd,
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "prep", parent_node_ids=["prep_001"])
+        complete_node(
+            jd,
+            "prep_002",
+            artifacts={"audit": "artifacts/audit.json"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_002"])
+
+        inputs = resolve_node_inputs(jd, "solv_001", "solv")
+
+        assert "pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "prep_002" in inputs["input_resolution_error"]
+        assert "merged_pdb" in inputs["input_resolution_error"]
 
     def test_resolve_node_inputs_blocks_failed_parent_with_artifacts(self, job_dir):
         jd = str(job_dir)

@@ -5,6 +5,7 @@ Tests validate tool discovery, argparse construction, parameter coercion,
 and CLI subcommand output.
 """
 
+import json
 import subprocess
 import sys
 from importlib.util import find_spec
@@ -205,6 +206,35 @@ class TestArgparseConstruction:
         json_str = '{"pdb_file": "test.pdb", "water_model": "opc"}'
         args = parser.parse_args(["solvate_structure", "--json-input", json_str])
         assert args.json_input == json_str
+
+    def test_invalid_json_input_returns_structured_json(self, capsys):
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["solvate_structure", "--json-input", "{bad"])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is False
+        assert payload["error_type"] == "ValidationError"
+        assert payload["code"] == "invalid_json_input"
+        assert payload["context"]["field"] == "--json-input"
+
+    def test_invalid_json_typed_argument_returns_structured_json(self, capsys, tmp_path):
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_job_params",
+                "--job-dir", str(tmp_path),
+                "--params", "{bad",
+            ])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is False
+        assert payload["code"] == "invalid_json_input"
+        assert payload["context"]["field"] == "--params"
 
     def test_list_flag(self):
         from mdclaw._cli import _build_parser, _discover_tools
@@ -657,8 +687,8 @@ class TestNodeCLIParameters:
             (tmp_path / "nodes" / "prod_001" / "node.json").read_text()
         )
         progress = json.loads((tmp_path / "progress.json").read_text())
-        assert node["status"] == "submitted"
-        assert progress["nodes"]["prod_001"]["status"] == "submitted"
+        assert node["status"] == "queued"
+        assert progress["nodes"]["prod_001"]["status"] == "queued"
 
     def test_update_job_params_accepts_json_dict(self):
         from mdclaw._cli import _build_parser, _discover_tools
