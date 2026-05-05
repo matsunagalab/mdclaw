@@ -149,6 +149,24 @@ def test_detect_equilibration_direct_selects_2d_npy_column(tmp_path):
     assert report["column_index"] == 1
 
 
+def test_detect_equilibration_node_validation_failure_marks_failed(tmp_path):
+    job_dir = tmp_path / "job"
+    _make_analysis_node(job_dir)
+
+    result = detect_equilibration(
+        job_dir=str(job_dir),
+        node_id="analyze_001",
+        timeseries_file=None,
+    )
+
+    assert result["success"] is False
+    node = json.loads((job_dir / "nodes" / "analyze_001" / "node.json").read_text())
+    assert node["status"] == "failed"
+    assert "timeseries_file" in node["metadata"]["errors"][0]
+    progress = json.loads((job_dir / "progress.json").read_text())
+    assert progress["nodes"]["analyze_001"]["status"] == "failed"
+
+
 @pytest.fixture
 def tiny_mdtraj_inputs(tmp_path, alanine_dipeptide_pdb):
     md = pytest.importorskip("mdtraj")

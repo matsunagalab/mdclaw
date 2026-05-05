@@ -534,13 +534,22 @@ def detect_equilibration(
     }
     node_mode = bool(job_dir and node_id)
 
+    def _validation_failure(field: str, message: str) -> dict:
+        validation = create_validation_error(field, message)
+        if node_mode:
+            from mdclaw._node import begin_node, fail_node
+
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=validation["errors"])
+        return validation
+
     if not timeseries_file:
-        return create_validation_error(
+        return _validation_failure(
             "timeseries_file",
             "timeseries_file is required and must point to a .npy or .csv scalar timeseries",
         )
     if nskip <= 0:
-        return create_validation_error("nskip", "nskip must be a positive integer")
+        return _validation_failure("nskip", "nskip must be a positive integer")
 
     if _out_dir_override is not None:
         out_dir = ensure_directory(Path(_out_dir_override))
