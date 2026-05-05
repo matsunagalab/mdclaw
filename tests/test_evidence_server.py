@@ -4,6 +4,7 @@ import json
 
 from mdclaw.evidence_server import (
     generate_md_evidence_report,
+    generate_md_methods_report,
     generate_study_evidence_report,
 )
 
@@ -75,6 +76,97 @@ def test_generate_md_evidence_report_includes_analyze_metrics(tmp_path):
     assert analyze_metrics["node_id"] == "analyze_001"
     assert analyze_metrics["metrics"]["mean_rmsd_nm"] == 0.25
     assert result["report"]["status"] == "complete"
+
+
+def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
+    from mdclaw._node import complete_node, create_node
+
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "source")
+    _write_artifact(job_dir, "source_001", "artifacts/4M3J.pdb")
+    complete_node(
+        str(job_dir),
+        "source_001",
+        artifacts={"structure_file": "artifacts/4M3J.pdb"},
+        metadata={"source_type": "pdb", "source_id": "4M3J", "chains": ["A"]},
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+    _write_artifact(job_dir, "prep_001", "artifacts/merged.pdb")
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merged.pdb"},
+        metadata={"protonation_method": "pdb2pqr+propka", "protonation_ph": 7.4},
+    )
+    create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+    _write_artifact(job_dir, "solv_001", "artifacts/solvated.pdb")
+    complete_node(
+        str(job_dir),
+        "solv_001",
+        artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+        metadata={"water_model": "opc", "box_shape": "cubic", "buffer_distance_angstrom": 15.0},
+    )
+    create_node(str(job_dir), "topo", parent_node_ids=["solv_001"])
+    _write_artifact(job_dir, "topo_001", "artifacts/system.parm7")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.rst7")
+    complete_node(
+        str(job_dir),
+        "topo_001",
+        artifacts={"prmtop": "artifacts/system.parm7", "inpcrd": "artifacts/system.rst7"},
+        metadata={"forcefield": "ff19SB", "water_model": "opc"},
+    )
+    create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+    _write_artifact(job_dir, "eq_001", "artifacts/equilibration.xml")
+    complete_node(
+        str(job_dir),
+        "eq_001",
+        artifacts={"state_file": "artifacts/equilibration.xml"},
+        metadata={
+            "temperature_kelvin": 300.0,
+            "pressure_bar": 1.0,
+            "nvt_steps": 100,
+            "npt_steps": 200,
+        },
+    )
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
+    _write_artifact(job_dir, "prod_001", "artifacts/energy.dat")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"trajectory": "artifacts/trajectory.dcd", "energy": "artifacts/energy.dat"},
+        metadata={
+            "simulation_time_ns": 1.0,
+            "temperature_kelvin": 300.0,
+            "timestep_fs": 4.0,
+            "output_frequency_ps": 10.0,
+            "hmr": True,
+            "platform": "CPU",
+        },
+    )
+
+    result = generate_md_methods_report(str(job_dir))
+
+    assert result["success"] is True
+    assert result["terminal_node_id"] == "prod_001"
+    assert result["lineage"] == [
+        "source_001",
+        "prep_001",
+        "solv_001",
+        "topo_001",
+        "eq_001",
+        "prod_001",
+    ]
+    assert result["facts"]["source_description"] == "RCSB PDB entry 4M3J"
+    assert "OpenMM" in result["methods_paragraphs"][2]
+    assert "Eastman2024OpenMM8" in result["citation_keys"]
+
+    methods_file = job_dir / "evidence" / "mdclaw_methods_job_prod_001.md"
+    assert methods_file.is_file()
+    markdown = methods_file.read_text()
+    assert "## Methods Draft" in markdown
+    assert "```mermaid" in markdown
+    assert "```bibtex" in markdown
 
 
 def test_generate_study_evidence_report(tmp_path):
