@@ -105,6 +105,27 @@ The runner appends durable records to:
 - `benchmark_runs/runs.jsonl`
 - `benchmark_runs/summaries.jsonl`
 
+## Using The Agent Skill
+
+Claude Code and Cursor users can start from the benchmark skill:
+
+```text
+/mdclaw:md-benchmark run a smoke evaluation for exec_short_protein_md
+```
+
+The skill keeps the evaluated-agent and scorer roles separate. While producing
+a task submission, the agent should read `task.json` and input files only; it
+should not read the task's `truth/` or `scorer/` directories before writing
+`submission/`. After artifacts are produced, use `validate_benchmark_submission`,
+`score_benchmark_submission`, and `summarize_benchmark_run` to validate, score,
+and aggregate results.
+
+Good first smoke tasks are:
+
+- `exec_short_protein_md`, for execution metrics such as completion, finite
+  energy, and no NaN values.
+- `prep_guardrail_bad_ligand`, for structured-failure and guardrail reporting.
+
 ## Structured LLM Judge
 
 Human judges are not part of the benchmark. If qualitative judging is enabled,

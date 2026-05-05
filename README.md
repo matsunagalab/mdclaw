@@ -46,6 +46,7 @@ The session-start hook downloads the container automatically:
 | `/mdclaw:md-production` | Production MD (NPT/NVT, HMR, checkpoint restart) |
 | `/mdclaw:md-analyze` | RMSD, RMSF, energy, hydrogen bonds |
 | `/mdclaw:hpc-run` | SLURM job submission, monitoring, restart |
+| `/mdclaw:md-benchmark` | MDAgentBench task submission, scoring, and run summaries |
 
 ### Examples
 
