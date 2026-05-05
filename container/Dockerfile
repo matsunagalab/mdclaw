@@ -40,6 +40,12 @@ FROM --platform=linux/amd64 condaforge/mambaforge:latest AS conda-base
 
 WORKDIR /build
 
+# C++ toolchain for source-built pip dependencies (e.g. py_FASPR).
+# Stays in stage 1 only — conda-pack copies just /opt/mdclaw to later stages.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends build-essential && \
+    rm -rf /var/lib/apt/lists/*
+
 # Copy environment definition and project files
 COPY environment.yml pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
