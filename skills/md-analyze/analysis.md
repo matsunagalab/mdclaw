@@ -1,85 +1,33 @@
-# Trajectory Analysis
+# Trajectory Analysis Reference
 
-## Prerequisites
+Use this page only as a short reference. The workflow entry point is
+`skills/md-analyze/SKILL.md`, which creates `analyze` nodes and lets the
+tools resolve trajectory/topology inputs from the DAG.
 
-Ensure these files exist (from `md-production`):
-- `parm7` — Amber topology file
-- `trajectory` — Trajectory file (DCD or similar)
-
-Read `progress.json` in the job directory to find completed `prod` nodes.
-Read `nodes/<prod_id>/node.json` to find the trajectory path under
-`artifacts.trajectory`, then walk ancestors to the relevant `topo` node
-to find `system.parm7`.
-
----
-
-## Available Analyses
+## Implemented Tools
 
 ```bash
-# RMSD — backbone deviation from starting structure
-mdclaw analyze_rmsd --trajectory-file <traj> --parm-file <parm7>
+# Combine a production lineage into one compact trajectory.
+mdclaw --job-dir <job_dir> --node-id analyze_001 concat_trajectory
 
-# RMSF — per-residue fluctuations
-mdclaw analyze_rmsf --trajectory-file <traj> --parm-file <parm7>
+# Align frames for visualization or dimensional-reduction inputs.
+mdclaw --job-dir <job_dir> --node-id analyze_002 fit_trajectory
 
-# Hydrogen bonds
-mdclaw analyze_hydrogen_bonds --trajectory-file <traj> --parm-file <parm7>
+# RMSD on a combined or fitted analyze node.
+mdclaw --job-dir <job_dir> --node-id analyze_003 analyze_rmsd
 
-# Secondary structure
-mdclaw analyze_secondary_structure --trajectory-file <traj> --parm-file <parm7>
+# Atom-pair or group distance time series.
+mdclaw --job-dir <job_dir> --node-id analyze_004 analyze_distance
 
-# Contact analysis
-mdclaw analyze_contacts --trajectory-file <traj> --parm-file <parm7>
-
-# Distance between atoms/residues
-mdclaw calculate_distance --trajectory-file <traj> --parm-file <parm7>
-
-# Energy timeseries
-mdclaw analyze_energy_timeseries --trajectory-file <traj> --parm-file <parm7>
-
-# Native contact fraction (Q-value)
-mdclaw compute_q_value --trajectory-file <traj> --parm-file <parm7>
+# Native contact fraction.
+mdclaw --job-dir <job_dir> --node-id analyze_005 analyze_q_value
 ```
 
----
+## Interpretation Hints
 
-## Interpretation Guide
-
-### RMSD
-- < 2 A: stable
-- 2-4 A: moderate conformational change
-- \> 4 A: large-scale rearrangement or instability
-
-### RMSF
-- Loops: typically 2-5 A
-- Core: typically < 1 A
-
-### Energy
-- Potential energy should plateau after equilibration
-- Kinetic energy reflects temperature control
-- No sudden energy jumps = good sign
-
----
-
-## Quality Indicators
-
-### Good Simulation
-- RMSD plateaus within a few ns
-- Temperature fluctuates around target (300 +/- 5 K)
-- Density stable around 1.0 g/cm3 (explicit water, NPT)
-
-### Warning Signs
-- RMSD continuously increasing → not equilibrated
-- Large energy spikes → clashes or bad parameters
-- Temperature drift → thermostat issues
-- Box volume changing dramatically → barostat issues
-
----
-
-## Reporting
-
-Summarize results for the user:
-1. System overview (atoms, box size, simulation time)
-2. Stability metrics (RMSD, energy)
-3. Key observations (flexible regions, ligand contacts)
-4. Recommendations (extend simulation, adjust parameters, etc.)
+- RMSD plateaus usually indicate a stable sampled basin; continuous drift
+  suggests the system may need longer equilibration or a longer trajectory.
+- Energy, temperature, volume, and density should be read from the production
+  `energy.dat` lineage or the combined energy artifact when available.
+- Treat analysis thresholds as system-dependent. Report the observed trend and
+  the exact selection/stride used rather than relying on fixed cutoffs.

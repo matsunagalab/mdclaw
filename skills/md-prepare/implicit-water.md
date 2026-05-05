@@ -4,6 +4,8 @@ Implicit solvent models represent water as a continuum dielectric instead of exp
 
 ## Decision Defaults
 
+Quick reference only; Python tool signatures and guardrails are authoritative.
+
 | Parameter | Default | User Cues |
 |---|---|---|
 | GB model | GBn2 (igb=8) | "obc", "obc2", "hct" |

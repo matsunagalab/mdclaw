@@ -52,14 +52,8 @@ use `--simulation-time-ns 0.1` as the default sanity check.
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
 
 `prmtop_file`, `inpcrd_file`, and `restart_from` auto-resolve from DAG
-ancestors. Topology comes from the `topo` ancestor. The checkpoint rule
-depends on how the prod node was created:
-
-- **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
-  `checkpoint.chk` (no fallback; missing checkpoint = hard error).
-- **plain `--parent-node-ids prod_N`** → BFS picks the nearest prod
-  ancestor with a checkpoint, or falls through to the `eq` ancestor.
-- **fresh run (eq parent)** → restart from the `eq` ancestor's checkpoint.
+ancestors. For extension/retry details, read
+`skills/md-production/restart.md`.
 
 ### GBn2 Ligand Fallback
 
@@ -151,37 +145,22 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 
 ---
 
-## Checkpoint / Restart
+## Restart / Extension
 
-### Extension: create a new prod node (recommended)
+For planned extensions, create a new prod node with `--continue-from`:
 
 ```bash
-# Create the extension node
 mdclaw create_node --job-dir <job_dir> --node-type prod \
   --continue-from prod_001 --label "+50ns" \
   --conditions '{"simulation_time_ns": 50}'
 
-# Run it — restart_from resolves via the DAG
 mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
   --simulation-time-ns 50.0 --platform CUDA \
   --pressure-bar 0 --implicit-solvent GBn2
 ```
 
-- `--simulation-time-ns` is the **additional** time to run in this node
-  (the `eq→prod` case still behaves as the full production duration
-  because the eq checkpoint is saved with `currentStep=0` by design).
-- Each prod node keeps its own `trajectory.dcd` under `artifacts/` — no
-  cross-node DCD append. Concatenate with mdtraj when a continuous
-  trajectory is required.
-- Binary checkpoint is platform-specific (CUDA ↔ CPU not interchangeable).
-
-### Mid-run restart into the same node (advanced / rare)
-
-Re-running against the same `--node-id` with an existing trajectory in
-that node's `artifacts/` makes the tool append. `--simulation-time-ns`
-then means "time to run in this call" (additional on top of the
-checkpoint's step count). Prefer the extension-node workflow above — it
-is easier to reason about for chained restarts.
+For state-vs-checkpoint behavior, same-node retries, and stale-artifact
+handling, read `skills/md-production/restart.md`.
 
 ---
 

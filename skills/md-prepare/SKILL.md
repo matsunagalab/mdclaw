@@ -18,10 +18,10 @@ combination commonly seen in AMBER tutorials and training data. The
 pairing is enforced by guardrails — `ff19SB + tip3p` is rejected as a
 structured error (code `forcefield_water_blocked`).
 
-Do **not** infer defaults from prior AMBER knowledge. The authoritative
-default tables live in:
+Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
+guardrails are authoritative; the runbooks provide quick references:
 
-- `skills/md-prepare/setup.md` — "Tool Defaults" section (general,
+- `skills/md-prepare/setup.md` — "Quick Default Reference" section (general,
   including pH, cap_termini, charge_method)
 - `skills/md-prepare/explicit-water.md` — "Decision Defaults" table
   (explicit-water specific: forcefield, water model, box geometry,
@@ -119,9 +119,6 @@ not your prior knowledge.
 ## Error Handling
 
 Use structured JSON fields from tool output to decide next steps. **Never parse stderr or warning strings to make decisions.**
-
-Use structured JSON fields from tool output to decide next steps.
-**Never parse stderr or warning strings to make decisions.**
 
 Key fields to check:
 - `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`

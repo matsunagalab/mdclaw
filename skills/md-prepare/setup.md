@@ -1,62 +1,12 @@
 # Setup: Structure Acquisition & Preparation
 
-## Progress Tracking (schema v3, node-based)
+## Progress Tracking
 
-`progress.json` is a thin **index** over the job's nodes. Each pipeline step
-(`source`, `prep`, `solv`, `topo`, `eq`, `prod`) is a separate node with its own
-`node.json`, lock, and `artifacts/` directory. Tools self-update both their
-`node.json` and the `progress.json` index — the skill never writes state
-manually.
-
-Read `progress.json` to see which nodes exist and their status; read a specific
-`nodes/<node_id>/node.json` to see that node's artifacts and metadata.
-
-```json
-{
-  "schema_version": 3,
-  "job_id": "<8-char hex>",
-  "created_at": "<ISO8601 timestamp>",
-  "system": {},
-  "preparation": {},
-  "params": {
-    "execution_mode": "autonomous"
-  },
-  "nodes": {
-    "source_001": {"type": "source", "status": "completed", "parents": []},
-    "prep_001":  {"type": "prep",  "status": "completed", "parents": ["source_001"]},
-    "solv_001":  {"type": "solv",  "status": "completed", "parents": ["prep_001"]},
-    "topo_001":  {"type": "topo",  "status": "completed", "parents": ["solv_001"]}
-  },
-  "warnings": []
-}
-```
-
-### Job Directory Structure
-
-```
-job_XXXXXXXX/
-  progress.json
-  progress.lock
-  nodes/
-    source_001/
-      node.json
-      node.lock
-      artifacts/        ← downloaded structure, inspection.json
-    prep_001/
-      node.json
-      artifacts/        ← split/, merge/, cleaned protein, ligand_params.json
-    solv_001/
-      node.json
-      artifacts/        ← solvated.pdb, box_dimensions.json
-    topo_001/
-      node.json
-      artifacts/        ← system.parm7, system.rst7
-  events/               ← append-only JSON files per event
-```
-
-Always read artifact paths from each tool's JSON output or from
-`nodes/<id>/node.json` rather than guessing paths. Downstream tools resolve
-paths automatically from DAG ancestors when invoked with `--job-dir` / `--node-id`.
+MDClaw uses schema v3 node-based jobs. The skill creates nodes and runs tools;
+the tools update `node.json`, `progress.json`, artifacts, and events. Always
+read artifact paths from tool JSON or `nodes/<id>/node.json` rather than
+guessing paths. With `--job-dir` and `--node-id`, downstream tools resolve
+inputs from DAG ancestors automatically.
 
 ---
 
@@ -108,7 +58,8 @@ structure is almost always the right starting point.
 > `boltz2_protein_from_seq`. The downloaded / registered / predicted file
 > is recorded under `nodes/source_001/artifacts/` with provenance metadata
 > (`source_type`, `source_id`, `sha256`, `source_url` or sequence/SMILES).
-> See `explicit-water.md` for the full runbook.
+> After source and prep steps complete, continue with the solvation-specific
+> runbook: `explicit-water.md` or `implicit-water.md`.
 >
 > **Boltz-2 note**: `boltz2_protein_from_seq` takes its ligands via
 > `--smiles-list` — SMILES handling is entirely Boltz-2's responsibility
@@ -628,11 +579,11 @@ Guardrails: missing mapping returns `modxna_target_residue_not_found` with
 
 ---
 
-## Tool Defaults (skill-relevant)
+## Quick Default Reference
 
-Defaults the tools apply silently when the user does not specify. The
-skill should surface any non-default value the user provided in the
-initial summary (Step 0) and otherwise trust these.
+This is a skill-facing quick reference. The Python tool signatures and
+guardrail codes are authoritative. Surface user-provided non-default values
+in Step 0; otherwise let the tools apply their defaults silently.
 
 `prepare_complex`:
 

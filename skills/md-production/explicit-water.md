@@ -35,30 +35,10 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 If the user does not specify a run length and `execution_mode=autonomous`,
 use `--simulation-time-ns 0.1` as the default sanity check.
 
-`prmtop_file`, `inpcrd_file`, `restart_from`, **and `pressure_bar`** are all
-auto-resolved from DAG ancestors. Topology comes from the `topo` ancestor.
-Ensemble is inherited from the `eq` ancestor — when the eq node's
-`metadata.final_ensemble == "NPT"`, prod automatically adds a matching
-`MonteCarloBarostat` at the eq's `pressure_bar` so the saved `state.xml`
-loads cleanly. Pass `--pressure-bar` only to override the inherited value
-(e.g. running NVT prod from an NPT-equilibrated state requires explicitly
-producing a fresh NVT eq state — see Troubleshooting below).
-
-The restart rule depends on how the prod node was created. Resolution
-prefers the `state.xml` artifact (saveState, cross-node portable) and
-falls back to `checkpoint.chk` (saveCheckpoint, GPU-architecture-
-specific) only when state.xml is missing — typically a legacy DAG that
-predates the saveState migration.
-
-- **`--continue-from prod_N`** → restart from **exactly** `prod_N`'s
-  saved state (`.xml` preferred, `.chk` legacy fallback). No fallback
-  to a different ancestor; missing both artifacts is a hard error.
-- **plain `--parent-node-ids prod_N`** → BFS picks the nearest prod
-  ancestor with a state file, falling through to the `eq` ancestor.
-- **fresh run (eq parent)** → restart from the `eq` ancestor's
-  `state.xml` (or its `checkpoint.chk` for legacy DAGs).
-
-To override any of this, pass the flags explicitly.
+`prmtop_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are
+auto-resolved from DAG ancestors. Ensemble is inherited from the `eq`
+ancestor, so NPT eq states load with a matching barostat by default. For
+extension/retry details, read `skills/md-production/restart.md`.
 
 ### SLURM Execution (HPC)
 
@@ -116,64 +96,11 @@ Key properties:
 --no-hmr --timestep-fs 2.0
 ```
 
-## Restart (state file)
+## Restart / Extension
 
-Both `eq` and `prod` nodes write two restart artifacts at end-of-run:
-`state.xml` (saveState; positions, velocities, box, context parameters)
-and `checkpoint.chk` (saveCheckpoint; binary, includes integrator
-state). The resolver prefers `state.xml` because it is **cross-node
-portable** — the binary checkpoint encodes GPU-specific context layout
-and silently corrupts when loaded on a different GPU architecture (or
-even CPU↔GPU). `checkpoint.chk` is retained for bit-identical
-reproduction on identical hardware (committor / sensitivity studies)
-and as a legacy fallback for DAGs that predate the saveState migration.
-
-### Extension: create a new prod node (recommended)
-
-Each production extension gets its own node and its own trajectory file.
-Use `--continue-from` when creating the node to make the intent explicit:
-
-```bash
-# Create the extension node (sugar for --parent-node-ids prod_001 with a
-# type check that prod_001 really is a prod node)
-mdclaw create_node --job-dir <job_dir> --node-type prod \
-  --continue-from prod_001 --label "+50ns" \
-  --conditions '{"simulation_time_ns": 50}'
-
-# Run it — restart_from resolves via the DAG to prod_001's state.xml
-# (or its checkpoint.chk if state.xml is absent in a legacy DAG)
-mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
-  --simulation-time-ns 50.0 --platform CUDA
-```
-
-- `--simulation-time-ns` is the **additional** time to run in this node
-  (the `eq→prod` case still behaves as the full production duration
-  because the eq state is written with `final_step=0` /
-  `currentStep=0` by design).
-- With `--continue-from`, `restart_from` resolves to **exactly that
-  prod's state file** (`.xml` preferred, `.chk` legacy fallback). No
-  silent fallback to a different ancestor: if the named prod has
-  neither artifact (still running or failed), the run fails cleanly.
-- Without `--continue-from` (plain `--parent-node-ids prod_001`),
-  the resolver does a BFS through prod ancestors (state.xml first,
-  checkpoint.chk fallback per node), skipping ancestors that have
-  neither, and finally falls through to the `eq` ancestor. Only use
-  this form if you don't care which prod in the chain is the source.
-- Each prod node keeps its own `trajectory.dcd` under `artifacts/`; there
-  is **no cross-node DCD append**. Concatenate with mdtraj / `analyze`
-  tools when a continuous trajectory is required.
-- The binary `.chk` is platform-specific (a CUDA checkpoint cannot load
-  on CPU, and vice versa) — this is exactly why `.xml` is preferred.
-
-### Mid-run restart into the same node (advanced / rare)
-
-The tool will append to an existing `trajectory.dcd` **only** if you
-re-run against the same `--node-id` AND an existing trajectory is already
-present under that node's `artifacts/`. In this (legacy) mode
-`--simulation-time-ns` is interpreted as the time to run **in this call**
-(added on top of whatever step count the checkpoint carries), so repeated
-same-node restarts can still over- or under-run if you lose track.
-Prefer the extension-node workflow above.
+For planned extensions, create a new prod node with `--continue-from`. For
+state-vs-checkpoint behavior, same-node retries, and stale-artifact handling,
+read `skills/md-production/restart.md`.
 
 ---
 

@@ -1,6 +1,6 @@
 ---
 name: MD Equilibration
-description: "Equilibration (standard staged minimization -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and produces equilibrated.chk for production handoff."
+description: "Equilibration (standard staged minimization -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and writes restart artifacts for production handoff."
 ---
 
 # MD Equilibration
@@ -70,9 +70,12 @@ mdclaw update_job_params --job-dir <job_dir> \
 
 ## Error Handling
 
-- If a tool fails, read the error message carefully
-- Retrying the same failed command with identical parameters will produce the same error
-- If stuck, report the error and ask the user for guidance
+- Use structured JSON fields from tool output to decide next steps. Never
+  parse stderr or warning strings to make decisions.
+- Branch on stable `code` values when present; otherwise report the
+  structured `errors` / `warnings` fields.
+- Retrying the same failed command with identical parameters will produce
+  the same error.
 
 ## Handoff
 

@@ -1,6 +1,6 @@
 ---
 name: HPC Run
-description: "SLURM-based HPC submission for MDClaw workflow nodes. Handles cluster inspection, single-node and job-array submission, status sync to the DAG, and checkpoint-restart extensions. Use whenever an equilibration or production node (or a batch of them across multiple systems) should run on a compute cluster instead of the login node."
+description: "SLURM-based HPC submission for MDClaw workflow nodes. Handles cluster inspection, single-node and job-array submission, status sync to the DAG, and production restart extensions. Use whenever an equilibration or production node (or a batch of them across multiple systems) should run on a compute cluster instead of the login node."
 ---
 
 # HPC Run Skill
@@ -44,7 +44,7 @@ downstream depend on.
 1. SLURM commands available (`sinfo`, `sbatch`, `squeue`, `sacct`).
 2. A schema-v3 job directory with a completed `topo` node (from
    `/md-prepare`). SLURM jobs for `eq` / `prod` auto-resolve their input
-   files (parm7, rst7, restart checkpoint) from DAG ancestors — do not pass
+   files (parm7, rst7, restart state) from DAG ancestors — do not pass
    them manually.
 3. (Optional) Singularity SIF configured via `configure_container`.
 
@@ -118,7 +118,7 @@ On successful `sbatch`, the tool:
 
 **Do not** pass `--prmtop-file` / `--inpcrd-file` / `--restart-from` in the
 inner `mdclaw` command — DAG auto-resolution handles all three (topology
-from the `topo` ancestor, checkpoint from the `eq` or named `prod`
+from the `topo` ancestor, restart state from the `eq` or named `prod`
 ancestor). The compute node runs the same CLI the login node would;
 `--job-dir` is what makes the resolution work.
 
@@ -565,21 +565,21 @@ Common failures and the usual fix:
 | Error Pattern | Cause | Fix |
 |---|---|---|
 | `CUDA out of memory` | GPU too small | Switch to a larger-GPU partition, or reduce system size |
-| `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH` | Driver < 530 | Pick a node with driver 530+ (`--nodelist` or `--gres`) |
+| `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH` | Driver below the supported CUDA runtime floor | Pick a node with NVIDIA driver 520+ (`--nodelist` or `--gres`) |
 | `FileNotFoundError` | Relative path outside the bind set | Use absolute paths; verify Singularity binds include `job_dir` |
 | `ModuleNotFoundError` | Wrong container / missing env | Verify `configure_container` points at the right SIF, or use `--environment "module load ..."` |
-| `DUE TO TIME LIMIT` | Wall time exceeded | Increase `--time-limit` and resubmit from the checkpoint — see Step 6 |
+| `DUE TO TIME LIMIT` | Wall time exceeded | Increase `--time-limit` and resubmit from the restart state — see Step 6 |
 | `slurmstepd: error: Exceeded memory limit` | OOM kill | Increase `--memory` |
 | `invalid number of nodes (-N 4-1)` at sbatch | `--nodes=1` combined with a multi-node `--nodelist=n1,n2,n4,n5` | Use `--exclude=<unwanted nodes>` (or `--gres=gpu:<type>:1` for GPU model targeting) — never pair `--nodes=N` with a longer `--nodelist`. |
 | Downstream tasks stuck at `(Dependency)` / `(DependencyNeverSatisfied)` | `aftercorr`/`afterok` parent array held incomplete by a few failing tasks | `squeue -u $USER -r -h -o '%i %T %R' \| awk '$3=="(DependencyNeverSatisfied)"{print $1}' \| xargs -r scancel`, or rebuild the chain as Step 3.5 per-entry. |
 
 Resubmit the fixed job against the **same** `node_id` — the node's
 status drops back to `queued` on the new sbatch, and
-`resolve_node_inputs` still finds the right topology / checkpoint.
+`resolve_node_inputs` still finds the right topology / restart state.
 
 ---
 
-## Step 6: Checkpoint Extension (production-specific)
+## Step 6: Production Extension
 
 When production hits wall time or the user wants to extend a completed
 prod run, create a new `prod` node with `--continue-from` and submit it.
@@ -590,7 +590,7 @@ JD=$(realpath job_target)
 PREV=prod_001  # the completed prod you want to extend
 
 # New node: DAG records metadata.continued_from = prod_001 and
-# resolve_node_inputs will restart from EXACTLY that prod's checkpoint.
+# resolve_node_inputs will restart from EXACTLY that prod's saved state.
 mdclaw create_node --job-dir $JD --node-type prod \
   --continue-from $PREV --label "+100ns" \
   --conditions '{"simulation_time_ns":100}'
@@ -609,8 +609,8 @@ Each prod node keeps its own `trajectory.dcd` under its `artifacts/`
 directory; concatenate with mdtraj / `md-analyze` when a continuous
 trajectory is needed. `simulation_time_ns` in the extension is the
 additional time to run *in this node* (added on top of `prod_001`'s
-`currentStep`). OpenMM checkpoints are platform-specific — keep
-`--platform CUDA` for CUDA-written checkpoints.
+`currentStep`). `state.xml` is preferred for cross-node restarts;
+`checkpoint.chk` remains a legacy fallback and is platform-specific.
 
 ---
 
@@ -648,13 +648,14 @@ Cancelling a job leaves the DAG node in whatever state it was in
   | > 200k | 24–48 h | 3-00:00:00 |
 
 ### Singularity / driver compatibility
-- The stock MDClaw SIF ships with CUDA 12.4 and needs **NVIDIA driver
-  550+**. Older nodes fail with `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH`.
+- The stock MDClaw SIF ships with CUDA 11.8 and is actively verified on
+  **NVIDIA driver 520+**. Older nodes may fail with
+  `CUDA_ERROR_SYSTEM_DRIVER_MISMATCH`.
 - Prefer `--gres "gpu:<type>:1"` to target specific GPU models rather
   than `--nodelist`, which is fragile as the cluster evolves.
 
 ### Environment variables
-- `MDCLAW_MODULE_LOADS="cuda/12.4 amber/24"` — auto-insert module loads
+- `MDCLAW_MODULE_LOADS="cuda/11.8 amber/24"` — auto-insert module loads
   into every generated sbatch script (overridden when you pass
   `--environment` explicitly).
 - `MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"` — init script sourced

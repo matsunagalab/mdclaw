@@ -2,6 +2,8 @@
 
 ## Decision Defaults
 
+Quick reference only; Python tool signatures and guardrails are authoritative.
+
 | Parameter | Default | User Cues |
 |---|---|---|
 | Water model | OPC | "tip3p", "spce" |
@@ -15,92 +17,18 @@ the Amber Manual 2024 recommendation — ff19SB was parameterized against
 OPC and behaves incorrectly with TIP3P (guardrail rejects this
 combination). Use `ff14SB + tip3p` only to reproduce pre-2019 results.
 
-Full tool-level defaults (including `cubic`, `notprotonate`,
-`optimize_ligands`, `charge_method`, etc.) live in the "Tool Defaults"
-section of `setup.md`. Prepare-time checkpoints (chain selection, ligand
-inclusion, metal handling, confirmation loop) also live in `setup.md`
-and apply identically for both explicit- and implicit-solvent paths.
+Prepare-time details (source acquisition, inspection, chain/ligand
+selection, metals, PTMs, mutations, and confirmation policy) live in
+`setup.md` and apply identically for explicit and implicit solvent.
 
 ---
 
-## Node-Based Workflow
+## Preparation Prerequisite
 
-Each step: `create_node` -> run tool with `--job-dir`/`--node-id`.
-Tools auto-resolve input files from DAG ancestors and self-update state.
-
-The DAG root is a `source` node that records the source of the structure
-(PDB ID, UniProt ID, or local file) plus its sha256 / source URL so the run
-is reproducible and re-fetchable. `prep` then auto-resolves
-`structure_file` from its `source` parent.
-
----
-
-## Step 1: Acquire Structure (source node)
-
-```bash
-mkdir -p job_xxx
-mdclaw create_node --job-dir job_xxx --node-type source --label "<source description>"
-```
-
-Then fetch the structure with `--node-id source_001`:
-
-```bash
-# PDB
-mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
-  --source pdb \
-  --pdb-id 1AKE
-
-# AlphaFold
-mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
-  --source alphafold \
-  --uniprot-id P12345
-
-# Local file (copies into the node's artifacts dir)
-mdclaw --job-dir job_xxx --node-id source_001 fetch_structure \
-  --source local \
-  --file-path /path/to/input.pdb
-```
-
-The structure file is written under `job_xxx/nodes/source_001/artifacts/` and
-the node's `metadata` records `source_type`, `source_id`, `sha256`, and
-`source_url` (when applicable).
-
----
-
-## Step 2: Inspect (read-only, optional event under source node)
-
-```bash
-mdclaw --job-dir job_xxx --node-id source_001 inspect_molecules \
-  --structure-file job_xxx/nodes/source_001/artifacts/<file>
-```
-
-This writes `inspection.json` next to the structure file and appends an
-`inspection_completed` event. Node status stays `completed` (read-only).
-
-Before moving on, check `summary.multivalent_metal_residues` and
-`notes.metal_parameterization_required` in the inspection output. If
-non-empty, follow the "Metal ion handling" section of `setup.md` —
-`parameterize_metal_ion` runs on the prep node after `prepare_complex`.
-
----
-
-## Step 3: Prepare Complex (prep node)
-
-```bash
-mdclaw create_node --job-dir job_xxx --node-type prep --parent-node-ids source_001
-mdclaw --job-dir job_xxx --node-id prep_001 prepare_complex
-```
-
-`structure_file` is auto-resolved from the `source` parent. Pass
-`--structure-file` only to override (e.g., to use a manually edited PDB).
-
-If the input PDB contained SEP / TPO / PTR residues, they are listed
-under `preparation_summary.detected_ptm_residues` and on the prep node's
-metadata. PDBFixer will have replaced them with SER / THR / TYR in
-`merged.pdb` by design — re-introduce them with
-`phosphorylate_residues --restore-from-detection` on a branched prep
-node before solvation. See `setup.md` "Step 3.6: Phosphorylation" for
-details.
+Complete `setup.md` through `prepare_complex` first. Continue here only after
+a completed `prep` node exists. If inspection found multivalent metals or
+PTMs, finish the corresponding branched prep steps in `setup.md` before
+solvation.
 
 ---
 
