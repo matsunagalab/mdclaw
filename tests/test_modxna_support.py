@@ -24,6 +24,18 @@ ATOM     12  C4'  DC A   3      12.500   5.000   0.000  1.00  0.00           C
 END
 """
 
+_TWO_MODIFIED_NUCLEIC_PDB = """\
+ATOM      1  P    DA A   1       0.000   0.000   0.000  1.00  0.00           P
+ATOM      2  O5'  DA A   1       1.000   0.000   0.000  1.00  0.00           O
+ATOM      3  P   5CM A   2       5.000   2.000   0.000  1.00  0.00           P
+ATOM      4  O5' 5CM A   2       6.000   2.000   0.000  1.00  0.00           O
+ATOM      5  P   5CM A   3       8.000   3.000   0.000  1.00  0.00           P
+ATOM      6  O5' 5CM A   3       9.000   3.000   0.000  1.00  0.00           O
+ATOM      7  P    DC A   4      10.000   4.000   0.000  1.00  0.00           P
+ATOM      8  O5'  DC A   4      11.000   4.000   0.000  1.00  0.00           O
+END
+"""
+
 _STANDARD_DNA_RNA_PDB = """\
 ATOM      1  P    DA A   1       0.000   0.000   0.000  1.00  0.00           P
 ATOM      2  O5'  DA A   1       1.000   0.000   0.000  1.00  0.00           O
@@ -68,7 +80,11 @@ def _fake_modxna_dir(tmp_path: Path) -> Path:
     return root
 
 
-def _job_with_parent_prep(tmp_path: Path) -> tuple[Path, str]:
+def _job_with_parent_prep(
+    tmp_path: Path,
+    pdb_text: str = _MODIFIED_NUCLEIC_PDB,
+    residue_mapping: list[dict] | None = None,
+) -> tuple[Path, str]:
     from mdclaw._node import complete_node, create_node
 
     job_dir = tmp_path / "job_modxna"
@@ -78,8 +94,8 @@ def _job_with_parent_prep(tmp_path: Path) -> tuple[Path, str]:
     artifacts = job_dir / "nodes" / prep["node_id"] / "artifacts"
     (artifacts / "merge").mkdir(parents=True)
     merged_pdb = artifacts / "merge" / "merged.pdb"
-    merged_pdb.write_text(_MODIFIED_NUCLEIC_PDB, encoding="utf-8")
-    residue_mapping = [
+    merged_pdb.write_text(pdb_text, encoding="utf-8")
+    residue_mapping = residue_mapping or [
         {
             "source_chain": "A",
             "source_label_chain": "A",
@@ -167,6 +183,7 @@ def test_build_amber_system_loads_modxna_params_before_loadpdb(monkeypatch, tmp_
 
     assert result["success"], result.get("errors")
     assert result["parameters"]["modxna_params"][0]["residue_name"] == "RSS"
+    assert result["parameters"]["modxna_validation"][0]["library_residue_name"] == "RSS"
 
 
 def test_build_amber_system_fails_modxna_residue_name_mismatch(monkeypatch, tmp_path):
@@ -234,6 +251,63 @@ def test_prepare_modified_nucleic_fake_modxna_source_frame(tmp_path):
     assert node["artifacts"]["modxna_params"] == "artifacts/modxna_params.json"
 
 
+def test_prepare_modified_nucleic_applies_5cm_fragment_preset(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[{"chain": "A", "resnum": 2, "source_resname": "5CM"}],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"], result.get("errors")
+    resolved = result["resolved_modifications"][0]
+    assert resolved["fragments"] == {"backbone": "DPO", "sugar": "DC2", "base": "M5C"}
+    assert resolved["fragment_preset"]["source_resname"] == "5CM"
+
+
+def test_prepare_modified_nucleic_unknown_preset_reports_required_fields(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    mapping = [
+        {
+            "source_chain": "A",
+            "source_label_chain": "A",
+            "source_resnum": 2,
+            "source_icode": "",
+            "source_resname": "XYZ",
+            "merged_chain": "A",
+            "merged_resnum": 2,
+            "merged_icode": "",
+            "merged_resname": "XYZ",
+            "chain_file": "nucleic_1.pdb",
+        },
+    ]
+    pdb_text = _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "XYZ A   2")
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path, pdb_text=pdb_text, residue_mapping=mapping)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[{"chain": "A", "resnum": 2, "source_resname": "XYZ"}],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "invalid_modxna_fragment_spec"
+    assert result["required_fields"] == ["backbone", "sugar", "base"]
+    assert "5CM" in result["known_presets"]
+
+
 def test_prepare_modified_nucleic_returns_source_candidates_on_missing_target(tmp_path):
     from mdclaw._node import create_node
     from mdclaw.structure_server import prepare_modified_nucleic
@@ -261,6 +335,185 @@ def test_prepare_modified_nucleic_returns_source_candidates_on_missing_target(tm
     assert result["success"] is False
     assert result["code"] == "modxna_target_residue_not_found"
     assert result["source_candidates"]
+
+
+def test_prepare_modified_nucleic_merged_coordinate_frame(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[
+            {
+                "coordinate_frame": "merged",
+                "chain": "A",
+                "resnum": 2,
+                "source_resname": "5CM",
+            }
+        ],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"], result.get("errors")
+    assert result["resolved_modifications"][0]["coordinate_frame"] == "merged"
+
+
+def test_prepare_modified_nucleic_reuses_library_for_duplicate_fragments(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    mapping = [
+        {
+            "source_chain": "A",
+            "source_label_chain": "A",
+            "source_resnum": i,
+            "source_icode": "",
+            "source_resname": resname,
+            "merged_chain": "A",
+            "merged_resnum": i,
+            "merged_icode": "",
+            "merged_resname": resname,
+            "chain_file": "nucleic_1.pdb",
+        }
+        for i, resname in [(1, "DA"), (2, "5CM"), (3, "5CM"), (4, "DC")]
+    ]
+    job_dir, parent_prep = _job_with_parent_prep(
+        tmp_path,
+        pdb_text=_TWO_MODIFIED_NUCLEIC_PDB,
+        residue_mapping=mapping,
+    )
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[
+            {"chain": "A", "resnum": 2, "source_resname": "5CM"},
+            {"chain": "A", "resnum": 3, "source_resname": "5CM"},
+        ],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"], result.get("errors")
+    assert len(result["resolved_modifications"]) == 2
+    assert len(result["modxna_params"]) == 1
+    assert result["modxna_params"][0]["target_count"] == 2
+    text = Path(result["merged_pdb"]).read_text(encoding="utf-8")
+    assert text.count("RSS A   2") == 2
+    assert text.count("RSS A   3") == 2
+
+
+def test_prepare_modified_nucleic_reports_terminal_position(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[
+            {
+                "chain": "A",
+                "resnum": 1,
+                "source_resname": "DA",
+                "backbone": "DPO",
+                "sugar": "DC2",
+                "base": "M5C",
+            }
+        ],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "modxna_terminal_residue_unsupported"
+    assert "5prime" in result["errors"][0]
+
+
+def test_prepare_modified_nucleic_reports_tool_unavailable(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[{"chain": "A", "resnum": 2, "source_resname": "5CM"}],
+        modxna_dir=str(tmp_path / "missing_modxna"),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "modxna_tool_unavailable"
+
+
+def test_prepare_modified_nucleic_reports_execution_failed(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    root = tmp_path / "bad_modxna"
+    (root / "dat").mkdir(parents=True)
+    (root / "dat" / "frcmod.modxna").write_text("MASS\n", encoding="utf-8")
+    script = root / "modxna.sh"
+    script.write_text("#!/bin/sh\necho failed >&2\nexit 2\n", encoding="utf-8")
+    script.chmod(script.stat().st_mode | 0o111)
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[{"chain": "A", "resnum": 2, "source_resname": "5CM"}],
+        modxna_dir=str(root),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "modxna_execution_failed"
+
+
+def test_prepare_modified_nucleic_reports_stale_mapping(tmp_path):
+    from mdclaw._node import create_node
+    from mdclaw.structure_server import prepare_modified_nucleic
+
+    mapping = [
+        {
+            "source_chain": "A",
+            "source_label_chain": "A",
+            "source_resnum": 2,
+            "source_icode": "",
+            "source_resname": "5CM",
+            "merged_chain": "A",
+            "merged_resnum": 99,
+            "merged_icode": "",
+            "merged_resname": "5CM",
+            "chain_file": "nucleic_1.pdb",
+        },
+    ]
+    job_dir, parent_prep = _job_with_parent_prep(tmp_path, residue_mapping=mapping)
+    child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
+    assert child["success"]
+
+    result = prepare_modified_nucleic(
+        modifications=[{"chain": "A", "resnum": 2, "source_resname": "5CM"}],
+        modxna_dir=str(_fake_modxna_dir(tmp_path)),
+        job_dir=str(job_dir),
+        node_id=child["node_id"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "modxna_residue_mapping_stale"
+    assert result["merged_candidates"]
 
 
 def test_topo_resolves_modxna_params_from_prep_ancestor(tmp_path):

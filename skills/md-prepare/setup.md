@@ -540,9 +540,13 @@ acetylation, methylation, ubiquitination, lipidation) are out of scope
 ## Step 3.7: Modified Nucleic Acids via modXNA (optional)
 
 Use this only when the user explicitly wants a modified DNA/RNA residue that
-is not covered by standard OL15/OL3 residue names. Do **not** infer fragment
-IDs from a PDB residue name. Ask the user for the source-structure target and
-the three modXNA fragment IDs.
+is not covered by standard OL15/OL3 residue names. `inspect_molecules` reports
+modified nucleotides with author/label chain IDs and residue numbers when the
+input format exposes them; use those fields or `prepare_complex`'s
+`residue_mapping.json` to pick the target. Do **not** invent fragment IDs from
+a PDB residue name. MDClaw only auto-fills fragment IDs for curated presets
+such as `5CM -> DPO / DC2 / M5C`; otherwise ask the user for the three modXNA
+fragment IDs.
 
 Required user input per modification:
 
@@ -570,12 +574,16 @@ mdclaw --job-dir <jd> --node-id prep_002 prepare_modified_nucleic \
 `modxna.sh -i in.modxna`, renames only that residue to the generated 3-letter
 code, and registers both `merged_pdb` and `modxna_params` on the new prep node.
 Downstream `solvate_structure` and `build_amber_system` auto-resolve these.
+If the source coordinates are ambiguous after chain remapping, pass
+`"coordinate_frame":"merged"` and use the merged PDB chain/residue IDs instead.
 
 Guardrails: missing mapping returns `modxna_target_residue_not_found` with
 `source_candidates`; stale merged coordinates return
 `modxna_residue_mapping_stale`; terminal 5′/3′ modifications return
 `modxna_terminal_residue_unsupported`; missing modXNA/AmberTools helpers return
-`modxna_tool_unavailable`.
+`modxna_tool_unavailable`; a failed modXNA run returns
+`modxna_execution_failed`; unknown fragment presets return
+`invalid_modxna_fragment_spec` with `required_fields` and `known_presets`.
 
 ---
 

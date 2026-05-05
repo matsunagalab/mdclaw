@@ -65,7 +65,7 @@ a post-prep prep node; see `setup.md` "Step 3.5: Mutation (optional)").
    forcefield, water model, box geometry, etc. are tool-level defaults
    surfaced from the runbooks read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
-5. Execute prepare_complex / mutate / solv / topo per setup.md and the
+5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
    solvation runbook. Create nodes first, then run workflow tools with
    both `--job-dir` and `--node-id`.
 6. After `topo_001` completes, hand off: tell the user to invoke

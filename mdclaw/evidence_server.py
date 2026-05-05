@@ -448,7 +448,12 @@ def _topology_description(topo_node: dict | None) -> tuple[str, str, str, str]:
     forcefield = str(metadata.get("forcefield") or "not recorded")
     water_model = str(metadata.get("water_model") or "not recorded")
     extra: list[str] = []
-    if metadata.get("nucleic_forcefield"):
+    if metadata.get("nucleic_libraries"):
+        libraries = metadata["nucleic_libraries"]
+        if isinstance(libraries, list):
+            libraries = ", ".join(str(item) for item in libraries)
+        extra.append(f"{libraries} for nucleic acids")
+    elif metadata.get("nucleic_forcefield"):
         extra.append(f"{metadata['nucleic_forcefield']} for nucleic acids")
     if metadata.get("glycan_forcefield"):
         extra.append(f"{metadata['glycan_forcefield']} for glycans")

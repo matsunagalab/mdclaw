@@ -1855,10 +1855,20 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
                     nucleic_chain_ids.append(author_chain)
                 if nucleic_info["subtype"]:
                     nucleic_subtypes[chain_id] = nucleic_info["subtype"]
-                for res_name in nucleic_info["modified_residue_names"]:
+                modified_names = set(nucleic_info["modified_residue_names"])
+                for res in res_list:
+                    res_name = res.name.strip()
+                    if res_name not in modified_names:
+                        continue
                     modified_nucleic_residues.append({
                         "chain": author_chain,
+                        "author_chain": author_chain,
+                        "label_chain": chain_id,
+                        "resnum": res.seqid.num,
+                        "icode": str(res.seqid.icode or ""),
                         "resname": res_name,
+                        "source_resname": res_name,
+                        "coordinate_frame": "source",
                     })
             elif glycan_info["is_glycan"]:
                 chain_type = "glycan"
@@ -6546,6 +6556,41 @@ def _merged_residue_candidates(merged_pdb: Path) -> list[dict]:
     ]
 
 
+MODXNA_FRAGMENT_PRESETS: dict[str, dict[str, str]] = {
+    # 5-methylcytidine: default non-terminal deoxy-cytidine backbone used by
+    # the existing 6JV5 integration path. Unknown modifications still require
+    # explicit user-provided fragment IDs.
+    "5CM": {"backbone": "DPO", "sugar": "DC2", "base": "M5C"},
+}
+
+
+def _apply_modxna_fragment_preset(mod: dict) -> tuple[dict, dict | None]:
+    updated = dict(mod)
+    missing = [field for field in ("backbone", "sugar", "base") if not updated.get(field)]
+    if not missing:
+        return updated, None
+    source_resname = str(updated.get("source_resname") or updated.get("resname") or "").upper()
+    preset = MODXNA_FRAGMENT_PRESETS.get(source_resname)
+    if not preset:
+        return updated, None
+    for field in missing:
+        updated[field] = preset[field]
+    return updated, {
+        "source_resname": source_resname,
+        "fragments": dict(preset),
+        "filled_fields": missing,
+    }
+
+
+def _read_modxna_library_residue_name(lib_path: Path) -> str:
+    """Read the LEaP residue code from a modXNA library, falling back to stem."""
+    text = lib_path.read_text(encoding="utf-8", errors="ignore")
+    quoted = re.findall(r'"([A-Za-z0-9]{1,4})"', text)
+    if quoted:
+        return quoted[0].upper()[:3]
+    return lib_path.stem.upper()[:3]
+
+
 def _terminal_modxna_targets(merged_pdb: Path, resolved_targets: list[dict]) -> list[dict]:
     residues_by_chain: dict[str, list[dict]] = {}
     for residue in _read_pdb_unique_residues(merged_pdb):
@@ -6556,16 +6601,21 @@ def _terminal_modxna_targets(merged_pdb: Path, resolved_targets: list[dict]) -> 
         chain = str(target["merged_chain"])
         residues = residues_by_chain.get(chain, [])
         if len(residues) < 3:
-            terminal.append(target)
+            terminal_target = dict(target)
+            terminal_target["terminal_position"] = "short_chain"
+            terminal_target["chain_residue_count"] = len(residues)
+            terminal.append(terminal_target)
             continue
         first = residues[0]
         last = residues[-1]
         key = (str(target["merged_resnum"]), str(target.get("merged_icode", "") or ""))
-        if key in {
-            (str(first["resnum"]), str(first.get("icode", "") or "")),
-            (str(last["resnum"]), str(last.get("icode", "") or "")),
-        }:
-            terminal.append(target)
+        first_key = (str(first["resnum"]), str(first.get("icode", "") or ""))
+        last_key = (str(last["resnum"]), str(last.get("icode", "") or ""))
+        if key in {first_key, last_key}:
+            terminal_target = dict(target)
+            terminal_target["terminal_position"] = "5prime" if key == first_key else "3prime"
+            terminal_target["chain_residue_count"] = len(residues)
+            terminal.append(terminal_target)
     return terminal
 
 
@@ -6678,6 +6728,7 @@ def prepare_modified_nucleic(
 
     resolved_targets = []
     for mod in modifications:
+        mod, preset_info = _apply_modxna_fragment_preset(mod)
         frame = str(mod.get("coordinate_frame", "source")).lower()
         if frame == "source":
             target = _find_mapped_modxna_target(mod, residue_mapping)
@@ -6716,6 +6767,8 @@ def prepare_modified_nucleic(
                     "error_type": "ValidationError",
                     "code": "invalid_modxna_fragment_spec",
                     "errors": [f"modification is missing required fragment field '{field}': {mod}"],
+                    "required_fields": ["backbone", "sugar", "base"],
+                    "known_presets": sorted(MODXNA_FRAGMENT_PRESETS),
                 })
                 fail_node(job_dir, node_id, errors=result["errors"])
                 return result
@@ -6725,6 +6778,8 @@ def prepare_modified_nucleic(
             "base": str(mod["base"]),
         }
         target["coordinate_frame"] = frame
+        if preset_info:
+            target["fragment_preset"] = preset_info
         resolved_targets.append(target)
 
     stale = []
@@ -6781,57 +6836,81 @@ def prepare_modified_nucleic(
     begin_node(job_dir, node_id)
 
     in_modxna = out_dir / "in.modxna"
-    in_lines = [
-        "# Generated by MDClaw prepare_modified_nucleic",
-    ]
+    in_lines = ["# Generated by MDClaw prepare_modified_nucleic"]
+    unique_fragment_keys: list[tuple[str, str, str]] = []
+    fragment_libs: dict[tuple[str, str, str], dict] = {}
     for target in resolved_targets:
         fragments = target["fragments"]
-        in_lines.append(
-            f"{fragments['backbone']} {fragments['sugar']} {fragments['base']}"
-        )
+        key = (fragments["backbone"], fragments["sugar"], fragments["base"])
+        in_lines.append(" ".join(key))
+        if key not in unique_fragment_keys:
+            unique_fragment_keys.append(key)
     in_modxna.write_text("\n".join(in_lines) + "\n")
 
-    try:
-        completed = subprocess.run(
-            [str(modxna_sh), "-i", str(in_modxna)],
-            cwd=str(out_dir),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=3600,
+    stdout_parts = []
+    stderr_parts = []
+    for index, key in enumerate(unique_fragment_keys, start=1):
+        run_dir = out_dir / f"modxna_{index:03d}"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_input = run_dir / "in.modxna"
+        run_input.write_text(
+            "# Generated by MDClaw prepare_modified_nucleic\n"
+            + " ".join(key)
+            + "\n",
+            encoding="utf-8",
         )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        result.update({
-            "error_type": "ToolUnavailableError",
-            "code": "modxna_tool_unavailable",
-            "errors": [f"modXNA execution failed: {type(e).__name__}: {e}"],
-        })
-        fail_node(job_dir, node_id, errors=result["errors"])
-        return result
+        before_libs = set(run_dir.glob("*.lib")) | set(run_dir.glob("*.off"))
+        try:
+            completed = subprocess.run(
+                [str(modxna_sh), "-i", str(run_input)],
+                cwd=str(run_dir),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=3600,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            result.update({
+                "error_type": "ToolUnavailableError",
+                "code": "modxna_tool_unavailable",
+                "errors": [f"modXNA execution failed: {type(e).__name__}: {e}"],
+            })
+            fail_node(job_dir, node_id, errors=result["errors"])
+            return result
 
-    result["modxna_stdout"] = completed.stdout
-    result["modxna_stderr"] = completed.stderr
-    if completed.returncode != 0:
-        result.update({
-            "error_type": "ToolExecutionError",
-            "code": "modxna_execution_failed",
-            "errors": [f"modXNA exited with code {completed.returncode}", completed.stderr.strip()],
-        })
-        fail_node(job_dir, node_id, errors=result["errors"])
-        return result
+        stdout_parts.append(completed.stdout)
+        stderr_parts.append(completed.stderr)
+        if completed.returncode != 0:
+            result.update({
+                "error_type": "ToolExecutionError",
+                "code": "modxna_execution_failed",
+                "errors": [f"modXNA exited with code {completed.returncode}", completed.stderr.strip()],
+            })
+            fail_node(job_dir, node_id, errors=result["errors"])
+            return result
 
-    generated_libs = sorted(out_dir.glob("*.lib")) + sorted(out_dir.glob("*.off"))
-    if len(generated_libs) < len(resolved_targets):
-        result.update({
-            "error_type": "ValidationError",
-            "code": "invalid_modxna_parameters",
-            "errors": [
-                f"modXNA generated {len(generated_libs)} library file(s), "
-                f"but {len(resolved_targets)} modification(s) were requested."
-            ],
-        })
-        fail_node(job_dir, node_id, errors=result["errors"])
-        return result
+        generated_libs = sorted((set(run_dir.glob("*.lib")) | set(run_dir.glob("*.off"))) - before_libs)
+        if len(generated_libs) != 1:
+            result.update({
+                "error_type": "ValidationError",
+                "code": "invalid_modxna_parameters",
+                "generated_libraries": [str(path) for path in generated_libs],
+                "errors": [
+                    "modXNA must generate exactly one library file per unique "
+                    f"fragment specification {key}; generated {len(generated_libs)}."
+                ],
+            })
+            fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+        lib_path = generated_libs[0]
+        fragment_libs[key] = {
+            "lib": lib_path,
+            "residue_name": _read_modxna_library_residue_name(lib_path),
+            "in_modxna": run_input,
+        }
+
+    result["modxna_stdout"] = "".join(stdout_parts)
+    result["modxna_stderr"] = "".join(stderr_parts)
 
     local_frcmod = out_dir / "frcmod.modxna"
     shutil.copy2(modxna_frcmod, local_frcmod)
@@ -6839,28 +6918,45 @@ def prepare_modified_nucleic(
     rename_map = {}
     modxna_params = []
     updated_mapping = [dict(m) for m in residue_mapping]
-    for target, lib_path in zip(resolved_targets, generated_libs):
-        residue_name = lib_path.stem.upper()[:3]
+    seen_param_keys = set()
+    for target in resolved_targets:
+        fragments = target["fragments"]
+        fragment_key = (fragments["backbone"], fragments["sugar"], fragments["base"])
+        lib_record = fragment_libs[fragment_key]
+        lib_path = lib_record["lib"]
+        residue_name = lib_record["residue_name"]
         chain = str(target["merged_chain"])
         resnum = str(target["merged_resnum"])
         icode = str(target.get("merged_icode", "") or "")
         rename_map[(chain, resnum, icode)] = residue_name
         target = dict(target)
         target["modxna_residue_name"] = residue_name
+        target["modxna_library"] = str(lib_path.resolve())
         result["resolved_modifications"].append(target)
-        modxna_params.append({
-            "residue_name": residue_name,
-            "lib": str(lib_path.resolve()),
-            "frcmod": str(local_frcmod.resolve()),
-            "source_resname": target.get("source_resname"),
-            "chain": target.get("source_chain"),
-            "resnum": target.get("source_resnum"),
-            "merged_chain": chain,
-            "merged_resnum": target.get("merged_resnum"),
-            "backbone": target["fragments"]["backbone"],
-            "sugar": target["fragments"]["sugar"],
-            "base": target["fragments"]["base"],
-        })
+        param_key = (residue_name, str(lib_path.resolve()), str(local_frcmod.resolve()))
+        if param_key not in seen_param_keys:
+            seen_param_keys.add(param_key)
+            modxna_params.append({
+                "residue_name": residue_name,
+                "lib": str(lib_path.resolve()),
+                "frcmod": str(local_frcmod.resolve()),
+                "source_resname": target.get("source_resname"),
+                "chain": target.get("source_chain"),
+                "resnum": target.get("source_resnum"),
+                "merged_chain": chain,
+                "merged_resnum": target.get("merged_resnum"),
+                "backbone": fragments["backbone"],
+                "sugar": fragments["sugar"],
+                "base": fragments["base"],
+                "target_count": sum(
+                    1 for other in resolved_targets
+                    if (
+                        other["fragments"]["backbone"],
+                        other["fragments"]["sugar"],
+                        other["fragments"]["base"],
+                    ) == fragment_key
+                ),
+            })
         for entry in updated_mapping:
             if (
                 str(entry.get("merged_chain")) == chain

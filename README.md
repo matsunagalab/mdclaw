@@ -68,6 +68,17 @@ You can also call `mdclaw <tool>` directly. For DAG workflow tools
 create a node first and then pass both `--job-dir` and `--node-id`.
 See `mdclaw --list`.
 
+### Nucleic Acids
+
+Standard DNA/RNA chains are supported through the same DAG workflow: include
+`nucleic` during preparation and `build_amber_system` auto-loads Amber OL15
+for DNA and OL3 for RNA. Modified nucleotides are handled as an explicit prep
+branch with `prepare_modified_nucleic`, which requires `MDCLAW_MODXNA_DIR`
+unless the environment already provides `modxna.sh` and `dat/frcmod.modxna`.
+MDClaw can auto-fill curated modXNA fragment presets such as `5CM`, while
+unknown modifications still require explicit `backbone` / `sugar` / `base`
+fragment IDs. See `skills/md-prepare/setup.md` Step 3.7 for the full workflow.
+
 ### Execution Mode
 
 MDClaw tracks **how much it asks** the user during a skill:

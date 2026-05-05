@@ -76,6 +76,7 @@ class TestToolDiscovery:
         if _dependency_available("pdbfixer"):
             assert "split_molecules" in tools
             assert "inspect_molecules" in tools
+            assert "prepare_modified_nucleic" in tools
 
     def test_all_servers_represented(self):
         from mdclaw._cli import _discover_tools

@@ -28,9 +28,12 @@ def test_modified_nucleic_branch_resolves_into_topology(tmp_path):
     fetch_id = fetch_pdb_node(job_dir, "6JV5")
     inspected = inspect_molecules(str(node_artifact(job_dir, fetch_id, "structure_file")))
     assert inspected["success"], inspected.get("errors")
-    assert inspected["summary"]["modified_nucleic_residues"] == [
-        {"chain": "A", "resname": "5CM"}
-    ]
+    modified_residues = inspected["summary"]["modified_nucleic_residues"]
+    assert [
+        {key: residue[key] for key in ("chain", "resname")}
+        for residue in modified_residues
+    ] == [{"chain": "A", "resname": "5CM"}]
+    assert modified_residues[0]["resnum"]
 
     prep = create_node(str(job_dir), "prep", parent_node_ids=[fetch_id])
     assert prep["success"], prep

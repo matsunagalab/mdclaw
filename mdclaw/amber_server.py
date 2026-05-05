@@ -511,6 +511,44 @@ def validate_metal_params(
     return valid_params, errors
 
 
+def _read_modxna_library_metadata(lib_path: Path) -> dict:
+    text = lib_path.read_text(encoding="utf-8", errors="ignore")
+    quoted = re.findall(r'"([A-Za-z0-9]{1,4})"', text)
+    residue_name = quoted[0].upper()[:3] if quoted else lib_path.stem.upper()[:3]
+    # LEaP library formats vary; this best-effort atom scan is diagnostic
+    # only and intentionally does not block valid sparse/off files.
+    atom_names = sorted(set(re.findall(r'\bname\s+"?([A-Za-z0-9\'*]+)"?', text)))
+    return {
+        "residue_name": residue_name,
+        "declared_residue_names": sorted({name.upper()[:3] for name in quoted}),
+        "atom_names": atom_names,
+    }
+
+
+def _frcmod_validation_summary(frcmod_path: Path) -> dict:
+    text = frcmod_path.read_text(encoding="utf-8", errors="ignore")
+    sections = [
+        section for section in ("MASS", "BOND", "ANGLE", "DIHE", "IMPROPER", "NONBON")
+        if re.search(rf"^\s*{section}\s*$", text, flags=re.MULTILINE)
+    ]
+    warnings = []
+    if not text.strip():
+        warnings.append("frcmod file is empty")
+    elif not sections:
+        warnings.append("frcmod file has no recognized Amber parameter sections")
+    return {"sections": sections, "warnings": warnings}
+
+
+def _pdb_residue_atom_names(pdb_path: Path, residue_name: str) -> list[str]:
+    atoms = set()
+    for line in pdb_path.read_text().splitlines():
+        if not line.startswith(("ATOM", "HETATM")) or len(line) < 26:
+            continue
+        if line[17:20].strip().upper() == residue_name:
+            atoms.add(line[12:16].strip())
+    return sorted(atoms)
+
+
 def validate_modxna_params(
     modxna_params: List[Dict[str, Any]],
     pdb_path: Path,
@@ -549,7 +587,8 @@ def validate_modxna_params(
             errors.append(f"modXNA {label}: library must be .lib or .off: {lib_path.name}")
             continue
 
-        lib_residue_name = lib_path.stem.upper()[:3]
+        lib_metadata = _read_modxna_library_metadata(lib_path)
+        lib_residue_name = lib_metadata["residue_name"]
         if lib_residue_name != residue_name:
             errors.append(
                 f"modXNA {label}: residue_name '{residue_name}' does not match "
@@ -564,11 +603,28 @@ def validate_modxna_params(
             )
             continue
 
+        pdb_atoms = _pdb_residue_atom_names(pdb_path, residue_name)
+        frcmod_summary = _frcmod_validation_summary(frcmod_path)
+        validation = {
+            "label": label,
+            "residue_name": residue_name,
+            "library_residue_name": lib_residue_name,
+            "pdb_residue_count": pdb_residue_counts.get(residue_name, 0),
+            "pdb_atom_names": pdb_atoms,
+            "library_atom_names": lib_metadata["atom_names"],
+            "frcmod_sections": frcmod_summary["sections"],
+            "warnings": frcmod_summary["warnings"],
+        }
+        if lib_metadata["atom_names"]:
+            missing_in_library = sorted(set(pdb_atoms) - set(lib_metadata["atom_names"]))
+            validation["pdb_atoms_missing_in_library"] = missing_in_library
+
         valid = dict(params)
         valid.update({
             "residue_name": residue_name,
             "lib": str(lib_path),
             "frcmod": str(frcmod_path),
+            "validation": validation,
         })
         valid_params.append(valid)
 
@@ -585,7 +641,7 @@ def _pdb_residue_instance_counts(pdb_path: Path) -> Dict[str, int]:
         resname = line[17:20].strip().upper()
         if not resname:
             continue
-        key = (line[21].strip(), line[22:26].strip(), resname)
+        key = (line[21].strip(), line[22:26].strip(), line[26].strip(), resname)
         if key in seen:
             continue
         seen.add(key)
@@ -2134,6 +2190,12 @@ def build_amber_system(
             return blocked
     modxna_residue_names = {p["residue_name"] for p in valid_modxna_params}
     result["parameters"]["modxna_params"] = valid_modxna_params
+    result["parameters"]["modxna_validation"] = [
+        p.get("validation", {}) for p in valid_modxna_params
+    ]
+    for validation in result["parameters"]["modxna_validation"]:
+        for warning in validation.get("warnings", []):
+            result["warnings"].append(f"modXNA {validation.get('label')}: {warning}")
 
     unsupported_modified = [
         r for r in nucleic_content["unsupported_modified_residues"]

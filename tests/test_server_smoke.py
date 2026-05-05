@@ -366,6 +366,15 @@ class TestStructureServer:
         assert result["success"] is True
         assert Path(result["output_file"]).exists()
 
+    def test_modxna_fragment_presets_available(self):
+        from structure_server import MODXNA_FRAGMENT_PRESETS
+
+        assert MODXNA_FRAGMENT_PRESETS["5CM"] == {
+            "backbone": "DPO",
+            "sugar": "DC2",
+            "base": "M5C",
+        }
+
     def test_prepare_complex(self, small_pdb, tmp_path):
         from structure_server import prepare_complex
 

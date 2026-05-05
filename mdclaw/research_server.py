@@ -2837,10 +2837,20 @@ def inspect_molecules(
                     nucleic_subtypes[chain_id] = nucleic_subtype
                 if author_chain not in nucleic_author_chains:
                     nucleic_author_chains.append(author_chain)
-                for res_name in nucleic_info["modified_residue_names"]:
+                modified_names = set(nucleic_info["modified_residue_names"])
+                for res in res_list:
+                    res_name = res.name.strip()
+                    if res_name not in modified_names:
+                        continue
                     modified_nucleic_residues.append({
                         "chain": author_chain,
+                        "author_chain": author_chain,
+                        "label_chain": chain_id,
+                        "resnum": res.seqid.num,
+                        "icode": str(res.seqid.icode or ""),
                         "resname": res_name,
+                        "source_resname": res_name,
+                        "coordinate_frame": "source",
                     })
             elif glycan_info["is_glycan"]:
                 chain_type = "glycan"

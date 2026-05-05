@@ -237,6 +237,71 @@ def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
     assert "```bibtex" in markdown
 
 
+def test_generate_md_methods_report_includes_modxna_and_nucleic_citations(tmp_path):
+    from mdclaw._node import complete_node, create_node
+
+    job_dir = tmp_path / "job_modxna_methods"
+    create_node(str(job_dir), "source")
+    _write_artifact(job_dir, "source_001", "artifacts/6JV5.pdb")
+    complete_node(
+        str(job_dir),
+        "source_001",
+        artifacts={"structure_file": "artifacts/6JV5.pdb"},
+        metadata={"source_type": "pdb", "source_id": "6JV5", "chains": ["A"]},
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+    _write_artifact(job_dir, "prep_001", "artifacts/modified_nucleic.pdb")
+    _write_artifact(job_dir, "prep_001", "artifacts/modxna_params.json", "[]\n")
+    _write_artifact(job_dir, "prep_001", "artifacts/residue_mapping.json", "[]\n")
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={
+            "merged_pdb": "artifacts/modified_nucleic.pdb",
+            "modxna_params": "artifacts/modxna_params.json",
+            "residue_mapping": "artifacts/residue_mapping.json",
+        },
+        metadata={
+            "protonation_method": "not applicable",
+            "has_modified_nucleic": True,
+            "modxna_residue_names": ["RSS"],
+        },
+    )
+    create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
+    _write_artifact(job_dir, "topo_001", "artifacts/system.parm7")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.rst7")
+    complete_node(
+        str(job_dir),
+        "topo_001",
+        artifacts={"prmtop": "artifacts/system.parm7", "inpcrd": "artifacts/system.rst7"},
+        metadata={
+            "forcefield": "ff14SB",
+            "water_model": "tip3p",
+            "nucleic_libraries": ["leaprc.RNA.OL3", "leaprc.DNA.OL15"],
+            "modxna_params": [{"residue_name": "RSS"}],
+        },
+    )
+    create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+    _write_artifact(job_dir, "eq_001", "artifacts/equilibration.xml")
+    complete_node(str(job_dir), "eq_001", artifacts={"state_file": "artifacts/equilibration.xml"})
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"trajectory": "artifacts/trajectory.dcd"},
+        metadata={"simulation_time_ns": 1.0, "platform": "CPU"},
+    )
+
+    result = generate_md_methods_report(str(job_dir))
+
+    assert result["success"] is True
+    assert "Love2024modXNA" in result["citation_keys"]
+    assert "Zgarbova2011OL3" in result["citation_keys"]
+    assert "Zgarbova2015OL15" in result["citation_keys"]
+    assert "modXNA parameters for modified nucleic acids" in result["methods_paragraphs"][1]
+
+
 def test_generate_study_evidence_report(tmp_path):
     from mdclaw._node import complete_node, create_node
     from mdclaw.study_server import add_study_job, init_study
