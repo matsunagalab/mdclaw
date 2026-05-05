@@ -1,0 +1,10 @@
+{
+  "expected_direction": "weakened_binding",
+  "ddg_bind_kcal_per_mol_min": 3.0,
+  "ddg_bind_kcal_per_mol_max": 6.0,
+  "magnitude_class": "large",
+  "kd_ratio_mutant_over_wt_log10_min": 3.0,
+  "kd_ratio_mutant_over_wt_log10_max": 5.0,
+  "source": "Schreiber & Fersht 1995 J. Mol. Biol. 248:478-486",
+  "note": "D39 on barnase is a buried interface residue forming polar contacts with barstar. Alanine substitution removes the side-chain contribution and weakens binding by 3-5 orders of magnitude in Kd."
+}

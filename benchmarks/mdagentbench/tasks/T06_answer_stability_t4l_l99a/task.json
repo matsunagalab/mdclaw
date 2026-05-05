@@ -1,0 +1,51 @@
+{
+  "schema_version": "1.0",
+  "task_id": "T06_answer_stability_t4l_l99a",
+  "category": "experimental_ground_truth",
+  "primary_score": "scientific_answer",
+  "secondary_scores": ["evidence_communication"],
+  "execution_mode": "plan_only",
+  "time_limit_minutes": 60,
+  "failure_policy": {
+    "blocked_by_missing_input_allowed": false,
+    "insufficient_information_allowed": false
+  },
+  "inputs": {
+    "structures": ["input/2LZM.pdb"],
+    "config_files": ["input/mutation_request.json", "input/references.json"]
+  },
+  "required_outputs": [
+    "manifest.json",
+    "provenance.json",
+    "evidence_report.json"
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "effect_direction_in_allowed_set",
+        "check_type": "json_allowed_values",
+        "json_file": "evidence_report.json",
+        "json_path": "effect.direction",
+        "allowed_values": ["destabilizing", "stabilizing", "neutral"],
+        "weight": 0.0
+      }
+    ],
+    "ground_truth_checks": [
+      {
+        "check_id": "effect_direction_matches_truth",
+        "truth_file": "truth/experimental_truth.json",
+        "truth_path": "expected_direction",
+        "submission_file": "evidence_report.json",
+        "submission_path": "effect.direction",
+        "weight": 1.0
+      }
+    ],
+    "llm_judge_rubrics": ["confidence_calibration", "overclaim_detection"]
+  },
+  "task_intent": "Predict the direction of ΔΔG for T4 lysozyme L99A relative to WT (PDB 2LZM). Report effect.direction in evidence_report.json with calibrated confidence and explicit limitations.",
+  "references": [
+    {"note": "Eriksson et al. 1992 — cavity-creating mutation, +4-5 kcal/mol destabilization.", "source": "doi:10.1126/science.1553543"},
+    {"note": "FireProtDB curated single mutation database.", "source": "FireProtDB"},
+    {"note": "S669 / Ssym single-mutation ΔΔG benchmark.", "source": "S669"}
+  ]
+}

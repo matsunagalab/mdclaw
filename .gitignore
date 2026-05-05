@@ -73,6 +73,15 @@ ref/
 *.tar.gz
 test_plan.md
 
+# MDAgentBench dataset assets are curator-authored and must be tracked
+!benchmarks/**/*.pdb
+!benchmarks/**/*.dcd
+!benchmarks/**/*.parm7
+!benchmarks/**/*.rst7
+
+# Local benchmark run outputs (validation artifacts, never commit)
+benchmark_runs/
+
 # Mac
 .DS_Store
 

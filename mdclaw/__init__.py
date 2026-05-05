@@ -15,5 +15,5 @@ __all__ = [
     "analyze_server",
     "study_server",
     "evidence_server",
-    "benchmark_server",
+    "benchmark",
 ]

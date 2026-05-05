@@ -14,5 +14,5 @@ SERVER_REGISTRY = {
     "analyze": "mdclaw.analyze_server",
     "study": "mdclaw.study_server",
     "evidence": "mdclaw.evidence_server",
-    "benchmark": "mdclaw.benchmark_server",
+    "benchmark": "mdclaw.benchmark",
 }

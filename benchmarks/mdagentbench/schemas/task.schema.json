@@ -1,0 +1,514 @@
+{
+  "$defs": {
+    "DeterministicCheck": {
+      "additionalProperties": false,
+      "description": "One deterministic, re-runnable check.\n\nEach check_type interprets the optional fields differently. The scoring\nlayer dispatches on ``check_type`` and applies the relevant fields.",
+      "properties": {
+        "align_selection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Align Selection"
+        },
+        "allowed_values": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Values"
+        },
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "check_type": {
+          "enum": [
+            "required_files",
+            "json_equals",
+            "json_max",
+            "json_min",
+            "json_min_length",
+            "json_allowed_values",
+            "trajectory_rescan",
+            "rmsd_recompute",
+            "metrics_caption_consistency"
+          ],
+          "title": "Check Type",
+          "type": "string"
+        },
+        "equals": {
+          "default": null,
+          "title": "Equals"
+        },
+        "json_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Json File"
+        },
+        "json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Json Path"
+        },
+        "max_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Value"
+        },
+        "min_length": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Length"
+        },
+        "min_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Value"
+        },
+        "reference_pdb": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reference Pdb"
+        },
+        "relative_tolerance": {
+          "default": 0.01,
+          "title": "Relative Tolerance",
+          "type": "number"
+        },
+        "require_min_frames": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Require Min Frames"
+        },
+        "required_outputs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Outputs"
+        },
+        "selection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selection"
+        },
+        "tolerance_angstrom": {
+          "default": 0.05,
+          "title": "Tolerance Angstrom",
+          "type": "number"
+        },
+        "topology_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topology Path"
+        },
+        "trajectory_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trajectory Path"
+        },
+        "weight": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "check_id",
+        "check_type"
+      ],
+      "title": "DeterministicCheck",
+      "type": "object"
+    },
+    "FailurePolicy": {
+      "properties": {
+        "blocked_by_missing_input_allowed": {
+          "default": false,
+          "title": "Blocked By Missing Input Allowed",
+          "type": "boolean"
+        },
+        "insufficient_information_allowed": {
+          "default": false,
+          "title": "Insufficient Information Allowed",
+          "type": "boolean"
+        }
+      },
+      "title": "FailurePolicy",
+      "type": "object"
+    },
+    "GroundTruthCheck": {
+      "additionalProperties": false,
+      "description": "Compares an agent-submitted scalar against a curator-held truth file.\n\ntruth_file is read by the scorer from ``<task_dir>/truth/...``; the agent\nis *not* allowed to read it (skill rule + structural separation).",
+      "properties": {
+        "allowed_values": {
+          "anyOf": [
+            {
+              "items": {},
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Values"
+        },
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "submission_file": {
+          "default": "evidence_report.json",
+          "title": "Submission File",
+          "type": "string"
+        },
+        "submission_path": {
+          "title": "Submission Path",
+          "type": "string"
+        },
+        "truth_file": {
+          "default": "truth/experimental_truth.json",
+          "title": "Truth File",
+          "type": "string"
+        },
+        "truth_path": {
+          "title": "Truth Path",
+          "type": "string"
+        },
+        "weight": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "check_id",
+        "truth_path",
+        "submission_path"
+      ],
+      "title": "GroundTruthCheck",
+      "type": "object"
+    },
+    "TaskInputs": {
+      "description": "Curator-supplied inputs. Empty lists mean the task does not require\nthat kind of artifact (NOT 'agent picks one'). v1.0 every task ships\na fully-specified set.",
+      "properties": {
+        "config_files": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Config Files",
+          "type": "array"
+        },
+        "ligands": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Ligands",
+          "type": "array"
+        },
+        "structures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Structures",
+          "type": "array"
+        },
+        "trajectories": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trajectories",
+          "type": "array"
+        }
+      },
+      "title": "TaskInputs",
+      "type": "object"
+    },
+    "TaskReference": {
+      "properties": {
+        "doi": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Doi"
+        },
+        "note": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Note"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "title": "TaskReference",
+      "type": "object"
+    },
+    "TaskScoring": {
+      "properties": {
+        "deterministic_checks": {
+          "items": {
+            "$ref": "#/$defs/DeterministicCheck"
+          },
+          "title": "Deterministic Checks",
+          "type": "array"
+        },
+        "ground_truth_checks": {
+          "items": {
+            "$ref": "#/$defs/GroundTruthCheck"
+          },
+          "title": "Ground Truth Checks",
+          "type": "array"
+        },
+        "llm_judge_rubrics": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Llm Judge Rubrics",
+          "type": "array"
+        }
+      },
+      "title": "TaskScoring",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "v1.0 task contract.\n\nNote the deliberate absence of any ``truth.expected_*`` fields here:\nground truth lives in ``<task_dir>/truth/`` and is scorer-only.",
+  "properties": {
+    "category": {
+      "enum": [
+        "engine_sanity",
+        "system_preparation",
+        "experimental_ground_truth",
+        "publication_ready_evidence"
+      ],
+      "title": "Category",
+      "type": "string"
+    },
+    "execution_mode": {
+      "enum": [
+        "lite",
+        "dry_run",
+        "plan_only"
+      ],
+      "title": "Execution Mode",
+      "type": "string"
+    },
+    "failure_policy": {
+      "$ref": "#/$defs/FailurePolicy"
+    },
+    "inputs": {
+      "$ref": "#/$defs/TaskInputs"
+    },
+    "not_scored_here": {
+      "items": {
+        "enum": [
+          "preparation",
+          "execution",
+          "scientific_answer",
+          "evidence_communication"
+        ],
+        "type": "string"
+      },
+      "title": "Not Scored Here",
+      "type": "array"
+    },
+    "primary_score": {
+      "enum": [
+        "preparation",
+        "execution",
+        "scientific_answer",
+        "evidence_communication"
+      ],
+      "title": "Primary Score",
+      "type": "string"
+    },
+    "references": {
+      "items": {
+        "$ref": "#/$defs/TaskReference"
+      },
+      "title": "References",
+      "type": "array"
+    },
+    "required_outputs": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Required Outputs",
+      "type": "array"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scoring": {
+      "$ref": "#/$defs/TaskScoring"
+    },
+    "secondary_scores": {
+      "items": {
+        "enum": [
+          "preparation",
+          "execution",
+          "scientific_answer",
+          "evidence_communication"
+        ],
+        "type": "string"
+      },
+      "title": "Secondary Scores",
+      "type": "array"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "task_intent": {
+      "title": "Task Intent",
+      "type": "string"
+    },
+    "time_limit_minutes": {
+      "default": 180,
+      "exclusiveMinimum": 0,
+      "title": "Time Limit Minutes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "task_id",
+    "category",
+    "primary_score",
+    "execution_mode",
+    "task_intent"
+  ],
+  "title": "Task",
+  "type": "object"
+}

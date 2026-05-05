@@ -1,8 +1,0 @@
-{
-  "required_outputs": [
-    "submission/manifest.json",
-    "submission/provenance.json",
-    "submission/evidence_report.json"
-  ],
-  "task_id": "stab_ci2_core_mutation"
-}

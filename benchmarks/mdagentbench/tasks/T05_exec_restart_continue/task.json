@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0",
+  "task_id": "T05_exec_restart_continue",
+  "category": "engine_sanity",
+  "primary_score": "execution",
+  "secondary_scores": ["evidence_communication"],
+  "execution_mode": "lite",
+  "time_limit_minutes": 30,
+  "failure_policy": {
+    "blocked_by_missing_input_allowed": false,
+    "insufficient_information_allowed": false
+  },
+  "inputs": {
+    "structures": ["input/5AWL.pdb"],
+    "config_files": ["input/restart_protocol.json"]
+  },
+  "required_outputs": [
+    "manifest.json",
+    "metrics.json",
+    "provenance.json",
+    "evidence_report.json"
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "restart_steps_contiguous",
+        "check_type": "json_equals",
+        "json_file": "metrics.json",
+        "json_path": "execution.restart_steps_contiguous",
+        "equals": true,
+        "weight": 0.4
+      },
+      {
+        "check_id": "concat_frames_match_sources",
+        "check_type": "json_equals",
+        "json_file": "metrics.json",
+        "json_path": "analysis.concat_frames_match_sources",
+        "equals": true,
+        "weight": 0.3
+      },
+      {
+        "check_id": "concat_trajectory_loadable",
+        "check_type": "trajectory_rescan",
+        "trajectory_path": "../work/traj_concat.dcd",
+        "topology_path": "../work/system.parm7",
+        "require_min_frames": 4,
+        "weight": 0.3
+      }
+    ],
+    "ground_truth_checks": [],
+    "llm_judge_rubrics": ["provenance_traceability"]
+  },
+  "task_intent": "Split a chignolin NVT MD into two equal chunks; save state.xml after chunk 1, load it on a fresh Simulation for chunk 2, concatenate chunk 1 + chunk 2 trajectories with mdtraj. Verify that step counters are contiguous (chunk1.end == chunk2.start) and that concat frame count equals sum of source frames.",
+  "references": [
+    {"note": "Honda et al. 2008 — chignolin CLN025.", "source": "PDB 5AWL"}
+  ]
+}

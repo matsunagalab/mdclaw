@@ -40,12 +40,25 @@ else
 fi
 
 # --- Determine runtime ---
-# Explicit override via MDCLAW_RUNTIME=singularity|apptainer|docker
-# Otherwise auto-detect: singularity (with SIF) > apptainer (with SIF) > docker
+# Explicit override via MDCLAW_RUNTIME=singularity|apptainer|docker|conda
+# Otherwise auto-detect:
+#   conda env named "mdclaw" exists → conda
+#   else singularity (with SIF) > apptainer (with SIF) > docker
+#
+# Self-containment rule: every command for a given invocation runs entirely
+# inside the chosen runtime. SLURM/--list flags still execute on the host
+# because they need host-side commands (sbatch, etc).
+CONDA_ENV_NAME="${MDCLAW_CONDA_ENV:-mdclaw}"
 RUNTIME="${MDCLAW_RUNTIME:-}"
 CONTAINER_CMD=""
+_conda_env_exists() {
+    command -v conda &>/dev/null \
+        && conda env list 2>/dev/null | awk '{print $1}' | grep -qx "$CONDA_ENV_NAME"
+}
 if [ -z "$RUNTIME" ]; then
-    if [ -n "$SIF" ] && command -v singularity &>/dev/null; then
+    if _conda_env_exists; then
+        RUNTIME="conda"
+    elif [ -n "$SIF" ] && command -v singularity &>/dev/null; then
         RUNTIME="singularity"
         CONTAINER_CMD="singularity"
     elif [ -n "$SIF" ] && command -v apptainer &>/dev/null; then
@@ -78,8 +91,15 @@ if echo " $NATIVE_TOOLS " | grep -q " $TOOL "; then
         exec python3 -m mdclaw._cli "$@"
 fi
 
-# --- Computation tools run via container ---
+# --- Computation tools run via the chosen runtime (self-contained) ---
 case "$RUNTIME" in
+    conda)
+        # Run mdclaw entirely inside the conda env. The env must contain
+        # mdclaw (-e .) plus its scientific dependencies. No mixing with
+        # the host Python.
+        exec conda run --no-capture-output -n "$CONDA_ENV_NAME" \
+            python -m mdclaw._cli "$@"
+        ;;
     singularity|apptainer)
         NV_FLAG=""
         if command -v nvidia-smi &>/dev/null; then
@@ -115,6 +135,7 @@ case "$RUNTIME" in
         echo "  - Singularity: https://docs.sylabs.io/guides/latest/user-guide/quick_start.html" >&2
         echo "  - Apptainer: https://apptainer.org/docs/user/main/quick_start.html" >&2
         echo "  - Docker: https://docs.docker.com/get-docker/" >&2
+        echo "Or create a conda env named 'mdclaw' (with mdclaw + AmberTools + OpenMM)" >&2
         echo "Or set MDCLAW_SIF=/path/to/mdclaw.sif" >&2
         exit 1
         ;;

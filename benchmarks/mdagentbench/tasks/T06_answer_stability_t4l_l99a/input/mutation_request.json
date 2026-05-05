@@ -1,0 +1,8 @@
+{
+  "wild_type_pdb": "input/2LZM.pdb",
+  "chain": "A",
+  "wild_type_residue": "LEU",
+  "residue_number": 99,
+  "mutant_residue": "ALA",
+  "mutation_short": "L99A"
+}

@@ -1,0 +1,65 @@
+{
+  "schema_version": "1.0",
+  "task_id": "T01_engine_smoke",
+  "category": "engine_sanity",
+  "primary_score": "execution",
+  "secondary_scores": [],
+  "execution_mode": "lite",
+  "time_limit_minutes": 30,
+  "failure_policy": {
+    "blocked_by_missing_input_allowed": false,
+    "insufficient_information_allowed": false
+  },
+  "inputs": {
+    "structures": ["input/5AWL.pdb"],
+    "config_files": ["input/solvent_spec.json", "input/md_protocol.json"]
+  },
+  "required_outputs": [
+    "manifest.json",
+    "metrics.json",
+    "provenance.json",
+    "evidence_report.json"
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "execution_completed",
+        "check_type": "json_equals",
+        "json_file": "metrics.json",
+        "json_path": "execution.completed",
+        "equals": true,
+        "weight": 0.3
+      },
+      {
+        "check_id": "finite_energy",
+        "check_type": "json_equals",
+        "json_file": "metrics.json",
+        "json_path": "execution.finite_energy",
+        "equals": true,
+        "weight": 0.2
+      },
+      {
+        "check_id": "no_nan",
+        "check_type": "json_equals",
+        "json_file": "metrics.json",
+        "json_path": "execution.no_nan",
+        "equals": true,
+        "weight": 0.2
+      },
+      {
+        "check_id": "trajectory_rescan",
+        "check_type": "trajectory_rescan",
+        "trajectory_path": "../work/traj.dcd",
+        "topology_path": "../work/system.parm7",
+        "require_min_frames": 5,
+        "weight": 0.3
+      }
+    ],
+    "ground_truth_checks": [],
+    "llm_judge_rubrics": []
+  },
+  "task_intent": "Run a 10 ps Langevin NVT smoke MD on chignolin (CLN025, PDB 5AWL) starting from the supplied PDB. Report finite energy, no NaN, and emit a trajectory file the scorer can re-load.",
+  "references": [
+    {"note": "Honda et al. 2008 — chignolin CLN025 designed mini-protein.", "source": "PDB 5AWL"}
+  ]
+}

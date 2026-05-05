@@ -1,0 +1,8 @@
+{
+  "allowed_source_pools": ["FireProtDB", "S669", "Ssym", "VariBench"],
+  "primary_reference": {
+    "doi": "10.1126/science.1553543",
+    "citation": "Eriksson AE, Baase WA, Wozniak JA, Matthews BW. A cavity-containing mutant of T4 lysozyme is stabilized by buried benzene. Science 1992."
+  },
+  "note": "Predict effect.direction with calibrated confidence; cite the source pool you draw from."
+}

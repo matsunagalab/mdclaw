@@ -1,0 +1,8 @@
+{
+  "allowed_source_pools": ["SKEMPI", "ASEdb"],
+  "primary_reference": {
+    "doi": "10.1006/jmbi.1995.0237",
+    "citation": "Schreiber G, Fersht AR. Energetics of protein-protein interactions: analysis of the barnase-barstar interface by single mutations and double mutant cycles. J. Mol. Biol. 1995, 248:478-486."
+  },
+  "note": "Predict effect.direction for D39A on barnase relative to WT barnase against barstar."
+}

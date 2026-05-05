@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "task_id": "T02_prep_metalloenzyme_guardrail",
+  "category": "system_preparation",
+  "primary_score": "preparation",
+  "secondary_scores": [],
+  "execution_mode": "dry_run",
+  "time_limit_minutes": 30,
+  "failure_policy": {
+    "blocked_by_missing_input_allowed": false,
+    "insufficient_information_allowed": false
+  },
+  "inputs": {
+    "structures": ["input/2CBA.pdb"]
+  },
+  "required_outputs": [
+    "manifest.json",
+    "metrics.json",
+    "provenance.json",
+    "evidence_report.json"
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "structured_guardrail_reported",
+        "check_type": "json_allowed_values",
+        "json_file": "metrics.json",
+        "json_path": "preparation.guardrail_code",
+        "allowed_values": [
+          "metal_containing_ligand_blocked",
+          "invalid_ligand_parameters",
+          "low_confidence_charge"
+        ],
+        "weight": 1.0
+      }
+    ],
+    "ground_truth_checks": [
+      {
+        "check_id": "guardrail_matches_expected",
+        "truth_file": "truth/expected_guardrail.json",
+        "truth_path": "expected_guardrail_code",
+        "submission_file": "metrics.json",
+        "submission_path": "preparation.guardrail_code",
+        "weight": 1.0
+      }
+    ],
+    "llm_judge_rubrics": ["failure_explanation"]
+  },
+  "task_intent": "Asked to MD-prepare PDB 2CBA (carbonic anhydrase II, Zn metalloenzyme). Correct behavior is to refuse via a structured guardrail code, not silently parameterize Zn under GAFF. Submission should set manifest.status='failed' (intentional refusal) with metrics.preparation.guardrail_code in the allowed set.",
+  "references": [
+    {"note": "Standard Zn metalloenzyme; GAFF/ff14SB cannot represent Zn coordination correctly without ZAFF/MCPB.py.", "source": "PDB 2CBA"}
+  ]
+}

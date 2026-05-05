@@ -1,6 +1,6 @@
 ---
 name: MD Benchmark
-description: "Run MDAgentBench evaluations for MDClaw or external MD agents. Use when creating benchmark runs, producing task submissions, validating/scoring submissions, or summarizing benchmark results."
+description: "Run MDAgentBench v1.0 evaluations for MDClaw or external MD agents. Use when creating benchmark runs, producing task submissions, validating/scoring submissions, or summarizing benchmark results."
 ---
 
 # MD Benchmark
@@ -9,63 +9,86 @@ Read `skills/common/preamble.md` and `skills/common/tool-output.md` before
 acting.
 
 Use this skill to evaluate MD agents with the artifact-based MDAgentBench
-contract. The benchmark scores only submitted files, not chat history, tool
-calls, or harness-specific logs.
+v1.0 contract. The benchmark scores only submitted files, not chat history,
+tool calls, or harness-specific logs.
 
 ## Core Contract
 
 Each task has:
 
-- `task.json`: public task contract the agent may read before acting.
-- `submission/`: artifact directory produced by the evaluated agent or harness.
-- `score.json`: deterministic and optional structured-judge score for one task.
-- `summary.json`: aggregate score for a benchmark run.
+- `task.json` — public task contract the agent may read.
+- `input/` — agent-readable input files (PDB, mutation requests, MD
+  protocols).
+- `truth/` — **scorer-only** ground truth. The agent MUST NOT read this
+  directory.
+- `submission/` — artifact directory the agent produces.
+- `score.json` — deterministic + ground-truth + (optional) LLM-judge score.
+- `summary.json` — run-level aggregate produced by `summarize_benchmark_run`.
 
-Default checked-in datasets:
-
-- Pilot: `benchmarks/mdagentbench/`
-- Lite v0.1 skeleton: `benchmarks/mdagentbench_lite_v0_1/`
+Default checked-in dataset: `benchmarks/mdagentbench/` (9 tasks,
+schema_version `1.0`).
 
 ## Critical Rules
 
-- Before producing a task submission, read `task.json` and input files only.
-  Do not read `truth/` or `scorer/` for that task.
-- Do not set success metrics to `true` unless the submitted artifacts support
-  them. If work was not run or is uncertain, use `partial`, `failed`, or
-  `blocked` and explain the limitation.
-- Keep `submission/manifest.json` consistent with files that actually exist.
-- Treat `export_mdclaw_submission` as a conservative skeleton exporter. It does
-  not infer task-specific scientific success; fill `metrics.json` explicitly.
-- The scorer does not call an LLM. If qualitative judging is requested, an
-  external evaluator writes structured JSON from `scorer/llm_judge_prompt.json`
-  and passes it through `--llm-judge-file`.
+- Before producing a submission, read `task.json` and the task's `input/`
+  directory only. **Do not read `truth/`, `scorer/`, or `expected/`.**
+- Curator-fixed inputs: every task ships its own concrete PDB and config
+  files in `input/`. Do not select different cases.
+- Honesty first: only set boolean success metrics to `true` when the
+  artifacts support them. If work was not run or is uncertain, use
+  `manifest.status="partial"` (× 0.6 multiplier) or `"blocked"` (zero) and
+  explain in `evidence_report.limitations`.
+- For T02-style structured refusal: set `manifest.status="failed"` and emit
+  `metrics.preparation.guardrail_code` from the allowed set; that earns full
+  credit when the truth file confirms the expected guardrail.
+- The scorer re-runs computations (md5, trajectory load, RMSD recompute,
+  caption ↔ metrics consistency). Submitted JSON values are
+  cross-validated; they are not trusted blindly.
 
 ## Submission Layout
 
-Every harness writes a task-level `submission/` directory:
-
 ```text
 submission/
-  manifest.json
-  metrics.json
-  evidence_report.json
-  provenance.json
-  decision_log.jsonl
-  figures/
-  methods.md
+  manifest.json          # required
+  metrics.json           # required by most tasks
+  evidence_report.json   # required by most tasks
+  provenance.json        # required by all tasks
+  decision_log.jsonl     # optional, useful for traceability
+  methods.md             # required by T09
+  figures/               # required by T08; manifest.outputs.figures must list each
+  prepared_structure.pdb # required by T03
 ```
 
-Only files required by the task contract need to be present, but
-`manifest.json`, `metrics.json`, `evidence_report.json`, and `provenance.json`
-are the common minimum.
+## Self-contained execution
+
+Run benchmark commands either entirely inside the `mdclaw:latest` container
+(Mode A) or entirely inside a `mdclaw` conda env (Mode B). **Never mix.**
+
+```bash
+# Mode A — container
+docker run --rm -v "$PWD:/work" -w /work mdclaw:latest \
+  mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <id>
+
+# Mode B — conda
+conda run -n mdclaw mdclaw init_benchmark_run \
+  --output-dir benchmark_runs --run-id <id>
+
+# bin/mdclaw wrapper auto-selects Mode B when a 'mdclaw' conda env exists,
+# otherwise falls back to singularity → docker.
+```
+
+The benchmark CLI runs in pure Python (no MD compute), but it stays inside
+the chosen runtime so the dependency closure (mdclaw, pydantic, mdtraj) is
+always self-consistent.
 
 ## Workflow
 
-1. Choose the dataset and task:
+1. List tasks and validate the dataset:
 
    ```bash
    mdclaw list_benchmark_tasks
-   mdclaw validate_benchmark_task --task-file benchmarks/mdagentbench/tasks/<task_id>/task.json
+   mdclaw validate_benchmark_task --task-file \
+       benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json
    ```
 
 2. Initialize a run:
@@ -73,16 +96,14 @@ are the common minimum.
    ```bash
    mdclaw init_benchmark_run \
      --output-dir benchmark_runs \
-     --run-id <run_id> \
-     --execution-mode dry_run \
+     --run-id <YYYYMMDD>_<harness>_<id> \
+     --execution-mode lite \
      --judge-mode deterministic
    ```
 
-3. Produce `submission/` for each task under:
-
-   ```text
-   benchmark_runs/<run_id>/tasks/<task_id>/submission/
-   ```
+3. For each task, read `task.json` + `input/`, do the work, write
+   `submission/` under
+   `benchmark_runs/<run_id>/tasks/<task_id>/submission/`.
 
 4. Validate before scoring:
 
@@ -92,7 +113,7 @@ are the common minimum.
      --submission-dir benchmark_runs/<run_id>/tasks/<task_id>/submission
    ```
 
-5. Score the task:
+5. Score:
 
    ```bash
    mdclaw score_benchmark_submission \
@@ -102,31 +123,50 @@ are the common minimum.
      --output-file benchmark_runs/<run_id>/tasks/<task_id>/score.json
    ```
 
-6. Summarize the run:
+6. Summarize:
 
    ```bash
-   mdclaw summarize_benchmark_run \
-     --run-dir benchmark_runs/<run_id>
+   mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
    ```
 
-Report the overall score, per-axis scores, failed checks, missing outputs, and
-any limitations that affect interpretation.
+   `runs.jsonl` and `summaries.jsonl` are appended with last-write-wins
+   semantics on `run_id`.
 
-## Common Task Patterns
+## Pilot tasks (v1.0)
 
-- Preparation tasks usually require prepared structures, topology-ready
-  artifacts, or structured guardrail metrics under `preparation.*`.
-- Execution tasks usually require finite-energy and completion evidence under
-  `execution.*`, plus provenance for restart or continuation tasks.
-- Scientific-answer tasks usually require a clear `effect.direction` in
-  `evidence_report.json`; only state a direction when supported by submitted
-  evidence.
-- Evidence-communication tasks usually require consistent metrics, figures,
-  captions, methods, limitations, and provenance.
+| Task | Primary axis | Mode | Target system |
+|---|---|---|---|
+| T01_engine_smoke | execution | lite | Chignolin (5AWL) |
+| T02_prep_metalloenzyme_guardrail | preparation | dry_run | Carbonic anhydrase II (2CBA) |
+| T03_prep_ligand_pose_t4l_benzene | preparation | lite | T4L L99A + benzene (181L) |
+| T04_exec_short_protein_md | execution | lite | T4 lysozyme WT (2LZM) |
+| T05_exec_restart_continue | execution | lite | Chignolin (5AWL) |
+| T06_answer_stability_t4l_l99a | scientific_answer | plan_only | T4 lysozyme L99A |
+| T07_answer_ppi_hotspot_barnase_d39a | scientific_answer | plan_only | Barnase D39A on 1BRS |
+| T08_communicate_t4l_dynamics | evidence_communication | dry_run | T4 lysozyme WT |
+| T09_study_t4l_wt_vs_l99a_methods | evidence_communication | dry_run | T4L WT vs L99A |
+
+Five tasks reuse T4 lysozyme as a shared scaffold so scoring is comparable
+across harnesses.
+
+## Structured LLM Judge (optional, deferred to v1.x automation)
+
+Deterministic mode is the default. To add qualitative scoring:
+
+1. An external evaluator reads `<task_dir>/scorer/llm_judge_prompt.json`,
+   combines it with the agent's submission, calls an LLM, and saves the
+   structured response (a JSON object with `enabled`, `judge_model`,
+   `temperature`, `scores`, `violations`).
+2. Pass that file via `--llm-judge-file` to `score_benchmark_submission`.
+3. Score axes that have a populated secondary will reflect the judge values;
+   axes without a judge entry remain `null`.
+
+A `mdclaw run_llm_judge` automation tool will land in v1.x. For now the
+judge file must be produced externally.
 
 ## MDClaw Job Adapter
 
-When a completed MDClaw `job_dir` or `study_dir` already exists, start with:
+When a completed MDClaw `job_dir` already exists, start with:
 
 ```bash
 mdclaw export_mdclaw_submission \
@@ -136,18 +176,18 @@ mdclaw export_mdclaw_submission \
   --output-dir benchmark_runs/<run_id>/tasks/<task_id>/submission
 ```
 
-Then inspect the task's deterministic checks and fill `metrics.json`,
-`manifest.json`, and `evidence_report.json` with task-specific values that are
-supported by the artifacts.
+The adapter writes a partial-status skeleton (manifest, metrics, provenance,
+evidence_report). Fill in task-specific deterministic values yourself.
 
 ## Dataset Maintenance
 
-Create or refresh benchmark skeletons only when explicitly needed:
+The v1.0 dataset is curator-authored and lives at
+`benchmarks/mdagentbench/`. Schema files are generated from the pydantic
+models:
 
 ```bash
-mdclaw create_pilot_benchmark --benchmark-dir benchmarks/mdagentbench
-mdclaw create_lite_benchmark --benchmark-dir benchmarks/mdagentbench_lite_v0_1
+mdclaw write_benchmark_schemas --output-dir benchmarks/mdagentbench/schemas
 ```
 
-Use `--overwrite` only when the user intends to regenerate existing task
-contracts.
+`create_pilot_benchmark` is now a no-op when the dataset already exists; it
+returns success and does not regenerate task contracts.

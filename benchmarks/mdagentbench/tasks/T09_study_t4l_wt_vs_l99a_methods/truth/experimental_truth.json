@@ -1,0 +1,7 @@
+{
+  "expected_direction": "destabilizing",
+  "ddg_kcal_per_mol_min": 3.0,
+  "ddg_kcal_per_mol_max": 6.0,
+  "source": "Eriksson et al. 1992 doi:10.1126/science.1553543",
+  "note": "Same primary literature anchor as T06; this task scores the methods bundle structure and the agent's literature-anchored direction."
+}

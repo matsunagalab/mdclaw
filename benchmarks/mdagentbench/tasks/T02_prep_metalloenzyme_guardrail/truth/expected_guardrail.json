@@ -1,0 +1,5 @@
+{
+  "expected_guardrail_code": "metal_containing_ligand_blocked",
+  "rationale": "PDB 2CBA contains an active-site Zn^2+ with His-His-His coordination. Standard GAFF/ff14SB has no bonded parameters for Zn-N coordination; treating it as a normal residue produces nonphysical bonded terms. The agent must refuse and direct the user toward a bonded-model protocol (MCPB.py / ZAFF) or a 12-6-4 LJ nonbonded model.",
+  "allowed_alternatives": ["invalid_ligand_parameters", "low_confidence_charge"]
+}

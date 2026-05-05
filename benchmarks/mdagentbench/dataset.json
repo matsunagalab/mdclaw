@@ -1,20 +1,22 @@
 {
-  "benchmark_version": "MDAgentBench-Lite-v0.1",
-  "created_at": "2026-05-05T07:27:59.037074Z",
-  "notes": [
-    "This pilot is intentionally light-weight and artifact based.",
-    "Inputs are skeletons; each task can be populated with concrete files from the cited curated source."
-  ],
-  "schema_version": "0.1",
-  "task_count": 8,
+  "benchmark_version": "MDAgentBench-v1.0",
+  "schema_version": "1.0",
+  "released": "2026-05-06",
+  "task_count": 9,
   "task_ids": [
-    "prep_ligand_pose_bace1",
-    "prep_guardrail_bad_ligand",
-    "exec_short_protein_md",
-    "exec_restart_continue",
-    "answer_stability_mutation",
-    "answer_ppi_hotspot",
-    "communicate_rmsd_rmsf_contacts",
-    "study_wt_mutant_methods"
+    "T01_engine_smoke",
+    "T02_prep_metalloenzyme_guardrail",
+    "T03_prep_ligand_pose_t4l_benzene",
+    "T04_exec_short_protein_md",
+    "T05_exec_restart_continue",
+    "T06_answer_stability_t4l_l99a",
+    "T07_answer_ppi_hotspot_barnase_d39a",
+    "T08_communicate_t4l_dynamics",
+    "T09_study_t4l_wt_vs_l99a_methods"
+  ],
+  "notes": [
+    "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
+    "Curator-fixed PDBs; ground truth held in <task>/truth/ (scorer-only).",
+    "Designed for self-contained execution in either mdclaw:latest container or a 'mdclaw' conda env."
   ]
 }

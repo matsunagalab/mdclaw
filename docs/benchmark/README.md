@@ -1,49 +1,75 @@
-# MDAgentBench
+# MDAgentBench v1.0
 
 MDAgentBench is a tool-agnostic benchmark contract for molecular dynamics
 agents. It evaluates MDClaw as one backend, but the submission format is just
-files on disk, so Claude Code, Cursor, OpenCode, Pi, GROMACS workflows, raw
-OpenMM scripts, or other harnesses can be compared with the same scorer.
+files on disk, so Claude Code, Cursor, OpenCode, raw OpenMM scripts, GROMACS
+workflows, or other harnesses can be compared with the same scorer.
+
+The v1.0 release replaces the v0.1 pilot with:
+
+- 9 tasks centered on chignolin, T4 lysozyme (WT + L99A), barnase-barstar,
+  and carbonic anhydrase — all curator-fixed, no agent-chosen inputs.
+- Held-back ground truth in `<task>/truth/` (scorer-only). The agent's
+  `task.json` contains no `expected_*` fields.
+- A pydantic-v2 framework that re-validates submissions (md5, trajectory
+  rescan, RMSD recompute, caption ↔ metrics consistency) instead of trusting
+  submitted JSON.
+- Per-axis aggregation that divides by the number of tasks where each axis
+  is in scope, so a perfect run reaches 1.0 on every populated axis.
+- Self-contained execution in either the `mdclaw:latest` container or a
+  `mdclaw` conda env. `bin/mdclaw` auto-selects.
 
 ## Scores
 
-The benchmark reports four composite scores:
+Four composite axes, each in `[0, 1]`:
 
-- `preparation`: system preparation quality, including pose preservation,
-  structured guardrails, and MD-ready artifacts.
-- `execution`: short MD completion, restart/continuation correctness, finite
-  energy, and analysis completeness.
-- `scientific_answer`: agreement with curated experimental direction or
-  supplied truth, plus calibrated interpretation.
-- `evidence_communication`: plot/data consistency, methods traceability,
-  figure readiness, and explicit limitations.
+- `preparation` — system preparation quality, including pose preservation,
+  structured guardrails, MD-ready artifacts.
+- `execution` — short MD completion, restart correctness, finite energy,
+  and trajectory artifact integrity.
+- `scientific_answer` — agreement with curated experimental direction,
+  plus calibrated interpretation.
+- `evidence_communication` — figure / data consistency, methods
+  traceability, figure readiness, and explicit limitations.
 
-Each task has one `primary_score` and optional `secondary_scores`. This avoids
-double-counting one failure across all axes.
+Each task names a `primary_score` and zero or more `secondary_scores`. The
+per-task `weighted_total` is `0.8 * primary + 0.2 * mean(secondaries)` when
+secondaries are populated, otherwise `primary` alone — both reach 1.0 at
+perfect performance.
+
+The run-level axis score is the mean of per-task values across the tasks
+where that axis is in scope, returning `null` when no task scores the axis.
+`overall_score` is the mean of `weighted_total` across all tasks.
 
 ## Dataset Layout
-
-The checked-in pilot lives at `benchmarks/mdagentbench/`:
 
 ```text
 benchmarks/mdagentbench/
   dataset.json
   schemas/
-    task_schema_v0.1.json
-    submission_manifest_schema_v0.1.json
-    score_schema_v0.1.json
+    task.schema.json
+    submission_manifest.schema.json
+    score.schema.json
   tasks/<task_id>/
     task.json
-    input/
-    truth/experimental_truth.json
-    expected/required_outputs.json
-    expected/scoring_rubric.json
-    scorer/llm_judge_prompt.json
+    input/             # agent-readable inputs (PDB, configs, references)
+    truth/             # scorer-only ground truth — DO NOT READ FROM AGENT
+    scorer/            # LLM judge prompt template (v1.x automation)
 ```
 
-`benchmarks/mdagentbench_lite_v0_1/` contains the 30-task Lite v0.1 skeleton
-with the same schema. Concrete task input files can be populated from the
-curated source pools listed in each `task.json`.
+Pilot tasks (v1.0):
+
+| Task | Primary | Target system | Source |
+|---|---|---|---|
+| T01_engine_smoke | execution | Chignolin (5AWL) | Honda 2008 |
+| T02_prep_metalloenzyme_guardrail | preparation | Carbonic anhydrase (2CBA) | — |
+| T03_prep_ligand_pose_t4l_benzene | preparation | T4L L99A + benzene (181L) | Morton 1995 |
+| T04_exec_short_protein_md | execution | T4 lysozyme WT (2LZM) | — |
+| T05_exec_restart_continue | execution | Chignolin (5AWL) | — |
+| T06_answer_stability_t4l_l99a | scientific_answer | T4L L99A vs WT | Eriksson 1992 |
+| T07_answer_ppi_hotspot_barnase_d39a | scientific_answer | Barnase D39A | Schreiber & Fersht 1995 |
+| T08_communicate_t4l_dynamics | evidence_communication | T4L WT trajectory | — |
+| T09_study_t4l_wt_vs_l99a_methods | evidence_communication | T4L WT vs L99A study | Eriksson 1992 |
 
 ## Submission Contract
 
@@ -51,53 +77,56 @@ Every harness writes a `submission/` directory:
 
 ```text
 submission/
-  manifest.json
-  metrics.json
-  evidence_report.json
-  provenance.json
-  decision_log.jsonl
-  figures/
-  methods.md
+  manifest.json          # required
+  metrics.json           # required by most tasks
+  evidence_report.json   # required by most tasks
+  provenance.json        # required (md5, scripts, tools_used)
+  decision_log.jsonl     # optional but recommended
+  figures/               # required by T08
+  methods.md             # required by T09
+  prepared_structure.pdb # required by T03
 ```
 
-Only the artifacts are scored. The scorer does not inspect chat transcripts,
-tool calls, or harness-specific logs.
+Only the artifacts are scored. The scorer never reads chat transcripts,
+tool calls, or harness logs. Provenance md5 references are recomputed
+on the scorer side.
 
-## Running A Baseline
+## Self-contained execution
 
-Create or refresh benchmark contracts:
+Run benchmark commands either entirely inside the `mdclaw:latest` container
+(Mode A) or entirely inside a `mdclaw` conda env (Mode B). **Never mix.**
 
 ```bash
-mdclaw create_pilot_benchmark --benchmark-dir benchmarks/mdagentbench --overwrite
-mdclaw create_lite_benchmark --benchmark-dir benchmarks/mdagentbench_lite_v0_1 --overwrite
+# Mode A — container self-contained
+docker run --rm -v "$PWD:/work" -w /work mdclaw:latest \
+  mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <id>
+
+# Mode B — conda self-contained
+conda run -n mdclaw mdclaw init_benchmark_run \
+  --output-dir benchmark_runs --run-id <id>
+
+# bin/mdclaw wrapper auto-selects Mode B when a 'mdclaw' conda env exists,
+# otherwise falls back to singularity → docker.
 ```
 
-Initialize a run:
+## Per-task Workflow
 
 ```bash
-mdclaw init_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id 20260505_cursor_gpt55_mdclaw_pilot \
-  --execution-mode dry_run \
-  --judge-mode deterministic
-```
+# 1. Read task.json + input/, build submission/.
+# 2. Validate:
+mdclaw validate_benchmark_submission \
+  --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json \
+  --submission-dir benchmark_runs/<run_id>/tasks/T01_engine_smoke/submission
 
-For each task, a harness should read `task.json`, produce `submission/`, then
-score it:
-
-```bash
+# 3. Score:
 mdclaw score_benchmark_submission \
-  --task-file benchmarks/mdagentbench/tasks/exec_short_protein_md/task.json \
-  --submission-dir benchmark_runs/20260505_cursor_gpt55_mdclaw_pilot/tasks/exec_short_protein_md/submission \
-  --run-id 20260505_cursor_gpt55_mdclaw_pilot \
-  --output-file benchmark_runs/20260505_cursor_gpt55_mdclaw_pilot/tasks/exec_short_protein_md/score.json
-```
+  --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json \
+  --submission-dir benchmark_runs/<run_id>/tasks/T01_engine_smoke/submission \
+  --run-id <run_id> \
+  --output-file benchmark_runs/<run_id>/tasks/T01_engine_smoke/score.json
 
-Aggregate the run:
-
-```bash
-mdclaw summarize_benchmark_run \
-  --run-dir benchmark_runs/20260505_cursor_gpt55_mdclaw_pilot
+# 4. Aggregate:
+mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```
 
 The runner appends durable records to:
@@ -105,55 +134,40 @@ The runner appends durable records to:
 - `benchmark_runs/runs.jsonl`
 - `benchmark_runs/summaries.jsonl`
 
-## Using The Agent Skill
-
-Claude Code and Cursor users can start from the benchmark skill:
-
-```text
-/mdclaw:md-benchmark run a smoke evaluation for exec_short_protein_md
-```
-
-The skill keeps the evaluated-agent and scorer roles separate. While producing
-a task submission, the agent should read `task.json` and input files only; it
-should not read the task's `truth/` or `scorer/` directories before writing
-`submission/`. After artifacts are produced, use `validate_benchmark_submission`,
-`score_benchmark_submission`, and `summarize_benchmark_run` to validate, score,
-and aggregate results.
-
-Good first smoke tasks are:
-
-- `exec_short_protein_md`, for execution metrics such as completion, finite
-  energy, and no NaN values.
-- `prep_guardrail_bad_ligand`, for structured-failure and guardrail reporting.
+Both are last-write-wins on `run_id` so re-summarizing replaces stale rows
+instead of stacking duplicates.
 
 ## Structured LLM Judge
 
-Human judges are not part of the benchmark. If qualitative judging is enabled,
-the harness or external evaluator must call an LLM with
-`scorer/llm_judge_prompt.json` and save the raw structured JSON. That file can
-then be passed to `score_benchmark_submission --llm-judge-file`. The scorer
-stores the judge model, rubric scores, violations, and prompt hash fields in
-`score.json`.
+Human judges are not part of the benchmark. Qualitative scoring is wired but
+manual in v1.0:
+
+1. Read `<task_dir>/scorer/llm_judge_prompt.json`.
+2. Combine with the agent's submission and call an LLM externally.
+3. Save the structured response and pass it via `--llm-judge-file`.
+
+`mdclaw run_llm_judge` will land in v1.x. With `--judge-mode deterministic`
+(default) the secondary axes return `null`; they are not silently zeroed.
 
 ## MDClaw Adapter
 
-Use `export_mdclaw_submission` to create a conservative submission skeleton
-from a `job_dir` or `study_dir`:
+`export_mdclaw_submission` creates a partial-status submission skeleton from
+an MDClaw `job_dir`:
 
 ```bash
 mdclaw export_mdclaw_submission \
-  --job-dir job_1ake \
-  --task-id exec_short_protein_md \
-  --run-id 20260505_cursor_gpt55_mdclaw_pilot \
-  --output-dir benchmark_runs/20260505_cursor_gpt55_mdclaw_pilot/tasks/exec_short_protein_md/submission
+  --job-dir job_2lzm \
+  --task-id T04_exec_short_protein_md \
+  --run-id <run_id> \
+  --output-dir benchmark_runs/<run_id>/tasks/T04_exec_short_protein_md/submission
 ```
 
-The adapter records provenance and common evidence/methods artifacts, but it
-does not infer scientific success. Harnesses should still fill `metrics.json`
-with task-specific deterministic metrics.
+The skeleton has `manifest.status="partial"`. The agent must still fill in
+task-specific deterministic metrics and evidence claims.
 
-## Plotting Dependency
+## Migration from v0.1
 
-Figure-producing analysis tasks require `matplotlib` with a headless backend.
-`environment.yml` and `pyproject.toml` both declare it so PNG-producing
-`analyze_server` tests are not skipped in benchmark environments.
+v0.1 (`MDAgentBench-Lite-v0.1`) and its 30-task lite skeleton are removed.
+Existing `benchmark_runs/` directories from v0.1 remain on disk but their
+`summary.json` is not forward-compatible (different aggregation math and
+weighted-total formula). Re-run with v1.0 to obtain comparable scores.

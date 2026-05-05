@@ -1,0 +1,11 @@
+{
+  "minimization_max_iters": 200,
+  "production_steps": 5000,
+  "step_size_fs": 2.0,
+  "temperature_kelvin": 300.0,
+  "friction_per_ps": 1.0,
+  "dcd_stride_steps": 500,
+  "constraints": "HBonds",
+  "nonbonded_method": "PME",
+  "cutoff_nm": 1.0
+}

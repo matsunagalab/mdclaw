@@ -1,0 +1,196 @@
+{
+  "$defs": {
+    "SubmissionError": {
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "stage": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stage"
+        }
+      },
+      "title": "SubmissionError",
+      "type": "object"
+    },
+    "SubmissionOutputs": {
+      "properties": {
+        "checkpoints": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Checkpoints",
+          "type": "array"
+        },
+        "decision_log": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Decision Log"
+        },
+        "evidence_report": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "evidence_report.json",
+          "title": "Evidence Report"
+        },
+        "figures": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Figures",
+          "type": "array"
+        },
+        "methods": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Methods"
+        },
+        "metrics": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "metrics.json",
+          "title": "Metrics"
+        },
+        "prepared_structure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prepared Structure"
+        },
+        "provenance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": "provenance.json",
+          "title": "Provenance"
+        },
+        "topology": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Topology",
+          "type": "array"
+        },
+        "trajectories": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Trajectories",
+          "type": "array"
+        }
+      },
+      "title": "SubmissionOutputs",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "errors": {
+      "items": {
+        "$ref": "#/$defs/SubmissionError"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Limitations",
+      "type": "array"
+    },
+    "outputs": {
+      "$ref": "#/$defs/SubmissionOutputs"
+    },
+    "run_id": {
+      "default": "",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "status": {
+      "default": "completed",
+      "enum": [
+        "completed",
+        "partial",
+        "failed",
+        "blocked"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "task_id"
+  ],
+  "title": "SubmissionManifest",
+  "type": "object"
+}
