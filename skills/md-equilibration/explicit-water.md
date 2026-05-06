@@ -24,7 +24,13 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 
 - Equilibration starts with standard staged minimization and low-temperature
   warmup for all systems, then proceeds to normal NVT/NPT
-- Equilibration uses positional restraints on CA atoms to prevent structural collapse
+- Equilibration uses positional restraints to prevent structural collapse.
+  `--restraint-atoms` accepts:
+  - `CA` (default): alpha carbons only — recommended for most workflows
+  - `backbone`: protein backbone heavy atoms (N, CA, C, O)
+  - `heavy`: all non-hydrogen solute atoms — strongest, useful for early-stage relaxation
+  All three options automatically exclude water and ions (solute only),
+  so OPC virtual sites and counterions are never restrained.
 - NVT stage: 250000 steps at 4 fs (1 ns, default) -- heats from 0 to target temperature
 - NPT stage: 250000 steps at 4 fs (1 ns, default) -- equilibrates density at target pressure
 - Override: pass `--nvt-steps <N>` / `--npt-steps <N>` to shorten or
@@ -32,8 +38,13 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   runs, 125000 (500 ps) for compromise, 500000+ (2 ns+) for difficult
   systems needing more relaxation.
 - Both stages use HMR (hydrogenMass=4 amu), matching production's integrator
-- `equilibrated.chk` is a binary checkpoint with currentStep=0 by construction,
-  so `run_production --simulation-time-ns` is the full production length
+- `equilibrated.xml` is the portable cross-node restart artifact (preferred);
+  `equilibrated.chk` is a binary checkpoint kept for same-GPU bit-exact replay.
+  Both record `currentStep=0` so `run_production --simulation-time-ns` is the
+  full production length.
+- For finer control (e.g. NPT compress with `heavy` → NVT thermalize with `CA`
+  → NPT relax with no restraints), chain multiple eq nodes — see the
+  "Multi-Stage Chaining" section in `skills/md-equilibration/SKILL.md`.
 - Energy should drop significantly during minimization (good sign)
 
 ---

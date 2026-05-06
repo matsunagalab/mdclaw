@@ -33,16 +33,25 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   not implicit solvent
 - NVT default length: 250000 steps at 4 fs (1 ns). Override with
   `--nvt-steps <N>` (e.g. `--nvt-steps 2500` for a 10 ps sanity run).
-- CA positional restraints prevent structural collapse during heating
-- CA restraints are removed in the production-matching checkpoint
+- Positional restraints prevent structural collapse during heating.
+  `--restraint-atoms` accepts:
+  - `CA` (default): alpha carbons only
+  - `backbone`: protein backbone heavy atoms (N, CA, C, O)
+  - `heavy`: all non-hydrogen solute atoms — strongest restraint
+  Solute filtering is automatic (water/ions are excluded even under `heavy`,
+  though implicit solvent has no explicit waters anyway).
+- All restraints are removed in the production-matching checkpoint
 - Standard staged minimization and low-temperature warmup run automatically
   before normal NVT heating. This is the same protocol used for explicit water.
 - Ligand charge/clash diagnostics are recorded for interpretation; they do not
   switch to a different equilibration protocol.
-- `equilibrated.chk` is written with `currentStep=0` by design, so
-  `run_production --simulation-time-ns` is the full production length
-- The checkpoint is directly usable by `run_production --restart-from`, or
-  auto-resolved via the DAG when prod has eq as parent
+- `equilibrated.xml` is the portable cross-node restart artifact (preferred);
+  `equilibrated.chk` is the binary checkpoint kept for same-GPU bit-exact replay.
+  Both are written with `currentStep=0` so `run_production --simulation-time-ns`
+  is the full production length.
+- The state is auto-resolved via the DAG when prod has eq as parent;
+  `--restart-from` can also be passed explicitly. Multi-stage eq → eq chains
+  also work (see `skills/md-equilibration/SKILL.md` "Multi-Stage Chaining").
 
 ---
 

@@ -72,6 +72,8 @@ Core schema v3 rules:
 - `tool = run + record`; tools call `_node.py` helpers to update state.
 - One `job_dir` represents one physical system with exactly one `source` root.
 - Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod`.
+- `eq` accepts both `topo` and prior `eq` parents (multi-stage equilibration
+  chains, e.g. NPT compress → NVT thermalize → NPT relax).
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.
@@ -84,8 +86,13 @@ contracts.
 
 - `_node.py` is the source of truth for DAG resolution, locking, status, and
   progress synchronization. Refactor it only with focused tests.
-- `run_production` restart semantics prefer portable XML state over binary
-  checkpoints and use `metadata.final_step` to restore timeline metadata.
+- `run_production` and `run_equilibration` both prefer portable XML state over
+  binary checkpoints for restart, and use `metadata.final_step` to restore
+  timeline metadata. The ensemble-agnostic loader (`_load_state_into_simulation`
+  in `mdclaw/md_simulation_server.py`) transfers positions / velocities / box
+  via `XmlSerializer.deserialize` without restoring Context parameters, so
+  NPT ↔ NVT switching is safe across nodes (barostat parameters in the saved
+  state are dropped or introduced as the new System requires).
 - `build_amber_system` guardrails are part of the public agent contract; branch
   on stable `code` values rather than human messages.
 - Skills invoke tools through the CLI. When tool signatures change, update the

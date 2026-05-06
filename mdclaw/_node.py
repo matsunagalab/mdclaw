@@ -1382,7 +1382,11 @@ _ALLOWED_PARENT_TYPES = {
     # explicit-water topo descends from solv; implicit topo skips solv and
     # descends directly from prep.
     "topo": frozenset({"solv", "prep"}),
-    "eq": frozenset({"topo"}),
+    # eq → eq chaining lets users compose multi-stage equilibration
+    # (e.g. NPT → NVT → NPT) with one ensemble per node and per-stage
+    # restraint settings. The auto-resolver surfaces the parent eq's
+    # state.xml as the restart source.
+    "eq": frozenset({"topo", "eq"}),
     "prod": frozenset({"eq", "prod"}),
     "analyze": frozenset({"prod", "analyze"}),
 }
@@ -1844,7 +1848,16 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
     return result
 
 
-def _resolve_prod_restart(job_dir: str, node_id: str) -> dict:
+def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
+    """Locate the restart artifact for an MD node (eq or prod).
+
+    Search order: explicit ``continue_from`` ancestor first, then walk the
+    DAG looking at prod ancestors before eq ancestors. Within each
+    ancestor, prefer the portable ``state`` (XML) artifact and fall back
+    to ``checkpoint`` (binary, GPU-tied). Both eq and prod nodes use the
+    same resolver — eq → eq chaining works the same way as prod → prod
+    extension.
+    """
     result: dict = {}
     continued_from = _read_continued_from(job_dir, node_id)
     if continued_from is not None:
@@ -1857,8 +1870,8 @@ def _resolve_prod_restart(job_dir: str, node_id: str) -> dict:
             result["restart_from_error"] = (
                 f"continue_from='{continued_from}' but that node has neither a "
                 f"'state' nor 'checkpoint' artifact — extension cannot start. "
-                f"Wait for that prod to finish (or fix the DAG to point at a "
-                f"completed prod ancestor)."
+                f"Wait for that node to finish (or fix the DAG to point at a "
+                f"completed eq/prod ancestor)."
             )
         return result
 
@@ -1873,6 +1886,10 @@ def _resolve_prod_restart(job_dir: str, node_id: str) -> dict:
             result["restart_from"] = src
             break
     return result
+
+
+# Backwards-compatible alias for callers that import the prod-specific name.
+_resolve_prod_restart = _resolve_md_restart
 
 
 def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
@@ -1959,6 +1976,11 @@ def resolve_node_inputs(
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
+        # eq → eq chaining: when an eq ancestor exists, surface its state
+        # XML so the new eq node can resume from it (e.g. NPT → NVT → NPT
+        # multi-stage equilibration). First eq node from topo has no
+        # ancestor and runs from inpcrd.
+        result.update(_resolve_md_restart(job_dir, node_id))
 
     elif node_type == "prod":
         result.update(_resolve_topology_files(job_dir, node_id))
@@ -1967,16 +1989,15 @@ def resolve_node_inputs(
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
-        result.update(_resolve_prod_restart(job_dir, node_id))
+        result.update(_resolve_md_restart(job_dir, node_id))
 
-        # Surface the eq ancestor's ensemble so prod can inherit it. Without
-        # this, an NPT eq state cannot be loaded into a default-config
-        # (NVT) prod context — OpenMM raises
-        # ``setParameter() with invalid parameter name: MonteCarloPressure``
-        # because the saved state references a barostat the new context
-        # never received. The prod tool reads ``eq_final_ensemble`` /
-        # ``eq_pressure_bar`` and adds the matching barostat when the
-        # caller hasn't supplied an explicit pressure_bar.
+        # Surface the eq ancestor's ensemble as a default-pressure hint
+        # so a prod that omits ``--pressure-bar`` still defaults to NPT
+        # when its eq ran NPT. The ensemble-agnostic state loader handles
+        # the cross-ensemble case safely (positions/velocities/box are
+        # transferred without restoring barostat parameters), so this
+        # inheritance is a UX convenience rather than a correctness
+        # requirement.
         result.update(_resolve_eq_ensemble_metadata(job_dir, node_id))
 
     elif node_type == "analyze":

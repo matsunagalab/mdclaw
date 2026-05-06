@@ -51,6 +51,44 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
   --conditions '{"temperature_kelvin": 300, "random_seed": 42}'
 ```
 
+## Multi-Stage Chaining (NPT → NVT → NPT etc.)
+
+A single `run_equilibration` call already runs `NVT → optional NPT`. For
+finer control — e.g. an explicit `NPT (compress) → NVT (thermalize) → NPT
+(relax)` protocol — chain multiple `eq` nodes by parenting each onto the
+prior eq. The auto-resolver surfaces the parent's `state.xml` as
+`restart_from`, so the new eq node skips minimization/warmup and inherits
+positions, velocities, and box vectors. The loader is ensemble-agnostic
+(uses `XmlSerializer.deserialize`), so an NPT-saved state can resume
+into an NVT stage and vice versa — barostat parameters are dropped or
+introduced as needed.
+
+```bash
+# Stage 1: NPT compression with strong heavy-atom restraints
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids topo_001 --label "stage1_npt_compress" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
+                 "nvt_steps": 0, "npt_steps": 50000,
+                 "restraint_atoms": "heavy", "restraint_force_constant": 500.0}'
+
+# Stage 2: NVT thermalization with weaker CA restraints
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids eq_001 --label "stage2_nvt_thermalize" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 0,
+                 "nvt_steps": 50000, "npt_steps": 0,
+                 "restraint_atoms": "CA", "restraint_force_constant": 50.0}'
+
+# Stage 3: NPT density relaxation, no restraints
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids eq_002 --label "stage3_npt_relax" \
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
+                 "nvt_steps": 0, "npt_steps": 50000,
+                 "restraint_force_constant": 0.0}'
+```
+
+Each downstream eq node auto-resumes from its parent's `state` artifact;
+no `--restart-from` flag is needed when running in node mode.
+
 ## Workflow
 
 This skill operates on one `job_dir`. Reuse the same `topo` node and branch

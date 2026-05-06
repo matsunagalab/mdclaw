@@ -39,6 +39,18 @@ The Python resolver in `mdclaw/_node.py` is authoritative:
 for bit-identical reproduction and legacy DAGs, but binary OpenMM checkpoints
 are platform-specific.
 
+## Switching Ensembles Across Nodes
+
+`state.xml` is loaded via `XmlSerializer.deserialize` and only
+positions / velocities / periodic box are transferred. Barostat
+parameters in the saved state are dropped when the new prod context has
+no barostat, and a new barostat in the new context starts in its
+default state. This means an NPT-equilibrated state can resume directly
+into an NVT prod (and vice versa) without rebuilding the topology — just
+set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on the new
+node. A short volume re-equilibration is expected when starting NPT
+from an NVT state.
+
 ## Same-Node Retry
 
 Re-running the same `prod` node can resume and append to existing artifacts,

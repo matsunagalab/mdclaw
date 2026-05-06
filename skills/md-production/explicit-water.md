@@ -99,7 +99,7 @@ read `skills/md-production/restart.md`.
 | NaN energies | Clashes | Re-equilibrate or re-prepare |
 | Slow performance | GPU not detected | Check `--platform CUDA` |
 | Barostat instability | Temperature mismatch | Match barostat and integrator T |
-| `Ensemble mismatch: ... MonteCarloPressure ...` (structured error) | NPT-equilibrated state.xml loaded into an NVT prod context | Either let prod auto-inherit ensemble (omit `--pressure-bar`) or pass the eq's pressure explicitly. To run NVT prod intentionally, rerun the eq node with `--pressure-bar 0` to produce a barostat-free state. |
+| `Ensemble switch:` warning in `result["warnings"]` | NPT-saved eq state used in an NVT prod context, or vice versa | Safe to ignore — the loader transfers only positions/velocities/box, so barostat parameters are dropped (NPT → NVT) or the new barostat starts in its default state and re-equilibrates volume over the first few ps (NVT → NPT). Set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on prod; no eq re-run needed. |
 
 ---
 

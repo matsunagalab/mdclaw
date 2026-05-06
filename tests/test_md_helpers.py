@@ -313,13 +313,14 @@ class TestResolveDcdAppendMode:
 
 
 class TestEnsembleMismatchDetection:
-    """Cover the guardrail that catches an NPT-equilibrated state.xml
-    being loaded into a prod context that has no MonteCarloBarostat —
-    OpenMM's loadState would otherwise raise a confusing
-    ``setParameter() with invalid parameter name: MonteCarloPressure``.
+    """Classify barostat / saved-state inconsistencies for warning purposes.
 
-    The helper takes a ``state_xml_path`` (real file) and a
-    ``system_has_barostat`` bool so the test stays free of OpenMM."""
+    The ensemble-agnostic loader transfers only positions/velocities/box
+    and never touches Context parameters, so neither mismatch case
+    raises. The helper now drives a soft warning either way (still
+    safe to load) — the kind tag distinguishes whether the new run is
+    dropping NPT info or starting an NPT system from an NVT-saved state.
+    """
 
     def _write_state(self, path: Path, *, with_barostat: bool) -> None:
         body = (
@@ -333,9 +334,8 @@ class TestEnsembleMismatchDetection:
         path.write_text(body)
 
     def test_npt_state_into_nvt_system_returns_kind(self, tmp_path):
-        """State has barostat parameters but the System has none →
-        hard-fail kind tag so caller emits a structured error before
-        loadState would explode."""
+        """NPT saved state into NVT system: barostat parameters dropped,
+        warning tag returned."""
         p = tmp_path / "eq_state.xml"
         self._write_state(p, with_barostat=True)
         assert (
@@ -344,9 +344,8 @@ class TestEnsembleMismatchDetection:
         )
 
     def test_nvt_state_into_npt_system_returns_kind(self, tmp_path):
-        """System has a barostat but state has no NPT parameters →
-        soft-warning kind tag (the simulation can still run; the
-        initial pressure may not match the eq's final state)."""
+        """NVT saved state into NPT system: new barostat starts in
+        default state and re-equilibrates volume — warning tag."""
         p = tmp_path / "eq_state.xml"
         self._write_state(p, with_barostat=False)
         assert (
@@ -369,6 +368,172 @@ class TestEnsembleMismatchDetection:
         assert (
             _detect_ensemble_mismatch(p, system_has_barostat=False) is None
         )
+
+
+class TestLoadStateIntoSimulation:
+    """Unit coverage for the ensemble-agnostic state loader.
+
+    The integration tests in ``test_server_smoke.py`` and
+    ``test_pipeline_eq_chain_dag.py`` exercise this through
+    ``run_equilibration`` / ``run_production`` end-to-end; these cases
+    isolate the loader on a tiny periodic LJ Argon system so the round-trip
+    of positions / velocities / box and the barostat-drop behaviour are
+    asserted directly.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_openmm(self):
+        pytest.importorskip("openmm")
+
+    def _build_lj_simulation(self, *, with_barostat: bool):
+        from openmm import (
+            LangevinMiddleIntegrator,
+            MonteCarloBarostat,
+            NonbondedForce,
+            System,
+            Vec3,
+        )
+        from openmm.app import Element, Simulation, Topology
+        from openmm.unit import (
+            bar,
+            dalton,
+            femtoseconds,
+            kelvin,
+            nanometer,
+            picosecond,
+        )
+
+        n_particles = 8
+        box_nm = 2.0
+
+        system = System()
+        nb = NonbondedForce()
+        for _ in range(n_particles):
+            system.addParticle(40.0 * dalton)
+            nb.addParticle(0.0, 0.34, 0.99)
+        nb.setNonbondedMethod(NonbondedForce.CutoffPeriodic)
+        nb.setCutoffDistance(0.9 * nanometer)
+        system.addForce(nb)
+        system.setDefaultPeriodicBoxVectors(
+            Vec3(box_nm, 0, 0) * nanometer,
+            Vec3(0, box_nm, 0) * nanometer,
+            Vec3(0, 0, box_nm) * nanometer,
+        )
+        if with_barostat:
+            system.addForce(MonteCarloBarostat(1.0 * bar, 300.0 * kelvin))
+
+        topology = Topology()
+        chain = topology.addChain()
+        argon = Element.getBySymbol("Ar")
+        for i in range(n_particles):
+            res = topology.addResidue("AR", chain)
+            topology.addAtom(f"AR{i}", argon, res)
+
+        integrator = LangevinMiddleIntegrator(
+            300 * kelvin, 1.0 / picosecond, 2 * femtoseconds
+        )
+        return Simulation(topology, system, integrator)
+
+    def _seed_positions_velocities(self, sim):
+        """Place 8 atoms on a 0.5 nm grid line and seed thermal velocities."""
+        from openmm import Vec3
+        from openmm.unit import kelvin, nanometer
+
+        positions = [Vec3(i * 0.5, 0, 0) for i in range(8)] * nanometer
+        sim.context.setPositions(positions)
+        sim.context.setVelocitiesToTemperature(300 * kelvin)
+
+    def test_xml_transfers_positions_velocities_box(self, tmp_path):
+        """saveState → _load_state_into_simulation round-trips
+        positions/velocities/box exactly when the target System has the
+        same Force composition. Barostat presence is handled in a
+        separate test."""
+        import numpy as np
+        from openmm.unit import nanometer, picosecond
+
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        src = self._build_lj_simulation(with_barostat=False)
+        self._seed_positions_velocities(src)
+        src.step(2)
+        state_path = tmp_path / "src.xml"
+        src.saveState(str(state_path))
+
+        src_state = src.context.getState(getPositions=True, getVelocities=True)
+        src_pos = src_state.getPositions(asNumpy=True).value_in_unit(nanometer)
+        src_vel = src_state.getVelocities(asNumpy=True).value_in_unit(
+            nanometer / picosecond
+        )
+        src_box = [
+            v.value_in_unit(nanometer)
+            for v in src_state.getPeriodicBoxVectors()
+        ]
+
+        target = self._build_lj_simulation(with_barostat=False)
+        info = _load_state_into_simulation(target, state_path, is_periodic=True)
+        assert info["format"] == "xml"
+
+        tgt_state = target.context.getState(
+            getPositions=True, getVelocities=True
+        )
+        tgt_pos = tgt_state.getPositions(asNumpy=True).value_in_unit(nanometer)
+        tgt_vel = tgt_state.getVelocities(asNumpy=True).value_in_unit(
+            nanometer / picosecond
+        )
+        tgt_box = [
+            v.value_in_unit(nanometer)
+            for v in tgt_state.getPeriodicBoxVectors()
+        ]
+
+        np.testing.assert_allclose(tgt_pos, src_pos, atol=1e-6)
+        np.testing.assert_allclose(tgt_vel, src_vel, atol=1e-6)
+        for sv, tv in zip(src_box, tgt_box):
+            np.testing.assert_allclose(
+                [c for c in tv], [c for c in sv], atol=1e-6
+            )
+
+    def test_xml_npt_state_into_nvt_system_does_not_raise(self, tmp_path):
+        """NPT-saved state contains a ``MonteCarloPressure`` Context
+        parameter; loading via the legacy ``simulation.loadState`` would
+        raise ``setParameter() with invalid parameter name``. The
+        ensemble-agnostic loader transfers only positions/velocities/box
+        and skips Context parameters, so the same XML resumes cleanly
+        into a barostat-free System and a step succeeds."""
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        npt = self._build_lj_simulation(with_barostat=True)
+        self._seed_positions_velocities(npt)
+        npt.step(2)
+        state_path = tmp_path / "npt.xml"
+        npt.saveState(str(state_path))
+
+        # Sanity check: the saved XML records the barostat parameter.
+        assert "MonteCarloPressure" in state_path.read_text()
+
+        nvt = self._build_lj_simulation(with_barostat=False)
+        info = _load_state_into_simulation(nvt, state_path, is_periodic=True)
+        assert info["format"] == "xml"
+        # Step must succeed — would raise on the dropped barostat parameter
+        # under the legacy loadState path.
+        nvt.step(1)
+
+    def test_chk_path_takes_load_checkpoint_branch(self, tmp_path):
+        """Binary checkpoint route requires identical System layout but
+        is the fast same-GPU bit-exact path. Verify the loader returns
+        ``"checkpoint"`` and the target context advances after the call."""
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        src = self._build_lj_simulation(with_barostat=False)
+        self._seed_positions_velocities(src)
+        src.step(2)
+        chk_path = tmp_path / "src.chk"
+        src.saveCheckpoint(str(chk_path))
+
+        target = self._build_lj_simulation(with_barostat=False)
+        info = _load_state_into_simulation(target, chk_path, is_periodic=True)
+        assert info["format"] == "checkpoint"
+        # And the resumed context must be steppable.
+        target.step(1)
 
 
 class TestRestartFromErrorFailsNode:

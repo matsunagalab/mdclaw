@@ -42,7 +42,7 @@ The session-start hook downloads the container automatically:
 | Command | Purpose |
 |---------|---------|
 | `/mdclaw:md-prepare` | Structure → cleaning → solvation → topology |
-| `/mdclaw:md-equilibration` | Energy minimization → NVT heating → NPT density |
+| `/mdclaw:md-equilibration` | Energy minimization → NVT heating → NPT density (also supports multi-stage NPT → NVT → NPT chains via eq → eq DAG) |
 | `/mdclaw:md-production` | Production MD (NPT/NVT, HMR, checkpoint restart) |
 | `/mdclaw:md-analyze` | RMSD, RMSF, energy, hydrogen bonds |
 | `/mdclaw:hpc-run` | SLURM job submission, monitoring, restart |
@@ -108,6 +108,13 @@ positional restraints (100 kJ/mol/nm²) for NVT (250000 steps, 4 fs = 1 ns) +
 NPT (250000 steps, 4 fs = 1 ns). Override the stage lengths with
 `--nvt-steps` / `--npt-steps` on `run_equilibration`.
 
+Need finer control? Multi-stage equilibration (e.g. NPT compress → NVT
+thermalize → NPT relax with per-stage restraint atoms and force constants)
+is supported via eq → eq DAG chaining — see the "Multi-Stage Chaining"
+section in `skills/md-equilibration/SKILL.md`. Ensembles can also be
+switched freely between nodes (NPT eq → NVT prod, etc.); the saved XML
+state is portable across barostat configurations.
+
 ### Output Structure
 
 Each pipeline step is an independent **node** with its own directory,
@@ -153,7 +160,10 @@ job_a1b2c3d4/
 
 The same topology node can be reused for multiple equilibrations at
 different temperatures. Each equilibration can branch into multiple
-productions (different seeds, lengths, etc.).
+productions (different seeds, lengths, etc.). For multi-stage
+equilibration (e.g. NPT compress → NVT thermalize → NPT relax), chain
+eq nodes by parenting each onto the previous eq — the next node
+auto-resumes from its parent's `state.xml` regardless of ensemble.
 
 One `job_dir` represents one physical system. Keep a single `source` root per
 job and use branching after `prep` to explore preparation, equilibration, and

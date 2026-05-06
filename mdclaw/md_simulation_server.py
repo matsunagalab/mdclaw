@@ -136,24 +136,22 @@ def _restart_source_metadata(
 def _detect_ensemble_mismatch(
     state_xml_path: Path, system_has_barostat: bool
 ) -> Optional[str]:
-    """Detect a barostat / saved-state inconsistency before ``loadState``.
+    """Classify a barostat / saved-state inconsistency for warning purposes.
 
-    OpenMM's ``Simulation.loadState`` restores all context parameters by
-    name and rejects unknown ones with the opaque exception
-    ``setParameter() with invalid parameter name: MonteCarloPressure``.
-    That happens whenever an NPT-equilibrated state.xml is loaded into a
-    prod System that has no barostat (the common default-config case
-    before ensemble auto-inheritance landed).
+    The ensemble-agnostic loader (``_load_state_into_simulation``)
+    transfers only positions/velocities/box and does not touch Context
+    parameters, so neither case raises. Callers may still surface a
+    warning when the saved ensemble differs from the new System's
+    ensemble — the simulation is safe to start, but a brief
+    re-equilibration is expected (e.g. NVT→NPT will need a few ps for
+    the barostat to settle the volume).
 
     Returns one of:
-        - ``"npt_state_nvt_system"`` — state has barostat params but
-          System has no barostat. Hard fail.
-        - ``"nvt_state_npt_system"`` — System has a barostat but state
-          lacks the parameters. Soft warning.
-        - ``None`` — matched (NPT/NPT or NVT/NVT) — load freely.
-
-    Caller pairs the kind tag with the message string. Splitting the
-    decision out keeps it unit-testable without an OpenMM Context.
+        - ``"npt_state_nvt_system"`` — state has NPT barostat parameters
+          but the new System has no barostat.
+        - ``"nvt_state_npt_system"`` — new System has a barostat but the
+          saved state lacks NPT parameters.
+        - ``None`` — matched (NPT/NPT or NVT/NVT).
     """
     state_has_pressure = "MonteCarloPressure" in state_xml_path.read_text()
     if state_has_pressure and not system_has_barostat:
@@ -161,6 +159,57 @@ def _detect_ensemble_mismatch(
     if system_has_barostat and not state_has_pressure:
         return "nvt_state_npt_system"
     return None
+
+
+def _load_state_into_simulation(
+    simulation,
+    restart_path: Path,
+    *,
+    is_periodic: bool,
+) -> dict:
+    """Load a saved OpenMM state into ``simulation`` regardless of ensemble.
+
+    For ``.xml`` (saveState output): deserialize via
+    ``XmlSerializer.deserialize`` and transfer only positions, velocities,
+    and (when periodic) box vectors. Unlike ``simulation.loadState()`` —
+    which routes through ``Context.setState`` and restores every saved
+    Context parameter by name — this skips parameter restoration entirely
+    and is therefore safe across ensemble changes:
+
+    - NPT state → NVT system: barostat parameters in the saved state are
+      ignored (the new System has no barostat to receive them).
+    - NVT state → NPT system: the new barostat starts in its default
+      relaxed state and re-equilibrates within a few ps.
+
+    For ``.chk`` (binary checkpoint): fall back to
+    ``simulation.loadCheckpoint`` which requires identical System layout
+    and GPU architecture. This path is for same-machine bit-exact restart
+    only; cross-ensemble or cross-GPU should use XML.
+
+    Note: ``simulation.currentStep`` is NOT restored by this helper. The
+    caller restores it from ``metadata.final_step`` (see
+    ``read_ancestor_final_step``).
+
+    Returns ``{"format": "xml"|"checkpoint"}``.
+    """
+    if restart_path.suffix == ".xml":
+        from openmm import XmlSerializer
+        state = XmlSerializer.deserialize(restart_path.read_text())
+        simulation.context.setPositions(state.getPositions())
+        try:
+            simulation.context.setVelocities(state.getVelocities())
+        except Exception as e:
+            logger.warning(
+                f"Saved state at {restart_path} has no velocities "
+                f"({e}); resuming with re-thermalized velocities."
+            )
+        if is_periodic:
+            box = state.getPeriodicBoxVectors()
+            if box is not None:
+                simulation.context.setPeriodicBoxVectors(*box)
+        return {"format": "xml"}
+    simulation.loadCheckpoint(str(restart_path))
+    return {"format": "checkpoint"}
 
 
 # DCD fixed-record-84 + "CORD" magic. OpenMM/CHARMM DCD always emit this
@@ -371,6 +420,7 @@ def run_equilibration(
     random_seed: Optional[int] = None,
     hmr: bool = True,
     timestep_fs: float = 4.0,
+    restart_from: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -435,6 +485,15 @@ def run_equilibration(
             Used for both NVT and NPT stages and the clean checkpoint
             Simulation. Must match run_production's ``timestep_fs`` for a
             clean handoff.
+        restart_from: Path to a saved OpenMM state (``.xml`` preferred,
+            ``.chk`` fallback) to resume from. When set, the pre-NVT
+            staged minimization and warmup are skipped, and
+            positions/velocities/box are loaded via the
+            ensemble-agnostic loader (so an NPT-saved state can resume
+            into an NVT stage and vice versa). In node mode this is
+            auto-resolved from the nearest ``eq``/``prod`` ancestor's
+            ``state`` artifact, enabling NPT → NVT → NPT chaining
+            across multiple eq nodes.
 
     Returns:
         dict with:
@@ -479,6 +538,12 @@ def run_equilibration(
             inpcrd_file = _inputs["inpcrd_file"]
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
+        # eq → eq chaining: when an eq/prod ancestor exposes a state
+        # artifact, resume from it instead of running a fresh
+        # minimization + warmup. The first eq node from topo has no
+        # ancestor and runs from inpcrd as before.
+        if not restart_from and "restart_from" in _inputs:
+            restart_from = _inputs["restart_from"]
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,
@@ -543,6 +608,10 @@ def run_equilibration(
     if not inpcrd_path.is_file():
         result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
         return result
+    restart_path = Path(restart_from).resolve() if restart_from else None
+    if restart_path is not None and not restart_path.is_file():
+        result["errors"].append(f"Restart file not found: {restart_from}")
+        return result
 
     try:
         from openmm.app import (
@@ -570,6 +639,17 @@ def run_equilibration(
         "backbone": {"N", "CA", "C", "O"},
         "heavy": None,  # all non-hydrogen
     }
+
+    # Restraints anchor *solute* atoms only. Iterating over every atom in
+    # the topology (which includes solvent waters, ions, and OPC virtual
+    # sites) would otherwise wrongly restrain the bulk water oxygens or
+    # crash on virtual particles whose `element` is None. Filter by
+    # residue name against the standard solvent set.
+    from mdclaw.research_server import WATER_NAMES, COMMON_IONS
+    _NON_SOLUTE_RESNAMES = WATER_NAMES | COMMON_IONS
+
+    def _is_solute_atom(atom) -> bool:
+        return atom.residue.name.upper() not in _NON_SOLUTE_RESNAMES
 
     try:
         # Set up output directory
@@ -665,9 +745,12 @@ def run_equilibration(
         restraint_count = 0
 
         for atom in prmtop.topology.atoms():
+            if not _is_solute_atom(atom):
+                continue
             if allowed_names is None:
-                # "heavy" = all non-hydrogen
-                if atom.element.symbol == 'H':
+                # "heavy" = all non-hydrogen. Virtual sites (e.g. OPC's
+                # EPW dummy particle) have no element — skip them too.
+                if atom.element is None or atom.element.symbol == 'H':
                     continue
             elif atom.name not in allowed_names:
                 continue
@@ -727,9 +810,28 @@ def run_equilibration(
                 density=is_periodic,
             ))
 
-        sim_nvt.context.setPositions(positions)
-        if is_periodic and inpcrd.boxVectors is not None:
-            sim_nvt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+        if restart_path is not None:
+            # eq → eq chaining: pull positions/velocities/box from the
+            # ancestor's saved state (XML preferred). The loader is
+            # ensemble-agnostic — an NPT-saved state lands cleanly into
+            # this NVT system because barostat parameters are dropped.
+            _eq_load_info = _load_state_into_simulation(
+                sim_nvt, restart_path, is_periodic=is_periodic,
+            )
+            logger.info(
+                f"Equilibration restarted from {_eq_load_info['format']} "
+                f"({restart_path})"
+            )
+            if _node_mode:
+                from mdclaw._node import read_ancestor_final_step
+                anc_step = read_ancestor_final_step(job_dir, node_id)
+                if anc_step is not None:
+                    sim_nvt.currentStep = anc_step
+            result["restarted_from"] = str(restart_path)
+        else:
+            sim_nvt.context.setPositions(positions)
+            if is_periodic and inpcrd.boxVectors is not None:
+                sim_nvt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
         def _finite_energy_check(stage: str) -> dict:
             state = sim_nvt.context.getState(getEnergy=True, getForces=True)
@@ -755,41 +857,56 @@ def run_equilibration(
                 raise RuntimeError(f"Non-finite energy/force detected during {stage}")
             return check
 
-        # Universal pre-NVT relaxation protocol. This is intentionally not
-        # branched by solvent model, ligand charge, or clash metadata.
-        logger.info("Running standard staged minimization before NVT...")
-        relaxation_checks = []
-        relaxation_checks.append(_finite_energy_check("initial"))
-        for stage_name, max_iterations in (
-            ("staged_minimization_a", 500),
-            ("staged_minimization_b", 2000),
-            ("staged_minimization_c", 5000),
-        ):
-            logger.info(f"{stage_name}: minimizeEnergy(maxIterations={max_iterations})")
-            sim_nvt.minimizeEnergy(maxIterations=max_iterations)
-            relaxation_checks.append(_finite_energy_check(stage_name))
+        # Universal pre-NVT relaxation protocol. Skipped on restart —
+        # the ancestor state is already minimized and thermalized, and
+        # re-minimizing would discard the loaded velocities and box.
+        if restart_path is None:
+            logger.info("Running standard staged minimization before NVT...")
+            relaxation_checks = []
+            relaxation_checks.append(_finite_energy_check("initial"))
+            for stage_name, max_iterations in (
+                ("staged_minimization_a", 500),
+                ("staged_minimization_b", 2000),
+                ("staged_minimization_c", 5000),
+            ):
+                logger.info(f"{stage_name}: minimizeEnergy(maxIterations={max_iterations})")
+                sim_nvt.minimizeEnergy(maxIterations=max_iterations)
+                relaxation_checks.append(_finite_energy_check(stage_name))
 
-        warmup_steps = min(1000, max(0, nvt_steps // 20))
-        low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
-        if warmup_steps > 0:
+            warmup_steps = min(1000, max(0, nvt_steps // 20))
+            low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
+            if warmup_steps > 0:
+                logger.info(
+                    f"Low-temperature NVT warmup: {warmup_steps} steps at {low_temperature:.1f} K"
+                )
+                integrator_nvt.setTemperature(low_temperature * kelvin)
+                sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
+                sim_nvt.step(warmup_steps)
+                relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
+                integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+            result["low_temperature_warmup_steps"] = warmup_steps
+            result["relaxation_protocol"] = {
+                "name": "standard_staged_minimization_low_temperature_warmup",
+                "applies_to": "all_nvt_equilibration",
+                "stages": relaxation_checks,
+                "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
+            }
+            # Fresh start: reseed velocities at target temperature.
+            sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
+        else:
             logger.info(
-                f"Low-temperature NVT warmup: {warmup_steps} steps at {low_temperature:.1f} K"
+                "Restart mode: skipping pre-NVT minimization and warmup; "
+                "velocities and box are inherited from the saved state."
             )
-            integrator_nvt.setTemperature(low_temperature * kelvin)
-            sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
-            sim_nvt.step(warmup_steps)
-            relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
-            integrator_nvt.setTemperature(temperature_kelvin * kelvin)
-        result["low_temperature_warmup_steps"] = warmup_steps
-        result["relaxation_protocol"] = {
-            "name": "standard_staged_minimization_low_temperature_warmup",
-            "applies_to": "all_nvt_equilibration",
-            "stages": relaxation_checks,
-            "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
-        }
+            result["low_temperature_warmup_steps"] = 0
+            result["relaxation_protocol"] = {
+                "name": "skipped_due_to_restart",
+                "applies_to": "all_nvt_equilibration",
+                "stages": [],
+                "low_temperature_kelvin": None,
+            }
 
         # NVT run
-        sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
         sim_nvt.step(nvt_steps)
         _finite_energy_check("normal_nvt_complete")
         for reporter in sim_nvt.reporters:
@@ -797,10 +914,20 @@ def run_equilibration(
         result["nvt_steps"] = nvt_steps
         logger.info(f"NVT heating complete ({nvt_steps} steps)")
 
-        # Save NVT state
-        nvt_state = sim_nvt.context.getState(getPositions=True, getVelocities=True)
+        # Save NVT state — also capture box vectors so that the NPT stage
+        # inherits the box from the most-recent simulation, not the
+        # prmtop's initial box. This matters when the NVT simulation
+        # itself was restarted from a prior NPT state with a different box.
+        nvt_state = sim_nvt.context.getState(
+            getPositions=True,
+            getVelocities=True,
+            enforcePeriodicBox=is_periodic,
+        )
         nvt_positions = nvt_state.getPositions()
         nvt_velocities = nvt_state.getVelocities()
+        nvt_box_vectors = (
+            nvt_state.getPeriodicBoxVectors() if is_periodic else None
+        )
 
         # --- Stage 2: NPT equilibration (same timestep + HMR, with restraints) ---
         if npt_steps > 0:
@@ -834,8 +961,10 @@ def run_equilibration(
             restraint_npt.addPerParticleParameter('z0')
 
             for atom in prmtop.topology.atoms():
+                if not _is_solute_atom(atom):
+                    continue
                 if allowed_names is None:
-                    if atom.element.symbol == 'H':
+                    if atom.element is None or atom.element.symbol == 'H':
                         continue
                 elif atom.name not in allowed_names:
                     continue
@@ -893,7 +1022,9 @@ def run_equilibration(
 
             sim_npt.context.setPositions(nvt_positions)
             sim_npt.context.setVelocities(nvt_velocities)
-            if is_periodic and inpcrd.boxVectors is not None:
+            if is_periodic and nvt_box_vectors is not None:
+                sim_npt.context.setPeriodicBoxVectors(*nvt_box_vectors)
+            elif is_periodic and inpcrd.boxVectors is not None:
                 sim_npt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
 
             sim_npt.step(npt_steps)
@@ -1589,69 +1720,54 @@ def run_production(
                     from mdclaw._node import fail_node
                     fail_node(job_dir, node_id, errors=result["errors"])
                 return result
-            # Prefer saveState (XML) for cross-node portability.
-            # saveCheckpoint (binary) is GPU-architecture-specific and
-            # fails silently across heterogeneous clusters. .xml and
-            # .chk both remain on disk; resolve_node_inputs picks .xml
-            # first when available.
+            # Use the ensemble-agnostic loader: XML is read via
+            # XmlSerializer.deserialize and only positions/velocities/box
+            # are transferred, so an NPT-saved state can resume into an
+            # NVT System (and vice versa) without barostat-parameter
+            # rejection. Binary .chk falls back to loadCheckpoint and
+            # still requires identical System and GPU architecture.
+            system_has_barostat = any(
+                isinstance(f, (MonteCarloBarostat,
+                               MonteCarloMembraneBarostat))
+                for f in system.getForces()
+            )
             if restart_path.suffix == ".xml":
-                # Guardrail: see _detect_ensemble_mismatch docstring.
-                system_has_barostat = any(
-                    isinstance(f, (MonteCarloBarostat,
-                                   MonteCarloMembraneBarostat))
-                    for f in system.getForces()
-                )
                 _kind = _detect_ensemble_mismatch(
                     restart_path, system_has_barostat
                 )
                 if _kind == "npt_state_nvt_system":
-                    suggested = (
-                        f"--pressure-bar {_eq_pressure_bar}"
-                        if _eq_pressure_bar is not None
-                        else "--pressure-bar 1.0"
-                    )
-                    result["errors"].append(
-                        "Ensemble mismatch: the equilibration state at "
-                        f"{restart_path} contains an NPT barostat "
-                        "(MonteCarloPressure parameter) but this prod "
-                        "context was configured as NVT (no barostat). "
-                        f"Pass {suggested} to add a matching barostat, "
-                        "or rerun equilibration with --pressure-bar 0 to "
-                        "produce an NVT state."
-                    )
-                    if _node_mode:
-                        from mdclaw._node import fail_node
-                        fail_node(job_dir, node_id, errors=result["errors"])
-                    return result
-                if _kind == "nvt_state_npt_system":
                     result["warnings"].append(
-                        "Ensemble mismatch (mild): prod has a barostat but "
-                        "the eq state lacks NPT parameters. The initial "
-                        "pressure may not match the eq's final state."
+                        "Ensemble switch: the saved state contains NPT "
+                        "barostat parameters but this run is NVT — barostat "
+                        "parameters are dropped, positions/velocities/box "
+                        "are preserved."
+                    )
+                elif _kind == "nvt_state_npt_system":
+                    result["warnings"].append(
+                        "Ensemble switch: NVT state into NPT system — the "
+                        "barostat starts in its default relaxed state and "
+                        "will re-equilibrate the volume over the first few ps."
                     )
 
-                simulation.loadState(str(restart_path))
-                # loadState does NOT restore simulation.currentStep —
-                # it only carries positions/velocities/box. Pull the
-                # ancestor node's metadata.final_step so prod→prod
-                # extension preserves the cumulative step counter.
-                if _node_mode:
-                    from mdclaw._node import read_ancestor_final_step
-                    anc_step = read_ancestor_final_step(job_dir, node_id)
-                    if anc_step is not None:
-                        simulation.currentStep = anc_step
-                logger.info(
-                    f"Restarted from state XML (step {simulation.currentStep})"
-                )
-                if _pressure_bar_inherited:
-                    result["warnings"].append(
-                        f"pressure_bar={pressure_bar} inherited from eq "
-                        f"ancestor (final_ensemble=NPT)."
-                    )
-            else:
-                simulation.loadCheckpoint(str(restart_path))
-                logger.info(
-                    f"Restarted from checkpoint (step {simulation.currentStep})"
+            _load_info = _load_state_into_simulation(
+                simulation, restart_path, is_periodic=is_periodic,
+            )
+            # Restore the cumulative step counter from the ancestor so
+            # eq→prod and prod→prod extension preserves the timeline.
+            # The state file itself does not carry currentStep.
+            if _node_mode:
+                from mdclaw._node import read_ancestor_final_step
+                anc_step = read_ancestor_final_step(job_dir, node_id)
+                if anc_step is not None:
+                    simulation.currentStep = anc_step
+            logger.info(
+                f"Restarted from {_load_info['format']} "
+                f"(step {simulation.currentStep})"
+            )
+            if _pressure_bar_inherited:
+                result["warnings"].append(
+                    f"pressure_bar={pressure_bar} inherited from eq "
+                    f"ancestor (final_ensemble=NPT)."
                 )
             append_dcd = True
             result["restarted_from"] = restart_from

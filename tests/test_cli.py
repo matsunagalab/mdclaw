@@ -423,6 +423,31 @@ class TestHPCParameters:
         ])
         assert args.restart_from == "checkpoint.chk"
 
+    def test_equilibration_restart_from_param(self):
+        """run_equilibration accepts --restart-from for eq → eq chaining
+        (NPT → NVT → NPT across multiple eq nodes). The CLI auto-derives
+        the flag from the new function parameter."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_equilibration",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+            "--restart-from", "prior_eq_state.xml",
+        ])
+        assert args.restart_from == "prior_eq_state.xml"
+
+        # Default is None — fresh equilibration runs from inpcrd as before.
+        args_default = parser.parse_args([
+            "run_equilibration",
+            "--prmtop-file", "sys.parm7",
+            "--inpcrd-file", "sys.rst7",
+        ])
+        assert args_default.restart_from is None
+
     def test_hmr_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

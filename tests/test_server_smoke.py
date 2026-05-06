@@ -669,15 +669,26 @@ class TestMDSimulationServer:
         assert r2["restarted_from"] == chk
 
     def test_equilibration_to_production_checkpoint_handoff(self, small_pdb, tmp_path):
-        """run_equilibration writes a .chk that run_production can loadCheckpoint.
+        """run_equilibration writes both equilibrated.xml and equilibrated.chk;
+        run_production can resume from either. This test exercises the .chk
+        path explicitly.
 
-        Verifies the equilibration → production handoff via binary checkpoint:
+        For cross-node and cross-GPU portability, ``equilibrated.xml`` is the
+        preferred restart artifact (it's what ``_resolve_md_restart`` returns
+        first). ``equilibrated.chk`` is a binary OpenMM checkpoint kept for
+        bit-exact resume on the same GPU and is what this test passes via
+        ``restart_from``. Both records carry ``currentStep=0`` so
+        ``run_production --simulation-time-ns`` is the full production length.
+
+        Coverage:
         - run_equilibration builds its clean (production-matching) System at
           the end of NPT and writes equilibrated.chk with currentStep=0.
         - run_production loads that checkpoint via --restart-from, inherits
           positions/velocities/box, skips minimization, and runs the full
-          requested simulation_time_ns (because currentStep in the checkpoint
-          is 0, not the equilibration step count).
+          requested simulation_time_ns.
+
+        See ``test_equilibration_xml_restart_npt_to_nvt_cross_ensemble`` for
+        the XML path with cross-ensemble switching.
         """
         from md_simulation_server import run_equilibration, run_production
 
@@ -717,6 +728,81 @@ class TestMDSimulationServer:
         assert Path(prod["trajectory_file"]).exists()
         assert Path(prod["trajectory_file"]).stat().st_size > 0
         assert Path(prod["energy_file"]).stat().st_size > 0
+
+    def test_equilibration_xml_restart_npt_to_nvt_cross_ensemble(
+        self, small_pdb, tmp_path
+    ):
+        """eq → eq with an ensemble switch: an NPT-saved equilibration
+        XML state can be resumed into a fresh equilibration call that
+        runs NVT only. This exercises the ensemble-agnostic loader —
+        ``simulation.loadState`` would have raised on the dropped
+        ``MonteCarloPressure`` parameter, but ``XmlSerializer.deserialize``
+        + manual transfer of positions/velocities/box succeeds.
+        """
+        from md_simulation_server import run_equilibration, run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+
+        # First eq: NPT, 100 NVT + 100 NPT.
+        equil_npt = run_equilibration(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil_npt"),
+            platform="CPU",
+        )
+        assert equil_npt["success"] is True
+        npt_state_xml = equil_npt["state_file"]
+        assert Path(npt_state_xml).suffix == ".xml"
+        assert Path(npt_state_xml).exists()
+        # The first eq's clean equilibrated.xml — the cross-node portable
+        # artifact downstream nodes resume from.
+        npt_equilibrated_xml = str(
+            Path(equil_npt["output_dir"]) / "equilibrated.xml"
+        )
+        assert Path(npt_equilibrated_xml).exists()
+
+        # Second eq: NVT only (pressure_bar=0), restarting from the NPT XML.
+        # The new loader drops barostat parameters; restart succeeds.
+        equil_nvt = run_equilibration(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            temperature_kelvin=300.0,
+            pressure_bar=0,
+            nvt_steps=100,
+            npt_steps=0,
+            output_dir=str(tmp_path / "equil_nvt"),
+            platform="CPU",
+            restart_from=npt_equilibrated_xml,
+        )
+        assert equil_nvt["success"] is True, equil_nvt["errors"]
+        assert equil_nvt["restarted_from"] == npt_equilibrated_xml
+        # Restart must skip pre-NVT minimization/warmup.
+        assert equil_nvt["relaxation_protocol"]["name"] == "skipped_due_to_restart"
+        assert equil_nvt["low_temperature_warmup_steps"] == 0
+
+        # Production from the NVT-equilibrated state — verifies the chain
+        # NPT-eq → NVT-eq → prod completes end-to-end and the prod
+        # trajectory advances on top of the loaded state.
+        nvt_equilibrated_xml = str(
+            Path(equil_nvt["output_dir"]) / "equilibrated.xml"
+        )
+        prod = run_production(
+            prmtop_file=amber["parm7"],
+            inpcrd_file=amber["rst7"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=None,  # NVT prod
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "prod_after_nvt_eq"),
+            platform="CPU",
+            restart_from=nvt_equilibrated_xml,
+        )
+        assert prod["success"] is True, prod["errors"]
+        assert prod["restarted_from"] == nvt_equilibrated_xml
 
     def test_run_production_node_mode_records_relative_artifacts(self, small_pdb, tmp_path):
         """Node-mode production should write non-empty outputs and relative artifacts."""

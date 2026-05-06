@@ -221,7 +221,9 @@ class TestValidateNodeExecutionContext:
         ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq")
 
         assert ctx["success"] is False
-        assert any("expected one of ['topo']" in e for e in ctx["errors"])
+        # eq accepts {"topo", "eq"} parents — rejection message lists
+        # both as the allowed set.
+        assert any("expected one of ['eq', 'topo']" in e for e in ctx["errors"])
 
     def test_rejects_condition_mismatch(self, job_dir):
         create_node(str(job_dir), "topo")
@@ -1303,6 +1305,36 @@ class TestDAGAutoResolve:
         assert "inpcrd_file" in inputs
         assert inputs["prmtop_file"].endswith("system.parm7")
         assert inputs["inpcrd_file"].endswith("system.rst7")
+        # The first eq node from topo has no eq/prod ancestor, so no
+        # restart source is surfaced — it runs from inpcrd as a fresh
+        # equilibration.
+        assert "restart_from" not in inputs
+
+    def test_resolve_node_inputs_eq_chain_uses_prior_eq_state(self, full_dag):
+        """eq → eq chaining: the second eq node restarts from the first
+        eq's saved state (XML preferred over chk). This enables NPT →
+        NVT → NPT multi-stage equilibration as a sequence of eq nodes,
+        which is the user-facing entry point for free ensemble
+        chaining."""
+        import json
+        jd = str(full_dag)
+        # full_dag completes eq_001 with the legacy chk-only artifact set;
+        # extend it with the portable XML state artifact so resolve_node_inputs
+        # picks the XML path.
+        eq1_path = full_dag / "nodes" / "eq_001" / "node.json"
+        eq1 = json.loads(eq1_path.read_text())
+        eq1["artifacts"]["state"] = "artifacts/equilibrated.xml"
+        eq1_path.write_text(json.dumps(eq1))
+
+        create_node(jd, "eq", parent_node_ids=["eq_001"])
+        inputs = resolve_node_inputs(jd, "eq_002", "eq")
+        assert "restart_from" in inputs
+        assert inputs["restart_from"].endswith("equilibrated.xml"), (
+            "eq → eq chaining must surface the XML state of the parent eq "
+            "so the new eq node can resume from it (cross-ensemble safe)"
+        )
+        # Topology still resolves from the shared topo ancestor.
+        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
 
     def test_resolve_node_inputs_prod(self, full_dag):
         jd = str(full_dag)
