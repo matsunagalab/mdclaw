@@ -617,14 +617,22 @@ class TestRestartFromErrorFailsNode:
 # ----------------------------------------------------------------------------
 
 
-class TestModernPrmtopShimContract:
-    """The shim must validate run-time createSystem kwargs against the saved
-    system.xml so the user cannot silently ask for HMR or implicit solvent
-    that build_amber_system did not bake in."""
+class TestXMLSystemContractValidation:
+    """``_validate_xml_system_contract`` is the native replacement for the
+    pre-Phase-16 ``_ModernPrmtopShim.createSystem`` validation: each
+    NVT / NPT / clean-handoff / production stage now deserializes
+    ``system.xml`` into a fresh ``openmm.System`` via
+    ``_deserialize_xml_system`` and runs this validator before mutating
+    the System or starting the integrator. Stable failure codes
+    (``modern_system_hmr_mismatch``,
+    ``modern_system_implicit_solvent_unsupported``) match what the shim
+    used to raise so callers / docs do not need to change."""
 
     def _build_minimal_system(self, *, hmr: bool, implicit: bool, tmp_path):
         """Create a 1-residue ALA topology + a System optionally with HMR /
-        a GBSA-OBC force, and serialize a system.xml ready for the shim."""
+        a GBSA-OBC force. The serialized system.xml is the moral
+        equivalent of what ``build_amber_system`` would emit; we only
+        need it to exercise the contract check."""
         pytest.importorskip("openmm")
         from openmm import (
             HarmonicBondForce,
@@ -664,72 +672,97 @@ class TestModernPrmtopShimContract:
 
         xml_path = tmp_path / "system.xml"
         xml_path.write_text(XmlSerializer.serialize(system))
-        return top, xml_path
+        return top, system
 
-    def test_shim_accepts_matching_hmr(self, tmp_path):
-        from openmm.unit import amu
-        from mdclaw.md_simulation_server import _ModernPrmtopShim
+    def test_validator_accepts_matching_hmr(self, tmp_path):
+        from mdclaw.md_simulation_server import _validate_xml_system_contract
 
-        topology, xml_path = self._build_minimal_system(
+        topology, system = self._build_minimal_system(
             hmr=True, implicit=False, tmp_path=tmp_path,
         )
-        shim = _ModernPrmtopShim(topology, xml_path)
-        # Asking for hydrogenMass=4 amu against an HMR system must succeed.
-        sys_obj = shim.createSystem(hydrogenMass=4.0 * amu)
-        assert sys_obj.getNumParticles() == 3
+        # No raise expected — the deserialized System has H=4 amu, which
+        # is what the run-time ``hmr=True`` request asked for.
+        _validate_xml_system_contract(
+            system, topology,
+            hmr_request=True, implicit_solvent_request=None,
+        )
 
-    def test_shim_rejects_hmr_request_against_non_hmr_system(self, tmp_path):
-        from openmm.unit import amu
+    def test_validator_rejects_hmr_request_against_non_hmr_system(self, tmp_path):
         from mdclaw.md_simulation_server import (
-            _ModernPrmtopShim,
+            _validate_xml_system_contract,
             _ModernSystemContractError,
         )
 
-        topology, xml_path = self._build_minimal_system(
+        topology, system = self._build_minimal_system(
             hmr=False, implicit=False, tmp_path=tmp_path,
         )
-        shim = _ModernPrmtopShim(topology, xml_path)
         with pytest.raises(_ModernSystemContractError) as exc_info:
-            shim.createSystem(hydrogenMass=4.0 * amu)
+            _validate_xml_system_contract(
+                system, topology,
+                hmr_request=True, implicit_solvent_request=None,
+            )
         assert exc_info.value.code == "modern_system_hmr_mismatch"
 
-    def test_shim_rejects_implicit_request_against_non_gb_system(self, tmp_path):
+    def test_validator_rejects_no_hmr_request_against_hmr_system(self, tmp_path):
+        """The reverse direction: requesting standard hydrogen masses
+        against a System whose H atoms were already repartitioned to
+        4 amu would silently mis-simulate at 2 fs without this guard."""
         from mdclaw.md_simulation_server import (
-            _ModernPrmtopShim,
+            _validate_xml_system_contract,
             _ModernSystemContractError,
         )
 
-        topology, xml_path = self._build_minimal_system(
+        topology, system = self._build_minimal_system(
+            hmr=True, implicit=False, tmp_path=tmp_path,
+        )
+        with pytest.raises(_ModernSystemContractError) as exc_info:
+            _validate_xml_system_contract(
+                system, topology,
+                hmr_request=False, implicit_solvent_request=None,
+            )
+        assert exc_info.value.code == "modern_system_hmr_mismatch"
+
+    def test_validator_rejects_implicit_request_against_non_gb_system(self, tmp_path):
+        from mdclaw.md_simulation_server import (
+            _validate_xml_system_contract,
+            _ModernSystemContractError,
+        )
+
+        topology, system = self._build_minimal_system(
             hmr=False, implicit=False, tmp_path=tmp_path,
         )
-        shim = _ModernPrmtopShim(topology, xml_path)
         with pytest.raises(_ModernSystemContractError) as exc_info:
-            shim.createSystem(implicitSolvent="OBC2")
+            _validate_xml_system_contract(
+                system, topology,
+                hmr_request=None, implicit_solvent_request="OBC2",
+            )
         assert exc_info.value.code == "modern_system_implicit_solvent_unsupported"
 
-    def test_shim_accepts_implicit_request_when_gb_force_present(self, tmp_path):
-        from mdclaw.md_simulation_server import _ModernPrmtopShim
+    def test_validator_accepts_implicit_request_when_gb_force_present(self, tmp_path):
+        from mdclaw.md_simulation_server import _validate_xml_system_contract
 
-        topology, xml_path = self._build_minimal_system(
+        topology, system = self._build_minimal_system(
             hmr=False, implicit=True, tmp_path=tmp_path,
         )
-        shim = _ModernPrmtopShim(topology, xml_path)
-        # With a GB force already on the System, the request is satisfiable.
-        sys_obj = shim.createSystem(implicitSolvent="OBC2")
-        assert any(
-            type(f).__name__ in {"GBSAOBCForce", "CustomGBForce"}
-            for f in sys_obj.getForces()
+        # No raise expected: the deserialized System carries a GB force,
+        # so ``--implicit-solvent OBC2`` is satisfiable.
+        _validate_xml_system_contract(
+            system, topology,
+            hmr_request=None, implicit_solvent_request="OBC2",
         )
 
-    def test_shim_default_kwargs_are_pass_through(self, tmp_path):
-        """No hydrogenMass / implicitSolvent in kwargs -> no validation."""
-        from mdclaw.md_simulation_server import _ModernPrmtopShim
-        topology, xml_path = self._build_minimal_system(
+    def test_validator_default_requests_are_pass_through(self, tmp_path):
+        """When neither HMR nor implicit-solvent is being requested at
+        run time, the validator must not consult the System."""
+        from mdclaw.md_simulation_server import _validate_xml_system_contract
+
+        topology, system = self._build_minimal_system(
             hmr=False, implicit=False, tmp_path=tmp_path,
         )
-        shim = _ModernPrmtopShim(topology, xml_path)
-        sys_obj = shim.createSystem()
-        assert sys_obj.getNumParticles() == 3
+        _validate_xml_system_contract(
+            system, topology,
+            hmr_request=None, implicit_solvent_request=None,
+        )
 
 
 # ----------------------------------------------------------------------------
@@ -1319,21 +1352,26 @@ class TestBuildAmberSystemImplicitEndToEnd:
             f"system.xml has no GB force; forces={present}"
         )
 
-    def test_implicit_obc2_shim_accepts_implicitsolvent_request(
+    def test_implicit_obc2_validator_accepts_implicitsolvent_request(
         self, small_pdb, tmp_path
     ):
-        """End-to-end against the run-side contract: the ``_ModernPrmtopShim``
-        must NOT raise ``modern_system_implicit_solvent_unsupported`` against
-        an OBC2-built system.xml. This guards against future regressions
-        where the build path stops baking the GB force."""
+        """End-to-end against the run-side contract: the native validator
+        ``_validate_xml_system_contract`` must NOT raise
+        ``modern_system_implicit_solvent_unsupported`` against an
+        OBC2-built system.xml. Guards against future regressions where
+        the build path stops baking the GB force."""
         pytest.importorskip("openmm")
         pytest.importorskip("openmmforcefields")
         pytest.importorskip("openff.pablo")
         pytest.importorskip("pdbfixer")
 
-        from openmm import app
+        from openmm.app import PDBFile
         from mdclaw.amber_server import build_amber_system
-        from mdclaw.md_simulation_server import _ModernPrmtopShim
+        from mdclaw.md_simulation_server import (
+            _load_xml_topology_inputs,
+            _deserialize_xml_system,
+            _validate_xml_system_contract,
+        )
 
         result = build_amber_system(
             pdb_file=str(small_pdb),
@@ -1342,11 +1380,21 @@ class TestBuildAmberSystemImplicitEndToEnd:
             output_dir=str(tmp_path / "topo"),
         )
         assert result["success"] is True, result.get("errors")
-        topology = app.PDBFile(result["topology_pdb"]).topology
-        shim = _ModernPrmtopShim(topology, result["system_xml"])
-        # No raise expected: the System has a GB force, the shim's
+        xml_inputs = _load_xml_topology_inputs(
+            system_xml_file=result["system_xml"],
+            topology_pdb_file=result["topology_pdb"],
+            state_xml_file=result.get("state_xml"),
+        )
+        system = _deserialize_xml_system(xml_inputs)
+        # No raise expected: the System has a GB force, the validator's
         # implicit-solvent contract is satisfied.
-        system = shim.createSystem(implicitSolvent=app.OBC2)
+        _validate_xml_system_contract(
+            system, xml_inputs.topology,
+            hmr_request=True,
+            implicit_solvent_request="OBC2",
+        )
+        topology = PDBFile(result["topology_pdb"]).topology
+        assert topology.getNumAtoms() == xml_inputs.topology.getNumAtoms()
         assert any(
             type(f).__name__ in {
                 "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
@@ -1469,98 +1517,29 @@ class TestResolveImplicitSolventModel:
 
 
 class TestRunProductionImplicitSolventLookup:
-    """Mock-level smoke verifying ``run_production`` honors GBn2 (not OBC2).
-
-    The bug was that ``IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)``
-    silently mapped ``"GBn2"`` → ``"GBN2"`` → ``OBC2``. After the fix,
-    ``run_production(implicit_solvent="GBn2")`` must reach
-    ``prmtop.createSystem`` with ``implicitSolvent=app.GBn2``.
+    """``run_production`` must resolve canonical / aliased implicit-solvent
+    names through ``_resolve_implicit_solvent_model`` instead of the old
+    ``.upper()``-vs-mixed-case lookup that silently fell back to OBC2.
+    The helper-level guarantees are covered exhaustively by
+    ``TestResolveImplicitSolventModel``; here we exercise the public
+    ``run_production`` surface end-to-end against the structured failure
+    code so a regression in the routing layer surfaces without depending
+    on the (now-removed) shim mock.
     """
 
-    def test_gbn2_request_calls_createsystem_with_gbn2(self, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from openmm import app
-
-        # Stand-in artifact triple — ``run_production`` short-circuits on
-        # missing files before reaching createSystem, so we just need
-        # paths that exist (their content is not parsed by the mock).
-        sysxml = tmp_path / "system.xml"
-        topo = tmp_path / "topology.pdb"
-        state = tmp_path / "state.xml"
-        for p in (sysxml, topo, state):
-            p.write_text("<placeholder/>")
-
-        # Mock prmtop / inpcrd loaders (the modern triple wrapper) so the
-        # only path we care about — implicit-solvent createSystem — runs
-        # against a captured MagicMock.
-        fake_topology = MagicMock(name="topology")
-        fake_topology.atoms.return_value = []
-        fake_topology.residues.return_value = []
-        fake_prmtop = MagicMock(name="prmtop")
-        fake_prmtop.topology = fake_topology
-        fake_prmtop.createSystem = MagicMock()
-        # Sentinel system to surface as the createSystem return value.
-        fake_system = MagicMock(name="system")
-        fake_prmtop.createSystem.return_value = fake_system
-
-        fake_inpcrd = MagicMock(name="inpcrd")
-        fake_inpcrd.boxVectors = None  # non-periodic = implicit/vacuum
-
-        from mdclaw import md_simulation_server as md_mod
-
-        # Catch the createSystem call; we don't need a full simulation run,
-        # just to confirm the implicit-solvent symbol matches GBn2 instead
-        # of falling back to OBC2.
-        captured: dict = {}
-
-        original_create = fake_prmtop.createSystem
-
-        def _capture_createsystem(**kwargs):
-            captured["implicitSolvent"] = kwargs.get("implicitSolvent")
-            captured["nonbondedMethod"] = kwargs.get("nonbondedMethod")
-            # Surface OBC2 as a poison sentinel: if the lookup regressed
-            # to OBC2, we'd see it here.
-            return fake_system
-
-        fake_prmtop.createSystem = _capture_createsystem
-        # Restore reference for assertion below.
-        _ = original_create
-
-        with patch.object(
-            md_mod, "_maybe_load_modern_topology",
-            return_value=(fake_prmtop, fake_inpcrd),
-        ), patch(
-            "openmm.app.Simulation",
-            side_effect=RuntimeError("__stop_after_createSystem__"),
-        ):
-            result = md_mod.run_production(
-                system_xml_file=str(sysxml),
-                topology_pdb_file=str(topo),
-                state_xml_file=str(state),
-                simulation_time_ns=0.001,
-                implicit_solvent="GBn2",
-                pressure_bar=0,
-                output_dir=str(tmp_path / "out"),
-            )
-
-        # The simulation set-up was aborted on purpose; we only need to
-        # confirm that createSystem received the GBn2 symbol (not OBC2).
-        assert captured.get("implicitSolvent") is app.GBn2, (
-            f"Expected app.GBn2; got {captured.get('implicitSolvent')!r} "
-            "(silent OBC2 fallback regression)."
-        )
-        assert captured.get("nonbondedMethod") is app.NoCutoff
-        # The function aborted via the planted RuntimeError; result will
-        # carry an error message but the key invariant — the GB symbol
-        # we routed in — is satisfied above.
-        assert isinstance(result, dict)
-
-    def test_unknown_implicit_model_fails_node_with_structured_code(
+    def test_unknown_implicit_model_fails_with_structured_code(
         self, tmp_path
     ):
         """run_production with an unknown GB model name must fail-fast
         with the structured ``implicit_solvent_model_unsupported`` code,
-        not silently fall back to OBC2."""
+        not silently fall back to OBC2.
+
+        Stub ``_load_xml_topology_inputs`` so we never hit the
+        XML deserializer (the placeholder XML files would fail to parse
+        well before the GB lookup), and stub ``_deserialize_xml_system``
+        so a regression that *did* reach the System build raises loudly.
+        """
+        from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
 
         sysxml = tmp_path / "system.xml"
@@ -1572,24 +1551,26 @@ class TestRunProductionImplicitSolventLookup:
         fake_topology = MagicMock(name="topology")
         fake_topology.atoms.return_value = []
         fake_topology.residues.return_value = []
-        fake_prmtop = MagicMock(name="prmtop")
-        fake_prmtop.topology = fake_topology
-        # createSystem MUST NOT be called when the GB lookup fails — the
-        # fail-fast path skips it. Wire it to raise so a regression is
-        # impossible to miss.
-        fake_prmtop.createSystem = MagicMock(
-            side_effect=AssertionError(
-                "createSystem must not be reached for an unknown GB model."
-            )
+        fake_xml_inputs = SimpleNamespace(
+            topology=fake_topology,
+            positions=None,
+            box_vectors=None,
+            is_periodic=False,
+            system_xml_path=sysxml,
+            topology_pdb_path=topo,
+            state_xml_path=state,
         )
-        fake_inpcrd = MagicMock(name="inpcrd")
-        fake_inpcrd.boxVectors = None
 
         from mdclaw import md_simulation_server as md_mod
 
         with patch.object(
-            md_mod, "_maybe_load_modern_topology",
-            return_value=(fake_prmtop, fake_inpcrd),
+            md_mod, "_load_xml_topology_inputs",
+            return_value=fake_xml_inputs,
+        ), patch.object(
+            md_mod, "_deserialize_xml_system",
+            side_effect=AssertionError(
+                "_deserialize_xml_system must not be reached for an unknown GB model."
+            ),
         ):
             result = md_mod.run_production(
                 system_xml_file=str(sysxml),

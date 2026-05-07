@@ -44,12 +44,13 @@ def _create_completed_methods_job(job_dir, source_id="4M3J", simulation_time_ns=
         metadata={"water_model": "opc", "box_shape": "cubic", "buffer_distance_angstrom": 15.0},
     )
     create_node(str(job_dir), "topo", parent_node_ids=["solv_001"])
-    _write_artifact(job_dir, "topo_001", "artifacts/system.parm7")
-    _write_artifact(job_dir, "topo_001", "artifacts/system.rst7")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.xml")
+    _write_artifact(job_dir, "topo_001", "artifacts/topology.pdb")
+    _write_artifact(job_dir, "topo_001", "artifacts/state.xml")
     complete_node(
         str(job_dir),
         "topo_001",
-        artifacts={"prmtop": "artifacts/system.parm7", "inpcrd": "artifacts/system.rst7"},
+        artifacts={"system_xml": "artifacts/system.xml", "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"},
         metadata={"forcefield": "ff19SB", "water_model": "opc"},
     )
     create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
@@ -218,12 +219,13 @@ def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
         metadata={"water_model": "opc", "box_shape": "cubic", "buffer_distance_angstrom": 15.0},
     )
     create_node(str(job_dir), "topo", parent_node_ids=["solv_001"])
-    _write_artifact(job_dir, "topo_001", "artifacts/system.parm7")
-    _write_artifact(job_dir, "topo_001", "artifacts/system.rst7")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.xml")
+    _write_artifact(job_dir, "topo_001", "artifacts/topology.pdb")
+    _write_artifact(job_dir, "topo_001", "artifacts/state.xml")
     complete_node(
         str(job_dir),
         "topo_001",
-        artifacts={"prmtop": "artifacts/system.parm7", "inpcrd": "artifacts/system.rst7"},
+        artifacts={"system_xml": "artifacts/system.xml", "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"},
         metadata={"forcefield": "ff19SB", "water_model": "opc"},
     )
     create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
@@ -412,12 +414,13 @@ def test_generate_md_methods_report_includes_modxna_and_nucleic_citations(tmp_pa
         },
     )
     create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
-    _write_artifact(job_dir, "topo_001", "artifacts/system.parm7")
-    _write_artifact(job_dir, "topo_001", "artifacts/system.rst7")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.xml")
+    _write_artifact(job_dir, "topo_001", "artifacts/topology.pdb")
+    _write_artifact(job_dir, "topo_001", "artifacts/state.xml")
     complete_node(
         str(job_dir),
         "topo_001",
-        artifacts={"prmtop": "artifacts/system.parm7", "inpcrd": "artifacts/system.rst7"},
+        artifacts={"system_xml": "artifacts/system.xml", "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"},
         metadata={
             "forcefield": "ff14SB",
             "water_model": "tip3p",

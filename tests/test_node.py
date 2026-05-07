@@ -228,8 +228,8 @@ class TestValidateNodeExecutionContext:
     def test_rejects_condition_mismatch(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -250,8 +250,8 @@ class TestValidateNodeExecutionContext:
     def test_accepts_completed_parent_and_matching_conditions(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -274,8 +274,8 @@ class TestValidateNodeExecutionContext:
         check defeats the point of declaring it."""
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -299,8 +299,8 @@ class TestValidateNodeExecutionContext:
         value. ``None`` is treated as unverifiable, not as a match."""
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -394,8 +394,8 @@ class TestContinueFromSugar:
                       artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk"})
@@ -477,8 +477,8 @@ class TestContinueFromStrictEnforcement:
                       artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk"})
@@ -1185,8 +1185,8 @@ class TestDAGAutoResolve:
 
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
 
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
@@ -1196,11 +1196,11 @@ class TestDAGAutoResolve:
         create_node(jd, "prod", parent_node_ids=["eq_001"])
         return job_dir
 
-    def test_find_ancestor_parm7_from_eq(self, full_dag):
+    def test_find_ancestor_system_xml_from_eq(self, full_dag):
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "eq_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "eq_001", "topo", "system_xml")
         assert result is not None
-        assert result.endswith("topo_001/artifacts/system.parm7")
+        assert result.endswith("topo_001/artifacts/system.xml")
 
     def test_find_ancestor_checkpoint_from_prod(self, full_dag):
         jd = str(full_dag)
@@ -1215,15 +1215,15 @@ class TestDAGAutoResolve:
         assert result.endswith("prep_001/artifacts/merge/merged.pdb")
 
     def test_find_ancestor_skips_intermediate(self, full_dag):
-        """prod_001 -> eq_001 -> topo_001: parm7 is 2 hops away."""
+        """prod_001 -> eq_001 -> topo_001: the topo's system_xml is 2 hops away."""
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "prod_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "prod_001", "topo", "system_xml")
         assert result is not None
         assert "topo_001" in result
 
     def test_find_ancestor_missing_returns_none(self, full_dag):
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "prep_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "prep_001", "topo", "system_xml")
         assert result is None
 
     def test_resolve_node_inputs_blocks_pending_parent(self, job_dir):
@@ -1265,15 +1265,15 @@ class TestDAGAutoResolve:
         jd = str(job_dir)
         create_node(jd, "topo")
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         fail_node(jd, "topo_001", errors=["topology invalid"])
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
         inputs = resolve_node_inputs(jd, "eq_001", "eq")
 
-        assert "prmtop_file" not in inputs
-        assert "inpcrd_file" not in inputs
+        assert "system_xml_file" not in inputs
+        assert "topology_pdb_file" not in inputs
         assert "input_resolution_error" in inputs
         assert "topo_001" in inputs["input_resolution_error"]
         assert "failed" in inputs["input_resolution_error"]
@@ -1301,13 +1301,13 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_eq(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "eq_001", "eq")
-        assert "prmtop_file" in inputs
-        assert "inpcrd_file" in inputs
-        assert inputs["prmtop_file"].endswith("system.parm7")
-        assert inputs["inpcrd_file"].endswith("system.rst7")
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
+        assert inputs["system_xml_file"].endswith("system.xml")
+        assert inputs["topology_pdb_file"].endswith("topology.pdb")
         # The first eq node from topo has no eq/prod ancestor, so no
-        # restart source is surfaced — it runs from inpcrd as a fresh
-        # equilibration.
+        # restart source is surfaced — it runs from the topo state.xml
+        # as a fresh equilibration.
         assert "restart_from" not in inputs
 
     def test_resolve_node_inputs_eq_chain_uses_prior_eq_state(self, full_dag):
@@ -1334,13 +1334,13 @@ class TestDAGAutoResolve:
             "so the new eq node can resume from it (cross-ensemble safe)"
         )
         # Topology still resolves from the shared topo ancestor.
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
 
     def test_resolve_node_inputs_prod(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "prod_001", "prod")
-        assert "prmtop_file" in inputs
-        assert "inpcrd_file" in inputs
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
         assert "restart_from" in inputs
         assert inputs["restart_from"].endswith("equilibrated.chk")
 
@@ -1357,7 +1357,7 @@ class TestDAGAutoResolve:
         assert "restart_from" in inputs
         assert inputs["restart_from"].endswith("prod_001/artifacts/checkpoint.chk")
         # topo inputs still resolve to the shared topo ancestor
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
 
     def test_resolve_node_inputs_prod_chain_blocks_unfinished_parent(self, full_dag):
         """Deep chain prod_003 → prod_002 → prod_001 → eq_001: unfinished
@@ -1404,8 +1404,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk",
@@ -1441,8 +1441,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk",
@@ -1471,8 +1471,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"state": "artifacts/equilibrated.xml"},
@@ -1493,8 +1493,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"state": "artifacts/equilibrated.xml"},
@@ -1535,8 +1535,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
     def test_resolve_node_inputs_prod_surfaces_npt_eq_ensemble(self, job_dir):
@@ -1594,7 +1594,8 @@ class TestDAGAutoResolve:
         self, full_dag
     ):
         """An analyze node directly parented on a single prod node with
-        one trajectory resolves to that trajectory plus the topo's parm7."""
+        one trajectory resolves to that trajectory plus the topo's
+        ``topology_pdb`` (mdtraj-compatible)."""
         from mdclaw._node import resolve_node_inputs
         jd = str(full_dag)
         complete_node(jd, "prod_001",
@@ -1602,8 +1603,8 @@ class TestDAGAutoResolve:
                                  "state": "artifacts/state.xml"})
         create_node(jd, "analyze", parent_node_ids=["prod_001"])
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
-        assert "prmtop_file" in inputs
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert "topology_file" in inputs
+        assert inputs["topology_file"].endswith("topo_001/artifacts/topology.pdb")
         chain = inputs["trajectory_chain"]
         assert len(chain) == 1
         assert chain[0].endswith("prod_001/artifacts/trajectory.dcd")
@@ -1726,9 +1727,9 @@ class TestDAGAutoResolve:
         assert inputs["reference_pdb"].endswith(
             "analyze_001/artifacts/combined.pdb"
         )
-        # prmtop still resolves through the earlier topo ancestor
-        assert inputs["prmtop_file"].endswith(
-            "topo_001/artifacts/system.parm7"
+        # topology still resolves through the earlier topo ancestor
+        assert inputs["topology_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
         )
         # Phase 1 keys must NOT appear in the Phase 2 resolution
         assert "trajectory_chain" not in inputs
@@ -1812,9 +1813,9 @@ class TestDAGAutoResolve:
 
     @pytest.fixture
     def modern_dag(self, job_dir):
-        """prep→solv→topo→eq DAG where topo emits the openmmforcefields-era
-        artifact triple (system.xml + topology.pdb + state.xml) instead of
-        the legacy parm7/rst7 pair."""
+        """prep→solv→topo→eq DAG where topo emits the XML triple
+        (``system.xml`` + ``topology.pdb`` + ``state.xml``) — the only
+        topology contract supported on the run side."""
         jd = str(job_dir)
         create_node(jd, "prep")
         complete_node(
@@ -1856,9 +1857,6 @@ class TestDAGAutoResolve:
         assert inputs["state_xml_file"].endswith(
             "topo_001/artifacts/state.xml"
         )
-        # Modern path must not emit the legacy keys.
-        assert "prmtop_file" not in inputs
-        assert "inpcrd_file" not in inputs
 
     def test_resolve_modern_prod_uses_xml_triple(self, modern_dag):
         jd = str(modern_dag)
@@ -1877,13 +1875,11 @@ class TestDAGAutoResolve:
             "topo_001/artifacts/state.xml"
         )
         assert inputs["restart_from"].endswith("equilibrated.xml")
-        assert "prmtop_file" not in inputs
 
     def test_resolve_modern_analyze_uses_topology_pdb(self, modern_dag):
         """Analyze branch picks up topology.pdb (mdtraj-compatible) as
-        ``prmtop_file`` so atom-selection DSL keeps working without a
-        prmtop on disk. The result key is intentionally still
-        ``prmtop_file``; PR6 renames it to ``topology_file``."""
+        ``topology_file`` so atom-selection DSL works directly off the
+        XML triple's PDB."""
         jd = str(modern_dag)
         complete_node(
             jd, "eq_001",
@@ -1899,7 +1895,7 @@ class TestDAGAutoResolve:
         )
         create_node(jd, "analyze", parent_node_ids=["prod_001"])
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
-        assert inputs["prmtop_file"].endswith(
+        assert inputs["topology_file"].endswith(
             "topo_001/artifacts/topology.pdb"
         )
 
@@ -1965,16 +1961,6 @@ class TestDAGAutoResolve:
         assert inputs["topology_hmr"] is None
         assert inputs["topology_solvent_type"] is None
 
-    def test_resolve_legacy_dag_still_works(self, full_dag):
-        """Smoke: the resolver must keep working for legacy parm7/rst7
-        topo nodes throughout the multi-PR migration. ``full_dag`` writes
-        only legacy artifacts."""
-        jd = str(full_dag)
-        inputs = resolve_node_inputs(jd, "eq_001", "eq")
-        assert "prmtop_file" in inputs
-        assert "inpcrd_file" in inputs
-        assert "system_xml_file" not in inputs
-
     def test_resolver_pins_to_a_single_topo_for_modern_triple(self, job_dir):
         """If topo_002 has only system_xml and topo_001 (older) has the full
         triple, the resolver MUST NOT mix system_xml from topo_002 with
@@ -2026,41 +2012,6 @@ class TestDAGAutoResolve:
         assert "topo_002" in msg
         assert "topology_pdb" in msg
 
-    def test_resolver_legacy_pair_atomicity(self, job_dir):
-        """Same atomicity invariant for legacy parm7/rst7: a topo carrying
-        only parm7 must error rather than falling back to an older topo for
-        rst7."""
-        jd = str(job_dir)
-        create_node(jd, "prep")
-        complete_node(
-            jd, "prep_001",
-            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
-        )
-        create_node(jd, "solv", parent_node_ids=["prep_001"])
-        complete_node(
-            jd, "solv_001",
-            artifacts={
-                "solvated_pdb": "artifacts/solvated.pdb",
-                "box_dimensions": "artifacts/box_dimensions.json",
-            },
-        )
-        create_node(jd, "topo", parent_node_ids=["solv_001"])
-        complete_node(
-            jd, "topo_001",
-            artifacts={"parm7": "artifacts/system.parm7", "rst7": "artifacts/system.rst7"},
-        )
-        create_node(jd, "topo", parent_node_ids=["topo_001"])
-        complete_node(
-            jd, "topo_002",
-            artifacts={"parm7": "artifacts/only_parm.parm7"},
-        )
-        create_node(jd, "eq", parent_node_ids=["topo_002"])
-
-        inputs = resolve_node_inputs(jd, "eq_001", "eq")
-        assert "prmtop_file" not in inputs
-        assert "inpcrd_file" not in inputs
-        assert "input_resolution_error" in inputs
-        assert "topo_002" in inputs["input_resolution_error"]
 
 
 # ── Structured (non-path) artifact propagation ─────────────────────────────

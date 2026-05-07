@@ -82,10 +82,10 @@ def test_workflow_missing_inputs_are_structured():
     assert solvate["error_type"] == "ValidationError"
     assert solvate["code"] == "missing_pdb_file"
 
-    eq = run_equilibration(prmtop_file=None, inpcrd_file=None)
+    eq = run_equilibration(system_xml_file=None, topology_pdb_file=None)
     assert eq["success"] is False
     assert eq["error_type"] == "ValidationError"
-    assert eq["code"] == "missing_topology_inputs"
+    assert eq["code"] == "missing_xml_topology_inputs"
 
 
 def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):

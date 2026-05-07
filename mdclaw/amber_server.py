@@ -12,11 +12,11 @@ Provides tools for:
 - Handling protein-ligand complexes with curated GAFF parameters and
   ParmEd-bridged metal templates where applicable.
 
-The legacy tleap script generation / parm7 + rst7 build path was retired in
-PR3 of the openmmforcefields-unification refactor; eq/prod now resolve the
-modern XML triple from DAG ancestors. AmberTools (``pdb4amber``,
-``antechamber``, ``parmchk2``, ``sqm``, ``cpptraj``) remain in use upstream
-for structure preparation and ligand parameterization.
+The XML triple is the only topology contract on the run side; tleap and
+parm7/rst7 are not produced or consumed anywhere. AmberTools
+(``pdb4amber``, ``antechamber``, ``parmchk2``, ``sqm``, ``cpptraj``)
+remain in use upstream for structure preparation and ligand
+parameterization.
 """
 
 # Configure logging early to suppress noisy third-party logs
@@ -2017,10 +2017,9 @@ def build_amber_system(
     # Initialize result structure.
     # The curated build path emits the modern XML triple. Callers should
     # consume ``system_xml``, ``topology_pdb``, and ``state_xml`` (set by
-    # ``_run_openmmforcefields_build`` on success). The pre-PR3 ``parm7``,
-    # ``rst7``, ``leap_log``, and ``leap_script`` fields have been removed
-    # because the openmmforcefields path never populates them; downstream
-    # code (DAG resolver, eq/prod) reads the XML triple instead.
+    # ``_run_openmmforcefields_build`` on success). The XML triple is the
+    # only topology contract; downstream code (DAG resolver, eq/prod)
+    # never reads anything else.
     job_id = generate_job_id()
     solvent_type = "implicit" if box_dimensions is None else "explicit"
     result = {
@@ -2365,9 +2364,8 @@ def build_amber_system(
         out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
     
-    # Output files (modern: openmmforcefields path).
-    # Legacy parm7 / rst7 / leap_* file-name slots have been retired with the
-    # tleap process in PR3; eq/prod consume the system.xml triple instead.
+    # Output files. ``build_amber_system`` emits the XML triple consumed
+    # by run_equilibration / run_production through the DAG resolver.
     system_xml_file = out_dir / f"{output_name}.system.xml"
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"

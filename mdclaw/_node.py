@@ -1593,8 +1593,8 @@ def find_ancestor_artifact(
 
     Example (path artifact)::
 
-        parm7 = find_ancestor_artifact(job_dir, "eq_001", "topo", "parm7")
-        # -> "/abs/path/job_xxx/nodes/topo_001/artifacts/system.parm7"
+        topo_pdb = find_ancestor_artifact(job_dir, "eq_001", "topo", "topology_pdb")
+        # -> "/abs/path/job_xxx/nodes/topo_001/artifacts/system.topology.pdb"
 
     Example (structured artifact)::
 
@@ -1773,99 +1773,74 @@ def _nearest_ancestor_artifact_or_error(
 def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     """Resolve topology artifacts emitted by the nearest topo ancestor.
 
-    Modern topo nodes (built via openmmforcefields/SystemGenerator) emit a
-    ``system_xml`` + ``topology_pdb`` + ``state_xml`` triple. Legacy topo
-    nodes built before the openmmforcefields-unification refactor emitted
-    ``parm7`` + ``rst7``. This resolver prefers the modern triple and falls
-    back to the legacy pair so eq/prod/analyze keep working through the
-    multi-PR migration; the legacy fallback will be dropped once every
-    consumer has been migrated.
+    Topo nodes built via ``build_amber_system`` / ``build_openmm_system``
+    emit a ``system_xml`` + ``topology_pdb`` + ``state_xml`` triple. The
+    XML triple is the only supported topology contract on the run side —
+    eq / prod / analyze refuse to consume any other artifact set.
 
-    **Atomicity guarantee**: when a topo ancestor carries ``system_xml``,
-    *all* modern triple components must come from that same node — we never
-    fall back to an older topo ancestor for ``topology_pdb`` / ``state_xml``,
-    because mixing artifacts across topo nodes would point eq/prod at a
-    different physical System. Missing components on the chosen topo node
-    surface as ``input_resolution_error`` rather than a silent walk upward.
-    Same atomicity for the legacy ``parm7`` + ``rst7`` pair.
+    **Atomicity guarantee**: all triple components must come from the
+    same topo node. We never fall back to an older topo ancestor for
+    ``topology_pdb`` / ``state_xml``, because mixing artifacts across
+    topo nodes would point eq/prod at a different physical System.
+    Missing components on the chosen topo node surface as
+    ``input_resolution_error`` rather than a silent walk upward.
     """
     result: dict = {}
 
-    # Pick the nearest topo ancestor that actually carries ``system_xml``;
-    # only that node is allowed to source the modern triple.
-    modern_topo_id = _find_ancestor_node_with_artifact(
+    topo_id = _find_ancestor_node_with_artifact(
         job_dir, node_id, "topo", "system_xml"
     )
-    if modern_topo_id is not None:
-        sys_xml = _read_artifact_from_node(job_dir, modern_topo_id, "system_xml")
-        topo_pdb = _read_artifact_from_node(job_dir, modern_topo_id, "topology_pdb")
-        state_xml = _read_artifact_from_node(job_dir, modern_topo_id, "state_xml")
-        if sys_xml is None or topo_pdb is None:
+    if topo_id is None:
+        nearest_topo = _find_ancestor_node_id(job_dir, node_id, "topo")
+        if nearest_topo is not None:
             _record_input_resolution_error(
                 result,
-                f"Topo ancestor '{modern_topo_id}' is missing the modern "
-                f"artifact triple: system_xml={'ok' if sys_xml else 'MISSING'}, "
-                f"topology_pdb={'ok' if topo_pdb else 'MISSING'}. The triple "
-                f"must be emitted atomically by build_amber_system / "
-                f"build_openmm_system; do not mix artifacts across topo nodes.",
+                f"Nearest topo ancestor '{nearest_topo}' has no "
+                f"``system_xml`` artifact. Run ``build_amber_system`` "
+                f"or ``build_openmm_system`` to produce the modern XML "
+                f"triple (``system_xml`` + ``topology_pdb`` + "
+                f"``state_xml``).",
             )
-            return result
-        result["system_xml_file"] = sys_xml
-        result["topology_pdb_file"] = topo_pdb
-        if state_xml:
-            result["state_xml_file"] = state_xml
-        result["topology_resolved_from_node_id"] = modern_topo_id
-        # Surface build-time choices the run side needs to validate against
-        # runtime kwargs. ``implicit_solvent`` is the load-bearing one
-        # (mismatch silently runs the wrong GB model); ``hmr`` and
-        # ``solvent_type`` are along for the ride so eq/prod can produce
-        # cleaner diagnostics without re-deserializing system.xml. Missing
-        # metadata keys (legacy or hand-built node.json) keep the value as
-        # ``None`` so downstream guards can skip the check rather than
-        # blocking on noise.
-        try:
-            modern_meta = read_node(job_dir, modern_topo_id).get("metadata") or {}
-        except (OSError, json.JSONDecodeError):
-            modern_meta = {}
-        result["topology_implicit_solvent"] = modern_meta.get("implicit_solvent")
-        result["topology_hmr"] = modern_meta.get("hmr")
-        result["topology_solvent_type"] = modern_meta.get("solvent_type")
-        return result
-
-    # Legacy parm7/rst7 path — both must come from the same topo ancestor.
-    legacy_topo_id = _find_ancestor_node_with_artifact(
-        job_dir, node_id, "topo", "parm7"
-    )
-    if legacy_topo_id is not None:
-        p7 = _read_artifact_from_node(job_dir, legacy_topo_id, "parm7")
-        r7 = _read_artifact_from_node(job_dir, legacy_topo_id, "rst7")
-        if p7 is None or r7 is None:
+        else:
             _record_input_resolution_error(
                 result,
-                f"Topo ancestor '{legacy_topo_id}' is missing the legacy "
-                f"parm7+rst7 pair: parm7={'ok' if p7 else 'MISSING'}, "
-                f"rst7={'ok' if r7 else 'MISSING'}.",
+                f"No topo ancestor found for '{node_id}'.",
             )
-            return result
-        result["prmtop_file"] = p7
-        result["inpcrd_file"] = r7
-        result["topology_resolved_from_node_id"] = legacy_topo_id
         return result
 
-    # No topo ancestor carries either artifact set — surface a clear error.
-    nearest_topo = _find_ancestor_node_id(job_dir, node_id, "topo")
-    if nearest_topo is not None:
+    sys_xml = _read_artifact_from_node(job_dir, topo_id, "system_xml")
+    topo_pdb = _read_artifact_from_node(job_dir, topo_id, "topology_pdb")
+    state_xml = _read_artifact_from_node(job_dir, topo_id, "state_xml")
+    if sys_xml is None or topo_pdb is None:
         _record_input_resolution_error(
             result,
-            f"Nearest topo ancestor '{nearest_topo}' is missing both the "
-            f"modern (system_xml + topology_pdb [+ state_xml]) and legacy "
-            f"(parm7 + rst7) artifact sets.",
+            f"Topo ancestor '{topo_id}' is missing the XML triple: "
+            f"system_xml={'ok' if sys_xml else 'MISSING'}, "
+            f"topology_pdb={'ok' if topo_pdb else 'MISSING'}. The "
+            f"triple must be emitted atomically by build_amber_system "
+            f"/ build_openmm_system; do not mix artifacts across topo "
+            f"nodes.",
         )
-    else:
-        _record_input_resolution_error(
-            result,
-            f"No topo ancestor found for '{node_id}'.",
-        )
+        return result
+    result["system_xml_file"] = sys_xml
+    result["topology_pdb_file"] = topo_pdb
+    if state_xml:
+        result["state_xml_file"] = state_xml
+    result["topology_resolved_from_node_id"] = topo_id
+    # Surface build-time choices the run side needs to validate against
+    # runtime kwargs. ``implicit_solvent`` is the load-bearing one
+    # (mismatch silently runs the wrong GB model); ``hmr`` and
+    # ``solvent_type`` are along for the ride so eq/prod can produce
+    # cleaner diagnostics without re-deserializing system.xml. Missing
+    # metadata keys (hand-built node.json) keep the value as ``None`` so
+    # downstream guards can skip the check rather than blocking on noise.
+    try:
+        topo_meta = read_node(job_dir, topo_id).get("metadata") or {}
+    except (OSError, json.JSONDecodeError):
+        topo_meta = {}
+    result["topology_implicit_solvent"] = topo_meta.get("implicit_solvent")
+    result["topology_hmr"] = topo_meta.get("hmr")
+    result["topology_solvent_type"] = topo_meta.get("solvent_type")
     return result
 
 
@@ -2045,8 +2020,8 @@ def resolve_node_inputs(
                 ancestor, plus ``ligand_params`` / ``metal_params`` from
                 nearest ``prep`` ancestor
     - ``eq``:   ``system_xml`` + ``topology_pdb`` + ``state_xml`` from nearest
-                ``topo`` ancestor (or legacy ``parm7`` + ``rst7`` for
-                pre-openmmforcefields topo nodes)
+                ``topo`` ancestor (XML triple is the only supported
+                topology contract on the run side)
     - ``prod``: same topology artifacts as ``eq``;
                 ``checkpoint`` / ``state`` from nearest ``eq`` ancestor (parent)
     """
@@ -2155,16 +2130,13 @@ def resolve_node_inputs(
         n_parents = len(parents)
         # Every analyze branch needs the same topology for atom-selection
         # DSL evaluation — within one job_dir all prods share the topo.
-        # mdtraj accepts both PDB and prmtop, so we prefer the modern
-        # ``topology_pdb`` artifact and fall back to ``parm7`` for legacy
-        # topo nodes. The result key is still ``prmtop_file`` to keep
-        # analyze_server callers stable until PR6 renames the parameter.
-        topology = (
-            find_ancestor_artifact(job_dir, node_id, "topo", "topology_pdb")
-            or find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        # The modern XML triple's ``topology_pdb`` is mdtraj-compatible
+        # and is the only topology source the resolver returns.
+        topology = find_ancestor_artifact(
+            job_dir, node_id, "topo", "topology_pdb"
         )
         if topology:
-            result["prmtop_file"] = topology
+            result["topology_file"] = topology
 
         if n_parents == 1 and parent_types[0] == "prod":
             # Phase 1 single-prod shape: trajectory + energy chain

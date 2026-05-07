@@ -277,113 +277,70 @@ def _system_hydrogen_mass_amu(system, topology) -> Optional[float]:
     return None
 
 
-class _ModernPrmtopShim:
-    """Drop-in replacement for ``AmberPrmtopFile`` when build_amber_system has
-    emitted a system.xml + topology.pdb triple instead of parm7/rst7.
+class _XMLTopologyInputs:
+    """Native loader for the ``system.xml`` + ``topology.pdb`` + ``state.xml``
+    artifact triple emitted by ``build_amber_system`` /
+    ``build_openmm_system``. The XML triple is the only topology contract
+    on the run side — there is no longer a legacy parm7/rst7 fallback.
 
-    ``run_equilibration`` and ``run_production`` access two attributes on the
-    ``prmtop`` object: ``.topology`` and ``.createSystem(**kwargs)``. By
-    wrapping the modern artifacts, we keep the legacy branches intact while
-    routing both call sites through ``XmlSerializer.deserialize``.
-
-    The saved System already has ``HMR`` / ``nonbondedMethod`` /
-    ``constraints`` / implicit-solvent baked in at build time. Of the
-    ``createSystem`` kwargs that legacy run_* code paths pass, only
-    ``hydrogenMass`` and ``implicitSolvent`` are **validated** against the
-    saved System — a request that the build did not commit to raises
-    ``_ModernSystemContractError`` with a structured code so the caller can
-    surface a clean error. The other kwargs (``nonbondedMethod``,
-    ``nonbondedCutoff``, ``constraints``, ``rigidWater``) are honored as
-    whatever the saved System carries, since they were already chosen at
-    build time and re-asserting them at run time cannot change the
-    deserialized System. Callers that need to re-tune those settings must
-    rebuild via ``build_amber_system`` / ``build_openmm_system`` rather than
-    relying on run_* kwargs.
+    Attributes:
+        topology: ``openmm.app.Topology`` loaded from ``topology.pdb``.
+        positions: Initial positions, sourced from ``state.xml`` when
+            available (carries the build-time minimized geometry),
+            falling back to the PDB coordinates.
+        box_vectors: Periodic box vectors, sourced from the same place as
+            ``positions``. ``None`` for non-periodic systems.
+        system_xml_path: Path to ``system.xml``. Held so callers can
+            deserialize a fresh ``openmm.System`` per stage (NVT, NPT,
+            production-clean checkpoint) without mutating a shared one.
+        topology_pdb_path / state_xml_path: For provenance / signature
+            hashing.
+        is_periodic: ``box_vectors is not None``.
     """
 
-    def __init__(self, topology, system_xml_path: Path):
+    __slots__ = (
+        "topology",
+        "positions",
+        "box_vectors",
+        "system_xml_path",
+        "topology_pdb_path",
+        "state_xml_path",
+        "is_periodic",
+    )
+
+    def __init__(
+        self,
+        *,
+        topology,
+        positions,
+        box_vectors,
+        system_xml_path: Path,
+        topology_pdb_path: Path,
+        state_xml_path: Optional[Path],
+    ):
         self.topology = topology
-        self._system_xml_path = Path(system_xml_path)
-
-    def createSystem(self, **kwargs):
-        from openmm import XmlSerializer
-        with self._system_xml_path.open("r") as fh:
-            system = XmlSerializer.deserialize(fh.read())
-
-        # Hydrogen-mass repartitioning contract.
-        requested_hmass = kwargs.get("hydrogenMass")
-        if requested_hmass is not None:
-            try:
-                from openmm.unit import dalton
-                requested_amu = float(requested_hmass.value_in_unit(dalton))
-            except AttributeError:
-                requested_amu = float(requested_hmass)
-            actual_amu = _system_hydrogen_mass_amu(system, self.topology)
-            if actual_amu is not None and abs(requested_amu - actual_amu) > 0.05:
-                raise _ModernSystemContractError(
-                    code="modern_system_hmr_mismatch",
-                    message=(
-                        f"run_* requested hydrogenMass={requested_amu:.3f} amu but the "
-                        f"saved system.xml has H={actual_amu:.3f} amu. HMR is a "
-                        f"build-time decision under the openmmforcefields path — "
-                        f"rebuild via build_amber_system(hmr=True) to bake HMR into "
-                        f"system.xml, or pass hmr=False at run time."
-                    ),
-                )
-
-        # Implicit-solvent contract: GB-aware Force must already exist on the
-        # saved System. ``build_amber_system(..., implicit_solvent=...)``
-        # bakes the matching ``implicit/*.xml`` (HCT / OBC1 / OBC2 / GBn /
-        # GBn2) into ``system.xml`` so the deserialized System carries a
-        # ``CustomGBForce`` / ``GBSAOBCForce``. A vacuum or explicit-solvent
-        # build paired with ``--implicit-solvent`` at run time is the case
-        # this guard catches.
-        if kwargs.get("implicitSolvent") is not None and not _system_has_implicit_solvent_force(system):
-            raise _ModernSystemContractError(
-                code="modern_system_implicit_solvent_unsupported",
-                message=(
-                    f"run_* requested implicitSolvent={kwargs['implicitSolvent']!r} but "
-                    f"the saved system.xml has no GB / implicit-solvent force. "
-                    f"Rebuild the topo node with "
-                    f"``build_amber_system(..., implicit_solvent="
-                    f"{kwargs['implicitSolvent']!r})`` so the matching "
-                    f"openmmforcefields ``implicit/*.xml`` is baked into "
-                    f"``system.xml``. For non-shipped GB models, route "
-                    f"through ``build_openmm_system`` with a GB-aware "
-                    f"third-party ForceField XML (e.g. GB99dms.xml)."
-                ),
-            )
-
-        return system
-
-
-class _ModernInpcrdShim:
-    """Drop-in replacement for ``AmberInpcrdFile`` keyed off state.xml.
-
-    Exposes ``.positions`` and ``.boxVectors``. State velocities are not
-    surfaced here — the equilibration/production helpers explicitly load
-    velocities through ``_load_state_into_simulation`` when restarting.
-    """
-
-    def __init__(self, positions, box_vectors):
         self.positions = positions
-        self.boxVectors = box_vectors
+        self.box_vectors = box_vectors
+        self.system_xml_path = system_xml_path
+        self.topology_pdb_path = topology_pdb_path
+        self.state_xml_path = state_xml_path
+        self.is_periodic = box_vectors is not None
 
 
-def _maybe_load_modern_topology(
+def _load_xml_topology_inputs(
     *,
-    system_xml_file: Optional[str],
-    topology_pdb_file: Optional[str],
+    system_xml_file: str,
+    topology_pdb_file: str,
     state_xml_file: Optional[str],
-):
-    """Build (prmtop_shim, inpcrd_shim) from the modern triple, or
-    ``(None, None)`` when the legacy parm7/rst7 path applies.
+) -> _XMLTopologyInputs:
+    """Load the XML triple into a single ``_XMLTopologyInputs`` record.
 
-    Imports OpenMM lazily so callers that never reach the modern branch
-    don't pay the import cost twice.
+    Reads the ``topology.pdb`` for the OpenMM Topology, then prefers
+    ``state.xml`` for positions / box (because that file carries the
+    minimized post-build state); falls back to the PDB when ``state.xml``
+    is absent. Imports OpenMM lazily so the helper stays cheap to call
+    from validation paths that error out before reaching the loader.
     """
-    if not (system_xml_file and topology_pdb_file):
-        return None, None
     from openmm.app import PDBFile
     from openmm import XmlSerializer
 
@@ -392,28 +349,108 @@ def _maybe_load_modern_topology(
     positions = pdb.positions
     box_vectors = topology.getPeriodicBoxVectors()
 
-    # Prefer state.xml positions / box if it's available — this captures the
-    # minimized geometry written by build_amber_system.
-    if state_xml_file:
-        state_path = Path(state_xml_file)
-        if state_path.is_file():
-            with state_path.open("r") as fh:
-                state = XmlSerializer.deserialize(fh.read())
-            positions = state.getPositions()
-            try:
-                box_vectors = state.getPeriodicBoxVectors()
-            except Exception:  # noqa: BLE001
-                pass
+    state_path = Path(state_xml_file) if state_xml_file else None
+    if state_path is not None and state_path.is_file():
+        with state_path.open("r") as fh:
+            state = XmlSerializer.deserialize(fh.read())
+        positions = state.getPositions()
+        try:
+            box_vectors = state.getPeriodicBoxVectors()
+        except Exception:  # noqa: BLE001
+            pass
 
-    return (
-        _ModernPrmtopShim(topology, Path(system_xml_file)),
-        _ModernInpcrdShim(positions, box_vectors),
+    return _XMLTopologyInputs(
+        topology=topology,
+        positions=positions,
+        box_vectors=box_vectors,
+        system_xml_path=Path(system_xml_file).resolve(),
+        topology_pdb_path=Path(topology_pdb_file).resolve(),
+        state_xml_path=state_path.resolve() if state_path else None,
     )
 
 
+def _deserialize_xml_system(xml_inputs: _XMLTopologyInputs):
+    """Deserialize a fresh ``openmm.System`` from ``system.xml``.
+
+    Each NVT / NPT / clean-handoff stage in run_equilibration and the
+    production stage in run_production gets its own ``System`` from this
+    helper; that lets the caller mutate the System (add restraints, add
+    a barostat) without leaking those forces between stages.
+    """
+    from openmm import XmlSerializer
+
+    with xml_inputs.system_xml_path.open("r") as fh:
+        return XmlSerializer.deserialize(fh.read())
+
+
+def _validate_xml_system_contract(
+    system,
+    topology,
+    *,
+    hmr_request: Optional[bool],
+    implicit_solvent_request: Optional[str],
+) -> None:
+    """Replay the build-time → run-time consistency checks the legacy
+    shim used to perform inside ``createSystem``.
+
+    Raises ``_ModernSystemContractError`` with a structured ``code`` if a
+    run-time choice contradicts what was baked into ``system.xml``.
+    Stable codes (matched by callers / docs):
+
+      - ``modern_system_hmr_mismatch`` — runtime ``hmr`` opts in but the
+        deserialized System has standard hydrogen masses (or vice
+        versa). Hydrogen mass is sampled from the first H atom in the
+        topology; tolerance 0.05 amu.
+      - ``modern_system_implicit_solvent_unsupported`` — runtime asked
+        for implicit GB but the saved System carries no
+        ``GBSAOBCForce`` / ``CustomGBForce`` /
+        ``AmoebaGeneralizedKirkwoodForce``.
+
+    The other build-time choices (``nonbondedMethod``, ``cutoff``,
+    ``constraints``, ``rigidWater``) are baked into the System once and
+    cannot be changed at run time, so this helper does not re-validate
+    them — rebuilding the topo node is the only way to alter those.
+    """
+    if hmr_request is not None:
+        actual_amu = _system_hydrogen_mass_amu(system, topology)
+        # 4.0 amu is HMR; 1.008 amu is standard. Use 2.0 amu as a
+        # decision boundary so a small numerical drift on either side
+        # does not flip classification.
+        if actual_amu is not None:
+            actual_is_hmr = actual_amu > 2.0
+            if actual_is_hmr != bool(hmr_request):
+                raise _ModernSystemContractError(
+                    code="modern_system_hmr_mismatch",
+                    message=(
+                        f"run_* requested hmr={bool(hmr_request)} but the "
+                        f"saved system.xml has H={actual_amu:.3f} amu "
+                        f"({'HMR' if actual_is_hmr else 'standard'} mass). "
+                        f"HMR is a build-time decision — rebuild via "
+                        f"build_amber_system(hmr={bool(hmr_request)}) to "
+                        f"bake the matching mass into system.xml, or pass "
+                        f"hmr={not bool(hmr_request)} at run time."
+                    ),
+                )
+
+    if implicit_solvent_request is not None and not _system_has_implicit_solvent_force(system):
+        raise _ModernSystemContractError(
+            code="modern_system_implicit_solvent_unsupported",
+            message=(
+                f"run_* requested implicit_solvent="
+                f"{implicit_solvent_request!r} but the saved system.xml "
+                f"has no GB / implicit-solvent force. Rebuild the topo "
+                f"node with build_amber_system(..., implicit_solvent="
+                f"{implicit_solvent_request!r}) so the matching "
+                f"openmmforcefields ``implicit/*.xml`` is baked into "
+                f"``system.xml``. For non-shipped GB models, route "
+                f"through build_openmm_system with a GB-aware ForceField "
+                f"XML and pass --implicit-solvent <MODEL> there too."
+            ),
+        )
+
+
 def _system_signature(
-    prmtop_path: Path,
-    inpcrd_path: Path,
+    xml_inputs: _XMLTopologyInputs,
     *,
     solvent_type: str,
     ensemble: str,
@@ -422,9 +459,20 @@ def _system_signature(
     implicit_solvent: Optional[str],
     hmr: bool,
 ) -> dict:
+    """Reproducibility signature keyed off the XML triple.
+
+    Hash names (``system_xml_sha256`` etc.) match the on-disk artifact
+    names emitted by build_amber_system / build_openmm_system; the
+    signature is recorded on every restart so eq → prod handoff can
+    detect ancestor edits between runs.
+    """
     return {
-        "prmtop_sha256": sha256_file(prmtop_path),
-        "inpcrd_sha256": sha256_file(inpcrd_path),
+        "system_xml_sha256": sha256_file(xml_inputs.system_xml_path),
+        "topology_pdb_sha256": sha256_file(xml_inputs.topology_pdb_path),
+        "state_xml_sha256": (
+            sha256_file(xml_inputs.state_xml_path)
+            if xml_inputs.state_xml_path is not None else None
+        ),
         "solvent_type": solvent_type,
         "ensemble": ensemble,
         "pressure_bar": pressure_bar,
@@ -772,8 +820,6 @@ def _record_production_node_result(
 
 
 def run_equilibration(
-    prmtop_file: Optional[str] = None,
-    inpcrd_file: Optional[str] = None,
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
     state_xml_file: Optional[str] = None,
@@ -821,8 +867,16 @@ def run_equilibration(
     ``run_production --restart-from`` to inherit the equilibrated state.
 
     Args:
-        prmtop_file: Amber topology file (.parm7 or .prmtop)
-        inpcrd_file: Amber coordinate file (.rst7 or .inpcrd)
+        system_xml_file: Path to ``system.xml`` from the topo ancestor
+            (``build_amber_system`` / ``build_openmm_system``). Source of
+            truth for force-field parameters at run time — the run side
+            never reconstructs the System from ForceField XML.
+        topology_pdb_file: Path to ``topology.pdb`` from the same topo
+            ancestor; provides the OpenMM ``Topology`` for restraint atom
+            selection and final-structure writing.
+        state_xml_file: Path to ``state.xml`` from the same topo ancestor.
+            Carries the build-time minimized positions / velocities / box
+            and is preferred over the PDB coordinates when present.
         temperature_kelvin: Temperature in Kelvin (default: 300.0)
         pressure_bar: Pressure in bar. Controls whether NPT stage runs:
             - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
@@ -897,17 +951,13 @@ def run_equilibration(
             return create_validation_error(
                 "job_dir/node_id",
                 _inputs["input_resolution_error"],
-                expected="Completed topo ancestor with parm7/rst7 artifacts",
+                expected="Completed topo ancestor with system.xml + topology.pdb [+ state.xml] triple",
                 actual=f"job_dir={job_dir}, node_id={node_id}",
                 context_extra={
                     "input_resolution_errors": _inputs.get("input_resolution_errors", []),
                 },
                 code="input_resolution_blocked",
             )
-        if not prmtop_file and "prmtop_file" in _inputs:
-            prmtop_file = _inputs["prmtop_file"]
-        if not inpcrd_file and "inpcrd_file" in _inputs:
-            inpcrd_file = _inputs["inpcrd_file"]
         if not system_xml_file and "system_xml_file" in _inputs:
             system_xml_file = _inputs["system_xml_file"]
         if not topology_pdb_file and "topology_pdb_file" in _inputs:
@@ -919,7 +969,7 @@ def run_equilibration(
         # eq → eq chaining: when an eq/prod ancestor exposes a state
         # artifact, resume from it instead of running a fresh
         # minimization + warmup. The first eq node from topo has no
-        # ancestor and runs from inpcrd as before.
+        # ancestor and runs directly from the topo state.xml.
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
         # Catch implicit-solvent model mismatches between the topo node's
@@ -978,23 +1028,21 @@ def run_equilibration(
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
 
-    # The new openmmforcefields-unification path supplies system.xml +
-    # topology.pdb + state.xml (PR3); the legacy path uses parm7 + rst7.
-    # Either set is acceptable here.
-    _modern_inputs = bool(system_xml_file and topology_pdb_file)
-    _legacy_inputs = bool(prmtop_file and inpcrd_file)
-    if not _modern_inputs and not _legacy_inputs:
+    # The XML triple is the only supported topology contract on the run
+    # side. ``state_xml_file`` is optional (built-in to ``build_amber_system``
+    # output but not required for restart-from-checkpoint flows that
+    # supply positions through ``--restart-from``).
+    if not (system_xml_file and topology_pdb_file):
         return create_validation_error(
             "topology_inputs",
-            "Either (system_xml_file + topology_pdb_file) or "
-            "(prmtop_file + inpcrd_file) is required",
-            expected="Modern triple from build_amber_system (PR3), or legacy parm7/rst7",
+            "system_xml_file and topology_pdb_file are required",
+            expected="XML triple from build_amber_system / build_openmm_system",
             actual=(
-                f"system_xml_file={system_xml_file!r}, topology_pdb_file={topology_pdb_file!r}, "
-                f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}"
+                f"system_xml_file={system_xml_file!r}, "
+                f"topology_pdb_file={topology_pdb_file!r}"
             ),
             hints=["Run build_amber_system first or execute in node mode from an eq node."],
-            code="missing_topology_inputs",
+            code="missing_xml_topology_inputs",
         )
 
     logger.info(f"Starting equilibration at {temperature_kelvin}K")
@@ -1019,32 +1067,18 @@ def run_equilibration(
         "warnings": [],
     }
 
-    if _modern_inputs:
-        system_xml_path = Path(system_xml_file).resolve()
-        topology_pdb_path = Path(topology_pdb_file).resolve()
-        state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
-        if not system_xml_path.is_file():
-            result["errors"].append(f"system.xml not found: {system_xml_file}")
-            return result
-        if not topology_pdb_path.is_file():
-            result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
-            return result
-        if state_xml_path and not state_xml_path.is_file():
-            result["errors"].append(f"state.xml not found: {state_xml_file}")
-            return result
-        # Synthesize legacy paths for downstream code that still references
-        # them (e.g. logging / signature). Both point at the modern artifacts.
-        prmtop_path = system_xml_path
-        inpcrd_path = state_xml_path or topology_pdb_path
-    else:
-        prmtop_path = Path(prmtop_file).resolve()
-        inpcrd_path = Path(inpcrd_file).resolve()
-        if not prmtop_path.is_file():
-            result["errors"].append(f"Topology file not found: {prmtop_file}")
-            return result
-        if not inpcrd_path.is_file():
-            result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
-            return result
+    system_xml_path = Path(system_xml_file).resolve()
+    topology_pdb_path = Path(topology_pdb_file).resolve()
+    state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
+    if not system_xml_path.is_file():
+        result["errors"].append(f"system.xml not found: {system_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if not topology_pdb_path.is_file():
+        result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if state_xml_path and not state_xml_path.is_file():
+        result["errors"].append(f"state.xml not found: {state_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
     restart_path = Path(restart_from).resolve() if restart_from else None
     if restart_path is not None and not restart_path.is_file():
         result["errors"].append(f"Restart file not found: {restart_from}")
@@ -1052,8 +1086,7 @@ def run_equilibration(
 
     try:
         from openmm.app import (
-            AmberPrmtopFile, AmberInpcrdFile, PDBFile,
-            Simulation, PME, NoCutoff, HBonds, StateDataReporter,
+            PDBFile, Simulation, StateDataReporter,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (
@@ -1062,11 +1095,11 @@ def run_equilibration(
         )
         from openmm.unit import (
             nanometer, kelvin, picosecond, femtoseconds, bar,
-            kilojoules_per_mole, amu,
+            kilojoules_per_mole,
         )
     except ImportError:
         result["errors"].append("OpenMM not installed")
-        return result
+        return _fail_node_if_running(job_dir, node_id, result)
 
     # Canonical implicit-solvent names → OpenMM symbols. Resolved by
     # ``_resolve_implicit_solvent_model`` (same alias set as
@@ -1107,21 +1140,17 @@ def run_equilibration(
         ensure_directory(out_dir)
         result["output_dir"] = str(out_dir)
 
-        # Load topology and coordinates — modern path uses Pablo-built
-        # system.xml + topology.pdb + state.xml; legacy path uses parm7/rst7.
-        if _modern_inputs:
-            logger.info("Loading modern artifact triple (system.xml + topology.pdb + state.xml)")
-            prmtop, inpcrd = _maybe_load_modern_topology(
-                system_xml_file=str(system_xml_path),
-                topology_pdb_file=str(topology_pdb_path),
-                state_xml_file=str(state_xml_path) if state_xml_path else None,
-            )
-        else:
-            logger.info("Loading Amber files")
-            prmtop = AmberPrmtopFile(str(prmtop_path))
-            inpcrd = AmberInpcrdFile(str(inpcrd_path))
+        # Load topology + initial positions / box vectors from the XML
+        # triple. ``state.xml`` (when present) carries the build-time
+        # minimized state; otherwise the PDB coordinates are used.
+        logger.info("Loading XML topology triple (system.xml + topology.pdb + state.xml)")
+        xml_inputs = _load_xml_topology_inputs(
+            system_xml_file=str(system_xml_path),
+            topology_pdb_file=str(topology_pdb_path),
+            state_xml_file=str(state_xml_path) if state_xml_path else None,
+        )
 
-        is_periodic = inpcrd.boxVectors is not None
+        is_periodic = xml_inputs.is_periodic
         if implicit_solvent:
             solvent_type = "implicit"
         elif is_periodic:
@@ -1134,10 +1163,19 @@ def run_equilibration(
             )
             return _fail_node_if_running(job_dir, node_id, result)
 
-        # HMR kwargs shared by NVT, NPT, and the clean checkpoint System
-        # (must mirror run_production's hmr handling so the saved checkpoint
-        # is loadable).
-        hmr_kwargs = {"hydrogenMass": 4.0 * amu} if hmr else {}
+        # Resolve the requested implicit-solvent symbol up-front so a
+        # typo in the runtime flag fails before any System is built.
+        # The build vs runtime model match is already enforced by the
+        # topology metadata guard upstream; here we just need the symbol.
+        if implicit_solvent:
+            _gb_model, gb_err = _resolve_implicit_solvent_model(
+                implicit_solvent, IMPLICIT_MODELS
+            )
+            if gb_err:
+                result["errors"].extend(gb_err["errors"])
+                result["code"] = gb_err["code"]
+                return _fail_node_if_running(job_dir, node_id, result)
+
         if hmr:
             logger.info(f"HMR enabled: hydrogenMass=4.0 amu (timestep={timestep_fs}fs)")
 
@@ -1158,34 +1196,24 @@ def run_equilibration(
             f"restraints on {restraint_atoms})"
         )
 
-        # Create system for NVT
-        if implicit_solvent:
-            gb_model, gb_err = _resolve_implicit_solvent_model(
-                implicit_solvent, IMPLICIT_MODELS
+        # Deserialize a fresh System for NVT. The build-time choices
+        # (forcefield, constraints, nonbondedMethod, HMR, GB) are baked
+        # into ``system.xml`` and validated against the run-time request
+        # below; the run side never reconstructs the System.
+        try:
+            system_nvt = _deserialize_xml_system(xml_inputs)
+            _validate_xml_system_contract(
+                system_nvt, xml_inputs.topology,
+                hmr_request=hmr,
+                implicit_solvent_request=implicit_solvent,
             )
-            if gb_err:
-                result["errors"].extend(gb_err["errors"])
-                result["code"] = gb_err["code"]
-                return _fail_node_if_running(job_dir, node_id, result)
-            system_nvt = prmtop.createSystem(
-                implicitSolvent=gb_model,
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
-        elif is_periodic:
-            system_nvt = prmtop.createSystem(
-                nonbondedMethod=PME,
-                nonbondedCutoff=1.0 * nanometer,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
-        else:
-            system_nvt = prmtop.createSystem(
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
+        except _ModernSystemContractError as exc:
+            result["errors"].append(str(exc))
+            result["code"] = exc.code
+            return _fail_node_if_running(job_dir, node_id, result)
+        # Stage variants (implicit / periodic / vacuum) are reflected in
+        # integrator + barostat choices below; the System itself is
+        # build-time fixed.
 
         # Add positional restraints
         restraint = CustomExternalForce(
@@ -1197,10 +1225,10 @@ def run_equilibration(
         restraint.addPerParticleParameter('z0')
 
         allowed_names = RESTRAINT_SELECTIONS.get(restraint_atoms, {"CA"})
-        positions = inpcrd.positions
+        positions = xml_inputs.positions
         restraint_count = 0
 
-        for atom in prmtop.topology.atoms():
+        for atom in xml_inputs.topology.atoms():
             if not _is_solute_atom(atom):
                 continue
             if allowed_names is None:
@@ -1245,10 +1273,10 @@ def run_equilibration(
                     platform_properties["DeviceIndex"] = device_index
 
         if platform_obj:
-            sim_nvt = Simulation(prmtop.topology, system_nvt, integrator_nvt,
+            sim_nvt = Simulation(xml_inputs.topology, system_nvt, integrator_nvt,
                                  platform_obj, platform_properties)
         else:
-            sim_nvt = Simulation(prmtop.topology, system_nvt, integrator_nvt)
+            sim_nvt = Simulation(xml_inputs.topology, system_nvt, integrator_nvt)
 
         result["platform"] = sim_nvt.context.getPlatform().getName()
         nvt_energy_file = out_dir / "nvt_energy.dat"
@@ -1286,8 +1314,8 @@ def run_equilibration(
             result["restarted_from"] = str(restart_path)
         else:
             sim_nvt.context.setPositions(positions)
-            if is_periodic and inpcrd.boxVectors is not None:
-                sim_nvt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+            if is_periodic and xml_inputs.box_vectors is not None:
+                sim_nvt.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
         def _finite_energy_check(stage: str) -> dict:
             state = sim_nvt.context.getState(getEnergy=True, getForces=True)
@@ -1372,8 +1400,8 @@ def run_equilibration(
 
         # Save NVT state — also capture box vectors so that the NPT stage
         # inherits the box from the most-recent simulation, not the
-        # prmtop's initial box. This matters when the NVT simulation
-        # itself was restarted from a prior NPT state with a different box.
+        # build-time XML box. This matters when the NVT simulation itself
+        # was restarted from a prior NPT state with a different box.
         nvt_state = sim_nvt.context.getState(
             getPositions=True,
             getVelocities=True,
@@ -1392,20 +1420,21 @@ def run_equilibration(
                 f"restraints on {restraint_atoms})"
             )
 
-            # Create new system for NPT
-            if is_periodic:
-                system_npt = prmtop.createSystem(
-                    nonbondedMethod=PME,
-                    nonbondedCutoff=1.0 * nanometer,
-                    constraints=HBonds,
-                    **hmr_kwargs,
+            # Fresh System for the NPT stage. The build-time forces +
+            # constraints are baked into ``system.xml``; we deserialize
+            # again so the restraint + barostat we add here do not bleed
+            # into the production-clean handoff System below.
+            try:
+                system_npt = _deserialize_xml_system(xml_inputs)
+                _validate_xml_system_contract(
+                    system_npt, xml_inputs.topology,
+                    hmr_request=hmr,
+                    implicit_solvent_request=implicit_solvent,
                 )
-            else:
-                system_npt = prmtop.createSystem(
-                    nonbondedMethod=NoCutoff,
-                    constraints=HBonds,
-                    **hmr_kwargs,
-                )
+            except _ModernSystemContractError as exc:
+                result["errors"].append(str(exc))
+                result["code"] = exc.code
+                return _fail_node_if_running(job_dir, node_id, result)
 
             # Add same restraints
             restraint_npt = CustomExternalForce(
@@ -1416,7 +1445,7 @@ def run_equilibration(
             restraint_npt.addPerParticleParameter('y0')
             restraint_npt.addPerParticleParameter('z0')
 
-            for atom in prmtop.topology.atoms():
+            for atom in xml_inputs.topology.atoms():
                 if not _is_solute_atom(atom):
                     continue
                 if allowed_names is None:
@@ -1458,10 +1487,10 @@ def run_equilibration(
                 integrator_npt.setRandomNumberSeed(random_seed)
 
             if platform_obj:
-                sim_npt = Simulation(prmtop.topology, system_npt, integrator_npt,
+                sim_npt = Simulation(xml_inputs.topology, system_npt, integrator_npt,
                                      platform_obj, platform_properties)
             else:
-                sim_npt = Simulation(prmtop.topology, system_npt, integrator_npt)
+                sim_npt = Simulation(xml_inputs.topology, system_npt, integrator_npt)
             npt_energy_file = out_dir / "npt_energy.dat"
             sim_npt.reporters.append(StateDataReporter(
                 str(npt_energy_file),
@@ -1480,8 +1509,8 @@ def run_equilibration(
             sim_npt.context.setVelocities(nvt_velocities)
             if is_periodic and nvt_box_vectors is not None:
                 sim_npt.context.setPeriodicBoxVectors(*nvt_box_vectors)
-            elif is_periodic and inpcrd.boxVectors is not None:
-                sim_npt.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+            elif is_periodic and xml_inputs.box_vectors is not None:
+                sim_npt.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
             sim_npt.step(npt_steps)
             for reporter in sim_npt.reporters:
@@ -1505,7 +1534,7 @@ def run_equilibration(
         pref = f"{name}_" if name else ""
         final_pdb = out_dir / f"{pref}equilibrated.pdb"
         with open(final_pdb, 'w') as f:
-            PDBFile.writeFile(prmtop.topology, final_positions, f)
+            PDBFile.writeFile(xml_inputs.topology, final_positions, f)
         result["final_structure"] = str(final_pdb)
         logger.info(f"Equilibrated structure saved: {final_pdb} (stages: {result['stages_completed']})")
 
@@ -1526,35 +1555,22 @@ def run_equilibration(
             enforcePeriodicBox=is_periodic,
         )
 
-        # Clean System — mirrors run_production's build exactly
-        # (same nonbonded method, cutoff, constraints, HMR).
-        if implicit_solvent:
-            gb_model_clean, gb_err = _resolve_implicit_solvent_model(
-                implicit_solvent, IMPLICIT_MODELS
+        # Clean System — fresh deserialization so the NVT / NPT restraint
+        # CustomExternalForce does not bleed into the production handoff
+        # (run_production loads this checkpoint and expects a restraint-free
+        # System). Build-time forcefield / HMR / GB choices are baked in;
+        # the run-time barostat for NPT explicit is added after.
+        try:
+            system_clean = _deserialize_xml_system(xml_inputs)
+            _validate_xml_system_contract(
+                system_clean, xml_inputs.topology,
+                hmr_request=hmr,
+                implicit_solvent_request=implicit_solvent,
             )
-            if gb_err:
-                result["errors"].extend(gb_err["errors"])
-                result["code"] = gb_err["code"]
-                return _fail_node_if_running(job_dir, node_id, result)
-            system_clean = prmtop.createSystem(
-                implicitSolvent=gb_model_clean,
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
-        elif is_periodic:
-            system_clean = prmtop.createSystem(
-                nonbondedMethod=PME,
-                nonbondedCutoff=1.0 * nanometer,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
-        else:
-            system_clean = prmtop.createSystem(
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
+        except _ModernSystemContractError as exc:
+            result["errors"].append(str(exc))
+            result["code"] = exc.code
+            return _fail_node_if_running(job_dir, node_id, result)
 
         # Barostat — mirrors run_production's NPT setup.
         if pressure_bar is not None and is_periodic and not implicit_solvent:
@@ -1582,11 +1598,11 @@ def run_equilibration(
 
         if platform_obj:
             sim_clean = Simulation(
-                prmtop.topology, system_clean, integrator_clean,
+                xml_inputs.topology, system_clean, integrator_clean,
                 platform_obj, platform_properties,
             )
         else:
-            sim_clean = Simulation(prmtop.topology, system_clean, integrator_clean)
+            sim_clean = Simulation(xml_inputs.topology, system_clean, integrator_clean)
 
         sim_clean.context.setPositions(final_state_full.getPositions())
         sim_clean.context.setVelocities(final_state_full.getVelocities())
@@ -1616,8 +1632,7 @@ def run_equilibration(
                       and npt_steps > 0) else "NVT"
         )
         result["system_signature"] = _system_signature(
-            prmtop_path,
-            inpcrd_path,
+            xml_inputs,
             solvent_type=solvent_type,
             ensemble=final_ensemble,
             pressure_bar=pressure_bar,
@@ -1694,8 +1709,6 @@ def run_equilibration(
 
 
 def run_production(
-    prmtop_file: Optional[str] = None,
-    inpcrd_file: Optional[str] = None,
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
     state_xml_file: Optional[str] = None,
@@ -1724,8 +1737,14 @@ def run_production(
     NVT and NPT ensembles with Langevin dynamics.
 
     Args:
-        prmtop_file: Amber topology file (.parm7 or .prmtop)
-        inpcrd_file: Amber coordinate file (.rst7 or .inpcrd)
+        system_xml_file: Path to ``system.xml`` from the topo ancestor
+            (``build_amber_system`` / ``build_openmm_system``). The run
+            side never reconstructs the System from ForceField XML —
+            the saved triple is the source of truth.
+        topology_pdb_file: Path to ``topology.pdb`` from the same topo
+            ancestor.
+        state_xml_file: Path to ``state.xml`` from the same topo
+            ancestor; preferred over the PDB coordinates when present.
         simulation_time_ns: Simulation time to run IN THIS CALL in nanoseconds
                      (default: 1.0). On restart (``restart_from`` set) this is
                      the *additional* time to append after the checkpoint —
@@ -1759,8 +1778,10 @@ def run_production(
                      CUDA or OpenCL platforms.
         restart_from: Path to a state file to restart from. Prefer ``.xml``
                      (saveState, cross-node portable); ``.chk``
-                     (saveCheckpoint, GPU-architecture-specific) is a
-                     legacy fallback. In node mode this is auto-resolved
+                     (saveCheckpoint, GPU-architecture-specific) is kept
+                     for same-GPU bit-exact replay (committor / sensitivity
+                     analyses) but no code path reads it when a ``.xml``
+                     is also present. In node mode this is auto-resolved
                      via ``resolve_node_inputs`` (state first, checkpoint
                      second). Skips minimization and runs
                      ``simulation_time_ns`` additional nanoseconds on top
@@ -1866,10 +1887,6 @@ def run_production(
         )
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
-        if not prmtop_file and "prmtop_file" in _inputs:
-            prmtop_file = _inputs["prmtop_file"]
-        if not inpcrd_file and "inpcrd_file" in _inputs:
-            inpcrd_file = _inputs["inpcrd_file"]
         if not system_xml_file and "system_xml_file" in _inputs:
             system_xml_file = _inputs["system_xml_file"]
         if not topology_pdb_file and "topology_pdb_file" in _inputs:
@@ -1911,20 +1928,17 @@ def run_production(
             err["errors"] = _topo_solvent_mismatch["errors"]
             return err
 
-    _modern_inputs = bool(system_xml_file and topology_pdb_file)
-    _legacy_inputs = bool(prmtop_file and inpcrd_file)
-    if not _modern_inputs and not _legacy_inputs:
+    if not (system_xml_file and topology_pdb_file):
         return create_validation_error(
             "topology_inputs",
-            "Either (system_xml_file + topology_pdb_file) or "
-            "(prmtop_file + inpcrd_file) is required",
-            expected="Modern triple from build_amber_system (PR3), or legacy parm7/rst7",
+            "system_xml_file and topology_pdb_file are required",
+            expected="XML triple from build_amber_system / build_openmm_system",
             actual=(
-                f"system_xml_file={system_xml_file!r}, topology_pdb_file={topology_pdb_file!r}, "
-                f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}"
+                f"system_xml_file={system_xml_file!r}, "
+                f"topology_pdb_file={topology_pdb_file!r}"
             ),
             hints=["Run build_amber_system first or execute in node mode from a prod node."],
-            code="missing_topology_inputs",
+            code="missing_xml_topology_inputs",
         )
     logger.info(f"Starting MD simulation: {simulation_time_ns}ns at {temperature_kelvin}K")
 
@@ -1976,57 +1990,35 @@ def run_production(
         out_dir = create_unique_subdir(base_dir, "production")
     result["output_dir"] = str(out_dir)
 
-    # Validate input files (modern triple takes precedence over legacy
-    # parm7/rst7 — see PR3 of openmmforcefields-unification).
-    # Every early-return path below this point happens AFTER begin_node(),
-    # so it must transit through _fail_node_if_running to flip the node out
-    # of "running" — otherwise the DAG sees a perpetually in-flight node.
-    if _modern_inputs:
-        system_xml_path = Path(system_xml_file).resolve()
-        topology_pdb_path = Path(topology_pdb_file).resolve()
-        state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
-        if not system_xml_path.is_file():
-            result["errors"].append(f"system.xml not found: {system_xml_file}")
-            return _fail_node_if_running(job_dir, node_id, result)
-        if not topology_pdb_path.is_file():
-            result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
-            return _fail_node_if_running(job_dir, node_id, result)
-        if state_xml_path and not state_xml_path.is_file():
-            result["errors"].append(f"state.xml not found: {state_xml_file}")
-            return _fail_node_if_running(job_dir, node_id, result)
-        prmtop_path = system_xml_path
-        inpcrd_path = state_xml_path or topology_pdb_path
-    else:
-        prmtop_path = Path(prmtop_file)
-        inpcrd_path = Path(inpcrd_file)
-        search_dir = Path(output_dir) if output_dir else None
-        if not prmtop_path.is_file() and search_dir:
-            candidates = list(search_dir.glob("**/system.parm7")) + list(search_dir.glob("**/*.parm7"))
-            if candidates:
-                prmtop_path = candidates[0]
-                logger.info(f"Found topology file: {prmtop_path}")
-        if not inpcrd_path.is_file() and search_dir:
-            candidates = list(search_dir.glob("**/system.rst7")) + list(search_dir.glob("**/*.rst7"))
-            if candidates:
-                inpcrd_path = candidates[0]
-                logger.info(f"Found coordinate file: {inpcrd_path}")
-        if not prmtop_path.is_file():
-            result["errors"].append(f"Topology file not found: {prmtop_file}")
-            result["errors"].append("Hint: Run build_amber_system first to create topology files")
-            return _fail_node_if_running(job_dir, node_id, result)
-        if not inpcrd_path.is_file():
-            result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
-            result["errors"].append("Hint: Run build_amber_system first to create topology files")
-            return _fail_node_if_running(job_dir, node_id, result)
+    # Validate input files. Every early-return path below this point
+    # happens AFTER begin_node(), so it must transit through
+    # _fail_node_if_running to flip the node out of "running" —
+    # otherwise the DAG sees a perpetually in-flight node.
+    system_xml_path = Path(system_xml_file).resolve()
+    topology_pdb_path = Path(topology_pdb_file).resolve()
+    state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
+    if not system_xml_path.is_file():
+        result["errors"].append(f"system.xml not found: {system_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if not topology_pdb_path.is_file():
+        result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if state_xml_path and not state_xml_path.is_file():
+        result["errors"].append(f"state.xml not found: {state_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
 
     try:
-        from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter, CheckpointReporter
-        from openmm import LangevinMiddleIntegrator, MonteCarloBarostat, MonteCarloMembraneBarostat, Platform
-        from openmm.app import Simulation, PME, NoCutoff, HBonds
-        # Implicit solvent models (Generalized Born)
-        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2
+        from openmm.app import (
+            PDBFile, DCDReporter, StateDataReporter, CheckpointReporter,
+            Simulation,
+            HCT, OBC1, OBC2, GBn, GBn2,
+        )
+        from openmm import (
+            LangevinMiddleIntegrator, MonteCarloBarostat,
+            MonteCarloMembraneBarostat, Platform,
+        )
         from openmm.unit import (
-            nanometer, kelvin, picosecond, femtoseconds, bar, amu
+            nanometer, kelvin, picosecond, femtoseconds, bar,
         )
     except ImportError:
         result["errors"].append("OpenMM not installed")
@@ -2048,33 +2040,19 @@ def run_production(
     }
     
     try:
-        # Load system — modern path uses Pablo-built system.xml + topology.pdb
-        # + state.xml; legacy path uses parm7/rst7 from a pre-PR3 build.
-        if _modern_inputs:
-            logger.info("Loading modern artifact triple (system.xml + topology.pdb + state.xml)")
-            prmtop, inpcrd = _maybe_load_modern_topology(
-                system_xml_file=str(system_xml_path),
-                topology_pdb_file=str(topology_pdb_path),
-                state_xml_file=str(state_xml_path) if state_xml_path else None,
-            )
-        else:
-            logger.info("Loading Amber files")
-            prmtop = AmberPrmtopFile(str(prmtop_path))
-            inpcrd = AmberInpcrdFile(str(inpcrd_path))
+        # Load topology + initial positions / box vectors from the XML
+        # triple. The build-time forcefield, constraints, and HMR are
+        # baked into ``system.xml`` and validated against the runtime
+        # ``hmr`` / ``implicit_solvent`` request below.
+        logger.info("Loading XML topology triple (system.xml + topology.pdb + state.xml)")
+        xml_inputs = _load_xml_topology_inputs(
+            system_xml_file=str(system_xml_path),
+            topology_pdb_file=str(topology_pdb_path),
+            state_xml_file=str(state_xml_path) if state_xml_path else None,
+        )
+        is_periodic = xml_inputs.is_periodic
 
-        # Detect if system is periodic (has box vectors)
-        is_periodic = inpcrd.boxVectors is not None
-
-        # Auto-detect implicit solvent from simulation_brief if not specified
-        # This fixes the issue where LLM doesn't pass implicit_solvent parameter
-        # For non-periodic systems without explicit implicit_solvent specification,
-        # the user should pass --implicit-solvent explicitly.
-        # (Previously auto-detected from session_dir/simulation_brief.json)
-
-        # HMR (Hydrogen Mass Repartitioning)
-        hmr_kwargs = {}
         if hmr:
-            hmr_kwargs["hydrogenMass"] = 4.0 * amu
             logger.info(f"HMR enabled: hydrogenMass=4.0 amu (timestep={timestep_fs}fs)")
             if timestep_fs <= 2.0:
                 result["warnings"].append(
@@ -2091,15 +2069,11 @@ def run_production(
                 )
             result["hmr"] = False
 
-        # Create system - handle implicit vs explicit solvent
-        logger.info("Creating OpenMM system")
+        # Resolve the GB symbol up-front so a runtime typo fails before
+        # the System is built. The build vs runtime model match was
+        # already enforced by the topology metadata guard upstream.
         if implicit_solvent:
-            # Implicit solvent mode (Generalized Born). Resolve via the
-            # shared helper so user aliases (``gbneck2``, ``igb8``, case
-            # variants) canonicalize the same way build_amber_system did,
-            # and unknown names fail-fast instead of silently mapping to
-            # OBC2.
-            gb_model, gb_err = _resolve_implicit_solvent_model(
+            _gb_model, gb_err = _resolve_implicit_solvent_model(
                 implicit_solvent, IMPLICIT_MODELS
             )
             if gb_err:
@@ -2108,32 +2082,33 @@ def run_production(
                 return _fail_node_if_running(job_dir, node_id, result)
             from mdclaw import forcefield_catalog as _fc
             canonical_implicit = _fc.normalize_implicit_solvent(implicit_solvent)
-            system = prmtop.createSystem(
-                implicitSolvent=gb_model,
-                nonbondedMethod=NoCutoff,
-                constraints=HBonds,
-                soluteDielectric=1.0,
-                solventDielectric=78.5,
-                **hmr_kwargs,
-            )
-            logger.info(f"Using implicit solvent ({canonical_implicit}) with NoCutoff")
             result["solvent_type"] = "implicit"
             result["implicit_model"] = canonical_implicit
         elif is_periodic:
-            # Explicit solvent with periodic boundaries
-            system = prmtop.createSystem(
-                nonbondedMethod=PME,
-                nonbondedCutoff=1.0*nanometer,
-                constraints=HBonds,
-                **hmr_kwargs,
-            )
             result["solvent_type"] = "explicit"
         else:
-            # Non-periodic without implicit model - use NoCutoff (vacuum)
             result["errors"].append(
                 "Non-periodic topology without implicit_solvent would run vacuum production. "
                 "Pass --implicit-solvent for GB simulations or build an explicit-solvent topology."
             )
+            return _fail_node_if_running(job_dir, node_id, result)
+
+        # Deserialize a fresh System from system.xml. The build-time
+        # forcefield / constraints / HMR / GB are baked in; the run side
+        # never reconstructs the System from ForceField XML. The
+        # contract check raises if HMR or implicit-solvent requests
+        # contradict what was baked at build time.
+        logger.info("Deserializing system.xml")
+        try:
+            system = _deserialize_xml_system(xml_inputs)
+            _validate_xml_system_contract(
+                system, xml_inputs.topology,
+                hmr_request=hmr,
+                implicit_solvent_request=implicit_solvent,
+            )
+        except _ModernSystemContractError as exc:
+            result["errors"].append(str(exc))
+            result["code"] = exc.code
             return _fail_node_if_running(job_dir, node_id, result)
 
         # Add barostat if NPT (only for periodic explicit solvent systems)
@@ -2172,8 +2147,7 @@ def run_production(
         result["ensemble"] = ensemble
         result["is_membrane"] = is_membrane
         current_system_signature = _system_signature(
-            prmtop_path,
-            inpcrd_path,
+            xml_inputs,
             solvent_type=result.get("solvent_type", "unknown"),
             ensemble=ensemble,
             pressure_bar=pressure_bar,
@@ -2217,11 +2191,11 @@ def run_production(
         # Create simulation
         if platform_obj:
             simulation = Simulation(
-                prmtop.topology, system, integrator,
+                xml_inputs.topology, system, integrator,
                 platform=platform_obj, platformProperties=platform_properties,
             )
         else:
-            simulation = Simulation(prmtop.topology, system, integrator)
+            simulation = Simulation(xml_inputs.topology, system, integrator)
 
         result["platform"] = simulation.context.getPlatform().getName()
         if device_index:
@@ -2248,10 +2222,10 @@ def run_production(
             # signature keys accordingly.
             _restart_is_xml = restart_path.suffix == ".xml"
             _system_hard_keys: tuple[str, ...] = (
-                "prmtop_sha256", "inpcrd_sha256", "solvent_type",
+                "system_xml_sha256", "topology_pdb_sha256", "solvent_type",
                 "is_membrane", "implicit_solvent", "hmr",
             ) if _restart_is_xml else (
-                "prmtop_sha256", "inpcrd_sha256", "solvent_type",
+                "system_xml_sha256", "topology_pdb_sha256", "solvent_type",
                 "ensemble", "pressure_bar", "is_membrane",
                 "implicit_solvent", "hmr",
             )
@@ -2348,11 +2322,11 @@ def run_production(
             result["restarted_from"] = restart_from
         else:
             append_dcd = False
-            simulation.context.setPositions(inpcrd.positions)
+            simulation.context.setPositions(xml_inputs.positions)
             # Set box vectors for periodic explicit solvent systems (required for PME)
             if is_periodic and not implicit_solvent:
-                if inpcrd.boxVectors is not None:
-                    simulation.context.setPeriodicBoxVectors(*inpcrd.boxVectors)
+                if xml_inputs.box_vectors is not None:
+                    simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
         # Apply restraints if provided
         if restraint_file and Path(restraint_file).is_file():

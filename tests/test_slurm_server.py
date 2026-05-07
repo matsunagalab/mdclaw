@@ -939,7 +939,7 @@ class TestExtractBindPaths:
     """Test _extract_bind_paths helper."""
 
     def test_file_args(self, tmp_path):
-        cmd = f"mdclaw run_md --prmtop-file {tmp_path}/sys.parm7 --inpcrd-file {tmp_path}/sys.rst7"
+        cmd = f"mdclaw run_md --system-xml-file {tmp_path}/sys.system.xml --topology-pdb-file {tmp_path}/sys.topology.pdb"
         paths = _extract_bind_paths(cmd)
         assert str(tmp_path) in paths
 
@@ -984,7 +984,7 @@ class TestBuildSingularityCommand:
     def test_auto_extracts_file_args(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         container = {"image": "/opt/mdclaw.sif"}
-        cmd = f"mdclaw run_md --prmtop-file {tmp_path}/sys.parm7"
+        cmd = f"mdclaw run_md --system-xml-file {tmp_path}/sys.system.xml"
         result = _build_singularity_command(cmd, container, str(tmp_path))
         assert str(tmp_path) in result
 
@@ -1087,7 +1087,7 @@ class TestContainerExecution:
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 10001\n")
 
         result = submit_job(
-            script="mdclaw run_production --prmtop-file /data/sys.parm7",
+            script="mdclaw run_production --system-xml-file /data/sys.system.xml",
             partition="gpu",
             gpus=1,
             output_dir=str(tmp_path),
