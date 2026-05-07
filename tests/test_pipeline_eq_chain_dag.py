@@ -15,18 +15,7 @@ import pytest
 
 from tests.pipeline_helpers import fetch_pdb_node, node_artifact
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.skip(
-        reason=(
-            'PR3 of openmmforcefields-unification: build_amber_system now '
-            'emits system.xml + topology.pdb + state.xml instead of '
-            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
-            'migrates run_equilibration / run_production to the new triple.'
-        )
-    ),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipelineEqChainDag:
@@ -94,8 +83,9 @@ class TestPipelineEqChainDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
-        assert topo_node["artifacts"]["rst7"]
+        assert topo_node["artifacts"]["system_xml"]
+        assert topo_node["artifacts"]["topology_pdb"]
+        assert topo_node["artifacts"]["state_xml"]
 
     def test_step5_eq_npt_compress(self, job_dir):
         """Stage 1: NPT with strong heavy-atom restraints (compression)."""

@@ -10,18 +10,7 @@ from tests.pipeline_helpers import (
     require_tleap,
 )
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.skip(
-        reason=(
-            'PR3 of openmmforcefields-unification: build_amber_system now '
-            'emits system.xml + topology.pdb + state.xml instead of '
-            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
-            'migrates run_equilibration / run_production to the new triple.'
-        )
-    ),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipelineMetalDag:
@@ -102,5 +91,5 @@ class TestPipelineMetalDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
+        assert topo_node["artifacts"]["system_xml"]
         assert topo_node["metadata"]["forcefield"] == "ff14SB"

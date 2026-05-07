@@ -5,18 +5,7 @@ import pytest
 
 from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_tleap
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.skip(
-        reason=(
-            'PR3 of openmmforcefields-unification: build_amber_system now '
-            'emits system.xml + topology.pdb + state.xml instead of '
-            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
-            'migrates run_equilibration / run_production to the new triple.'
-        )
-    ),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipelineGlycoproteinDag:
@@ -80,7 +69,7 @@ class TestPipelineGlycoproteinDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
+        assert topo_node["artifacts"]["system_xml"]
         assert topo_node["artifacts"]["glycam_prepared_pdb"] == "artifacts/system.glycam.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_pdb"] == "artifacts/system.prepareforleap.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_leap"] == "artifacts/system.glycam.leap.in"

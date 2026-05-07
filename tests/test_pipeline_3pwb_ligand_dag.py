@@ -27,18 +27,7 @@ import pytest
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.skip(
-        reason=(
-            'PR3 of openmmforcefields-unification: build_amber_system now '
-            'emits system.xml + topology.pdb + state.xml instead of '
-            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
-            'migrates run_equilibration / run_production to the new triple.'
-        )
-    ),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipeline3PWBLigandDag:
@@ -199,8 +188,8 @@ class TestPipeline3PWBLigandDag:
         assert result["success"], result.get("errors")
         node_data = read_node(str(job_dir), self.topo_id)
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["parm7"]
-        assert node_data["artifacts"]["rst7"]
+        assert node_data["artifacts"]["system_xml"]
+        assert node_data["artifacts"]["topology_pdb"]
         assert node_data["metadata"]["forcefield"] == "ff19SB"
         assert node_data["metadata"]["water_model"] == "opc"
 

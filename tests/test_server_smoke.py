@@ -525,15 +525,6 @@ class TestAmberServer:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.skip(
-    reason=(
-        "PR3 of openmmforcefields-unification: build_amber_system now emits "
-        "system.xml + topology.pdb + state.xml instead of parm7/rst7. "
-        "run_equilibration / run_production will be migrated to consume the "
-        "new artifact triple in PR5; these MD smoke tests are temporarily "
-        "disabled until then."
-    )
-)
 class TestMDSimulationServer:
     """Smoke tests for md_simulation_server.py tools."""
 
@@ -583,8 +574,9 @@ class TestMDSimulationServer:
 
         # Quick MD (1 ps)
         result = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -606,8 +598,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         result = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -626,8 +619,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         result = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -648,8 +642,9 @@ class TestMDSimulationServer:
 
         # First run
         r1 = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -664,8 +659,9 @@ class TestMDSimulationServer:
 
         # Restart: request same total time (should complete quickly)
         r2 = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.002,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -705,8 +701,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         equil = run_equilibration(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             temperature_kelvin=300.0,
             pressure_bar=1.0,
             nvt_steps=100,
@@ -721,8 +718,9 @@ class TestMDSimulationServer:
         assert Path(chk).exists()
 
         prod = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,   # 250 steps at 4 fs
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -755,8 +753,9 @@ class TestMDSimulationServer:
 
         # First eq: NPT, 100 NVT + 100 NPT.
         equil_npt = run_equilibration(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             temperature_kelvin=300.0,
             pressure_bar=1.0,
             nvt_steps=100,
@@ -778,8 +777,9 @@ class TestMDSimulationServer:
         # Second eq: NVT only (pressure_bar=0), restarting from the NPT XML.
         # The new loader drops barostat parameters; restart succeeds.
         equil_nvt = run_equilibration(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             temperature_kelvin=300.0,
             pressure_bar=0,
             nvt_steps=100,
@@ -801,8 +801,9 @@ class TestMDSimulationServer:
             Path(equil_nvt["output_dir"]) / "equilibrated.xml"
         )
         prod = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=None,  # NVT prod
@@ -822,8 +823,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         equil = run_equilibration(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             temperature_kelvin=300.0,
             pressure_bar=1.0,
             nvt_steps=100,
@@ -837,14 +839,16 @@ class TestMDSimulationServer:
         topo = create_node(str(job_dir), "topo")
         topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
         topo_artifacts.mkdir(parents=True, exist_ok=True)
-        (topo_artifacts / Path(amber["parm7"]).name).write_bytes(Path(amber["parm7"]).read_bytes())
-        (topo_artifacts / Path(amber["rst7"]).name).write_bytes(Path(amber["rst7"]).read_bytes())
+        for key in ("system_xml", "topology_pdb", "state_xml"):
+            src = Path(amber[key])
+            (topo_artifacts / src.name).write_bytes(src.read_bytes())
         complete_node(
             str(job_dir),
             topo["node_id"],
             artifacts={
-                "parm7": f"artifacts/{Path(amber['parm7']).name}",
-                "rst7": f"artifacts/{Path(amber['rst7']).name}",
+                "system_xml": f"artifacts/{Path(amber['system_xml']).name}",
+                "topology_pdb": f"artifacts/{Path(amber['topology_pdb']).name}",
+                "state_xml": f"artifacts/{Path(amber['state_xml']).name}",
             },
         )
 
@@ -889,8 +893,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         result = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             temperature_kelvin=300.0,
             pressure_bar=1.0,
@@ -910,8 +915,9 @@ class TestMDSimulationServer:
         amber = self._build_topology(small_pdb, tmp_path)
 
         result = run_production(
-            prmtop_file=amber["parm7"],
-            inpcrd_file=amber["rst7"],
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
             simulation_time_ns=0.001,
             output_dir=str(tmp_path / "md_bad"),
             platform="INVALID_PLATFORM",

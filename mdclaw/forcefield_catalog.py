@@ -99,10 +99,13 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     ),
     "ff14SB": ProteinFFEntry(
         name="ff14SB",
-        # Use the openmmforcefields-converted XML so atom types stay
-        # consistent with phosaa14SB / lipid21 / GLYCAM_06j-1 XMLs that
-        # share the same conversion lineage. (The plain ff14SB.xml is a
-        # legacy ad-hoc port; protein.ff14SB.xml is the canonical one.)
+        # ``amber/protein.ff14SB.xml`` is the openmmforcefields-canonical
+        # XML; its prefixed atom types (``protein-N`` etc.) round-trip with
+        # the DNA / RNA / GLYCAM / lipid21 conversions but currently DO NOT
+        # match ``amber/phosaa14SB.xml``'s unprefixed types — that pairing
+        # raises ``KeyError: 'N'``. ff14SB + phospho users should switch to
+        # ff19SB + phosaa19SB (which DOES round-trip in openmmforcefields)
+        # until this asymmetry is fixed upstream.
         status="supported",
         openmm_xml=("amber/protein.ff14SB.xml",),
         leaprc="leaprc.protein.ff14SB",

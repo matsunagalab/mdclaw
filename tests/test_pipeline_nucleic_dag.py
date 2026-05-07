@@ -5,18 +5,7 @@ import pytest
 
 from tests.pipeline_helpers import fetch_pdb_node, require_tleap
 
-pytestmark = [
-    pytest.mark.integration,
-    pytest.mark.slow,
-    pytest.mark.skip(
-        reason=(
-            'PR3 of openmmforcefields-unification: build_amber_system now '
-            'emits system.xml + topology.pdb + state.xml instead of '
-            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
-            'migrates run_equilibration / run_production to the new triple.'
-        )
-    ),
-]
+pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 @pytest.mark.parametrize(
@@ -66,6 +55,6 @@ def test_standard_nucleic_pdb_builds_real_topology(
     )
     assert built["success"], built.get("errors")
     topo_node = read_node(str(job_dir), topo["node_id"])
-    assert topo_node["artifacts"]["parm7"]
-    assert topo_node["artifacts"]["rst7"]
+    assert topo_node["artifacts"]["system_xml"]
+    assert topo_node["artifacts"]["topology_pdb"]
     assert topo_node["metadata"]["nucleic_libraries"] == [expected_library]

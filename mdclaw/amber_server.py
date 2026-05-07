@@ -2898,6 +2898,16 @@ def _run_openmmforcefields_build(
             )
 
     # --- 4. Set unit cell for explicit solvent ---------------------------
+    if not box_dimensions:
+        # Implicit / vacuum builds must not carry a periodic box, otherwise
+        # SystemGenerator picks PME and the typical small CRYST1 placeholder
+        # in the input PDB triggers a "cutoff > half box" error during
+        # minimization.
+        try:
+            omm_topology.setPeriodicBoxVectors(None)
+        except Exception:  # noqa: BLE001
+            pass
+
     if box_dimensions:
         try:
             from openmm import unit, Vec3

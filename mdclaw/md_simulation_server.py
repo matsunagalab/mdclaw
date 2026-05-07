@@ -42,6 +42,85 @@ def _node_artifact_path(path: Optional[str]) -> str:
     return f"artifacts/{Path(path).name}"
 
 
+class _ModernPrmtopShim:
+    """Drop-in replacement for ``AmberPrmtopFile`` when build_amber_system has
+    emitted a system.xml + topology.pdb triple instead of parm7/rst7.
+
+    ``run_equilibration`` and ``run_production`` access two attributes on the
+    ``prmtop`` object: ``.topology`` and ``.createSystem(**kwargs)``. By
+    wrapping the modern artifacts, we keep the legacy branches intact while
+    routing both call sites through ``XmlSerializer.deserialize``.
+
+    Note: the saved System already has ``HMR`` / ``nonbondedMethod`` /
+    ``constraints`` baked in (PR3 build-time decisions). The createSystem
+    kwargs from the legacy code paths are accepted but ignored — System
+    settings are now build-time, not run-time.
+    """
+
+    def __init__(self, topology, system_xml_path: Path):
+        self.topology = topology
+        self._system_xml_path = Path(system_xml_path)
+
+    def createSystem(self, **kwargs):
+        from openmm import XmlSerializer
+        with self._system_xml_path.open("r") as fh:
+            return XmlSerializer.deserialize(fh.read())
+
+
+class _ModernInpcrdShim:
+    """Drop-in replacement for ``AmberInpcrdFile`` keyed off state.xml.
+
+    Exposes ``.positions`` and ``.boxVectors``. State velocities are not
+    surfaced here — the equilibration/production helpers explicitly load
+    velocities through ``_load_state_into_simulation`` when restarting.
+    """
+
+    def __init__(self, positions, box_vectors):
+        self.positions = positions
+        self.boxVectors = box_vectors
+
+
+def _maybe_load_modern_topology(
+    *,
+    system_xml_file: Optional[str],
+    topology_pdb_file: Optional[str],
+    state_xml_file: Optional[str],
+):
+    """Build (prmtop_shim, inpcrd_shim) from the modern triple, or
+    ``(None, None)`` when the legacy parm7/rst7 path applies.
+
+    Imports OpenMM lazily so callers that never reach the modern branch
+    don't pay the import cost twice.
+    """
+    if not (system_xml_file and topology_pdb_file):
+        return None, None
+    from openmm.app import PDBFile
+    from openmm import XmlSerializer
+
+    pdb = PDBFile(str(topology_pdb_file))
+    topology = pdb.topology
+    positions = pdb.positions
+    box_vectors = topology.getPeriodicBoxVectors()
+
+    # Prefer state.xml positions / box if it's available — this captures the
+    # minimized geometry written by build_amber_system.
+    if state_xml_file:
+        state_path = Path(state_xml_file)
+        if state_path.is_file():
+            with state_path.open("r") as fh:
+                state = XmlSerializer.deserialize(fh.read())
+            positions = state.getPositions()
+            try:
+                box_vectors = state.getPeriodicBoxVectors()
+            except Exception:  # noqa: BLE001
+                pass
+
+    return (
+        _ModernPrmtopShim(topology, Path(system_xml_file)),
+        _ModernInpcrdShim(positions, box_vectors),
+    )
+
+
 def _system_signature(
     prmtop_path: Path,
     inpcrd_path: Path,
@@ -405,6 +484,9 @@ def _record_production_node_result(
 def run_equilibration(
     prmtop_file: Optional[str] = None,
     inpcrd_file: Optional[str] = None,
+    system_xml_file: Optional[str] = None,
+    topology_pdb_file: Optional[str] = None,
+    state_xml_file: Optional[str] = None,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
     nvt_steps: int = 250000,
@@ -536,6 +618,12 @@ def run_equilibration(
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
             inpcrd_file = _inputs["inpcrd_file"]
+        if not system_xml_file and "system_xml_file" in _inputs:
+            system_xml_file = _inputs["system_xml_file"]
+        if not topology_pdb_file and "topology_pdb_file" in _inputs:
+            topology_pdb_file = _inputs["topology_pdb_file"]
+        if not state_xml_file and "state_xml_file" in _inputs:
+            state_xml_file = _inputs["state_xml_file"]
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
         # eq → eq chaining: when an eq/prod ancestor exposes a state
@@ -567,12 +655,21 @@ def run_equilibration(
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
 
-    if not prmtop_file or not inpcrd_file:
+    # The new openmmforcefields-unification path supplies system.xml +
+    # topology.pdb + state.xml (PR3); the legacy path uses parm7 + rst7.
+    # Either set is acceptable here.
+    _modern_inputs = bool(system_xml_file and topology_pdb_file)
+    _legacy_inputs = bool(prmtop_file and inpcrd_file)
+    if not _modern_inputs and not _legacy_inputs:
         return create_validation_error(
-            "prmtop_file/inpcrd_file",
-            "prmtop_file and inpcrd_file are required",
-            expected="Explicit topology paths, or --job-dir/--node-id for DAG auto-resolve",
-            actual=f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}",
+            "topology_inputs",
+            "Either (system_xml_file + topology_pdb_file) or "
+            "(prmtop_file + inpcrd_file) is required",
+            expected="Modern triple from build_amber_system (PR3), or legacy parm7/rst7",
+            actual=(
+                f"system_xml_file={system_xml_file!r}, topology_pdb_file={topology_pdb_file!r}, "
+                f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}"
+            ),
             hints=["Run build_amber_system first or execute in node mode from an eq node."],
             code="missing_topology_inputs",
         )
@@ -599,15 +696,32 @@ def run_equilibration(
         "warnings": [],
     }
 
-    prmtop_path = Path(prmtop_file).resolve()
-    inpcrd_path = Path(inpcrd_file).resolve()
-
-    if not prmtop_path.is_file():
-        result["errors"].append(f"Topology file not found: {prmtop_file}")
-        return result
-    if not inpcrd_path.is_file():
-        result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
-        return result
+    if _modern_inputs:
+        system_xml_path = Path(system_xml_file).resolve()
+        topology_pdb_path = Path(topology_pdb_file).resolve()
+        state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
+        if not system_xml_path.is_file():
+            result["errors"].append(f"system.xml not found: {system_xml_file}")
+            return result
+        if not topology_pdb_path.is_file():
+            result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
+            return result
+        if state_xml_path and not state_xml_path.is_file():
+            result["errors"].append(f"state.xml not found: {state_xml_file}")
+            return result
+        # Synthesize legacy paths for downstream code that still references
+        # them (e.g. logging / signature). Both point at the modern artifacts.
+        prmtop_path = system_xml_path
+        inpcrd_path = state_xml_path or topology_pdb_path
+    else:
+        prmtop_path = Path(prmtop_file).resolve()
+        inpcrd_path = Path(inpcrd_file).resolve()
+        if not prmtop_path.is_file():
+            result["errors"].append(f"Topology file not found: {prmtop_file}")
+            return result
+        if not inpcrd_path.is_file():
+            result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
+            return result
     restart_path = Path(restart_from).resolve() if restart_from else None
     if restart_path is not None and not restart_path.is_file():
         result["errors"].append(f"Restart file not found: {restart_from}")
@@ -666,10 +780,19 @@ def run_equilibration(
         ensure_directory(out_dir)
         result["output_dir"] = str(out_dir)
 
-        # Load topology and coordinates
-        logger.info("Loading Amber files")
-        prmtop = AmberPrmtopFile(str(prmtop_path))
-        inpcrd = AmberInpcrdFile(str(inpcrd_path))
+        # Load topology and coordinates — modern path uses Pablo-built
+        # system.xml + topology.pdb + state.xml; legacy path uses parm7/rst7.
+        if _modern_inputs:
+            logger.info("Loading modern artifact triple (system.xml + topology.pdb + state.xml)")
+            prmtop, inpcrd = _maybe_load_modern_topology(
+                system_xml_file=str(system_xml_path),
+                topology_pdb_file=str(topology_pdb_path),
+                state_xml_file=str(state_xml_path) if state_xml_path else None,
+            )
+        else:
+            logger.info("Loading Amber files")
+            prmtop = AmberPrmtopFile(str(prmtop_path))
+            inpcrd = AmberInpcrdFile(str(inpcrd_path))
 
         is_periodic = inpcrd.boxVectors is not None
         if implicit_solvent:
@@ -1230,6 +1353,9 @@ def run_equilibration(
 def run_production(
     prmtop_file: Optional[str] = None,
     inpcrd_file: Optional[str] = None,
+    system_xml_file: Optional[str] = None,
+    topology_pdb_file: Optional[str] = None,
+    state_xml_file: Optional[str] = None,
     simulation_time_ns: float = 1.0,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = None,
@@ -1401,19 +1527,30 @@ def run_production(
             prmtop_file = _inputs["prmtop_file"]
         if not inpcrd_file and "inpcrd_file" in _inputs:
             inpcrd_file = _inputs["inpcrd_file"]
+        if not system_xml_file and "system_xml_file" in _inputs:
+            system_xml_file = _inputs["system_xml_file"]
+        if not topology_pdb_file and "topology_pdb_file" in _inputs:
+            topology_pdb_file = _inputs["topology_pdb_file"]
+        if not state_xml_file and "state_xml_file" in _inputs:
+            state_xml_file = _inputs["state_xml_file"]
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
 
-    if not prmtop_file or not inpcrd_file:
+    _modern_inputs = bool(system_xml_file and topology_pdb_file)
+    _legacy_inputs = bool(prmtop_file and inpcrd_file)
+    if not _modern_inputs and not _legacy_inputs:
         return create_validation_error(
-            "prmtop_file/inpcrd_file",
-            "prmtop_file and inpcrd_file are required",
-            expected="Explicit topology paths, or --job-dir/--node-id for DAG auto-resolve",
-            actual=f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}",
-            hints=["Run build_amber_system and run_equilibration first or execute in node mode from a prod node."],
+            "topology_inputs",
+            "Either (system_xml_file + topology_pdb_file) or "
+            "(prmtop_file + inpcrd_file) is required",
+            expected="Modern triple from build_amber_system (PR3), or legacy parm7/rst7",
+            actual=(
+                f"system_xml_file={system_xml_file!r}, topology_pdb_file={topology_pdb_file!r}, "
+                f"prmtop_file={prmtop_file!r}, inpcrd_file={inpcrd_file!r}"
+            ),
+            hints=["Run build_amber_system first or execute in node mode from a prod node."],
             code="missing_topology_inputs",
         )
-
     logger.info(f"Starting MD simulation: {simulation_time_ns}ns at {temperature_kelvin}K")
 
     # Initialize result structure
@@ -1464,32 +1601,45 @@ def run_production(
         out_dir = create_unique_subdir(base_dir, "production")
     result["output_dir"] = str(out_dir)
 
-    # Validate input files - also search in topology subdirectory if not found
-    prmtop_path = Path(prmtop_file)
-    inpcrd_path = Path(inpcrd_file)
-
-    # If file not found, try searching in output_dir subdirectories
-    search_dir = Path(output_dir) if output_dir else None
-    if not prmtop_path.is_file() and search_dir:
-        candidates = list(search_dir.glob("**/system.parm7")) + list(search_dir.glob("**/*.parm7"))
-        if candidates:
-            prmtop_path = candidates[0]
-            logger.info(f"Found topology file: {prmtop_path}")
-
-    if not inpcrd_path.is_file() and search_dir:
-        candidates = list(search_dir.glob("**/system.rst7")) + list(search_dir.glob("**/*.rst7"))
-        if candidates:
-            inpcrd_path = candidates[0]
-            logger.info(f"Found coordinate file: {inpcrd_path}")
-
-    if not prmtop_path.is_file():
-        result["errors"].append(f"Topology file not found: {prmtop_file}")
-        result["errors"].append("Hint: Run build_amber_system first to create topology files")
-        return result
-    if not inpcrd_path.is_file():
-        result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
-        result["errors"].append("Hint: Run build_amber_system first to create topology files")
-        return result
+    # Validate input files (modern triple takes precedence over legacy
+    # parm7/rst7 — see PR3 of openmmforcefields-unification).
+    if _modern_inputs:
+        system_xml_path = Path(system_xml_file).resolve()
+        topology_pdb_path = Path(topology_pdb_file).resolve()
+        state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
+        if not system_xml_path.is_file():
+            result["errors"].append(f"system.xml not found: {system_xml_file}")
+            return result
+        if not topology_pdb_path.is_file():
+            result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
+            return result
+        if state_xml_path and not state_xml_path.is_file():
+            result["errors"].append(f"state.xml not found: {state_xml_file}")
+            return result
+        prmtop_path = system_xml_path
+        inpcrd_path = state_xml_path or topology_pdb_path
+    else:
+        prmtop_path = Path(prmtop_file)
+        inpcrd_path = Path(inpcrd_file)
+        search_dir = Path(output_dir) if output_dir else None
+        if not prmtop_path.is_file() and search_dir:
+            candidates = list(search_dir.glob("**/system.parm7")) + list(search_dir.glob("**/*.parm7"))
+            if candidates:
+                prmtop_path = candidates[0]
+                logger.info(f"Found topology file: {prmtop_path}")
+        if not inpcrd_path.is_file() and search_dir:
+            candidates = list(search_dir.glob("**/system.rst7")) + list(search_dir.glob("**/*.rst7"))
+            if candidates:
+                inpcrd_path = candidates[0]
+                logger.info(f"Found coordinate file: {inpcrd_path}")
+        if not prmtop_path.is_file():
+            result["errors"].append(f"Topology file not found: {prmtop_file}")
+            result["errors"].append("Hint: Run build_amber_system first to create topology files")
+            return result
+        if not inpcrd_path.is_file():
+            result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
+            result["errors"].append("Hint: Run build_amber_system first to create topology files")
+            return result
 
     try:
         from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter, CheckpointReporter
@@ -1515,10 +1665,19 @@ def run_production(
     }
     
     try:
-        # Load system
-        logger.info("Loading Amber files")
-        prmtop = AmberPrmtopFile(str(prmtop_path))
-        inpcrd = AmberInpcrdFile(str(inpcrd_path))
+        # Load system — modern path uses Pablo-built system.xml + topology.pdb
+        # + state.xml; legacy path uses parm7/rst7 from a pre-PR3 build.
+        if _modern_inputs:
+            logger.info("Loading modern artifact triple (system.xml + topology.pdb + state.xml)")
+            prmtop, inpcrd = _maybe_load_modern_topology(
+                system_xml_file=str(system_xml_path),
+                topology_pdb_file=str(topology_pdb_path),
+                state_xml_file=str(state_xml_path) if state_xml_path else None,
+            )
+        else:
+            logger.info("Loading Amber files")
+            prmtop = AmberPrmtopFile(str(prmtop_path))
+            inpcrd = AmberInpcrdFile(str(inpcrd_path))
 
         # Detect if system is periodic (has box vectors)
         is_periodic = inpcrd.boxVectors is not None
