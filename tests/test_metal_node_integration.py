@@ -235,3 +235,53 @@ class TestParameterizeMetalIonNodeIntegration:
         assert result["metal_params"][0]["atom_type"] == "Zn3+"
         assert result["metals_parameterized"][0]["charge"] == 3
         assert result["metals_parameterized"][0]["atom_type"] == "Zn3+"
+
+
+# ----------------------------------------------------------------------------
+# Bug 6: metal params without an OpenMM XML port must fail-fast
+# ----------------------------------------------------------------------------
+
+
+def test_build_amber_system_blocks_metal_without_openmm_xml(tmp_path):
+    """metal_params bundles (frcmod + mol2) come from MCPB / metalpdb2mol2
+    and are AMBER-native. The openmmforcefields path cannot consume them
+    directly; until a parmed bridge ships, build_amber_system must fail-fast
+    with ``metal_openmm_xml_required`` rather than emit a warning that
+    masks the eventual ``No template found`` crash inside SystemGenerator."""
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = tmp_path / "with_metal.pdb"
+    pdb.write_text(
+        "ATOM      1  N   ALA A   1       1.000   1.000   1.000  1.00 10.00           N\n"
+        "ATOM      2  CA  ALA A   1       2.450   1.000   1.000  1.00 10.00           C\n"
+        "ATOM      3  C   ALA A   1       3.000   2.400   1.000  1.00 10.00           C\n"
+        "ATOM      4  O   ALA A   1       2.300   3.400   1.000  1.00 10.00           O\n"
+        "ATOM      5  CB  ALA A   1       3.000   0.200   2.200  1.00 10.00           C\n"
+        "TER\n"
+        "HETATM    6 ZN    ZN B   1       4.000   2.000   1.500  1.00 10.00          ZN\n"
+        "END\n",
+        encoding="utf-8",
+    )
+    mol2 = tmp_path / "ZN.mol2"
+    # Atom type ``Zn2+`` matches ``validate_metal_params``'s regex for Amber
+    # ion atom types — without that the bare ``ZN`` validator would block
+    # the build before we reached the openmmforcefields-bridge guard.
+    mol2.write_text(
+        "@<TRIPOS>MOLECULE\nZN\n  1 0 0 0 0\nSMALL\nUSER_CHARGES\n"
+        "@<TRIPOS>ATOM\n  1 ZN  0.0 0.0 0.0 Zn2+  1 ZN  2.0\n",
+        encoding="utf-8",
+    )
+    frcmod = tmp_path / "ZN.frcmod"
+    frcmod.write_text("MASS\nZn2+  65.380\n\n", encoding="utf-8")
+
+    result = build_amber_system(
+        pdb_file=str(pdb),
+        metal_params=[
+            {"residue_name": "ZN", "mol2": str(mol2), "frcmods": [str(frcmod)]}
+        ],
+        output_dir=str(tmp_path / "topo"),
+    )
+
+    assert result["success"] is False
+    assert result.get("code") == "metal_openmm_xml_required"
+    assert any("Metal parameters" in e for e in result["errors"])

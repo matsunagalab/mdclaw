@@ -125,3 +125,108 @@ def test_build_openmm_system_missing_pdb_returns_file_not_found(tmp_path):
         output_dir=str(tmp_path / "topo"),
     )
     assert result.get("success", False) is False
+
+
+# ----------------------------------------------------------------------------
+# Node-mode regression tests (Bug 2 of openmmforcefields-unification)
+# ----------------------------------------------------------------------------
+
+
+class TestBuildOpenmmSystemNodeMode:
+    """In node mode, build_openmm_system must:
+      - write outputs under ``job_dir/nodes/<node_id>/artifacts/``
+      - call ``begin_node()`` so the node enters ``running``
+      - auto-resolve ``pdb_file`` from the prep ancestor when not provided
+      - mark the node ``failed`` (never leave it ``running``) on validation
+        / build error so the DAG never sees a half-built artifact
+    """
+
+    def _setup_topo_node(self, tmp_path):
+        """Build a (source -> prep -> topo) DAG with a hydrogenated dipeptide
+        merged.pdb on the prep node, then return the topo node id."""
+        from mdclaw._node import complete_node, create_node
+
+        pdb = _hydrogenated_dipeptide(tmp_path)
+        job_dir = tmp_path / "job"
+
+        create_node(str(job_dir), "source")
+        complete_node(
+            str(job_dir),
+            "source_001",
+            artifacts={"structure_file": str(pdb)},
+        )
+        create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+        prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
+        prep_artifacts.mkdir(parents=True, exist_ok=True)
+        merged = prep_artifacts / "merged.pdb"
+        merged.write_bytes(pdb.read_bytes())
+        complete_node(
+            str(job_dir),
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merged.pdb"},
+        )
+        create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
+        return job_dir, "topo_001"
+
+    def test_node_mode_writes_artifacts_under_node_dir(self, tmp_path):
+        from mdclaw._node import read_node
+
+        job_dir, topo_id = self._setup_topo_node(tmp_path)
+
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+        )
+
+        assert result["success"] is True, result.get("errors")
+        # Outputs under the node's own artifacts dir, not WORKING_DIR/openmm_system_*
+        node_artifacts = job_dir / "nodes" / topo_id / "artifacts"
+        for key in ("system_xml", "topology_pdb", "state_xml"):
+            recorded = Path(result[key])
+            assert recorded.is_file(), f"{key} not written: {recorded}"
+            assert node_artifacts in recorded.parents, (
+                f"{key} written outside the node artifacts dir: {recorded}"
+            )
+
+        # Node transitioned to completed and the relative artifact paths exist.
+        topo_node = read_node(str(job_dir), topo_id)
+        assert topo_node["status"] == "completed"
+        for key in ("system_xml", "topology_pdb", "state_xml"):
+            rel = topo_node["artifacts"].get(key)
+            assert rel and (node_artifacts / Path(rel).name).is_file()
+
+    def test_node_mode_auto_resolves_pdb_from_prep(self, tmp_path):
+        """When pdb_file is omitted, build_openmm_system must look up
+        merged_pdb on the prep ancestor through resolve_node_inputs."""
+        job_dir, topo_id = self._setup_topo_node(tmp_path)
+
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+        )
+
+        assert result["success"] is True, result.get("errors")
+
+    def test_node_mode_marks_node_failed_on_invalid_input(self, tmp_path):
+        """forcefield_xml empty under node mode: node ends up failed, not
+        stuck in ``running`` (build_openmm_system must run the failure
+        through fail_node)."""
+        from mdclaw._node import read_node
+
+        job_dir, topo_id = self._setup_topo_node(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=[],  # invalid
+            nonbonded_method="NoCutoff",
+        )
+        assert result.get("success", False) is False
+        topo_node = read_node(str(job_dir), topo_id)
+        assert topo_node["status"] == "failed", (
+            f"Node should be failed, got {topo_node['status']!r}"
+        )

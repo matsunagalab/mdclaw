@@ -815,6 +815,54 @@ class TestMDSimulationServer:
         assert prod["success"] is True, prod["errors"]
         assert prod["restarted_from"] == nvt_equilibrated_xml
 
+    def test_run_production_xml_restart_cross_ensemble_npt_state_into_nvt(
+        self, small_pdb, tmp_path
+    ):
+        """run_production XML restart must allow NPT-eq state -> NVT prod
+        (and the reverse). signature_mismatches on (ensemble, pressure_bar)
+        must be downgraded to a warning when the restart vehicle is XML
+        state — _load_state_into_simulation drops barostat parameters and
+        transfers positions/velocities/box safely. (Bug 4 of
+        openmmforcefields-unification.)"""
+        from md_simulation_server import run_equilibration, run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+        equil_npt = run_equilibration(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil_npt_for_prod"),
+            platform="CPU",
+        )
+        assert equil_npt["success"] is True, equil_npt["errors"]
+        npt_state_xml = str(Path(equil_npt["output_dir"]) / "equilibrated.xml")
+
+        prod_nvt = run_production(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=0,  # NVT prod
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "prod_nvt_from_npt_state"),
+            platform="CPU",
+            restart_from=npt_state_xml,
+        )
+        assert prod_nvt["success"] is True, prod_nvt["errors"]
+        assert prod_nvt["restarted_from"] == npt_state_xml
+        # Soft mismatch (ensemble + pressure) must surface as a warning, not
+        # block the run.
+        warnings_blob = " ".join(prod_nvt.get("warnings", []))
+        assert "ensemble switch" in warnings_blob.lower() or "barostat" in warnings_blob.lower(), (
+            f"Expected an ensemble-switch warning. Got warnings: "
+            f"{prod_nvt.get('warnings')!r}"
+        )
+
     def test_run_production_node_mode_records_relative_artifacts(self, small_pdb, tmp_path):
         """Node-mode production should write non-empty outputs and relative artifacts."""
         from md_simulation_server import run_equilibration, run_production

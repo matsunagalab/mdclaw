@@ -150,41 +150,86 @@ def build_openmm_system(
     }
 
     _node_mode = bool(job_dir and node_id)
-    if not pdb_file:
-        return create_file_not_found_error(str(pdb_file), file_type="pdb_file")
 
-    pdb_path = Path(pdb_file)
-    if not pdb_path.is_file():
-        return create_file_not_found_error(str(pdb_path), file_type="pdb_file")
+    # Helper that surfaces a structured error AND, when running under a node,
+    # marks the node as failed so the DAG never sees a half-built artifact.
+    def _emit_failure(payload: Dict[str, Any]) -> Dict[str, Any]:
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(
+                job_dir, node_id,
+                errors=payload.get("errors") or [payload.get("message", "build_openmm_system failed")],
+            )
+        return payload
 
-    if not forcefield_xml:
-        result["errors"].append(
-            "forcefield_xml is required: supply at least one OpenMM ForceField XML."
+    # In node mode the topo node owns the artifact location; auto-resolve the
+    # input PDB from the prep ancestor when the user didn't supply one
+    # explicitly. ``begin_node`` flips the node into ``running`` so subsequent
+    # failures can be surfaced via fail_node().
+    if _node_mode:
+        from mdclaw._node import (
+            begin_node,
+            resolve_node_inputs,
+            validate_node_execution_context,
         )
-        return result
 
-    try:
-        import openmmforcefields  # noqa: F401
-    except ImportError:
-        return create_tool_not_available_error(
-            "openmmforcefields",
-            "Run `conda env update -f environment.yml` to install the openmmforcefields-unification deps",
-        )
+        _ctx = validate_node_execution_context(job_dir, node_id, "topo")
+        if not _ctx["success"]:
+            return _emit_failure({
+                "success": False,
+                "error_type": "ValidationError",
+                "errors": _ctx.get("errors", []),
+                **_ctx,
+            })
 
-    incompat = _check_gb99_openmm_version_compatible(forcefield_xml)
-    if incompat:
-        result["errors"].append(incompat)
-        return {
-            **result,
-            "code": "openmm_version_too_old",
-        }
+        if not pdb_file:
+            _inputs = resolve_node_inputs(job_dir, node_id, "topo")
+            if "input_resolution_error" in _inputs:
+                return _emit_failure({
+                    **result,
+                    "errors": result["errors"] + [_inputs["input_resolution_error"]],
+                    "code": "input_resolution_blocked",
+                })
+            pdb_file = _inputs.get("pdb_file")
 
-    if output_dir:
+        out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        begin_node(job_dir, node_id)
+    elif output_dir:
         out_dir = Path(output_dir)
         ensure_directory(out_dir)
     else:
         out_dir = create_unique_subdir(WORKING_DIR, "openmm_system")
     result["output_dir"] = str(out_dir)
+
+    if not pdb_file:
+        return _emit_failure(create_file_not_found_error(str(pdb_file), file_type="pdb_file"))
+
+    pdb_path = Path(pdb_file)
+    if not pdb_path.is_file():
+        return _emit_failure(create_file_not_found_error(str(pdb_path), file_type="pdb_file"))
+
+    if not forcefield_xml:
+        result["errors"].append(
+            "forcefield_xml is required: supply at least one OpenMM ForceField XML."
+        )
+        return _emit_failure(result)
+
+    try:
+        import openmmforcefields  # noqa: F401
+    except ImportError:
+        return _emit_failure(create_tool_not_available_error(
+            "openmmforcefields",
+            "Run `conda env update -f environment.yml` to install the openmmforcefields-unification deps",
+        ))
+
+    incompat = _check_gb99_openmm_version_compatible(forcefield_xml)
+    if incompat:
+        result["errors"].append(incompat)
+        return _emit_failure({
+            **result,
+            "code": "openmm_version_too_old",
+        })
 
     system_xml_file = out_dir / f"{output_name}.system.xml"
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
@@ -197,7 +242,7 @@ def build_openmm_system(
         result["errors"].append(
             f"OpenMM stack not importable: {exc}. Run `conda env update -f environment.yml`."
         )
-        return result
+        return _emit_failure(result)
 
     extra_smiles_pairs: List[tuple[str, str]] = []
     for item in additional_smiles or []:
@@ -228,7 +273,7 @@ def build_openmm_system(
             f"nonbonded_method={nonbonded_method!r} not recognized; "
             f"choose from {sorted(nb_method_map)}."
         )
-        return result
+        return _emit_failure(result)
 
     constraints_map = {
         "HBonds": app.HBonds,
@@ -241,7 +286,7 @@ def build_openmm_system(
             f"constraints={constraints!r} not recognized; "
             f"choose from HBonds | AllBonds | None."
         )
-        return result
+        return _emit_failure(result)
 
     try:
         ff = ForceField(*forcefield_xml)
@@ -250,7 +295,7 @@ def build_openmm_system(
             f"ForceField init failed: {type(exc).__name__}: {exc}. "
             f"Bundle: {forcefield_xml}"
         )
-        return result
+        return _emit_failure(result)
 
     modeller = Modeller(omm_topology, omm_positions)
     try:
@@ -275,7 +320,7 @@ def build_openmm_system(
         result["errors"].append(
             f"ForceField.createSystem failed: {type(exc).__name__}: {exc}"
         )
-        return result
+        return _emit_failure(result)
 
     try:
         integrator = LangevinIntegrator(
@@ -293,7 +338,7 @@ def build_openmm_system(
         result["errors"].append(
             f"Energy minimization failed: {type(exc).__name__}: {exc}"
         )
-        return result
+        return _emit_failure(result)
 
     # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
     # doesn't choke on `len(int_id)`.
@@ -312,7 +357,7 @@ def build_openmm_system(
         result["errors"].append(
             f"Serialization failed: {type(exc).__name__}: {exc}"
         )
-        return result
+        return _emit_failure(result)
 
     sha256_table: Dict[str, str] = {}
     for xml_path in forcefield_xml:

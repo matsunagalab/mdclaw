@@ -610,3 +610,391 @@ class TestRestartFromErrorFailsNode:
             f"node.json metadata.errors should mention the unfinished parent: "
             f"got {recorded_errors!r}"
         )
+
+
+# ----------------------------------------------------------------------------
+# Modern-system shim contract (HMR / implicit-solvent baked into system.xml).
+# ----------------------------------------------------------------------------
+
+
+class TestModernPrmtopShimContract:
+    """The shim must validate run-time createSystem kwargs against the saved
+    system.xml so the user cannot silently ask for HMR or implicit solvent
+    that build_amber_system did not bake in."""
+
+    def _build_minimal_system(self, *, hmr: bool, implicit: bool, tmp_path):
+        """Create a 1-residue ALA topology + a System optionally with HMR /
+        a GBSA-OBC force, and serialize a system.xml ready for the shim."""
+        pytest.importorskip("openmm")
+        from openmm import (
+            HarmonicBondForce,
+            NonbondedForce,
+            System,
+            XmlSerializer,
+            CustomGBForce,
+        )
+        from openmm.app import Element, Topology
+        from openmm.unit import dalton, nanometer
+
+        top = Topology()
+        chain = top.addChain("A")
+        res = top.addResidue("ALA", chain, "1")
+        n = top.addAtom("N", Element.getBySymbol("N"), res)
+        ca = top.addAtom("CA", Element.getBySymbol("C"), res)
+        h = top.addAtom("H", Element.getBySymbol("H"), res)
+        top.addBond(n, ca)
+        top.addBond(n, h)
+
+        system = System()
+        # N
+        system.addParticle(14.003 * dalton)
+        # CA
+        system.addParticle(12.000 * dalton)
+        # H — 4 amu under HMR, 1.008 amu otherwise.
+        system.addParticle((4.0 if hmr else 1.008) * dalton)
+        # Bond / NB forces are required only to make the deserialize round trip
+        # exercise a non-trivial XML.
+        system.addForce(HarmonicBondForce())
+        nb = NonbondedForce()
+        for _ in range(3):
+            nb.addParticle(0.0, 0.1 * nanometer, 0.0)
+        system.addForce(nb)
+        if implicit:
+            system.addForce(CustomGBForce())
+
+        xml_path = tmp_path / "system.xml"
+        xml_path.write_text(XmlSerializer.serialize(system))
+        return top, xml_path
+
+    def test_shim_accepts_matching_hmr(self, tmp_path):
+        from openmm.unit import amu
+        from mdclaw.md_simulation_server import _ModernPrmtopShim
+
+        topology, xml_path = self._build_minimal_system(
+            hmr=True, implicit=False, tmp_path=tmp_path,
+        )
+        shim = _ModernPrmtopShim(topology, xml_path)
+        # Asking for hydrogenMass=4 amu against an HMR system must succeed.
+        sys_obj = shim.createSystem(hydrogenMass=4.0 * amu)
+        assert sys_obj.getNumParticles() == 3
+
+    def test_shim_rejects_hmr_request_against_non_hmr_system(self, tmp_path):
+        from openmm.unit import amu
+        from mdclaw.md_simulation_server import (
+            _ModernPrmtopShim,
+            _ModernSystemContractError,
+        )
+
+        topology, xml_path = self._build_minimal_system(
+            hmr=False, implicit=False, tmp_path=tmp_path,
+        )
+        shim = _ModernPrmtopShim(topology, xml_path)
+        with pytest.raises(_ModernSystemContractError) as exc_info:
+            shim.createSystem(hydrogenMass=4.0 * amu)
+        assert exc_info.value.code == "modern_system_hmr_mismatch"
+
+    def test_shim_rejects_implicit_request_against_non_gb_system(self, tmp_path):
+        from mdclaw.md_simulation_server import (
+            _ModernPrmtopShim,
+            _ModernSystemContractError,
+        )
+
+        topology, xml_path = self._build_minimal_system(
+            hmr=False, implicit=False, tmp_path=tmp_path,
+        )
+        shim = _ModernPrmtopShim(topology, xml_path)
+        with pytest.raises(_ModernSystemContractError) as exc_info:
+            shim.createSystem(implicitSolvent="OBC2")
+        assert exc_info.value.code == "modern_system_implicit_solvent_unsupported"
+
+    def test_shim_accepts_implicit_request_when_gb_force_present(self, tmp_path):
+        from mdclaw.md_simulation_server import _ModernPrmtopShim
+
+        topology, xml_path = self._build_minimal_system(
+            hmr=False, implicit=True, tmp_path=tmp_path,
+        )
+        shim = _ModernPrmtopShim(topology, xml_path)
+        # With a GB force already on the System, the request is satisfiable.
+        sys_obj = shim.createSystem(implicitSolvent="OBC2")
+        assert any(
+            type(f).__name__ in {"GBSAOBCForce", "CustomGBForce"}
+            for f in sys_obj.getForces()
+        )
+
+    def test_shim_default_kwargs_are_pass_through(self, tmp_path):
+        """No hydrogenMass / implicitSolvent in kwargs -> no validation."""
+        from mdclaw.md_simulation_server import _ModernPrmtopShim
+        topology, xml_path = self._build_minimal_system(
+            hmr=False, implicit=False, tmp_path=tmp_path,
+        )
+        shim = _ModernPrmtopShim(topology, xml_path)
+        sys_obj = shim.createSystem()
+        assert sys_obj.getNumParticles() == 3
+
+
+# ----------------------------------------------------------------------------
+# Bug 5: every early-return path after begin_node() must mark the node failed
+# ----------------------------------------------------------------------------
+
+
+class TestRunProductionFailNodeCoverage:
+    """run_production must never leave a node stuck in ``running`` after
+    ``begin_node()``. Validation failures (missing artifacts, invalid
+    platform, missing restart file) must transit through ``fail_node`` so
+    the DAG never sees a perpetually in-flight node."""
+
+    def _dag_with_fake_modern_artifacts(self, tmp_path):
+        """Build a (topo -> eq -> ... ) DAG so a fresh ``prod`` node can be
+        validated through ``validate_node_execution_context`` (which requires
+        prod's parent to be ``eq`` or ``prod``). Topo lists modern triple
+        artifacts that exist on disk but are not parseable XML — the goal is
+        to drive past begin_node() and let the OpenMM deserialize step fail."""
+        from mdclaw._node import complete_node, create_node
+
+        job_dir = tmp_path / "job"
+        create_node(str(job_dir), "topo")
+        topo_artifacts = job_dir / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        # Write minimal placeholder files — exist for path checks but not
+        # parseable; deserialize / minimize will raise after begin_node().
+        (topo_artifacts / "system.xml").write_text("<bogus />")
+        (topo_artifacts / "topology.pdb").write_text("REMARK fake\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<bogus />")
+        complete_node(
+            str(job_dir),
+            "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+        # eq_001 placeholder so a prod node downstream is execution-context
+        # valid. We don't actually run eq — only the existence + completed
+        # status matters for validate_node_execution_context.
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        eq_artifacts = job_dir / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text("<bogus />")
+        complete_node(
+            str(job_dir),
+            "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        return job_dir
+
+    def test_node_modern_triple_present_in_dag_but_missing_on_disk_marks_failed(
+        self, tmp_path
+    ):
+        """When the DAG resolver finds a modern triple on the topo node but
+        the actual files have been deleted before run_production opens
+        them, validation fails *after* ``begin_node()`` — the post-begin_node
+        artifact-existence check must mark the node ``failed`` rather than
+        leave it ``running``.
+
+        We exercise that by completing the topo with the triple recorded,
+        then deleting the files on disk."""
+        from mdclaw._node import create_node, read_node
+
+        job_dir = self._dag_with_fake_modern_artifacts(tmp_path)
+        topo_artifacts = job_dir / "nodes" / "topo_001" / "artifacts"
+        # Delete only the system.xml — the resolver still surfaces the path
+        # from node.json, but the post-begin_node existence check fires.
+        (topo_artifacts / "system.xml").unlink()
+
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+        result = run_production(
+            simulation_time_ns=0.001,
+            platform="CPU",
+            job_dir=str(job_dir),
+            node_id="prod_001",
+        )
+        assert result.get("success", False) is False
+        prod_node = read_node(str(job_dir), "prod_001")
+        assert prod_node["status"] == "failed", (
+            f"Expected failed, got {prod_node['status']!r}"
+        )
+
+    def test_node_invalid_platform_after_begin_node_marks_failed(self, tmp_path):
+        """An unknown OpenMM platform name fails inside the inner try block
+        — well past begin_node() — so the helper must catch and fail_node
+        the result. The test points run_production at fake-but-existent
+        modern artifacts so we get past the existence checks before the
+        platform error fires."""
+        from mdclaw._node import create_node, read_node
+
+        job_dir = self._dag_with_fake_modern_artifacts(tmp_path)
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+
+        result = run_production(
+            simulation_time_ns=0.001,
+            platform="DefinitelyNotAPlatform",
+            job_dir=str(job_dir),
+            node_id="prod_001",
+        )
+        assert result.get("success", False) is False
+        prod_node = read_node(str(job_dir), "prod_001")
+        assert prod_node["status"] == "failed", (
+            f"Expected failed, got {prod_node['status']!r}"
+        )
+
+    def test_fail_node_helper_is_idempotent_outside_node_mode(self):
+        """When called without job_dir/node_id, the helper must be a no-op
+        on the result dict (it just returns ``result`` so call sites can
+        ``return _fail_node_if_running(...)`` regardless of mode)."""
+        from mdclaw.md_simulation_server import _fail_node_if_running
+
+        result = {"success": False, "errors": ["x"], "warnings": []}
+        out = _fail_node_if_running(None, None, result)
+        assert out is result
+
+    def test_fail_node_helper_skips_when_success(self, tmp_path):
+        """A successful run dict must NOT trigger fail_node — the caller
+        sometimes passes through this helper from non-fatal cleanup
+        branches."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import _fail_node_if_running
+
+        job_dir = tmp_path / "job_ok"
+        create_node(str(job_dir), "prod")
+        out = _fail_node_if_running(
+            str(job_dir),
+            "prod_001",
+            {"success": True, "errors": [], "warnings": []},
+        )
+        assert out["success"] is True
+        prod_node = read_node(str(job_dir), "prod_001")
+        # Node should still be ``pending`` because we never began it; the
+        # important invariant is that it is NOT now ``failed``.
+        assert prod_node["status"] != "failed"
+
+
+# ----------------------------------------------------------------------------
+# Bug 1 end-to-end: build_amber_system bakes HMR / blocks implicit_solvent
+# ----------------------------------------------------------------------------
+
+
+class TestBuildAmberSystemHmrAndImplicitContract:
+    """Sanity smokes for the Bug 1 fix at the public ``build_amber_system``
+    surface. Lighter than the slow eq/prod smoke; runs in the default lane."""
+
+    def _fake_om_build_capturing_kwargs(self):
+        """Helper that records the ``hmr`` / ``implicit_solvent`` kwargs the
+        outer build_amber_system passes into _run_openmmforcefields_build."""
+        captured: dict = {}
+
+        def _fake(**kwargs):
+            captured["hmr"] = kwargs.get("hmr")
+            captured["implicit_solvent"] = kwargs.get("implicit_solvent")
+            kwargs["system_xml_file"].write_text("<System/>")
+            kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+            kwargs["state_xml_file"].write_text("<State/>")
+            return {
+                "success": True,
+                "errors": [],
+                "warnings": [],
+                "system_xml": str(kwargs["system_xml_file"]),
+                "topology_pdb": str(kwargs["topology_pdb_file"]),
+                "state_xml": str(kwargs["state_xml_file"]),
+                "num_atoms": 1,
+                "num_residues": 1,
+                "forcefield_provenance": {
+                    "kind": "amber_via_openmmforcefields",
+                    "openmm_xml": [],
+                    "method": {
+                        "hmr": kwargs.get("hmr", False),
+                        "implicit_solvent": kwargs.get("implicit_solvent"),
+                    },
+                },
+            }
+
+        return captured, _fake
+
+    def test_build_amber_system_passes_hmr_through_to_helper(self, tmp_path):
+        """``build_amber_system(hmr=True)`` must reach the helper. The helper
+        is mocked so we can assert the kwarg propagation without running
+        SystemGenerator."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                hmr=True,
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert captured["hmr"] is True
+        assert captured["implicit_solvent"] is None
+
+    def test_build_amber_system_blocks_implicit_solvent_under_openmmforcefields(
+        self, tmp_path
+    ):
+        """``implicit_solvent`` is not yet supported by the openmmforcefields
+        path. ``_run_openmmforcefields_build`` must reject the request with a
+        structured ``code`` rather than emit a NoCutoff vacuum System that
+        run_* would mistake for GB. Calling the helper directly here keeps
+        the test in the fast lane (no SystemGenerator import)."""
+        from mdclaw.amber_server import _run_openmmforcefields_build
+
+        result = _run_openmmforcefields_build(
+            pdb_path=tmp_path / "x.pdb",
+            output_name="system",
+            out_dir=tmp_path,
+            system_xml_file=tmp_path / "system.xml",
+            topology_pdb_file=tmp_path / "topology.pdb",
+            state_xml_file=tmp_path / "state.xml",
+            forcefield="ff14SB",
+            water_model=None,
+            phosaa_library=None,
+            nucleic_libraries=[],
+            glycan_library=None,
+            is_membrane=False,
+            box_dimensions=None,
+            valid_ligands=[],
+            valid_metal_params=[],
+            valid_modxna_params=[],
+            disulfide_bonds=None,
+            implicit_solvent="OBC2",
+        )
+        assert result["success"] is False
+        assert result.get("code") == "implicit_solvent_unsupported_under_openmmforcefields"
+
+    def test_build_amber_system_provenance_records_hmr(self, tmp_path):
+        """When ``hmr=True`` builds successfully via openmmforcefields, the
+        topo node's ``forcefield_provenance.method.hmr`` must reflect that
+        choice so evidence_server / run_* can read the source of truth."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                hmr=True,
+                output_dir=str(tmp_path / "topo"),
+            )
+        prov = result.get("forcefield_provenance") or {}
+        method = prov.get("method") or {}
+        assert method.get("hmr") is True

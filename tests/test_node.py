@@ -1913,6 +1913,93 @@ class TestDAGAutoResolve:
         assert "inpcrd_file" in inputs
         assert "system_xml_file" not in inputs
 
+    def test_resolver_pins_to_a_single_topo_for_modern_triple(self, job_dir):
+        """If topo_002 has only system_xml and topo_001 (older) has the full
+        triple, the resolver MUST NOT mix system_xml from topo_002 with
+        topology_pdb / state_xml from topo_001 — the two topo nodes refer to
+        different physical Systems. The expected outcome is an explicit
+        input_resolution_error, not a silent walk to the older topo."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+
+        # topo_001 carries a complete triple.
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+
+        # topo_002 carries ONLY system_xml.
+        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "topo_002",
+            artifacts={"system_xml": "artifacts/system.xml"},
+        )
+
+        # eq node directly above topo_002 — the broken topo.
+        create_node(jd, "eq", parent_node_ids=["topo_002"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        # Must NOT have silently mixed topo_001's topology with topo_002's system.
+        assert "system_xml_file" not in inputs
+        assert "topology_pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        msg = inputs["input_resolution_error"]
+        assert "topo_002" in msg
+        assert "topology_pdb" in msg
+
+    def test_resolver_legacy_pair_atomicity(self, job_dir):
+        """Same atomicity invariant for legacy parm7/rst7: a topo carrying
+        only parm7 must error rather than falling back to an older topo for
+        rst7."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"parm7": "artifacts/system.parm7", "rst7": "artifacts/system.rst7"},
+        )
+        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "topo_002",
+            artifacts={"parm7": "artifacts/only_parm.parm7"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_002"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert "prmtop_file" not in inputs
+        assert "inpcrd_file" not in inputs
+        assert "input_resolution_error" in inputs
+        assert "topo_002" in inputs["input_resolution_error"]
+
 
 # ── Structured (non-path) artifact propagation ─────────────────────────────
 

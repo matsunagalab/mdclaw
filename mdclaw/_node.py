@@ -1780,44 +1780,119 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     back to the legacy pair so eq/prod/analyze keep working through the
     multi-PR migration; the legacy fallback will be dropped once every
     consumer has been migrated.
+
+    **Atomicity guarantee**: when a topo ancestor carries ``system_xml``,
+    *all* modern triple components must come from that same node — we never
+    fall back to an older topo ancestor for ``topology_pdb`` / ``state_xml``,
+    because mixing artifacts across topo nodes would point eq/prod at a
+    different physical System. Missing components on the chosen topo node
+    surface as ``input_resolution_error`` rather than a silent walk upward.
+    Same atomicity for the legacy ``parm7`` + ``rst7`` pair.
     """
     result: dict = {}
 
-    sys_xml = find_ancestor_artifact(job_dir, node_id, "topo", "system_xml")
-    if sys_xml:
-        topo_id = _find_ancestor_node_id(job_dir, node_id, "topo")
-        topo_pdb = find_ancestor_artifact(
-            job_dir, node_id, "topo", "topology_pdb"
-        )
-        state_xml = find_ancestor_artifact(
-            job_dir, node_id, "topo", "state_xml"
-        )
+    # Pick the nearest topo ancestor that actually carries ``system_xml``;
+    # only that node is allowed to source the modern triple.
+    modern_topo_id = _find_ancestor_node_with_artifact(
+        job_dir, node_id, "topo", "system_xml"
+    )
+    if modern_topo_id is not None:
+        sys_xml = _read_artifact_from_node(job_dir, modern_topo_id, "system_xml")
+        topo_pdb = _read_artifact_from_node(job_dir, modern_topo_id, "topology_pdb")
+        state_xml = _read_artifact_from_node(job_dir, modern_topo_id, "state_xml")
+        if sys_xml is None or topo_pdb is None:
+            _record_input_resolution_error(
+                result,
+                f"Topo ancestor '{modern_topo_id}' is missing the modern "
+                f"artifact triple: system_xml={'ok' if sys_xml else 'MISSING'}, "
+                f"topology_pdb={'ok' if topo_pdb else 'MISSING'}. The triple "
+                f"must be emitted atomically by build_amber_system / "
+                f"build_openmm_system; do not mix artifacts across topo nodes.",
+            )
+            return result
         result["system_xml_file"] = sys_xml
-        if topo_pdb:
-            result["topology_pdb_file"] = topo_pdb
+        result["topology_pdb_file"] = topo_pdb
         if state_xml:
             result["state_xml_file"] = state_xml
-        if topo_id:
-            result["topology_resolved_from_node_id"] = topo_id
+        result["topology_resolved_from_node_id"] = modern_topo_id
         return result
 
-    # Legacy parm7/rst7 path — kept until PR3+ migrate every emitter.
-    p7, topo_id, p7_error = _nearest_ancestor_artifact_or_error(
+    # Legacy parm7/rst7 path — both must come from the same topo ancestor.
+    legacy_topo_id = _find_ancestor_node_with_artifact(
         job_dir, node_id, "topo", "parm7"
     )
-    r7, _, r7_error = _nearest_ancestor_artifact_or_error(
-        job_dir, node_id, "topo", "rst7"
-    )
-    for error in (p7_error, r7_error):
-        if error:
-            _record_input_resolution_error(result, error)
-    if p7:
+    if legacy_topo_id is not None:
+        p7 = _read_artifact_from_node(job_dir, legacy_topo_id, "parm7")
+        r7 = _read_artifact_from_node(job_dir, legacy_topo_id, "rst7")
+        if p7 is None or r7 is None:
+            _record_input_resolution_error(
+                result,
+                f"Topo ancestor '{legacy_topo_id}' is missing the legacy "
+                f"parm7+rst7 pair: parm7={'ok' if p7 else 'MISSING'}, "
+                f"rst7={'ok' if r7 else 'MISSING'}.",
+            )
+            return result
         result["prmtop_file"] = p7
-    if r7:
         result["inpcrd_file"] = r7
-    if topo_id:
-        result["topology_resolved_from_node_id"] = topo_id
+        result["topology_resolved_from_node_id"] = legacy_topo_id
+        return result
+
+    # No topo ancestor carries either artifact set — surface a clear error.
+    nearest_topo = _find_ancestor_node_id(job_dir, node_id, "topo")
+    if nearest_topo is not None:
+        _record_input_resolution_error(
+            result,
+            f"Nearest topo ancestor '{nearest_topo}' is missing both the "
+            f"modern (system_xml + topology_pdb [+ state_xml]) and legacy "
+            f"(parm7 + rst7) artifact sets.",
+        )
+    else:
+        _record_input_resolution_error(
+            result,
+            f"No topo ancestor found for '{node_id}'.",
+        )
     return result
+
+
+def _find_ancestor_node_with_artifact(
+    job_dir: str,
+    node_id: str,
+    ancestor_type: str,
+    artifact_key: str,
+) -> Optional[str]:
+    """Walk parents BFS-style and return the *first* matching-type ancestor
+    whose ``artifacts`` dict contains ``artifact_key`` (with a non-None value).
+
+    Mirrors :func:`find_ancestor_artifact`'s walk order but yields the *node
+    id* rather than the resolved path. Callers use this to atomically pin
+    follow-up reads to the same node — see ``_resolve_topology_files``'s
+    triple-atomicity invariant.
+    """
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return None
+    nodes_index = progress.get("nodes", {})
+
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        if info.get("type") == ancestor_type:
+            nj = jd / "nodes" / nid / "node.json"
+            if nj.exists():
+                try:
+                    data = json.loads(nj.read_text())
+                except (json.JSONDecodeError, OSError):
+                    data = {}
+                if data.get("artifacts", {}).get(artifact_key) is not None:
+                    return nid
+        queue.extend(info.get("parents", []))
+    return None
 
 
 def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:

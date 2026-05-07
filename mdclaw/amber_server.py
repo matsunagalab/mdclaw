@@ -1836,6 +1836,8 @@ def build_amber_system(
     nucleic_forcefield: str = "auto",
     glycan_forcefield: str = "auto",
     is_membrane: Optional[bool] = None,
+    hmr: bool = False,
+    implicit_solvent: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -2637,6 +2639,8 @@ def build_amber_system(
             valid_metal_params=valid_metal_params or [],
             valid_modxna_params=valid_modxna_params or [],
             disulfide_bonds=disulfide_bonds,
+            hmr=hmr,
+            implicit_solvent=implicit_solvent,
         )
         result["warnings"].extend(om_result.get("warnings", []))
         if om_result.get("success"):
@@ -2656,6 +2660,11 @@ def build_amber_system(
             logger.info(f"  Atoms: {om_result['num_atoms']}")
         else:
             result["errors"].extend(om_result.get("errors", []))
+            # Propagate the helper's structured ``code`` (e.g.
+            # ``metal_openmm_xml_required``) so callers can branch on the
+            # specific failure mode instead of grepping the error string.
+            if om_result.get("code") and not result.get("code"):
+                result["code"] = om_result["code"]
             logger.error(
                 "openmmforcefields build failed: %s",
                 "; ".join(om_result.get("errors", [])) or "(no error message)",
@@ -2813,6 +2822,8 @@ def _run_openmmforcefields_build(
     valid_metal_params: list[Dict[str, Any]],
     valid_modxna_params: list[Dict[str, Any]],
     disulfide_bonds: Optional[list[Dict[str, Any]]],
+    hmr: bool = False,
+    implicit_solvent: Optional[str] = None,
     extra_xml: Optional[list[str]] = None,
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
 ) -> Dict[str, Any]:
@@ -2831,6 +2842,19 @@ def _run_openmmforcefields_build(
     result: Dict[str, Any] = {"success": False, "errors": [], "warnings": []}
     extra_xml = list(extra_xml or [])
     extra_smiles = list(extra_smiles or [])
+
+    # The openmmforcefields path does not yet wire AMBER GB/OBC into a
+    # SystemGenerator-built System. Until ``forcefield_catalog`` ships an
+    # implicit-solvent path, fail-fast rather than silently produce a
+    # NoCutoff vacuum System that the run_* layer would mistake for GB.
+    if implicit_solvent:
+        result["errors"].append(
+            f"implicit_solvent={implicit_solvent!r} is not yet supported by the "
+            f"openmmforcefields path. Either build via the legacy parm7 route, "
+            f"or supply a third-party GB-aware XML via extra_xml."
+        )
+        result["code"] = "implicit_solvent_unsupported_under_openmmforcefields"
+        return result
 
     # --- 1. Resolve OpenMM XML bundle via the catalog --------------------
     canon_protein = _ff_catalog.normalize_protein(forcefield) or forcefield
@@ -2951,8 +2975,13 @@ def _run_openmmforcefields_build(
         return result
 
     # SystemGenerator splits the kwargs by periodicity so the same generator
-    # can build either kind of System.
+    # can build either kind of System. HMR is a build-time decision: when
+    # the user opts in we bake ``hydrogenMass=4 amu`` into every System this
+    # generator emits, and the same value is recorded in the provenance dict
+    # so the run_* shim can validate later.
     common_kwargs: Dict[str, Any] = {"constraints": app.HBonds, "rigidWater": True}
+    if hmr:
+        common_kwargs["hydrogenMass"] = 4.0 * unit.amu
     periodic_kwargs: Dict[str, Any] = {
         "nonbondedMethod": app.PME,
         "nonbondedCutoff": 1.0 * unit.nanometer,
@@ -2987,22 +3016,36 @@ def _run_openmmforcefields_build(
         )
         return result
 
-    # Metal frcmod+mol2 are not yet routed through SystemGenerator (the parmed
-    # bridge will be added in a follow-up). Emit a warning so the caller knows
-    # the metal residues will fall through to the ForceField unmatched.
+    # Metal frcmod+mol2 and modXNA frcmod+lib are NOT yet routed through
+    # SystemGenerator. Under the legacy tleap path these would be loaded as
+    # residue templates; under the openmmforcefields path they would silently
+    # fall through to the ForceField unmatched, eventually crashing inside
+    # ``create_system`` with an opaque ``No template found`` error. Fail-fast
+    # with a structured ``code`` so callers can route the user toward
+    # ``extra_xml`` (a pre-built OpenMM ForceField XML port of the metal /
+    # modXNA parameters) or the legacy parm7 path until the parmed bridge
+    # ships.
     if valid_metal_params:
-        result["warnings"].append(
-            f"Metal frcmod+mol2 parmed bridge is not yet implemented "
-            f"({len(valid_metal_params)} metal sets requested). "
-            f"Supply pre-built OpenMM XML for metals via extra_xml."
+        result["errors"].append(
+            f"Metal parameters detected ({len(valid_metal_params)} sets) but the "
+            f"openmmforcefields path does not yet provide a parmed bridge from "
+            f"frcmod+mol2 to OpenMM ForceField XML. Either: (a) supply a "
+            f"pre-converted OpenMM XML via extra_xml, or (b) build via the "
+            f"legacy parm7 path until the parmed bridge ships."
         )
+        result["code"] = "metal_openmm_xml_required"
+        return result
 
     if valid_modxna_params:
-        result["warnings"].append(
-            f"modXNA frcmod+lib parmed bridge is not yet implemented "
-            f"({len(valid_modxna_params)} modXNA sets requested). "
-            f"Supply pre-built OpenMM XML for modXNA via extra_xml."
+        result["errors"].append(
+            f"modXNA parameters detected ({len(valid_modxna_params)} sets) but the "
+            f"openmmforcefields path does not yet provide a parmed bridge from "
+            f"frcmod+lib to OpenMM ForceField XML. Either: (a) supply a "
+            f"pre-converted OpenMM XML via extra_xml, or (b) build via the "
+            f"legacy parm7 path until the parmed bridge ships."
         )
+        result["code"] = "modxna_openmm_xml_required"
+        return result
 
     modeller = Modeller(omm_topology, omm_positions)
     try:
@@ -3097,6 +3140,9 @@ def _run_openmmforcefields_build(
             "cutoff_nm": 1.0 if box_dimensions else None,
             "constraints": "HBonds",
             "rigid_water": True,
+            "hmr": bool(hmr),
+            "hydrogen_mass_amu": 4.0 if hmr else 1.008,
+            "implicit_solvent": implicit_solvent,
             "barostat": None,
             "includes_restraints": False,
         },

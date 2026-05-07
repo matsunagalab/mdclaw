@@ -19,7 +19,7 @@ logger = setup_logger(__name__)
 
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Optional  # noqa: E402
+from typing import Any, Dict, Optional  # noqa: E402
 
 import numpy as np  # noqa: E402
 from mdclaw._common import (  # noqa: E402
@@ -42,6 +42,67 @@ def _node_artifact_path(path: Optional[str]) -> str:
     return f"artifacts/{Path(path).name}"
 
 
+def _fail_node_if_running(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Mark the node as ``failed`` when an early-return path fires after
+    ``begin_node()``. Idempotent: safe to call when not in node mode, and
+    safe to call when the node has already been marked failed elsewhere.
+
+    Returns ``result`` unchanged so call sites can ``return _fail_node_if_running(...)``.
+    """
+    if job_dir and node_id and not result.get("success"):
+        from mdclaw._node import fail_node
+        try:
+            fail_node(job_dir, node_id, errors=result.get("errors") or ["run_* aborted"])
+        except Exception:  # noqa: BLE001
+            # fail_node is best-effort — never let a bookkeeping failure mask
+            # the original error the caller is about to surface.
+            pass
+    return result
+
+
+class _ModernSystemContractError(RuntimeError):
+    """Raised when run_* requests a System trait that build_amber_system did
+    not bake into the saved system.xml (e.g. ``hmr=True`` against a non-HMR
+    build, or ``implicit_solvent`` against a vacuum / explicit System).
+
+    Carries a stable ``code`` attribute so the caller can branch deterministically.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _system_has_implicit_solvent_force(system) -> bool:
+    """Return True if the OpenMM System carries a Generalized-Born force."""
+    gb_class_names = {
+        "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+    }
+    for force in system.getForces():
+        if type(force).__name__ in gb_class_names:
+            return True
+    return False
+
+
+def _system_hydrogen_mass_amu(system, topology) -> Optional[float]:
+    """Sample the mass of the first hydrogen atom from a System+Topology pair.
+
+    Returns ``None`` when the topology has no hydrogen atoms (e.g. heavy-atom-
+    only test stub). HMR systems put ``~4 amu`` on hydrogens; non-HMR systems
+    keep ``~1.008 amu``.
+    """
+    from openmm.unit import dalton
+    for atom in topology.atoms():
+        if atom.element is not None and atom.element.symbol == "H":
+            mass = system.getParticleMass(atom.index)
+            return float(mass.value_in_unit(dalton))
+    return None
+
+
 class _ModernPrmtopShim:
     """Drop-in replacement for ``AmberPrmtopFile`` when build_amber_system has
     emitted a system.xml + topology.pdb triple instead of parm7/rst7.
@@ -51,10 +112,13 @@ class _ModernPrmtopShim:
     wrapping the modern artifacts, we keep the legacy branches intact while
     routing both call sites through ``XmlSerializer.deserialize``.
 
-    Note: the saved System already has ``HMR`` / ``nonbondedMethod`` /
-    ``constraints`` baked in (PR3 build-time decisions). The createSystem
-    kwargs from the legacy code paths are accepted but ignored — System
-    settings are now build-time, not run-time.
+    The saved System already has ``HMR`` / ``nonbondedMethod`` /
+    ``constraints`` / implicit-solvent baked in at build time. ``createSystem``
+    kwargs from the legacy run_* code paths are now **validated** against the
+    saved System rather than silently ignored: a request for HMR or implicit
+    solvent that the build did not commit to raises
+    ``_ModernSystemContractError`` with a structured code so the caller can
+    surface a clean error to the user.
     """
 
     def __init__(self, topology, system_xml_path: Path):
@@ -64,7 +128,46 @@ class _ModernPrmtopShim:
     def createSystem(self, **kwargs):
         from openmm import XmlSerializer
         with self._system_xml_path.open("r") as fh:
-            return XmlSerializer.deserialize(fh.read())
+            system = XmlSerializer.deserialize(fh.read())
+
+        # Hydrogen-mass repartitioning contract.
+        requested_hmass = kwargs.get("hydrogenMass")
+        if requested_hmass is not None:
+            try:
+                from openmm.unit import dalton
+                requested_amu = float(requested_hmass.value_in_unit(dalton))
+            except AttributeError:
+                requested_amu = float(requested_hmass)
+            actual_amu = _system_hydrogen_mass_amu(system, self.topology)
+            if actual_amu is not None and abs(requested_amu - actual_amu) > 0.05:
+                raise _ModernSystemContractError(
+                    code="modern_system_hmr_mismatch",
+                    message=(
+                        f"run_* requested hydrogenMass={requested_amu:.3f} amu but the "
+                        f"saved system.xml has H={actual_amu:.3f} amu. HMR is a "
+                        f"build-time decision under the openmmforcefields path — "
+                        f"rebuild via build_amber_system(hmr=True) to bake HMR into "
+                        f"system.xml, or pass hmr=False at run time."
+                    ),
+                )
+
+        # Implicit-solvent contract: GB-aware Force must already exist on the
+        # saved System. The build_amber_system openmmforcefields path does not
+        # yet attach GB forces, so any caller that hands us implicitSolvent=
+        # is bound to mis-simulate.
+        if kwargs.get("implicitSolvent") is not None and not _system_has_implicit_solvent_force(system):
+            raise _ModernSystemContractError(
+                code="modern_system_implicit_solvent_unsupported",
+                message=(
+                    f"run_* requested implicitSolvent={kwargs['implicitSolvent']!r} but "
+                    f"the saved system.xml has no GB / implicit-solvent force. "
+                    f"build_amber_system does not yet support implicit solvent under "
+                    f"the openmmforcefields path; rebuild via the legacy parm7 route, "
+                    f"or supply a GB-aware ForceField XML via build_openmm_system."
+                ),
+            )
+
+        return system
 
 
 class _ModernInpcrdShim:
@@ -1307,6 +1410,10 @@ def run_equilibration(
 
         result["success"] = True
 
+    except _ModernSystemContractError as exc:
+        logger.error("Equilibration aborted by modern-system contract: %s", exc)
+        result["errors"].append(str(exc))
+        result["code"] = exc.code
     except Exception as e:
         logger.error(f"Equilibration failed: {e}")
         result["errors"].append(f"Equilibration failed: {e}")
@@ -1603,19 +1710,22 @@ def run_production(
 
     # Validate input files (modern triple takes precedence over legacy
     # parm7/rst7 — see PR3 of openmmforcefields-unification).
+    # Every early-return path below this point happens AFTER begin_node(),
+    # so it must transit through _fail_node_if_running to flip the node out
+    # of "running" — otherwise the DAG sees a perpetually in-flight node.
     if _modern_inputs:
         system_xml_path = Path(system_xml_file).resolve()
         topology_pdb_path = Path(topology_pdb_file).resolve()
         state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
         if not system_xml_path.is_file():
             result["errors"].append(f"system.xml not found: {system_xml_file}")
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
         if not topology_pdb_path.is_file():
             result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
         if state_xml_path and not state_xml_path.is_file():
             result["errors"].append(f"state.xml not found: {state_xml_file}")
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
         prmtop_path = system_xml_path
         inpcrd_path = state_xml_path or topology_pdb_path
     else:
@@ -1635,11 +1745,11 @@ def run_production(
         if not prmtop_path.is_file():
             result["errors"].append(f"Topology file not found: {prmtop_file}")
             result["errors"].append("Hint: Run build_amber_system first to create topology files")
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
         if not inpcrd_path.is_file():
             result["errors"].append(f"Coordinate file not found: {inpcrd_file}")
             result["errors"].append("Hint: Run build_amber_system first to create topology files")
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
 
     try:
         from openmm.app import AmberPrmtopFile, AmberInpcrdFile, PDBFile, DCDReporter, StateDataReporter, CheckpointReporter
@@ -1653,7 +1763,7 @@ def run_production(
     except ImportError:
         result["errors"].append("OpenMM not installed")
         result["errors"].append("Hint: Install with: conda install -c conda-forge openmm")
-        return result
+        return _fail_node_if_running(job_dir, node_id, result)
 
     # Map implicit solvent model names to OpenMM objects
     IMPLICIT_MODELS = {
@@ -1739,7 +1849,7 @@ def run_production(
                 "Non-periodic topology without implicit_solvent would run vacuum production. "
                 "Pass --implicit-solvent for GB simulations or build an explicit-solvent topology."
             )
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
 
         # Add barostat if NPT (only for periodic explicit solvent systems)
         if pressure_bar is not None and is_periodic and not implicit_solvent:
@@ -1814,7 +1924,7 @@ def run_production(
                     f"Unknown platform '{platform}'. "
                     f"Valid options: auto, CUDA, OpenCL, CPU, Reference"
                 )
-                return result
+                return _fail_node_if_running(job_dir, node_id, result)
             platform_obj = Platform.getPlatformByName(PLATFORM_MAP[plat_key])
             if device_index and plat_key in ("cuda", "opencl"):
                 platform_properties["DeviceIndex"] = device_index
@@ -1841,30 +1951,54 @@ def run_production(
             restart_path = Path(restart_from)
             if not restart_path.is_file():
                 result["errors"].append(f"Restart file not found: {restart_from}")
-                return result
+                return _fail_node_if_running(job_dir, node_id, result)
             restart_meta = _restart_source_metadata(job_dir, node_id, restart_from)
             restart_system_signature = restart_meta.get("system_signature")
             restart_integrator_signature = restart_meta.get("integrator_signature")
+            # XML state is the portable, ensemble-agnostic restart vehicle:
+            # _load_state_into_simulation transfers positions/velocities/box
+            # without re-applying barostat parameters, so NPT ↔ NVT switches
+            # are safe. Binary .chk restart, by contrast, requires the
+            # System and integrator to be byte-identical. Partition the
+            # signature keys accordingly.
+            _restart_is_xml = restart_path.suffix == ".xml"
+            _system_hard_keys: tuple[str, ...] = (
+                "prmtop_sha256", "inpcrd_sha256", "solvent_type",
+                "is_membrane", "implicit_solvent", "hmr",
+            ) if _restart_is_xml else (
+                "prmtop_sha256", "inpcrd_sha256", "solvent_type",
+                "ensemble", "pressure_bar", "is_membrane",
+                "implicit_solvent", "hmr",
+            )
+            _system_soft_keys: tuple[str, ...] = (
+                ("ensemble", "pressure_bar") if _restart_is_xml else ()
+            )
             if isinstance(restart_system_signature, dict):
-                mismatches = _signature_mismatches(
-                    restart_system_signature,
-                    current_system_signature,
-                    (
-                        "prmtop_sha256",
-                        "inpcrd_sha256",
-                        "solvent_type",
-                        "ensemble",
-                        "pressure_bar",
-                        "is_membrane",
-                        "implicit_solvent",
-                        "hmr",
-                    ),
+                hard_mismatches = _signature_mismatches(
+                    restart_system_signature, current_system_signature,
+                    _system_hard_keys,
                 )
-                if mismatches:
+                if hard_mismatches:
                     result["errors"].append(
-                        "Restart system signature mismatch: " + "; ".join(mismatches)
+                        "Restart system signature mismatch: " + "; ".join(hard_mismatches)
                     )
+                if _system_soft_keys:
+                    soft_mismatches = _signature_mismatches(
+                        restart_system_signature, current_system_signature,
+                        _system_soft_keys,
+                    )
+                    if soft_mismatches:
+                        result["warnings"].append(
+                            "Restart ensemble switch (XML state): "
+                            + "; ".join(soft_mismatches)
+                            + " — _load_state_into_simulation drops barostat "
+                            "parameters; positions / velocities / box vectors "
+                            "transfer cleanly across NPT ↔ NVT."
+                        )
             if isinstance(restart_integrator_signature, dict):
+                # Integrator settings are still hard-error material — temperature,
+                # timestep, and friction must match for the saved velocities to
+                # remain physically meaningful even under XML restart.
                 mismatches = _signature_mismatches(
                     restart_integrator_signature,
                     current_integrator_signature,
@@ -1875,10 +2009,7 @@ def run_production(
                         "Restart integrator signature mismatch: " + "; ".join(mismatches)
                     )
             if result["errors"]:
-                if _node_mode:
-                    from mdclaw._node import fail_node
-                    fail_node(job_dir, node_id, errors=result["errors"])
-                return result
+                return _fail_node_if_running(job_dir, node_id, result)
             # Use the ensemble-agnostic loader: XML is read via
             # XmlSerializer.deserialize and only positions/velocities/box
             # are transferred, so an NPT-saved state can resume into an
@@ -2137,6 +2268,10 @@ def run_production(
 
         logger.info(f"Simulation complete. Trajectory saved: {trajectory_file}")
 
+    except _ModernSystemContractError as exc:
+        logger.error("Production aborted by modern-system contract: %s", exc)
+        result["errors"].append(str(exc))
+        result["code"] = exc.code
     except Exception as e:
         logger.error(f"MD simulation failed: {e}")
         result["errors"].append(f"MD simulation failed: {type(e).__name__}: {str(e)}")

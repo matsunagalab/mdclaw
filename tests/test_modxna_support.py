@@ -529,3 +529,38 @@ def test_prepare_modified_nucleic_real_modxna_smoke_skip():
     if not modxna_dir:
         pytest.skip("MDCLAW_MODXNA_DIR is not set")
     assert (Path(modxna_dir) / "modxna.sh").exists()
+
+
+# ----------------------------------------------------------------------------
+# Bug 6: modXNA without an OpenMM XML port must fail-fast (not silently warn)
+# ----------------------------------------------------------------------------
+
+
+def test_build_amber_system_blocks_modxna_without_openmm_xml(tmp_path):
+    """modXNA params are still validated upstream (lib + frcmod presence,
+    residue match), but openmmforcefields cannot consume the AMBER frcmod+lib
+    bundles directly. Until a parmed bridge ships, build_amber_system must
+    fail-fast with the structured code ``modxna_openmm_xml_required`` rather
+    than emit a warning and continue to a System that lacks the modXNA
+    residue template."""
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = _write_modified_pdb(
+        tmp_path, _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "RSS A   2")
+    )
+    lib = tmp_path / "RSS.lib"
+    lib.write_text("!!index array str\n", encoding="utf-8")
+    frcmod = tmp_path / "frcmod.modxna"
+    frcmod.write_text("MASS\n", encoding="utf-8")
+
+    result = build_amber_system(
+        pdb_file=str(pdb),
+        modxna_params=[
+            {"residue_name": "RSS", "lib": str(lib), "frcmod": str(frcmod)}
+        ],
+        output_dir=str(tmp_path / "topo"),
+    )
+
+    assert result["success"] is False
+    assert result.get("code") == "modxna_openmm_xml_required"
+    assert any("modXNA" in e for e in result["errors"])
