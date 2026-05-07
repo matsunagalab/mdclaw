@@ -890,8 +890,11 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
 def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> dict:
     """Fix inconsistent HIS residue names vs present hydrogen atom names.
 
-    tleap will fail if, for example, a residue is named HIE but contains atom HD1.
-    This can happen when upstream tools label residues but keep hydrogen names.
+    Amber/OpenMM residue template matching at openmmforcefields build time
+    requires the residue name to agree with the hydrogen atoms that are
+    present (e.g. a residue named HIE that still carries HD1 fails to
+    match any HIS template). This can happen when upstream tools relabel
+    residues but keep their original hydrogen names.
 
     Rules (Amber):
     - HID: delta-protonated -> has HD1 (and typically no HE2)
@@ -945,7 +948,7 @@ def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> 
     # numbers for waters and ions, so a water molecule can share
     # (chain, resnum, icode) with a HIS residue. Without the resname
     # guard, the water's resname would be silently renamed to HID/HIE/HIP
-    # too, corrupting downstream tleap input.
+    # too, breaking residue template matching at openmmforcefields build time.
     _his_family = {"HIS", "HID", "HIE", "HIP"}
     out_lines: list[str] = []
     for line in lines:
