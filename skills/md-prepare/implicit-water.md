@@ -88,12 +88,18 @@ e.g. the Greener group's `GB99dms.xml` or a third-party amber14 + GB
 port — and the same `system.xml` + `topology.pdb` + `state.xml` triple
 flows through to `run_equilibration` / `run_production`.
 
-> No `--box-dimensions` or `--water-model` needed for implicit solvent.
-> Ligand parameters are auto-resolved from the `prep` ancestor's artifacts.
-> Highly charged ligands and close contacts are recorded as topology
-> diagnostics. They do not stop the workflow or select a special equilibration
-> branch; `/md-equilibration` uses the same standard staged minimization and
-> low-temperature warmup protocol for all systems.
+> **Future intended interface — currently rejected by `build_amber_system`.**
+> When GB support lands (`forcefield_catalog` GB wiring, or the
+> `build_openmm_system` escape hatch shipping a GB-aware XML by default),
+> the calling contract here is what users will reach for: no
+> `--box-dimensions` and no `--water-model` are needed for implicit
+> solvent. Ligand parameters auto-resolve from the `prep` ancestor's
+> artifacts; highly charged ligands and close contacts are recorded as
+> topology diagnostics and do not stop the workflow or select a special
+> equilibration branch — `/md-equilibration` uses the same standard
+> staged minimization and low-temperature warmup protocol for all
+> systems. Today, take the same workflow through `build_openmm_system`
+> with a GB-aware ForceField XML.
 
 ### Domain Knowledge
 

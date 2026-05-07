@@ -35,11 +35,17 @@
 
 ### Timestep Guide
 
-| Constraints | HMR | Max Timestep | Recommended |
-|---|---|---|---|
-| HBonds | No | 4 fs | 2 fs (conservative) or 4 fs |
-| AllBonds | Yes | 4 fs | 4 fs |
-| None | No | 1 fs | Not recommended |
+The MDClaw default is HBonds + HMR=True at 4 fs. HMR is a build-time
+choice — it must match what `build_amber_system` / `build_openmm_system`
+baked into `system.xml`, otherwise the modern-system shim raises
+`modern_system_hmr_mismatch`.
+
+| Constraints | HMR    | Max Timestep | Recommended                      |
+|-------------|--------|--------------|----------------------------------|
+| HBonds      | True   | 4 fs         | **4 fs** (MDClaw default)        |
+| HBonds      | False  | 2 fs         | 2 fs (no HMR baked into XML)     |
+| AllBonds    | True   | 4 fs         | 4 fs                             |
+| None        | False  | 1 fs         | Not recommended                  |
 
 ---
 

@@ -8,8 +8,17 @@ This file provides guidance to Codex when working with this repository.
 - **CLI Tools** (`mdclaw <tool>`) for specialized MD operations
 - **Skills** (domain knowledge prompts) for workflow guidance
 - **Boltz-2** for AI-driven structure prediction
-- **AmberTools** for topology generation and parameterization
-- **OpenMM** for production-ready MD simulations
+- **OpenMM** + **openmmforcefields** + **OpenFF Pablo** for the curated
+  Amber→OpenMM topology build path (`build_amber_system`) and for
+  production MD. The legacy `tleap` script generation path has been
+  retired; `build_amber_system` now emits a `system.xml` + `topology.pdb`
+  + `state.xml` triple consumed by `run_equilibration` / `run_production`.
+- **AmberTools** for structure preparation and ligand parameterization
+  (`pdb4amber`, `antechamber`, `parmchk2`, `sqm`, `cpptraj`'s
+  `prepareforleap` for glycoproteins). The Amber per-residue parameter
+  datasets (ff19SB, ff14SB, OL15/OL3, GLYCAM_06j-1, lipid21, phosaa19SB,
+  …) are still the source-of-truth force fields; they reach the System
+  through the `openmmforcefields` XML conversion rather than `tleap`.
 
 ## Architecture
 

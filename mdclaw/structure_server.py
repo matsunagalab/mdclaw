@@ -4899,7 +4899,8 @@ def prepare_complex(
         # in the output merged.pdb. The list lets a follow-up
         # `phosphorylate_residues --restore-from-detection` re-introduce them
         # on a branched prep node, and lets `build_amber_system` decide
-        # whether to source `leaprc.phosaa*`.
+        # whether to add the matching ``amber/phosaa*.xml`` to the
+        # ``openmmforcefields.SystemGenerator`` bundle.
         from mdclaw.research_server import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
         detected_glycan_linkages = _parse_pdb_glycan_link_records(Path(structure_file))
@@ -6052,8 +6053,11 @@ def create_mutated_structure(
 # =============================================================================
 
 # Map of phospho residue → its plain (post-PDBFixer) counterpart and the
-# hydroxyl hydrogen atom name we must strip so tleap can rebuild the
-# phosphate from `phosaa*.lib` against the existing OG / OG1 / OH oxygen.
+# hydroxyl hydrogen atom name we must strip so the openmmforcefields
+# phosaa XML residue template (``amber/phosaa19SB.xml`` / ``phosaa14SB.xml``
+# / ``phosaa10.xml`` / ``phosfb18.xml``) can rebuild the phosphate atoms
+# against the existing OG / OG1 / OH oxygen when SystemGenerator builds
+# the System.
 _PHOSPHO_TARGETS = {
     "SEP": {"source": "SER", "hydroxyl_h": "HG"},
     "TPO": {"source": "THR", "hydroxyl_h": "HG1"},
@@ -6241,8 +6245,9 @@ def _apply_phosphorylation_to_pdb(
                         continue
                     seen[key] = target
                     if atom_name == spec["hydroxyl_h"]:
-                        # Drop the hydroxyl hydrogen — tleap rebuilds the
-                        # phosphate from the phosaa template.
+                        # Drop the hydroxyl hydrogen — the openmmforcefields
+                        # phosaa XML residue template rebuilds the phosphate
+                        # atoms during ``SystemGenerator.create_system``.
                         continue
                     new_line = line[:17] + f"{target:>3}" + line[20:]
                     fout.write(new_line)
@@ -6300,8 +6305,13 @@ def phosphorylate_residues(
     counterpart of the requested target (``SEP`` requires ``SER`` etc.).
     The tool renames the residue and strips the hydroxyl hydrogen
     (``HG`` / ``HG1`` / ``HH``); ``OG`` / ``OG1`` / ``OH`` is kept as the
-    phosphate linkage atom. ``build_amber_system`` then rebuilds the phosphate
-    atoms from ``leaprc.phosaa19SB`` / ``phosaa14SB``.
+    phosphate linkage atom. ``build_amber_system`` then routes the matching
+    openmmforcefields phosaa XML — ``amber/phosaa19SB.xml`` (ff19SB),
+    ``amber/phosaa14SB.xml`` (ff14SB), ``amber/phosaa10.xml`` (ff03 /
+    ff99SB legacy), ``amber/phosfb18.xml`` (fb15) — into the
+    ``SystemGenerator`` ForceField bundle so the phosphate atoms get
+    rebuilt by the OpenMM ForceField residue template (the legacy
+    ``leaprc.phosaa*`` tleap source line is no longer involved).
 
     Args:
         pdb_file: Cleaned PDB (output of ``prepare_complex``). Required

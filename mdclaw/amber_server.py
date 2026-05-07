@@ -1880,11 +1880,12 @@ def build_amber_system(
         modxna_params / metal_params: Currently unsupported under the
                        openmmforcefields path; non-empty lists return
                        structured codes ``modxna_openmm_xml_required`` /
-                       ``metal_openmm_xml_required``. Build via the
-                       legacy parm7 path or supply pre-converted XML
-                       through ``extra_xml`` (research-mode tool
-                       ``build_openmm_system``) until the parmed bridge
-                       ships.
+                       ``metal_openmm_xml_required``. Supply a
+                       pre-converted OpenMM ForceField XML for the
+                       residue through ``build_openmm_system`` (research
+                       escape hatch) or via the ``extra_xml`` follow-up
+                       in the catalog until the ParmEd → OpenMM XML
+                       bridge ships.
         box_dimensions: ``{"box_a", "box_b", "box_c"}`` in Å from
                         ``solvate_structure``; ``None`` selects implicit /
                         vacuum.
@@ -2872,8 +2873,12 @@ def _run_openmmforcefields_build(
     if implicit_solvent:
         result["errors"].append(
             f"implicit_solvent={implicit_solvent!r} is not yet supported by the "
-            f"openmmforcefields path. Either build via the legacy parm7 route, "
-            f"or supply a third-party GB-aware XML via extra_xml."
+            f"openmmforcefields path. Until the ``forcefield_catalog`` GB "
+            f"wiring ships, supply a GB-aware OpenMM ForceField XML "
+            f"(e.g. GB99dms.xml, an amber14+OBC2 third-party port) through "
+            f"``build_openmm_system``: that builder accepts arbitrary XML and "
+            f"emits the same system.xml + topology.pdb + state.xml triple, so "
+            f"eq/prod consume it identically."
         )
         result["code"] = "implicit_solvent_unsupported_under_openmmforcefields"
         return result
@@ -3039,21 +3044,21 @@ def _run_openmmforcefields_build(
         return result
 
     # Metal frcmod+mol2 and modXNA frcmod+lib are NOT yet routed through
-    # SystemGenerator. Under the legacy tleap path these would be loaded as
-    # residue templates; under the openmmforcefields path they would silently
+    # SystemGenerator: under the openmmforcefields path they would silently
     # fall through to the ForceField unmatched, eventually crashing inside
     # ``create_system`` with an opaque ``No template found`` error. Fail-fast
     # with a structured ``code`` so callers can route the user toward
-    # ``extra_xml`` (a pre-built OpenMM ForceField XML port of the metal /
-    # modXNA parameters) or the legacy parm7 path until the parmed bridge
-    # ships.
+    # ``build_openmm_system`` with a pre-built OpenMM ForceField XML port
+    # of the metal / modXNA parameters until the ParmEd → OpenMM XML
+    # bridge ships in ``forcefield_catalog``.
     if valid_metal_params:
         result["errors"].append(
             f"Metal parameters detected ({len(valid_metal_params)} sets) but the "
-            f"openmmforcefields path does not yet provide a parmed bridge from "
-            f"frcmod+mol2 to OpenMM ForceField XML. Either: (a) supply a "
-            f"pre-converted OpenMM XML via extra_xml, or (b) build via the "
-            f"legacy parm7 path until the parmed bridge ships."
+            f"openmmforcefields path does not yet provide a ParmEd → OpenMM XML "
+            f"bridge from frcmod+mol2. Use ``build_openmm_system`` with a "
+            f"pre-converted OpenMM ForceField XML for the metal residue "
+            f"(research escape hatch); the same system.xml + topology.pdb + "
+            f"state.xml triple flows to eq/prod."
         )
         result["code"] = "metal_openmm_xml_required"
         return result
@@ -3061,10 +3066,11 @@ def _run_openmmforcefields_build(
     if valid_modxna_params:
         result["errors"].append(
             f"modXNA parameters detected ({len(valid_modxna_params)} sets) but the "
-            f"openmmforcefields path does not yet provide a parmed bridge from "
-            f"frcmod+lib to OpenMM ForceField XML. Either: (a) supply a "
-            f"pre-converted OpenMM XML via extra_xml, or (b) build via the "
-            f"legacy parm7 path until the parmed bridge ships."
+            f"openmmforcefields path does not yet provide a ParmEd → OpenMM XML "
+            f"bridge from frcmod+lib. Use ``build_openmm_system`` with a "
+            f"pre-converted OpenMM ForceField XML for the modified residue "
+            f"(research escape hatch); the same system.xml + topology.pdb + "
+            f"state.xml triple flows to eq/prod."
         )
         result["code"] = "modxna_openmm_xml_required"
         return result
