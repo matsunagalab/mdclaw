@@ -98,6 +98,7 @@ def build_openmm_system(
     nonbonded_cutoff_nm: float = 1.0,
     constraints: str = "HBonds",
     rigid_water: bool = True,
+    hmr: bool = True,
     minimize: bool = True,
     output_name: str = "system",
     output_dir: Optional[str] = None,
@@ -127,6 +128,14 @@ def build_openmm_system(
             ``NoCutoff``.
         constraints: ``"HBonds"`` (default) / ``"AllBonds"`` / ``"None"``.
         rigid_water: Pass-through to ``ForceField.createSystem``.
+        hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
+             ``system.xml`` so a downstream ``run_equilibration`` /
+             ``run_production`` invocation with the default ``hmr=True``
+             does not trip the modern-system contract check. Defaults
+             match ``build_amber_system`` so a ``build_openmm_system →
+             run_equilibration → run_production`` chain works without
+             extra kwargs. Pass ``hmr=False`` to keep standard hydrogen
+             masses (use a 2 fs timestep on the run_* side).
         minimize: Run a short LocalEnergyMinimizer pass before
             serializing the state. Disable for debugging.
         output_name: Stem for the artifact file names.
@@ -146,6 +155,7 @@ def build_openmm_system(
             "nonbonded_cutoff_nm": nonbonded_cutoff_nm,
             "constraints": constraints,
             "rigid_water": rigid_water,
+            "hmr": hmr,
             "minimize": minimize,
         },
     }
@@ -331,6 +341,11 @@ def build_openmm_system(
     }
     if nonbonded_method != "NoCutoff":
         create_system_kwargs["nonbondedCutoff"] = nonbonded_cutoff_nm * unit.nanometer
+    # HMR is a build-time decision: bake ``hydrogenMass=4 amu`` into the
+    # System so the run_* shim's modern-system contract check accepts the
+    # default ``hmr=True`` from run_equilibration / run_production.
+    if hmr:
+        create_system_kwargs["hydrogenMass"] = 4.0 * unit.amu
 
     try:
         system = ff.createSystem(modeller.topology, **create_system_kwargs)
@@ -395,6 +410,8 @@ def build_openmm_system(
             "cutoff_nm": nonbonded_cutoff_nm if nonbonded_method != "NoCutoff" else None,
             "constraints": constraints,
             "rigid_water": rigid_water,
+            "hmr": bool(hmr),
+            "hydrogen_mass_amu": 4.0 if hmr else 1.008,
             "barostat": None,
             "includes_restraints": False,
         },

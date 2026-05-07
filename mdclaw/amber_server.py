@@ -2844,7 +2844,7 @@ def _run_openmmforcefields_build(
     valid_metal_params: list[Dict[str, Any]],
     valid_modxna_params: list[Dict[str, Any]],
     disulfide_bonds: Optional[list[Dict[str, Any]]],
-    hmr: bool = False,
+    hmr: bool = True,
     implicit_solvent: Optional[str] = None,
     extra_xml: Optional[list[str]] = None,
     extra_smiles: Optional[list[Tuple[str, str]]] = None,

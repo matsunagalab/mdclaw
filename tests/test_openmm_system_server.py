@@ -127,6 +127,82 @@ def test_build_openmm_system_missing_pdb_returns_file_not_found(tmp_path):
     assert result.get("success", False) is False
 
 
+def test_build_openmm_system_default_hmr_bakes_4amu_into_system_xml(tmp_path):
+    """``build_openmm_system()`` defaults to ``hmr=True`` so that the
+    default downstream ``run_equilibration`` / ``run_production`` call
+    (also ``hmr=True``) clears the shim's modern-system contract check.
+
+    Verify by deserializing the saved system.xml and inspecting the H
+    atom mass — under HMR every hydrogen carries 4 amu, otherwise 1.008.
+    """
+    from openmm import XmlSerializer
+    from openmm.unit import dalton
+    from openmm.app import PDBFile
+
+    pdb = _hydrogenated_dipeptide(tmp_path)
+    out_dir = tmp_path / "topo_default_hmr"
+
+    result = build_openmm_system(
+        pdb_file=str(pdb),
+        forcefield_xml=["amber/protein.ff14SB.xml"],
+        nonbonded_method="NoCutoff",
+        constraints="HBonds",
+        # No hmr=! Verifying the default propagates.
+        output_dir=str(out_dir),
+    )
+    assert result["success"] is True, result.get("errors")
+
+    sys_xml = Path(result["system_xml"]).read_text()
+    system = XmlSerializer.deserialize(sys_xml)
+    topology = PDBFile(result["topology_pdb"]).topology
+
+    # Find a hydrogen and verify its mass is the HMR-tagged 4 amu (matches
+    # build_amber_system's default contract).
+    for atom in topology.atoms():
+        if atom.element is not None and atom.element.symbol == "H":
+            mass_amu = system.getParticleMass(atom.index).value_in_unit(dalton)
+            assert abs(mass_amu - 4.0) < 0.05, (
+                f"Default build_openmm_system must bake HMR into system.xml, "
+                f"but H atom {atom.index} has mass {mass_amu} amu (expected ~4)."
+            )
+            break
+    else:
+        pytest.fail("Hydrogenated dipeptide topology unexpectedly has no H atoms")
+
+    # Provenance should also surface the choice.
+    method = result["forcefield_provenance"]["method"]
+    assert method["hmr"] is True
+    assert abs(method["hydrogen_mass_amu"] - 4.0) < 1e-9
+
+
+def test_build_openmm_system_hmr_false_keeps_standard_h_mass(tmp_path):
+    """Explicit ``hmr=False`` produces a System where H atoms carry the
+    standard 1.008 amu — useful for non-HMR research workflows."""
+    from openmm import XmlSerializer
+    from openmm.unit import dalton
+    from openmm.app import PDBFile
+
+    pdb = _hydrogenated_dipeptide(tmp_path)
+    result = build_openmm_system(
+        pdb_file=str(pdb),
+        forcefield_xml=["amber/protein.ff14SB.xml"],
+        nonbonded_method="NoCutoff",
+        constraints="HBonds",
+        hmr=False,
+        output_dir=str(tmp_path / "topo_no_hmr"),
+    )
+    assert result["success"] is True, result.get("errors")
+    sys_xml = Path(result["system_xml"]).read_text()
+    system = XmlSerializer.deserialize(sys_xml)
+    topology = PDBFile(result["topology_pdb"]).topology
+    for atom in topology.atoms():
+        if atom.element is not None and atom.element.symbol == "H":
+            mass_amu = system.getParticleMass(atom.index).value_in_unit(dalton)
+            assert abs(mass_amu - 1.008) < 0.05
+            break
+    assert result["forcefield_provenance"]["method"]["hmr"] is False
+
+
 def test_build_openmm_system_pdb_file_required_validation_error(tmp_path):
     """Calling without ``pdb_file`` (and without enough DAG context to
     auto-resolve one) must return a structured validation error keyed by
