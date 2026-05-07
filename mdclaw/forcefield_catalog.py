@@ -89,7 +89,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff19SB": ProteinFFEntry(
         name="ff19SB",
         status="recommended",
-        openmm_xml=("amber/ff19SB.xml",),
+        openmm_xml=("amber/protein.ff19SB.xml",),
         leaprc="leaprc.protein.ff19SB",
         recommended_waters=("opc", "opc3"),
         acceptable_waters=("tip4pew",),
@@ -99,9 +99,10 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     ),
     "ff14SB": ProteinFFEntry(
         name="ff14SB",
-        # Use the openmmforcefields-converted XML (NOT amber14-all.xml) so atom
-        # types stay consistent with phosaa14SB / lipid21 / GLYCAM_06j-1 XMLs
-        # that share the same conversion lineage.
+        # Use the openmmforcefields-converted XML so atom types stay
+        # consistent with phosaa14SB / lipid21 / GLYCAM_06j-1 XMLs that
+        # share the same conversion lineage. (The plain ff14SB.xml is a
+        # legacy ad-hoc port; protein.ff14SB.xml is the canonical one.)
         status="supported",
         openmm_xml=("amber/protein.ff14SB.xml",),
         leaprc="leaprc.protein.ff14SB",
@@ -148,7 +149,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff03.r1": ProteinFFEntry(
         name="ff03.r1",
         status="legacy",
-        openmm_xml=("amber03.xml",),
+        openmm_xml=("amber/protein.ff03.r1.xml",),
         leaprc="oldff/leaprc.ff03",
         recommended_waters=("tip3p",),
         acceptable_waters=("spce",),
@@ -156,10 +157,21 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
         phosaa="phosaa10",
         notes="Duan et al. 2003. QM-derived charges.",
     ),
+    "ff03ua": ProteinFFEntry(
+        name="ff03ua",
+        status="legacy",
+        openmm_xml=("amber/protein.ff03ua.xml",),
+        leaprc="oldff/leaprc.ff03ua",
+        recommended_waters=("tip3p",),
+        acceptable_waters=("spce",),
+        blocked_waters=("opc",),
+        phosaa="phosaa10",
+        notes="United-atom variant of ff03.",
+    ),
     "ff99SBildn": ProteinFFEntry(
         name="ff99SBildn",
         status="legacy",
-        openmm_xml=("amber/protein.ff99SBildn.xml",),
+        openmm_xml=("amber/ff99SBildn.xml",),
         leaprc="oldff/leaprc.ff99SBildn",
         recommended_waters=("tip3p",),
         acceptable_waters=("spce", "tip4pew"),
@@ -170,7 +182,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff99SBnmr": ProteinFFEntry(
         name="ff99SBnmr",
         status="legacy",
-        openmm_xml=("amber/protein.ff99SBnmr.xml",),
+        openmm_xml=("amber/ff99SBnmr.xml",),
         leaprc="oldff/leaprc.ff99SBnmr",
         recommended_waters=("tip3p",),
         acceptable_waters=("spce", "tip4pew"),
@@ -181,7 +193,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff99SB": ProteinFFEntry(
         name="ff99SB",
         status="legacy",
-        openmm_xml=("amber/protein.ff99SB.xml",),
+        openmm_xml=("amber/ff99SB.xml",),
         leaprc="oldff/leaprc.ff99SB",
         recommended_waters=("tip3p",),
         acceptable_waters=("spce", "tip4pew"),
@@ -192,7 +204,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff99": ProteinFFEntry(
         name="ff99",
         status="obsolete",
-        openmm_xml=(),
+        openmm_xml=("amber/ff99.xml",),
         leaprc="oldff/leaprc.ff99",
         recommended_waters=(),
         acceptable_waters=(),
@@ -203,7 +215,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff96": ProteinFFEntry(
         name="ff96",
         status="obsolete",
-        openmm_xml=(),
+        openmm_xml=("amber/ff96.xml",),
         leaprc="oldff/leaprc.ff96",
         recommended_waters=(),
         acceptable_waters=(),
@@ -214,7 +226,7 @@ PROTEIN_FORCEFIELDS: dict[str, ProteinFFEntry] = {
     "ff94": ProteinFFEntry(
         name="ff94",
         status="obsolete",
-        openmm_xml=(),
+        openmm_xml=("amber/ff94.xml",),
         leaprc="oldff/leaprc.ff94",
         recommended_waters=(),
         acceptable_waters=(),
@@ -248,53 +260,62 @@ _PROTEIN_ALIASES.update(
 # ---------------------------------------------------------------------------
 
 WATER_MODELS: dict[str, WaterEntry] = {
+    # ``*_standard.xml`` bundles the water residue + Joung-Cheatham 12-6 ions
+    # in one file; ``*_HFE_multivalent.xml`` / ``*_IOD_multivalent.xml`` add
+    # Li-Merz 12-6 multivalent ion parameters when the system contains divalent
+    # / trivalent ions.
     "opc": WaterEntry(
         name="opc",
-        openmm_xml="amber14/opc.xml",
+        openmm_xml="amber/opc_standard.xml",
         leaprc="leaprc.water.opc",
         requires_extra_particles=True,
-        notes="4-site water. Recommended for ff19SB.",
+        notes="4-site water. Recommended for ff19SB. opc.xml is the residue-only variant.",
     ),
     "opc3": WaterEntry(
         name="opc3",
-        openmm_xml="amber14/opc3.xml",
+        openmm_xml="amber/opc3_standard.xml",
         leaprc="leaprc.water.opc3",
         requires_extra_particles=False,
         notes="3-site OPC family. Pairs with ff19SB and ff14SB.",
     ),
     "tip3p": WaterEntry(
         name="tip3p",
-        openmm_xml="amber14/tip3p.xml",
+        openmm_xml="amber/tip3p_standard.xml",
         leaprc="leaprc.water.tip3p",
         requires_extra_particles=False,
+        ions_multivalent_xml="amber/tip3p_HFE_multivalent.xml",
         notes="Legacy 3-site water. Default for ff14SB and ff99SB family.",
     ),
     "spce": WaterEntry(
         name="spce",
-        openmm_xml="amber14/spce.xml",
+        openmm_xml="amber/spce_standard.xml",
         leaprc="leaprc.water.spce",
         requires_extra_particles=False,
+        ions_multivalent_xml="amber/spce_HFE_multivalent.xml",
         notes="Required for ff15ipq.",
     ),
     "tip4pew": WaterEntry(
         name="tip4pew",
-        openmm_xml="amber14/tip4pew.xml",
+        openmm_xml="amber/tip4pew_standard.xml",
         leaprc="leaprc.water.tip4pew",
         requires_extra_particles=True,
+        ions_multivalent_xml="amber/tip4pew_HFE_multivalent.xml",
         notes="4-site Ewald-tuned. Use addExtraParticles.",
     ),
     "tip3pfb": WaterEntry(
         name="tip3pfb",
-        openmm_xml="amber14/tip3pfb.xml",
+        openmm_xml="amber/tip3pfb_standard.xml",
         leaprc="leaprc.water.tip3pfb",
         requires_extra_particles=False,
+        ions_multivalent_xml="amber/tip3pfb_HFE_multivalent.xml",
         notes="Force-balance 3-site. Pairs with fb15.",
     ),
     "tip4pfb": WaterEntry(
         name="tip4pfb",
-        openmm_xml="amber14/tip4pfb.xml",
+        openmm_xml="amber/tip4pfb_standard.xml",
         leaprc="leaprc.water.tip4pfb",
         requires_extra_particles=True,
+        ions_multivalent_xml="amber/tip4pfb_HFE_multivalent.xml",
         notes="Force-balance 4-site.",
     ),
 }
@@ -326,7 +347,7 @@ LIPID_XML: dict[str, str] = {
 }
 
 GLYCAN_XML: dict[str, str] = {
-    "GLYCAM_06j-1": "amber/glycam_06j-1.xml",
+    "GLYCAM_06j-1": "amber/GLYCAM_06j-1.xml",
 }
 
 DNA_XML: dict[str, str] = {

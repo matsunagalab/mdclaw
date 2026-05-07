@@ -19,7 +19,7 @@ def test_protein_catalog_has_recommended_default():
     assert "ff19SB" in fc.PROTEIN_FORCEFIELDS
     entry = fc.PROTEIN_FORCEFIELDS["ff19SB"]
     assert entry.status == "recommended"
-    assert "amber/ff19SB.xml" in entry.openmm_xml
+    assert "amber/protein.ff19SB.xml" in entry.openmm_xml
     assert "opc" in entry.recommended_waters
     assert "tip3p" in entry.blocked_waters
     assert entry.phosaa == "phosaa19SB"
@@ -194,7 +194,7 @@ def test_unrecognized_water_for_known_ff_returns_alternative():
 
 def test_resolve_xml_bundle_default_pair():
     xml_list = fc.resolve_xml_bundle(protein="ff19SB", water="opc")
-    assert xml_list == ["amber/ff19SB.xml", "amber14/opc.xml"]
+    assert xml_list == ["amber/protein.ff19SB.xml", "amber/opc_standard.xml"]
 
 
 def test_resolve_xml_bundle_with_phosaa_and_lipid():
@@ -206,9 +206,9 @@ def test_resolve_xml_bundle_with_phosaa_and_lipid():
     )
     # Order: protein → phosaa → water → lipid
     assert xml_list == [
-        "amber/ff19SB.xml",
+        "amber/protein.ff19SB.xml",
         "amber/phosaa19SB.xml",
-        "amber14/opc.xml",
+        "amber/opc_standard.xml",
         "amber/lipid21.xml",
     ]
 
@@ -226,8 +226,8 @@ def test_resolve_xml_bundle_with_dna_rna_glycan():
         "amber/protein.ff14SB.xml",
         "amber/DNA.OL21.xml",
         "amber/RNA.OL3.xml",
-        "amber/glycam_06j-1.xml",
-        "amber14/tip3p.xml",
+        "amber/GLYCAM_06j-1.xml",
+        "amber/tip3p_standard.xml",
     ]
 
 
@@ -238,8 +238,8 @@ def test_resolve_xml_bundle_appends_extra_xml():
         extra_xml=("/path/to/GB99dms.xml",),
     )
     assert xml_list == [
-        "amber/ff19SB.xml",
-        "amber14/opc.xml",
+        "amber/protein.ff19SB.xml",
+        "amber/opc_standard.xml",
         "/path/to/GB99dms.xml",
     ]
 
@@ -248,11 +248,15 @@ def test_resolve_xml_bundle_dedupes_repeats():
     xml_list = fc.resolve_xml_bundle(
         protein="ff19SB",
         water="opc",
-        extra_xml=("amber/ff19SB.xml", "amber14/opc.xml", "/extra/x.xml"),
+        extra_xml=(
+            "amber/protein.ff19SB.xml",
+            "amber/opc_standard.xml",
+            "/extra/x.xml",
+        ),
     )
     assert xml_list == [
-        "amber/ff19SB.xml",
-        "amber14/opc.xml",
+        "amber/protein.ff19SB.xml",
+        "amber/opc_standard.xml",
         "/extra/x.xml",
     ]
 
@@ -294,3 +298,61 @@ def test_resolve_internal_frcmod_existing_file(tmp_path, monkeypatch):
 def test_resolve_internal_frcmod_missing_file(tmp_path, monkeypatch):
     monkeypatch.setenv("AMBERHOME", str(tmp_path))
     assert fc.resolve_internal_frcmod_path("frcmod.does_not_exist") is None
+
+
+# ---------------------------------------------------------------------------
+# Catalog ↔ openmmforcefields shipped XML existence guard
+# ---------------------------------------------------------------------------
+
+
+def _ffxml_root():
+    """Locate the openmmforcefields ffxml/ directory; skip if not installed."""
+    pytest.importorskip("openmmforcefields")
+    import openmmforcefields  # noqa: WPS433
+    from pathlib import Path
+    return Path(openmmforcefields.__file__).parent / "ffxml"
+
+
+@pytest.mark.parametrize(
+    "table_name,xml_paths",
+    [
+        ("PHOSAA_XML", tuple(fc.PHOSAA_XML.values())),
+        ("LIPID_XML", tuple(fc.LIPID_XML.values())),
+        ("GLYCAN_XML", tuple(fc.GLYCAN_XML.values())),
+        ("DNA_XML", tuple(fc.DNA_XML.values())),
+        ("RNA_XML", tuple(fc.RNA_XML.values())),
+    ],
+)
+def test_simple_xml_tables_resolve_to_real_files(table_name, xml_paths):
+    """Every XML path in PHOSAA / LIPID / GLYCAN / DNA / RNA tables must resolve
+    to a file that openmmforcefields actually ships. Catches typos and drift
+    when openmmforcefields renames its bundled XML files."""
+    root = _ffxml_root()
+    missing = [p for p in xml_paths if not (root / p).is_file()]
+    assert not missing, (
+        f"{table_name} references XML files not shipped in openmmforcefields: {missing}"
+    )
+
+
+def test_protein_openmm_xml_resolves_to_real_files():
+    """Each protein FF entry's openmm_xml tuple must point to shipped XML."""
+    root = _ffxml_root()
+    missing: list[str] = []
+    for name, entry in fc.PROTEIN_FORCEFIELDS.items():
+        for xml in entry.openmm_xml:
+            if not (root / xml).is_file():
+                missing.append(f"{name}: {xml}")
+    assert not missing, f"PROTEIN_FORCEFIELDS XML not shipped: {missing}"
+
+
+def test_water_openmm_xml_resolves_to_real_files():
+    """Each water entry's openmm_xml + multivalent companion must ship."""
+    root = _ffxml_root()
+    missing: list[str] = []
+    for name, entry in fc.WATER_MODELS.items():
+        if not (root / entry.openmm_xml).is_file():
+            missing.append(f"{name}: {entry.openmm_xml}")
+        for opt in (entry.ions_monovalent_xml, entry.ions_multivalent_xml):
+            if opt and not (root / opt).is_file():
+                missing.append(f"{name} (ions): {opt}")
+    assert not missing, f"WATER_MODELS XML not shipped: {missing}"
