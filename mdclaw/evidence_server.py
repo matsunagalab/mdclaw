@@ -669,8 +669,9 @@ def _draft_methods_paragraphs(facts: dict) -> list[str]:
         f"The prepared structure was solvated using an explicit {facts['water_model']} water model "
         f"with {facts['box_description']}. Ions were added according to "
         f"{facts['salt_description']}. "
-        f"Amber topology and coordinate files were generated with AmberTools/tleap using the "
-        f"{facts['forcefield']} protein force field{facts['additional_forcefields_sentence']}. "
+        f"OpenMM Systems were generated with `openmmforcefields.SystemGenerator` over an OpenFF "
+        f"Pablo–loaded topology, using the {facts['forcefield']} protein force field"
+        f"{facts['additional_forcefields_sentence']}. "
         f"Small-molecule ligand parameterization was {facts['ligand_parameterization']}."
     )
 
@@ -712,12 +713,11 @@ def _methods_template() -> str:
         "Template paragraph 2: system construction",
         (
             "The prepared structure was solvated using an explicit {water_model} water model with "
-            "{box_description}. Ions were added to {salt_description}. Amber topology and "
-            "coordinate "
-            "files were generated with AmberTools/tleap using the {forcefield} protein force field"
+            "{box_description}. Ions were added to {salt_description}. OpenMM Systems were "
+            "generated with `openmmforcefields.SystemGenerator` over an OpenFF Pablo–loaded "
+            "topology, using the {forcefield} protein force field"
             "{additional_forcefields_sentence}. Small-molecule ligands, if present, were "
-            "parameterized "
-            "using {ligand_parameterization}."
+            "parameterized using {ligand_parameterization}."
         ),
         "",
         "Template paragraph 3: MD protocol",
@@ -1252,8 +1252,9 @@ def _study_methods_paragraphs(study: dict, job_reports: list[dict]) -> list[str]
         f"Structures were prepared with {prep_tools}, with protonation states assigned at pH "
         f"{ph}. Special components were recorded as {special_components}. Prepared systems "
         f"were solvated using {water_model} water with {box_description}, and ions were added "
-        f"according to {salt_description}. Amber topology and coordinate files were generated "
-        f"with AmberTools/tleap using {forcefield}."
+        f"according to {salt_description}. OpenMM Systems were generated with "
+        f"`openmmforcefields.SystemGenerator` over an OpenFF Pablo–loaded topology, using "
+        f"{forcefield}."
     )
 
     equilibration = _field_by_job(job_reports, "equilibration_protocol")

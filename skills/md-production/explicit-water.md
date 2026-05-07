@@ -41,10 +41,10 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 If the user does not specify a run length and `execution_mode=autonomous`,
 use `--simulation-time-ns 0.1` as the default sanity check.
 
-`system_xml_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are
-auto-resolved from DAG ancestors. Ensemble is inherited from the `eq`
-ancestor, so NPT eq states load with a matching barostat by default. For
-extension/retry details, read `skills/md-production/restart.md`.
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from`, and
+`pressure_bar` are auto-resolved from DAG ancestors. Ensemble is inherited from
+the `eq` ancestor, so NPT eq states load with a matching barostat by default.
+For extension/retry details, read `skills/md-production/restart.md`.
 
 ### SLURM Execution (HPC)
 

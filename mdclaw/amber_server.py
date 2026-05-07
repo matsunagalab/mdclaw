@@ -2474,9 +2474,9 @@ def build_amber_system(
     state_xml_file = out_dir / f"{output_name}.state.xml"
     
     # Copy and fix PDB file (fix UNL residue names if needed)
-    working_pdb = out_dir / f"{output_name}.tleap_input.pdb"
+    working_pdb = out_dir / f"{output_name}.prepared.pdb"
     ligand_res_names = [lig["residue_name"] for lig in valid_ligands] if valid_ligands else []
-    
+
     # Fix ligand residue names (UNL -> correct name)
     # Note: N-terminal hydrogen naming is handled by pdb4amber --reduce in structure_server.py
     fix_lig_result = fix_ligand_residue_names(pdb_path, working_pdb, ligand_res_names)
@@ -2487,7 +2487,9 @@ def build_amber_system(
             **result,
             "error_type": "ValidationError",
             "code": "ambiguous_ligand_residue_repair",
-            "message": "Ambiguous ligand residue-name repair before tleap.",
+            "message": (
+                "Ambiguous ligand residue-name repair before openmmforcefields build."
+            ),
         }
     if fix_lig_result["unl_count"] > 0:
         result["warnings"].extend(fix_lig_result["replacements"])
@@ -2914,7 +2916,7 @@ def _run_openmmforcefields_build(
     # hydrogen to be present. The mdclaw prep pipeline normally takes care of
     # this upstream, but unit-test inputs and ad-hoc PDBs may arrive without
     # explicit hydrogens — re-run PDBFixer here so the build is robust.
-    hydrogenated_pdb = out_dir / f"{output_name}.tleap_input.pdb"
+    hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
     try:
         from pdbfixer import PDBFixer
         from openmm.app import PDBFile as _PDBFile

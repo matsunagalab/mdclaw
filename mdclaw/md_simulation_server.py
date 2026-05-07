@@ -113,12 +113,18 @@ class _ModernPrmtopShim:
     routing both call sites through ``XmlSerializer.deserialize``.
 
     The saved System already has ``HMR`` / ``nonbondedMethod`` /
-    ``constraints`` / implicit-solvent baked in at build time. ``createSystem``
-    kwargs from the legacy run_* code paths are now **validated** against the
-    saved System rather than silently ignored: a request for HMR or implicit
-    solvent that the build did not commit to raises
+    ``constraints`` / implicit-solvent baked in at build time. Of the
+    ``createSystem`` kwargs that legacy run_* code paths pass, only
+    ``hydrogenMass`` and ``implicitSolvent`` are **validated** against the
+    saved System — a request that the build did not commit to raises
     ``_ModernSystemContractError`` with a structured code so the caller can
-    surface a clean error to the user.
+    surface a clean error. The other kwargs (``nonbondedMethod``,
+    ``nonbondedCutoff``, ``constraints``, ``rigidWater``) are honored as
+    whatever the saved System carries, since they were already chosen at
+    build time and re-asserting them at run time cannot change the
+    deserialized System. Callers that need to re-tune those settings must
+    rebuild via ``build_amber_system`` / ``build_openmm_system`` rather than
+    relying on run_* kwargs.
     """
 
     def __init__(self, topology, system_xml_path: Path):
@@ -161,9 +167,11 @@ class _ModernPrmtopShim:
                 message=(
                     f"run_* requested implicitSolvent={kwargs['implicitSolvent']!r} but "
                     f"the saved system.xml has no GB / implicit-solvent force. "
-                    f"build_amber_system does not yet support implicit solvent under "
-                    f"the openmmforcefields path; rebuild via the legacy parm7 route, "
-                    f"or supply a GB-aware ForceField XML via build_openmm_system."
+                    f"build_amber_system does not yet wire GB forces into the "
+                    f"openmmforcefields path; supply a GB-aware ForceField XML "
+                    f"(e.g. GB99dms.xml or an amber14+OBC2 third-party port) "
+                    f"via build_openmm_system so the saved System carries a "
+                    f"GBSAOBCForce / CustomGBForce / AmoebaGeneralizedKirkwoodForce."
                 ),
             )
 
