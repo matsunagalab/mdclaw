@@ -310,7 +310,7 @@ def run_command(
 
 
 class BaseToolWrapper:
-    """Wrapper for external CLI tools (tleap, antechamber, etc.)."""
+    """Wrapper for external CLI tools (antechamber, parmchk2, cpptraj, etc.)."""
 
     def __init__(self, tool_name: str, conda_env: Optional[str] = None):
         self.tool_name = tool_name
@@ -365,12 +365,12 @@ _TIMEOUT_DEFAULTS = {
     "genesis": 300,
     "solvation": 7200,
     "membrane": 7200,
-    # ``amber`` is the tleap wall-time budget for build_amber_system.
-    # 3600 s (60 min) covers solvated nanobody–scaffold fusions
-    # (megabody-style, ~450 residues / 400k atoms) observed in the
-    # 2422-row SabDab batch where the earlier 900 s default timed out
-    # on 48 entries. For even larger systems, override via
-    # MDCLAW_AMBER_TIMEOUT=<seconds>.
+    # ``amber`` is the wall-time budget for build_amber_system's
+    # openmmforcefields build path. 3600 s (60 min) covers solvated
+    # nanobody–scaffold fusions (megabody-style, ~450 residues /
+    # 400k atoms) observed in the 2422-row SabDab batch where the
+    # earlier 900 s default timed out on 48 entries. For even larger
+    # systems, override via MDCLAW_AMBER_TIMEOUT=<seconds>.
     "amber": 3600,
     "md_simulation": 3600,
     "slurm": 120,
