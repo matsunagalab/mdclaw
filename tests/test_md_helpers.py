@@ -1063,6 +1063,176 @@ class TestExplicitRestartFromFinalStepAlignment:
         )
         assert node_id == "eq_001"
 
+    # -------- Run-function-level (routing wiring) -------------------------
+    #
+    # The tests above pin the helper's contract. The pair below confirms
+    # the wiring inside ``run_production`` / ``run_equilibration``: the
+    # ``explicit_restart_from`` flag is computed BEFORE the resolver
+    # auto-resolve fallback, and ``_resolve_restart_node_id_for_run`` is
+    # invoked with the right combination of (restart_from,
+    # explicit_restart_from, inputs). We patch the helper itself with a
+    # recorder and let the run abort on the next downstream OpenMM step
+    # — that's enough to confirm the routing layer without needing a
+    # real System build or trajectory.
+
+    def _capture_helper_call(self):
+        captured: dict = {}
+
+        def _wrapper(**kwargs):
+            captured.setdefault("calls", []).append(kwargs)
+            return None  # safe: real run_* code accepts None
+        return captured, _wrapper
+
+    def test_run_production_explicit_external_path_routes_explicit_true(
+        self, tmp_path,
+    ):
+        """``run_production(restart_from=<external>, ...)`` calls
+        ``_resolve_restart_node_id_for_run`` with
+        ``explicit_restart_from=True`` and the user's path verbatim,
+        even though the DAG resolver would have auto-resolved
+        eq_001's state."""
+        from unittest.mock import patch
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_production
+        from mdclaw import md_simulation_server as md_mod
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        # Drop a placeholder XML triple on disk so file-existence
+        # checks pass before the run aborts at the OpenMM import stage.
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        # External restart file (not in the DAG).
+        external = jd / "external.xml"
+        external.write_text("<placeholder/>")
+        # Re-create prod_001 (seed already created it; we just need
+        # node_id resolution to find an eq parent for the resolver).
+        _ = create_node
+
+        captured, wrapper = self._capture_helper_call()
+        with patch.object(
+            md_mod, "_resolve_restart_node_id_for_run", side_effect=wrapper,
+        ):
+            run_production(
+                simulation_time_ns=0.001,
+                pressure_bar=1.0,
+                restart_from=str(external),
+                job_dir=str(jd),
+                node_id="prod_001",
+                platform="CPU",
+            )
+
+        # The helper was invoked exactly once (from run_production), with
+        # the user's external path and explicit_restart_from=True.
+        calls = captured.get("calls") or []
+        assert len(calls) == 1, calls
+        kwargs = calls[0]
+        assert kwargs["explicit_restart_from"] is True
+        assert kwargs["restart_from"] == str(external)
+        # The resolver did auto-resolve eq_001 — but the helper's
+        # ``inputs`` is what gets fed in; the helper's contract (covered
+        # in the explicit-path tests above) is to ignore those when
+        # explicit_restart_from is True.
+        assert kwargs["inputs"].get("restart_from_node_id") == "eq_001"
+
+    def test_run_production_no_restart_from_routes_explicit_false(
+        self, tmp_path,
+    ):
+        """No explicit ``restart_from`` → ``_resolve_restart_node_id_for_run``
+        is called with ``explicit_restart_from=False`` so the
+        resolver's ``restart_from_node_id`` is trusted."""
+        from unittest.mock import patch
+        from mdclaw.md_simulation_server import run_production
+        from mdclaw import md_simulation_server as md_mod
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        eq_artifacts = jd / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text("<placeholder/>")
+        (eq_artifacts / "equilibrated.chk").write_text("placeholder")
+
+        captured, wrapper = self._capture_helper_call()
+        with patch.object(
+            md_mod, "_resolve_restart_node_id_for_run", side_effect=wrapper,
+        ):
+            run_production(
+                simulation_time_ns=0.001,
+                pressure_bar=1.0,
+                # No restart_from: the resolver's auto-pick is what the
+                # run side sees.
+                job_dir=str(jd),
+                node_id="prod_001",
+                platform="CPU",
+            )
+
+        calls = captured.get("calls") or []
+        assert len(calls) == 1, calls
+        kwargs = calls[0]
+        assert kwargs["explicit_restart_from"] is False
+        # The resolver-supplied path will then be substituted in by the
+        # run code (we returned None from the wrapper, so the helper's
+        # actual contract is exercised separately above).
+        assert kwargs["inputs"].get("restart_from_node_id") == "eq_001"
+
+    def test_run_equilibration_explicit_external_path_routes_explicit_true(
+        self, tmp_path,
+    ):
+        """Same wiring on the eq side: an explicit external path lands
+        in the helper with ``explicit_restart_from=True``."""
+        from unittest.mock import patch
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw import md_simulation_server as md_mod
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        # New eq_002 chained off eq_001 — that's the call that exposes
+        # the resolver's eq → eq auto-pick.
+        create_node(str(jd), "eq", parent_node_ids=["eq_001"])
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        eq_artifacts = jd / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text("<placeholder/>")
+        external = jd / "ext_eq.xml"
+        external.write_text("<placeholder/>")
+
+        captured, wrapper = self._capture_helper_call()
+        with patch.object(
+            md_mod, "_resolve_restart_node_id_for_run", side_effect=wrapper,
+        ):
+            run_equilibration(
+                pressure_bar=1.0,
+                restart_from=str(external),
+                job_dir=str(jd),
+                node_id="eq_002",
+                platform="CPU",
+            )
+
+        calls = captured.get("calls") or []
+        assert len(calls) == 1, calls
+        kwargs = calls[0]
+        assert kwargs["explicit_restart_from"] is True
+        assert kwargs["restart_from"] == str(external)
+        # Resolver still auto-resolved eq_001 — but the helper must
+        # decide based on path equality, not on this resolver hint.
+        assert kwargs["inputs"].get("restart_from_node_id") == "eq_001"
+
 
 # ----------------------------------------------------------------------------
 # Bug 5: every early-return path after begin_node() must mark the node failed

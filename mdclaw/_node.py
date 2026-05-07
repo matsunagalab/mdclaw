@@ -2585,15 +2585,34 @@ def read_ancestor_final_step(
     both artifacts), reading ``final_step`` off the nearest prod would
     overshoot the actual restart point.
 
-    Pass ``restart_node_id`` to read directly from that node — this
-    is the ``restart_from_node_id`` returned by ``_resolve_md_restart``.
-    When omitted (e.g. an explicit ``--restart-from`` path on the CLI),
-    the helper falls back to the same BFS the resolver uses (per
-    ancestor: prod or eq with state/checkpoint), so the step counter
-    still tracks the artifact that would have been picked.
+    The expected calling pattern from ``run_equilibration`` /
+    ``run_production`` is to pass ``restart_node_id`` whenever the run
+    side knows which DAG ancestor produced the artifact it just loaded:
 
-    Returns ``None`` when no ancestor records ``final_step`` (a node
-    whose run didn't write the metadata yet).
+      - DAG resolver auto-resolved the restart artifact
+        (``restart_from`` came from ``_inputs``):
+        pass ``restart_node_id=_inputs["restart_from_node_id"]``.
+      - Explicit ``--restart-from <path>`` matched a DAG ancestor's
+        ``state``/``checkpoint`` (via
+        ``_resolve_restart_node_id_for_run``):
+        pass that matched ancestor id.
+      - Explicit ``--restart-from <path>`` is an external file
+        (no DAG match): pass ``restart_node_id=None``. The helper
+        returns ``None`` so the caller leaves
+        ``simulation.currentStep`` to whatever the loader sets
+        (``saveState`` XML → 0; ``saveCheckpoint`` ``.chk`` →
+        the persisted counter).
+
+    When ``restart_node_id`` is omitted entirely, the helper replays
+    the same per-ancestor BFS as ``_resolve_md_restart`` to pick the
+    ancestor that *would* have been chosen — useful for non-node-mode
+    callers and for backwards compatibility. ``run_*`` no longer relies
+    on this default path: it always passes an explicit
+    ``restart_node_id`` (possibly ``None``).
+
+    Returns ``None`` when the chosen ancestor has no ``final_step``
+    metadata (a node whose run didn't write it yet) or when no prod /
+    eq ancestor exists at all.
     """
     if restart_node_id is not None:
         v = _read_metadata_field(job_dir, restart_node_id, "final_step")

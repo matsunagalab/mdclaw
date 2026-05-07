@@ -1766,10 +1766,10 @@ class TestDAGAutoResolve:
     def test_read_ancestor_final_step_returns_none_when_missing(
         self, full_dag
     ):
-        """Legacy DAGs without final_step metadata: helper returns None
-        so the caller falls back to simulation.currentStep=0 after
-        loadState — same observable behavior as loadCheckpoint for a
-        fresh prod (eq→prod)."""
+        """Nodes without ``final_step`` metadata: the helper returns
+        ``None`` so the caller falls back to ``simulation.currentStep=0``
+        after loadState — same observable behaviour as loadCheckpoint
+        for a fresh prod (eq → prod)."""
         from mdclaw._node import read_ancestor_final_step
         assert read_ancestor_final_step(str(full_dag), "prod_001") is None
 
