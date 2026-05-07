@@ -388,3 +388,258 @@ class TestBuildOpenmmSystemNodeMode:
         assert topo_node["status"] == "failed", (
             f"Node should be failed, got {topo_node['status']!r}"
         )
+
+
+# ----------------------------------------------------------------------------
+# Implicit-solvent metadata contract (Phase 14)
+# ----------------------------------------------------------------------------
+
+
+class TestBuildOpenmmSystemImplicitSolvent:
+    """``build_openmm_system`` is the research escape hatch — it does not
+    silently inject XMLs the caller did not bring, but it must keep the
+    same topology metadata contract as ``build_amber_system`` so the
+    run-side topology guard recognises the build choice on either path.
+
+    Three failure codes are exercised here:
+      - ``implicit_solvent_xml_missing`` — declared model, but no matching
+        ``implicit/<model>.xml`` in ``forcefield_xml``.
+      - ``implicit_solvent_xml_ambiguous`` — multiple shipped GB XMLs
+        bundled and no explicit ``implicit_solvent`` to disambiguate.
+      - ``implicit_solvent_model_unsupported`` — typo / unknown model name.
+    """
+
+    @staticmethod
+    def _setup_topo(tmp_path):
+        from mdclaw._node import complete_node, create_node
+
+        pdb = _hydrogenated_dipeptide(tmp_path)
+        job_dir = tmp_path / "job"
+        create_node(str(job_dir), "source")
+        complete_node(
+            str(job_dir),
+            "source_001",
+            artifacts={"structure_file": str(pdb)},
+        )
+        create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+        prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
+        prep_artifacts.mkdir(parents=True, exist_ok=True)
+        merged = prep_artifacts / "merged.pdb"
+        merged.write_bytes(pdb.read_bytes())
+        complete_node(
+            str(job_dir),
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merged.pdb"},
+        )
+        create_node(str(job_dir), "topo", parent_node_ids=["prep_001"])
+        return job_dir, "topo_001", pdb
+
+    def test_declared_obc2_with_matching_xml_records_canonical_metadata(
+        self, tmp_path
+    ):
+        """``forcefield_xml=[..., "implicit/gbn2.xml"]`` paired with
+        ``implicit_solvent="gbneck2"`` (an alias) must canonicalize to
+        ``"GBn2"`` in node metadata + provenance, and the saved
+        system.xml must carry a Generalized-Born force."""
+        from openmm import XmlSerializer
+        from mdclaw._node import read_node
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=[
+                "amber/protein.ff14SBonlysc.xml",
+                "implicit/gbn2.xml",
+            ],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            implicit_solvent="gbneck2",  # alias of GBn2
+        )
+        assert result["success"] is True, result.get("errors")
+        assert result["parameters"]["implicit_solvent"] == "GBn2"
+
+        topo_node = read_node(str(job_dir), topo_id)
+        meta = topo_node["metadata"]
+        assert meta["implicit_solvent"] == "GBn2"
+        assert meta["solvent_type"] == "implicit"
+        assert meta["hmr"] is True
+
+        prov = meta["forcefield_provenance"]
+        assert prov["method"]["implicit_solvent"] == "GBn2"
+        assert prov["method"]["solvent_type"] == "implicit"
+
+        # GB force is actually present in the saved system.xml.
+        with open(result["system_xml"]) as fh:
+            system = XmlSerializer.deserialize(fh.read())
+        gb_classes = {
+            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+        }
+        present = {type(f).__name__ for f in system.getForces()}
+        assert present & gb_classes, (
+            f"system.xml has no GB force; forces={present}"
+        )
+
+    def test_declared_model_missing_xml_fails(self, tmp_path):
+        """``implicit_solvent="GBn2"`` but the GBn2 XML is not in the
+        bundle: surface the structured ``implicit_solvent_xml_missing``
+        code with rebuild guidance, and never reach SystemGenerator."""
+        from mdclaw._node import read_node
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SBonlysc.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            implicit_solvent="GBn2",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_xml_missing"
+        joined = " ".join(result.get("errors", []))
+        assert "implicit/gbn2.xml" in joined.lower() or "GBn2" in joined
+        topo_node = read_node(str(job_dir), topo_id)
+        assert topo_node["status"] == "failed"
+
+    def test_unknown_declared_model_fails(self, tmp_path):
+        """Typos like ``MAGIC_GB`` get caught with the same code the run
+        side uses, so the failure mode is consistent across the build /
+        run sides."""
+        pdb = _hydrogenated_dipeptide(tmp_path)
+        result = build_openmm_system(
+            pdb_file=str(pdb),
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            implicit_solvent="MAGIC_GB",
+            output_dir=str(tmp_path / "topo"),
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_model_unsupported"
+        joined = " ".join(result.get("errors", []))
+        assert "MAGIC_GB" in joined
+        # Supported list surfaces so agents can recover.
+        assert "OBC2" in joined and "GBn2" in joined
+
+    def test_inferred_obc2_from_xml_bundle(self, tmp_path):
+        """When ``implicit_solvent`` is omitted but the bundle ships a
+        single ``implicit/<model>.xml``, the canonical model is recorded
+        on node metadata so the run-side topology guard recognises it."""
+        from mdclaw._node import read_node
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=[
+                "amber/protein.ff14SBonlysc.xml",
+                "implicit/obc2.xml",
+            ],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+        )
+        assert result["success"] is True, result.get("errors")
+        assert result["parameters"]["implicit_solvent"] == "OBC2"
+        meta = read_node(str(job_dir), topo_id)["metadata"]
+        assert meta["implicit_solvent"] == "OBC2"
+        assert meta["solvent_type"] == "implicit"
+
+    def test_ambiguous_xml_fails(self, tmp_path):
+        """Two shipped ``implicit/*.xml`` files in the same bundle without
+        an explicit ``implicit_solvent`` is irresolvable — both could not
+        be the active GB model. Surface as
+        ``implicit_solvent_xml_ambiguous``."""
+        from mdclaw._node import read_node
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=[
+                "amber/protein.ff14SBonlysc.xml",
+                "implicit/obc2.xml",
+                "implicit/gbn2.xml",
+            ],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_xml_ambiguous"
+        topo_node = read_node(str(job_dir), topo_id)
+        assert topo_node["status"] == "failed"
+
+    def test_no_implicit_xml_means_explicit_or_vacuum(self, tmp_path):
+        """No shipped GB XML present → metadata.implicit_solvent stays
+        ``None``; ``solvent_type`` reflects the nonbonded regime
+        (``vacuum`` for NoCutoff, ``explicit`` for PME). The run-side
+        topology guard then skips the implicit-solvent check."""
+        from mdclaw._node import read_node
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+        )
+        assert result["success"] is True, result.get("errors")
+        meta = read_node(str(job_dir), topo_id)["metadata"]
+        assert meta["implicit_solvent"] is None
+        assert meta["solvent_type"] == "vacuum"
+
+    def test_topology_metadata_passes_run_side_guard_with_alias(self, tmp_path):
+        """Integration: a topo node built via build_openmm_system with
+        ``implicit_solvent="GBn2"`` must let ``run_production
+        --implicit-solvent gbneck2`` past the topology mismatch guard.
+        The simulation will fail later because the placeholder
+        deserialization step does not run a real System, but the
+        specific assertion is that the failure code is *not*
+        ``implicit_solvent_topology_mismatch``."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_production
+
+        job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=[
+                "amber/protein.ff14SBonlysc.xml",
+                "implicit/gbn2.xml",
+            ],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            implicit_solvent="GBn2",
+        )
+        assert result["success"] is True, result.get("errors")
+        # eq + prod nodes downstream so run_production can resolve the
+        # topo metadata. The eq state is a placeholder so the run will
+        # fail at deserialization — we only care about the guard verdict.
+        from mdclaw._node import complete_node
+        create_node(str(job_dir), "eq", parent_node_ids=[topo_id])
+        eq_artifacts = job_dir / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text("<placeholder/>")
+        complete_node(
+            str(job_dir),
+            "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+
+        prod_result = run_production(
+            simulation_time_ns=0.001,
+            implicit_solvent="gbneck2",  # alias of GBn2 — must canonicalize
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="prod_001",
+        )
+        # prod_001 will fail later (placeholder system.xml is unparseable),
+        # but specifically NOT with the topology-mismatch code.
+        assert prod_result.get("code") != "implicit_solvent_topology_mismatch"
+        # Sanity: the topo node carries the canonical metadata that fed
+        # the guard.
+        topo_meta = read_node(str(job_dir), topo_id)["metadata"]
+        assert topo_meta["implicit_solvent"] == "GBn2"

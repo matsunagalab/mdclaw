@@ -59,6 +59,52 @@ def _hash_file(path: Path) -> Optional[str]:
         return None
 
 
+def _xml_entry_matches_catalog(entry: str, catalog_path: str) -> bool:
+    """Decide whether a user-supplied ``forcefield_xml`` entry refers to the
+    same shipped XML as ``catalog_path`` (e.g. ``"implicit/obc2.xml"``).
+
+    Three forms are recognised, all case-insensitive on the basename:
+    - exact string equality (the standard recipe);
+    - any path that ends in the same filename (``/extras/obc2.xml`` or
+      ``…/implicit/obc2.xml``);
+    so a user pinning the XML by absolute path can still declare which GB
+    model they meant. We do *not* accept a bare ``obc2.xml`` without an
+    ``implicit/`` directory component, to avoid colliding with unrelated
+    XMLs that happen to share a basename.
+    """
+    if entry == catalog_path:
+        return True
+    catalog_basename = Path(catalog_path).name.lower()
+    entry_path = Path(entry)
+    if entry_path.name.lower() != catalog_basename:
+        return False
+    parts_lower = {p.lower() for p in entry_path.parts}
+    return "implicit" in parts_lower
+
+
+def _detect_implicit_solvent_xml(
+    forcefield_xml: List[str],
+) -> tuple[Optional[str], list[str]]:
+    """Scan ``forcefield_xml`` for shipped ``implicit/*.xml`` entries.
+
+    Returns a tuple ``(canonical_or_none, matched_models)``. When exactly
+    one shipped model is present, ``canonical_or_none`` is its canonical
+    name (``"OBC2"`` etc.). Multiple matches return ``(None, [...])`` so
+    the caller can raise ``implicit_solvent_xml_ambiguous``. Zero matches
+    return ``(None, [])`` — third-party GB XML (``GB99dms.xml``) is
+    intentionally not inferable, matching the spec's escape-hatch policy.
+    """
+    from mdclaw import forcefield_catalog as _fc
+
+    matched: list[str] = []
+    for canonical, catalog_path in _fc.IMPLICIT_SOLVENT_XML.items():
+        if any(_xml_entry_matches_catalog(e, catalog_path) for e in forcefield_xml):
+            matched.append(canonical)
+    if len(matched) == 1:
+        return matched[0], matched
+    return None, matched
+
+
 def _check_gb99_openmm_version_compatible(forcefield_xml: List[str]) -> Optional[str]:
     """Return an error message if any GB99* XML is paired with OpenMM < 8.0.
 
@@ -99,6 +145,7 @@ def build_openmm_system(
     constraints: str = "HBonds",
     rigid_water: bool = True,
     hmr: bool = True,
+    implicit_solvent: Optional[str] = None,
     minimize: bool = True,
     output_name: str = "system",
     output_dir: Optional[str] = None,
@@ -136,6 +183,24 @@ def build_openmm_system(
              run_equilibration → run_production`` chain works without
              extra kwargs. Pass ``hmr=False`` to keep standard hydrogen
              masses (use a 2 fs timestep on the run_* side).
+        implicit_solvent: Canonical GB model name (case-insensitive;
+             ``HCT`` / ``OBC1`` / ``OBC2`` / ``GBn`` / ``GBn2``, with
+             ``gbneck2`` / ``igb1``–``igb8`` aliases). When set, the
+             matching ``implicit/<model>.xml`` must already appear in
+             ``forcefield_xml`` — this builder is the research escape
+             hatch and will not silently inject XMLs the caller did not
+             ask for; missing entries fail-fast with
+             ``implicit_solvent_xml_missing``. When omitted, the builder
+             scans ``forcefield_xml`` for shipped ``implicit/*.xml``
+             entries and stamps the inferred canonical name on the topo
+             node's metadata so the run-side topology guard recognises
+             the build choice. Multiple shipped GB XMLs trigger
+             ``implicit_solvent_xml_ambiguous``. Third-party GB XML
+             (e.g. ``GB99dms.xml``) is *not* inferable — pass
+             ``implicit_solvent`` explicitly only when the corresponding
+             shipped XML is also in ``forcefield_xml``; for purely
+             custom GB XML, leave the metadata as ``None`` and accept
+             that the run-side topology guard cannot match.
         minimize: Run a short LocalEnergyMinimizer pass before
             serializing the state. Disable for debugging.
         output_name: Stem for the artifact file names.
@@ -156,6 +221,7 @@ def build_openmm_system(
             "constraints": constraints,
             "rigid_water": rigid_water,
             "hmr": hmr,
+            "implicit_solvent": None,    # filled in after canonicalization
             "minimize": minimize,
         },
     }
@@ -199,6 +265,7 @@ def build_openmm_system(
                 "constraints": constraints,
                 "rigid_water": rigid_water,
                 "hmr": hmr,
+                "implicit_solvent": implicit_solvent,
                 "output_name": output_name,
             },
         )
@@ -259,6 +326,65 @@ def build_openmm_system(
             "forcefield_xml is required: supply at least one OpenMM ForceField XML."
         )
         return _emit_failure(result)
+
+    # --- Implicit-solvent: canonicalize, validate, optionally infer -------
+    # Three failure modes here, all fail-fast with structured codes:
+    #   * unknown declared model name (typo)
+    #     -> ``implicit_solvent_model_unsupported``
+    #   * declared model but the matching ``implicit/<model>.xml`` is not
+    #     in ``forcefield_xml`` (the escape hatch never silently injects
+    #     XML the caller did not ask for)
+    #     -> ``implicit_solvent_xml_missing``
+    #   * no declaration but multiple shipped ``implicit/*.xml`` are
+    #     bundled (cannot decide which model the System actually carries)
+    #     -> ``implicit_solvent_xml_ambiguous``
+    from mdclaw import forcefield_catalog as _fc
+
+    canonical_implicit: Optional[str] = None
+    if implicit_solvent is not None:
+        canonical = _fc.normalize_implicit_solvent(implicit_solvent)
+        if canonical not in _fc.IMPLICIT_SOLVENT_XML:
+            supported = ", ".join(_fc.supported_implicit_solvent_models())
+            result["errors"].append(
+                f"Unknown implicit_solvent={implicit_solvent!r}. "
+                f"Supported: {supported}."
+            )
+            return _emit_failure({
+                **result,
+                "code": "implicit_solvent_model_unsupported",
+            })
+        expected_xml = _fc.IMPLICIT_SOLVENT_XML[canonical]
+        if not any(
+            _xml_entry_matches_catalog(entry, expected_xml)
+            for entry in forcefield_xml
+        ):
+            result["errors"].append(
+                f"build_openmm_system requested implicit_solvent={canonical!r}, "
+                f"but forcefield_xml does not include {expected_xml!r}. "
+                f"Add it to forcefield_xml, or use "
+                f"build_amber_system --implicit-solvent {canonical}."
+            )
+            return _emit_failure({
+                **result,
+                "code": "implicit_solvent_xml_missing",
+            })
+        canonical_implicit = canonical
+    else:
+        inferred, matched = _detect_implicit_solvent_xml(forcefield_xml)
+        if len(matched) > 1:
+            result["errors"].append(
+                f"forcefield_xml contains multiple shipped implicit-solvent "
+                f"XMLs ({', '.join(matched)}); pass implicit_solvent=<one of "
+                f"{', '.join(matched)}> to disambiguate, or remove the "
+                f"unwanted XML from forcefield_xml."
+            )
+            return _emit_failure({
+                **result,
+                "code": "implicit_solvent_xml_ambiguous",
+            })
+        canonical_implicit = inferred  # may be None when no shipped GB XML
+
+    result["parameters"]["implicit_solvent"] = canonical_implicit
 
     try:
         import openmmforcefields  # noqa: F401
@@ -372,6 +498,30 @@ def build_openmm_system(
         )
         return _emit_failure(result)
 
+    # When an implicit-solvent model was declared or inferred, the built
+    # System must actually carry a Generalized-Born force. Otherwise the
+    # XML loaded but never produced a ``CustomGBForce`` (e.g. residue
+    # template overrode the implicit definitions), and the run-side shim
+    # would later run vacuum dynamics under the GB label. Mirror of the
+    # ``build_amber_system`` ``implicit_solvent_force_missing`` guard.
+    if canonical_implicit is not None:
+        gb_force_classes = (
+            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+        )
+        present = {type(f).__name__ for f in system.getForces()}
+        if not (present & set(gb_force_classes)):
+            result["errors"].append(
+                f"implicit_solvent={canonical_implicit!r} requested but the "
+                f"built System carries no Generalized-Born force "
+                f"(expected one of {', '.join(gb_force_classes)}). "
+                f"Check that the ``implicit/*.xml`` was loaded after the "
+                f"protein force field XML."
+            )
+            return _emit_failure({
+                **result,
+                "code": "implicit_solvent_force_missing",
+            })
+
     try:
         integrator = LangevinIntegrator(
             300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
@@ -417,12 +567,25 @@ def build_openmm_system(
             if digest:
                 sha256_table[xml_path] = digest
 
+    # Solvent classification for provenance / node metadata. ``implicit``
+    # wins because the GB force on the System defines the regime; ``explicit``
+    # tracks periodic nonbonded methods (PME / Ewald / CutoffPeriodic);
+    # everything else (NoCutoff, CutoffNonPeriodic without GB) is vacuum.
+    if canonical_implicit:
+        solvent_type = "implicit"
+    elif nonbonded_method in ("PME", "Ewald", "CutoffPeriodic"):
+        solvent_type = "explicit"
+    else:
+        solvent_type = "vacuum"
+
     provenance: Dict[str, Any] = {
         "kind": "openmm_xml",
         "forcefield_xml": list(forcefield_xml),
         "extra_smiles": extra_smiles_pairs,
         "sha256": sha256_table,
         "method": {
+            "solvent_type": solvent_type,
+            "implicit_solvent": canonical_implicit,
             "nonbonded": nonbonded_method,
             "cutoff_nm": nonbonded_cutoff_nm if nonbonded_method != "NoCutoff" else None,
             "constraints": constraints,
@@ -466,6 +629,11 @@ def build_openmm_system(
             "topology_pdb": f"artifacts/{output_name}.topology.pdb",
             "state_xml": f"artifacts/{output_name}.state.xml",
         }
+        # The eq/prod resolver reads ``metadata.implicit_solvent``,
+        # ``metadata.solvent_type``, and ``metadata.hmr`` so the run-side
+        # topology guard can match build-time choices to runtime kwargs.
+        # Mirror of ``build_amber_system``'s metadata stamp so curated
+        # and research-mode topo nodes are interchangeable downstream.
         complete_node(
             job_dir, node_id,
             artifacts=artifacts,
@@ -473,6 +641,9 @@ def build_openmm_system(
                 "system_artifact_kind": "openmm_system_xml",
                 "forcefield_provenance": provenance,
                 "forcefield_xml": list(forcefield_xml),
+                "implicit_solvent": canonical_implicit,
+                "solvent_type": solvent_type,
+                "hmr": bool(hmr),
             },
         )
 

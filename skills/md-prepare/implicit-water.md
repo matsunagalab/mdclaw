@@ -76,6 +76,16 @@ Calling contract:
   group's `GB99dms.xml`), use `build_openmm_system` with the
   third-party ForceField XML; the saved `system.xml` + `topology.pdb` +
   `state.xml` triple flows through eq/prod identically.
+- When using `build_openmm_system` for shipped GB models, **also pass
+  `--implicit-solvent <MODEL>`** so the topo node's metadata records the
+  canonical name (`OBC2` / `GBn2` / …). The run-side topology guard
+  then matches build-time and runtime choices on either path. Missing
+  `implicit/<model>.xml` in `--forcefield-xml` triggers
+  `implicit_solvent_xml_missing`; multiple `implicit/*.xml` without an
+  explicit `--implicit-solvent` triggers `implicit_solvent_xml_ambiguous`.
+  Third-party GB XML cannot be inferred — for fully custom GB
+  research, leave `implicit_solvent` unset and accept that the run-side
+  topology guard will not recognise the build choice.
 
 ### Domain Knowledge
 
