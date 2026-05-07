@@ -1771,7 +1771,37 @@ def _nearest_ancestor_artifact_or_error(
 
 
 def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
+    """Resolve topology artifacts emitted by the nearest topo ancestor.
+
+    Modern topo nodes (built via openmmforcefields/SystemGenerator) emit a
+    ``system_xml`` + ``topology_pdb`` + ``state_xml`` triple. Legacy topo
+    nodes built before the openmmforcefields-unification refactor emitted
+    ``parm7`` + ``rst7``. This resolver prefers the modern triple and falls
+    back to the legacy pair so eq/prod/analyze keep working through the
+    multi-PR migration; the legacy fallback will be dropped once every
+    consumer has been migrated.
+    """
     result: dict = {}
+
+    sys_xml = find_ancestor_artifact(job_dir, node_id, "topo", "system_xml")
+    if sys_xml:
+        topo_id = _find_ancestor_node_id(job_dir, node_id, "topo")
+        topo_pdb = find_ancestor_artifact(
+            job_dir, node_id, "topo", "topology_pdb"
+        )
+        state_xml = find_ancestor_artifact(
+            job_dir, node_id, "topo", "state_xml"
+        )
+        result["system_xml_file"] = sys_xml
+        if topo_pdb:
+            result["topology_pdb_file"] = topo_pdb
+        if state_xml:
+            result["state_xml_file"] = state_xml
+        if topo_id:
+            result["topology_resolved_from_node_id"] = topo_id
+        return result
+
+    # Legacy parm7/rst7 path — kept until PR3+ migrate every emitter.
     p7, topo_id, p7_error = _nearest_ancestor_artifact_or_error(
         job_dir, node_id, "topo", "parm7"
     )
@@ -1924,9 +1954,11 @@ def resolve_node_inputs(
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_params`` / ``metal_params`` from
                 nearest ``prep`` ancestor
-    - ``eq``:   ``parm7``, ``rst7`` from nearest ``topo`` ancestor
-    - ``prod``: ``parm7``, ``rst7`` from nearest ``topo`` ancestor;
-                ``checkpoint`` from nearest ``eq`` ancestor (parent)
+    - ``eq``:   ``system_xml`` + ``topology_pdb`` + ``state_xml`` from nearest
+                ``topo`` ancestor (or legacy ``parm7`` + ``rst7`` for
+                pre-openmmforcefields topo nodes)
+    - ``prod``: same topology artifacts as ``eq``;
+                ``checkpoint`` / ``state`` from nearest ``eq`` ancestor (parent)
     """
     result: dict = {}
     status_errors = _input_resolution_status_errors(job_dir, node_id)
@@ -2031,11 +2063,18 @@ def resolve_node_inputs(
                 parent_types.append("unreadable")
 
         n_parents = len(parents)
-        # Every analyze branch needs the same prmtop for atom-selection
+        # Every analyze branch needs the same topology for atom-selection
         # DSL evaluation — within one job_dir all prods share the topo.
-        p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
-        if p7:
-            result["prmtop_file"] = p7
+        # mdtraj accepts both PDB and prmtop, so we prefer the modern
+        # ``topology_pdb`` artifact and fall back to ``parm7`` for legacy
+        # topo nodes. The result key is still ``prmtop_file`` to keep
+        # analyze_server callers stable until PR6 renames the parameter.
+        topology = (
+            find_ancestor_artifact(job_dir, node_id, "topo", "topology_pdb")
+            or find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+        )
+        if topology:
+            result["prmtop_file"] = topology
 
         if n_parents == 1 and parent_types[0] == "prod":
             # Phase 1 single-prod shape: trajectory + energy chain

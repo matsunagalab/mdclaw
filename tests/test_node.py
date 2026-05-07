@@ -1808,6 +1808,111 @@ class TestDAGAutoResolve:
         assert "pdb_file" in inputs
         assert inputs["pdb_file"].endswith("solvated.pdb")
 
+    # ── Modern artifact triple (system.xml + topology.pdb + state.xml) ────────
+
+    @pytest.fixture
+    def modern_dag(self, job_dir):
+        """prep→solv→topo→eq DAG where topo emits the openmmforcefields-era
+        artifact triple (system.xml + topology.pdb + state.xml) instead of
+        the legacy parm7/rst7 pair."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        return job_dir
+
+    def test_resolve_modern_eq_uses_xml_triple(self, modern_dag):
+        jd = str(modern_dag)
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
+        assert "state_xml_file" in inputs
+        assert inputs["system_xml_file"].endswith(
+            "topo_001/artifacts/system.xml"
+        )
+        assert inputs["topology_pdb_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
+        )
+        assert inputs["state_xml_file"].endswith(
+            "topo_001/artifacts/state.xml"
+        )
+        # Modern path must not emit the legacy keys.
+        assert "prmtop_file" not in inputs
+        assert "inpcrd_file" not in inputs
+
+    def test_resolve_modern_prod_uses_xml_triple(self, modern_dag):
+        jd = str(modern_dag)
+        complete_node(
+            jd, "eq_001",
+            artifacts={
+                "state": "artifacts/equilibrated.xml",
+                "checkpoint": "artifacts/equilibrated.chk",
+            },
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs["system_xml_file"].endswith("system.xml")
+        assert inputs["topology_pdb_file"].endswith("topology.pdb")
+        assert inputs["state_xml_file"].endswith(
+            "topo_001/artifacts/state.xml"
+        )
+        assert inputs["restart_from"].endswith("equilibrated.xml")
+        assert "prmtop_file" not in inputs
+
+    def test_resolve_modern_analyze_uses_topology_pdb(self, modern_dag):
+        """Analyze branch picks up topology.pdb (mdtraj-compatible) as
+        ``prmtop_file`` so atom-selection DSL keeps working without a
+        prmtop on disk. The result key is intentionally still
+        ``prmtop_file``; PR6 renames it to ``topology_file``."""
+        jd = str(modern_dag)
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={
+                "trajectory": "artifacts/trajectory.dcd",
+                "state": "artifacts/state.xml",
+            },
+        )
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        assert inputs["prmtop_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
+        )
+
+    def test_resolve_legacy_dag_still_works(self, full_dag):
+        """Smoke: the resolver must keep working for legacy parm7/rst7
+        topo nodes throughout the multi-PR migration. ``full_dag`` writes
+        only legacy artifacts."""
+        jd = str(full_dag)
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert "prmtop_file" in inputs
+        assert "inpcrd_file" in inputs
+        assert "system_xml_file" not in inputs
+
 
 # ── Structured (non-path) artifact propagation ─────────────────────────────
 
