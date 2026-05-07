@@ -1295,6 +1295,109 @@ class TestExplicitRestartFromFinalStepAlignment:
             f"auto-resolved node id for an external --restart-from."
         )
 
+    def test_run_equilibration_external_path_invokes_final_step_with_none(
+        self, tmp_path,
+    ):
+        """Symmetric counterpart to the run_production deep test:
+        ``run_equilibration`` (eq → eq chain) with an external
+        ``--restart-from`` must reach
+        ``read_ancestor_final_step(..., restart_node_id=None)``. Without
+        the sentinel fix the eq side would inherit the resolver's
+        eq_001 id and roll the new eq's currentStep onto the DAG
+        timeline."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw import md_simulation_server as md_mod
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        # Chain a second eq node off eq_001 — the resolver auto-resolves
+        # eq_001's state for eq_002, but we override with an external
+        # path below.
+        create_node(str(jd), "eq", parent_node_ids=["eq_001"])
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        for f in ("system.xml", "topology.pdb", "state.xml"):
+            (topo_artifacts / f).write_text("<placeholder/>")
+        eq_artifacts = jd / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text(
+            "<State><MonteCarloPressure>1.0</MonteCarloPressure></State>"
+        )
+        external = jd / "external_eq.xml"
+        external.write_text(
+            "<State><MonteCarloPressure>1.0</MonteCarloPressure></State>"
+        )
+
+        fake_topology = MagicMock(name="topology")
+        fake_topology.atoms.return_value = []
+        fake_topology.residues.return_value = []
+        fake_xml_inputs = SimpleNamespace(
+            topology=fake_topology,
+            positions=None,
+            box_vectors=[(1, 0, 0), (0, 1, 0), (0, 0, 1)],
+            is_periodic=True,
+            system_xml_path=topo_artifacts / "system.xml",
+            topology_pdb_path=topo_artifacts / "topology.pdb",
+            state_xml_path=topo_artifacts / "state.xml",
+        )
+        fake_system = MagicMock(name="system")
+        fake_system.getForces.return_value = []
+        fake_simulation = MagicMock(name="simulation")
+        fake_simulation.context.getPlatform.return_value.getName.return_value = "CPU"
+        fake_simulation.currentStep = 0
+
+        captured: dict = {}
+
+        def _record_then_stop(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = dict(kwargs)
+            raise RuntimeError("__phase22_recorder__")
+
+        with patch.object(
+            md_mod, "_load_xml_topology_inputs",
+            return_value=fake_xml_inputs,
+        ), patch.object(
+            md_mod, "_deserialize_xml_system",
+            return_value=fake_system,
+        ), patch.object(
+            md_mod, "_validate_xml_system_contract",
+            return_value=None,
+        ), patch(
+            "openmm.app.Simulation", return_value=fake_simulation,
+        ), patch.object(
+            md_mod, "_load_state_into_simulation",
+            return_value={"format": "xml"},
+        ), patch(
+            "mdclaw._node.read_ancestor_final_step",
+            side_effect=_record_then_stop,
+        ):
+            run_equilibration(
+                pressure_bar=1.0,
+                # Skip restraints / NPT step counts — keep the run
+                # focused on the restart path.
+                nvt_steps=0,
+                npt_steps=0,
+                restart_from=str(external),
+                job_dir=str(jd),
+                node_id="eq_002",
+                platform="CPU",
+            )
+
+        assert "kwargs" in captured, (
+            "read_ancestor_final_step was never reached in "
+            "run_equilibration — the wiring to the helper has regressed."
+        )
+        assert captured["kwargs"].get("restart_node_id") is None, (
+            f"Expected restart_node_id=None for an external eq restart; "
+            f"got {captured['kwargs'].get('restart_node_id')!r}. The eq "
+            f"side is silently re-introducing the resolver's "
+            f"auto-resolved node id."
+        )
+
     def test_run_equilibration_explicit_external_path_routes_explicit_true(
         self, tmp_path,
     ):
