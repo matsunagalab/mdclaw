@@ -111,6 +111,133 @@ def _resolve_implicit_solvent_model(
     return openmm_models[canon], None
 
 
+def _check_topology_implicit_solvent_match(
+    *,
+    topology_implicit_solvent: Optional[str],
+    runtime_implicit_solvent: Optional[str],
+    is_modern_topology: bool,
+) -> Optional[Dict[str, Any]]:
+    """Compare the topo node's build-time implicit-solvent metadata against
+    the run-side request, before either ``createSystem`` runs.
+
+    The shim's GB-force presence check (``modern_system_implicit_solvent_unsupported``)
+    catches the worst case (vacuum System paired with ``--implicit-solvent``)
+    but cannot tell ``OBC2``-built from ``GBn2``-built — both Systems carry
+    a ``CustomGBForce``, so a model mismatch would silently run with the
+    wrong GB radii. This guard reads the build-time choice from the
+    resolver's ``topology_implicit_solvent`` (sourced from
+    ``metadata.implicit_solvent`` of the modern topo ancestor) and compares
+    it against the canonical runtime name. Aliases are normalized through
+    ``forcefield_catalog.normalize_implicit_solvent`` so ``"GBn2"`` and
+    ``"gbneck2"`` count as a match.
+
+    Args:
+        topology_implicit_solvent: ``metadata.implicit_solvent`` from the
+            modern topo ancestor. ``None`` indicates the topo was built
+            without GB (explicit / vacuum) or the metadata is missing.
+        runtime_implicit_solvent: The ``--implicit-solvent`` value passed
+            to run_equilibration / run_production.
+        is_modern_topology: Whether the resolved topology came from a
+            modern (system.xml triple) topo node. Legacy parm7/rst7 nodes
+            do not carry this metadata and must not be blocked here.
+
+    Returns:
+        ``None`` when the choices line up (or the check does not apply);
+        otherwise a structured-error dict carrying ``code``, ``errors``,
+        and a recovery-friendly ``message``. Callers should splice it
+        into ``result`` and bail via ``_fail_node_if_running``.
+    """
+    if not is_modern_topology:
+        # Legacy parm7/rst7 topo nodes have no implicit_solvent metadata —
+        # the run side falls back to the shim's GB-force presence check,
+        # which still catches the worst-case (vacuum vs. requested GB).
+        return None
+
+    from mdclaw import forcefield_catalog as _fc
+
+    # Canonicalize the build-time metadata. ``None`` stays ``None``;
+    # anything that does not normalize to a catalog key indicates node
+    # corruption (someone hand-edited node.json) — surface it explicitly
+    # rather than blocking on what looks like a runtime typo.
+    if topology_implicit_solvent is None:
+        canon_topo: Optional[str] = None
+    else:
+        normalized = _fc.normalize_implicit_solvent(topology_implicit_solvent)
+        if normalized not in _fc.IMPLICIT_SOLVENT_XML:
+            return {
+                "code": "implicit_solvent_topology_metadata_invalid",
+                "errors": [
+                    f"Topo node metadata records implicit_solvent="
+                    f"{topology_implicit_solvent!r}, which is not a "
+                    f"recognized GB model. The node.json metadata may "
+                    f"be corrupt; rebuild the topo node via "
+                    f"build_amber_system."
+                ],
+                "message": (
+                    f"Topo metadata.implicit_solvent="
+                    f"{topology_implicit_solvent!r} is not a known model."
+                ),
+            }
+        canon_topo = normalized
+
+    if runtime_implicit_solvent is None:
+        canon_run: Optional[str] = None
+    else:
+        normalized = _fc.normalize_implicit_solvent(runtime_implicit_solvent)
+        # Unknown runtime names are caught later by
+        # ``_resolve_implicit_solvent_model`` with the same code path; we
+        # leave that responsibility there to keep error precedence stable.
+        canon_run = normalized
+
+    if canon_topo == canon_run:
+        return None
+
+    if canon_topo is None and canon_run is not None:
+        return {
+            "code": "implicit_solvent_topology_mismatch",
+            "errors": [
+                f"Topo node was built without implicit solvent, but "
+                f"requested implicit_solvent={runtime_implicit_solvent!r}. "
+                f"Rebuild a topo node with "
+                f"build_amber_system --implicit-solvent {canon_run}, or "
+                f"rerun without --implicit-solvent."
+            ],
+            "message": (
+                f"Topo built without GB; runtime requested {canon_run!r}."
+            ),
+        }
+
+    if canon_topo is not None and canon_run is None:
+        return {
+            "code": "implicit_solvent_topology_mismatch",
+            "errors": [
+                f"Topo node was built with implicit_solvent={canon_topo!r}, "
+                f"but the run did not pass --implicit-solvent. Rerun with "
+                f"--implicit-solvent {canon_topo}, or rebuild a topo node "
+                f"without GB."
+            ],
+            "message": (
+                f"Topo built with GB={canon_topo!r}; runtime omitted "
+                f"--implicit-solvent."
+            ),
+        }
+
+    # Both sides carry a model but they disagree.
+    return {
+        "code": "implicit_solvent_topology_mismatch",
+        "errors": [
+            f"Topo node was built with implicit_solvent={canon_topo!r}, "
+            f"but run requested implicit_solvent={canon_run!r}. Rebuild a "
+            f"new topo node with build_amber_system --implicit-solvent "
+            f"{canon_run}, or rerun with --implicit-solvent {canon_topo}."
+        ],
+        "message": (
+            f"Topo built with GB={canon_topo!r}; runtime requested "
+            f"{canon_run!r}."
+        ),
+    }
+
+
 class _ModernSystemContractError(RuntimeError):
     """Raised when run_* requests a System trait that build_amber_system did
     not bake into the saved system.xml (e.g. ``hmr=True`` against a non-HMR
@@ -795,6 +922,39 @@ def run_equilibration(
         # ancestor and runs from inpcrd as before.
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+        # Catch implicit-solvent model mismatches between the topo node's
+        # build-time metadata and the runtime --implicit-solvent flag
+        # before any System is built. The shim's GB-force presence check
+        # cannot tell ``OBC2``-built from ``GBn2``-built (both carry a
+        # CustomGBForce), so a silent model swap would otherwise mis-
+        # simulate quietly.
+        _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+            runtime_implicit_solvent=implicit_solvent,
+            is_modern_topology=bool(_inputs.get("system_xml_file")),
+        )
+        if _topo_solvent_mismatch is not None:
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(
+                job_dir, node_id,
+                errors=_topo_solvent_mismatch["errors"],
+            )
+            err = create_validation_error(
+                "implicit_solvent",
+                _topo_solvent_mismatch["message"],
+                expected=(
+                    "build-time and runtime implicit_solvent agree "
+                    "after canonicalization (HCT / OBC1 / OBC2 / GBn / GBn2)"
+                ),
+                actual=(
+                    f"build={_inputs.get('topology_implicit_solvent')!r}, "
+                    f"runtime={implicit_solvent!r}"
+                ),
+                code=_topo_solvent_mismatch["code"],
+            )
+            err["errors"] = _topo_solvent_mismatch["errors"]
+            return err
         _ctx = validate_node_execution_context(
             job_dir,
             node_id,
@@ -1718,6 +1878,38 @@ def run_production(
             state_xml_file = _inputs["state_xml_file"]
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+        # Catch implicit-solvent model mismatches between the topo node's
+        # build-time metadata and the runtime --implicit-solvent flag
+        # before any System is built. Mirror of the run_equilibration
+        # guard; both sites must agree because eq/prod share the topo
+        # ancestor's saved system.xml.
+        _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+            runtime_implicit_solvent=implicit_solvent,
+            is_modern_topology=bool(_inputs.get("system_xml_file")),
+        )
+        if _topo_solvent_mismatch is not None:
+            from mdclaw._node import begin_node, fail_node
+            begin_node(job_dir, node_id)
+            fail_node(
+                job_dir, node_id,
+                errors=_topo_solvent_mismatch["errors"],
+            )
+            err = create_validation_error(
+                "implicit_solvent",
+                _topo_solvent_mismatch["message"],
+                expected=(
+                    "build-time and runtime implicit_solvent agree "
+                    "after canonicalization (HCT / OBC1 / OBC2 / GBn / GBn2)"
+                ),
+                actual=(
+                    f"build={_inputs.get('topology_implicit_solvent')!r}, "
+                    f"runtime={implicit_solvent!r}"
+                ),
+                code=_topo_solvent_mismatch["code"],
+            )
+            err["errors"] = _topo_solvent_mismatch["errors"]
+            return err
 
     _modern_inputs = bool(system_xml_file and topology_pdb_file)
     _legacy_inputs = bool(prmtop_file and inpcrd_file)

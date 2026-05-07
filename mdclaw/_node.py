@@ -1815,6 +1815,21 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
         if state_xml:
             result["state_xml_file"] = state_xml
         result["topology_resolved_from_node_id"] = modern_topo_id
+        # Surface build-time choices the run side needs to validate against
+        # runtime kwargs. ``implicit_solvent`` is the load-bearing one
+        # (mismatch silently runs the wrong GB model); ``hmr`` and
+        # ``solvent_type`` are along for the ride so eq/prod can produce
+        # cleaner diagnostics without re-deserializing system.xml. Missing
+        # metadata keys (legacy or hand-built node.json) keep the value as
+        # ``None`` so downstream guards can skip the check rather than
+        # blocking on noise.
+        try:
+            modern_meta = read_node(job_dir, modern_topo_id).get("metadata") or {}
+        except (OSError, json.JSONDecodeError):
+            modern_meta = {}
+        result["topology_implicit_solvent"] = modern_meta.get("implicit_solvent")
+        result["topology_hmr"] = modern_meta.get("hmr")
+        result["topology_solvent_type"] = modern_meta.get("solvent_type")
         return result
 
     # Legacy parm7/rst7 path — both must come from the same topo ancestor.

@@ -1903,6 +1903,68 @@ class TestDAGAutoResolve:
             "topo_001/artifacts/topology.pdb"
         )
 
+    def test_resolve_modern_topo_surfaces_implicit_solvent_metadata(
+        self, job_dir
+    ):
+        """Modern topo nodes built with implicit solvent stamp
+        ``metadata.implicit_solvent`` on node.json. The resolver must
+        surface it as ``topology_implicit_solvent`` so eq/prod can validate
+        their runtime ``--implicit-solvent`` flag against the build-time
+        choice (catches OBC2-built-but-GBn2-requested silent mismatches).
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+            metadata={
+                "implicit_solvent": "OBC2",
+                "hmr": True,
+                "solvent_type": "implicit",
+            },
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert inputs["topology_implicit_solvent"] == "OBC2"
+        assert inputs["topology_hmr"] is True
+        assert inputs["topology_solvent_type"] == "implicit"
+
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+        )
+        prod_inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        # Same topo metadata must propagate down the prod path too —
+        # eq and prod share the topo ancestor's saved system.xml and
+        # therefore must see the same build-time implicit_solvent.
+        assert prod_inputs["topology_implicit_solvent"] == "OBC2"
+
+    def test_resolve_modern_topo_without_implicit_metadata_returns_none(
+        self, modern_dag
+    ):
+        """Explicit-solvent / vacuum topo nodes (no
+        ``metadata.implicit_solvent``) must surface the field as ``None``
+        so the run-side guard skips the check rather than blocking on
+        missing metadata."""
+        jd = str(modern_dag)
+        # ``modern_dag`` fixture completes topo_001 without metadata, so
+        # the resolver should report None for all three build-time hints.
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert inputs["topology_implicit_solvent"] is None
+        assert inputs["topology_hmr"] is None
+        assert inputs["topology_solvent_type"] is None
+
     def test_resolve_legacy_dag_still_works(self, full_dag):
         """Smoke: the resolver must keep working for legacy parm7/rst7
         topo nodes throughout the multi-PR migration. ``full_dag`` writes

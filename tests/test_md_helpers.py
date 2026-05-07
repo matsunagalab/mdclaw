@@ -1603,3 +1603,280 @@ class TestRunProductionImplicitSolventLookup:
         assert result.get("success") is False
         assert result.get("code") == "implicit_solvent_model_unsupported"
         assert any("MAGIC_GB" in e for e in result.get("errors", []))
+
+
+class TestCheckTopologyImplicitSolventMatch:
+    """Unit tests for ``_check_topology_implicit_solvent_match``.
+
+    The shim's GB-force presence check (``modern_system_implicit_solvent_unsupported``)
+    catches vacuum-vs-GB but cannot distinguish OBC2-built from GBn2-built
+    Systems (both carry a ``CustomGBForce``). This guard reads the topo
+    node's build-time ``metadata.implicit_solvent`` and compares it
+    against the runtime flag, with alias canonicalization, before any
+    System is built.
+    """
+
+    def test_matching_canonical_returns_none(self):
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        assert _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="OBC2",
+            runtime_implicit_solvent="OBC2",
+            is_modern_topology=True,
+        ) is None
+
+    @pytest.mark.parametrize(
+        ("build", "runtime"),
+        [
+            ("GBn2", "gbneck2"),
+            ("gbneck2", "GBn2"),
+            ("OBC2", "obc2"),
+            ("OBC2", "igb5"),
+            ("HCT", "igb1"),
+            ("GBn2", "igb8"),
+        ],
+    )
+    def test_alias_pair_canonicalizes_to_match(self, build, runtime):
+        """Aliases must canonicalize so users typing ``gbneck2`` against a
+        node built with ``GBn2`` (or vice versa) do not trip the guard."""
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        assert _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=build,
+            runtime_implicit_solvent=runtime,
+            is_modern_topology=True,
+        ) is None
+
+    def test_obc2_topo_with_gbn2_runtime_is_mismatch(self):
+        """The headline regression: build-time OBC2 + runtime GBn2 must
+        surface ``implicit_solvent_topology_mismatch``, not silently run
+        the wrong GB model."""
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="OBC2",
+            runtime_implicit_solvent="GBn2",
+            is_modern_topology=True,
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_topology_mismatch"
+        joined = " ".join(err["errors"])
+        assert "OBC2" in joined and "GBn2" in joined
+
+    def test_implicit_topo_with_explicit_runtime_is_mismatch(self):
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="OBC2",
+            runtime_implicit_solvent=None,
+            is_modern_topology=True,
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_topology_mismatch"
+        assert "OBC2" in " ".join(err["errors"])
+
+    def test_explicit_topo_with_implicit_runtime_is_mismatch(self):
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=None,
+            runtime_implicit_solvent="GBn2",
+            is_modern_topology=True,
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_topology_mismatch"
+        assert "GBn2" in " ".join(err["errors"])
+
+    def test_legacy_topology_skips_guard(self):
+        """Legacy parm7/rst7 topo nodes carry no
+        ``metadata.implicit_solvent`` and must not trip this guard."""
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        assert _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=None,
+            runtime_implicit_solvent="OBC2",
+            is_modern_topology=False,
+        ) is None
+
+    def test_corrupt_topo_metadata_returns_distinct_code(self):
+        """A garbage value in ``node.json`` ``metadata.implicit_solvent``
+        surfaces as ``implicit_solvent_topology_metadata_invalid`` so it
+        is not confused with a runtime typo."""
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="MAGIC_GB",
+            runtime_implicit_solvent="OBC2",
+            is_modern_topology=True,
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_topology_metadata_invalid"
+
+    def test_both_none_skips_guard(self):
+        """Explicit-solvent topo + explicit-solvent run is the most common
+        case; the guard must not fire."""
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        assert _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=None,
+            runtime_implicit_solvent=None,
+            is_modern_topology=True,
+        ) is None
+
+
+class TestImplicitSolventTopologyMismatchInRunFunctions:
+    """Integration-y guard tests against the public ``run_equilibration`` /
+    ``run_production`` surfaces. The guard fires before any OpenMM System
+    is built, so these tests stay in the fast lane.
+    """
+
+    def _dag_with_modern_topo(self, tmp_path, topo_implicit_solvent):
+        """Build a topo -> eq DAG where topo carries the modern triple plus
+        ``metadata.implicit_solvent``. ``topo_implicit_solvent`` may be
+        ``None`` (explicit / vacuum) or a string like ``"OBC2"``."""
+        from mdclaw._node import create_node as _create_node
+        from mdclaw._node import complete_node as _complete_node
+
+        job_dir = tmp_path / "job"
+        _create_node(str(job_dir), "topo")
+        topo_artifacts = job_dir / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK fake\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        meta = {
+            "hmr": True,
+            "solvent_type": "implicit" if topo_implicit_solvent else "vacuum",
+        }
+        if topo_implicit_solvent is not None:
+            meta["implicit_solvent"] = topo_implicit_solvent
+        _complete_node(
+            str(job_dir),
+            "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+            metadata=meta,
+        )
+        _create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+        eq_artifacts = job_dir / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / "equilibrated.xml").write_text("<placeholder/>")
+        _complete_node(
+            str(job_dir),
+            "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        return job_dir
+
+    def test_run_equilibration_obc2_topo_gbn2_runtime_fails(self, tmp_path):
+        """Topo metadata says OBC2; user passes ``--implicit-solvent GBn2``.
+        Must fail with ``implicit_solvent_topology_mismatch`` and never
+        reach SystemGenerator."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+
+        result = run_equilibration(
+            implicit_solvent="GBn2",
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="eq_002",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_topology_mismatch"
+        joined = (
+            " ".join(result.get("errors", [])) + str(result.get("message", ""))
+        )
+        assert "OBC2" in joined and "GBn2" in joined
+        eq_node = read_node(str(job_dir), "eq_002")
+        assert eq_node["status"] == "failed", eq_node["status"]
+
+    def test_run_production_obc2_topo_gbn2_runtime_fails(self, tmp_path):
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_production
+
+        job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+
+        result = run_production(
+            simulation_time_ns=0.001,
+            implicit_solvent="GBn2",
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="prod_001",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_topology_mismatch"
+        prod_node = read_node(str(job_dir), "prod_001")
+        assert prod_node["status"] == "failed", prod_node["status"]
+
+    def test_run_production_alias_match_passes_guard(self, tmp_path):
+        """Topo metadata says ``GBn2`` and the runtime arg is ``gbneck2``.
+        The guard must not fire — the run will eventually fail later
+        because ``system.xml`` is a placeholder, but specifically NOT
+        with the topology-mismatch code."""
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_production
+
+        job_dir = self._dag_with_modern_topo(tmp_path, "GBn2")
+        create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+
+        result = run_production(
+            simulation_time_ns=0.001,
+            implicit_solvent="gbneck2",
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="prod_001",
+        )
+        assert result.get("code") != "implicit_solvent_topology_mismatch"
+
+    def test_run_equilibration_explicit_topo_with_runtime_implicit_fails(
+        self, tmp_path,
+    ):
+        """Topo built without GB; runtime passes ``--implicit-solvent``."""
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        job_dir = self._dag_with_modern_topo(tmp_path, None)
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+
+        result = run_equilibration(
+            implicit_solvent="OBC2",
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="eq_002",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_topology_mismatch"
+
+    def test_run_equilibration_implicit_topo_without_runtime_implicit_fails(
+        self, tmp_path,
+    ):
+        """Topo built with GB; runtime omits ``--implicit-solvent``."""
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+
+        result = run_equilibration(
+            pressure_bar=0,
+            job_dir=str(job_dir),
+            node_id="eq_002",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "implicit_solvent_topology_mismatch"
