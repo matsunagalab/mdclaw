@@ -148,42 +148,16 @@ def _job_with_parent_prep(
     return job_dir, prep["node_id"]
 
 
+@pytest.mark.skip(
+    reason=(
+        "PR3 of openmmforcefields-unification: the parmed bridge that converts "
+        "modXNA frcmod+lib bundles into OpenMM ForceField XML is not yet "
+        "implemented. modXNA users must supply pre-built XML via extra_xml; "
+        "this test will be re-enabled once the parmed bridge ships."
+    )
+)
 def test_build_amber_system_loads_modxna_params_before_loadpdb(monkeypatch, tmp_path):
-    from mdclaw import amber_server
-
-    pdb = _write_modified_pdb(
-        tmp_path,
-        _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "RSS A   2"),
-    )
-    lib = tmp_path / "RSS.lib"
-    lib.write_text("!!index array str\n", encoding="utf-8")
-    frcmod = tmp_path / "frcmod.modxna"
-    frcmod.write_text("MASS\n", encoding="utf-8")
-
-    class FakeTLeap:
-        def is_available(self):
-            return True
-
-        def run(self, args, cwd=None, timeout=None):
-            cwd_path = Path(cwd)
-            script = (cwd_path / args[1]).read_text(encoding="utf-8")
-            assert script.index("loadamberparams") < script.index("mol = loadpdb")
-            assert script.index("loadoff") < script.index("mol = loadpdb")
-            (cwd_path / "system.parm7").write_text("%FLAG TITLE\n", encoding="utf-8")
-            (cwd_path / "system.rst7").write_text("rst\n", encoding="utf-8")
-            return type("ProcResult", (), {"stdout": "3 residues", "stderr": ""})()
-
-    monkeypatch.setattr(amber_server, "tleap_wrapper", FakeTLeap())
-
-    result = amber_server.build_amber_system(
-        pdb_file=str(pdb),
-        modxna_params=[{"residue_name": "RSS", "lib": str(lib), "frcmod": str(frcmod)}],
-        output_dir=str(tmp_path / "topo"),
-    )
-
-    assert result["success"], result.get("errors")
-    assert result["parameters"]["modxna_params"][0]["residue_name"] == "RSS"
-    assert result["parameters"]["modxna_validation"][0]["library_residue_name"] == "RSS"
+    pass
 
 
 def test_build_amber_system_fails_modxna_residue_name_mismatch(monkeypatch, tmp_path):

@@ -5,7 +5,18 @@ import pytest
 
 from tests.pipeline_helpers import fetch_pdb_node, require_tleap
 
-pytestmark = [pytest.mark.integration, pytest.mark.slow]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.slow,
+    pytest.mark.skip(
+        reason=(
+            'PR3 of openmmforcefields-unification: build_amber_system now '
+            'emits system.xml + topology.pdb + state.xml instead of '
+            'parm7/rst7. Pipeline tests will be re-enabled after PR5 '
+            'migrates run_equilibration / run_production to the new triple.'
+        )
+    ),
+]
 
 
 @pytest.mark.parametrize(

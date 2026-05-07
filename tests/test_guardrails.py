@@ -179,19 +179,33 @@ def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_p
     node = create_node(str(job_dir), "topo")
     assert node["success"] is True
 
-    def _fake_tleap_run(args, cwd, timeout):
-        del args, timeout
-        out_dir = Path(cwd)
-        (out_dir / "system.parm7").write_text("fake parm7\n")
-        (out_dir / "system.rst7").write_text("fake rst7\n")
-        return SimpleNamespace(stdout="Writing parm file with 1 atoms\n", stderr="")
+    # Mock the openmmforcefields build helper rather than tleap; PR3 retires
+    # the tleap process entirely. The test exercises the water-model
+    # parameter-marking behavior, not the actual System build.
+    def _fake_om_build(**kwargs):
+        out_dir = kwargs["out_dir"]
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": ["amber/protein.ff14SB.xml"],
+            },
+        }
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run", side_effect=_fake_tleap_run), \
-         patch(
-             "mdclaw.amber_server._add_pdb_info",
-             return_value={"success": False, "errors": [], "flags_added": []},
-         ):
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
         result = build_amber_system(
             pdb_file=str(pdb_file),
             job_dir=str(job_dir),
