@@ -148,18 +148,6 @@ def _job_with_parent_prep(
     return job_dir, prep["node_id"]
 
 
-@pytest.mark.skip(
-    reason=(
-        "PR3 of openmmforcefields-unification: the parmed bridge that converts "
-        "modXNA frcmod+lib bundles into OpenMM ForceField XML is not yet "
-        "implemented. modXNA users must supply pre-built XML via extra_xml; "
-        "this test will be re-enabled once the parmed bridge ships."
-    )
-)
-def test_build_amber_system_loads_modxna_params_before_loadpdb(monkeypatch, tmp_path):
-    pass
-
-
 def test_build_amber_system_fails_modxna_residue_name_mismatch(tmp_path):
     # modxna validation runs before the openmmforcefields availability check,
     # so this test does not need to mock the build stack.

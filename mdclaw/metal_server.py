@@ -114,7 +114,8 @@ def _amber_ion_atom_type(element: str, charge: int) -> str:
     Title case. Examples: Zn +2 -> ``Zn2+``; Na +1 -> ``Na+``; Cl -1 ->
     ``Cl-``. ``metalpdb2mol2.py`` emits the raw PDB element (all caps),
     so the generated mol2 must be rewritten to match the frcmod before
-    tleap can resolve the vdW parameters.
+    the openmmforcefields build path (via the ParmEd metal bridge) can
+    resolve the vdW parameters.
     """
     el = element.strip()
     el = el[:1].upper() + el[1:].lower() if len(el) > 1 else el.upper()
@@ -131,7 +132,8 @@ def _rewrite_mol2_atom_type(mol2_file: str, new_atom_type: str) -> None:
     mol2 atom rows are whitespace-delimited with the layout
     ``atom_id atom_name x y z atom_type subst_id subst_name charge``.
     Rewriting in place keeps parameters and coordinates intact while
-    pointing tleap at the correct frcmod vdW entry.
+    letting ``build_amber_system`` (through the ParmEd metal bridge)
+    pick up the correct frcmod vdW entry.
     """
     p = Path(mol2_file)
     lines = p.read_text().splitlines()
@@ -313,7 +315,9 @@ def _get_ion_frcmods(
             TIP4PEW require one frcmod for +1 and another for +2..+4.
 
     Returns:
-        Names of frcmod files to load in tleap.
+        Names of frcmod files for ``build_amber_system`` to load via the
+        ParmEd metal bridge (these are AmberTools-shipped frcmod names
+        resolved under ``$AMBERHOME/dat/leap/parm/``).
     """
     mapping = ION_FRCMODS_BY_SET[ion_parameter_set][water_model.lower()]
     if isinstance(mapping, str):
@@ -393,7 +397,10 @@ def parameterize_metal_ion(
     2. Extract each metal to a separate PDB file
     3. Convert to mol2 using metalpdb2mol2.py
 
-    The mol2 files are then loaded in tleap along with Amber's ion parameter file.
+    The resulting mol2 + frcmod pair is consumed by ``build_amber_system``
+    via ``--metal-params``; the ParmEd metal bridge converts the
+    Amber-style mol2 + frcmod into an OpenMM ForceField XML that the
+    ``SystemGenerator`` loads alongside the protein force field.
 
     Args:
         pdb_file: Path to PDB file containing protein with metal ion(s).
@@ -607,8 +614,9 @@ def parameterize_metal_ion(
 
             # metalpdb2mol2.py writes the raw PDB element as the atom_type
             # (e.g. "ZN"), but Amber's ionslm/hfe frcmod files key vdW
-            # parameters by "Zn2+"/"Mg2+"/... — without this rewrite tleap
-            # aborts with "could not find vdW parameters for type (ZN)".
+            # parameters by "Zn2+"/"Mg2+"/... — without this rewrite the
+            # ParmEd metal bridge inside build_amber_system fails to find
+            # vdW parameters for the raw element-only atom type.
             atom_type = _amber_ion_atom_type(element, charge)
             _rewrite_mol2_atom_type(metal_mol2, atom_type)
         except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
