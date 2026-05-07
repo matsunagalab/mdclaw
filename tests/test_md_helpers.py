@@ -1185,6 +1185,116 @@ class TestExplicitRestartFromFinalStepAlignment:
         # actual contract is exercised separately above).
         assert kwargs["inputs"].get("restart_from_node_id") == "eq_001"
 
+    def test_run_production_external_path_invokes_final_step_with_none(
+        self, tmp_path,
+    ):
+        """Deepest wiring test: run all the way past
+        ``_load_state_into_simulation`` so we observe the actual
+        ``read_ancestor_final_step`` call. With an external
+        ``--restart-from``, the helper *must* be invoked with
+        ``restart_node_id=None`` — passing the resolver's eq_001 id
+        through would trigger the very rollback the sentinel was
+        introduced to prevent."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock, patch
+        from mdclaw.md_simulation_server import run_production
+        from mdclaw import md_simulation_server as md_mod
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        for f in ("system.xml", "topology.pdb", "state.xml"):
+            (topo_artifacts / f).write_text("<placeholder/>")
+        eq_artifacts = jd / "nodes" / "eq_001" / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        # eq_001 has both state and a checkpoint so the resolver picks
+        # eq_001 in its auto-resolve attempt — the test asserts that
+        # the *external* path overrides this.
+        (eq_artifacts / "equilibrated.xml").write_text(
+            "<State><MonteCarloPressure>1.0</MonteCarloPressure></State>"
+        )
+        (eq_artifacts / "equilibrated.chk").write_text("placeholder")
+        external = jd / "external.xml"
+        external.write_text(
+            "<State><MonteCarloPressure>1.0</MonteCarloPressure></State>"
+        )
+
+        # Stub the heavy OpenMM machinery so the run reaches
+        # read_ancestor_final_step without needing a real System.
+        fake_topology = MagicMock(name="topology")
+        fake_topology.atoms.return_value = []
+        fake_topology.residues.return_value = []
+        fake_xml_inputs = SimpleNamespace(
+            topology=fake_topology,
+            positions=None,
+            box_vectors=[(1, 0, 0), (0, 1, 0), (0, 0, 1)],
+            is_periodic=True,
+            system_xml_path=topo_artifacts / "system.xml",
+            topology_pdb_path=topo_artifacts / "topology.pdb",
+            state_xml_path=topo_artifacts / "state.xml",
+        )
+        fake_system = MagicMock(name="system")
+        fake_system.getForces.return_value = []  # no barostat
+        fake_simulation = MagicMock(name="simulation")
+        fake_simulation.context.getPlatform.return_value.getName.return_value = "CPU"
+        fake_simulation.currentStep = 0
+
+        captured: dict = {}
+
+        def _record_then_stop(*args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = dict(kwargs)
+            # Aborting via a typed sentinel exception keeps the run
+            # from continuing into reporters / step loops we have not
+            # mocked. The outer try/except in run_production marks the
+            # node failed cleanly.
+            raise RuntimeError("__phase21_recorder__")
+
+        with patch.object(
+            md_mod, "_load_xml_topology_inputs",
+            return_value=fake_xml_inputs,
+        ), patch.object(
+            md_mod, "_deserialize_xml_system",
+            return_value=fake_system,
+        ), patch.object(
+            md_mod, "_validate_xml_system_contract",
+            return_value=None,
+        ), patch(
+            "openmm.app.Simulation", return_value=fake_simulation,
+        ), patch.object(
+            md_mod, "_load_state_into_simulation",
+            return_value={"format": "xml"},
+        ), patch(
+            "mdclaw._node.read_ancestor_final_step",
+            side_effect=_record_then_stop,
+        ):
+            run_production(
+                simulation_time_ns=0.001,
+                pressure_bar=1.0,
+                restart_from=str(external),
+                job_dir=str(jd),
+                node_id="prod_001",
+                platform="CPU",
+            )
+
+        # The outer try caught our sentinel, so the test never reached
+        # the reporters. The captured kwargs prove the contract:
+        # restart_node_id=None for an external file, *not* the
+        # resolver's auto-resolved "eq_001".
+        assert "kwargs" in captured, (
+            "read_ancestor_final_step was never reached — the wiring "
+            "to the helper has regressed."
+        )
+        assert "restart_node_id" in captured["kwargs"]
+        assert captured["kwargs"]["restart_node_id"] is None, (
+            f"Expected restart_node_id=None for external file; got "
+            f"{captured['kwargs'].get('restart_node_id')!r}. The run "
+            f"side is silently re-introducing the resolver's "
+            f"auto-resolved node id for an external --restart-from."
+        )
+
     def test_run_equilibration_explicit_external_path_routes_explicit_true(
         self, tmp_path,
     ):

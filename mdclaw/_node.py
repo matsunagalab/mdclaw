@@ -2568,11 +2568,19 @@ def _read_artifact_from_node(
     return _resolve_structured_artifact_paths(value, jd / "nodes" / node_id)
 
 
+# Sentinel that distinguishes ``restart_node_id=None`` (caller asserts
+# "external restart file — no DAG ancestor produced this artifact") from
+# the omitted case (caller hasn't picked an ancestor; replay the BFS).
+# Using a private object for the sentinel keeps ``None`` available as a
+# meaningful runtime value.
+_RESTART_NODE_ID_UNSET = object()
+
+
 def read_ancestor_final_step(
     job_dir: str,
     node_id: str,
     *,
-    restart_node_id: Optional[str] = None,
+    restart_node_id: object = _RESTART_NODE_ID_UNSET,
 ) -> Optional[int]:
     """Return the ``metadata.final_step`` of the ancestor whose artifact
     was chosen as the restart source for *node_id*.
@@ -2580,41 +2588,52 @@ def read_ancestor_final_step(
     The cumulative step counter the run side restores after
     :meth:`Simulation.loadState` (XML State does not persist
     ``currentStep``) must come from the *same* ancestor whose state /
-    checkpoint was loaded. If the resolver picked an older prod
-    ancestor than the nearest one (because the nearest one is missing
-    both artifacts), reading ``final_step`` off the nearest prod would
-    overshoot the actual restart point.
+    checkpoint was loaded. ``run_equilibration`` / ``run_production``
+    decide the right node id via ``_resolve_restart_node_id_for_run``
+    and then pass it here.
 
-    The expected calling pattern from ``run_equilibration`` /
-    ``run_production`` is to pass ``restart_node_id`` whenever the run
-    side knows which DAG ancestor produced the artifact it just loaded:
+    ``restart_node_id`` has three distinct meanings, all of which must
+    be preserved by callers:
 
-      - DAG resolver auto-resolved the restart artifact
-        (``restart_from`` came from ``_inputs``):
-        pass ``restart_node_id=_inputs["restart_from_node_id"]``.
-      - Explicit ``--restart-from <path>`` matched a DAG ancestor's
-        ``state``/``checkpoint`` (via
-        ``_resolve_restart_node_id_for_run``):
-        pass that matched ancestor id.
-      - Explicit ``--restart-from <path>`` is an external file
-        (no DAG match): pass ``restart_node_id=None``. The helper
-        returns ``None`` so the caller leaves
-        ``simulation.currentStep`` to whatever the loader sets
-        (``saveState`` XML → 0; ``saveCheckpoint`` ``.chk`` →
+      - **Omitted** (no keyword passed): backwards-compatible BFS
+        fallback. The helper replays the same per-ancestor BFS as
+        ``_resolve_md_restart`` to pick the ancestor that *would* have
+        been chosen, then reads its ``metadata.final_step``. Useful for
+        non-node-mode callers and pre-Phase-19 code paths; ``run_*``
+        always passes an explicit value.
+      - **A node id string** (e.g. ``"eq_001"``): read
+        ``metadata.final_step`` directly from that node. This is what
+        the resolver auto-resolve path and the matched-explicit-path
+        path supply.
+      - **``None``** (explicit, distinct from omitted): assert
+        "external restart file — there is no DAG ancestor whose
+        ``final_step`` applies to ``simulation.currentStep``". The
+        helper returns ``None`` *without* running the BFS fallback,
+        so the run side leaves ``currentStep`` at whatever the loader
+        sets (``saveState`` XML → 0; ``saveCheckpoint`` ``.chk`` →
         the persisted counter).
 
-    When ``restart_node_id`` is omitted entirely, the helper replays
-    the same per-ancestor BFS as ``_resolve_md_restart`` to pick the
-    ancestor that *would* have been chosen — useful for non-node-mode
-    callers and for backwards compatibility. ``run_*`` no longer relies
-    on this default path: it always passes an explicit
-    ``restart_node_id`` (possibly ``None``).
+    The omitted-vs-``None`` distinction is enforced by a private
+    sentinel default; passing ``None`` explicitly is therefore a
+    different signal than not passing the keyword at all.
 
-    Returns ``None`` when the chosen ancestor has no ``final_step``
-    metadata (a node whose run didn't write it yet) or when no prod /
-    eq ancestor exists at all.
+    Returns ``None`` when:
+    - the chosen ancestor has no ``final_step`` metadata (a node whose
+      run didn't write it yet);
+    - no prod / eq ancestor exists at all;
+    - the caller explicitly asserted "external restart file" by passing
+      ``restart_node_id=None``.
     """
-    if restart_node_id is not None:
+    if restart_node_id is None:
+        # Explicit "no DAG ancestor for this restart" — e.g. the run
+        # side loaded a user-supplied external state file. The loader
+        # decides ``simulation.currentStep`` by itself; we must not
+        # overwrite it from a DAG ancestor.
+        return None
+
+    if restart_node_id is not _RESTART_NODE_ID_UNSET:
+        if not isinstance(restart_node_id, str):
+            return None
         v = _read_metadata_field(job_dir, restart_node_id, "final_step")
         return v if isinstance(v, int) else None
 

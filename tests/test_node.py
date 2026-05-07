@@ -1773,6 +1773,55 @@ class TestDAGAutoResolve:
         from mdclaw._node import read_ancestor_final_step
         assert read_ancestor_final_step(str(full_dag), "prod_001") is None
 
+    def test_read_ancestor_final_step_explicit_none_skips_bfs_fallback(
+        self, job_dir,
+    ):
+        """``restart_node_id=None`` is the run-side signal "external
+        restart file — there is no DAG ancestor whose ``final_step``
+        applies to ``simulation.currentStep``". The helper must
+        return ``None`` *without* falling back to the BFS picker;
+        otherwise an external state.xml would still inherit a DAG
+        ancestor's step counter and silently roll the timeline back
+        or forward.
+
+        This is distinct from omitting ``restart_node_id`` entirely,
+        which IS supposed to trigger the BFS fallback for legacy
+        / non-node-mode callers (covered by
+        ``test_read_ancestor_final_step_uses_resolver_chosen_node``).
+        """
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 250000},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        # Sentinel-vs-None contract:
+        # - omitted → BFS fallback picks eq_001 → 250000.
+        assert read_ancestor_final_step(jd, "prod_001") == 250000
+        # - explicit None → "external file" → return None without
+        #   running the BFS, even though eq_001 would have matched.
+        assert read_ancestor_final_step(
+            jd, "prod_001", restart_node_id=None,
+        ) is None
+        # - explicit ancestor id → read from that ancestor.
+        assert read_ancestor_final_step(
+            jd, "prod_001", restart_node_id="eq_001",
+        ) == 250000
+
     # ------------------------------------------------------------------
     # eq_final_ensemble / eq_pressure_bar propagation (added with the
     # eq→prod ensemble auto-inheritance fix). Without these keys,
