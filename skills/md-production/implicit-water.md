@@ -1,14 +1,12 @@
 # Production MD: Implicit Solvent
 
-> **Current support status (2026-09)**: `build_amber_system` does not
-> yet build implicit-solvent (GB) systems under the openmmforcefields
-> path — see `skills/md-prepare/implicit-water.md` for details. The
-> commands below assume the topo node carries a System whose saved
-> `system.xml` already includes a GB force (today: built via
-> `build_openmm_system` with a GB-aware ForceField XML such as
-> `GB99dms.xml`). Passing `--implicit-solvent <model>` against a
-> non-GB System fails with `modern_system_implicit_solvent_unsupported`
-> at the shim's contract check.
+The standard recipe is `build_amber_system --implicit-solvent <MODEL>`
+on the topo node, then `run_production --implicit-solvent <MODEL>` on
+the prod node. `build_amber_system` bakes the matching GB force
+(`implicit/gbn2.xml` etc.) into `system.xml` and the run-side shim
+verifies it before honoring the run flag. For non-shipped GB models
+(e.g. the Greener group's `GB99dms.xml`), use `build_openmm_system`
+with a third-party ForceField XML — the artifact triple is the same.
 
 ## System Configuration
 

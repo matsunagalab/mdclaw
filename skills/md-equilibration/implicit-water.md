@@ -1,14 +1,13 @@
 # Equilibration: Implicit Solvent
 
-> **Current support status (2026-09)**: `build_amber_system` does not
-> yet build implicit-solvent (GB) systems under the openmmforcefields
-> path — see `skills/md-prepare/implicit-water.md` for details. The
-> commands below assume the topo node carries a System whose saved
-> `system.xml` already includes a GB force (today: built via
-> `build_openmm_system` with a GB-aware ForceField XML such as
-> `GB99dms.xml`). The shim's contract check rejects `--implicit-solvent`
-> against a System that has no GB force with code
-> `modern_system_implicit_solvent_unsupported`.
+The standard recipe is `build_amber_system --implicit-solvent <MODEL>`
+on the topo node, then `run_equilibration --implicit-solvent <MODEL>`
+here. `build_amber_system` bakes the GB force (HCT / OBC1 / OBC2 / GBn /
+GBn2 → matching `implicit/*.xml`) into `system.xml`; the shim verifies
+that force is present before honoring the run flag, so accidental
+vacuum builds fail-fast rather than silently mis-simulating. For
+non-shipped GB models (e.g. `GB99dms.xml`), route through
+`build_openmm_system` — the saved triple flows through identically.
 
 ## Equilibration Protocol
 

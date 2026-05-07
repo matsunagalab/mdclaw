@@ -1677,12 +1677,17 @@ def build_amber_system(
     artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
     (consumed by ``run_equilibration`` / ``run_production`` in node mode).
 
-    The solvent type is determined from ``box_dimensions``:
-    - If ``box_dimensions`` is ``None`` → implicit / vacuum (no PBC).
-      Note: implicit solvent (GB) is **not yet wired through the
-      openmmforcefields path**; passing ``implicit_solvent`` returns
-      ``code="implicit_solvent_unsupported_under_openmmforcefields"``.
-    - If ``box_dimensions`` is provided → explicit solvent (with PBC).
+    The solvent type is determined from ``box_dimensions`` and
+    ``implicit_solvent``:
+    - ``box_dimensions`` set, ``implicit_solvent`` unset → explicit solvent
+      with PBC (PME, default ff19SB + OPC).
+    - ``box_dimensions`` unset, ``implicit_solvent`` set → implicit solvent
+      (Generalized Born). The matching ``implicit/*.xml`` is loaded by
+      ``SystemGenerator`` so the saved ``system.xml`` carries a
+      ``CustomGBForce`` / ``GBSAOBCForce``.
+    - Both set → ``code="implicit_solvent_explicit_box_conflict"``.
+    - Neither set → vacuum NoCutoff System (research only; the run-side
+      shim rejects vacuum for default eq/prod workflows).
 
     Example (explicit solvent, default HMR=True)::
 
@@ -1726,10 +1731,18 @@ def build_amber_system(
              tripping the modern-system contract check. Defaults match
              ``run_equilibration`` / ``run_production`` so the standard
              default workflow (build → eq → prod, no kwargs) succeeds.
-        implicit_solvent: GB model name (``"OBC2"``, ``"GBn2"``, ...).
-                          **Not yet supported via openmmforcefields**;
-                          rejected with code
-                          ``implicit_solvent_unsupported_under_openmmforcefields``.
+        implicit_solvent: GB model name (case-insensitive). Supported:
+                          ``"HCT"``, ``"OBC1"``, ``"OBC2"``, ``"GBn"``,
+                          ``"GBn2"``. When set, the matching
+                          ``implicit/*.xml`` from openmmforcefields is
+                          added to the SystemGenerator bundle and the
+                          resulting ``system.xml`` carries a
+                          Generalized-Born force. Cannot be combined with
+                          ``box_dimensions`` (returns code
+                          ``implicit_solvent_explicit_box_conflict``).
+                          ``forcefield="ff14SB"`` is auto-substituted to
+                          ``"ff14SBonlysc"`` (the GBneck2-tuned variant)
+                          when ``implicit_solvent`` is set.
         output_name: Stem for the artifact filenames; emits
                      ``{output_name}.system.xml``,
                      ``{output_name}.topology.pdb``,
@@ -1756,7 +1769,9 @@ def build_amber_system(
             - ``statistics``: ``{"num_atoms", "num_residues"}``.
             - ``code``: structured failure code on failure (e.g.
               ``metal_openmm_xml_required``,
-              ``implicit_solvent_unsupported_under_openmmforcefields``).
+              ``implicit_solvent_explicit_box_conflict``,
+              ``implicit_solvent_model_unsupported``,
+              ``implicit_solvent_force_missing``).
             - ``errors`` / ``warnings``: lists of strings.
     
     Example (explicit solvent, ligand, default HMR=True):
@@ -1946,6 +1961,58 @@ def build_amber_system(
             from mdclaw._node import fail_node
             fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
         return blocked
+
+    # --- Implicit-solvent guardrails ------------------------------------
+    # Mutual exclusion with an explicit periodic box (these come from
+    # different solvation paths and must not be combined).
+    if implicit_solvent is not None and box_dimensions is not None:
+        blocked = {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "implicit_solvent_explicit_box_conflict",
+            "message": (
+                f"implicit_solvent={implicit_solvent!r} cannot be combined "
+                f"with explicit box_dimensions. Drop one: implicit GB systems "
+                f"are non-periodic, explicit-solvent systems do not need a "
+                f"GB model."
+            ),
+            "errors": [
+                "implicit_solvent and box_dimensions are mutually exclusive."
+            ],
+            "warnings": [],
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked["errors"])
+        return blocked
+
+    # Normalize the GB model name against the catalog. Unknown / typo'd
+    # names fail-fast with a structured code so callers can surface a
+    # clean recommendation.
+    canonical_implicit_solvent: Optional[str] = None
+    if implicit_solvent is not None:
+        canonical_implicit_solvent = _ff_catalog.normalize_implicit_solvent(
+            implicit_solvent
+        )
+        if canonical_implicit_solvent not in _ff_catalog.IMPLICIT_SOLVENT_XML:
+            supported = ", ".join(_ff_catalog.supported_implicit_solvent_models())
+            blocked = {
+                "success": False,
+                "error_type": "ValidationError",
+                "code": "implicit_solvent_model_unsupported",
+                "message": (
+                    f"Unknown implicit-solvent model "
+                    f"{implicit_solvent!r}. Supported: {supported}."
+                ),
+                "errors": [
+                    f"implicit_solvent={implicit_solvent!r} is not in the catalog."
+                ],
+                "warnings": [],
+            }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked["errors"])
+            return blocked
 
     # Initialize result structure.
     # The curated build path emits the modern XML triple. Callers should
@@ -2489,6 +2556,41 @@ def build_amber_system(
                 for linkage in glycan_linkages
             ]
 
+        # Stamp the implicit-solvent decision before resolving the
+        # effective force field — both feed result["parameters"] /
+        # node metadata and need to survive even if the build later fails.
+        result["parameters"]["implicit_solvent"] = canonical_implicit_solvent
+
+        # Implicit solvent: pick the effective protein force field. ff14SB is
+        # the standard implicit pair (GBneck2 was parameterized against the
+        # ff99SB-derived ff14SB backbone), but Amber25 ships an explicit
+        # implicit-tuned variant (``ff14SBonlysc``) which uses the same
+        # backbone with sidechains tuned for GB. Auto-substitute it when the
+        # caller picks ff14SB so the standard skill recipe (``--forcefield
+        # ff14SB --implicit-solvent OBC2``) lands on the implicit-tuned XML
+        # without surprising users that explicitly request ff14SBonlysc.
+        # ff19SB + implicit_solvent gets a warning (ff19SB is OPC-tuned and
+        # not endorsed for GB by Amber25 ch.3).
+        effective_forcefield = forcefield
+        if canonical_implicit_solvent is not None:
+            canon_protein_for_implicit = _ff_catalog.normalize_protein(forcefield)
+            if canon_protein_for_implicit == "ff14SB":
+                effective_forcefield = "ff14SBonlysc"
+                result["warnings"].append(
+                    "implicit_solvent: auto-switched protein force field "
+                    "ff14SB -> ff14SBonlysc (the GBneck2-tuned variant). "
+                    "Pass forcefield='ff14SBonlysc' explicitly to silence "
+                    "this notice."
+                )
+            elif canon_protein_for_implicit == "ff19SB":
+                result["warnings"].append(
+                    "implicit_solvent: ff19SB was parameterized for OPC "
+                    "explicit water and is not Amber25's recommended choice "
+                    "for GB models. Prefer ff14SB / ff14SBonlysc for "
+                    "implicit-solvent runs."
+                )
+        result["parameters"]["effective_forcefield"] = effective_forcefield
+
         om_result = _run_openmmforcefields_build(
             pdb_path=pdb_path,
             output_name=output_name,
@@ -2496,7 +2598,7 @@ def build_amber_system(
             system_xml_file=system_xml_file,
             topology_pdb_file=topology_pdb_file,
             state_xml_file=state_xml_file,
-            forcefield=forcefield,
+            forcefield=effective_forcefield,
             water_model=actual_water_model if box_dimensions else None,
             phosaa_library=phosaa_library,
             nucleic_libraries=nucleic_libraries,
@@ -2508,7 +2610,7 @@ def build_amber_system(
             valid_modxna_params=valid_modxna_params or [],
             disulfide_bonds=disulfide_bonds,
             hmr=hmr,
-            implicit_solvent=implicit_solvent,
+            implicit_solvent=canonical_implicit_solvent,
         )
         result["warnings"].extend(om_result.get("warnings", []))
         if om_result.get("success"):
@@ -2574,8 +2676,11 @@ def build_amber_system(
                 artifacts=artifacts,
                 metadata={
                     "forcefield": result["parameters"].get("forcefield"),
+                    "effective_forcefield": effective_forcefield,
                     "water_model": water_model if solvent_type == "explicit" else None,
                     "solvent_type": solvent_type,
+                    "implicit_solvent": canonical_implicit_solvent,
+                    "hmr": bool(hmr),
                     "is_membrane": is_membrane,
                     "system_artifact_kind": "openmm_system_xml",
                     "forcefield_provenance": result.get("forcefield_provenance"),
@@ -2711,31 +2816,37 @@ def _run_openmmforcefields_build(
     extra_xml = list(extra_xml or [])
     extra_smiles = list(extra_smiles or [])
 
-    # The openmmforcefields path does not yet wire AMBER GB/OBC into a
-    # SystemGenerator-built System. Until ``forcefield_catalog`` ships an
-    # implicit-solvent path, fail-fast rather than silently produce a
-    # NoCutoff vacuum System that the run_* layer would mistake for GB.
-    if implicit_solvent:
-        result["errors"].append(
-            f"implicit_solvent={implicit_solvent!r} is not yet supported by the "
-            f"openmmforcefields path. Until the ``forcefield_catalog`` GB "
-            f"wiring ships, supply a GB-aware OpenMM ForceField XML "
-            f"(e.g. GB99dms.xml, an amber14+OBC2 third-party port) through "
-            f"``build_openmm_system``: that builder accepts arbitrary XML and "
-            f"emits the same system.xml + topology.pdb + state.xml triple, so "
-            f"eq/prod consume it identically."
-        )
-        result["code"] = "implicit_solvent_unsupported_under_openmmforcefields"
-        return result
-
     # --- 1. Resolve OpenMM XML bundle via the catalog --------------------
+    # Implicit-solvent (GB) systems load an extra ``implicit/*.xml`` from
+    # the openmmforcefields shipped tree, which contributes the
+    # ``CustomGBForce`` (HCT / OBC1 / OBC2 / GBn / GBn2) that
+    # ``XmlSerializer`` then bakes into ``system.xml``. The run-side shim
+    # verifies that force is present before honoring an
+    # ``implicitSolvent`` request, so a missing GB force after build is a
+    # structured-failure case (``implicit_solvent_force_missing``).
     canon_protein = _ff_catalog.normalize_protein(forcefield) or forcefield
     canon_water = _ff_catalog.normalize_water(water_model) if water_model else None
+    canon_implicit = (
+        _ff_catalog.normalize_implicit_solvent(implicit_solvent)
+        if implicit_solvent
+        else None
+    )
     phosaa_name = _resolve_phosaa_name_from_library(phosaa_library)
     dna_name = _resolve_dna_name_from_libraries(nucleic_libraries)
     rna_name = _resolve_rna_name_from_libraries(nucleic_libraries)
     glycan_name = _resolve_glycan_name_from_library(glycan_library)
     lipid_name = "lipid21" if is_membrane else None
+
+    if canon_implicit and canon_implicit not in _ff_catalog.IMPLICIT_SOLVENT_XML:
+        # The public ``build_amber_system`` already guards this path, but
+        # direct callers of this helper still get a clean structured code.
+        supported = ", ".join(_ff_catalog.supported_implicit_solvent_models())
+        result["errors"].append(
+            f"Unknown implicit-solvent model {implicit_solvent!r}. "
+            f"Supported: {supported}."
+        )
+        result["code"] = "implicit_solvent_model_unsupported"
+        return result
 
     xml_bundle = _ff_catalog.resolve_xml_bundle(
         protein=canon_protein,
@@ -2745,6 +2856,7 @@ def _run_openmmforcefields_build(
         rna=rna_name,
         glycan=glycan_name,
         lipid=lipid_name,
+        implicit_solvent=canon_implicit,
         extra_xml=extra_xml,
     )
     if not xml_bundle:
@@ -2937,6 +3049,27 @@ def _run_openmmforcefields_build(
         )
         return result
 
+    # Verify the GB force is actually attached when implicit_solvent was
+    # requested. If the catalog XML loaded but no Generalized-Born force
+    # ended up in the System (e.g. the protein force field overrode the
+    # implicit residue templates), fail-fast rather than save a System
+    # that the run-side shim would later reject as vacuum-disguised-as-GB.
+    if canon_implicit:
+        gb_force_classes = (
+            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+        )
+        present = {type(f).__name__ for f in system.getForces()}
+        if not (present & set(gb_force_classes)):
+            result["errors"].append(
+                f"implicit_solvent={canon_implicit!r} requested but the built "
+                f"System carries no Generalized-Born force "
+                f"(expected one of {', '.join(gb_force_classes)}). "
+                f"This usually means the protein force field XML overrode "
+                f"the implicit residue templates; try forcefield='ff14SBonlysc'."
+            )
+            result["code"] = "implicit_solvent_force_missing"
+            return result
+
     # --- 6. Minimize + serialize ----------------------------------------
     try:
         integrator = LangevinIntegrator(
@@ -2998,6 +3131,13 @@ def _run_openmmforcefields_build(
             if digest:
                 sha256_table[xml_path] = digest
 
+    if box_dimensions:
+        provenance_solvent_type = "explicit"
+    elif canon_implicit:
+        provenance_solvent_type = "implicit"
+    else:
+        provenance_solvent_type = "vacuum"
+
     provenance: Dict[str, Any] = {
         "kind": "amber_via_openmmforcefields",
         "openmm_xml": list(xml_bundle),
@@ -3009,13 +3149,15 @@ def _run_openmmforcefields_build(
         ],
         "sha256": sha256_table,
         "method": {
+            "solvent_type": provenance_solvent_type,
+            "protein_forcefield": canon_protein,
             "nonbonded": "PME" if box_dimensions else "NoCutoff",
             "cutoff_nm": 1.0 if box_dimensions else None,
             "constraints": "HBonds",
             "rigid_water": True,
             "hmr": bool(hmr),
             "hydrogen_mass_amu": 4.0 if hmr else 1.008,
-            "implicit_solvent": implicit_solvent,
+            "implicit_solvent": canon_implicit,
             "barostat": None,
             "includes_restraints": False,
         },

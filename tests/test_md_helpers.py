@@ -1022,14 +1022,17 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         assert captured["hmr"] is True
         assert captured["implicit_solvent"] is None
 
-    def test_build_amber_system_blocks_implicit_solvent_under_openmmforcefields(
-        self, tmp_path
-    ):
-        """``implicit_solvent`` is not yet supported by the openmmforcefields
-        path. ``_run_openmmforcefields_build`` must reject the request with a
-        structured ``code`` rather than emit a NoCutoff vacuum System that
-        run_* would mistake for GB. Calling the helper directly here keeps
-        the test in the fast lane (no SystemGenerator import)."""
+    def test_build_amber_system_rejects_unknown_implicit_model(self, tmp_path):
+        """Unknown implicit-solvent names fail-fast with a structured code so
+        agents can offer the supported set rather than letting a typo slip
+        into ``SystemGenerator(forcefields=...)`` and crash with an opaque
+        XML-not-found error.
+
+        Calling ``_run_openmmforcefields_build`` directly keeps the test in
+        the fast lane (no SystemGenerator import). The wider
+        ``build_amber_system`` test in tests/test_guardrails.py covers the
+        public-API path and the matching ``box_dimensions`` conflict guard.
+        """
         from mdclaw.amber_server import _run_openmmforcefields_build
 
         result = _run_openmmforcefields_build(
@@ -1050,10 +1053,10 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             valid_metal_params=[],
             valid_modxna_params=[],
             disulfide_bonds=None,
-            implicit_solvent="OBC2",
+            implicit_solvent="MAGIC_GB",
         )
         assert result["success"] is False
-        assert result.get("code") == "implicit_solvent_unsupported_under_openmmforcefields"
+        assert result.get("code") == "implicit_solvent_model_unsupported"
 
     def test_build_amber_system_default_hmr_matches_run_defaults(self, tmp_path):
         """The default ``build_amber_system()`` call (no hmr= override) must
@@ -1117,3 +1120,236 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         prov = result.get("forcefield_provenance") or {}
         method = prov.get("method") or {}
         assert method.get("hmr") is True
+
+    def test_build_amber_system_rejects_box_and_implicit_conflict(self, tmp_path):
+        """``build_amber_system(implicit_solvent=..., box_dimensions=...)``
+        must fail-fast with a structured ``implicit_solvent_explicit_box_conflict``
+        code so callers cannot accidentally produce a periodic GB system."""
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            forcefield="ff14SB",
+            implicit_solvent="OBC2",
+            box_dimensions={"box_a": 50.0, "box_b": 50.0, "box_c": 50.0},
+            output_dir=str(tmp_path / "topo"),
+        )
+        assert result["success"] is False
+        assert result["code"] == "implicit_solvent_explicit_box_conflict"
+
+    def test_build_amber_system_rejects_unknown_implicit_model_at_public_api(
+        self, tmp_path
+    ):
+        """Unknown GB model names are rejected by the public ``build_amber_system``
+        surface, not just the internal helper."""
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            forcefield="ff14SB",
+            implicit_solvent="MAGIC_GB",
+            output_dir=str(tmp_path / "topo"),
+        )
+        assert result["success"] is False
+        assert result["code"] == "implicit_solvent_model_unsupported"
+        # The error message must surface the supported set so agents can
+        # recover without re-reading the source.
+        assert "OBC2" in result["message"]
+        assert "GBn2" in result["message"]
+
+    def test_build_amber_system_auto_switches_ff14sb_to_ff14sbonlysc_for_implicit(
+        self, tmp_path
+    ):
+        """``build_amber_system(forcefield="ff14SB", implicit_solvent="OBC2")``
+        must reach the helper with the GBneck2-tuned ``ff14SBonlysc`` variant
+        (Amber25 implicit recipe). The auto-switch is surfaced via a
+        warning so users keep the ability to opt back to plain ff14SB by
+        passing ``ff14SBonlysc`` explicitly."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+
+        # Augment the capture closure to also record ``forcefield``.
+        original_fake = fake
+
+        def _fake(**kwargs):
+            captured["forcefield"] = kwargs.get("forcefield")
+            return original_fake(**kwargs)
+
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=_fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff14SB",
+                implicit_solvent="OBC2",
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert captured["forcefield"] == "ff14SBonlysc"
+        assert captured["implicit_solvent"] == "OBC2"
+        assert result["parameters"]["effective_forcefield"] == "ff14SBonlysc"
+        assert result["parameters"]["implicit_solvent"] == "OBC2"
+        assert any(
+            "auto-switched protein force field ff14SB -> ff14SBonlysc" in w
+            for w in result.get("warnings", [])
+        ), result.get("warnings")
+
+    def test_build_amber_system_warns_on_ff19sb_with_implicit(self, tmp_path):
+        """ff19SB is OPC-tuned; pairing it with GB raises a warning but is
+        not blocked outright (research workflows may still want it)."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        _captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                implicit_solvent="OBC2",
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert any(
+            "ff19SB was parameterized for OPC" in w
+            for w in result.get("warnings", [])
+        )
+
+    def test_build_amber_system_normalizes_implicit_alias(self, tmp_path):
+        """Case-insensitive aliases (``obc2``, ``gbneck2``) reach the helper
+        as the canonical key (``OBC2``, ``GBn2``) so provenance / metadata
+        are stable across user inputs."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff14SBonlysc",
+                implicit_solvent="gbneck2",
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert captured["implicit_solvent"] == "GBn2"
+        assert result["parameters"]["implicit_solvent"] == "GBn2"
+
+
+@pytest.mark.slow
+class TestBuildAmberSystemImplicitEndToEnd:
+    """End-to-end smoke for the openmmforcefields implicit-solvent path.
+
+    Runs the real ``_run_openmmforcefields_build`` with a small peptide,
+    so the test exercises SystemGenerator + Pablo + GB XML loading and
+    asserts the resulting ``system.xml`` actually carries a Generalized-Born
+    force. Marked slow because it imports the full openmmforcefields stack.
+
+    Uses the project's ``small_pdb`` fixture (5-residue ALA-GLY pentapeptide)
+    so terminal residue templates resolve cleanly under PDBFixer's default
+    cap-handling.
+    """
+
+    def test_implicit_obc2_build_attaches_gb_force_to_system_xml(
+        self, small_pdb, tmp_path
+    ):
+        """``build_amber_system(forcefield="ff14SBonlysc", implicit_solvent="OBC2")``
+        must produce a ``system.xml`` whose deserialized System carries a
+        ``CustomGBForce``/``GBSAOBCForce``. This is the contract the run-side
+        shim relies on when honoring an ``implicitSolvent`` request."""
+        pytest.importorskip("openmm")
+        pytest.importorskip("openmmforcefields")
+        pytest.importorskip("openff.pablo")
+        pytest.importorskip("pdbfixer")
+
+        from openmm import XmlSerializer
+        from mdclaw.amber_server import build_amber_system
+
+        result = build_amber_system(
+            pdb_file=str(small_pdb),
+            forcefield="ff14SBonlysc",
+            implicit_solvent="OBC2",
+            output_dir=str(tmp_path / "topo"),
+        )
+        assert result["success"] is True, result.get("errors")
+        prov = result["forcefield_provenance"]
+        # Provenance reflects the implicit choice + bundle.
+        assert prov["method"]["solvent_type"] == "implicit"
+        assert prov["method"]["implicit_solvent"] == "OBC2"
+        assert prov["method"]["nonbonded"] == "NoCutoff"
+        assert prov["method"]["hmr"] is True
+        assert prov["method"]["hydrogen_mass_amu"] == 4.0
+        assert "implicit/obc2.xml" in prov["openmm_xml"]
+        # GB force is actually present in the saved system.xml.
+        with open(result["system_xml"]) as fh:
+            system = XmlSerializer.deserialize(fh.read())
+        gb_classes = {
+            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+        }
+        present = {type(f).__name__ for f in system.getForces()}
+        assert present & gb_classes, (
+            f"system.xml has no GB force; forces={present}"
+        )
+
+    def test_implicit_obc2_shim_accepts_implicitsolvent_request(
+        self, small_pdb, tmp_path
+    ):
+        """End-to-end against the run-side contract: the ``_ModernPrmtopShim``
+        must NOT raise ``modern_system_implicit_solvent_unsupported`` against
+        an OBC2-built system.xml. This guards against future regressions
+        where the build path stops baking the GB force."""
+        pytest.importorskip("openmm")
+        pytest.importorskip("openmmforcefields")
+        pytest.importorskip("openff.pablo")
+        pytest.importorskip("pdbfixer")
+
+        from openmm import app
+        from mdclaw.amber_server import build_amber_system
+        from mdclaw.md_simulation_server import _ModernPrmtopShim
+
+        result = build_amber_system(
+            pdb_file=str(small_pdb),
+            forcefield="ff14SBonlysc",
+            implicit_solvent="OBC2",
+            output_dir=str(tmp_path / "topo"),
+        )
+        assert result["success"] is True, result.get("errors")
+        topology = app.PDBFile(result["topology_pdb"]).topology
+        shim = _ModernPrmtopShim(topology, result["system_xml"])
+        # No raise expected: the System has a GB force, the shim's
+        # implicit-solvent contract is satisfied.
+        system = shim.createSystem(implicitSolvent=app.OBC2)
+        assert any(
+            type(f).__name__ in {
+                "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+            }
+            for f in system.getForces()
+        )

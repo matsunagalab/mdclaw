@@ -158,20 +158,25 @@ class _ModernPrmtopShim:
                 )
 
         # Implicit-solvent contract: GB-aware Force must already exist on the
-        # saved System. The build_amber_system openmmforcefields path does not
-        # yet attach GB forces, so any caller that hands us implicitSolvent=
-        # is bound to mis-simulate.
+        # saved System. ``build_amber_system(..., implicit_solvent=...)``
+        # bakes the matching ``implicit/*.xml`` (HCT / OBC1 / OBC2 / GBn /
+        # GBn2) into ``system.xml`` so the deserialized System carries a
+        # ``CustomGBForce`` / ``GBSAOBCForce``. A vacuum or explicit-solvent
+        # build paired with ``--implicit-solvent`` at run time is the case
+        # this guard catches.
         if kwargs.get("implicitSolvent") is not None and not _system_has_implicit_solvent_force(system):
             raise _ModernSystemContractError(
                 code="modern_system_implicit_solvent_unsupported",
                 message=(
                     f"run_* requested implicitSolvent={kwargs['implicitSolvent']!r} but "
                     f"the saved system.xml has no GB / implicit-solvent force. "
-                    f"build_amber_system does not yet wire GB forces into the "
-                    f"openmmforcefields path; supply a GB-aware ForceField XML "
-                    f"(e.g. GB99dms.xml or an amber14+OBC2 third-party port) "
-                    f"via build_openmm_system so the saved System carries a "
-                    f"GBSAOBCForce / CustomGBForce / AmoebaGeneralizedKirkwoodForce."
+                    f"Rebuild the topo node with "
+                    f"``build_amber_system(..., implicit_solvent="
+                    f"{kwargs['implicitSolvent']!r})`` so the matching "
+                    f"openmmforcefields ``implicit/*.xml`` is baked into "
+                    f"``system.xml``. For non-shipped GB models, route "
+                    f"through ``build_openmm_system`` with a GB-aware "
+                    f"third-party ForceField XML (e.g. GB99dms.xml)."
                 ),
             )
 

@@ -367,6 +367,60 @@ RNA_XML: dict[str, str] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Implicit-solvent (Generalized Born) XML
+# ---------------------------------------------------------------------------
+# Inventory cross-checked against openmmforcefields v0.16.0 ffxml/amber/
+# implicit/. SystemGenerator loads these alongside the protein force field;
+# the resulting System carries a ``GBSAOBCForce`` / ``CustomGBForce`` /
+# ``AmoebaGeneralizedKirkwoodForce`` that the run-side shim verifies.
+
+IMPLICIT_SOLVENT_XML: dict[str, str] = {
+    "HCT":  "implicit/hct.xml",
+    "OBC1": "implicit/obc1.xml",
+    "OBC2": "implicit/obc2.xml",
+    "GBn":  "implicit/gbn.xml",
+    "GBn2": "implicit/gbn2.xml",
+}
+
+
+# Case-insensitive aliases (e.g. ``obc2`` → ``OBC2``, ``gbneck2`` → ``GBn2``).
+_IMPLICIT_ALIASES: dict[str, str] = {}
+for _canonical in IMPLICIT_SOLVENT_XML:
+    _IMPLICIT_ALIASES[_canonical.lower()] = _canonical
+_IMPLICIT_ALIASES.update(
+    {
+        "gbneck":   "GBn",
+        "gbneck2":  "GBn2",
+        "obc":      "OBC2",     # bare "obc" defaults to OBC2 (most common)
+        "igb1":     "HCT",
+        "igb2":     "OBC1",
+        "igb5":     "OBC2",
+        "igb7":     "GBn",
+        "igb8":     "GBn2",
+    }
+)
+
+
+def normalize_implicit_solvent(name: Optional[str]) -> Optional[str]:
+    """Resolve a user-provided implicit-solvent / GB model name to its catalog key.
+
+    Returns None on empty input. Returns the canonical key
+    (``"HCT"`` / ``"OBC1"`` / ``"OBC2"`` / ``"GBn"`` / ``"GBn2"``) on hit, or
+    the original (stripped) name on miss so callers can detect unknown
+    models and emit a structured ``implicit_solvent_model_unsupported`` error.
+    """
+    if not name:
+        return None
+    canonical = normalize_choice(name, _IMPLICIT_ALIASES)
+    return canonical if canonical else name.strip()
+
+
+def supported_implicit_solvent_models() -> tuple[str, ...]:
+    """Return the canonical implicit-solvent model names mdclaw knows about."""
+    return tuple(IMPLICIT_SOLVENT_XML.keys())
+
+
 # Specialty FFs that ship NO OpenMM XML in the current openmmforcefields
 # release. Users must supply a third-party XML via ``extra_xml`` for these.
 SPECIALTY_FORCEFIELDS_REQUIRING_EXTRA_XML: frozenset[str] = frozenset(
@@ -585,13 +639,20 @@ def resolve_xml_bundle(
     rna: Optional[str] = None,
     glycan: Optional[str] = None,
     lipid: Optional[str] = None,
+    implicit_solvent: Optional[str] = None,
     extra_xml: Union[tuple[str, ...], list[str]] = (),
 ) -> list[str]:
     """Build the ordered OpenMM XML bundle for ``SystemGenerator(forcefields=...)``.
 
     Order follows Amber25 manual section 14.4.1: protein → phosaa → nucleic →
-    glycan → water → lipid → user extras. Unknown / specialty force fields
-    must be supplied via ``extra_xml``.
+    glycan → water → lipid → implicit-solvent → user extras. Unknown /
+    specialty force fields must be supplied via ``extra_xml``.
+
+    ``implicit_solvent`` (HCT / OBC1 / OBC2 / GBn / GBn2) attaches the matching
+    ``implicit/*.xml`` so the resulting System carries a Generalized-Born
+    force; pairing it with ``water`` is unusual but not blocked here (the
+    caller is expected to enforce mutual exclusion at the
+    ``box_dimensions`` level).
     """
     bundle: list[str] = []
 
@@ -618,6 +679,9 @@ def resolve_xml_bundle(
 
     if lipid and lipid in LIPID_XML:
         bundle.append(LIPID_XML[lipid])
+
+    if implicit_solvent and implicit_solvent in IMPLICIT_SOLVENT_XML:
+        bundle.append(IMPLICIT_SOLVENT_XML[implicit_solvent])
 
     bundle.extend(extra_xml)
 
@@ -656,9 +720,12 @@ __all__ = [
     "GLYCAN_XML",
     "DNA_XML",
     "RNA_XML",
+    "IMPLICIT_SOLVENT_XML",
     "SPECIALTY_FORCEFIELDS_REQUIRING_EXTRA_XML",
     "normalize_protein",
     "normalize_water",
+    "normalize_implicit_solvent",
+    "supported_implicit_solvent_models",
     "phosaa_for_protein",
     "evaluate_protein_water",
     "resolve_xml_bundle",

@@ -276,6 +276,80 @@ def test_resolve_xml_bundle_empty_when_nothing_specified():
 
 
 # ---------------------------------------------------------------------------
+# Implicit-solvent catalog
+# ---------------------------------------------------------------------------
+
+
+def test_implicit_solvent_catalog_covers_amber25_models():
+    # The five GB models recognized by Amber25 manual (igb=1/2/5/7/8) all
+    # need a corresponding ffxml so SystemGenerator can attach the GB force
+    # to system.xml.
+    expected = {"HCT", "OBC1", "OBC2", "GBn", "GBn2"}
+    assert set(fc.IMPLICIT_SOLVENT_XML.keys()) == expected
+    # Every entry maps to ffxml/amber/implicit/<name>.xml.
+    for name, path in fc.IMPLICIT_SOLVENT_XML.items():
+        assert path.startswith("implicit/"), (name, path)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("OBC2", "OBC2"),
+        ("obc2", "OBC2"),
+        ("OBC", "OBC2"),         # bare 'OBC' alias defaults to OBC2
+        ("gbneck2", "GBn2"),
+        ("igb8", "GBn2"),
+        ("igb5", "OBC2"),
+    ],
+)
+def test_normalize_implicit_solvent_aliases(raw, expected):
+    assert fc.normalize_implicit_solvent(raw) == expected
+
+
+def test_normalize_implicit_solvent_unknown_returns_original():
+    # Unknown names round-trip stripped so callers can detect the miss and
+    # emit a structured ``implicit_solvent_model_unsupported`` error.
+    assert fc.normalize_implicit_solvent("MAGIC_GB") == "MAGIC_GB"
+    assert fc.normalize_implicit_solvent("  ") == ""
+
+
+def test_resolve_xml_bundle_with_implicit_solvent():
+    xml_list = fc.resolve_xml_bundle(
+        protein="ff14SBonlysc",
+        water=None,
+        implicit_solvent="OBC2",
+    )
+    assert xml_list == [
+        "amber/protein.ff14SBonlysc.xml",
+        "implicit/obc2.xml",
+    ]
+
+
+def test_resolve_xml_bundle_implicit_appends_after_water_and_lipid():
+    # Order contract: protein → phosaa → nucleic → glycan → water → lipid
+    # → implicit → user extras.
+    xml_list = fc.resolve_xml_bundle(
+        protein="ff14SBonlysc",
+        water="opc",       # unusual pairing, but must not reorder the bundle
+        lipid="lipid21",
+        implicit_solvent="GBn2",
+        extra_xml=("/research/foo.xml",),
+    )
+    assert xml_list == [
+        "amber/protein.ff14SBonlysc.xml",
+        "amber/opc_standard.xml",
+        "amber/lipid21.xml",
+        "implicit/gbn2.xml",
+        "/research/foo.xml",
+    ]
+
+
+def test_supported_implicit_solvent_models_returns_canonical_keys():
+    models = fc.supported_implicit_solvent_models()
+    assert set(models) == {"HCT", "OBC1", "OBC2", "GBn", "GBn2"}
+
+
+# ---------------------------------------------------------------------------
 # resolve_internal_frcmod_path
 # ---------------------------------------------------------------------------
 
@@ -331,6 +405,25 @@ def test_simple_xml_tables_resolve_to_real_files(table_name, xml_paths):
     missing = [p for p in xml_paths if not (root / p).is_file()]
     assert not missing, (
         f"{table_name} references XML files not shipped in openmmforcefields: {missing}"
+    )
+
+
+def test_implicit_solvent_xml_resolves_to_openmm_shipped_files():
+    """The Generalized-Born XMLs ship with OpenMM itself (not
+    openmmforcefields), under ``openmm/app/data/implicit/``. ForceField()
+    finds them via OpenMM's data-search path when the bundle includes the
+    relative ``implicit/<model>.xml`` string. Verify the relative paths
+    exist on disk so a typo can't slip into the catalog."""
+    pytest.importorskip("openmm")
+    import openmm  # noqa: WPS433
+    from pathlib import Path
+
+    data_root = Path(openmm.__file__).parent / "app" / "data"
+    missing = [
+        p for p in fc.IMPLICIT_SOLVENT_XML.values() if not (data_root / p).is_file()
+    ]
+    assert not missing, (
+        f"IMPLICIT_SOLVENT_XML references XML files not shipped in OpenMM: {missing}"
     )
 
 

@@ -4,35 +4,6 @@ Implicit solvent (Generalized Born) models represent water as a
 continuum dielectric instead of explicit water molecules. Faster but
 less accurate than explicit water.
 
-## ⚠️ Current support status
-
-`build_amber_system` under the openmmforcefields-unification refactor
-**does not yet build implicit-solvent (GB) systems**. Passing
-`--implicit-solvent OBC2` (or any other GB model name) returns a
-structured error with code
-`implicit_solvent_unsupported_under_openmmforcefields` because the
-SystemGenerator path does not yet attach a GB force to the saved
-`system.xml`. Omitting both `--box-dimensions` and `--implicit-solvent`
-would build a vacuum (NoCutoff) System, which the run-side guardrail
-also rejects (`Non-periodic topology without implicit_solvent would run
-vacuum equilibration`).
-
-Until the GB-aware build path ships, implicit-solvent runs require one
-of these escape hatches:
-
-- **Research mode**: build via `build_openmm_system` with a
-  third-party / hand-curated OpenMM ForceField XML that already attaches
-  the GB force you want. The shim's contract check passes when the
-  saved System carries a `GBSAOBCForce` / `CustomGBForce` /
-  `AmoebaGeneralizedKirkwoodForce`; the run-side `--implicit-solvent`
-  flag then matches.
-- **Skip implicit until then**: the rest of this runbook documents the
-  intended (not-yet-shipped) interface so the workflow is ready when GB
-  support lands. For real campaigns today, use explicit water (see
-  `skills/md-prepare/explicit-water.md`).
-
----
-
 ## Decision Defaults
 
 Quick reference only; Python tool signatures and guardrails are authoritative.
@@ -41,17 +12,25 @@ Quick reference only; Python tool signatures and guardrails are authoritative.
 |---|---|---|
 | GB model | GBn2 (igb=8) | "obc", "obc2", "hct" |
 | Salt concentration | 0.15 M | "0.3M", "no salt" |
-| Force field | ff14SB | "ff19SB" (note: ff19SB is optimized for explicit water) |
+| Force field | ff14SB | "ff19SB" (note: ff19SB is OPC-tuned and warns under GB) |
 
-**Force field choice**: default to `ff14SB` for implicit solvent.
-`ff19SB` was parameterized against OPC explicit water and may be less
-accurate under GB models; `ff14SB` remains the tested pair for implicit
-solvent runs.
+**Force field choice**: the implicit-solvent default is `ff14SB`. When
+`build_amber_system` sees `--forcefield ff14SB --implicit-solvent ...`,
+it auto-substitutes the GBneck2-tuned variant `ff14SBonlysc` (the
+implicit-tuned XML shipped by openmmforcefields) and surfaces a warning
+so the substitution is visible. `ff19SB` was parameterized against OPC
+explicit water and is not Amber25's recommended GB pair — a warning is
+emitted; pass `--forcefield ff14SBonlysc` to silence it.
 
-**Ligand note**: GBn2 remains the default starting model, but GBn/GBn2 neck
-corrections can fail for some GAFF or curated ligand atom types. If production
-fails with `Radii must be between 1 and 2 Angstroms for neck lookup`, branch a
-new `eq`/`prod` path from the same topology using `--implicit-solvent OBC2`.
+**GB model**: defaults to `GBn2` (igb=8) for accuracy. Other supported
+models are case-insensitive: `HCT`, `OBC1`, `OBC2`, `GBn`, `GBn2`.
+Unknown names fail-fast with `code="implicit_solvent_model_unsupported"`.
+
+**Ligand note**: GBn2 remains the default starting model, but GBn/GBn2
+neck corrections can fail for some GAFF or curated ligand atom types.
+If production fails with `Radii must be between 1 and 2 Angstroms for
+neck lookup`, branch a new `eq`/`prod` path from the same topology using
+`--implicit-solvent OBC2`.
 
 Prepare-time checkpoints (chain selection, ligand inclusion, metal
 handling, confirmation loop) live in `setup.md` and apply identically
@@ -67,39 +46,36 @@ No solvation step is needed for implicit solvent. Proceed directly to topology.
 
 ---
 
-## Step 5: Build Topology (no box, no water) — *not yet supported via build_amber_system*
-
-The intended call (kept here for reference; **currently rejected** —
-see "Current support status" above):
+## Step 5: Build Topology (no box, no water)
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type topo --parent-node-ids prep_001
 mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
   --forcefield ff14SB \
-  --implicit-solvent OBC2 \
+  --implicit-solvent GBn2 \
   --no-is-membrane
 ```
 
-Today this returns
-`code="implicit_solvent_unsupported_under_openmmforcefields"`. To run
-implicit-solvent MD until GB support is wired into the openmmforcefields
-path, build via `build_openmm_system` with a GB-aware ForceField XML —
-e.g. the Greener group's `GB99dms.xml` or a third-party amber14 + GB
-port — and the same `system.xml` + `topology.pdb` + `state.xml` triple
-flows through to `run_equilibration` / `run_production`.
+`build_amber_system` resolves the matching GB XML from
+`forcefield_catalog` (`implicit/gbn2.xml` for GBn2) and bakes the
+resulting `CustomGBForce` / `GBSAOBCForce` into the saved `system.xml`.
+The run-side shim verifies that force is present before honoring an
+`--implicit-solvent` request, so accidental vacuum builds are caught.
 
-> **Future intended interface — currently rejected by `build_amber_system`.**
-> When GB support lands (`forcefield_catalog` GB wiring, or the
-> `build_openmm_system` escape hatch shipping a GB-aware XML by default),
-> the calling contract here is what users will reach for: no
-> `--box-dimensions` and no `--water-model` are needed for implicit
-> solvent. Ligand parameters auto-resolve from the `prep` ancestor's
-> artifacts; highly charged ligands and close contacts are recorded as
-> topology diagnostics and do not stop the workflow or select a special
-> equilibration branch — `/md-equilibration` uses the same standard
-> staged minimization and low-temperature warmup protocol for all
-> systems. Today, take the same workflow through `build_openmm_system`
-> with a GB-aware ForceField XML.
+Calling contract:
+- No `--box-dimensions`, no `--water-model`. Combining `--implicit-solvent`
+  with `--box-dimensions` returns
+  `code="implicit_solvent_explicit_box_conflict"`.
+- Ligand parameters auto-resolve from the `prep` ancestor's artifacts.
+- Highly charged ligands and close contacts are recorded as topology
+  diagnostics and do not stop the workflow or select a special
+  equilibration branch — `/md-equilibration` uses the same standard
+  staged minimization and low-temperature warmup protocol for all
+  systems.
+- For GB models that openmmforcefields does not ship (e.g. the Greener
+  group's `GB99dms.xml`), use `build_openmm_system` with the
+  third-party ForceField XML; the saved `system.xml` + `topology.pdb` +
+  `state.xml` triple flows through eq/prod identically.
 
 ### Domain Knowledge
 
