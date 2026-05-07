@@ -388,6 +388,7 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "solvate_structure",
     "embed_in_membrane",
     "build_amber_system",
+    "build_openmm_system",
     "run_equilibration",
     "run_production",
     "concat_trajectory",

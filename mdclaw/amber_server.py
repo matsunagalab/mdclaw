@@ -3028,6 +3028,12 @@ def _run_openmmforcefields_build(
         )
         return result
 
+    # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
+    # doesn't choke on `len(int_id)`.
+    for res in modeller.topology.residues():
+        if not isinstance(res.id, str):
+            res.id = str(res.id)
+
     try:
         with system_xml_file.open("w") as fh:
             fh.write(XmlSerializer.serialize(system))

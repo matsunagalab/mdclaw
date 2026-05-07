@@ -20,7 +20,7 @@ class TestServerRegistry:
     def test_registry_has_all_servers(self):
         from mdclaw._registry import SERVER_REGISTRY
 
-        assert len(SERVER_REGISTRY) == 14
+        assert len(SERVER_REGISTRY) == 15
 
     def test_registry_keys(self):
         from mdclaw._registry import SERVER_REGISTRY
@@ -30,6 +30,7 @@ class TestServerRegistry:
             "structure",
             "solvation",
             "amber",
+            "openmm_system",
             "md_simulation",
             "genesis",
             "literature",
