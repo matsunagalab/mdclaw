@@ -303,6 +303,73 @@ class TestBuildOpenmmSystemNodeMode:
 
         assert result["success"] is True, result.get("errors")
 
+    def test_node_mode_honors_topo_hmr_condition_match(self, tmp_path):
+        """When the topo node was created with ``conditions={"hmr": True}``,
+        a ``build_openmm_system(... hmr=True)`` invocation must satisfy the
+        condition and complete the node. Mirrors build_amber_system's
+        contract so research-mode and curated builders behave identically
+        under DAG validation."""
+        from mdclaw._node import create_node, read_node
+
+        job_dir, _ = self._setup_topo_node(tmp_path)
+        # Replace the conditions-free topo with one declaring hmr=True.
+        # _setup_topo_node already created topo_001; we drop it and
+        # re-create with conditions on a fresh prep parent.
+        new_topo = create_node(
+            str(job_dir),
+            "topo",
+            parent_node_ids=["prep_001"],
+            conditions={"hmr": True},
+        )
+        assert new_topo["success"] is True
+        topo_id = new_topo["node_id"]
+
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            hmr=True,
+        )
+        assert result["success"] is True, result.get("errors")
+        assert read_node(str(job_dir), topo_id)["status"] == "completed"
+
+    def test_node_mode_blocks_topo_hmr_condition_mismatch(self, tmp_path):
+        """Conversely, a topo node declaring ``conditions={"hmr": True}``
+        must reject a ``build_openmm_system(... hmr=False)`` call up front
+        — before the OpenMM build runs and before the node flips out of
+        ``pending``."""
+        from mdclaw._node import create_node, read_node
+
+        job_dir, _ = self._setup_topo_node(tmp_path)
+        new_topo = create_node(
+            str(job_dir),
+            "topo",
+            parent_node_ids=["prep_001"],
+            conditions={"hmr": True},
+        )
+        assert new_topo["success"] is True
+        topo_id = new_topo["node_id"]
+
+        result = build_openmm_system(
+            job_dir=str(job_dir),
+            node_id=topo_id,
+            forcefield_xml=["amber/protein.ff14SB.xml"],
+            nonbonded_method="NoCutoff",
+            constraints="HBonds",
+            hmr=False,
+        )
+        assert result.get("success", False) is False
+        assert any("condition" in e.lower() for e in result.get("errors", [])), (
+            f"Expected condition-mismatch error, got: {result.get('errors')!r}"
+        )
+        # Node must end up failed, never completed with the wrong hmr.
+        node_status = read_node(str(job_dir), topo_id)["status"]
+        assert node_status in {"failed", "pending"}, (
+            f"After mismatch the node must NOT be completed; got {node_status!r}"
+        )
+
     def test_node_mode_marks_node_failed_on_invalid_input(self, tmp_path):
         """forcefield_xml empty under node mode: node ends up failed, not
         stuck in ``running`` (build_openmm_system must run the failure

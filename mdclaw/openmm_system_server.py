@@ -184,7 +184,24 @@ def build_openmm_system(
             validate_node_execution_context,
         )
 
-        _ctx = validate_node_execution_context(job_dir, node_id, "topo")
+        # Surface the build-time choices into actual_conditions so the topo
+        # node can declare them via ``create_node(... conditions={...})`` and
+        # have ``validate_node_execution_context`` enforce the match.
+        # Mirrors the contract ``build_amber_system`` keeps with its own
+        # actual_conditions so research-mode and curated builders behave
+        # identically under DAG condition checks.
+        _ctx = validate_node_execution_context(
+            job_dir, node_id, "topo",
+            actual_conditions={
+                "forcefield_xml": list(forcefield_xml or []),
+                "nonbonded_method": nonbonded_method,
+                "nonbonded_cutoff_nm": nonbonded_cutoff_nm,
+                "constraints": constraints,
+                "rigid_water": rigid_water,
+                "hmr": hmr,
+                "output_name": output_name,
+            },
+        )
         if not _ctx["success"]:
             return _emit_failure({
                 "success": False,
