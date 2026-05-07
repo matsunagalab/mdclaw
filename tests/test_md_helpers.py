@@ -906,6 +906,164 @@ class TestXMLSystemContractValidation:
         )
 
 
+class TestExplicitRestartFromFinalStepAlignment:
+    """An explicit ``--restart-from <path>`` must not silently inherit
+    the resolver's auto-resolved ``restart_from_node_id``: that would
+    pin ``simulation.currentStep`` to the *DAG-resolved* ancestor's
+    ``final_step`` while loading state from a *user-supplied* file. The
+    helper ``_resolve_restart_node_id_for_run`` enforces "the artifact
+    we load and the metadata we trust must come from the same node":
+
+      - DAG resolver's path → use the resolver's node id (auto-pick).
+      - Explicit path that matches a DAG ancestor's
+        ``state``/``checkpoint`` artifact → use that ancestor's id.
+      - Explicit path with no DAG match → return ``None`` (external
+        file; ``read_ancestor_final_step`` will return ``None``,
+        ``simulation.currentStep`` stays at whatever the loader sets).
+    """
+
+    def _seed_dag(self, jd):
+        """Topo → eq → prod DAG with both ``state`` and ``checkpoint``
+        written on eq_001. ``prod_001`` is left pending so the helpers
+        can be exercised against ``prod_001`` as the run's node id."""
+        from mdclaw._node import (
+            create_node as _create,
+            init_progress_v3,
+        )
+        init_progress_v3(str(jd))
+        _create(str(jd), "source")
+        complete_node(str(jd), "source_001", {"structure_file": "x.cif"})
+        _create(str(jd), "prep", parent_node_ids=["source_001"])
+        complete_node(str(jd), "prep_001", {"merged_pdb": "x.pdb"})
+        _create(str(jd), "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            str(jd), "topo_001",
+            {"system_xml": "artifacts/system.xml",
+             "topology_pdb": "artifacts/topology.pdb",
+             "state_xml": "artifacts/state.xml"},
+        )
+        _create(str(jd), "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            str(jd), "eq_001",
+            {"state": "artifacts/equilibrated.xml",
+             "checkpoint": "artifacts/equilibrated.chk"},
+            metadata={"final_step": 250000},
+        )
+        _create(str(jd), "prod", parent_node_ids=["eq_001"])
+
+    def test_auto_resolved_path_uses_resolver_node_id(self, tmp_path):
+        """Sanity: when the user does NOT pass ``restart_from`` and the
+        resolver picks eq_001, the helper picks up the resolver's
+        ``restart_from_node_id``."""
+        from mdclaw.md_simulation_server import (
+            _resolve_restart_node_id_for_run,
+        )
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        # Simulated resolver inputs.
+        resolver_inputs = {
+            "restart_from": str(
+                jd / "nodes" / "eq_001" / "artifacts" / "equilibrated.xml"
+            ),
+            "restart_from_node_id": "eq_001",
+        }
+        node_id = _resolve_restart_node_id_for_run(
+            job_dir=str(jd), node_id="prod_001",
+            restart_from=resolver_inputs["restart_from"],
+            explicit_restart_from=False,
+            inputs=resolver_inputs,
+        )
+        assert node_id == "eq_001"
+
+    def test_explicit_path_matching_ancestor_artifact_resolves_node_id(
+        self, tmp_path,
+    ):
+        """The explicit path equals eq_001's ``state`` artifact, so the
+        helper still binds the step counter to eq_001."""
+        from mdclaw.md_simulation_server import (
+            _resolve_restart_node_id_for_run,
+        )
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        explicit = str(
+            jd / "nodes" / "eq_001" / "artifacts" / "equilibrated.xml"
+        )
+        node_id = _resolve_restart_node_id_for_run(
+            job_dir=str(jd), node_id="prod_001",
+            restart_from=explicit,
+            explicit_restart_from=True,
+            # Resolver inputs intentionally lie (different node) — the
+            # helper must ignore them when an explicit path is passed.
+            inputs={"restart_from_node_id": "different_node"},
+        )
+        assert node_id == "eq_001"
+
+    def test_explicit_path_with_no_dag_match_returns_none(self, tmp_path):
+        """An external file (e.g. user copied a state.xml from another
+        job) does not match any ancestor's artifact. The helper returns
+        ``None`` so ``read_ancestor_final_step`` will not bind
+        ``simulation.currentStep`` to a DAG ancestor whose state is
+        not the one we loaded."""
+        from mdclaw.md_simulation_server import (
+            _resolve_restart_node_id_for_run,
+        )
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        external_state = jd / "external.xml"
+        external_state.write_text("<placeholder/>")
+        node_id = _resolve_restart_node_id_for_run(
+            job_dir=str(jd), node_id="prod_001",
+            restart_from=str(external_state),
+            explicit_restart_from=True,
+            # The resolver auto-resolved eq_001 — the helper must
+            # NOT inherit that node id since the path is external.
+            inputs={
+                "restart_from": str(
+                    jd / "nodes" / "eq_001"
+                       / "artifacts" / "equilibrated.xml"
+                ),
+                "restart_from_node_id": "eq_001",
+            },
+        )
+        assert node_id is None
+
+    def test_helper_picks_resolver_node_id_when_user_omits_restart_from(
+        self, tmp_path,
+    ):
+        """Pair to the explicit-path tests: when the user passes no
+        ``restart_from``, the helper trusts the resolver's chosen node
+        id verbatim. This is the auto-resolve path used by
+        ``eq → prod`` in node mode."""
+        from mdclaw.md_simulation_server import (
+            _resolve_restart_node_id_for_run,
+        )
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_dag(jd)
+        node_id = _resolve_restart_node_id_for_run(
+            job_dir=str(jd), node_id="prod_001",
+            restart_from=str(
+                jd / "nodes" / "eq_001" / "artifacts" / "equilibrated.xml"
+            ),
+            explicit_restart_from=False,
+            inputs={
+                "restart_from": str(
+                    jd / "nodes" / "eq_001"
+                       / "artifacts" / "equilibrated.xml"
+                ),
+                "restart_from_node_id": "eq_001",
+            },
+        )
+        assert node_id == "eq_001"
+
+
 # ----------------------------------------------------------------------------
 # Bug 5: every early-return path after begin_node() must mark the node failed
 # ----------------------------------------------------------------------------

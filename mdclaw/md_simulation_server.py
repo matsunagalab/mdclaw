@@ -521,13 +521,28 @@ def _signature_mismatches(expected: dict, actual: dict, keys: tuple[str, ...]) -
     return mismatches
 
 
-def _restart_source_metadata(
+def _find_ancestor_for_explicit_restart(
     job_dir: Optional[str],
     node_id: Optional[str],
     restart_from: Optional[str],
-) -> dict:
+) -> tuple[Optional[str], dict]:
+    """Match an explicit ``--restart-from`` path to a DAG ancestor.
+
+    When the caller passes a literal ``restart_from`` path (rather than
+    letting the DAG resolver pick one), the run side still needs to know
+    which ancestor — if any — that path corresponds to so the cumulative
+    step counter and signature checks track the same node. This helper
+    walks ``get_ancestors`` and returns the first ancestor whose
+    ``state`` or ``checkpoint`` artifact resolves to the same absolute
+    path as ``restart_from``.
+
+    Returns ``(node_id, metadata_dict)``. If the path matches no
+    ancestor (external file, hand-edited DAG, etc.), returns
+    ``(None, {})`` — callers should treat this as an external restart
+    source and skip the per-ancestor lookups.
+    """
     if not (job_dir and node_id and restart_from):
-        return {}
+        return None, {}
     from mdclaw._node import get_ancestors, read_node, resolve_artifact
     restart_path = str(Path(restart_from).resolve())
     for anc_id in get_ancestors(job_dir, node_id)[1:]:
@@ -540,8 +555,57 @@ def _restart_source_metadata(
             if not isinstance(rel, str):
                 continue
             if str(resolve_artifact(job_dir, anc_id, rel)) == restart_path:
-                return anc.get("metadata", {}) or {}
-    return {}
+                return anc_id, (anc.get("metadata", {}) or {})
+    return None, {}
+
+
+def _restart_source_metadata(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    restart_from: Optional[str],
+) -> dict:
+    """Backwards-compatible wrapper around
+    ``_find_ancestor_for_explicit_restart`` for callers that only need
+    the metadata dict (signature mismatch comparisons in run_production)."""
+    _anc_id, meta = _find_ancestor_for_explicit_restart(
+        job_dir, node_id, restart_from,
+    )
+    return meta
+
+
+def _resolve_restart_node_id_for_run(
+    *,
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    restart_from: Optional[str],
+    explicit_restart_from: bool,
+    inputs: dict,
+) -> Optional[str]:
+    """Return the ancestor node id whose ``metadata.final_step`` should
+    govern the restored ``simulation.currentStep`` for this run.
+
+    Two cases:
+
+    - The DAG resolver picked the restart artifact (``explicit_restart_from``
+      is False and ``inputs`` carries ``restart_from`` /
+      ``restart_from_node_id``): use the resolver's choice. The picker
+      already enforces "same ancestor for path and step counter".
+
+    - The caller passed an explicit ``--restart-from`` path: only trust
+      a node id when the path *matches* a DAG ancestor's ``state`` /
+      ``checkpoint`` artifact via
+      ``_find_ancestor_for_explicit_restart``. An external / manually-
+      placed file has no ancestor metadata to draw from; the run side
+      should leave ``simulation.currentStep`` at whatever the loader
+      sets (0 for ``saveState`` XML; the persisted counter for
+      ``saveCheckpoint`` ``.chk``).
+    """
+    if not explicit_restart_from:
+        return inputs.get("restart_from_node_id")
+    anc_id, _meta = _find_ancestor_for_explicit_restart(
+        job_dir, node_id, restart_from,
+    )
+    return anc_id
 
 
 def _detect_ensemble_mismatch(
@@ -991,9 +1055,22 @@ def run_equilibration(
         # artifact, resume from it instead of running a fresh
         # minimization + warmup. The first eq node from topo has no
         # ancestor and runs directly from the topo state.xml.
-        if not restart_from and "restart_from" in _inputs:
+        # Explicit ``--restart-from`` always wins over the resolver's
+        # auto-pick; we then trust the resolver's
+        # ``restart_from_node_id`` only when *we* used the resolver's
+        # path. For an explicit path we re-derive the matching ancestor
+        # via path comparison so ``read_ancestor_final_step`` cannot
+        # bind ``simulation.currentStep`` to a different node than the
+        # one whose state/checkpoint we actually load.
+        _explicit_restart_from = bool(restart_from)
+        if not _explicit_restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
-        _restart_from_node_id = _inputs.get("restart_from_node_id")
+        _restart_from_node_id = _resolve_restart_node_id_for_run(
+            job_dir=job_dir, node_id=node_id,
+            restart_from=restart_from,
+            explicit_restart_from=_explicit_restart_from,
+            inputs=_inputs,
+        )
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. The run-side XML system validator's GB-force presence check
@@ -1917,9 +1994,21 @@ def run_production(
             topology_pdb_file = _inputs["topology_pdb_file"]
         if not state_xml_file and "state_xml_file" in _inputs:
             state_xml_file = _inputs["state_xml_file"]
-        if not restart_from and "restart_from" in _inputs:
+        # See run_equilibration for the rationale: explicit
+        # ``--restart-from`` wins over the resolver's auto-pick, and we
+        # trust the resolver's ``restart_from_node_id`` only when we
+        # actually used the resolver's path. An explicit path is matched
+        # back to a DAG ancestor by absolute-path equality so the step
+        # counter cannot drift from the artifact we load.
+        _explicit_restart_from = bool(restart_from)
+        if not _explicit_restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
-        _restart_from_node_id = _inputs.get("restart_from_node_id")
+        _restart_from_node_id = _resolve_restart_node_id_for_run(
+            job_dir=job_dir, node_id=node_id,
+            restart_from=restart_from,
+            explicit_restart_from=_explicit_restart_from,
+            inputs=_inputs,
+        )
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. Mirror of the run_equilibration

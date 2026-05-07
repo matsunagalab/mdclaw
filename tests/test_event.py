@@ -27,7 +27,7 @@ class TestWriteEvent:
         path = write_event(str(job_dir), "eq_001", "tool_completed",
                            tool="run_equilibration",
                            success=True,
-                           cli="mdclaw run_equilibration --prmtop-file x",
+                           cli="mdclaw --job-dir <jd> --node-id eq_001 run_equilibration",
                            details={"platform": "CUDA"})
         ev = json.loads(path.read_text())
         assert ev["node_id"] == "eq_001"
