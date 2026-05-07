@@ -16,8 +16,8 @@
 
 The MDClaw default is HBonds + HMR=True at 4 fs. HMR is a build-time
 choice — it must match what `build_amber_system` /
-`build_openmm_system` baked into `system.xml`, otherwise the
-modern-system shim raises `modern_system_hmr_mismatch` on the run side.
+`build_openmm_system` baked into `system.xml`, otherwise the run-side
+XML system validator raises `modern_system_hmr_mismatch`.
 
 | Constraints | HMR   | Max Timestep | Recommended                                |
 |-------------|-------|--------------|--------------------------------------------|

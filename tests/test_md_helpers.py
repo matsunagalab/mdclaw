@@ -551,9 +551,10 @@ class TestRestartFromErrorFailsNode:
         jd.mkdir()
         init_progress_v3(str(jd))
         # Build the bare minimum DAG: an "anchor" prod (prod_001) with
-        # parents stubbed via an empty-but-completed chain. We don't
-        # need real parm7/state — the early-return for
-        # restart_from_error fires before any artifact is opened.
+        # parents stubbed via an empty-but-completed chain. The early
+        # return for restart_from_error fires before any artifact is
+        # actually opened, so the placeholder paths only need to look
+        # like the schema-v3 XML triple.
         # parents of prod_001 are required to construct continued_from
         # validation, so we synthesize a minimal source→prep→solv→topo→eq
         # spine and complete eq with a state artifact (so prod_001 is a
@@ -576,8 +577,9 @@ class TestRestartFromErrorFailsNode:
                       artifacts={"solvated_pdb": "x.pdb",
                                  "box_dimensions": "x.json"})
         complete_node(str(jd), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb",
+                                 "state_xml": "artifacts/state.xml"})
         complete_node(str(jd), "eq_001",
                       artifacts={"state": "artifacts/equilibrated.xml"},
                       metadata={"final_step": 0})
@@ -613,20 +615,129 @@ class TestRestartFromErrorFailsNode:
 
 
 # ----------------------------------------------------------------------------
-# Modern-system shim contract (HMR / implicit-solvent baked into system.xml).
+# XML system contract (HMR / implicit-solvent baked into system.xml).
 # ----------------------------------------------------------------------------
 
 
+class TestRunEquilibrationFailNodeCoverage:
+    """run_equilibration must mirror run_production: every early-return
+    after the resolver call must transit through fail_node so the eq
+    node ends up ``failed`` rather than perpetually ``pending``. This
+    covers the ``input_resolution_error`` path (no XML triple on the
+    topo ancestor), the ``restart_from_error`` path (a continue_from
+    pointing at an unfinished eq/prod), and the explicit ``--restart-from``
+    file-missing path."""
+
+    def _seed_minimal_dag(self, jd, *, complete_topo: bool = True):
+        # ``complete_node`` (alias for the placeholder-writing helper at
+        # the top of this file) tolerates missing artifact files and only
+        # touches the relative paths so node validation passes.
+        from mdclaw._node import (
+            create_node as _create,
+            init_progress_v3,
+        )
+        init_progress_v3(str(jd))
+        _create(str(jd), "source")
+        complete_node(str(jd), "source_001", {"structure_file": "x.cif"})
+        _create(str(jd), "prep", parent_node_ids=["source_001"])
+        complete_node(str(jd), "prep_001", {"merged_pdb": "x.pdb"})
+        _create(str(jd), "solv", parent_node_ids=["prep_001"])
+        complete_node(str(jd), "solv_001",
+                      {"solvated_pdb": "x.pdb", "box_dimensions": "x.json"})
+        _create(str(jd), "topo", parent_node_ids=["solv_001"])
+        if complete_topo:
+            complete_node(str(jd), "topo_001",
+                          {"system_xml": "artifacts/system.xml",
+                           "topology_pdb": "artifacts/topology.pdb",
+                           "state_xml": "artifacts/state.xml"})
+
+    def test_input_resolution_error_marks_eq_node_failed(self, tmp_path):
+        """Topo ancestor never completed → ``input_resolution_error``.
+        Before the fix the eq node stayed in ``pending``."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        # Topo deliberately left incomplete.
+        self._seed_minimal_dag(jd, complete_topo=False)
+        create_node(str(jd), "eq", parent_node_ids=["topo_001"])
+
+        result = run_equilibration(
+            job_dir=str(jd), node_id="eq_001",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "input_resolution_blocked"
+        eq_node = read_node(str(jd), "eq_001")
+        assert eq_node["status"] == "failed", eq_node["status"]
+
+    def test_eq_chain_unfinished_parent_marks_node_failed(self, tmp_path):
+        """eq → eq chaining: when the new eq's direct eq parent is still
+        pending (no ``state`` artifact yet), the resolver returns an
+        ``input_resolution_error`` and the new eq node must be flipped
+        to ``failed``."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_minimal_dag(jd, complete_topo=True)
+        # eq_001 exists as an anchor parent but never finished.
+        create_node(str(jd), "eq", parent_node_ids=["topo_001"])
+        create_node(str(jd), "eq", parent_node_ids=["eq_001"])
+
+        result = run_equilibration(
+            job_dir=str(jd), node_id="eq_002",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "input_resolution_blocked"
+        eq_node = read_node(str(jd), "eq_002")
+        assert eq_node["status"] == "failed", eq_node["status"]
+
+    def test_explicit_restart_from_missing_marks_eq_node_failed(
+        self, tmp_path
+    ):
+        """A literal ``--restart-from /nope.xml`` that does not exist on
+        disk must flip the eq node to ``failed`` (and propagate the
+        structured error)."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_minimal_dag(jd, complete_topo=True)
+        # Place placeholder XML triple files on disk so the file-existence
+        # checks in run_equilibration do not short-circuit before the
+        # restart_path check fires.
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        create_node(str(jd), "eq", parent_node_ids=["topo_001"])
+
+        result = run_equilibration(
+            job_dir=str(jd), node_id="eq_001",
+            restart_from=str(jd / "definitely_not_a_state.xml"),
+        )
+        assert result.get("success", False) is False
+        assert any(
+            "Restart file not found" in e
+            for e in result.get("errors", [])
+        )
+        eq_node = read_node(str(jd), "eq_001")
+        assert eq_node["status"] == "failed", eq_node["status"]
+
+
 class TestXMLSystemContractValidation:
-    """``_validate_xml_system_contract`` is the native replacement for the
-    pre-Phase-16 ``_ModernPrmtopShim.createSystem`` validation: each
-    NVT / NPT / clean-handoff / production stage now deserializes
+    """``_validate_xml_system_contract`` is the run-side validator for the
+    XML triple emitted by ``build_amber_system`` / ``build_openmm_system``:
+    each NVT / NPT / clean-handoff / production stage deserializes
     ``system.xml`` into a fresh ``openmm.System`` via
     ``_deserialize_xml_system`` and runs this validator before mutating
     the System or starting the integrator. Stable failure codes
     (``modern_system_hmr_mismatch``,
-    ``modern_system_implicit_solvent_unsupported``) match what the shim
-    used to raise so callers / docs do not need to change."""
+    ``modern_system_implicit_solvent_unsupported``)."""
 
     def _build_minimal_system(self, *, hmr: bool, implicit: bool, tmp_path):
         """Create a 1-residue ALA topology + a System optionally with HMR /
@@ -1604,7 +1715,6 @@ class TestCheckTopologyImplicitSolventMatch:
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent="OBC2",
-            is_modern_topology=True,
         ) is None
 
     @pytest.mark.parametrize(
@@ -1627,7 +1737,6 @@ class TestCheckTopologyImplicitSolventMatch:
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent=build,
             runtime_implicit_solvent=runtime,
-            is_modern_topology=True,
         ) is None
 
     def test_obc2_topo_with_gbn2_runtime_is_mismatch(self):
@@ -1640,7 +1749,6 @@ class TestCheckTopologyImplicitSolventMatch:
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent="GBn2",
-            is_modern_topology=True,
         )
         assert err is not None
         assert err["code"] == "implicit_solvent_topology_mismatch"
@@ -1654,7 +1762,6 @@ class TestCheckTopologyImplicitSolventMatch:
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent=None,
-            is_modern_topology=True,
         )
         assert err is not None
         assert err["code"] == "implicit_solvent_topology_mismatch"
@@ -1667,23 +1774,10 @@ class TestCheckTopologyImplicitSolventMatch:
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=None,
             runtime_implicit_solvent="GBn2",
-            is_modern_topology=True,
         )
         assert err is not None
         assert err["code"] == "implicit_solvent_topology_mismatch"
         assert "GBn2" in " ".join(err["errors"])
-
-    def test_legacy_topology_skips_guard(self):
-        """Legacy parm7/rst7 topo nodes carry no
-        ``metadata.implicit_solvent`` and must not trip this guard."""
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
-        assert _check_topology_implicit_solvent_match(
-            topology_implicit_solvent=None,
-            runtime_implicit_solvent="OBC2",
-            is_modern_topology=False,
-        ) is None
 
     def test_corrupt_topo_metadata_returns_distinct_code(self):
         """A garbage value in ``node.json`` ``metadata.implicit_solvent``
@@ -1695,7 +1789,6 @@ class TestCheckTopologyImplicitSolventMatch:
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="MAGIC_GB",
             runtime_implicit_solvent="OBC2",
-            is_modern_topology=True,
         )
         assert err is not None
         assert err["code"] == "implicit_solvent_topology_metadata_invalid"
@@ -1709,7 +1802,6 @@ class TestCheckTopologyImplicitSolventMatch:
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent=None,
             runtime_implicit_solvent=None,
-            is_modern_topology=True,
         ) is None
 
 

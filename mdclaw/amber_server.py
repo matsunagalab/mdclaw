@@ -2960,7 +2960,7 @@ def _run_openmmforcefields_build(
     # can build either kind of System. HMR is a build-time decision: when
     # the user opts in we bake ``hydrogenMass=4 amu`` into every System this
     # generator emits, and the same value is recorded in the provenance dict
-    # so the run_* shim can validate later.
+    # so the run-side XML system validator can match it later.
     common_kwargs: Dict[str, Any] = {"constraints": app.HBonds, "rigidWater": True}
     if hmr:
         common_kwargs["hydrogenMass"] = 4.0 * unit.amu

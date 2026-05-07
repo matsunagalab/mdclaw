@@ -1421,12 +1421,171 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_prod_falls_back_to_checkpoint_when_no_state(
         self, full_dag
     ):
-        """Legacy DAGs written before the saveState migration have only
-        the ``checkpoint`` artifact. resolve_node_inputs must fall back
-        to it rather than returning no restart source."""
+        """When the eq ancestor only carries a ``checkpoint`` artifact
+        (no ``state``), resolve_node_inputs falls back to the checkpoint
+        rather than returning no restart source. The XML state is the
+        preferred vehicle when both are present."""
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "prod_001", "prod")
         assert inputs["restart_from"].endswith("equilibrated.chk")
+
+    def test_resolve_node_inputs_prod_walks_per_ancestor_state_then_checkpoint(
+        self, job_dir
+    ):
+        """Headline regression: when a near prod ancestor carries only a
+        ``checkpoint`` and a far prod ancestor carries a ``state``, the
+        resolver MUST pick the near ancestor's checkpoint. The previous
+        implementation walked all prods looking for state first and would
+        silently roll the run back across an unsaved prod step.
+
+        DAG: prod_003 -> prod_002(checkpoint, no state) -> prod_001(state)
+             -> eq_001 -> topo_001
+        Expected restart_from: prod_002/checkpoint.chk
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"checkpoint": "artifacts/equilibrated.chk",
+                       "state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        # Far prod with state — the buggy ordering would prefer this.
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        # Near prod with only a checkpoint.
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        # The fix: per-ancestor BFS — for prod_002 we try state, miss,
+        # try checkpoint, hit. We never walk to prod_001.
+        assert inputs["restart_from"].endswith(
+            "prod_002/artifacts/checkpoint.chk"
+        ), inputs["restart_from"]
+        assert inputs["restart_from_node_id"] == "prod_002"
+
+    def test_resolve_node_inputs_prod_uses_nearest_state_when_present(
+        self, job_dir
+    ):
+        """Sanity: when the nearest prod has a state, that state wins —
+        nothing changed for the common case."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert inputs["restart_from"].endswith("prod_001/artifacts/state.xml")
+        assert inputs["restart_from_node_id"] == "prod_001"
+
+    def test_read_ancestor_final_step_uses_resolver_chosen_node(
+        self, job_dir
+    ):
+        """``read_ancestor_final_step`` must read ``final_step`` from the
+        same ancestor whose artifact ``_resolve_md_restart`` chose, not
+        from the nearest prod / eq. The two diverge whenever the chosen
+        artifact lives on a non-nearest ancestor — under the BFS-order
+        fix this happens when a prod was registered without artifacts
+        but a sibling has them, or in the regression scenario above."""
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        # Resolver picks prod_002's checkpoint (nearest with an artifact).
+        assert inputs["restart_from_node_id"] == "prod_002"
+        # final_step must come from prod_002 (the chosen ancestor),
+        # not prod_001 (the nearest prod with a *state*).
+        step = read_ancestor_final_step(
+            jd, "prod_003", restart_node_id="prod_002",
+        )
+        assert step == 200, (
+            f"final_step must come from prod_002; got {step!r}"
+        )
+        # Default path replays the same BFS — also returns 200.
+        assert read_ancestor_final_step(jd, "prod_003") == 200
 
     def test_resolve_node_inputs_prod_continue_from_prefers_state(
         self, job_dir

@@ -115,44 +115,36 @@ def _check_topology_implicit_solvent_match(
     *,
     topology_implicit_solvent: Optional[str],
     runtime_implicit_solvent: Optional[str],
-    is_modern_topology: bool,
 ) -> Optional[Dict[str, Any]]:
     """Compare the topo node's build-time implicit-solvent metadata against
-    the run-side request, before either ``createSystem`` runs.
+    the run-side request, before any System is deserialized from
+    ``system.xml``.
 
-    The shim's GB-force presence check (``modern_system_implicit_solvent_unsupported``)
-    catches the worst case (vacuum System paired with ``--implicit-solvent``)
-    but cannot tell ``OBC2``-built from ``GBn2``-built — both Systems carry
-    a ``CustomGBForce``, so a model mismatch would silently run with the
+    The run-side XML system validator
+    (``modern_system_implicit_solvent_unsupported``) catches the worst
+    case (vacuum System paired with ``--implicit-solvent``) but cannot
+    tell ``OBC2``-built from ``GBn2``-built — both Systems carry a
+    ``CustomGBForce``, so a model mismatch would silently run with the
     wrong GB radii. This guard reads the build-time choice from the
     resolver's ``topology_implicit_solvent`` (sourced from
-    ``metadata.implicit_solvent`` of the modern topo ancestor) and compares
-    it against the canonical runtime name. Aliases are normalized through
+    ``metadata.implicit_solvent`` of the topo ancestor) and compares it
+    against the canonical runtime name. Aliases are normalized through
     ``forcefield_catalog.normalize_implicit_solvent`` so ``"GBn2"`` and
     ``"gbneck2"`` count as a match.
 
     Args:
         topology_implicit_solvent: ``metadata.implicit_solvent`` from the
-            modern topo ancestor. ``None`` indicates the topo was built
-            without GB (explicit / vacuum) or the metadata is missing.
+            topo ancestor. ``None`` indicates the topo was built without
+            GB (explicit / vacuum) or the metadata is missing.
         runtime_implicit_solvent: The ``--implicit-solvent`` value passed
             to run_equilibration / run_production.
-        is_modern_topology: Whether the resolved topology came from a
-            modern (system.xml triple) topo node. Legacy parm7/rst7 nodes
-            do not carry this metadata and must not be blocked here.
 
     Returns:
-        ``None`` when the choices line up (or the check does not apply);
-        otherwise a structured-error dict carrying ``code``, ``errors``,
-        and a recovery-friendly ``message``. Callers should splice it
-        into ``result`` and bail via ``_fail_node_if_running``.
+        ``None`` when the choices line up; otherwise a structured-error
+        dict carrying ``code``, ``errors``, and a recovery-friendly
+        ``message``. Callers splice it into ``result`` and bail via
+        ``_fail_node_if_running``.
     """
-    if not is_modern_topology:
-        # Legacy parm7/rst7 topo nodes have no implicit_solvent metadata —
-        # the run side falls back to the shim's GB-force presence check,
-        # which still catches the worst-case (vacuum vs. requested GB).
-        return None
-
     from mdclaw import forcefield_catalog as _fc
 
     # Canonicalize the build-time metadata. ``None`` stays ``None``;
@@ -281,7 +273,7 @@ class _XMLTopologyInputs:
     """Native loader for the ``system.xml`` + ``topology.pdb`` + ``state.xml``
     artifact triple emitted by ``build_amber_system`` /
     ``build_openmm_system``. The XML triple is the only topology contract
-    on the run side — there is no longer a legacy parm7/rst7 fallback.
+    on the run side.
 
     Attributes:
         topology: ``openmm.app.Topology`` loaded from ``topology.pdb``.
@@ -390,8 +382,10 @@ def _validate_xml_system_contract(
     hmr_request: Optional[bool],
     implicit_solvent_request: Optional[str],
 ) -> None:
-    """Replay the build-time → run-time consistency checks the legacy
-    shim used to perform inside ``createSystem``.
+    """Run-time validator for the ``system.xml`` deserialized into a
+    fresh ``openmm.System``. Each run stage (NVT, NPT, clean handoff,
+    production) calls this helper after ``_deserialize_xml_system`` so
+    a runtime kwarg that contradicts the build-time choice fails-fast.
 
     Raises ``_ModernSystemContractError`` with a structured ``code`` if a
     run-time choice contradicts what was baked into ``system.xml``.
@@ -945,18 +939,45 @@ def run_equilibration(
 
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
-        from mdclaw._node import resolve_node_inputs, validate_node_execution_context
+        from mdclaw._node import (
+            begin_node, fail_node,
+            resolve_node_inputs, validate_node_execution_context,
+        )
         _inputs = resolve_node_inputs(job_dir, node_id, "eq")
         if "input_resolution_error" in _inputs:
+            # Mirror run_production: an unresolvable DAG must transit
+            # through fail_node so the eq node ends up ``failed`` rather
+            # than perpetually ``pending``. ``begin_node`` is safe to call
+            # before ``fail_node`` even though no work has run yet — the
+            # node lifecycle is "running → failed", which is what we want
+            # the audit trail to record.
+            err = _inputs["input_resolution_error"]
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
             return create_validation_error(
                 "job_dir/node_id",
-                _inputs["input_resolution_error"],
+                err,
                 expected="Completed topo ancestor with system.xml + topology.pdb [+ state.xml] triple",
                 actual=f"job_dir={job_dir}, node_id={node_id}",
                 context_extra={
                     "input_resolution_errors": _inputs.get("input_resolution_errors", []),
                 },
                 code="input_resolution_blocked",
+            )
+        # An explicit ``continue_from`` pointing at an incomplete eq /
+        # prod ancestor surfaces here as ``restart_from_error``. Mirror
+        # the run_production handling: fail the node cleanly with the
+        # structured message rather than silently dropping the request.
+        if "restart_from_error" in _inputs:
+            err = _inputs["restart_from_error"]
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
+            return create_validation_error(
+                "restart_from",
+                err,
+                expected="Completed continue_from eq/prod node with state or checkpoint artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                code="restart_from_unavailable",
             )
         if not system_xml_file and "system_xml_file" in _inputs:
             system_xml_file = _inputs["system_xml_file"]
@@ -972,16 +993,16 @@ def run_equilibration(
         # ancestor and runs directly from the topo state.xml.
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+        _restart_from_node_id = _inputs.get("restart_from_node_id")
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
-        # before any System is built. The shim's GB-force presence check
+        # before any System is built. The run-side XML system validator's GB-force presence check
         # cannot tell ``OBC2``-built from ``GBn2``-built (both carry a
         # CustomGBForce), so a silent model swap would otherwise mis-
         # simulate quietly.
         _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
             runtime_implicit_solvent=implicit_solvent,
-            is_modern_topology=bool(_inputs.get("system_xml_file")),
         )
         if _topo_solvent_mismatch is not None:
             from mdclaw._node import begin_node, fail_node
@@ -1082,7 +1103,7 @@ def run_equilibration(
     restart_path = Path(restart_from).resolve() if restart_from else None
     if restart_path is not None and not restart_path.is_file():
         result["errors"].append(f"Restart file not found: {restart_from}")
-        return result
+        return _fail_node_if_running(job_dir, node_id, result)
 
     try:
         from openmm.app import (
@@ -1308,7 +1329,10 @@ def run_equilibration(
             )
             if _node_mode:
                 from mdclaw._node import read_ancestor_final_step
-                anc_step = read_ancestor_final_step(job_dir, node_id)
+                anc_step = read_ancestor_final_step(
+                    job_dir, node_id,
+                    restart_node_id=_restart_from_node_id,
+                )
                 if anc_step is not None:
                     sim_nvt.currentStep = anc_step
             result["restarted_from"] = str(restart_path)
@@ -1895,6 +1919,7 @@ def run_production(
             state_xml_file = _inputs["state_xml_file"]
         if not restart_from and "restart_from" in _inputs:
             restart_from = _inputs["restart_from"]
+        _restart_from_node_id = _inputs.get("restart_from_node_id")
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. Mirror of the run_equilibration
@@ -1903,7 +1928,6 @@ def run_production(
         _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
             runtime_implicit_solvent=implicit_solvent,
-            is_modern_topology=bool(_inputs.get("system_xml_file")),
         )
         if _topo_solvent_mismatch is not None:
             from mdclaw._node import begin_node, fail_node
@@ -2301,12 +2325,16 @@ def run_production(
             _load_info = _load_state_into_simulation(
                 simulation, restart_path, is_periodic=is_periodic,
             )
-            # Restore the cumulative step counter from the ancestor so
-            # eq→prod and prod→prod extension preserves the timeline.
-            # The state file itself does not carry currentStep.
+            # Restore the cumulative step counter from the *same*
+            # ancestor whose artifact we just loaded — eq→prod and
+            # prod→prod extension preserves the timeline. The state
+            # file itself does not carry currentStep.
             if _node_mode:
                 from mdclaw._node import read_ancestor_final_step
-                anc_step = read_ancestor_final_step(job_dir, node_id)
+                anc_step = read_ancestor_final_step(
+                    job_dir, node_id,
+                    restart_node_id=_restart_from_node_id,
+                )
                 if anc_step is not None:
                     simulation.currentStep = anc_step
             logger.info(

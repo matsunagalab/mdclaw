@@ -1946,12 +1946,29 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
 def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
     """Locate the restart artifact for an MD node (eq or prod).
 
-    Search order: explicit ``continue_from`` ancestor first, then walk the
-    DAG looking at prod ancestors before eq ancestors. Within each
-    ancestor, prefer the portable ``state`` (XML) artifact and fall back
-    to ``checkpoint`` (binary, GPU-tied). Both eq and prod nodes use the
-    same resolver — eq → eq chaining works the same way as prod → prod
-    extension.
+    Search order: explicit ``continue_from`` ancestor first, then walk
+    parents in BFS order. For each ancestor whose ``node_type`` is
+    ``"prod"`` or ``"eq"``, prefer the portable ``state`` (XML) artifact
+    and fall back to ``checkpoint`` (binary, same-GPU bit-exact replay)
+    *on that same ancestor* before considering older ancestors. The key
+    invariant: a near prod ancestor that only carries a checkpoint
+    wins against a far ancestor that has a state — the alternative
+    silently rolls the run back across an unsaved prod step.
+
+    Returns a dict with one of:
+      - ``restart_from`` (str path) + ``restart_from_node_id`` (str) on
+        a successful match. Callers (and ``read_ancestor_final_step``)
+        must read ``metadata.final_step`` from that node id, not from
+        the nearest prod / eq, so the cumulative step counter is
+        consistent with the artifact actually loaded.
+      - ``restart_from_error`` (str) only for ``continue_from`` that
+        names a node without either artifact. The default-path BFS
+        is allowed to walk past ancestors missing both artifacts (e.g.
+        a future tool that completes eq nodes without writing state).
+      - empty when no ancestor of the right type carries either artifact.
+
+    Both eq and prod nodes use the same resolver — eq → eq chaining
+    works the same way as prod → prod extension.
     """
     result: dict = {}
     continued_from = _read_continued_from(job_dir, node_id)
@@ -1961,6 +1978,7 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
             src = _read_artifact_from_node(job_dir, continued_from, "checkpoint")
         if src is not None:
             result["restart_from"] = src
+            result["restart_from_node_id"] = continued_from
         else:
             result["restart_from_error"] = (
                 f"continue_from='{continued_from}' but that node has neither a "
@@ -1970,16 +1988,28 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
             )
         return result
 
-    for ancestor_type, artifact_key in (
-        ("prod", "state"),
-        ("prod", "checkpoint"),
-        ("eq", "state"),
-        ("eq", "checkpoint"),
-    ):
-        src = find_ancestor_artifact(job_dir, node_id, ancestor_type, artifact_key)
-        if src:
-            result["restart_from"] = src
-            break
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return result
+    nodes_index = progress.get("nodes", {})
+
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        if info.get("type") in ("prod", "eq"):
+            for artifact_key in ("state", "checkpoint"):
+                src = _read_artifact_from_node(job_dir, nid, artifact_key)
+                if src is not None:
+                    result["restart_from"] = src
+                    result["restart_from_node_id"] = nid
+                    return result
+        queue.extend(info.get("parents", []))
     return result
 
 
@@ -2471,32 +2501,62 @@ def _read_artifact_from_node(
     return _resolve_structured_artifact_paths(value, jd / "nodes" / node_id)
 
 
-def read_ancestor_final_step(job_dir: str, node_id: str) -> Optional[int]:
-    """Return the ``metadata.final_step`` of the ancestor that would be
-    chosen as the restart source for *node_id*.
+def read_ancestor_final_step(
+    job_dir: str,
+    node_id: str,
+    *,
+    restart_node_id: Optional[str] = None,
+) -> Optional[int]:
+    """Return the ``metadata.final_step`` of the ancestor whose artifact
+    was chosen as the restart source for *node_id*.
 
-    Mirrors the resolution order in :func:`resolve_node_inputs`'s prod
-    branch (continue_from → prod ancestor → eq ancestor) so that
-    ``run_production``, after calling :meth:`Simulation.loadState`, can
-    restore the cumulative step counter that XML State does not
-    persist. Returns ``None`` when the ancestor has no ``final_step``
-    metadata (e.g. legacy DAGs predating this schema or a node whose
-    run didn't record it).
+    The cumulative step counter the run side restores after
+    :meth:`Simulation.loadState` (XML State does not persist
+    ``currentStep``) must come from the *same* ancestor whose state /
+    checkpoint was loaded. If the resolver picked an older prod
+    ancestor than the nearest one (because the nearest one is missing
+    both artifacts), reading ``final_step`` off the nearest prod would
+    overshoot the actual restart point.
+
+    Pass ``restart_node_id`` to read directly from that node — this
+    is the ``restart_from_node_id`` returned by ``_resolve_md_restart``.
+    When omitted (e.g. an explicit ``--restart-from`` path on the CLI),
+    the helper falls back to the same BFS the resolver uses (per
+    ancestor: prod or eq with state/checkpoint), so the step counter
+    still tracks the artifact that would have been picked.
+
+    Returns ``None`` when no ancestor records ``final_step`` (a node
+    whose run didn't write the metadata yet).
     """
+    if restart_node_id is not None:
+        v = _read_metadata_field(job_dir, restart_node_id, "final_step")
+        return v if isinstance(v, int) else None
+
     continued_from = _read_continued_from(job_dir, node_id)
     if continued_from is not None:
         v = _read_metadata_field(job_dir, continued_from, "final_step")
         return v if isinstance(v, int) else None
 
-    # Default path matches resolve_node_inputs: prod ancestor first,
-    # then eq ancestor. Walk parents in the same order.
-    for anc_type in ("prod", "eq"):
-        anc_id = _find_ancestor_node_id(job_dir, node_id, anc_type)
-        if anc_id is None:
+    # Default path: replay the same per-ancestor BFS the resolver uses.
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return None
+    nodes_index = progress.get("nodes", {})
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
             continue
-        v = _read_metadata_field(job_dir, anc_id, "final_step")
-        if isinstance(v, int):
-            return v
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        if info.get("type") in ("prod", "eq"):
+            for artifact_key in ("state", "checkpoint"):
+                if _read_artifact_from_node(job_dir, nid, artifact_key) is not None:
+                    v = _read_metadata_field(job_dir, nid, "final_step")
+                    return v if isinstance(v, int) else None
+        queue.extend(info.get("parents", []))
     return None
 
 

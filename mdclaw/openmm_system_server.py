@@ -485,8 +485,8 @@ def build_openmm_system(
     if nonbonded_method != "NoCutoff":
         create_system_kwargs["nonbondedCutoff"] = nonbonded_cutoff_nm * unit.nanometer
     # HMR is a build-time decision: bake ``hydrogenMass=4 amu`` into the
-    # System so the run_* shim's modern-system contract check accepts the
-    # default ``hmr=True`` from run_equilibration / run_production.
+    # System so the run-side XML system validator accepts the default
+    # ``hmr=True`` from run_equilibration / run_production.
     if hmr:
         create_system_kwargs["hydrogenMass"] = 4.0 * unit.amu
 

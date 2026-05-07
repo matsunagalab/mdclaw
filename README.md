@@ -231,11 +231,10 @@ Mermaid workflow schematic, and select BibTeX entries from
 
 - **Skills** decide what to run (orchestration only, no state mutation)
 - **Tools** execute and self-record results via `begin_node`/`complete_node`/`fail_node`
-- Input files are **auto-resolved from the DAG**: e.g., `run_equilibration`
-  finds the modern `system.xml` + `topology.pdb` + `state.xml` triple
-  from its `topo` ancestor automatically (legacy `parm7`/`rst7` topo
-  nodes from before the openmmforcefields-unification refactor still
-  resolve transparently via the resolver fallback)
+- Input files are **auto-resolved from the DAG**: e.g.,
+  `run_equilibration` finds the `system.xml` + `topology.pdb` +
+  `state.xml` triple from its `topo` ancestor automatically. The XML
+  triple is the only topology contract on the run side
 
 | File | Scope | Updated by |
 |------|-------|------------|
