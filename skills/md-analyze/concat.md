@@ -27,7 +27,7 @@ mdclaw --job-dir <job_dir> --node-id analyze_001 concat_trajectory \
   --chunk 1000
 ```
 
-`trajectory_files` and `prmtop_file` are auto-resolved from the DAG.
+`trajectory_files` and `system_xml_file` are auto-resolved from the DAG.
 
 Key parameters:
 

@@ -35,7 +35,7 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 If the user does not specify a run length and `execution_mode=autonomous`,
 use `--simulation-time-ns 0.1` as the default sanity check.
 
-`prmtop_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are
+`system_xml_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are
 auto-resolved from DAG ancestors. Ensemble is inherited from the `eq`
 ancestor, so NPT eq states load with a matching barostat by default. For
 extension/retry details, read `skills/md-production/restart.md`.
@@ -50,7 +50,7 @@ to `/hpc-run`. Do not duplicate sbatch patterns here; use the focused runbooks:
 - `skills/hpc-run/prod-extension.md`
 - `skills/hpc-run/monitor-recover.md`
 
-Inside the job script, omit `--prmtop-file`, `--inpcrd-file`, and
+Inside the job script, omit `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, and
 `--restart-from` in normal DAG flows. DAG auto-resolution handles them.
 
 ---

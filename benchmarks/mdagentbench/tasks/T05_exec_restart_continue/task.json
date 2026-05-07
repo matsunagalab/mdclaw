@@ -3,7 +3,9 @@
   "task_id": "T05_exec_restart_continue",
   "category": "engine_sanity",
   "primary_score": "execution",
-  "secondary_scores": ["evidence_communication"],
+  "secondary_scores": [
+    "evidence_communication"
+  ],
   "execution_mode": "lite",
   "time_limit_minutes": 30,
   "failure_policy": {
@@ -11,8 +13,12 @@
     "insufficient_information_allowed": false
   },
   "inputs": {
-    "structures": ["input/5AWL.pdb"],
-    "config_files": ["input/restart_protocol.json"]
+    "structures": [
+      "input/5AWL.pdb"
+    ],
+    "config_files": [
+      "input/restart_protocol.json"
+    ]
   },
   "required_outputs": [
     "manifest.json",
@@ -42,16 +48,21 @@
         "check_id": "concat_trajectory_loadable",
         "check_type": "trajectory_rescan",
         "trajectory_path": "../work/traj_concat.dcd",
-        "topology_path": "../work/system.parm7",
+        "topology_path": "../work/system.topology.pdb",
         "require_min_frames": 4,
         "weight": 0.3
       }
     ],
     "ground_truth_checks": [],
-    "llm_judge_rubrics": ["provenance_traceability"]
+    "llm_judge_rubrics": [
+      "provenance_traceability"
+    ]
   },
   "task_intent": "Split a chignolin NVT MD into two equal chunks; save state.xml after chunk 1, load it on a fresh Simulation for chunk 2, concatenate chunk 1 + chunk 2 trajectories with mdtraj. Verify that step counters are contiguous (chunk1.end == chunk2.start) and that concat frame count equals sum of source frames.",
   "references": [
-    {"note": "Honda et al. 2008 — chignolin CLN025.", "source": "PDB 5AWL"}
+    {
+      "note": "Honda et al. 2008 — chignolin CLN025.",
+      "source": "PDB 5AWL"
+    }
   ]
 }

@@ -25,7 +25,7 @@ Extract parameters from the user's request and present a summary.
 ## Prerequisites
 
 Read `progress.json` -- find a completed `topo` node.
-(`prmtop_file` and `inpcrd_file` are auto-resolved from the `topo` ancestor by the tool.)
+(`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tool.)
 If topology metadata contains ligand charge or clash diagnostics, record them
 for reporting, but do not choose a different equilibration protocol. All NVT
 equilibration runs use the same standard staged minimization and low-temperature

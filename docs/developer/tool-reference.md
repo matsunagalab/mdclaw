@@ -54,10 +54,17 @@ skill examples.
 
 ## `amber_server.py`
 
-- `build_amber_system(...)`: tleap topology generation. Handles ligand, metal,
-  modXNA, glycan, nucleic acid, water-model, and PTM guardrails. In node mode it
-  resolves the PDB from `solv` or prep ancestors and stamps topology artifacts on
-  the `topo` node.
+- `build_amber_system(...)`: openmmforcefields-based topology builder
+  (`SystemGenerator` + `GAFFTemplateGenerator`, with OpenFF Pablo for the
+  PDB → topology stage). Replaces the legacy tleap path. Handles ligand,
+  metal, modXNA, glycan, nucleic acid, water-model, and PTM guardrails via
+  `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
+  prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
+  artifacts plus a `forcefield_provenance` dict on the `topo` node.
+- `build_openmm_system(...)`: research-mode escape hatch — accepts
+  arbitrary OpenMM ForceField XML files (e.g. GB99dms.xml) plus optional
+  ligand SMILES and emits the same modern artifact triple. No FF×water
+  guardrail matrix; users supply XML they already trust.
 
 ## `md_simulation_server.py`
 

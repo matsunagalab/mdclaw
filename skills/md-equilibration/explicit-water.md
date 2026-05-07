@@ -15,8 +15,8 @@ mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> --pressure-bar 1.0
 ```
 
-`prmtop_file` and `inpcrd_file` are auto-resolved from the `topo` ancestor.
-To override, pass `--prmtop-file` / `--inpcrd-file` explicitly.
+`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor.
+To override, pass `--system-xml-file` / `--topology-pdb-file` / `--state-xml-file` explicitly.
 
 The tool self-updates `node.json` and `progress.json` on success or failure.
 

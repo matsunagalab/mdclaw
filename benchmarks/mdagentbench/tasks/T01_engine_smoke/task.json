@@ -11,8 +11,13 @@
     "insufficient_information_allowed": false
   },
   "inputs": {
-    "structures": ["input/5AWL.pdb"],
-    "config_files": ["input/solvent_spec.json", "input/md_protocol.json"]
+    "structures": [
+      "input/5AWL.pdb"
+    ],
+    "config_files": [
+      "input/solvent_spec.json",
+      "input/md_protocol.json"
+    ]
   },
   "required_outputs": [
     "manifest.json",
@@ -50,7 +55,7 @@
         "check_id": "trajectory_rescan",
         "check_type": "trajectory_rescan",
         "trajectory_path": "../work/traj.dcd",
-        "topology_path": "../work/system.parm7",
+        "topology_path": "../work/system.topology.pdb",
         "require_min_frames": 5,
         "weight": 0.3
       }
@@ -60,6 +65,9 @@
   },
   "task_intent": "Run a 10 ps Langevin NVT smoke MD on chignolin (CLN025, PDB 5AWL) starting from the supplied PDB. Report finite energy, no NaN, and emit a trajectory file the scorer can re-load.",
   "references": [
-    {"note": "Honda et al. 2008 — chignolin CLN025 designed mini-protein.", "source": "PDB 5AWL"}
+    {
+      "note": "Honda et al. 2008 — chignolin CLN025 designed mini-protein.",
+      "source": "PDB 5AWL"
+    }
   ]
 }

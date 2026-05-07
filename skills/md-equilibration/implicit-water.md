@@ -17,12 +17,12 @@ mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --implicit-solvent GBn2
 ```
 
-`prmtop_file` and `inpcrd_file` are auto-resolved from the `topo` ancestor.
+`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor.
 Always pass `--implicit-solvent <model>` so OpenMM builds a GB system rather
 than rejecting the non-periodic topology as vacuum. Pass `--pressure-bar 0`
 to make the declared node conditions and restart signature explicit; implicit
 solvent has no barostat and always equilibrates as NVT. To override inputs,
-pass `--prmtop-file` / `--inpcrd-file` explicitly.
+pass `--system-xml-file` / `--topology-pdb-file` / `--state-xml-file` explicitly.
 
 The tool self-updates `node.json` and `progress.json` on success or failure.
 

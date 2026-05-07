@@ -17,7 +17,7 @@ mdclaw submit_job \
   --time-limit "00:30:00" --memory "32G"
 ```
 
-Do not pass `--prmtop-file`, `--inpcrd-file`, or `--restart-from` in normal DAG
+Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal DAG
 commands. The compute-node CLI resolves topology and restart inputs from the DAG.
 
 For `eq -> prod`, create both nodes on the login node and submit prod with an

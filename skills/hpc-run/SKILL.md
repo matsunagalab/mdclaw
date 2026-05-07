@@ -35,7 +35,7 @@ its inputs from the DAG.
 
 - Always pass both `--job-dir` and `--node-id` when submitting or running a DAG
   workflow node.
-- Do not pass `--prmtop-file`, `--inpcrd-file`, or `--restart-from` in normal
+- Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal
   DAG SLURM commands; resolver logic handles these.
 - `COMPLETED` SLURM state alone does not mark a node complete. The MDClaw tool
   running inside the job owns the final `complete_node` call.

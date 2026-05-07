@@ -3,7 +3,9 @@
   "task_id": "T04_exec_short_protein_md",
   "category": "engine_sanity",
   "primary_score": "execution",
-  "secondary_scores": ["evidence_communication"],
+  "secondary_scores": [
+    "evidence_communication"
+  ],
   "execution_mode": "lite",
   "time_limit_minutes": 60,
   "failure_policy": {
@@ -11,8 +13,13 @@
     "insufficient_information_allowed": false
   },
   "inputs": {
-    "structures": ["input/2LZM.pdb"],
-    "config_files": ["input/prep_request.json", "input/md_protocol.json"]
+    "structures": [
+      "input/2LZM.pdb"
+    ],
+    "config_files": [
+      "input/prep_request.json",
+      "input/md_protocol.json"
+    ]
   },
   "required_outputs": [
     "manifest.json",
@@ -58,16 +65,21 @@
         "check_id": "trajectory_rescan",
         "check_type": "trajectory_rescan",
         "trajectory_path": "../work/traj_production.dcd",
-        "topology_path": "../work/system.parm7",
+        "topology_path": "../work/system.topology.pdb",
         "require_min_frames": 50,
         "weight": 0.25
       }
     ],
     "ground_truth_checks": [],
-    "llm_judge_rubrics": ["limitations"]
+    "llm_judge_rubrics": [
+      "limitations"
+    ]
   },
   "task_intent": "Run an end-to-end short MD on T4 lysozyme WT (PDB 2LZM): prepare with ff14SB/TIP3P, equilibrate with positional restraints, then perform >= 100 ps NVT production, emit a DCD trajectory with >= 50 frames, and report finite/no-NaN.",
   "references": [
-    {"note": "T4 lysozyme WT, Matthews lab thermodynamic series.", "source": "PDB 2LZM"}
+    {
+      "note": "T4 lysozyme WT, Matthews lab thermodynamic series.",
+      "source": "PDB 2LZM"
+    }
   ]
 }

@@ -51,7 +51,7 @@ use `--simulation-time-ns 0.1` as the default sanity check.
 
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
 
-`prmtop_file`, `inpcrd_file`, and `restart_from` auto-resolve from DAG
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` auto-resolve from DAG
 ancestors. For extension/retry details, read
 `skills/md-production/restart.md`.
 
