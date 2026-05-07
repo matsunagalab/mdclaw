@@ -33,6 +33,7 @@ from mdclaw._common import (  # noqa: E402
     create_file_not_found_error,
     create_tool_not_available_error,
     create_unique_subdir,
+    create_validation_error,
     ensure_directory,
     setup_logger,
 )
@@ -203,7 +204,24 @@ def build_openmm_system(
     result["output_dir"] = str(out_dir)
 
     if not pdb_file:
-        return _emit_failure(create_file_not_found_error(str(pdb_file), file_type="pdb_file"))
+        # ``pdb_file is None`` (or empty string) is a structural error, not a
+        # missing file — distinguish them so users / agents see "supply
+        # pdb_file" instead of "file None not found". In node mode, the
+        # error fires only after auto-resolve has had a chance to populate
+        # pdb_file from the prep ancestor.
+        return _emit_failure(create_validation_error(
+            "pdb_file",
+            "pdb_file is required",
+            expected="An absolute or working-directory-relative path to a "
+                     "prepared (hydrogenated) PDB",
+            actual=repr(pdb_file),
+            hints=[
+                "Pass --pdb-file <path>, or run in node mode with a "
+                "completed prep ancestor so resolve_node_inputs can "
+                "auto-resolve merged_pdb.",
+            ],
+            code="missing_pdb_file",
+        ))
 
     pdb_path = Path(pdb_file)
     if not pdb_path.is_file():

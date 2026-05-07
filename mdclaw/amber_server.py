@@ -1836,104 +1836,124 @@ def build_amber_system(
     nucleic_forcefield: str = "auto",
     glycan_forcefield: str = "auto",
     is_membrane: Optional[bool] = None,
-    hmr: bool = False,
+    hmr: bool = True,
     implicit_solvent: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
-    """Build Amber topology (parm7) and coordinate (rst7) files using tleap.
-    
-    This tool generates Amber-compatible files from a prepared PDB structure.
-    Supports both implicit solvent (no water, no PBC) and explicit solvent
-    (with water box and PBC) systems.
-    
-    The solvent type is automatically determined:
-    - If box_dimensions is None → implicit solvent (no PBC)
-    - If box_dimensions is provided → explicit solvent (with PBC)
-    
-    For explicit solvent systems, use the box_dimensions from solvate_structure
-    output directly:
-    
-    ```python
-    solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
-    amber_result = build_amber_system(
-        pdb_file=solvate_result["output_file"],
-        box_dimensions=solvate_result["box_dimensions"],
-        water_model="opc"
-    )
-    ```
-    
+    """Build an OpenMM ``System`` for a prepared PDB via openmmforcefields.
+
+    Replaces the legacy tleap path. Internally runs ``openmmforcefields``'
+    ``SystemGenerator`` (with ``GAFFTemplateGenerator`` for ligands) over an
+    OpenFF Pablo-loaded topology, applies the resolved Amber XML bundle
+    from ``forcefield_catalog``, optionally bakes in HMR via
+    ``hydrogenMass=4 amu``, and serializes the result as the modern
+    artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
+    (consumed by ``run_equilibration`` / ``run_production`` in node mode).
+
+    The solvent type is determined from ``box_dimensions``:
+    - If ``box_dimensions`` is ``None`` → implicit / vacuum (no PBC).
+      Note: implicit solvent (GB) is **not yet wired through the
+      openmmforcefields path**; passing ``implicit_solvent`` returns
+      ``code="implicit_solvent_unsupported_under_openmmforcefields"``.
+    - If ``box_dimensions`` is provided → explicit solvent (with PBC).
+
+    Example (explicit solvent, default HMR=True)::
+
+        solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
+        amber_result = build_amber_system(
+            pdb_file=solvate_result["output_file"],
+            box_dimensions=solvate_result["box_dimensions"],
+            water_model="opc",
+        )
+
     Args:
-        pdb_file: Input PDB file path. For implicit solvent, use merged.pdb
-                  from merge_structures. For explicit solvent, use solvated.pdb
-                  from solvate_structure.
-        ligand_params: List of ligand parameter dicts. Each dict should have:
-                       - mol2: Path to GAFF2 parameterized MOL2 file
-                       - frcmod: Path to force field modification file
-                       - residue_name: 3-letter residue name (e.g., "LIG")
-                       Example: [{"mol2": "lig.mol2", "frcmod": "lig.frcmod", "residue_name": "LIG"}]
-        modxna_params: List of modified-nucleic parameter dicts. Each dict should have:
-                       - residue_name: 3-letter residue name in the input PDB
-                       - lib/off: Path to modXNA-generated LEaP library
-                       - frcmod: Path to modXNA frcmod file
-        metal_params: List of metal parameter dicts from parameterize_metal_ion.
-                      Each dict should have:
-                      - mol2: Path to metal mol2 file (from metalpdb2mol2.py)
-                      - frcmod: Path to frcmod file (optional, from MCPB.py)
-                      - residue_name: Metal residue name (e.g., "ZN")
-                      Example: [{"mol2": "zn.mol2", "residue_name": "ZN"}]
-        box_dimensions: PBC box dimensions from solvate_structure output.
-                        Required keys: box_a, box_b, box_c (in Angstroms).
-                        If None, builds implicit solvent system (no PBC).
-        forcefield: Protein force field name (default: "ff19SB").
-                    Options: "ff14SB", "ff19SB"
-        water_model: Water model for explicit solvent (default: "opc").
-                     Options: "tip3p", "opc", "tip4pew"
-                     Only used when box_dimensions is provided.
-                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
-        nucleic_forcefield: Standard nucleic acid force-field loading policy.
-                            "auto" loads DNA OL15 and/or RNA OL3 when standard
-                            nucleic residues are present; "none" disables this.
-        is_membrane: Set True for membrane systems to load lipid21 force field.
-                     If omitted in node mode, resolved from DAG metadata.
-                     Only used when box_dimensions is provided. (default: auto/False)
-        output_name: Base name for output files (default: "system").
-                     Creates {output_name}.parm7 and {output_name}.rst7
-        output_dir: Output directory (auto-generated if None)
-    
+        pdb_file: Input PDB. For implicit solvent use ``merged.pdb`` from
+                  ``merge_structures``; for explicit solvent use
+                  ``solvated.pdb`` from ``solvate_structure``.
+        ligand_params: List of ligand parameter dicts; each must carry
+                       ``mol2`` (GAFF-parameterized) and ``residue_name``.
+                       Loaded as OpenFF ``Molecule`` objects so
+                       ``GAFFTemplateGenerator`` can parameterize them.
+        modxna_params / metal_params: Currently unsupported under the
+                       openmmforcefields path; non-empty lists return
+                       structured codes ``modxna_openmm_xml_required`` /
+                       ``metal_openmm_xml_required``. Build via the
+                       legacy parm7 path or supply pre-converted XML
+                       through ``extra_xml`` (research-mode tool
+                       ``build_openmm_system``) until the parmed bridge
+                       ships.
+        box_dimensions: ``{"box_a", "box_b", "box_c"}`` in Å from
+                        ``solvate_structure``; ``None`` selects implicit /
+                        vacuum.
+        forcefield: Protein FF (default: ``"ff19SB"``).
+        water_model: Water model for explicit solvent (default: ``"opc"``).
+                     OPC is strongly recommended with ff19SB (Amber25 ch.3.6).
+        nucleic_forcefield: ``"auto"`` loads DNA OL15 / RNA OL3 when
+                            standard nucleic residues are present;
+                            ``"none"`` disables it.
+        is_membrane: Loads lipid21 when ``True``; resolved from DAG
+                     metadata in node mode.
+        hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
+             ``system.xml`` so eq/prod can run a 4 fs timestep without
+             tripping the modern-system contract check. Defaults match
+             ``run_equilibration`` / ``run_production`` so the standard
+             default workflow (build → eq → prod, no kwargs) succeeds.
+        implicit_solvent: GB model name (``"OBC2"``, ``"GBn2"``, ...).
+                          **Not yet supported via openmmforcefields**;
+                          rejected with code
+                          ``implicit_solvent_unsupported_under_openmmforcefields``.
+        output_name: Stem for the artifact filenames; emits
+                     ``{output_name}.system.xml``,
+                     ``{output_name}.topology.pdb``,
+                     ``{output_name}.state.xml``.
+        output_dir / job_dir / node_id: Standard mdclaw I/O knobs. In
+                     node mode, the topo node's metadata is stamped with
+                     ``system_artifact_kind="openmm_system_xml"`` and a
+                     ``forcefield_provenance`` dict (``method.hmr``,
+                     ``openmm_xml`` bundle, sha256 table, OpenMM /
+                     openmmforcefields versions).
+
     Returns:
         Dict with:
-            - success: bool - True if system building completed successfully
-            - job_id: str - Unique identifier for this operation
-            - output_dir: str - Output directory path
-            - parm7: str - Path to Amber topology file
-            - rst7: str - Path to Amber coordinate file
-            - leap_log: str - Path to tleap log file
-            - leap_script: str - Path to generated tleap script
-            - solvent_type: str - "implicit" or "explicit"
-            - parameters: dict - Parameters used for building
-            - statistics: dict - System statistics (num_atoms, num_residues)
-            - errors: list[str] - Error messages (empty if success=True)
-            - warnings: list[str] - Non-critical issues encountered
+            - ``success``: bool — True when the System built and
+              serialized cleanly.
+            - ``job_id``, ``output_dir``: bookkeeping.
+            - ``system_xml``, ``topology_pdb``, ``state_xml``: absolute
+              paths to the modern artifact triple.
+            - ``solvent_type``: ``"implicit"`` or ``"explicit"``.
+            - ``parameters``: copy of the input parameter selection.
+            - ``forcefield_provenance``: dict capturing the resolved
+              OpenMM XML bundle, ligand Molecules, ``method.hmr``,
+              versions of OpenMM / openmmforcefields / openff-toolkit.
+            - ``statistics``: ``{"num_atoms", "num_residues"}``.
+            - ``code``: structured failure code on failure (e.g.
+              ``metal_openmm_xml_required``,
+              ``implicit_solvent_unsupported_under_openmmforcefields``).
+            - ``errors`` / ``warnings``: lists of strings.
     
-    Example (implicit solvent):
-        >>> result = build_amber_system(
-        ...     pdb_file="output/job1/merged.pdb",
-        ...     ligand_params=[{
-        ...         "mol2": "output/job1/ligand.gaff.mol2",
-        ...         "frcmod": "output/job1/ligand.frcmod",
-        ...         "residue_name": "LIG"
-        ...     }]
-        ... )
-    
-    Example (explicit solvent):
+    Example (explicit solvent, ligand, default HMR=True):
         >>> solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
         >>> result = build_amber_system(
         ...     pdb_file=solvate_result["output_file"],
+        ...     ligand_params=[{
+        ...         "mol2": "output/job1/ligand.gaff.mol2",
+        ...         "frcmod": "output/job1/ligand.frcmod",
+        ...         "residue_name": "LIG",
+        ...     }],
         ...     box_dimensions=solvate_result["box_dimensions"],
-        ...     water_model="opc"
+        ...     water_model="opc",
+        ... )
+        >>> result["system_xml"], result["topology_pdb"], result["state_xml"]
+
+    Example (vacuum, no implicit solvent — research only):
+        >>> result = build_amber_system(
+        ...     pdb_file="output/job1/merged.pdb",
+        ...     # no box_dimensions and no implicit_solvent — produces a
+        ...     # vacuum NoCutoff System; eq/prod will reject it because
+        ...     # vacuum is not a recommended ensemble for default workflows.
         ... )
     """
     solvation_water_model = None
@@ -1948,6 +1968,8 @@ def build_amber_system(
                 "nucleic_forcefield": nucleic_forcefield,
                 "glycan_forcefield": glycan_forcefield,
                 "is_membrane": is_membrane,
+                "hmr": hmr,
+                "implicit_solvent": implicit_solvent,
                 "output_name": output_name,
             },
             pdb_file=pdb_file,

@@ -849,6 +849,89 @@ class TestRunProductionFailNodeCoverage:
         out = _fail_node_if_running(None, None, result)
         assert out is result
 
+    def test_run_equilibration_vacuum_rejection_marks_node_failed(self, tmp_path):
+        """Same fail-node coverage applies to run_equilibration: a
+        non-periodic topology with no implicit_solvent must mark the node
+        ``failed``, never leave it ``running``. (Review fix 2 for
+        openmmforcefields-unification.)
+
+        We exercise the rejection path by handing run_equilibration a fake
+        modern triple whose system.xml deserializes to a non-periodic
+        System (no box vectors). The vacuum guardrail fires after
+        ``begin_node()`` and must transit through ``_fail_node_if_running``."""
+        from openmm import (
+            HarmonicBondForce, NonbondedForce, System, XmlSerializer,
+        )
+        from openmm.app import Element, PDBFile, Topology
+        from openmm.unit import dalton
+        from mdclaw._node import complete_node, create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        # 1) Build a minimal non-periodic OpenMM System and serialize to
+        #    system.xml. Topology gets a single ALA residue's heavy atoms.
+        top = Topology()
+        chain = top.addChain("A")
+        res = top.addResidue("ALA", chain, "1")
+        n = top.addAtom("N", Element.getBySymbol("N"), res)
+        ca = top.addAtom("CA", Element.getBySymbol("C"), res)
+        c = top.addAtom("C", Element.getBySymbol("C"), res)
+        top.addBond(n, ca)
+        top.addBond(ca, c)
+
+        sys_obj = System()
+        for _ in range(3):
+            sys_obj.addParticle(12.0 * dalton)
+        sys_obj.addForce(HarmonicBondForce())
+        sys_obj.addForce(NonbondedForce())
+
+        topo_dir = tmp_path / "topo_artifacts"
+        topo_dir.mkdir()
+        sys_xml = topo_dir / "system.xml"
+        sys_xml.write_text(XmlSerializer.serialize(sys_obj))
+
+        # topology.pdb derived from the same Topology — no CRYST1, so
+        # ``inpcrd.boxVectors`` will be None → vacuum guardrail.
+        topology_pdb = topo_dir / "topology.pdb"
+        positions = [(0.0, 0.0, 0.0), (0.15, 0.0, 0.0), (0.30, 0.0, 0.0)]
+        from openmm import Vec3
+        positions_q = [Vec3(*p) for p in positions]
+        with topology_pdb.open("w") as fh:
+            PDBFile.writeFile(top, positions_q, fh, keepIds=False)
+
+        # 2) Build a (topo -> eq) DAG that points at those artifacts.
+        job_dir = tmp_path / "job_eq_vacuum"
+        create_node(str(job_dir), "topo")
+        ta = job_dir / "nodes" / "topo_001" / "artifacts"
+        ta.mkdir(parents=True, exist_ok=True)
+        (ta / "system.xml").write_bytes(sys_xml.read_bytes())
+        (ta / "topology.pdb").write_bytes(topology_pdb.read_bytes())
+        complete_node(
+            str(job_dir),
+            "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+            },
+        )
+        create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+
+        # 3) Run equilibration without implicit_solvent. The non-periodic
+        #    topology + no implicit_solvent guardrail must mark the node failed.
+        result = run_equilibration(
+            temperature_kelvin=300.0,
+            nvt_steps=1,
+            npt_steps=0,
+            platform="CPU",
+            job_dir=str(job_dir),
+            node_id="eq_001",
+        )
+        assert result.get("success", False) is False
+        eq_node = read_node(str(job_dir), "eq_001")
+        assert eq_node["status"] == "failed", (
+            f"Expected eq_001 status=failed after vacuum rejection, "
+            f"got {eq_node['status']!r}"
+        )
+
     def test_fail_node_helper_skips_when_success(self, tmp_path):
         """A successful run dict must NOT trigger fail_node — the caller
         sometimes passes through this helper from non-fatal cleanup
@@ -971,6 +1054,42 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         )
         assert result["success"] is False
         assert result.get("code") == "implicit_solvent_unsupported_under_openmmforcefields"
+
+    def test_build_amber_system_default_hmr_matches_run_defaults(self, tmp_path):
+        """The default ``build_amber_system()`` call (no hmr= override) must
+        bake HMR into system.xml. This is the contract that lets the
+        zero-kwarg workflow (build_amber_system → run_equilibration →
+        run_production with no overrides) succeed: run_equilibration's
+        default ``hmr=True`` would otherwise trip
+        ``modern_system_hmr_mismatch`` against a non-HMR build."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                # No hmr=! Verifying the default propagates.
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert captured["hmr"] is True, (
+            "build_amber_system default hmr must be True so run_equilibration "
+            "/ run_production defaults (also hmr=True) line up under the "
+            "modern-system contract."
+        )
+        prov = result.get("forcefield_provenance") or {}
+        assert (prov.get("method") or {}).get("hmr") is True
 
     def test_build_amber_system_provenance_records_hmr(self, tmp_path):
         """When ``hmr=True`` builds successfully via openmmforcefields, the

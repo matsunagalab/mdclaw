@@ -127,6 +127,21 @@ def test_build_openmm_system_missing_pdb_returns_file_not_found(tmp_path):
     assert result.get("success", False) is False
 
 
+def test_build_openmm_system_pdb_file_required_validation_error(tmp_path):
+    """Calling without ``pdb_file`` (and without enough DAG context to
+    auto-resolve one) must return a structured validation error keyed by
+    ``code="missing_pdb_file"``, not a confusing "file None not found"
+    file-not-found error. (Review fix 4 of openmmforcefields-unification.)"""
+    result = build_openmm_system(
+        pdb_file=None,
+        forcefield_xml=["amber/protein.ff14SB.xml"],
+        output_dir=str(tmp_path / "topo"),
+    )
+    assert result.get("success", False) is False
+    assert result.get("code") == "missing_pdb_file"
+    assert any("pdb_file" in e for e in result.get("errors", []))
+
+
 # ----------------------------------------------------------------------------
 # Node-mode regression tests (Bug 2 of openmmforcefields-unification)
 # ----------------------------------------------------------------------------

@@ -183,7 +183,6 @@ def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_p
     # the tleap process entirely. The test exercises the water-model
     # parameter-marking behavior, not the actual System build.
     def _fake_om_build(**kwargs):
-        out_dir = kwargs["out_dir"]
         kwargs["system_xml_file"].write_text("<System/>")
         kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
         kwargs["state_xml_file"].write_text("<State/>")
@@ -588,3 +587,108 @@ def test_policy_unparseable_time_and_memory_are_warnings():
         "policy_memory_unparseable",
     }
     assert all(result["severity"] == "warning" for result in results)
+
+
+# ----------------------------------------------------------------------------
+# Review fix 3: hmr / implicit_solvent flow into actual_conditions
+# ----------------------------------------------------------------------------
+
+
+def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_path):
+    """Topo nodes can declare ``hmr`` / ``implicit_solvent`` as conditions
+    on creation. ``build_amber_system`` must surface those from its
+    keyword arguments into ``actual_conditions`` so
+    ``validate_node_execution_context`` can match them against
+    ``node.conditions``. (Review fix 3 of openmmforcefields-unification.)"""
+    from unittest.mock import patch
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb)
+    job_dir = tmp_path / "job_hmr_condition_match"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(
+        str(job_dir),
+        "topo",
+        conditions={"hmr": True},
+    )
+    assert node["success"] is True
+
+    def _fake_om_build(**kwargs):
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": [],
+                "method": {"hmr": kwargs.get("hmr", False)},
+            },
+        }
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        # Matching hmr=True against the declared condition succeeds.
+        ok = build_amber_system(
+            pdb_file=str(pdb),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            forcefield="ff14SB",
+            water_model="opc",
+            hmr=True,
+        )
+        assert ok["success"] is True, ok.get("errors")
+
+
+def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
+    """If the topo node declared ``hmr=True`` but the run came in with
+    ``hmr=False``, validation must fail before the build helper runs."""
+    from unittest.mock import patch
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb)
+    job_dir = tmp_path / "job_hmr_condition_mismatch"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(
+        str(job_dir),
+        "topo",
+        conditions={"hmr": True},
+    )
+    assert node["success"] is True
+
+    # The build helper must NOT be reached when conditions mismatch.
+    helper_called = {"yes": False}
+
+    def _fake_om_build(**kwargs):
+        helper_called["yes"] = True
+        return {"success": True, "errors": [], "warnings": []}
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            forcefield="ff14SB",
+            water_model="opc",
+            hmr=False,
+        )
+
+    assert result.get("success", False) is False
+    assert any("condition" in e for e in result.get("errors", []))
+    assert helper_called["yes"] is False, (
+        "Condition mismatch must short-circuit before the build helper runs."
+    )

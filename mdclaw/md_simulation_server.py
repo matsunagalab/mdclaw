@@ -908,7 +908,7 @@ def run_equilibration(
                 "Non-periodic topology without implicit_solvent would run vacuum equilibration. "
                 "Pass --implicit-solvent for GB simulations or build an explicit-solvent topology."
             )
-            return result
+            return _fail_node_if_running(job_dir, node_id, result)
 
         # HMR kwargs shared by NVT, NPT, and the clean checkpoint System
         # (must mirror run_production's hmr handling so the saved checkpoint
