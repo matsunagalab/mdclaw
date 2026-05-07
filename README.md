@@ -72,8 +72,9 @@ See `mdclaw --list`.
 ### Nucleic Acids
 
 Standard DNA/RNA chains are supported through the same DAG workflow: include
-`nucleic` during preparation and `build_amber_system` auto-loads Amber OL15
-for DNA and OL3 for RNA. Modified nucleotides are handled as an explicit prep
+`nucleic` during preparation and `build_amber_system` resolves the matching
+`amber/DNA.OL15.xml` / `amber/RNA.OL3.xml` from `forcefield_catalog` into
+the SystemGenerator bundle. Modified nucleotides are handled as an explicit prep
 branch with `prepare_modified_nucleic`, which requires `MDCLAW_MODXNA_DIR`
 unless the environment already provides `modxna.sh` and `dat/frcmod.modxna`.
 MDClaw can auto-fill curated modXNA fragment presets such as `5CM`, while
@@ -139,7 +140,9 @@ job_a1b2c3d4/
     topo_001/                  ← topology (shared by all eq/prod)
       node.json
       artifacts/
-        system.parm7 system.rst7
+        system.system.xml      ← serialized OpenMM System
+        system.topology.pdb    ← OpenMM Topology + box vectors
+        system.state.xml       ← post-minimization state
     eq_001/                    ← equilibration at 300K
       node.json
       artifacts/
@@ -229,7 +232,10 @@ Mermaid workflow schematic, and select BibTeX entries from
 - **Skills** decide what to run (orchestration only, no state mutation)
 - **Tools** execute and self-record results via `begin_node`/`complete_node`/`fail_node`
 - Input files are **auto-resolved from the DAG**: e.g., `run_equilibration`
-  finds `parm7`/`rst7` from its `topo` ancestor automatically
+  finds the modern `system.xml` + `topology.pdb` + `state.xml` triple
+  from its `topo` ancestor automatically (legacy `parm7`/`rst7` topo
+  nodes from before the openmmforcefields-unification refactor still
+  resolve transparently via the resolver fallback)
 
 | File | Scope | Updated by |
 |------|-------|------------|

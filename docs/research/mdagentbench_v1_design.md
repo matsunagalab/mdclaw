@@ -1,5 +1,16 @@
 # MDAgentBench v1.0 — Design Reference
 
+> **Legacy note (2026-09 update)**: This design reference was written
+> before the openmmforcefields-unification refactor. References to
+> `system.parm7` / `system.rst7` describe the v1.0 task contract as
+> originally drafted; the current `build_amber_system` emits
+> `system.system.xml` + `system.topology.pdb` + `system.state.xml`
+> instead, and the live benchmark task definitions in
+> `benchmarks/mdagentbench/tasks/T0{1,4,5}/task.json` use
+> `topology_path: ../work/system.topology.pdb`. Treat the parm7/rst7
+> phrasing in this document as the original specification rather than
+> the current contract.
+
 This document is the design reference for the v1.0 ground-up rebuild of
 MDAgentBench. It supersedes the v0.1 pilot dataset and the
 `mdclaw/benchmark_server.py` + `mdclaw/benchmark_schema.py` framework.

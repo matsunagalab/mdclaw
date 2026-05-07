@@ -1,5 +1,15 @@
 # Equilibration: Implicit Solvent
 
+> **Current support status (2026-09)**: `build_amber_system` does not
+> yet build implicit-solvent (GB) systems under the openmmforcefields
+> path — see `skills/md-prepare/implicit-water.md` for details. The
+> commands below assume the topo node carries a System whose saved
+> `system.xml` already includes a GB force (today: built via
+> `build_openmm_system` with a GB-aware ForceField XML such as
+> `GB99dms.xml`). The shim's contract check rejects `--implicit-solvent`
+> against a System that has no GB force with code
+> `modern_system_implicit_solvent_unsupported`.
+
 ## Equilibration Protocol
 
 NVT only (no NPT — no periodic box in implicit solvent) with the standard

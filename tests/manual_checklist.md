@@ -27,13 +27,20 @@ Run these manually after all automated tests pass.
 - [ ] Run: `/md-prepare PDB 1AKE, chain A, no ligands, run end-to-end with defaults`
 - [ ] Claude proceeds without questions
 - [ ] All 5 steps complete
-- [ ] parm7 and rst7 files exist
+- [ ] Modern topo artifacts exist: `system.system.xml`, `system.topology.pdb`,
+      and `system.state.xml` under the topo node's `artifacts/` directory
+- [ ] Topo `node.json.metadata` carries `system_artifact_kind="openmm_system_xml"`
+      and a populated `forcefield_provenance` dict (`openmm_xml` list,
+      `method.hmr=true`, sha256 table, OpenMM / openmmforcefields versions)
 
 ## Nucleic Acid Workflows
 
 - [ ] Run a standard RNA/DNA preparation with `include_types` containing `nucleic`
 - [ ] Confirm `prepare_complex` records nucleic chains and writes `residue_mapping.json`
-- [ ] Confirm `build_amber_system` metadata records `leaprc.RNA.OL3` and/or `leaprc.DNA.OL15`
+- [ ] Confirm `build_amber_system` records `metadata.forcefield_provenance.openmm_xml`
+      containing `amber/RNA.OL3.xml` and/or `amber/DNA.OL15.xml`
+      (`metadata.nucleic_libraries` keeps the legacy leaprc names for
+      evidence-report continuity)
 - [ ] For a modified nucleotide input, confirm `inspect_molecules` reports chain/residue target fields under `modified_nucleic_residues`
 - [ ] With `MDCLAW_MODXNA_DIR` set, run a branched `prepare_modified_nucleic` node and confirm `modified_nucleic.pdb`, `modxna_params.json`, and updated `residue_mapping.json`
 - [ ] Confirm downstream topology auto-resolves the modified prep branch and Methods output includes modXNA/OL3/OL15 citations when applicable

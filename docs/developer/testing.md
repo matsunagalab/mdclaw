@@ -12,7 +12,9 @@ conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test
 
 - Level 1: fast unit tests with no external scientific dependencies.
 - Level 2: server smoke tests; requires the full scientific environment.
-- Level 3: pipeline tests; may require network, `tleap`, OpenMM, or optional data.
+- Level 3: pipeline tests; may require network, OpenMM, the
+  `openmmforcefields` + `openff-pablo` stack, AmberTools (for
+  `cpptraj` / `antechamber` / `pdb4amber`), or optional data.
 - Level 4: manual agent workflow checks.
 
 ## Common Commands
