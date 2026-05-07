@@ -1353,3 +1353,253 @@ class TestBuildAmberSystemImplicitEndToEnd:
             }
             for f in system.getForces()
         )
+
+
+class TestResolveImplicitSolventModel:
+    """Unit tests for ``_resolve_implicit_solvent_model``.
+
+    The helper guards against the historical ``.upper()``-vs-mixed-case bug
+    that silently mapped ``"GBn2"`` → ``"GBN2"`` → OBC2 fallback. It must
+    canonicalize aliases and fail-fast on unknown names rather than silently
+    selecting OBC2.
+    """
+
+    def _stub_models(self):
+        """Build an OpenMM-symbol stand-in keyed by canonical names."""
+        # Sentinel objects stand in for the real OpenMM symbols
+        # (``app.HCT`` etc.) — the helper only does dict lookup, so any
+        # distinguishable values work and the test stays fast.
+        return {
+            "HCT":  object(),
+            "OBC1": object(),
+            "OBC2": object(),
+            "GBn":  object(),
+            "GBn2": object(),
+        }
+
+    def test_resolves_canonical_gbn2_to_distinct_object_not_obc2(self):
+        """The headline regression: ``"GBn2"`` must resolve to the GBn2
+        symbol, not silently fall back to OBC2 the way the old
+        ``IMPLICIT_MODELS.get(name.upper(), OBC2)`` lookup did."""
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        models = self._stub_models()
+        model, err = _resolve_implicit_solvent_model("GBn2", models)
+        assert err is None
+        assert model is models["GBn2"]
+        assert model is not models["OBC2"]
+
+    def test_resolves_canonical_gbn_to_distinct_object_not_obc2(self):
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        models = self._stub_models()
+        model, err = _resolve_implicit_solvent_model("GBn", models)
+        assert err is None
+        assert model is models["GBn"]
+        assert model is not models["OBC2"]
+
+    @pytest.mark.parametrize(
+        ("alias", "expected_canonical"),
+        [
+            ("OBC2",    "OBC2"),
+            ("obc2",    "OBC2"),
+            ("OBC",     "OBC2"),     # bare OBC defaults to OBC2
+            ("gbneck2", "GBn2"),
+            ("igb8",    "GBn2"),
+            ("igb5",    "OBC2"),
+            ("HCT",     "HCT"),
+            ("hct",     "HCT"),
+            ("igb1",    "HCT"),
+        ],
+    )
+    def test_aliases_resolve_to_canonical_openmm_symbol(
+        self, alias, expected_canonical
+    ):
+        """Aliases (``gbneck2``, ``igb8``, case variants) reach the OpenMM
+        symbol associated with the canonical key, never via OBC2 fallback."""
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        models = self._stub_models()
+        model, err = _resolve_implicit_solvent_model(alias, models)
+        assert err is None
+        assert model is models[expected_canonical]
+
+    def test_unknown_model_returns_structured_error_not_obc2(self):
+        """A typo / unknown GB model must surface the structured failure
+        code rather than silently selecting OBC2 — the silent fallback was
+        precisely the regression this helper exists to fix."""
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        models = self._stub_models()
+        model, err = _resolve_implicit_solvent_model("MAGIC_GB", models)
+        assert model is None
+        assert err is not None
+        assert err["code"] == "implicit_solvent_model_unsupported"
+        assert any("MAGIC_GB" in e for e in err["errors"])
+        # Supported set surfaces in the message so agents can recover
+        # without consulting the source.
+        assert any("OBC2" in e and "GBn2" in e for e in err["errors"])
+
+    def test_blank_input_is_unknown(self):
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        models = self._stub_models()
+        model, err = _resolve_implicit_solvent_model("   ", models)
+        assert model is None
+        assert err["code"] == "implicit_solvent_model_unsupported"
+
+    def test_catalog_known_but_openmm_map_missing_is_explicit_failure(self):
+        """If the catalog lists a model that the run-side OpenMM map has
+        not been updated for, the helper must report a structured failure
+        rather than silently OBC2-fallback. Models a future drift between
+        catalog and runtime."""
+        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+
+        # Pretend the OpenMM symbol map is out of date and missing GBn2.
+        partial = {
+            "HCT":  object(),
+            "OBC1": object(),
+            "OBC2": object(),
+            "GBn":  object(),
+            # GBn2 deliberately absent
+        }
+        model, err = _resolve_implicit_solvent_model("GBn2", partial)
+        assert model is None
+        assert err["code"] == "implicit_solvent_model_unsupported"
+
+
+class TestRunProductionImplicitSolventLookup:
+    """Mock-level smoke verifying ``run_production`` honors GBn2 (not OBC2).
+
+    The bug was that ``IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)``
+    silently mapped ``"GBn2"`` → ``"GBN2"`` → ``OBC2``. After the fix,
+    ``run_production(implicit_solvent="GBn2")`` must reach
+    ``prmtop.createSystem`` with ``implicitSolvent=app.GBn2``.
+    """
+
+    def test_gbn2_request_calls_createsystem_with_gbn2(self, tmp_path):
+        from unittest.mock import MagicMock, patch
+        from openmm import app
+
+        # Stand-in artifact triple — ``run_production`` short-circuits on
+        # missing files before reaching createSystem, so we just need
+        # paths that exist (their content is not parsed by the mock).
+        sysxml = tmp_path / "system.xml"
+        topo = tmp_path / "topology.pdb"
+        state = tmp_path / "state.xml"
+        for p in (sysxml, topo, state):
+            p.write_text("<placeholder/>")
+
+        # Mock prmtop / inpcrd loaders (the modern triple wrapper) so the
+        # only path we care about — implicit-solvent createSystem — runs
+        # against a captured MagicMock.
+        fake_topology = MagicMock(name="topology")
+        fake_topology.atoms.return_value = []
+        fake_topology.residues.return_value = []
+        fake_prmtop = MagicMock(name="prmtop")
+        fake_prmtop.topology = fake_topology
+        fake_prmtop.createSystem = MagicMock()
+        # Sentinel system to surface as the createSystem return value.
+        fake_system = MagicMock(name="system")
+        fake_prmtop.createSystem.return_value = fake_system
+
+        fake_inpcrd = MagicMock(name="inpcrd")
+        fake_inpcrd.boxVectors = None  # non-periodic = implicit/vacuum
+
+        from mdclaw import md_simulation_server as md_mod
+
+        # Catch the createSystem call; we don't need a full simulation run,
+        # just to confirm the implicit-solvent symbol matches GBn2 instead
+        # of falling back to OBC2.
+        captured: dict = {}
+
+        original_create = fake_prmtop.createSystem
+
+        def _capture_createsystem(**kwargs):
+            captured["implicitSolvent"] = kwargs.get("implicitSolvent")
+            captured["nonbondedMethod"] = kwargs.get("nonbondedMethod")
+            # Surface OBC2 as a poison sentinel: if the lookup regressed
+            # to OBC2, we'd see it here.
+            return fake_system
+
+        fake_prmtop.createSystem = _capture_createsystem
+        # Restore reference for assertion below.
+        _ = original_create
+
+        with patch.object(
+            md_mod, "_maybe_load_modern_topology",
+            return_value=(fake_prmtop, fake_inpcrd),
+        ), patch(
+            "openmm.app.Simulation",
+            side_effect=RuntimeError("__stop_after_createSystem__"),
+        ):
+            result = md_mod.run_production(
+                system_xml_file=str(sysxml),
+                topology_pdb_file=str(topo),
+                state_xml_file=str(state),
+                simulation_time_ns=0.001,
+                implicit_solvent="GBn2",
+                pressure_bar=0,
+                output_dir=str(tmp_path / "out"),
+            )
+
+        # The simulation set-up was aborted on purpose; we only need to
+        # confirm that createSystem received the GBn2 symbol (not OBC2).
+        assert captured.get("implicitSolvent") is app.GBn2, (
+            f"Expected app.GBn2; got {captured.get('implicitSolvent')!r} "
+            "(silent OBC2 fallback regression)."
+        )
+        assert captured.get("nonbondedMethod") is app.NoCutoff
+        # The function aborted via the planted RuntimeError; result will
+        # carry an error message but the key invariant — the GB symbol
+        # we routed in — is satisfied above.
+        assert isinstance(result, dict)
+
+    def test_unknown_implicit_model_fails_node_with_structured_code(
+        self, tmp_path
+    ):
+        """run_production with an unknown GB model name must fail-fast
+        with the structured ``implicit_solvent_model_unsupported`` code,
+        not silently fall back to OBC2."""
+        from unittest.mock import MagicMock, patch
+
+        sysxml = tmp_path / "system.xml"
+        topo = tmp_path / "topology.pdb"
+        state = tmp_path / "state.xml"
+        for p in (sysxml, topo, state):
+            p.write_text("<placeholder/>")
+
+        fake_topology = MagicMock(name="topology")
+        fake_topology.atoms.return_value = []
+        fake_topology.residues.return_value = []
+        fake_prmtop = MagicMock(name="prmtop")
+        fake_prmtop.topology = fake_topology
+        # createSystem MUST NOT be called when the GB lookup fails — the
+        # fail-fast path skips it. Wire it to raise so a regression is
+        # impossible to miss.
+        fake_prmtop.createSystem = MagicMock(
+            side_effect=AssertionError(
+                "createSystem must not be reached for an unknown GB model."
+            )
+        )
+        fake_inpcrd = MagicMock(name="inpcrd")
+        fake_inpcrd.boxVectors = None
+
+        from mdclaw import md_simulation_server as md_mod
+
+        with patch.object(
+            md_mod, "_maybe_load_modern_topology",
+            return_value=(fake_prmtop, fake_inpcrd),
+        ):
+            result = md_mod.run_production(
+                system_xml_file=str(sysxml),
+                topology_pdb_file=str(topo),
+                state_xml_file=str(state),
+                simulation_time_ns=0.001,
+                implicit_solvent="MAGIC_GB",
+                pressure_bar=0,
+                output_dir=str(tmp_path / "out"),
+            )
+        assert result.get("success") is False
+        assert result.get("code") == "implicit_solvent_model_unsupported"
+        assert any("MAGIC_GB" in e for e in result.get("errors", []))

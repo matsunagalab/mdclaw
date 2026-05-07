@@ -19,7 +19,7 @@ logger = setup_logger(__name__)
 
 import json  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Any, Dict, Optional  # noqa: E402
+from typing import Any, Dict, Optional, Tuple  # noqa: E402
 
 import numpy as np  # noqa: E402
 from mdclaw._common import (  # noqa: E402
@@ -62,6 +62,53 @@ def _fail_node_if_running(
             # the original error the caller is about to surface.
             pass
     return result
+
+
+def _resolve_implicit_solvent_model(
+    implicit_solvent: str,
+    openmm_models: Dict[str, Any],
+) -> Tuple[Optional[Any], Optional[Dict[str, Any]]]:
+    """Resolve a user-supplied implicit-solvent name to an OpenMM GB symbol.
+
+    Goes through ``forcefield_catalog.normalize_implicit_solvent`` so the
+    same alias rules apply on the run side as on the build side
+    (case-insensitive ``HCT`` / ``OBC1`` / ``OBC2`` / ``GBn`` / ``GBn2`` plus
+    the ``gbneck2`` / ``igb1``–``igb8`` shortcuts). Unknown names — and the
+    historical ``.upper()``-vs-mixed-case bug that silently mapped
+    ``"GBn2"`` → ``"GBN2"`` → ``OBC2`` — return a structured error instead
+    of falling back, so typos surface as a clean
+    ``implicit_solvent_model_unsupported`` failure rather than a silent
+    accuracy regression.
+
+    Returns:
+        Tuple ``(model, None)`` on success; ``(None, error_dict)`` on
+        failure. ``error_dict`` carries ``code`` and ``errors`` ready to
+        splice into ``result`` before ``_fail_node_if_running``.
+    """
+    from mdclaw import forcefield_catalog as _fc
+
+    canon = _fc.normalize_implicit_solvent(implicit_solvent)
+    if canon not in _fc.IMPLICIT_SOLVENT_XML:
+        supported = ", ".join(_fc.supported_implicit_solvent_models())
+        return None, {
+            "code": "implicit_solvent_model_unsupported",
+            "errors": [
+                f"Unknown implicit-solvent model {implicit_solvent!r}. "
+                f"Supported: {supported}."
+            ],
+        }
+    if canon not in openmm_models:
+        # Catalog and the run-side OpenMM symbol map disagree. This should
+        # not happen — flag it as a structured failure so the bug is
+        # visible rather than masked by an OBC2 fallback.
+        return None, {
+            "code": "implicit_solvent_model_unsupported",
+            "errors": [
+                f"Implicit-solvent model {canon!r} is in the catalog but the "
+                f"run-side OpenMM symbol map is missing it; this is a bug."
+            ],
+        }
+    return openmm_models[canon], None
 
 
 class _ModernSystemContractError(RuntimeError):
@@ -861,6 +908,10 @@ def run_equilibration(
         result["errors"].append("OpenMM not installed")
         return result
 
+    # Canonical implicit-solvent names → OpenMM symbols. Resolved by
+    # ``_resolve_implicit_solvent_model`` (same alias set as
+    # forcefield_catalog), which never silently falls back to OBC2 when
+    # the lookup misses.
     IMPLICIT_MODELS = {
         "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
     }
@@ -949,7 +1000,13 @@ def run_equilibration(
 
         # Create system for NVT
         if implicit_solvent:
-            gb_model = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            gb_model, gb_err = _resolve_implicit_solvent_model(
+                implicit_solvent, IMPLICIT_MODELS
+            )
+            if gb_err:
+                result["errors"].extend(gb_err["errors"])
+                result["code"] = gb_err["code"]
+                return _fail_node_if_running(job_dir, node_id, result)
             system_nvt = prmtop.createSystem(
                 implicitSolvent=gb_model,
                 nonbondedMethod=NoCutoff,
@@ -1312,7 +1369,13 @@ def run_equilibration(
         # Clean System — mirrors run_production's build exactly
         # (same nonbonded method, cutoff, constraints, HMR).
         if implicit_solvent:
-            gb_model_clean = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            gb_model_clean, gb_err = _resolve_implicit_solvent_model(
+                implicit_solvent, IMPLICIT_MODELS
+            )
+            if gb_err:
+                result["errors"].extend(gb_err["errors"])
+                result["code"] = gb_err["code"]
+                return _fail_node_if_running(job_dir, node_id, result)
             system_clean = prmtop.createSystem(
                 implicitSolvent=gb_model_clean,
                 nonbondedMethod=NoCutoff,
@@ -1778,13 +1841,18 @@ def run_production(
         result["errors"].append("Hint: Install with: conda install -c conda-forge openmm")
         return _fail_node_if_running(job_dir, node_id, result)
 
-    # Map implicit solvent model names to OpenMM objects
+    # Map canonical implicit-solvent names (matching forcefield_catalog
+    # and the openmmforcefields ``implicit/<name>.xml`` keys) to OpenMM
+    # symbols. Resolution goes through ``_resolve_implicit_solvent_model``
+    # so user-provided aliases (``gbneck2``, ``igb8``, case variants)
+    # canonicalize the same way build_amber_system does — and unknown
+    # names fail-fast instead of silently falling back to OBC2.
     IMPLICIT_MODELS = {
-        "HCT": HCT,      # igb=1
-        "OBC1": OBC1,    # igb=2
-        "OBC2": OBC2,    # igb=5 (default, well-tested)
-        "GBN": GBn,      # igb=7
-        "GBN2": GBn2,    # igb=8 (recommended by Amber manual)
+        "HCT":  HCT,    # igb=1
+        "OBC1": OBC1,   # igb=2
+        "OBC2": OBC2,   # igb=5 (default, well-tested)
+        "GBn":  GBn,    # igb=7
+        "GBn2": GBn2,   # igb=8 (recommended by Amber manual)
     }
     
     try:
@@ -1834,8 +1902,20 @@ def run_production(
         # Create system - handle implicit vs explicit solvent
         logger.info("Creating OpenMM system")
         if implicit_solvent:
-            # Implicit solvent mode (Generalized Born)
-            gb_model = IMPLICIT_MODELS.get(implicit_solvent.upper(), OBC2)
+            # Implicit solvent mode (Generalized Born). Resolve via the
+            # shared helper so user aliases (``gbneck2``, ``igb8``, case
+            # variants) canonicalize the same way build_amber_system did,
+            # and unknown names fail-fast instead of silently mapping to
+            # OBC2.
+            gb_model, gb_err = _resolve_implicit_solvent_model(
+                implicit_solvent, IMPLICIT_MODELS
+            )
+            if gb_err:
+                result["errors"].extend(gb_err["errors"])
+                result["code"] = gb_err["code"]
+                return _fail_node_if_running(job_dir, node_id, result)
+            from mdclaw import forcefield_catalog as _fc
+            canonical_implicit = _fc.normalize_implicit_solvent(implicit_solvent)
             system = prmtop.createSystem(
                 implicitSolvent=gb_model,
                 nonbondedMethod=NoCutoff,
@@ -1844,9 +1924,9 @@ def run_production(
                 solventDielectric=78.5,
                 **hmr_kwargs,
             )
-            logger.info(f"Using implicit solvent ({implicit_solvent}) with NoCutoff")
+            logger.info(f"Using implicit solvent ({canonical_implicit}) with NoCutoff")
             result["solvent_type"] = "implicit"
-            result["implicit_model"] = implicit_solvent
+            result["implicit_model"] = canonical_implicit
         elif is_periodic:
             # Explicit solvent with periodic boundaries
             system = prmtop.createSystem(
