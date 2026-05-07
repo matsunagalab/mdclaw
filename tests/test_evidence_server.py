@@ -280,6 +280,107 @@ def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
     assert "```bibtex" in markdown
 
 
+def test_generate_md_methods_report_surfaces_modern_provenance(tmp_path):
+    """When build_amber_system records a forcefield_provenance dict on the
+    topo node (PR3+ openmmforcefields path), the methods report must
+    surface the resolved OpenMM XML bundle, and HMR is read from that
+    provenance even if the prod node didn't record one explicitly."""
+    from mdclaw._node import complete_node, create_node
+
+    job_dir = tmp_path / "job_modern"
+    create_node(str(job_dir), "source")
+    _write_artifact(job_dir, "source_001", "artifacts/4M3J.pdb")
+    complete_node(
+        str(job_dir),
+        "source_001",
+        artifacts={"structure_file": "artifacts/4M3J.pdb"},
+        metadata={"source_type": "pdb", "source_id": "4M3J", "chains": ["A"]},
+    )
+    create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+    _write_artifact(job_dir, "prep_001", "artifacts/merged.pdb")
+    complete_node(
+        str(job_dir),
+        "prep_001",
+        artifacts={"merged_pdb": "artifacts/merged.pdb"},
+    )
+    create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+    _write_artifact(job_dir, "solv_001", "artifacts/solvated.pdb")
+    complete_node(
+        str(job_dir),
+        "solv_001",
+        artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+        metadata={"water_model": "opc"},
+    )
+    create_node(str(job_dir), "topo", parent_node_ids=["solv_001"])
+    _write_artifact(job_dir, "topo_001", "artifacts/system.system.xml")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.topology.pdb")
+    _write_artifact(job_dir, "topo_001", "artifacts/system.state.xml")
+    complete_node(
+        str(job_dir),
+        "topo_001",
+        artifacts={
+            "system_xml": "artifacts/system.system.xml",
+            "topology_pdb": "artifacts/system.topology.pdb",
+            "state_xml": "artifacts/system.state.xml",
+        },
+        metadata={
+            "forcefield": "ff19SB",
+            "water_model": "opc",
+            "system_artifact_kind": "openmm_system_xml",
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": [
+                    "amber/protein.ff19SB.xml",
+                    "amber/opc_standard.xml",
+                ],
+                "method": {
+                    "nonbonded": "PME",
+                    "constraints": "HBonds",
+                    "rigid_water": True,
+                    "hmr": True,
+                },
+            },
+        },
+    )
+    create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
+    _write_artifact(job_dir, "eq_001", "artifacts/equilibration.xml")
+    complete_node(
+        str(job_dir),
+        "eq_001",
+        artifacts={"state_file": "artifacts/equilibration.xml"},
+        metadata={"temperature_kelvin": 300.0, "pressure_bar": 1.0},
+    )
+    create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
+    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
+    _write_artifact(job_dir, "prod_001", "artifacts/energy.dat")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={
+            "trajectory": "artifacts/trajectory.dcd",
+            "energy": "artifacts/energy.dat",
+        },
+        # Notably absent: no "hmr" metadata. The HMR truth lives on the
+        # topo node's forcefield_provenance under the modern path.
+        metadata={
+            "simulation_time_ns": 1.0,
+            "temperature_kelvin": 300.0,
+            "timestep_fs": 4.0,
+            "output_frequency_ps": 10.0,
+            "platform": "CPU",
+        },
+    )
+
+    result = generate_md_methods_report(str(job_dir))
+    assert result["success"] is True
+    facts = result["facts"]
+    assert "amber/protein.ff19SB.xml" in facts["additional_forcefields_sentence"]
+    assert "amber/opc_standard.xml" in facts["additional_forcefields_sentence"]
+    # HMR walked back to topo's provenance and surfaced as the production
+    # constraints/HMR description.
+    assert facts["constraints_or_hmr"] == "hydrogen mass repartitioning"
+
+
 def test_generate_md_methods_report_includes_modxna_and_nucleic_citations(tmp_path):
     from mdclaw._node import complete_node, create_node
 

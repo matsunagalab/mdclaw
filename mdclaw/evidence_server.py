@@ -468,7 +468,23 @@ def _topology_description(topo_node: dict | None) -> tuple[str, str, str, str]:
     artifacts = _node_artifacts(topo_node)
     forcefield = str(metadata.get("forcefield") or "not recorded")
     water_model = str(metadata.get("water_model") or "not recorded")
+    # Modern build_amber_system (PR3+) records the resolved OpenMM XML
+    # bundle under metadata.forcefield_provenance — surface it when
+    # available so the methods report carries the openmmforcefields
+    # provenance, not just the leaprc-era name.
+    provenance = metadata.get("forcefield_provenance")
     extra: list[str] = []
+    if isinstance(provenance, dict):
+        kind = provenance.get("kind")
+        xml_bundle = provenance.get("openmm_xml")
+        if kind == "amber_via_openmmforcefields" and isinstance(xml_bundle, list) and xml_bundle:
+            extra.append(
+                "OpenMM ForceField bundle: " + ", ".join(str(x) for x in xml_bundle)
+            )
+        elif kind == "openmm_xml" and isinstance(xml_bundle, list) and xml_bundle:
+            extra.append(
+                "research-mode OpenMM XML: " + ", ".join(str(x) for x in xml_bundle)
+            )
     if metadata.get("nucleic_libraries"):
         libraries = metadata["nucleic_libraries"]
         if isinstance(libraries, list):
@@ -513,7 +529,10 @@ def _equilibration_description(eq_node: dict | None) -> str:
     return _join_sentence_parts(parts)
 
 
-def _production_description(prod_node: dict | None) -> dict[str, str]:
+def _production_description(
+    prod_node: dict | None,
+    topo_node: dict | None = None,
+) -> dict[str, str]:
     if not prod_node:
         return {
             "simulation_time": "not recorded",
@@ -526,6 +545,17 @@ def _production_description(prod_node: dict | None) -> dict[str, str]:
     metadata = _node_metadata(prod_node)
     conditions = _node_conditions(prod_node)
     hmr = metadata.get("hmr")
+    # Modern (PR3+) build_amber_system bakes HMR into system.xml at topo
+    # build time and surfaces it under forcefield_provenance.method.hmr.
+    # Walk to the topo ancestor when the prod node didn't record an
+    # explicit hmr value (e.g. when run_production was invoked under the
+    # modern triple).
+    if hmr is None and topo_node is not None:
+        topo_meta = _node_metadata(topo_node)
+        provenance = topo_meta.get("forcefield_provenance")
+        if isinstance(provenance, dict):
+            method = provenance.get("method") if isinstance(provenance.get("method"), dict) else {}
+            hmr = method.get("hmr")
     if hmr is True:
         constraints_or_hmr = "hydrogen mass repartitioning"
     elif hmr is False:
@@ -594,7 +624,7 @@ def _extract_method_facts(
         additional_forcefields,
         ligand_parameterization,
     ) = _topology_description(topo_node)
-    production = _production_description(prod_node)
+    production = _production_description(prod_node, topo_node=topo_node)
     chains = _node_metadata(source_node).get("chains") if source_node else None
     if not chains and isinstance(progress.get("system"), dict):
         chains = progress["system"].get("chains")
