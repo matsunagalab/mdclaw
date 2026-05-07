@@ -117,7 +117,8 @@ class TestPipelineEqChainDag:
             platform="CPU",
         )
         assert result["success"], result.get("errors")
-        # First eq has no eq/prod ancestor — runs from inpcrd, not a restart.
+        # First eq has no eq/prod ancestor — runs from the topo state.xml
+        # via the XML topology inputs, not from a restart artifact.
         assert result.get("restarted_from") is None
         eq1 = read_node(str(job_dir), self.eq1_id)
         assert eq1["artifacts"]["state"].endswith("equilibrated.xml")

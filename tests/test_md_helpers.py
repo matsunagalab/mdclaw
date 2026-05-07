@@ -728,6 +728,36 @@ class TestRunEquilibrationFailNodeCoverage:
         eq_node = read_node(str(jd), "eq_001")
         assert eq_node["status"] == "failed", eq_node["status"]
 
+    def test_eq_chain_completed_empty_eq_parent_marks_node_failed(
+        self, tmp_path,
+    ):
+        """eq → eq chaining: when the eq parent is *completed* but
+        registered no ``state`` / ``checkpoint`` artifact, the resolver
+        surfaces ``restart_from_error`` (not ``input_resolution_error``)
+        and the new eq node must be flipped to ``failed`` rather than
+        silently rolling back to the topo state.xml."""
+        from mdclaw._node import create_node, read_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        self._seed_minimal_dag(jd, complete_topo=True)
+        # eq_001 completed without writing state / checkpoint — only a
+        # final_structure landed on the node. This is a broken-DAG
+        # signal the resolver must surface, not paper over.
+        create_node(str(jd), "eq", parent_node_ids=["topo_001"])
+        complete_node(str(jd), "eq_001",
+                      {"final_structure": "artifacts/equilibrated.pdb"})
+        create_node(str(jd), "eq", parent_node_ids=["eq_001"])
+
+        result = run_equilibration(
+            job_dir=str(jd), node_id="eq_002",
+        )
+        assert result.get("success", False) is False
+        assert result.get("code") == "restart_from_unavailable"
+        eq_node = read_node(str(jd), "eq_002")
+        assert eq_node["status"] == "failed", eq_node["status"]
+
 
 class TestXMLSystemContractValidation:
     """``_validate_xml_system_contract`` is the run-side validator for the
@@ -1034,7 +1064,8 @@ class TestRunProductionFailNodeCoverage:
         sys_xml.write_text(XmlSerializer.serialize(sys_obj))
 
         # topology.pdb derived from the same Topology — no CRYST1, so
-        # ``inpcrd.boxVectors`` will be None → vacuum guardrail.
+        # the loaded XML topology inputs carry no box vectors → vacuum
+        # guardrail fires on the run side.
         topology_pdb = topo_dir / "topology.pdb"
         positions = [(0.0, 0.0, 0.0), (0.15, 0.0, 0.0), (0.30, 0.0, 0.0)]
         from openmm import Vec3

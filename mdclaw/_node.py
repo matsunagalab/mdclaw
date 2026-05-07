@@ -1943,6 +1943,89 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
     return result
 
 
+def _select_md_restart_ancestor(
+    job_dir: str, node_id: str,
+) -> dict:
+    """Walk parents in BFS order and pick the first prod/eq ancestor that
+    *should* be the restart source for *node_id*.
+
+    For each prod/eq ancestor visited, three outcomes are possible:
+
+    1. ``state`` is present — pick it (preferred; XML is cross-node
+       portable). Stop the walk.
+    2. ``state`` is missing, ``checkpoint`` is present — pick the
+       checkpoint (same-GPU bit-exact replay). Stop the walk.
+    3. The ancestor is *completed* but carries **neither** artifact.
+       Treat the DAG as broken and refuse to skip this ancestor.
+       Restarting from an older ancestor would silently roll the run
+       back across whatever the empty ancestor produced (think: a
+       prod that only wrote a trajectory and forgot the state). The
+       caller should surface this as ``restart_from_error``.
+    4. The ancestor is *not completed* (e.g. failed, pending). The
+       upstream ``_input_resolution_status_errors`` catches direct
+       parents in that state. For non-direct ancestors we keep
+       walking — the run side reaches a stale-but-completed node
+       further up. This matches the pre-Phase-18 behaviour.
+
+    Returns one of:
+      - ``{"restart_from": <abs path>, "restart_from_node_id": <str>}``
+        on success.
+      - ``{"restart_from_error": <message>}`` when a completed prod/eq
+        ancestor carries neither artifact.
+      - ``{}`` when no prod/eq ancestor exists at all (the run side
+        falls back to the topo state.xml for fresh eq runs).
+    """
+    jd = Path(job_dir)
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return {}
+    nodes_index = progress.get("nodes", {})
+
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        info = nodes_index.get(nid, {})
+        if info.get("type") in ("prod", "eq"):
+            state = _read_artifact_from_node(job_dir, nid, "state")
+            checkpoint = (
+                _read_artifact_from_node(job_dir, nid, "checkpoint")
+                if state is None else None
+            )
+            if state is not None:
+                return {
+                    "restart_from": state,
+                    "restart_from_node_id": nid,
+                }
+            if checkpoint is not None:
+                return {
+                    "restart_from": checkpoint,
+                    "restart_from_node_id": nid,
+                }
+            # Neither artifact. If the ancestor is completed, refuse
+            # to skip it — restarting from an older ancestor would
+            # silently roll the run back across whatever this node
+            # produced. Failed / pending direct parents are already
+            # caught by ``_input_resolution_status_errors``; for older
+            # non-completed ancestors we keep walking.
+            if info.get("status") == "completed":
+                return {
+                    "restart_from_error": (
+                        f"Nearest completed {info.get('type')} ancestor "
+                        f"'{nid}' has neither 'state' nor 'checkpoint'; "
+                        f"refusing to skip it and restart from an older "
+                        f"ancestor. Re-run that node to produce a "
+                        f"saveState / saveCheckpoint artifact (or fix "
+                        f"the DAG to drop it from the lineage)."
+                    ),
+                }
+        queue.extend(info.get("parents", []))
+    return {}
+
+
 def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
     """Locate the restart artifact for an MD node (eq or prod).
 
@@ -1950,22 +2033,27 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
     parents in BFS order. For each ancestor whose ``node_type`` is
     ``"prod"`` or ``"eq"``, prefer the portable ``state`` (XML) artifact
     and fall back to ``checkpoint`` (binary, same-GPU bit-exact replay)
-    *on that same ancestor* before considering older ancestors. The key
-    invariant: a near prod ancestor that only carries a checkpoint
-    wins against a far ancestor that has a state — the alternative
-    silently rolls the run back across an unsaved prod step.
+    *on that same ancestor* before considering older ancestors. Two
+    invariants:
+
+    1. A near prod ancestor that only carries a checkpoint wins against
+       a far ancestor that has a state — the alternative silently rolls
+       the run back across an unsaved prod step.
+    2. A *completed* prod/eq ancestor that carries neither artifact
+       blocks resolution outright (``restart_from_error``). Skipping
+       past it would lose whatever the user's tool produced on that
+       node; the right answer is to re-run that node, not pretend it
+       didn't run.
 
     Returns a dict with one of:
       - ``restart_from`` (str path) + ``restart_from_node_id`` (str) on
-        a successful match. Callers (and ``read_ancestor_final_step``)
-        must read ``metadata.final_step`` from that node id, not from
-        the nearest prod / eq, so the cumulative step counter is
-        consistent with the artifact actually loaded.
-      - ``restart_from_error`` (str) only for ``continue_from`` that
-        names a node without either artifact. The default-path BFS
-        is allowed to walk past ancestors missing both artifacts (e.g.
-        a future tool that completes eq nodes without writing state).
-      - empty when no ancestor of the right type carries either artifact.
+        a successful match. ``read_ancestor_final_step`` must read
+        ``metadata.final_step`` from that same node id so the
+        cumulative step counter matches the loaded artifact.
+      - ``restart_from_error`` (str) for ``continue_from`` that names a
+        node without either artifact, or for a completed prod/eq
+        ancestor that carries neither artifact.
+      - empty when no prod/eq ancestor exists at all (fresh eq run).
 
     Both eq and prod nodes use the same resolver — eq → eq chaining
     works the same way as prod → prod extension.
@@ -1988,29 +2076,7 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
             )
         return result
 
-    jd = Path(job_dir)
-    progress = _load_progress_v3(jd / "progress.json")
-    if progress is None:
-        return result
-    nodes_index = progress.get("nodes", {})
-
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
-        info = nodes_index.get(nid, {})
-        if info.get("type") in ("prod", "eq"):
-            for artifact_key in ("state", "checkpoint"):
-                src = _read_artifact_from_node(job_dir, nid, artifact_key)
-                if src is not None:
-                    result["restart_from"] = src
-                    result["restart_from_node_id"] = nid
-                    return result
-        queue.extend(info.get("parents", []))
-    return result
+    return _select_md_restart_ancestor(job_dir, node_id)
 
 
 # Backwards-compatible alias for callers that import the prod-specific name.
@@ -2106,7 +2172,8 @@ def resolve_node_inputs(
         # eq → eq chaining: when an eq ancestor exists, surface its state
         # XML so the new eq node can resume from it (e.g. NPT → NVT → NPT
         # multi-stage equilibration). First eq node from topo has no
-        # ancestor and runs from inpcrd.
+        # eq/prod ancestor and runs directly from the topo state.xml via
+        # the XML topology inputs.
         result.update(_resolve_md_restart(job_dir, node_id))
 
     elif node_type == "prod":
@@ -2537,27 +2604,19 @@ def read_ancestor_final_step(
         v = _read_metadata_field(job_dir, continued_from, "final_step")
         return v if isinstance(v, int) else None
 
-    # Default path: replay the same per-ancestor BFS the resolver uses.
-    jd = Path(job_dir)
-    progress = _load_progress_v3(jd / "progress.json")
-    if progress is None:
+    # Default path: share ``_select_md_restart_ancestor`` so the
+    # final_step we return comes from the *same* ancestor whose
+    # state / checkpoint the resolver picked. When the resolver
+    # surfaces ``restart_from_error`` (e.g. a completed prod with no
+    # restart artifact), we return ``None`` rather than walking past
+    # the broken ancestor — restoring an older ancestor's
+    # ``final_step`` would silently roll the timeline back.
+    chosen = _select_md_restart_ancestor(job_dir, node_id)
+    chosen_id = chosen.get("restart_from_node_id")
+    if chosen_id is None:
         return None
-    nodes_index = progress.get("nodes", {})
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
-        info = nodes_index.get(nid, {})
-        if info.get("type") in ("prod", "eq"):
-            for artifact_key in ("state", "checkpoint"):
-                if _read_artifact_from_node(job_dir, nid, artifact_key) is not None:
-                    v = _read_metadata_field(job_dir, nid, "final_step")
-                    return v if isinstance(v, int) else None
-        queue.extend(info.get("parents", []))
-    return None
+    v = _read_metadata_field(job_dir, chosen_id, "final_step")
+    return v if isinstance(v, int) else None
 
 
 def _read_metadata_field(

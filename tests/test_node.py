@@ -1587,6 +1587,104 @@ class TestDAGAutoResolve:
         # Default path replays the same BFS — also returns 200.
         assert read_ancestor_final_step(jd, "prod_003") == 200
 
+    def test_resolve_node_inputs_prod_refuses_to_skip_completed_empty_ancestor(
+        self, job_dir,
+    ):
+        """A completed prod ancestor that registers no restart artifact
+        (state / checkpoint) is a broken DAG: skipping past it would
+        silently roll the run back across whatever the user's tool
+        produced. The resolver must surface ``restart_from_error``
+        rather than walking up to the older prod_001 state.
+
+        DAG: prod_003 -> prod_002(completed, trajectory only) ->
+             prod_001(state)
+        """
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        # Older prod with state — the buggy resolver would jump here.
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        # prod_002: completed, but no state and no checkpoint.
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        assert "restart_from" not in inputs, (
+            "Resolver must not silently skip a completed ancestor that "
+            "produced no restart artifact"
+        )
+        assert "restart_from_error" in inputs
+        assert "prod_002" in inputs["restart_from_error"]
+        assert (
+            "neither" in inputs["restart_from_error"].lower()
+            or "state" in inputs["restart_from_error"].lower()
+        )
+
+        # ``read_ancestor_final_step`` follows the same picker, so it
+        # returns ``None`` (not 100 from prod_001).
+        assert read_ancestor_final_step(jd, "prod_003") is None
+
+    def test_resolve_node_inputs_eq_chain_refuses_completed_empty_eq(
+        self, job_dir,
+    ):
+        """eq → eq chaining: a completed eq parent without state /
+        checkpoint must surface ``restart_from_error`` rather than
+        making the new eq node start fresh from the topo state.xml."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        # eq_001 is completed but only carries final_structure; the
+        # checkpoint / state were never written (broken DAG).
+        complete_node(
+            jd, "eq_001",
+            artifacts={"final_structure": "artifacts/equilibrated.pdb"},
+            metadata={"final_step": 250000},
+        )
+        create_node(jd, "eq", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_002", "eq")
+        assert "restart_from" not in inputs
+        assert "restart_from_error" in inputs
+        assert "eq_001" in inputs["restart_from_error"]
+
     def test_resolve_node_inputs_prod_continue_from_prefers_state(
         self, job_dir
     ):
