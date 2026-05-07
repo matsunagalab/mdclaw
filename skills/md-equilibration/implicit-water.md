@@ -1,13 +1,35 @@
 # Equilibration: Implicit Solvent
 
-The standard recipe is `build_amber_system --implicit-solvent <MODEL>`
-on the topo node, then `run_equilibration --implicit-solvent <MODEL>`
-here. `build_amber_system` bakes the GB force (HCT / OBC1 / OBC2 / GBn /
-GBn2 → matching `implicit/*.xml`) into `system.xml`; the shim verifies
-that force is present before honoring the run flag, so accidental
-vacuum builds fail-fast rather than silently mis-simulating. For
-non-shipped GB models (e.g. `GB99dms.xml`), route through
-`build_openmm_system` — the saved triple flows through identically.
+Officially supported implicit-water models: **HCT, OBC1, OBC2, GBn, GBn2**.
+
+Standard recipe: `build_amber_system --implicit-solvent <MODEL>` on the
+topo node, then `run_equilibration --implicit-solvent <MODEL>` here.
+`build_amber_system` bakes the GB force (matching `implicit/*.xml`)
+into `system.xml`, stamps the canonical model name on
+`metadata.implicit_solvent`, and the run side validates both halves
+before any System is built:
+
+- topology guard (resolver): `implicit_solvent_topology_mismatch` if
+  `metadata.implicit_solvent` and the runtime `--implicit-solvent`
+  disagree after canonicalization.
+- shim contract (deserialize): `modern_system_implicit_solvent_unsupported`
+  if `system.xml` carries no GB force at all.
+- runtime model lookup: `implicit_solvent_model_unsupported` for
+  unknown / typo'd GB names — no silent OBC2 fallback.
+
+Research-mode shipped XML path: `build_openmm_system --forcefield-xml …
+implicit/<model>.xml --implicit-solvent <MODEL>`. Same metadata
+contract, but the user owns the bundle (missing or duplicate
+`implicit/*.xml` returns `implicit_solvent_xml_missing` /
+`implicit_solvent_xml_ambiguous`).
+
+External GB XML (third-party, e.g. the Greener group's `GB99dms.xml`)
+is an advanced escape hatch through `build_openmm_system`. mdclaw
+cannot canonicalize a non-catalog GB XML, so the topo node's
+`metadata.implicit_solvent` stays `None` and the run-side topology
+guard cannot validate the build/runtime match — the user must manage
+XML correctness, GB-force presence, and consistency between build and
+run themselves.
 
 ## Equilibration Protocol
 

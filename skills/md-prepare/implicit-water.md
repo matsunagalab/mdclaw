@@ -72,20 +72,38 @@ Calling contract:
   equilibration branch — `/md-equilibration` uses the same standard
   staged minimization and low-temperature warmup protocol for all
   systems.
-- For GB models that openmmforcefields does not ship (e.g. the Greener
-  group's `GB99dms.xml`), use `build_openmm_system` with the
-  third-party ForceField XML; the saved `system.xml` + `topology.pdb` +
-  `state.xml` triple flows through eq/prod identically.
-- When using `build_openmm_system` for shipped GB models, **also pass
-  `--implicit-solvent <MODEL>`** so the topo node's metadata records the
-  canonical name (`OBC2` / `GBn2` / …). The run-side topology guard
-  then matches build-time and runtime choices on either path. Missing
-  `implicit/<model>.xml` in `--forcefield-xml` triggers
-  `implicit_solvent_xml_missing`; multiple `implicit/*.xml` without an
-  explicit `--implicit-solvent` triggers `implicit_solvent_xml_ambiguous`.
-  Third-party GB XML cannot be inferred — for fully custom GB
-  research, leave `implicit_solvent` unset and accept that the run-side
-  topology guard will not recognise the build choice.
+
+### Implicit-solvent paths in MDClaw
+
+| Path | Command | Coverage |
+|---|---|---|
+| **Standard (recommended)** | `build_amber_system --implicit-solvent <MODEL>` | Full catalog integration; metadata + run-side topology guard match by canonical name. |
+| **Research, shipped XML** | `build_openmm_system --forcefield-xml … implicit/<model>.xml --implicit-solvent <MODEL>` | Same metadata contract, but the user owns the XML bundle. ``--implicit-solvent`` is required for the topology guard to match — pass the canonical name explicitly. |
+| **Research, external XML** | `build_openmm_system --forcefield-xml … <custom_GB>.xml` | Advanced escape hatch. mdclaw cannot canonicalize a third-party GB XML (e.g. the Greener group's `GB99dms.xml`), so the topo node's `metadata.implicit_solvent` stays `None` and the run-side topology guard cannot validate the build/runtime match. The user must manage XML correctness, GB-force presence, and run-time consistency themselves. |
+
+Officially supported implicit-water models (catalog + run-side guard
+recognition): **HCT, OBC1, OBC2, GBn, GBn2**.
+
+Failure codes you may see (build side):
+- `implicit_solvent_model_unsupported` — name is not in the catalog (typo
+  / drift). The error message lists the supported set.
+- `implicit_solvent_explicit_box_conflict` — `--implicit-solvent` paired
+  with `--box-dimensions`.
+- `implicit_solvent_xml_missing` (`build_openmm_system` only) — declared
+  model whose `implicit/<model>.xml` is not in `--forcefield-xml`.
+- `implicit_solvent_xml_ambiguous` (`build_openmm_system` only) —
+  multiple shipped `implicit/*.xml` in the bundle without an explicit
+  `--implicit-solvent`.
+- `implicit_solvent_force_missing` — XML loaded but the built System
+  carries no `GBSAOBCForce` / `CustomGBForce` /
+  `AmoebaGeneralizedKirkwoodForce`.
+
+Failure codes you may see (run side, after the topology resolver):
+- `implicit_solvent_topology_mismatch` — topo
+  `metadata.implicit_solvent` and the runtime `--implicit-solvent`
+  disagree after canonicalization. Aliases (`gbneck2` ↔ `GBn2`, `obc2`
+  ↔ `OBC2`, `igb1`–`igb8`) match; different models do not. Rebuild the
+  topo node, or rerun with the canonical name the topo carries.
 
 ### Domain Knowledge
 
