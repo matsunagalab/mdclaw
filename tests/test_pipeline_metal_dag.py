@@ -7,7 +7,7 @@ from tests.pipeline_helpers import (
     fetch_pdb_node,
     node_artifact,
     require_metalpdb2mol2,
-    require_tleap,
+    require_topology_builder_stack,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
@@ -78,7 +78,7 @@ class TestPipelineMetalDag:
         from mdclaw._node import create_node, read_node
         from mdclaw.amber_server import build_amber_system
 
-        require_tleap()
+        require_topology_builder_stack()
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.prep_id])
         assert node["success"], node
         self.__class__.topo_id = node["node_id"]

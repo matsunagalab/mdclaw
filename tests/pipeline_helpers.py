@@ -63,11 +63,30 @@ def complete_node_with_placeholders(job_dir, node_id, artifacts, **kwargs):
     return complete_node(job_dir, node_id, artifacts, **kwargs)
 
 
-def require_tleap() -> None:
-    from mdclaw.amber_server import tleap_wrapper
+def require_topology_builder_stack() -> None:
+    """Skip the test unless the openmmforcefields topology build stack is importable.
 
-    if not tleap_wrapper.is_available():
-        pytest.skip("tleap is required for this integration test")
+    The curated build path needs ``openmm``, ``openmmforcefields``,
+    ``openff.pablo``, and ``pdbfixer`` (used for defensive hydrogenation
+    inside ``_run_openmmforcefields_build``). Any one of these missing
+    means the integration test cannot exercise the real build path.
+    """
+    missing: list[str] = []
+    for module_name, friendly in (
+        ("openmm", "openmm"),
+        ("openmmforcefields", "openmmforcefields"),
+        ("openff.pablo", "openff-pablo"),
+        ("pdbfixer", "pdbfixer"),
+    ):
+        try:
+            __import__(module_name)
+        except ImportError:
+            missing.append(friendly)
+    if missing:
+        pytest.skip(
+            "openmmforcefields topology build stack is required for this "
+            f"integration test; missing: {', '.join(missing)}"
+        )
 
 
 def require_packmol_memgen() -> None:

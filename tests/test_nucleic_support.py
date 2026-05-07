@@ -141,15 +141,13 @@ def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path)
     assert "amber/RNA.OL3.xml" in bundle
 
 
-def test_build_amber_system_blocks_modified_nucleic_like_residue(monkeypatch, tmp_path):
+def test_build_amber_system_blocks_modified_nucleic_like_residue(tmp_path):
+    # The unsupported-modified-nucleic guardrail fires before the
+    # openmmforcefields availability check, so this test does not need
+    # to mock the build stack.
     from mdclaw import amber_server
 
     modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
-    monkeypatch.setattr(
-        amber_server.tleap_wrapper,
-        "is_available",
-        lambda: True,
-    )
 
     result = amber_server.build_amber_system(
         pdb_file=_write_pdb(tmp_path, modified),

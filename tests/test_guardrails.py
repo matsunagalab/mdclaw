@@ -547,28 +547,28 @@ def test_metal_water_model_invariants():
     assert ION_FRCMODS_BY_SET["normal"]["opc3"] == "frcmod.ionslm_126_opc3"
 
 
-def test_build_amber_system_rejects_invalid_metal_params_before_tleap(tmp_path):
+def test_build_amber_system_rejects_invalid_metal_params_before_build(tmp_path):
+    # Metal-parameter validation must reject malformed records before the
+    # openmmforcefields build path runs; the structured failure code lets
+    # callers branch without grepping the error string.
     pdb_file = tmp_path / "metal.pdb"
     _write_minimal_metal_pdb(pdb_file)
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run") as fake_run:
-        result = build_amber_system(
-            pdb_file=str(pdb_file),
-            output_dir=str(tmp_path / "topo"),
-            forcefield="ff14SB",
-            water_model="opc",
-            metal_params=[{
-                "mol2": str(tmp_path / "missing.mol2"),
-                "frcmod": "frcmod.ionslm_126_opc",
-                "residue_name": "ZN",
-            }],
-        )
+    result = build_amber_system(
+        pdb_file=str(pdb_file),
+        output_dir=str(tmp_path / "topo"),
+        forcefield="ff14SB",
+        water_model="opc",
+        metal_params=[{
+            "mol2": str(tmp_path / "missing.mol2"),
+            "frcmod": "frcmod.ionslm_126_opc",
+            "residue_name": "ZN",
+        }],
+    )
 
     assert result["success"] is False
     assert result["code"] == "invalid_metal_parameters"
     assert any("mol2 file not found" in e for e in result["errors"])
-    fake_run.assert_not_called()
 
 
 def test_policy_unparseable_time_and_memory_are_warnings():

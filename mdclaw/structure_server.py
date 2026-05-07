@@ -286,15 +286,17 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     helper brings the merged PDB in line with it:
 
     - CYX residues *not* in ``disulfide_bonds`` are demoted back to CYS
-      (otherwise tleap would build a CYX residue without an SS bond,
-      leaving SG unprotonated — chemically wrong).
+      (otherwise the Amber CYX template would be applied to a residue
+      without an SS bond, leaving SG unprotonated — chemically wrong).
     - CYS residues that *are* in ``disulfide_bonds`` are promoted to CYX.
 
     Additionally, every final CYX residue has its ``HG`` thiol hydrogen
     stripped. SS-bonded cysteines have their SG bonded to another SG,
-    not to a proton, and tleap aborts with
-    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type`` if an HG atom
-    survives — observed for 5vm0_A and 7on5_A in the 2422-row batch.
+    not to a proton, and the Amber CYX template has no ``HG`` atom — a
+    surviving HG fails template matching at openmmforcefields build time
+    (and historically caused tleap to abort with
+    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type``).
+    Observed for 5vm0_A and 7on5_A in the 2422-row batch.
 
     Runs unconditionally after merge; it is a no-op whenever the
     auto-detection path agrees with pdb2pqr (the common case).
@@ -337,8 +339,9 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
 
             # Drop the thiol hydrogen from every CYX record. This covers
             # both the CYS→CYX promotion path above and pre-existing CYX
-            # residues from pdb2pqr that still carry HG (which tleap
-            # rejects with a FATAL).
+            # residues from pdb2pqr that still carry HG (which would fail
+            # template matching against the Amber CYX residue template at
+            # openmmforcefields build time).
             if final_resname == "CYX" and line[12:16].strip() == "HG":
                 stripped_hg += 1
                 continue
@@ -2519,8 +2522,10 @@ def clean_protein(
                                           instead of modeling them (default: True)
         cap_termini: Flag to indicate that ACE/NME caps should be added to termini.
                      Note: PDBFixer cannot add caps directly. When True, the return dict
-                     will include cap_termini_required=True to indicate that tleap should
-                     be used to add caps during system building. (default: False)
+                     will include cap_termini_required=True to signal that downstream
+                     tooling needs to add caps before openmmforcefields can build the
+                     System (PDBFixer leaves the original termini in place).
+                     (default: False)
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -2539,7 +2544,9 @@ def clean_protein(
             - success: bool - True if cleaning completed without critical errors
             - output_file: str - Path to the cleaned PDB file (*.clean.pdb)
             - input_file: str - Original input file path
-            - cap_termini_required: bool - True if ACE/NME caps need to be added via tleap
+            - cap_termini_required: bool - True if ACE/NME caps still need to be
+              added before openmmforcefields can build the System (PDBFixer cannot
+              add caps directly).
             - operations: list[dict] - Details of each operation performed
             - warnings: list[str] - Non-critical issues encountered
             - errors: list[str] - Critical errors (empty if success=True)
@@ -2887,7 +2894,8 @@ def clean_protein(
         # NOTE: We skip PDBFixer hydrogen addition here and let pdb2pqr + propka
         # handle it instead (with pdb4amber --reduce as fallback). This prevents
         # duplicate/conflicting hydrogens, especially at N-termini of internal
-        # chain breaks (e.g., NALA, NVAL, NGLN) which can cause tleap errors.
+        # chain breaks (e.g., NALA, NVAL, NGLN) which can fail Amber residue
+        # template matching at openmmforcefields build time.
         if add_hydrogens:
             logger.info(f"Skipping PDBFixer hydrogen addition (pH {ph}) - pdb2pqr/propka will handle it")
             result["operations"].append({
@@ -2944,9 +2952,10 @@ def clean_protein(
             # terminal variant naming (NHID/CHIE/etc.) and matching atom
             # lists. User-supplied histidine_states are applied *on top*
             # of the propka result by renaming residues after pdb2pqr
-            # finishes — skipping propka caused tleap to reject atoms on
-            # terminal HIS residues because their N-terminal H1/H2 (or
-            # C-terminal OXT) did not have a defined atom type.
+            # finishes — skipping propka leaves terminal HIS residues
+            # without correct N-terminal H1/H2 (or C-terminal OXT) atom
+            # naming, which fails residue template matching when
+            # openmmforcefields applies the Amber HIS variant template.
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
                 logger.info(f"Using pdb2pqr with propka for pH {ph}")
                 pqr_output = input_path.parent / f"{stem}.pqr"
@@ -3527,7 +3536,9 @@ def run_antechamber_robust(
         ligand_file: Input ligand file (mol2, pdb, sdf)
         output_dir: Output directory
         net_charge: Net molecular charge (auto-estimated if None; ignored for geostd hits)
-        residue_name: 3-letter residue name for tleap (used for geostd lookup)
+        residue_name: 3-letter residue name (used for amber_geostd lookup and
+                      to label the Amber-style PDB consumed by the
+                      openmmforcefields build path)
         charge_method: Charge method (bcc=AM1-BCC, gas=Gasteiger; ignored for geostd hits)
         atom_type: Atom type (gaff, gaff2; ignored for geostd hits)
         max_retries: Maximum retry attempts with different charges
@@ -3959,7 +3970,7 @@ def run_antechamber_robust(
         
         # Generate atom-name-preserving PDB from MOL2 using antechamber
         # This PDB preserves atom names (C1, C2, N1...) that match the MOL2/frcmod
-        # Required for merge_structures and subsequent tleap processing
+        # Required for merge_structures and subsequent openmmforcefields build
         output_pdb = out_dir / f"{input_stem}.amber.pdb"
         logger.info(f"Generating atom-name-preserving PDB: {output_pdb}")
         
@@ -4192,7 +4203,8 @@ def merge_structures(
     - Additional chains: 0-9
     
     Atom names are preserved exactly as they appear in the input files,
-    which is critical for subsequent tleap processing with frcmod files.
+    which is critical for subsequent openmmforcefields builds where the
+    GAFFTemplateGenerator matches by atom name against the mol2/frcmod pair.
     
     Args:
         pdb_files: List of PDB file paths to merge. Accepts:
@@ -5128,8 +5140,10 @@ def prepare_complex(
 
                 result["proteins"].append(protein_result)
 
-        # Step 4: Pass standard DNA/RNA chains through unchanged. tleap will
-        # apply the appropriate NA force field in build_amber_system.
+        # Step 4: Pass standard DNA/RNA chains through unchanged. The
+        # openmmforcefields build path picks up the appropriate
+        # ``amber/DNA.*.xml`` / ``amber/RNA.*.xml`` ForceField in
+        # ``build_amber_system``.
         if split_result.get("nucleic_files"):
             logger.info(f"Step 4: Passing through {len(split_result['nucleic_files'])} nucleic chain(s)...")
             for nucleic_file in split_result["nucleic_files"]:
@@ -5416,7 +5430,8 @@ def prepare_complex(
             # Add ligand files (use amber.pdb from parameterization for correct atom names)
             for lig in result["ligands"]:
                 if lig["success"]:
-                    # Prefer the amber PDB from parameterization (has correct atom names for tleap)
+                    # Prefer the amber PDB from parameterization (atom names
+                    # match the mol2/frcmod pair consumed by GAFFTemplateGenerator)
                     ligand_pdb = lig.get("pdb_file")
                     if ligand_pdb and Path(ligand_pdb).exists():
                         pdb_files_to_merge.append(ligand_pdb)
@@ -5510,7 +5525,8 @@ def prepare_complex(
                         if dropped_links:
                             result["warnings"].append(
                                 "Glycan LINK record(s) could not be mapped onto merged.pdb "
-                                f"and will not be bonded by tleap: {dropped_links}"
+                                "and will not be wired into the OpenMM topology by "
+                                f"build_amber_system: {dropped_links}"
                             )
                             result["unmapped_glycan_linkages"] = dropped_links
                         glycan_linkages_json = base_dir / "glycan_linkages.json"
@@ -5554,8 +5570,9 @@ def prepare_complex(
                     # own geometric SS detection and may have left CYX
                     # residues that our list does not include (or vice
                     # versa). Without this step, `disulfide_pairs=[]`
-                    # would yield CYX residues in merged.pdb without tleap
-                    # `bond` commands, leaving SG atoms unprotonated.
+                    # would yield CYX residues in merged.pdb without a
+                    # corresponding SG-SG topology bond, leaving SG
+                    # atoms unprotonated.
                     try:
                         reconcile = _reconcile_cyx_cys_in_pdb(
                             merge_result["output_file"],
@@ -6310,8 +6327,8 @@ def phosphorylate_residues(
     ``amber/phosaa14SB.xml`` (ff14SB), ``amber/phosaa10.xml`` (ff03 /
     ff99SB legacy), ``amber/phosfb18.xml`` (fb15) — into the
     ``SystemGenerator`` ForceField bundle so the phosphate atoms get
-    rebuilt by the OpenMM ForceField residue template (the legacy
-    ``leaprc.phosaa*`` tleap source line is no longer involved).
+    rebuilt by the OpenMM ForceField residue template (no tleap
+    source step is involved).
 
     Args:
         pdb_file: Cleaned PDB (output of ``prepare_complex``). Required

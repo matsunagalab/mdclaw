@@ -1,12 +1,22 @@
 """
-Amber Server - Amber topology and coordinate file generation tools.
+Amber Server — curated Amber → OpenMM System builder.
 
 Provides tools for:
-- Building Amber topology (parm7) and coordinate (rst7) files using tleap
-- Supporting both implicit solvent (no PBC) and explicit solvent (with PBC) systems
-- Handling protein-ligand complexes with custom GAFF2 parameters
+- ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
+  protein / nucleic / glycan / lipid / PTM force fields plus GAFF for ligands
+  via ``openmmforcefields.SystemGenerator`` (with ``GAFFTemplateGenerator`` for
+  small molecules), and emit a portable ``system.xml`` + ``topology.pdb`` +
+  ``state.xml`` triple consumed by ``run_equilibration`` / ``run_production``.
+- Supporting both implicit (no PBC) and explicit (with PBC, optionally
+  membrane) solvent setups.
+- Handling protein-ligand complexes with curated GAFF parameters and
+  ParmEd-bridged metal templates where applicable.
 
-Uses tleap from AmberTools for robust system building.
+The legacy tleap script generation / parm7 + rst7 build path was retired in
+PR3 of the openmmforcefields-unification refactor; eq/prod now resolve the
+modern XML triple from DAG ancestors. AmberTools (``pdb4amber``,
+``antechamber``, ``parmchk2``, ``sqm``, ``cpptraj``) remain in use upstream
+for structure preparation and ligand parameterization.
 """
 
 # Configure logging early to suppress noisy third-party logs
@@ -45,8 +55,13 @@ from mdclaw import _topology_pablo  # noqa: E402
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-# Initialize tool wrappers
-tleap_wrapper = BaseToolWrapper("tleap")
+# Initialize tool wrappers.
+# ``tleap`` is no longer used: the curated build path runs through
+# ``openmmforcefields.SystemGenerator`` and emits the modern
+# ``system.xml`` + ``topology.pdb`` + ``state.xml`` triple (PR3 of the
+# openmmforcefields-unification refactor). ``cpptraj`` is still used for
+# the GLYCAM ``prepareforleap`` glycan conversion stage; see
+# ``_prepare_glycam_pdb_with_cpptraj`` for context.
 cpptraj_wrapper = BaseToolWrapper("cpptraj")
 
 
@@ -183,58 +198,6 @@ CANONICAL_PROTEIN_FORCEFIELDS = {
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def parse_leap_log(log_path: Path) -> Dict[str, Any]:
-    """Parse tleap log file to extract system statistics.
-    
-    Args:
-        log_path: Path to tleap log file
-    
-    Returns:
-        Dict with extracted statistics:
-        - num_atoms: Total number of atoms
-        - num_residues: Total number of residues
-        - warnings: List of warning messages
-        - errors: List of error messages
-    """
-    result = {
-        "num_atoms": None,
-        "num_residues": None,
-        "warnings": [],
-        "errors": []
-    }
-    
-    if not log_path.exists():
-        return result
-    
-    try:
-        content = log_path.read_text()
-        
-        # Extract atom count from "Total number of atoms" or saveamberparm output
-        # Pattern: "Writing parm file with X atoms"
-        atom_match = re.search(r'(\d+)\s+atoms', content, re.IGNORECASE)
-        if atom_match:
-            result["num_atoms"] = int(atom_match.group(1))
-        
-        # Extract residue count
-        # Pattern: "X residues"
-        residue_match = re.search(r'(\d+)\s+residues', content, re.IGNORECASE)
-        if residue_match:
-            result["num_residues"] = int(residue_match.group(1))
-        
-        # Collect warnings
-        for line in content.split('\n'):
-            line_lower = line.lower()
-            if 'warning' in line_lower:
-                result["warnings"].append(line.strip())
-            elif 'error' in line_lower or 'fatal' in line_lower:
-                result["errors"].append(line.strip())
-        
-    except Exception as e:
-        logger.warning(f"Could not parse leap log: {e}")
-    
-    return result
 
 
 def detect_nucleic_content(pdb_path: Path) -> dict:
@@ -378,7 +341,11 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
 
 
 def _is_builtin_amber_frcmod(value: str) -> bool:
-    """Return True for AmberTools frcmod names loadable by tleap search paths."""
+    """Return True for AmberTools-shipped frcmod names (``frcmod.<...>``).
+
+    These names are resolved at openmmforcefields build time via the
+    ParmEd metal bridge by looking under ``$AMBERHOME/dat/leap/parm/``.
+    """
     return value.strip().startswith("frcmod.")
 
 
@@ -415,7 +382,7 @@ def validate_metal_params(
     metal_params: List[Dict[str, Any]],
     pdb_path: Path,
 ) -> tuple[list[dict], list[str]]:
-    """Validate metal ion parameter records before generating a tleap script."""
+    """Validate metal-ion parameter records before the openmmforcefields build."""
     valid_params: list[dict] = []
     errors: list[str] = []
     pdb_residue_counts = _pdb_residue_instance_counts(pdb_path)
@@ -1166,53 +1133,51 @@ def strip_crystal_waters(input_pdb: Path, output_pdb: Path) -> dict:
     return result
 
 
-def _plan_disulfide_tleap_bonds(
+def _plan_disulfide_topology_bonds(
     pdb_path: Path,
     disulfide_pairs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Map disulfide pairs (from prepare_complex) onto the PDB tleap will load.
+    """Map disulfide pairs (from prepare_complex) onto unit sequential indices.
 
-    tleap's ``bond unit.N.atom`` syntax uses the *unit sequential index*
-    assigned during ``loadpdb`` (1-based, in PDB atom order), not PDB
-    resSeq. For single-chain, contiguously numbered structures the two
-    happen to coincide — but they diverge for homodimers (same resSeq
-    repeated across chains) and when waters/ligands precede the protein.
-    So this function walks the PDB once, builds a ``(chain, resnum) →
-    unit_index`` map, and emits bond lines using the unit index.
+    The openmmforcefields build path adds the SG-SG bond directly to the
+    OpenMM ``Topology`` after loading the prepared PDB through Pablo, so
+    this helper just resolves which residues to wire together. Unit
+    sequential indices (1-based, in PDB atom order) — historically the
+    same numbering tleap used for ``bond mol.N.SG`` — are still the
+    cleanest cross-reference because they survive ``loadpdb`` and Pablo
+    alike for solvated PDBs where resSeq wraps.
 
     Resolution is done **per chain**: for each disulfide pair, every
     chain in the merged PDB that carries both resnums as ``CYX`` yields
-    one bond line. The pair's ``chain`` field is advisory and ignored,
-    because ``merge_structures`` renames chain IDs (A, B, C, …) while
-    the pair's chain comes from the original pre-split structure —
+    one resolved entry. The pair's ``chain`` field is advisory and
+    ignored, because ``merge_structures`` renames chain IDs (A, B, C, …)
+    while the pair's chain comes from the original pre-split structure —
     propagating the mapping is not worth the wiring cost when per-chain
     CYX presence is an equally reliable signal.
 
     Global de-duplication on ``frozenset({idx1, idx2})`` keeps the
     homodimer case (two legitimate disulfide_bonds.json entries listing
     the same pair under different chains) from double-bonding: the
-    first entry emits one line per matching chain, and later entries
-    that resolve to the same indices are recorded as
+    first entry emits one resolved row per matching chain, and later
+    entries that resolve to the same indices are recorded as
     ``emitted_duplicate``.
 
     Returns a dict with:
-        ``bond_lines``: list[str] — ``bond mol.<idx>.SG mol.<idx>.SG``
-            commands to inject into the tleap script.
         ``resolved``: list[dict] — per-pair provenance (``cys1``, ``cys2``,
-            ``source``, ``tleap_residues`` as ``[[idx1, idx2], …]`` — a
-            list because one pair can match multiple chains —, ``status``:
-            ``emitted``, ``emitted_duplicate``, ``skipped_cys_protonated``,
-            or ``unresolved``).
+            ``source``, ``topology_residues`` as ``[[idx1, idx2], …]`` —
+            a list because one pair can match multiple chains —,
+            ``status``: ``emitted``, ``emitted_duplicate``,
+            ``skipped_cys_protonated``, or ``unresolved``).
         ``warnings``: list[str] — human-readable notes for non-emitted pairs.
     """
-    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    plan: Dict[str, Any] = {"resolved": [], "warnings": []}
     if not disulfide_pairs:
         return plan
 
     # Walk the PDB once. ``unit_index`` counts every unique residue in PDB
-    # order (1-based) — this is exactly how tleap numbers residues in a
-    # unit after ``loadpdb``, so ``bond mol.<unit_index>.atom`` resolves
-    # unambiguously even when PDB resSeq collides across chains.
+    # order (1-based) — the openmmforcefields build path consumes this
+    # index when calling ``Topology.addBond`` so it remains a stable
+    # provenance handle even when PDB resSeq collides across chains.
     unit_index = 0
     by_chain: Dict[str, Dict[int, Dict[str, Any]]] = {}
     last_key: Optional[Tuple[str, int, str]] = None
@@ -1263,7 +1228,7 @@ def _plan_disulfide_tleap_bonds(
             "cys1": c1,
             "cys2": c2,
             "source": pair.get("source"),
-            "tleap_residues": None,
+            "topology_residues": None,
             "status": "unresolved",
         }
 
@@ -1307,12 +1272,11 @@ def _plan_disulfide_tleap_bonds(
             if bond_key in emitted_pairs:
                 continue
             emitted_pairs.add(bond_key)
-            plan["bond_lines"].append(f"bond mol.{idx1}.SG mol.{idx2}.SG")
             emitted_indices.append([idx1, idx2])
 
         if emitted_indices:
             record["status"] = "emitted"
-            record["tleap_residues"] = emitted_indices
+            record["topology_residues"] = emitted_indices
         else:
             # Every chain that matched was already covered by an earlier
             # pair — typical for the second entry of a homodimer listing.
@@ -1322,12 +1286,17 @@ def _plan_disulfide_tleap_bonds(
     return plan
 
 
-def _plan_glycan_tleap_bonds(
+def _plan_glycan_topology_bonds(
     pdb_path: Path,
     glycan_linkages: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Map prepared protein-glycan linkages onto tleap unit indices."""
-    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    """Map prepared protein-glycan linkages onto unit sequential indices.
+
+    The openmmforcefields build path consumes ``topology_residues`` from
+    the resolved entries to call ``Topology.addBond`` on the OpenMM
+    topology after Pablo loading.
+    """
+    plan: Dict[str, Any] = {"resolved": [], "warnings": []}
     if not glycan_linkages:
         return plan
 
@@ -1376,7 +1345,7 @@ def _plan_glycan_tleap_bonds(
             "protein": protein,
             "glycan": glycan,
             "source": linkage.get("source"),
-            "tleap_residues": None,
+            "topology_residues": None,
             "status": "unresolved",
         }
         protein_residue = residues.get(protein_key)
@@ -1405,9 +1374,8 @@ def _plan_glycan_tleap_bonds(
             plan["resolved"].append(record)
             continue
         emitted_pairs.add(bond_key)
-        plan["bond_lines"].append(f"bond mol.{idx1}.{protein_atom} mol.{idx2}.{glycan_atom}")
         record["status"] = "emitted"
-        record["tleap_residues"] = [[idx1, idx2]]
+        record["topology_residues"] = [[idx1, idx2]]
         plan["resolved"].append(record)
 
     return plan
@@ -1618,153 +1586,6 @@ def _prepare_glycam_pdb_with_cpptraj(
         return result
 
     result["success"] = True
-    return result
-
-
-def _prepareforleap_tleap_lines(
-    prepared_pdb: Path,
-    generated_leap: Path,
-) -> tuple[list[str], list[str]]:
-    """Return vetted prepareforleap LEaP lines and warnings.
-
-    cpptraj can infer close-contact protein-glycan bonds that are not valid
-    GLYCAM linkages, such as ASN.OD1-C1 contacts. Keep bonds only when the
-    protein residue was converted to a GLYCAM linker residue (e.g. NLN).
-    """
-    warnings: list[str] = []
-    residues: dict[int, dict[str, Any]] = {}
-    unit_index = 0
-    last_key: tuple[str, str, str, str] | None = None
-    for pdb_line in prepared_pdb.read_text(encoding="utf-8").splitlines():
-        if not pdb_line.startswith(("ATOM", "HETATM")) or len(pdb_line) < 27:
-            continue
-        key = (
-            pdb_line[21].strip() or "A",
-            pdb_line[22:26].strip(),
-            pdb_line[26].strip(),
-            pdb_line[17:20].strip().upper(),
-        )
-        if key != last_key:
-            unit_index += 1
-            residues[unit_index] = {"resname": key[3]}
-            last_key = key
-
-    filtered: list[str] = []
-    bond_pattern = re.compile(r"^\s*bond\s+mol\.(\d+)\.([^\s]+)\s+mol\.(\d+)\.([^\s]+)")
-    for line in generated_leap.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.lower() == "quit":
-            continue
-        match = bond_pattern.match(stripped)
-        if match:
-            idx1 = int(match.group(1))
-            idx2 = int(match.group(3))
-            res1 = residues.get(idx1, {}).get("resname")
-            res2 = residues.get(idx2, {}).get("resname")
-            is_glycan1 = is_glycan_residue_name(res1)
-            is_glycan2 = is_glycan_residue_name(res2)
-            if is_glycan1 != is_glycan2:
-                protein_resname = res2 if is_glycan1 else res1
-                if protein_resname not in GLYCAM_LINKED_PROTEIN_RESNAMES:
-                    warnings.append(
-                        "Skipped prepareforleap protein-glycan bond to "
-                        f"{protein_resname or 'unknown'}; residue was not converted "
-                        "to a GLYCAM linked-protein template."
-                    )
-                    continue
-        filtered.append(line)
-    return filtered, warnings
-
-
-def _add_pdb_info(
-    parm7_path: Path,
-    pdb_path: Path,
-    output_path: Path | None = None,
-) -> dict:
-    """Add PDB info (residue numbers, chain IDs) to Amber topology.
-
-    Uses ParmEd's addPDB action to embed original PDB metadata into the topology.
-    This preserves original PDB residue numbering so that output PDBs from
-    simulations match the initial PDB file.
-
-    Reference: https://github.com/callumjd/AMBER-Membrane_protein_tutorial
-
-    Args:
-        parm7_path: Input Amber topology file
-        pdb_path: Reference PDB with original numbering
-        output_path: Output path (overwrites input if None)
-
-    Returns:
-        dict with:
-            - success: bool - True if PDB info was added successfully
-            - flags_added: list[str] - List of flags added to topology
-            - warnings: list[str] - Non-critical issues
-            - errors: list[str] - Error messages
-    """
-    result = {
-        "success": False,
-        "flags_added": [],
-        "warnings": [],
-        "errors": [],
-    }
-
-    try:
-        import warnings as _warnings
-
-        from parmed.amber import AmberParm
-        from parmed.tools import addPDB
-        from parmed.tools.exceptions import AddPDBWarning
-
-        # Load topology
-        parm = AmberParm(str(parm7_path))
-
-        # Add PDB info (residue numbers, chain IDs, insertion codes, etc.)
-        # Using ParmEd's addPDB action class
-        # Catch AddPDBWarning: tleap reorders ions before water, causing
-        # residue name mismatches for solvent residues (protein metadata
-        # is applied correctly since it comes first in both orderings).
-        with _warnings.catch_warnings(record=True) as caught:
-            _warnings.simplefilter("always")
-            action = addPDB(parm, str(pdb_path))
-            action.execute()
-
-        mismatches = [w for w in caught if issubclass(w.category, AddPDBWarning)]
-        if mismatches:
-            result["warnings"].append(
-                f"PDB/topology residue order mismatch ({len(mismatches)} residues, "
-                "likely ions reordered by tleap) - protein metadata applied correctly"
-            )
-            logger.debug(
-                f"addPDB: {len(mismatches)} residue name mismatches "
-                "(tleap reorders ions before water)"
-            )
-
-        # Check which flags were added
-        expected_flags = [
-            "RESIDUE_CHAINID",
-            "RESIDUE_NUMBER",
-            "RESIDUE_ICODE",
-            "ATOM_NUMBER",
-            "ATOM_ELEMENT",
-        ]
-        for flag in expected_flags:
-            if flag in parm.parm_data:
-                result["flags_added"].append(flag)
-
-        # Save (overwrite or new file)
-        out_path = output_path or parm7_path
-        parm.save(str(out_path), overwrite=True)
-
-        result["success"] = True
-        logger.info(f"Added PDB info to topology: {result['flags_added']}")
-
-    except ImportError:
-        result["errors"].append("ParmEd not installed - cannot add PDB info")
-        logger.warning("ParmEd not available, skipping PDB info addition")
-    except Exception as e:
-        result["errors"].append(f"ParmEd addPDB failed: {str(e)}")
-        logger.warning(f"Could not add PDB info: {e}")
-
     return result
 
 
@@ -2123,17 +1944,19 @@ def build_amber_system(
             fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
         return blocked
 
-    # Initialize result structure
+    # Initialize result structure.
+    # The curated build path emits the modern XML triple. Callers should
+    # consume ``system_xml``, ``topology_pdb``, and ``state_xml`` (set by
+    # ``_run_openmmforcefields_build`` on success). The pre-PR3 ``parm7``,
+    # ``rst7``, ``leap_log``, and ``leap_script`` fields have been removed
+    # because the openmmforcefields path never populates them; downstream
+    # code (DAG resolver, eq/prod) reads the XML triple instead.
     job_id = generate_job_id()
     solvent_type = "implicit" if box_dimensions is None else "explicit"
     result = {
         "success": False,
         "job_id": job_id,
         "output_dir": None,
-        "parm7": None,
-        "rst7": None,
-        "leap_log": None,
-        "leap_script": None,
         "solvent_type": solvent_type,
         "parameters": {
             "forcefield": forcefield,
@@ -2260,7 +2083,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_modxna_parameters",
-                "message": "Invalid modXNA parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid modXNA parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
             if job_dir and node_id:
                 from mdclaw._node import fail_node
@@ -2451,7 +2277,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_ligand_parameters",
-                "message": "Invalid ligand parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid ligand parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
     
     # Setup output directory
@@ -2507,7 +2336,8 @@ def build_amber_system(
     except Exception as e:
         result["warnings"].append(f"Histidine residue name fix failed (continuing): {type(e).__name__}: {e}")
     
-    # Use fixed PDB for tleap
+    # Use the residue-name-repaired PDB as the input to the
+    # openmmforcefields build path below.
     pdb_path = working_pdb
 
     valid_metal_params = []
@@ -2520,7 +2350,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_metal_parameters",
-                "message": "Invalid metal parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid metal parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
             if _node_mode:
                 from mdclaw._node import fail_node
@@ -2553,10 +2386,12 @@ def build_amber_system(
         if box_dimensions is None:
             result["implicit_ligand_diagnostics"] = implicit_ligand_diagnostics(valid_ligands)
     
-    # PTM detection: scan the input PDB for SEP/TPO/PTR. If present, source
-    # the matching `leaprc.phosaa*` library after the protein leaprc line so
-    # tleap can rebuild the phosphate atoms from the template against the
-    # OG / OG1 / OH oxygen kept by `phosphorylate_residues`.
+    # PTM detection: scan the input PDB for SEP/TPO/PTR. If present, ask
+    # ``forcefield_catalog`` to add the matching ``amber/phosaa*.xml``
+    # bundle (e.g. ``amber/phosaa19SB.xml`` for ff19SB) on top of the
+    # protein force field so the SystemGenerator can apply the phospho-
+    # residue templates against the OG / OG1 / OH oxygen retained by
+    # ``phosphorylate_residues``.
     from mdclaw.research_server import detect_ptm_sites
     ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
     phosaa_library = None
@@ -2565,8 +2400,9 @@ def build_amber_system(
         if phosaa_library is None:
             err = create_validation_error(
                 "forcefield",
-                f"Forcefield '{forcefield}' has no matching `leaprc.phosaa*` "
-                f"library, but the input PDB contains PTM residues "
+                f"Forcefield '{forcefield}' has no matching openmmforcefields "
+                f"phosaa XML (e.g. ``amber/phosaa19SB.xml``), but the input "
+                f"PDB contains PTM residues "
                 f"({sorted({s['name'] for s in ptm_residues_in_input})}).",
                 expected="ff19SB or ff14SB (which pair with phosaa19SB / phosaa14SB)",
                 actual=forcefield,
@@ -2625,18 +2461,22 @@ def build_amber_system(
                         f"GB models don't support discrete water molecules."
                     )
 
-        # Disulfide and glycan-linkage planning still emit the same
-        # provenance dicts as the legacy tleap path so downstream tests /
-        # node metadata remain stable. The actual SG-SG / glycan bonds get
-        # added to the OpenMM topology inside _run_openmmforcefields_build.
+        # Disulfide and glycan-linkage planning resolves residue-pair
+        # provenance for the openmmforcefields build; the actual SG-SG /
+        # glycan bonds are added to the OpenMM topology inside
+        # ``_run_openmmforcefields_build``. The resolved-plan shape is
+        # stable agent-facing metadata, so the result keys
+        # (``disulfide_bond_plan``, ``glycan_linkage_plan``) and the
+        # per-record ``topology_residues`` field are part of the public
+        # node metadata contract.
         if disulfide_bonds:
-            ss_plan = _plan_disulfide_tleap_bonds(Path(pdb_path), disulfide_bonds)
+            ss_plan = _plan_disulfide_topology_bonds(Path(pdb_path), disulfide_bonds)
             if ss_plan["warnings"]:
                 result["warnings"].extend(ss_plan["warnings"])
             result["disulfide_bond_plan"] = ss_plan["resolved"]
 
         if glycan_linkages and not glycam_prepare:
-            glycan_plan = _plan_glycan_tleap_bonds(Path(pdb_path), glycan_linkages)
+            glycan_plan = _plan_glycan_topology_bonds(Path(pdb_path), glycan_linkages)
             if glycan_plan["warnings"]:
                 result["warnings"].extend(glycan_plan["warnings"])
             result["glycan_linkage_plan"] = glycan_plan["resolved"]

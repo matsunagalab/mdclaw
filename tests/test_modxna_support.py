@@ -160,7 +160,9 @@ def test_build_amber_system_loads_modxna_params_before_loadpdb(monkeypatch, tmp_
     pass
 
 
-def test_build_amber_system_fails_modxna_residue_name_mismatch(monkeypatch, tmp_path):
+def test_build_amber_system_fails_modxna_residue_name_mismatch(tmp_path):
+    # modxna validation runs before the openmmforcefields availability check,
+    # so this test does not need to mock the build stack.
     from mdclaw import amber_server
 
     pdb = _write_modified_pdb(tmp_path, _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "RSS A   2"))
@@ -168,7 +170,6 @@ def test_build_amber_system_fails_modxna_residue_name_mismatch(monkeypatch, tmp_
     lib.write_text("!!index array str\n", encoding="utf-8")
     frcmod = tmp_path / "frcmod.modxna"
     frcmod.write_text("MASS\n", encoding="utf-8")
-    monkeypatch.setattr(amber_server.tleap_wrapper, "is_available", lambda: True)
 
     result = amber_server.build_amber_system(
         pdb_file=str(pdb),
