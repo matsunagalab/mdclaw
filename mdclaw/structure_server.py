@@ -6074,12 +6074,100 @@ def create_mutated_structure(
 # phosaa XML residue template (``amber/phosaa19SB.xml`` / ``phosaa14SB.xml``
 # / ``phosaa10.xml`` / ``phosfb18.xml``) can rebuild the phosphate atoms
 # against the existing OG / OG1 / OH oxygen when SystemGenerator builds
-# the System.
+# the System. (The XML route only assigns parameters to existing atoms,
+# unlike the legacy tleap path which also added missing atoms — so this
+# tool also has to write ``P`` and ``O1P``/``O2P``/``O3P`` with sensible
+# tetrahedral coordinates.)
 _PHOSPHO_TARGETS = {
-    "SEP": {"source": "SER", "hydroxyl_h": "HG"},
-    "TPO": {"source": "THR", "hydroxyl_h": "HG1"},
-    "PTR": {"source": "TYR", "hydroxyl_h": "HH"},
+    "SEP": {"source": "SER", "hydroxyl_h": "HG", "ester_o": "OG", "parent_c": "CB"},
+    "TPO": {"source": "THR", "hydroxyl_h": "HG1", "ester_o": "OG1", "parent_c": "CB"},
+    "PTR": {"source": "TYR", "hydroxyl_h": "HH", "ester_o": "OH", "parent_c": "CZ"},
 }
+
+
+def _compute_phospho_atom_coords(
+    parent_c_xyz: tuple[float, float, float],
+    ester_o_xyz: tuple[float, float, float],
+    *,
+    p_o_ester_bond: float = 1.60,
+    p_o_terminal_bond: float = 1.50,
+    o_h_bond: float = 0.97,
+) -> dict[str, tuple[float, float, float]]:
+    """Place the phosphate atoms on a tetrahedral phosphorus.
+
+    Geometry (Amber dianion convention; SEP / TPO / PTR all share the
+    same skeleton):
+
+    - ``P`` sits along the parent_C → ester_O direction, extended by
+      ``p_o_ester_bond`` past the ester oxygen.
+    - The three terminal oxygens (``O1P`` / ``O2P`` / ``O3P``) ring P
+      tetrahedrally so each forms a ~109.5° angle with the P-OG / P-OG1
+      / P-OH bond. They are evenly spaced 120° around the C-O axis with
+      arbitrary phase (downstream eq/min relaxes the orientation).
+    - ``HOP2`` / ``HOP3`` are written as protons on ``O2P`` / ``O3P``
+      with the H pointing radially outward from P. Pablo's CCD entries
+      for SEP / TPO / PTR ship the *protonated* (singly-anion or
+      neutral) form and refuse to match unless these hydrogens are
+      present; the topology builder strips them again with
+      ``Modeller.delete`` after Pablo loads so Amber's dianion phosaa
+      templates apply.
+    """
+    import math
+
+    cx, cy, cz = parent_c_xyz
+    ox, oy, oz = ester_o_xyz
+    vx, vy, vz = ox - cx, oy - cy, oz - cz
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0
+    ux, uy, uz = vx / norm, vy / norm, vz / norm
+
+    px = ox + p_o_ester_bond * ux
+    py = oy + p_o_ester_bond * uy
+    pz = oz + p_o_ester_bond * uz
+
+    if abs(ux) < 0.9:
+        rx, ry, rz = 1.0, 0.0, 0.0
+    else:
+        rx, ry, rz = 0.0, 1.0, 0.0
+    dot = rx * ux + ry * uy + rz * uz
+    e1x = rx - dot * ux
+    e1y = ry - dot * uy
+    e1z = rz - dot * uz
+    n = math.sqrt(e1x * e1x + e1y * e1y + e1z * e1z) or 1.0
+    e1x, e1y, e1z = e1x / n, e1y / n, e1z / n
+    e2x = uy * e1z - uz * e1y
+    e2y = uz * e1x - ux * e1z
+    e2z = ux * e1y - uy * e1x
+
+    cos_t = 1.0 / 3.0
+    sin_t = math.sqrt(8.0) / 3.0
+
+    out: dict[str, tuple[float, float, float]] = {}
+    op_data: list[tuple[str, tuple[float, float, float], tuple[float, float, float]]] = []
+    for label, phi in (("O1P", 0.0), ("O2P", 2 * math.pi / 3), ("O3P", 4 * math.pi / 3)):
+        c, s = math.cos(phi), math.sin(phi)
+        dx = cos_t * ux + sin_t * (c * e1x + s * e2x)
+        dy = cos_t * uy + sin_t * (c * e1y + s * e2y)
+        dz = cos_t * uz + sin_t * (c * e1z + s * e2z)
+        op_xyz = (
+            px + p_o_terminal_bond * dx,
+            py + p_o_terminal_bond * dy,
+            pz + p_o_terminal_bond * dz,
+        )
+        out[label] = op_xyz
+        op_data.append((label, op_xyz, (dx, dy, dz)))
+    out["P"] = (px, py, pz)
+    # Protons placed along the P→O direction, extended by ``o_h_bond`` past
+    # each terminal oxygen. Direction-only — bond / angle relax in eq/min.
+    for label, (ox_p, oy_p, oz_p), (dx, dy, dz) in op_data:
+        # ``O2P`` → ``HOP2`` etc. The Pablo CCD entries name the proton
+        # ``HOP{n}`` rather than ``HO{n}P``.
+        h_label = "HOP" + label[1]
+        out[h_label] = (
+            ox_p + o_h_bond * dx,
+            oy_p + o_h_bond * dy,
+            oz_p + o_h_bond * dz,
+        )
+    return out
 
 
 def _build_source_to_merged_chain_map(
@@ -6224,8 +6312,77 @@ def _apply_phosphorylation_to_pdb(
     for s in sites:
         site_map[(s["chain"], int(s["resnum"]))] = s["target"]
 
+    # First pass: gather parent_C and ester_O coordinates per target site so
+    # we can synthesise phosphate-atom positions before the residue closes.
+    site_geometry: dict[tuple, dict[str, tuple[float, float, float]]] = {}
+    with in_path.open() as fin:
+        for line in fin:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:20].strip()
+            chain = line[21:22].strip()
+            try:
+                resnum = int(line[22:26].strip())
+            except ValueError:
+                continue
+            key = (chain, resnum)
+            if key not in site_map:
+                continue
+            spec = _PHOSPHO_TARGETS.get(site_map[key])
+            if spec is None:
+                continue
+            atom_name = line[12:16].strip()
+            if atom_name not in (spec["parent_c"], spec["ester_o"]):
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            entry = site_geometry.setdefault(key, {})
+            if atom_name == spec["parent_c"]:
+                entry["parent_c"] = xyz
+            else:
+                entry["ester_o"] = xyz
+
     seen: dict[tuple, str] = {}
     mismatch: list[dict] = []
+    last_serial = 0
+    pending_phospho_lines: list[str] = []
+    current_residue_key: Optional[tuple] = None
+
+    def _emit_phospho_atoms(
+        key: tuple, target: str, last_template_line: str
+    ) -> list[str]:
+        """Build P / O1P / O2P / O3P / HOP2 / HOP3 ATOM records.
+
+        Pablo's CCD ships SEP / TPO / PTR in the protonated form; we
+        emit ``HOP2`` and ``HOP3`` (placed by ``_compute_phospho_atom_coords``)
+        so Pablo's residue match succeeds. ``build_amber_system`` strips
+        these protons after Pablo loads so the dianion phosaa templates
+        used by ``protein.ff*.xml`` apply.
+        """
+        nonlocal last_serial
+        geom = site_geometry.get(key, {})
+        parent_c = geom.get("parent_c")
+        ester_o = geom.get("ester_o")
+        if not parent_c or not ester_o:
+            return []
+        coords = _compute_phospho_atom_coords(parent_c, ester_o)
+        chain_field = last_template_line[21:22]
+        resnum_field = last_template_line[22:26]
+        icode_field = last_template_line[26:27]
+        out_lines: list[str] = []
+        for atom_name in ("P", "O1P", "O2P", "O3P", "HOP2", "HOP3"):
+            x, y, z = coords[atom_name]
+            element = "H" if atom_name.startswith("H") else atom_name[0]
+            atom_field = f"{atom_name:>4}" if len(atom_name) < 4 else atom_name[:4]
+            last_serial += 1
+            out_lines.append(
+                f"ATOM  {last_serial:>5} {atom_field} {target:>3} {chain_field}"
+                f"{resnum_field}{icode_field}   "
+                f"{x:>8.3f}{y:>8.3f}{z:>8.3f}  1.00  0.00          {element:>2}\n"
+            )
+        return out_lines
 
     with in_path.open() as fin, out_path.open("w") as fout:
         for line in fin:
@@ -6236,15 +6393,29 @@ def _apply_phosphorylation_to_pdb(
                 try:
                     resnum = int(resnum_field)
                 except ValueError:
+                    if pending_phospho_lines:
+                        for pl in pending_phospho_lines:
+                            fout.write(pl)
+                        pending_phospho_lines = []
                     fout.write(line)
                     continue
+                try:
+                    last_serial = max(last_serial, int(line[6:11].strip()))
+                except ValueError:
+                    pass
                 atom_name = line[12:16].strip()
                 key = (chain, resnum)
+
+                if current_residue_key is not None and current_residue_key != key:
+                    for pl in pending_phospho_lines:
+                        fout.write(pl)
+                    pending_phospho_lines = []
+                current_residue_key = key
+
                 if key in site_map:
                     target = site_map[key]
                     spec = _PHOSPHO_TARGETS.get(target)
                     if spec is None:
-                        # Already validated upstream, but be defensive.
                         fout.write(line)
                         continue
                     expected_source = spec["source"]
@@ -6260,16 +6431,31 @@ def _apply_phosphorylation_to_pdb(
                             seen[key] = "mismatch"
                         fout.write(line)
                         continue
-                    seen[key] = target
+                    if seen.get(key) != target:
+                        seen[key] = target
+                        # Queue phospho atoms to flush right after the
+                        # last source atom — keeps the residue contiguous
+                        # so PDBFile / Pablo treat them as one residue.
+                        pending_phospho_lines = _emit_phospho_atoms(key, target, line)
                     if atom_name == spec["hydroxyl_h"]:
-                        # Drop the hydroxyl hydrogen — the openmmforcefields
-                        # phosaa XML residue template rebuilds the phosphate
-                        # atoms during ``SystemGenerator.create_system``.
+                        # Drop the original hydroxyl hydrogen — Amber's
+                        # phosaa XMLs assume the dianion form (no H on the
+                        # phosphate oxygens). The phosphate atoms we
+                        # synthesised replace it.
                         continue
                     new_line = line[:17] + f"{target:>3}" + line[20:]
                     fout.write(new_line)
                     continue
+            else:
+                if pending_phospho_lines:
+                    for pl in pending_phospho_lines:
+                        fout.write(pl)
+                    pending_phospho_lines = []
+                current_residue_key = None
             fout.write(line)
+        if pending_phospho_lines:
+            for pl in pending_phospho_lines:
+                fout.write(pl)
 
     applied = [
         {

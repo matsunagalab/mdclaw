@@ -2898,16 +2898,48 @@ def _run_openmmforcefields_build(
     # hydrogen to be present. The mdclaw prep pipeline normally takes care of
     # this upstream, but unit-test inputs and ad-hoc PDBs may arrive without
     # explicit hydrogens — re-run PDBFixer here so the build is robust.
+    #
+    # Skip ``addMissingHydrogens`` when the input already carries hydrogens.
+    # PDBFixer's hydrogenation routes through ``Modeller.addHydrogens`` which
+    # only knows standard amino acids and nucleotides; for ligands its
+    # ``_downloadNonstandardDefinitions`` pulls a CCD template and adds the
+    # CCD-listed H atoms on top of any existing H of the same name, giving
+    # duplicate H1/H2/HN1/HN21/etc. for residues like BEN that arrive
+    # already-hydrogenated from antechamber. The duplicates then create
+    # ghost residues during ``PDBFile`` parsing and SystemGenerator fails
+    # with ``No template found for residue``.
     hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
     try:
         from pdbfixer import PDBFixer
         from openmm.app import PDBFile as _PDBFile
 
+        input_has_hydrogens = False
+        try:
+            with pdb_path.open() as fh:
+                for line in fh:
+                    if line.startswith(("ATOM  ", "HETATM")):
+                        element = line[76:78].strip()
+                        # Element column is canonical; fall back to atom-name
+                        # leading letter for legacy PDBs that omit columns 77-78.
+                        if not element:
+                            element = line[12:14].strip().lstrip("0123456789")[:1]
+                        if element.upper() == "H":
+                            input_has_hydrogens = True
+                            break
+        except OSError:
+            pass
+
         fixer = PDBFixer(filename=str(pdb_path))
         fixer.findMissingResidues()
         fixer.findMissingAtoms()
         fixer.addMissingAtoms()
-        fixer.addMissingHydrogens(7.0)
+        if not input_has_hydrogens:
+            fixer.addMissingHydrogens(7.0)
+        else:
+            result["warnings"].append(
+                "Input PDB already contains hydrogens; skipping PDBFixer "
+                "addMissingHydrogens to avoid duplicating ligand H atoms."
+            )
         with hydrogenated_pdb.open("w") as fh:
             _PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
         pablo_input = hydrogenated_pdb
@@ -2918,10 +2950,225 @@ def _run_openmmforcefields_build(
         )
         pablo_input = pdb_path
 
-    pablo_result = _topology_pablo.load_topology(pablo_input, extra_smiles=extra_smiles)
+    # Load ligand parameter mol2 files into OpenFF Molecules early so we can
+    # (a) feed Pablo SMILES so its CCD-based loader matches non-CCD ligands
+    # like BEN, and (b) hand the same molecules to ``SystemGenerator`` /
+    # ``GAFFTemplateGenerator`` below. ``Molecule.from_file`` cannot read
+    # GAFF-typed mol2 with the RDKit-only registry, so we go through ParmEd
+    # to preserve TRIPOS bond orders (single / double / aromatic 1.5) — a
+    # bare PDB round-trip would lose the aromatic ring + amidine C=N and
+    # the resulting molecule would no longer match the topology.
+    try:
+        from openff.toolkit import Molecule as _Molecule  # local import
+    except ImportError as exc:
+        result["errors"].append(
+            f"openff-toolkit not importable for ligand load: {exc}. "
+            f"Run `conda env update -f environment.yml`."
+        )
+        return result
+
+    def _load_ligand_molecule(mol2_path: str) -> Any:
+        try:
+            return _Molecule.from_file(str(mol2_path))
+        except Exception:  # noqa: BLE001
+            pass
+        import parmed
+        from rdkit import Chem
+        struct = parmed.load_file(str(mol2_path), structure=True)
+        rwmol = Chem.RWMol()
+        atom_idx_map: dict[int, int] = {}
+        for atom in struct.atoms:
+            sym = atom.element_name
+            if not sym:
+                sym = atom.name.strip()[:1]
+            rdatom = Chem.Atom(sym)
+            fc = getattr(atom, "formal_charge", None)
+            rdatom.SetFormalCharge(int(fc) if fc is not None else 0)
+            rdatom.SetNoImplicit(True)
+            rdatom.SetProp("_atom_name", atom.name)
+            atom_idx_map[id(atom)] = rwmol.AddAtom(rdatom)
+        bond_type_map = {
+            1: Chem.BondType.SINGLE,
+            2: Chem.BondType.DOUBLE,
+            3: Chem.BondType.TRIPLE,
+            1.5: Chem.BondType.AROMATIC,
+        }
+        for bond in struct.bonds:
+            rwmol.AddBond(
+                atom_idx_map[id(bond.atom1)],
+                atom_idx_map[id(bond.atom2)],
+                bond_type_map.get(bond.order, Chem.BondType.SINGLE),
+            )
+        if struct.atoms and struct.atoms[0].xx is not None:
+            conf = Chem.Conformer(len(struct.atoms))
+            for i, atom in enumerate(struct.atoms):
+                conf.SetAtomPosition(
+                    atom_idx_map[id(atom)], (atom.xx, atom.xy, atom.xz)
+                )
+            rwmol.AddConformer(conf, assignId=True)
+        rdmol = rwmol.GetMol()
+        Chem.SanitizeMol(rdmol)
+        return _Molecule.from_rdkit(
+            rdmol, hydrogens_are_explicit=True, allow_undefined_stereo=True,
+        )
+
+    ligand_molecules: list[Any] = []
+    for lig in valid_ligands or []:
+        mol2 = lig.get("mol2")
+        if not mol2:
+            result["errors"].append(
+                f"Ligand entry {lig.get('residue_name', '?')!r} is missing the "
+                f"``mol2`` field — GAFFTemplateGenerator cannot register the "
+                f"residue without it. Re-run prepare_complex / "
+                f"parameterize_ligand to refresh ligand_params."
+            )
+            return result
+        try:
+            ligand_molecules.append(_load_ligand_molecule(mol2))
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(
+                f"Failed to load ligand mol2 {mol2}: "
+                f"{type(exc).__name__}: {exc}. The OpenFF GAFF generator "
+                f"needs every ligand as a Molecule; without it the topology "
+                f"build fails downstream with 'No template found'."
+            )
+            result["code"] = "ligand_mol2_load_failed"
+            return result
+
+    # Hand the loaded ligands to Pablo as ``(residue_name, smiles)`` pairs so
+    # its CCD matcher sees the GAFF-typed ligand as a registered
+    # additional definition. Without this, Pablo's PDBFile fallback emits a
+    # topology with zero internal bonds for unknown ligand residues, and
+    # ``SystemGenerator.create_system`` then fails with "No template found"
+    # (graph-isomorphism cannot match an unbonded residue).
+    ligand_extra_smiles: list[Tuple[str, str]] = []
+    for lig, mol in zip(valid_ligands or [], ligand_molecules):
+        residue_name = lig.get("residue_name")
+        if residue_name and mol is not None:
+            try:
+                ligand_extra_smiles.append((residue_name, mol.to_smiles()))
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Could not derive SMILES for ligand {residue_name!r}: "
+                    f"{type(exc).__name__}: {exc}; Pablo may fall back to "
+                    f"PDBFile and emit an under-bonded topology."
+                )
+
+    pablo_smiles = list(extra_smiles) + ligand_extra_smiles
+
+    # Sanitize residue names that Pablo's CCD-based loader does not
+    # recognise: packmol-memgen / Amber emit ions as ``Na+`` / ``Cl-`` /
+    # ``K+`` (3-letter residue name carries the charge sigil), but CCD
+    # ships only the bare element codes ``NA`` / ``CL`` / ``K``. Without
+    # this rewrite Pablo bails on the entire topology and falls back to
+    # ``openmm.app.PDBFile``, which then leaves ligand residues like BEN
+    # without internal bonds — ``SystemGenerator.create_system`` then
+    # fails with the cryptic "No template found for residue 223 (BEN)".
+    # Round-trip Amber's HID/HIE/HIP histidine variants through HIS for
+    # Pablo (CCD only knows HIS), then restore Amber names from each
+    # residue's HD1/HE2 atoms after load so ``protein.ff*.xml``'s
+    # protonation-specific templates apply.
+    # Map non-CCD ion names → CCD canonical (residue + atom). PDBFixer
+    # often re-aligns these fields, so match on stripped value rather than
+    # exact bytes and re-emit with PDB-format padding.
+    _ION_RESNAME_RENAMES = {
+        "Na+": "NA",
+        "Cl-": "CL",
+        "K+": "K",
+    }
+    _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
+
+    his_amber_resids: set[tuple[str, str]] = set()
+    sanitized_input = pablo_input
+    needs_sanitize = False
+    try:
+        with pablo_input.open() as fh:
+            for line in fh:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    rn = line[17:20].strip()
+                    if (rn in _ION_RESNAME_RENAMES
+                            or rn in _HIS_AMBER_VARIANTS):
+                        needs_sanitize = True
+                        break
+    except OSError:
+        pass
+
+    if needs_sanitize:
+        sanitized_input = out_dir / f"{output_name}.pablo_input.pdb"
+        with pablo_input.open() as fh_in, sanitized_input.open("w") as fh_out:
+            for line in fh_in:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    raw_resname = line[17:20]
+                    raw_atom_name = line[12:16]
+                    new_resname = raw_resname
+                    new_atom = raw_atom_name
+                    rn_strip = raw_resname.strip()
+                    an_strip = raw_atom_name.strip()
+                    if rn_strip in _ION_RESNAME_RENAMES:
+                        canonical_res = _ION_RESNAME_RENAMES[rn_strip]
+                        new_resname = f"{canonical_res:>3}"
+                        if an_strip == rn_strip:
+                            new_atom = f"{canonical_res:>4}"
+                    elif rn_strip in _HIS_AMBER_VARIANTS:
+                        chain_id = line[21:22]
+                        resseq = line[22:26]
+                        his_amber_resids.add((chain_id, resseq.strip()))
+                        new_resname = "HIS"
+                    line = (
+                        line[:12] + new_atom + line[16:17]
+                        + new_resname + line[20:]
+                    )
+                fh_out.write(line)
+
+    pablo_result = _topology_pablo.load_topology(
+        sanitized_input, extra_smiles=pablo_smiles
+    )
     result["warnings"].extend(pablo_result.warnings)
     omm_topology = pablo_result.topology
     omm_positions = pablo_result.positions
+
+    # Restore Amber HID/HIE/HIP residue names on the loaded topology so
+    # ``protein.ff*.xml``'s protonation-specific templates apply. Pablo
+    # loaded these as canonical HIS via the CCD; pick the variant from the
+    # H atoms that survived the load (``protein.ff19SB.xml`` lacks a HIS
+    # template entirely so leaving them as HIS would crash create_system).
+    if his_amber_resids:
+        for residue in omm_topology.residues():
+            if residue.name != "HIS":
+                continue
+            chain_id = residue.chain.id or ""
+            if (chain_id, str(residue.id)) not in his_amber_resids:
+                continue
+            atoms = {a.name for a in residue.atoms()}
+            if "HD1" in atoms and "HE2" in atoms:
+                residue.name = "HIP"
+            elif "HD1" in atoms:
+                residue.name = "HID"
+            elif "HE2" in atoms:
+                residue.name = "HIE"
+            else:
+                residue.name = "HID"
+
+    # Strip the HOP2 / HOP3 protons that ``phosphorylate_residues`` added
+    # only so Pablo's CCD-shipped (protonated) PHOSPHOSERINE /
+    # PHOSPHOTHREONINE / PHOSPHOTYROSINE template would match. Amber's
+    # phosaa19SB / phosaa14SB / phosaa10 templates are dianion (no proton
+    # on phosphate oxygens); keeping HOP2 / HOP3 would now make
+    # ``SystemGenerator.create_system`` fail with "Unknown atom names:
+    # HOP2 / HOP3" for the topology side.
+    _PHOSPHO_DROP_HS = {"HOP2", "HOP3", "HOP1"}
+    _PHOSPHO_RES_NAMES = {"SEP", "TPO", "PTR"}
+    drop_atoms = [
+        atom for atom in omm_topology.atoms()
+        if atom.residue.name in _PHOSPHO_RES_NAMES
+        and atom.name in _PHOSPHO_DROP_HS
+    ]
+    if drop_atoms:
+        from openmm.app import Modeller as _Modeller
+        modeller = _Modeller(omm_topology, omm_positions)
+        modeller.delete(drop_atoms)
+        omm_topology = modeller.topology
+        omm_positions = modeller.positions
 
     # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
     if disulfide_bonds:
@@ -2977,7 +3224,6 @@ def _run_openmmforcefields_build(
         from openmm import app, unit, XmlSerializer, LangevinIntegrator
         from openmm.app import Modeller, PDBFile, Simulation
         from openmmforcefields.generators import SystemGenerator
-        from openff.toolkit import Molecule
     except ImportError as exc:
         result["errors"].append(
             f"openmmforcefields stack not importable: {exc}. "
@@ -2998,18 +3244,6 @@ def _run_openmmforcefields_build(
         "nonbondedCutoff": 1.0 * unit.nanometer,
     }
     nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
-
-    ligand_molecules: list[Any] = []
-    for lig in valid_ligands or []:
-        mol2 = lig.get("mol2")
-        if not mol2:
-            continue
-        try:
-            ligand_molecules.append(Molecule.from_file(str(mol2)))
-        except Exception as exc:  # noqa: BLE001
-            result["warnings"].append(
-                f"Failed to load ligand mol2 {mol2}: {type(exc).__name__}: {exc}"
-            )
 
     try:
         sg = SystemGenerator(
@@ -3059,7 +3293,229 @@ def _run_openmmforcefields_build(
         result["code"] = "modxna_openmm_xml_required"
         return result
 
+    # Patch missing intra-residue bonds for residues that the loaded
+    # forcefield knows but Pablo / PDBFile produced an unbonded entry
+    # for. ``packmol-memgen`` does not emit CONECT records for lipid21
+    # residues (PA / PC / OL / etc.), and ``cpptraj prepareforleap``
+    # writes GLYCAM residue codes (0YB / 4YA / 4YB / NLN / …) that
+    # neither Pablo's CCD nor ``openmm.app.Topology._proteinResidues``
+    # know how to bond. Without bonds, ``SystemGenerator.create_system``
+    # fails with "the residue has no bonds between its atoms"
+    # (lipid case) or "missing 1 C atom externally bonded" (glycan
+    # cascade onto the linker amino acid). We walk the topology, find
+    # residues that have a template in ``sg.forcefield`` but no
+    # internal bonds yet, and copy the template's bond list onto the
+    # topology so create_system can match.
+    bonds_added = 0
+    for residue in list(omm_topology.residues()):
+        atom_by_name = {a.name: a for a in residue.atoms()}
+        if not atom_by_name:
+            continue
+        atom_indices = {a.index for a in atom_by_name.values()}
+        has_internal_bond = False
+        for bond in omm_topology.bonds():
+            if bond.atom1.index in atom_indices and bond.atom2.index in atom_indices:
+                has_internal_bond = True
+                break
+        if has_internal_bond:
+            continue
+        template = sg.forcefield._templates.get(residue.name)
+        if template is None:
+            continue
+        for tb in template.bonds:
+            n1 = template.atoms[tb[0]].name
+            n2 = template.atoms[tb[1]].name
+            a1 = atom_by_name.get(n1)
+            a2 = atom_by_name.get(n2)
+            if a1 is not None and a2 is not None:
+                omm_topology.addBond(a1, a2)
+                bonds_added += 1
+    if bonds_added:
+        result["warnings"].append(
+            f"Patched {bonds_added} intra-residue bond(s) onto topology "
+            f"residues whose Pablo / PDBFile load left them unbonded "
+            f"(lipid21 / GLYCAM templates supply the missing bonds)."
+        )
+
+    # Patch missing inter-residue (external) bonds. ``packmol-memgen`` and
+    # ``cpptraj prepareforleap`` write residues with the right geometry but
+    # rely on tleap/parmed-side bond inference to connect them. The
+    # template's ``externalBonds`` field tells us which atom in each
+    # residue is supposed to dangle out to a neighbor; a small spatial
+    # search (1.8 Å heavy-atom cutoff, matching tleap's default) wires them
+    # up. Without this, ``SystemGenerator.create_system`` fails with the
+    # protein-FF "missing 1 C atom externally bonded" cascade once the
+    # adjacent residue (LEU next to a glycan, PA next to PC, etc.) cannot
+    # complete its peptide / lipid linkage.
+    try:
+        from openmm import unit as _unit
+    except ImportError:
+        _unit = None
+    if _unit is not None:
+        # Per-atom external-bond budget so we never exceed what the
+        # template advertises (the budget already reflects existing
+        # cross-residue bonds Pablo / PDBFile produced).
+        existing_bonds: set[tuple[int, int]] = set()
+        cross_bonds_per_atom: dict[int, int] = {}
+        for bond in omm_topology.bonds():
+            i1, i2 = sorted((bond.atom1.index, bond.atom2.index))
+            existing_bonds.add((i1, i2))
+            if bond.atom1.residue.index != bond.atom2.residue.index:
+                cross_bonds_per_atom[bond.atom1.index] = (
+                    cross_bonds_per_atom.get(bond.atom1.index, 0) + 1
+                )
+                cross_bonds_per_atom[bond.atom2.index] = (
+                    cross_bonds_per_atom.get(bond.atom2.index, 0) + 1
+                )
+        ext_candidates: list[tuple[Any, int, str]] = []
+        ext_budget: dict[int, int] = {}
+        for residue in omm_topology.residues():
+            template = sg.forcefield._templates.get(residue.name)
+            if template is None or not template.externalBonds:
+                continue
+            atom_by_name = {a.name: a for a in residue.atoms()}
+            template_external_count: dict[str, int] = {}
+            for ti in template.externalBonds:
+                name = template.atoms[ti].name
+                template_external_count[name] = template_external_count.get(name, 0) + 1
+            for name, expected in template_external_count.items():
+                atom = atom_by_name.get(name)
+                if atom is None:
+                    continue
+                remaining = expected - cross_bonds_per_atom.get(atom.index, 0)
+                if remaining <= 0:
+                    continue
+                ext_budget[atom.index] = remaining
+                ext_candidates.append((atom, atom.residue.index, name))
+        positions_nm = [p.value_in_unit(_unit.nanometer) for p in omm_positions]
+        ext_bonds_added = 0
+        seen_pairs: set[tuple[int, int]] = set()
+        # Two-pass greedy: first pass only considers candidates whose
+        # residue names differ, so a chemically meaningful pair like
+        # ``PC.C21 ↔ OL.C12`` (1.52 Å) wins over a packmol-induced
+        # ``PC.C21 ↔ PC.C21`` overlap (1.37 Å) between adjacent
+        # leaflet lipids. Same-name pairings are still permitted on the
+        # second pass for legitimate glycan-glycan polymerisation
+        # (``0YB ↔ 0YB`` etc.).
+        # 2.0 Å heavy-atom cutoff for both passes — covers C-O / C-C
+        # ester linkages in lipid21 and the GLYCAM glycosidic O-C bond.
+        for restrict_cross_name in (True, False):
+            for i, (atom_a, res_a, _name_a) in enumerate(ext_candidates):
+                if ext_budget.get(atom_a.index, 0) <= 0:
+                    continue
+                best_partner = None
+                best_dist = 0.20
+                xa, ya, za = positions_nm[atom_a.index]
+                for j, (atom_b, res_b, _name_b) in enumerate(ext_candidates):
+                    if i == j:
+                        continue
+                    if res_a == res_b:
+                        continue
+                    if ext_budget.get(atom_b.index, 0) <= 0:
+                        continue
+                    if restrict_cross_name and atom_a.residue.name == atom_b.residue.name:
+                        continue
+                    xb, yb, zb = positions_nm[atom_b.index]
+                    d2 = (xa - xb) ** 2 + (ya - yb) ** 2 + (za - zb) ** 2
+                    if d2 >= best_dist * best_dist:
+                        continue
+                    d = d2 ** 0.5
+                    if d < best_dist:
+                        best_dist = d
+                        best_partner = atom_b
+                if best_partner is not None:
+                    k = tuple(sorted((atom_a.index, best_partner.index)))
+                    if k in existing_bonds or k in seen_pairs:
+                        continue
+                    omm_topology.addBond(atom_a, best_partner)
+                    seen_pairs.add(k)
+                    ext_bonds_added += 1
+                    ext_budget[atom_a.index] -= 1
+                    ext_budget[best_partner.index] = (
+                        ext_budget.get(best_partner.index, 0) - 1
+                    )
+        if ext_bonds_added:
+            result["warnings"].append(
+                f"Patched {ext_bonds_added} inter-residue bond(s) connecting "
+                f"residues whose templates declare external bonds but the "
+                f"loader emitted them unconnected (lipid21 head/tail or "
+                f"GLYCAM glycan-glycan linkages)."
+            )
+        # Debug: residues whose external-bond budget remained > 0 after the
+        # patcher pass — these will fail downstream with "missing N C atom
+        # externally bonded" so surface them as a warning the caller can act
+        # on (typically a packmol-memgen layout where headgroups are too far
+        # apart to bond, or a glycan branch with an unexpected partner).
+        unbonded_externals: list[str] = []
+        for atom_idx, remaining in ext_budget.items():
+            if remaining > 0:
+                atom = next(
+                    (a for a in omm_topology.atoms() if a.index == atom_idx),
+                    None,
+                )
+                if atom is not None:
+                    unbonded_externals.append(
+                        f"{atom.residue.name}#{atom.residue.id}.{atom.name}"
+                    )
+        if unbonded_externals:
+            result["warnings"].append(
+                f"External-bond patcher could not pair {len(unbonded_externals)} "
+                f"atom(s) within the 2.0 Å heavy-atom cutoff: "
+                f"{unbonded_externals[:5]}"
+                f"{'...' if len(unbonded_externals) > 5 else ''}"
+            )
+
+        # Salvage NLN residues whose glycan partner was missing from the
+        # prep output (cpptraj's ``prepareforleap`` writes NLN at every
+        # detected N-glycan site but the matching glycan chain may be
+        # spatially detached after the merge). With no glycan to bond to,
+        # the residue is functionally a plain ASN — rename it so
+        # ``addHydrogens`` can place HD22 from the ASN template and
+        # ``protein.ff*.xml`` matches the side chain.
+        nln_renamed = 0
+        for residue in omm_topology.residues():
+            if residue.name != "NLN":
+                continue
+            nd2 = next((a for a in residue.atoms() if a.name == "ND2"), None)
+            if nd2 is None:
+                continue
+            if ext_budget.get(nd2.index, 0) > 0:
+                residue.name = "ASN"
+                nln_renamed += 1
+        if nln_renamed:
+            result["warnings"].append(
+                f"Renamed {nln_renamed} NLN residue(s) without a matched "
+                f"glycan partner back to ASN (addHydrogens fills in HD22 "
+                f"and the protein FF treats them as plain asparagine)."
+            )
+
     modeller = Modeller(omm_topology, omm_positions)
+    # Top up residues that the upstream PDBFixer pass left under-hydrogenated
+    # (NLN / GLYCAM linker residues fall through PDBFixer's standard
+    # template list because OpenMM's built-in ``hydrogens.xml`` only knows
+    # standard amino acids/nucleotides. OpenMM ships a separate
+    # ``glycam-hydrogens.xml`` covering NLN / 0YB / 4YA / 4YB / etc. — load
+    # it explicitly via ``Modeller.loadHydrogenDefinitions`` so
+    # ``addHydrogens`` knows which Hs to place where.
+    try:
+        import os as _os
+        import openmm.app as _omm_app_for_data
+        _omm_app_dir = _os.path.dirname(_omm_app_for_data.__file__)
+        _glycam_h_xml = _os.path.join(_omm_app_dir, "data", "glycam-hydrogens.xml")
+        if _os.path.exists(_glycam_h_xml):
+            Modeller.loadHydrogenDefinitions(_glycam_h_xml)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"loadHydrogenDefinitions(glycam-hydrogens.xml) failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    try:
+        modeller.addHydrogens(forcefield=sg.forcefield)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"addHydrogens failed (continuing without auto-hydrogen pass): "
+            f"{type(exc).__name__}: {exc}"
+        )
     try:
         modeller.addExtraParticles(sg.forcefield)
     except Exception as exc:  # noqa: BLE001
