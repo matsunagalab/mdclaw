@@ -2481,6 +2481,35 @@ def build_amber_system(
                 from mdclaw._node import fail_node
                 fail_node(job_dir, node_id, errors=err.get("errors", []))
             return {**result, **err}
+        # openmmforcefields 0.16.0 ships ``amber/protein.ff14SB.xml`` with
+        # prefixed atom types (``protein-N``…) but ``amber/phosaa14SB.xml``
+        # with unprefixed types — loading both raises ``KeyError: 'N'``
+        # inside ``app.ForceField.loadFile``. Surface a structured fail-fast
+        # so callers get an actionable suggestion (switch to ff19SB +
+        # phosaa19SB) instead of the cryptic upstream KeyError.
+        _PHOSAA_TYPE_PREFIX_BROKEN = {
+            ("ff14SB", "phosaa14SB"),
+            ("ff14SBonlysc", "phosaa14SB"),
+        }
+        if (forcefield, phosaa_library.split(".")[-1]) in _PHOSAA_TYPE_PREFIX_BROKEN:
+            err = create_validation_error(
+                "forcefield",
+                f"Forcefield '{forcefield}' uses the openmmforcefields "
+                f"prefixed-atom-type protein XML (``protein-N``…), but "
+                f"``amber/{phosaa_library.split('.')[-1]}.xml`` ships with "
+                f"unprefixed types — pairing them raises KeyError 'N' inside "
+                f"``app.ForceField`` (atom-type asymmetry not yet fixed "
+                f"upstream). PTM residues detected in input: "
+                f"{sorted({s['name'] for s in ptm_residues_in_input})}.",
+                expected="ff19SB (pairs with phosaa19SB; OPC water recommended)",
+                actual=forcefield,
+                warnings=result["warnings"],
+                code="phospho_forcefield_atom_type_mismatch",
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=err.get("errors", []))
+            return {**result, **err}
         result["parameters"]["phosaa_library"] = phosaa_library
         result["parameters"]["ptm_residues"] = ptm_residues_in_input
 

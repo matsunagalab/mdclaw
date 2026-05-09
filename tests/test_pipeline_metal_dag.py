@@ -74,8 +74,18 @@ class TestPipelineMetalDag:
         assert "metal_params" in prep_node["artifacts"]
         assert prep_node["status"] == "completed"
 
-    def test_step4_topology_auto_resolves_metal_params(self, job_dir):
-        from mdclaw._node import create_node, read_node
+    def test_step4_topology_returns_metal_openmm_xml_required(self, job_dir):
+        """``build_amber_system`` fail-fasts on metal frcmod+mol2 inputs.
+
+        The openmmforcefields path does not yet provide a ParmEd → OpenMM
+        XML bridge for the AmberTools metal frcmod / mol2 artifacts that
+        ``parameterize_metal_ion`` writes. ``build_amber_system`` therefore
+        returns the structured code ``metal_openmm_xml_required`` and
+        directs callers to ``build_openmm_system`` with a pre-converted
+        OpenMM ForceField XML for the metal residue. This test pins that
+        contract until the bridge ships.
+        """
+        from mdclaw._node import create_node
         from mdclaw.amber_server import build_amber_system
 
         require_topology_builder_stack()
@@ -89,7 +99,8 @@ class TestPipelineMetalDag:
             forcefield="ff14SB",
             water_model="opc",
         )
-        assert result["success"], result.get("errors")
-        topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["system_xml"]
-        assert topo_node["metadata"]["forcefield"] == "ff14SB"
+        assert result["success"] is False
+        assert result.get("code") == "metal_openmm_xml_required"
+        joined = " ".join(result.get("errors") or [])
+        assert "build_openmm_system" in joined
+        assert "ParmEd" in joined or "parmed" in joined.lower()

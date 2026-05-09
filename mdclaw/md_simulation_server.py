@@ -1673,8 +1673,12 @@ def run_equilibration(
             result["code"] = exc.code
             return _fail_node_if_running(job_dir, node_id, result)
 
-        # Barostat — mirrors run_production's NPT setup.
-        if pressure_bar is not None and is_periodic and not implicit_solvent:
+        # Barostat — mirrors run_production's NPT setup. ``pressure_bar=0``
+        # is conventionally NVT (see ``_effective_pressure_bar`` and the
+        # ``pressure_bar`` docstring), so gate on ``> 0`` rather than
+        # ``is not None`` to avoid silently saving a barostat at 0 bar.
+        if (pressure_bar is not None and pressure_bar > 0
+                and is_periodic and not implicit_solvent):
             if is_membrane:
                 system_clean.addForce(MonteCarloMembraneBarostat(
                     pressure_bar * bar,
@@ -2224,8 +2228,14 @@ def run_production(
             result["code"] = exc.code
             return _fail_node_if_running(job_dir, node_id, result)
 
-        # Add barostat if NPT (only for periodic explicit solvent systems)
-        if pressure_bar is not None and is_periodic and not implicit_solvent:
+        # Add barostat if NPT (only for periodic explicit solvent systems).
+        # ``pressure_bar=0`` is conventionally NVT (matches
+        # ``_effective_pressure_bar`` and the docstring's "0 or None: NVT"
+        # rule); without this guard, a 0-bar barostat would be added and
+        # the ``_detect_ensemble_mismatch`` warning for NPT-state-into-NVT
+        # restarts would never fire.
+        if (pressure_bar is not None and pressure_bar > 0
+                and is_periodic and not implicit_solvent):
             if is_membrane:
                 # Membrane systems: MonteCarloMembraneBarostat with semi-isotropic coupling
                 # XYIsotropic: X and Y axes scale together (membrane plane)
@@ -2250,7 +2260,7 @@ def run_production(
                 barostat.setRandomNumberSeed(random_seed)
             system.addForce(barostat)
             ensemble = "NPT"
-        elif implicit_solvent and pressure_bar is not None:
+        elif implicit_solvent and pressure_bar is not None and pressure_bar > 0:
             # Warn user that NPT is not supported with implicit solvent
             logger.warning("Implicit solvent simulations use NVT ensemble - ignoring pressure setting")
             result["warnings"].append("NPT not supported with implicit solvent, using NVT")

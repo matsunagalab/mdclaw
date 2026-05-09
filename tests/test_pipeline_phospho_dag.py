@@ -89,7 +89,7 @@ class TestPipelinePhosphoDag:
         result = solvate_structure(
             job_dir=str(job_dir),
             node_id=self.solv_id,
-            water_model="tip3p",
+            water_model="opc",
             dist=8.0,
             salt=False,
         )
@@ -108,13 +108,13 @@ class TestPipelinePhosphoDag:
         result = build_amber_system(
             job_dir=str(job_dir),
             node_id=self.topo_id,
-            forcefield="ff14SB",
-            water_model="tip3p",
+            forcefield="ff19SB",
+            water_model="opc",
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
         assert topo_node["artifacts"]["system_xml"]
-        assert topo_node["metadata"]["phosaa_library"] == "leaprc.phosaa14SB"
+        assert topo_node["metadata"]["phosaa_library"] == "leaprc.phosaa19SB"
         assert topo_node["metadata"]["ptm_residues"] == [
             {"chain": "A", "resnum": 20, "name": "SEP"}
         ]
