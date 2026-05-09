@@ -10,8 +10,22 @@ dependencies:
   - openblas
   - matplotlib
   - pymbar>=4.2.0,<5
+  # --- openmmforcefields-unification (PR3+) ---
+  # OpenMM 8.5.1 is the floor for openmmforcefields>=0.15.1; 8.6 brings
+  # SourceWithCMAP fixes used by the ff19SB and phosaa19SB conversions.
+  - openmm>=8.5.1
+  - openmmforcefields>=0.16.0
+  - openff-toolkit-base>=0.17.1
+  # openff-pablo runtime deps (per its README: rustworkx for graph algos,
+  # pyxdg for XDG_CACHE_HOME resolution of the CCD download cache).
+  - rustworkx>=0.14
+  - pyxdg>=0.28
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip
   - pip:
     - -e .
     - git+https://github.com/matsunagalab/FASPR
+    # openff-pablo is pre-1.0 and not yet on conda-forge / PyPI; install
+    # the 0.2.2 git tag and pin to <0.3 to absorb expected API churn
+    # before the openff-pablo team cuts a stable release.
+    - openff-pablo @ git+https://github.com/openforcefield/openff-pablo.git@v0.2.2

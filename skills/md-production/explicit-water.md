@@ -14,10 +14,16 @@
 
 ### Timestep Guide
 
-| Constraints | HMR | Max Timestep | Recommended |
-|---|---|---|---|
-| HBonds | No | 4 fs | 2 fs (conservative) or 4 fs |
-| AllBonds | Yes (`hydrogenMass=4*amu`) | 4 fs | 4 fs |
+The MDClaw default is HBonds + HMR=True at 4 fs. HMR is a build-time
+choice — it must match what `build_amber_system` /
+`build_openmm_system` baked into `system.xml`, otherwise the run-side
+XML system validator raises `modern_system_hmr_mismatch`.
+
+| Constraints | HMR   | Max Timestep | Recommended                                |
+|-------------|-------|--------------|--------------------------------------------|
+| HBonds      | True  | 4 fs         | **4 fs** (MDClaw default; `hydrogenMass=4`) |
+| HBonds      | False | 2 fs         | 2 fs (no HMR baked into `system.xml`)      |
+| AllBonds    | True  | 4 fs         | 4 fs (rare; needs `hydrogenMass=4`)        |
 
 ---
 
@@ -35,10 +41,10 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 If the user does not specify a run length and `execution_mode=autonomous`,
 use `--simulation-time-ns 0.1` as the default sanity check.
 
-`prmtop_file`, `inpcrd_file`, `restart_from`, and `pressure_bar` are
-auto-resolved from DAG ancestors. Ensemble is inherited from the `eq`
-ancestor, so NPT eq states load with a matching barostat by default. For
-extension/retry details, read `skills/md-production/restart.md`.
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from`, and
+`pressure_bar` are auto-resolved from DAG ancestors. Ensemble is inherited from
+the `eq` ancestor, so NPT eq states load with a matching barostat by default.
+For extension/retry details, read `skills/md-production/restart.md`.
 
 ### SLURM Execution (HPC)
 
@@ -50,7 +56,7 @@ to `/hpc-run`. Do not duplicate sbatch patterns here; use the focused runbooks:
 - `skills/hpc-run/prod-extension.md`
 - `skills/hpc-run/monitor-recover.md`
 
-Inside the job script, omit `--prmtop-file`, `--inpcrd-file`, and
+Inside the job script, omit `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, and
 `--restart-from` in normal DAG flows. DAG auto-resolution handles them.
 
 ---

@@ -84,45 +84,70 @@ def test_prepare_complex_passes_nucleics_through(tmp_path):
 
 
 def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path):
+    """Standard DNA + RNA presence resolves DNA.OL15 + RNA.OL3 into the
+    SystemGenerator XML bundle (PR3: tleap script inspection retired)."""
+    from unittest.mock import patch
     from mdclaw import amber_server
 
-    class FakeTLeap:
-        def is_available(self):
-            return True
+    captured: dict = {}
 
-        def run(self, args, cwd=None, timeout=None):
-            cwd_path = Path(cwd)
-            script_path = cwd_path / args[1]
-            script = script_path.read_text(encoding="utf-8")
-            assert script.index("source leaprc.DNA.OL15") < script.index("mol = loadpdb")
-            assert script.index("source leaprc.RNA.OL3") < script.index("mol = loadpdb")
-            (cwd_path / "system.parm7").write_text("%FLAG TITLE\n", encoding="utf-8")
-            (cwd_path / "system.rst7").write_text("rst\n", encoding="utf-8")
-            return type("ProcResult", (), {"stdout": "2 residues", "stderr": ""})()
+    def _fake_om_build(**kwargs):
+        from mdclaw import forcefield_catalog as _fc
+        from mdclaw.amber_server import (
+            _resolve_dna_name_from_libraries,
+            _resolve_rna_name_from_libraries,
+        )
+        bundle = _fc.resolve_xml_bundle(
+            protein=_fc.normalize_protein(kwargs["forcefield"]) or kwargs["forcefield"],
+            water=_fc.normalize_water(kwargs["water_model"]) if kwargs["water_model"] else None,
+            dna=_resolve_dna_name_from_libraries(kwargs["nucleic_libraries"]),
+            rna=_resolve_rna_name_from_libraries(kwargs["nucleic_libraries"]),
+        )
+        captured["bundle"] = bundle
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": list(bundle),
+            },
+        }
 
-    monkeypatch.setattr(amber_server, "tleap_wrapper", FakeTLeap())
-
-    result = amber_server.build_amber_system(
-        pdb_file=_write_pdb(tmp_path),
-        output_dir=str(tmp_path / "topo"),
-    )
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        result = amber_server.build_amber_system(
+            pdb_file=_write_pdb(tmp_path),
+            output_dir=str(tmp_path / "topo"),
+        )
 
     assert result["success"], result.get("errors")
     assert result["parameters"]["nucleic_libraries"] == [
         "leaprc.DNA.OL15",
         "leaprc.RNA.OL3",
     ]
+    bundle = captured.get("bundle", [])
+    assert "amber/DNA.OL15.xml" in bundle
+    assert "amber/RNA.OL3.xml" in bundle
 
 
-def test_build_amber_system_blocks_modified_nucleic_like_residue(monkeypatch, tmp_path):
+def test_build_amber_system_blocks_modified_nucleic_like_residue(tmp_path):
+    # The unsupported-modified-nucleic guardrail fires before the
+    # openmmforcefields availability check, so this test does not need
+    # to mock the build stack.
     from mdclaw import amber_server
 
     modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
-    monkeypatch.setattr(
-        amber_server.tleap_wrapper,
-        "is_available",
-        lambda: True,
-    )
 
     result = amber_server.build_amber_system(
         pdb_file=_write_pdb(tmp_path, modified),

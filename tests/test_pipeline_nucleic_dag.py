@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.pipeline_helpers import fetch_pdb_node, require_tleap
+from tests.pipeline_helpers import fetch_pdb_node, require_topology_builder_stack
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -24,7 +24,7 @@ def test_standard_nucleic_pdb_builds_real_topology(
     from mdclaw.structure_server import prepare_complex
     from tests.pipeline_helpers import node_artifact
 
-    require_tleap()
+    require_topology_builder_stack()
     job_dir = tmp_path / f"job_{pdb_id.lower()}_nucleic"
 
     fetch_id = fetch_pdb_node(job_dir, pdb_id)
@@ -55,6 +55,6 @@ def test_standard_nucleic_pdb_builds_real_topology(
     )
     assert built["success"], built.get("errors")
     topo_node = read_node(str(job_dir), topo["node_id"])
-    assert topo_node["artifacts"]["parm7"]
-    assert topo_node["artifacts"]["rst7"]
+    assert topo_node["artifacts"]["system_xml"]
+    assert topo_node["artifacts"]["topology_pdb"]
     assert topo_node["metadata"]["nucleic_libraries"] == [expected_library]

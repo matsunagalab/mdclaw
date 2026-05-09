@@ -26,8 +26,9 @@ export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"
 
 Notes:
 
-- `MDCLAW_AMBER_TIMEOUT` controls tleap wall time in `build_amber_system`; raise
-  it for very large fusions.
+- `MDCLAW_AMBER_TIMEOUT` controls the `build_amber_system` wall-time budget for
+  the openmmforcefields `SystemGenerator` build + initial `LocalEnergyMinimizer`
+  pass (no tleap is invoked); raise it for very large fusions and glycoproteins.
 - `MDCLAW_GEOSTD_DIR` points to the curated ligand parameter database.
 - `MDCLAW_MODXNA_DIR` must contain `modxna.sh` and `dat/frcmod.modxna`.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.

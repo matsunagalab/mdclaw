@@ -228,8 +228,8 @@ class TestValidateNodeExecutionContext:
     def test_rejects_condition_mismatch(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -250,8 +250,8 @@ class TestValidateNodeExecutionContext:
     def test_accepts_completed_parent_and_matching_conditions(self, job_dir):
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -274,8 +274,8 @@ class TestValidateNodeExecutionContext:
         check defeats the point of declaring it."""
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -299,8 +299,8 @@ class TestValidateNodeExecutionContext:
         value. ``None`` is treated as unverifiable, not as a match."""
         create_node(str(job_dir), "topo")
         complete_node(str(job_dir), "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(
             str(job_dir),
             "eq",
@@ -394,8 +394,8 @@ class TestContinueFromSugar:
                       artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk"})
@@ -477,8 +477,8 @@ class TestContinueFromStrictEnforcement:
                       artifacts={"solvated_pdb": "artifacts/solvated.pdb"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk"})
@@ -1185,8 +1185,8 @@ class TestDAGAutoResolve:
 
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
 
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
@@ -1196,11 +1196,11 @@ class TestDAGAutoResolve:
         create_node(jd, "prod", parent_node_ids=["eq_001"])
         return job_dir
 
-    def test_find_ancestor_parm7_from_eq(self, full_dag):
+    def test_find_ancestor_system_xml_from_eq(self, full_dag):
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "eq_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "eq_001", "topo", "system_xml")
         assert result is not None
-        assert result.endswith("topo_001/artifacts/system.parm7")
+        assert result.endswith("topo_001/artifacts/system.xml")
 
     def test_find_ancestor_checkpoint_from_prod(self, full_dag):
         jd = str(full_dag)
@@ -1215,15 +1215,15 @@ class TestDAGAutoResolve:
         assert result.endswith("prep_001/artifacts/merge/merged.pdb")
 
     def test_find_ancestor_skips_intermediate(self, full_dag):
-        """prod_001 -> eq_001 -> topo_001: parm7 is 2 hops away."""
+        """prod_001 -> eq_001 -> topo_001: the topo's system_xml is 2 hops away."""
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "prod_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "prod_001", "topo", "system_xml")
         assert result is not None
         assert "topo_001" in result
 
     def test_find_ancestor_missing_returns_none(self, full_dag):
         jd = str(full_dag)
-        result = find_ancestor_artifact(jd, "prep_001", "topo", "parm7")
+        result = find_ancestor_artifact(jd, "prep_001", "topo", "system_xml")
         assert result is None
 
     def test_resolve_node_inputs_blocks_pending_parent(self, job_dir):
@@ -1265,15 +1265,15 @@ class TestDAGAutoResolve:
         jd = str(job_dir)
         create_node(jd, "topo")
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         fail_node(jd, "topo_001", errors=["topology invalid"])
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
         inputs = resolve_node_inputs(jd, "eq_001", "eq")
 
-        assert "prmtop_file" not in inputs
-        assert "inpcrd_file" not in inputs
+        assert "system_xml_file" not in inputs
+        assert "topology_pdb_file" not in inputs
         assert "input_resolution_error" in inputs
         assert "topo_001" in inputs["input_resolution_error"]
         assert "failed" in inputs["input_resolution_error"]
@@ -1301,13 +1301,13 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_eq(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "eq_001", "eq")
-        assert "prmtop_file" in inputs
-        assert "inpcrd_file" in inputs
-        assert inputs["prmtop_file"].endswith("system.parm7")
-        assert inputs["inpcrd_file"].endswith("system.rst7")
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
+        assert inputs["system_xml_file"].endswith("system.xml")
+        assert inputs["topology_pdb_file"].endswith("topology.pdb")
         # The first eq node from topo has no eq/prod ancestor, so no
-        # restart source is surfaced — it runs from inpcrd as a fresh
-        # equilibration.
+        # restart source is surfaced — it runs from the topo state.xml
+        # as a fresh equilibration.
         assert "restart_from" not in inputs
 
     def test_resolve_node_inputs_eq_chain_uses_prior_eq_state(self, full_dag):
@@ -1334,13 +1334,13 @@ class TestDAGAutoResolve:
             "so the new eq node can resume from it (cross-ensemble safe)"
         )
         # Topology still resolves from the shared topo ancestor.
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
 
     def test_resolve_node_inputs_prod(self, full_dag):
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "prod_001", "prod")
-        assert "prmtop_file" in inputs
-        assert "inpcrd_file" in inputs
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
         assert "restart_from" in inputs
         assert inputs["restart_from"].endswith("equilibrated.chk")
 
@@ -1357,7 +1357,7 @@ class TestDAGAutoResolve:
         assert "restart_from" in inputs
         assert inputs["restart_from"].endswith("prod_001/artifacts/checkpoint.chk")
         # topo inputs still resolve to the shared topo ancestor
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
 
     def test_resolve_node_inputs_prod_chain_blocks_unfinished_parent(self, full_dag):
         """Deep chain prod_003 → prod_002 → prod_001 → eq_001: unfinished
@@ -1404,8 +1404,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk",
@@ -1421,12 +1421,269 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_prod_falls_back_to_checkpoint_when_no_state(
         self, full_dag
     ):
-        """Legacy DAGs written before the saveState migration have only
-        the ``checkpoint`` artifact. resolve_node_inputs must fall back
-        to it rather than returning no restart source."""
+        """When the eq ancestor only carries a ``checkpoint`` artifact
+        (no ``state``), resolve_node_inputs falls back to the checkpoint
+        rather than returning no restart source. The XML state is the
+        preferred vehicle when both are present."""
         jd = str(full_dag)
         inputs = resolve_node_inputs(jd, "prod_001", "prod")
         assert inputs["restart_from"].endswith("equilibrated.chk")
+
+    def test_resolve_node_inputs_prod_walks_per_ancestor_state_then_checkpoint(
+        self, job_dir
+    ):
+        """Headline regression: when a near prod ancestor carries only a
+        ``checkpoint`` and a far prod ancestor carries a ``state``, the
+        resolver MUST pick the near ancestor's checkpoint. The previous
+        implementation walked all prods looking for state first and would
+        silently roll the run back across an unsaved prod step.
+
+        DAG: prod_003 -> prod_002(checkpoint, no state) -> prod_001(state)
+             -> eq_001 -> topo_001
+        Expected restart_from: prod_002/checkpoint.chk
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"checkpoint": "artifacts/equilibrated.chk",
+                       "state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        # Far prod with state — the buggy ordering would prefer this.
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        # Near prod with only a checkpoint.
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        # The fix: per-ancestor BFS — for prod_002 we try state, miss,
+        # try checkpoint, hit. We never walk to prod_001.
+        assert inputs["restart_from"].endswith(
+            "prod_002/artifacts/checkpoint.chk"
+        ), inputs["restart_from"]
+        assert inputs["restart_from_node_id"] == "prod_002"
+
+    def test_resolve_node_inputs_prod_uses_nearest_state_when_present(
+        self, job_dir
+    ):
+        """Sanity: when the nearest prod has a state, that state wins —
+        nothing changed for the common case."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        inputs = resolve_node_inputs(jd, "prod_002", "prod")
+        assert inputs["restart_from"].endswith("prod_001/artifacts/state.xml")
+        assert inputs["restart_from_node_id"] == "prod_001"
+
+    def test_read_ancestor_final_step_uses_resolver_chosen_node(
+        self, job_dir
+    ):
+        """``read_ancestor_final_step`` must read ``final_step`` from the
+        same ancestor whose artifact ``_resolve_md_restart`` chose, not
+        from the nearest prod / eq. The two diverge whenever the chosen
+        artifact lives on a non-nearest ancestor — under the BFS-order
+        fix this happens when a prod was registered without artifacts
+        but a sibling has them, or in the regression scenario above."""
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"checkpoint": "artifacts/checkpoint.chk",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        # Resolver picks prod_002's checkpoint (nearest with an artifact).
+        assert inputs["restart_from_node_id"] == "prod_002"
+        # final_step must come from prod_002 (the chosen ancestor),
+        # not prod_001 (the nearest prod with a *state*).
+        step = read_ancestor_final_step(
+            jd, "prod_003", restart_node_id="prod_002",
+        )
+        assert step == 200, (
+            f"final_step must come from prod_002; got {step!r}"
+        )
+        # Default path replays the same BFS — also returns 200.
+        assert read_ancestor_final_step(jd, "prod_003") == 200
+
+    def test_resolve_node_inputs_prod_refuses_to_skip_completed_empty_ancestor(
+        self, job_dir,
+    ):
+        """A completed prod ancestor that registers no restart artifact
+        (state / checkpoint) is a broken DAG: skipping past it would
+        silently roll the run back across whatever the user's tool
+        produced. The resolver must surface ``restart_from_error``
+        rather than walking up to the older prod_001 state.
+
+        DAG: prod_003 -> prod_002(completed, trajectory only) ->
+             prod_001(state)
+        """
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(jd, "solv_001",
+                      artifacts={"solvated_pdb": "x.pdb",
+                                 "box_dimensions": "x.json"})
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 0},
+        )
+        # Older prod with state — the buggy resolver would jump here.
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={"state": "artifacts/state.xml",
+                       "trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 100},
+        )
+        # prod_002: completed, but no state and no checkpoint.
+        create_node(jd, "prod", parent_node_ids=["prod_001"])
+        complete_node(
+            jd, "prod_002",
+            artifacts={"trajectory": "artifacts/trajectory.dcd"},
+            metadata={"final_step": 200},
+        )
+        create_node(jd, "prod", parent_node_ids=["prod_002"])
+
+        inputs = resolve_node_inputs(jd, "prod_003", "prod")
+        assert "restart_from" not in inputs, (
+            "Resolver must not silently skip a completed ancestor that "
+            "produced no restart artifact"
+        )
+        assert "restart_from_error" in inputs
+        assert "prod_002" in inputs["restart_from_error"]
+        assert (
+            "neither" in inputs["restart_from_error"].lower()
+            or "state" in inputs["restart_from_error"].lower()
+        )
+
+        # ``read_ancestor_final_step`` follows the same picker, so it
+        # returns ``None`` (not 100 from prod_001).
+        assert read_ancestor_final_step(jd, "prod_003") is None
+
+    def test_resolve_node_inputs_eq_chain_refuses_completed_empty_eq(
+        self, job_dir,
+    ):
+        """eq → eq chaining: a completed eq parent without state /
+        checkpoint must surface ``restart_from_error`` rather than
+        making the new eq node start fresh from the topo state.xml."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        # eq_001 is completed but only carries final_structure; the
+        # checkpoint / state were never written (broken DAG).
+        complete_node(
+            jd, "eq_001",
+            artifacts={"final_structure": "artifacts/equilibrated.pdb"},
+            metadata={"final_step": 250000},
+        )
+        create_node(jd, "eq", parent_node_ids=["eq_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_002", "eq")
+        assert "restart_from" not in inputs
+        assert "restart_from_error" in inputs
+        assert "eq_001" in inputs["restart_from_error"]
 
     def test_resolve_node_inputs_prod_continue_from_prefers_state(
         self, job_dir
@@ -1441,8 +1698,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"checkpoint": "artifacts/equilibrated.chk",
@@ -1471,8 +1728,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"state": "artifacts/equilibrated.xml"},
@@ -1493,8 +1750,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
         complete_node(jd, "eq_001",
                       artifacts={"state": "artifacts/equilibrated.xml"},
@@ -1509,12 +1766,61 @@ class TestDAGAutoResolve:
     def test_read_ancestor_final_step_returns_none_when_missing(
         self, full_dag
     ):
-        """Legacy DAGs without final_step metadata: helper returns None
-        so the caller falls back to simulation.currentStep=0 after
-        loadState — same observable behavior as loadCheckpoint for a
-        fresh prod (eq→prod)."""
+        """Nodes without ``final_step`` metadata: the helper returns
+        ``None`` so the caller falls back to ``simulation.currentStep=0``
+        after loadState — same observable behaviour as loadCheckpoint
+        for a fresh prod (eq → prod)."""
         from mdclaw._node import read_ancestor_final_step
         assert read_ancestor_final_step(str(full_dag), "prod_001") is None
+
+    def test_read_ancestor_final_step_explicit_none_skips_bfs_fallback(
+        self, job_dir,
+    ):
+        """``restart_node_id=None`` is the run-side signal "external
+        restart file — there is no DAG ancestor whose ``final_step``
+        applies to ``simulation.currentStep``". The helper must
+        return ``None`` *without* falling back to the BFS picker;
+        otherwise an external state.xml would still inherit a DAG
+        ancestor's step counter and silently roll the timeline back
+        or forward.
+
+        This is distinct from omitting ``restart_node_id`` entirely,
+        which IS supposed to trigger the BFS fallback for legacy
+        / non-node-mode callers (covered by
+        ``test_read_ancestor_final_step_uses_resolver_chosen_node``).
+        """
+        from mdclaw._node import read_ancestor_final_step
+
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+            metadata={"final_step": 250000},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+
+        # Sentinel-vs-None contract:
+        # - omitted → BFS fallback picks eq_001 → 250000.
+        assert read_ancestor_final_step(jd, "prod_001") == 250000
+        # - explicit None → "external file" → return None without
+        #   running the BFS, even though eq_001 would have matched.
+        assert read_ancestor_final_step(
+            jd, "prod_001", restart_node_id=None,
+        ) is None
+        # - explicit ancestor id → read from that ancestor.
+        assert read_ancestor_final_step(
+            jd, "prod_001", restart_node_id="eq_001",
+        ) == 250000
 
     # ------------------------------------------------------------------
     # eq_final_ensemble / eq_pressure_bar propagation (added with the
@@ -1535,8 +1841,8 @@ class TestDAGAutoResolve:
                                  "box_dimensions": "x.json"})
         create_node(jd, "topo", parent_node_ids=["solv_001"])
         complete_node(jd, "topo_001",
-                      artifacts={"parm7": "artifacts/system.parm7",
-                                 "rst7": "artifacts/system.rst7"})
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
     def test_resolve_node_inputs_prod_surfaces_npt_eq_ensemble(self, job_dir):
@@ -1594,7 +1900,8 @@ class TestDAGAutoResolve:
         self, full_dag
     ):
         """An analyze node directly parented on a single prod node with
-        one trajectory resolves to that trajectory plus the topo's parm7."""
+        one trajectory resolves to that trajectory plus the topo's
+        ``topology_pdb`` (mdtraj-compatible)."""
         from mdclaw._node import resolve_node_inputs
         jd = str(full_dag)
         complete_node(jd, "prod_001",
@@ -1602,8 +1909,8 @@ class TestDAGAutoResolve:
                                  "state": "artifacts/state.xml"})
         create_node(jd, "analyze", parent_node_ids=["prod_001"])
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
-        assert "prmtop_file" in inputs
-        assert inputs["prmtop_file"].endswith("topo_001/artifacts/system.parm7")
+        assert "topology_file" in inputs
+        assert inputs["topology_file"].endswith("topo_001/artifacts/topology.pdb")
         chain = inputs["trajectory_chain"]
         assert len(chain) == 1
         assert chain[0].endswith("prod_001/artifacts/trajectory.dcd")
@@ -1726,9 +2033,9 @@ class TestDAGAutoResolve:
         assert inputs["reference_pdb"].endswith(
             "analyze_001/artifacts/combined.pdb"
         )
-        # prmtop still resolves through the earlier topo ancestor
-        assert inputs["prmtop_file"].endswith(
-            "topo_001/artifacts/system.parm7"
+        # topology still resolves through the earlier topo ancestor
+        assert inputs["topology_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
         )
         # Phase 1 keys must NOT appear in the Phase 2 resolution
         assert "trajectory_chain" not in inputs
@@ -1807,6 +2114,210 @@ class TestDAGAutoResolve:
         inputs = resolve_node_inputs(jd, "topo_001", "topo")
         assert "pdb_file" in inputs
         assert inputs["pdb_file"].endswith("solvated.pdb")
+
+    # ── Modern artifact triple (system.xml + topology.pdb + state.xml) ────────
+
+    @pytest.fixture
+    def modern_dag(self, job_dir):
+        """prep→solv→topo→eq DAG where topo emits the XML triple
+        (``system.xml`` + ``topology.pdb`` + ``state.xml``) — the only
+        topology contract supported on the run side."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+        return job_dir
+
+    def test_resolve_modern_eq_uses_xml_triple(self, modern_dag):
+        jd = str(modern_dag)
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert "system_xml_file" in inputs
+        assert "topology_pdb_file" in inputs
+        assert "state_xml_file" in inputs
+        assert inputs["system_xml_file"].endswith(
+            "topo_001/artifacts/system.xml"
+        )
+        assert inputs["topology_pdb_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
+        )
+        assert inputs["state_xml_file"].endswith(
+            "topo_001/artifacts/state.xml"
+        )
+
+    def test_resolve_modern_prod_uses_xml_triple(self, modern_dag):
+        jd = str(modern_dag)
+        complete_node(
+            jd, "eq_001",
+            artifacts={
+                "state": "artifacts/equilibrated.xml",
+                "checkpoint": "artifacts/equilibrated.chk",
+            },
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        assert inputs["system_xml_file"].endswith("system.xml")
+        assert inputs["topology_pdb_file"].endswith("topology.pdb")
+        assert inputs["state_xml_file"].endswith(
+            "topo_001/artifacts/state.xml"
+        )
+        assert inputs["restart_from"].endswith("equilibrated.xml")
+
+    def test_resolve_modern_analyze_uses_topology_pdb(self, modern_dag):
+        """Analyze branch picks up topology.pdb (mdtraj-compatible) as
+        ``topology_file`` so atom-selection DSL works directly off the
+        XML triple's PDB."""
+        jd = str(modern_dag)
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+        )
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "prod_001",
+            artifacts={
+                "trajectory": "artifacts/trajectory.dcd",
+                "state": "artifacts/state.xml",
+            },
+        )
+        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
+        assert inputs["topology_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
+        )
+
+    def test_resolve_modern_topo_surfaces_implicit_solvent_metadata(
+        self, job_dir
+    ):
+        """Modern topo nodes built with implicit solvent stamp
+        ``metadata.implicit_solvent`` on node.json. The resolver must
+        surface it as ``topology_implicit_solvent`` so eq/prod can validate
+        their runtime ``--implicit-solvent`` flag against the build-time
+        choice (catches OBC2-built-but-GBn2-requested silent mismatches).
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+            metadata={
+                "implicit_solvent": "OBC2",
+                "hmr": True,
+                "solvent_type": "implicit",
+            },
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert inputs["topology_implicit_solvent"] == "OBC2"
+        assert inputs["topology_hmr"] is True
+        assert inputs["topology_solvent_type"] == "implicit"
+
+        create_node(jd, "prod", parent_node_ids=["eq_001"])
+        complete_node(
+            jd, "eq_001",
+            artifacts={"state": "artifacts/equilibrated.xml"},
+        )
+        prod_inputs = resolve_node_inputs(jd, "prod_001", "prod")
+        # Same topo metadata must propagate down the prod path too —
+        # eq and prod share the topo ancestor's saved system.xml and
+        # therefore must see the same build-time implicit_solvent.
+        assert prod_inputs["topology_implicit_solvent"] == "OBC2"
+
+    def test_resolve_modern_topo_without_implicit_metadata_returns_none(
+        self, modern_dag
+    ):
+        """Explicit-solvent / vacuum topo nodes (no
+        ``metadata.implicit_solvent``) must surface the field as ``None``
+        so the run-side guard skips the check rather than blocking on
+        missing metadata."""
+        jd = str(modern_dag)
+        # ``modern_dag`` fixture completes topo_001 without metadata, so
+        # the resolver should report None for all three build-time hints.
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        assert inputs["topology_implicit_solvent"] is None
+        assert inputs["topology_hmr"] is None
+        assert inputs["topology_solvent_type"] is None
+
+    def test_resolver_pins_to_a_single_topo_for_modern_triple(self, job_dir):
+        """If topo_002 has only system_xml and topo_001 (older) has the full
+        triple, the resolver MUST NOT mix system_xml from topo_002 with
+        topology_pdb / state_xml from topo_001 — the two topo nodes refer to
+        different physical Systems. The expected outcome is an explicit
+        input_resolution_error, not a silent walk to the older topo."""
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+
+        # topo_001 carries a complete triple.
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+
+        # topo_002 carries ONLY system_xml.
+        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "topo_002",
+            artifacts={"system_xml": "artifacts/system.xml"},
+        )
+
+        # eq node directly above topo_002 — the broken topo.
+        create_node(jd, "eq", parent_node_ids=["topo_002"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+        # Must NOT have silently mixed topo_001's topology with topo_002's system.
+        assert "system_xml_file" not in inputs
+        assert "topology_pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        msg = inputs["input_resolution_error"]
+        assert "topo_002" in msg
+        assert "topology_pdb" in msg
+
 
 
 # ── Structured (non-path) artifact propagation ─────────────────────────────

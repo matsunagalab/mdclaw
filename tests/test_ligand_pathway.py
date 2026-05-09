@@ -170,8 +170,16 @@ class TestLigandParamsAutoDetect:
 
         # mol2/frcmod paths are fake so validation will warn about missing files.
         # The key assertion: ligand validation warnings prove the JSON was loaded.
+        # ligand_params.json was loaded if validation surfaced a mol2/frcmod
+        # warning or the openmmforcefields build returned the structured
+        # invalid_ligand_parameters code (the fake paths cannot be opened).
         all_text = " ".join(result.get("warnings", []) + result.get("errors", []))
-        assert "mol2" in all_text.lower() or "frcmod" in all_text.lower() or "tleap" in all_text.lower(), (
+        signaled_load = (
+            "mol2" in all_text.lower()
+            or "frcmod" in all_text.lower()
+            or result.get("code") == "invalid_ligand_parameters"
+        )
+        assert signaled_load, (
             "ligand_params.json was not auto-detected from job root via explicit solvent path. "
             f"warnings={result.get('warnings')}, errors={result.get('errors')}"
         )
@@ -190,8 +198,16 @@ class TestLigandParamsAutoDetect:
 
         result = build_amber_system(pdb_file=str(pdb_file), output_dir=str(tmp_path / "topo"))
 
+        # ligand_params.json was loaded if validation surfaced a mol2/frcmod
+        # warning or the openmmforcefields build returned the structured
+        # invalid_ligand_parameters code (the fake paths cannot be opened).
         all_text = " ".join(result.get("warnings", []) + result.get("errors", []))
-        assert "mol2" in all_text.lower() or "frcmod" in all_text.lower() or "tleap" in all_text.lower(), (
+        signaled_load = (
+            "mol2" in all_text.lower()
+            or "frcmod" in all_text.lower()
+            or result.get("code") == "invalid_ligand_parameters"
+        )
+        assert signaled_load, (
             "ligand_params.json was not auto-detected from job root via implicit solvent path. "
             f"warnings={result.get('warnings')}, errors={result.get('errors')}"
         )

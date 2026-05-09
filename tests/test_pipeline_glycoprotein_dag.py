@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_tleap
+from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_topology_builder_stack
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -56,7 +56,7 @@ class TestPipelineGlycoproteinDag:
         from mdclaw._node import create_node, read_node
         from mdclaw.amber_server import build_amber_system
 
-        require_tleap()
+        require_topology_builder_stack()
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.prep_id])
         assert node["success"], node
         self.__class__.topo_id = node["node_id"]
@@ -69,7 +69,7 @@ class TestPipelineGlycoproteinDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
+        assert topo_node["artifacts"]["system_xml"]
         assert topo_node["artifacts"]["glycam_prepared_pdb"] == "artifacts/system.glycam.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_pdb"] == "artifacts/system.prepareforleap.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_leap"] == "artifacts/system.glycam.leap.in"

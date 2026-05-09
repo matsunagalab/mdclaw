@@ -35,7 +35,7 @@ def concat_trajectory(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
     trajectory_files: Optional[list[str]] = None,
-    prmtop_file: Optional[str] = None,
+    topology_file: Optional[str] = None,
     energy_files: Optional[list[str]] = None,
     selection: str = "protein",
     output_name: str = "combined",
@@ -56,21 +56,22 @@ def concat_trajectory(
     - ``trajectory_files`` is auto-resolved from
       :func:`mdclaw._node.resolve_node_inputs` as the chronological list
       of ``trajectory`` artifacts along the prod ancestor chain.
-    - ``prmtop_file`` is auto-resolved from the ``topo`` ancestor.
+    - ``topology_file`` is auto-resolved from the ``topo`` ancestor.
     - Output files land under ``nodes/<node_id>/artifacts/``.
     - The analyze node is marked ``completed`` on success (with
       structured artifacts + metadata) or ``failed`` on exception.
 
     Direct mode (no ``job_dir``/``node_id``): both ``trajectory_files``
-    and ``prmtop_file`` must be provided explicitly.
+    and ``topology_file`` must be provided explicitly.
 
     Args:
         job_dir: Path to a schema-v3 job directory.
         node_id: ID of the analyze node (e.g. ``"analyze_001"``).
         trajectory_files: Explicit ordered list of input DCD paths.
             Overrides DAG auto-resolution when provided.
-        prmtop_file: Explicit topology path (Amber prmtop or PDB).
-            Overrides DAG auto-resolution when provided.
+        topology_file: Explicit topology path (PDB matching the
+            ``topology_pdb`` artifact). Overrides DAG auto-resolution
+            when provided.
         selection: mdtraj ``topology.select()`` VMD-like string.
             Defaults to ``"protein"`` so waters/ions are stripped.
             Use ``"all"`` to keep every atom.
@@ -134,8 +135,8 @@ def concat_trajectory(
         from mdclaw._node import begin_node, fail_node, resolve_node_inputs
 
         resolved = resolve_node_inputs(job_dir, node_id, "analyze")
-        if prmtop_file is None:
-            prmtop_file = resolved.get("prmtop_file")
+        if topology_file is None:
+            topology_file = resolved.get("topology_file")
         # Phase 3: multiple prod parents produce a branches_input list;
         # otherwise fall back to the flat single-chain shape.
         if resolved.get("branches_input"):
@@ -153,9 +154,9 @@ def concat_trajectory(
         ensure_directory(out_dir)
         begin_node(job_dir, node_id)
     else:
-        if trajectory_files is None or prmtop_file is None:
+        if trajectory_files is None or topology_file is None:
             return create_validation_error(
-                "trajectory_files / prmtop_file",
+                "trajectory_files / topology_file",
                 "Both are required in direct mode. In node mode, pass "
                 "--job-dir and --node-id so they auto-resolve from the DAG.",
             )
@@ -167,7 +168,7 @@ def concat_trajectory(
         try:
             shared_ref_pdb, shared_sel_json, branch_results = _run_multi_branch_concat(
                 branches=branches_input,
-                prmtop_file=prmtop_file,
+                topology_file=topology_file,
                 out_dir=out_dir,
                 selection=selection,
                 stride=stride,
@@ -194,7 +195,7 @@ def concat_trajectory(
         if _node_mode:
             _finalize_concat_node(
                 job_dir, node_id, result, out_dir,
-                selection, stride, chunk, prmtop_file,
+                selection, stride, chunk, topology_file,
             )
         return result
 
@@ -210,8 +211,8 @@ def concat_trajectory(
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
-    if not prmtop_file or not Path(prmtop_file).is_file():
-        msg = f"prmtop file not found: {prmtop_file!r}"
+    if not topology_file or not Path(topology_file).is_file():
+        msg = f"topology file not found: {topology_file!r}"
         logger.error(msg)
         result["errors"].append(msg)
         if _node_mode:
@@ -235,7 +236,7 @@ def concat_trajectory(
         from mdtraj.formats import DCDTrajectoryFile
         from mdtraj.utils import in_units_of
 
-        topology = _parse_topology(prmtop_file)
+        topology = _parse_topology(topology_file)
 
         if selection and selection.lower() != "all":
             atom_indices = np.asarray(topology.select(selection), dtype=np.int64)
@@ -334,7 +335,7 @@ def concat_trajectory(
         logger.info(f"Wrote reference PDB (1 frame): {ref_pdb}")
 
         # Atom-index JSON for traceability (e.g. mapping back to the
-        # original prmtop when comparing with external tools)
+        # original topology when comparing with external tools)
         sel_json = out_dir / f"{output_name}.selection.json"
         sel_json.write_text(
             json.dumps(
@@ -418,7 +419,7 @@ def concat_trajectory(
     if _node_mode:
         _finalize_concat_node(
             job_dir, node_id, result, out_dir,
-            selection, stride, chunk, prmtop_file,
+            selection, stride, chunk, topology_file,
         )
 
     return result
@@ -802,7 +803,7 @@ def _finalize_concat_node(
     selection: str,
     stride: int,
     chunk: int,
-    prmtop_file: Optional[str],
+    topology_file: Optional[str],
 ) -> None:
     """Update node.json with the concat result. Single-branch uses the
     flat ``combined_trajectory`` keys; multi-branch uses a structured
@@ -871,7 +872,7 @@ def _finalize_concat_node(
                 "n_atoms_original": n_atoms_original,
                 "n_branches": result["n_branches"],
                 "total_frames": result["total_frames"],
-                "prmtop_file": prmtop_file,
+                "topology_file": topology_file,
             },
         )
         return
@@ -908,14 +909,14 @@ def _finalize_concat_node(
                 "energy_rows_per_source", []
             ),
             "total_energy_rows": result.get("total_energy_rows", 0),
-            "prmtop_file": prmtop_file,
+            "topology_file": topology_file,
         },
     )
 
 
 def _run_multi_branch_concat(
     branches: list[dict],
-    prmtop_file: str,
+    topology_file: str,
     out_dir: Path,
     selection: str,
     stride: int,
@@ -934,10 +935,10 @@ def _run_multi_branch_concat(
     from mdtraj.formats import DCDTrajectoryFile
     from mdtraj.utils import in_units_of
 
-    if not Path(prmtop_file).is_file():
-        raise FileNotFoundError(f"prmtop file not found: {prmtop_file}")
+    if not Path(topology_file).is_file():
+        raise FileNotFoundError(f"topology file not found: {topology_file}")
 
-    topology = _parse_topology(prmtop_file)
+    topology = _parse_topology(topology_file)
     if selection and selection.lower() != "all":
         atom_indices = np.asarray(
             topology.select(selection), dtype=np.int64

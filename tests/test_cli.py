@@ -401,8 +401,8 @@ class TestHPCParameters:
 
         args = parser.parse_args([
             "run_production",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
             "--platform", "CUDA",
             "--device-index", "0",
         ])
@@ -417,8 +417,8 @@ class TestHPCParameters:
 
         args = parser.parse_args([
             "run_production",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
             "--restart-from", "checkpoint.chk",
         ])
         assert args.restart_from == "checkpoint.chk"
@@ -434,17 +434,17 @@ class TestHPCParameters:
 
         args = parser.parse_args([
             "run_equilibration",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
             "--restart-from", "prior_eq_state.xml",
         ])
         assert args.restart_from == "prior_eq_state.xml"
 
-        # Default is None — fresh equilibration runs from inpcrd as before.
+        # Default is None — fresh equilibration runs from the topo state.xml.
         args_default = parser.parse_args([
             "run_equilibration",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
         ])
         assert args_default.restart_from is None
 
@@ -456,8 +456,8 @@ class TestHPCParameters:
 
         args = parser.parse_args([
             "run_production",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
             "--hmr",
             "--timestep-fs", "4.0",
         ])
@@ -472,8 +472,8 @@ class TestHPCParameters:
 
         args = parser.parse_args([
             "run_production",
-            "--prmtop-file", "sys.parm7",
-            "--inpcrd-file", "sys.rst7",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
         ])
         assert args.hmr is True
         assert args.timestep_fs == 4.0

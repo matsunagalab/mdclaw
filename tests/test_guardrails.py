@@ -82,10 +82,10 @@ def test_workflow_missing_inputs_are_structured():
     assert solvate["error_type"] == "ValidationError"
     assert solvate["code"] == "missing_pdb_file"
 
-    eq = run_equilibration(prmtop_file=None, inpcrd_file=None)
+    eq = run_equilibration(system_xml_file=None, topology_pdb_file=None)
     assert eq["success"] is False
     assert eq["error_type"] == "ValidationError"
-    assert eq["code"] == "missing_topology_inputs"
+    assert eq["code"] == "missing_xml_topology_inputs"
 
 
 def test_build_amber_system_blocks_missing_box_for_explicit_job(tmp_path):
@@ -179,19 +179,32 @@ def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_p
     node = create_node(str(job_dir), "topo")
     assert node["success"] is True
 
-    def _fake_tleap_run(args, cwd, timeout):
-        del args, timeout
-        out_dir = Path(cwd)
-        (out_dir / "system.parm7").write_text("fake parm7\n")
-        (out_dir / "system.rst7").write_text("fake rst7\n")
-        return SimpleNamespace(stdout="Writing parm file with 1 atoms\n", stderr="")
+    # Mock the openmmforcefields build helper rather than tleap; PR3 retires
+    # the tleap process entirely. The test exercises the water-model
+    # parameter-marking behavior, not the actual System build.
+    def _fake_om_build(**kwargs):
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": ["amber/protein.ff14SB.xml"],
+            },
+        }
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run", side_effect=_fake_tleap_run), \
-         patch(
-             "mdclaw.amber_server._add_pdb_info",
-             return_value={"success": False, "errors": [], "flags_added": []},
-         ):
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
         result = build_amber_system(
             pdb_file=str(pdb_file),
             job_dir=str(job_dir),
@@ -534,28 +547,28 @@ def test_metal_water_model_invariants():
     assert ION_FRCMODS_BY_SET["normal"]["opc3"] == "frcmod.ionslm_126_opc3"
 
 
-def test_build_amber_system_rejects_invalid_metal_params_before_tleap(tmp_path):
+def test_build_amber_system_rejects_invalid_metal_params_before_build(tmp_path):
+    # Metal-parameter validation must reject malformed records before the
+    # openmmforcefields build path runs; the structured failure code lets
+    # callers branch without grepping the error string.
     pdb_file = tmp_path / "metal.pdb"
     _write_minimal_metal_pdb(pdb_file)
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run") as fake_run:
-        result = build_amber_system(
-            pdb_file=str(pdb_file),
-            output_dir=str(tmp_path / "topo"),
-            forcefield="ff14SB",
-            water_model="opc",
-            metal_params=[{
-                "mol2": str(tmp_path / "missing.mol2"),
-                "frcmod": "frcmod.ionslm_126_opc",
-                "residue_name": "ZN",
-            }],
-        )
+    result = build_amber_system(
+        pdb_file=str(pdb_file),
+        output_dir=str(tmp_path / "topo"),
+        forcefield="ff14SB",
+        water_model="opc",
+        metal_params=[{
+            "mol2": str(tmp_path / "missing.mol2"),
+            "frcmod": "frcmod.ionslm_126_opc",
+            "residue_name": "ZN",
+        }],
+    )
 
     assert result["success"] is False
     assert result["code"] == "invalid_metal_parameters"
     assert any("mol2 file not found" in e for e in result["errors"])
-    fake_run.assert_not_called()
 
 
 def test_policy_unparseable_time_and_memory_are_warnings():
@@ -574,3 +587,108 @@ def test_policy_unparseable_time_and_memory_are_warnings():
         "policy_memory_unparseable",
     }
     assert all(result["severity"] == "warning" for result in results)
+
+
+# ----------------------------------------------------------------------------
+# Review fix 3: hmr / implicit_solvent flow into actual_conditions
+# ----------------------------------------------------------------------------
+
+
+def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_path):
+    """Topo nodes can declare ``hmr`` / ``implicit_solvent`` as conditions
+    on creation. ``build_amber_system`` must surface those from its
+    keyword arguments into ``actual_conditions`` so
+    ``validate_node_execution_context`` can match them against
+    ``node.conditions``. (Review fix 3 of openmmforcefields-unification.)"""
+    from unittest.mock import patch
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb)
+    job_dir = tmp_path / "job_hmr_condition_match"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(
+        str(job_dir),
+        "topo",
+        conditions={"hmr": True},
+    )
+    assert node["success"] is True
+
+    def _fake_om_build(**kwargs):
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": [],
+                "method": {"hmr": kwargs.get("hmr", False)},
+            },
+        }
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        # Matching hmr=True against the declared condition succeeds.
+        ok = build_amber_system(
+            pdb_file=str(pdb),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            forcefield="ff14SB",
+            water_model="opc",
+            hmr=True,
+        )
+        assert ok["success"] is True, ok.get("errors")
+
+
+def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
+    """If the topo node declared ``hmr=True`` but the run came in with
+    ``hmr=False``, validation must fail before the build helper runs."""
+    from unittest.mock import patch
+    from mdclaw.amber_server import build_amber_system
+
+    pdb = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb)
+    job_dir = tmp_path / "job_hmr_condition_mismatch"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(
+        str(job_dir),
+        "topo",
+        conditions={"hmr": True},
+    )
+    assert node["success"] is True
+
+    # The build helper must NOT be reached when conditions mismatch.
+    helper_called = {"yes": False}
+
+    def _fake_om_build(**kwargs):
+        helper_called["yes"] = True
+        return {"success": True, "errors": [], "warnings": []}
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            forcefield="ff14SB",
+            water_model="opc",
+            hmr=False,
+        )
+
+    assert result.get("success", False) is False
+    assert any("condition" in e for e in result.get("errors", []))
+    assert helper_called["yes"] is False, (
+        "Condition mismatch must short-circuit before the build helper runs."
+    )

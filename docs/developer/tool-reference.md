@@ -54,10 +54,38 @@ skill examples.
 
 ## `amber_server.py`
 
-- `build_amber_system(...)`: tleap topology generation. Handles ligand, metal,
-  modXNA, glycan, nucleic acid, water-model, and PTM guardrails. In node mode it
-  resolves the PDB from `solv` or prep ancestors and stamps topology artifacts on
-  the `topo` node.
+- `build_amber_system(...)`: openmmforcefields-based topology builder
+  (`SystemGenerator` + `GAFFTemplateGenerator`, with OpenFF Pablo for the
+  PDB → topology stage). Replaces the legacy tleap path. Handles ligand,
+  metal, modXNA, glycan, nucleic acid, water-model, and PTM guardrails via
+  `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
+  prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
+  artifacts plus a `forcefield_provenance` dict on the `topo` node.
+  Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
+  "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
+  matching `implicit/*.xml` is added to the SystemGenerator bundle so
+  the saved System carries a `CustomGBForce` / `GBSAOBCForce`, and the
+  canonical model name is stamped on `metadata.implicit_solvent` for
+  the run-side topology guard. Failure codes:
+  `implicit_solvent_model_unsupported`, `implicit_solvent_explicit_box_conflict`,
+  `implicit_solvent_force_missing`.
+- `build_openmm_system(...)`: research-mode escape hatch — accepts
+  arbitrary OpenMM ForceField XML files plus optional ligand SMILES and
+  emits the same modern artifact triple. No FF×water guardrail matrix;
+  users supply XML they already trust. Implicit solvent has two
+  research tiers: (a) **shipped GB XML** — pass
+  `forcefield_xml=[..., "implicit/<model>.xml"]` *plus*
+  `implicit_solvent="<MODEL>"` so the canonical name lands on
+  `metadata.implicit_solvent` and the run-side topology guard matches;
+  missing or duplicate `implicit/*.xml` returns
+  `implicit_solvent_xml_missing` / `implicit_solvent_xml_ambiguous`.
+  (b) **External GB XML** (e.g. the Greener group's `GB99dms.xml`) —
+  loadable as arbitrary OpenMM XML, but `forcefield_catalog` cannot
+  canonicalize a non-catalog GB XML. `metadata.implicit_solvent` stays
+  `None` and the run-side topology guard cannot validate the build vs
+  runtime match; the user owns XML correctness, GB-force presence, and
+  build/run consistency. Out-of-version checks (e.g. `GB99dms.xml`
+  needs OpenMM ≥ 8.0) still fire via existing guards.
 
 ## `md_simulation_server.py`
 

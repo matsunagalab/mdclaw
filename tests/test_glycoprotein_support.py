@@ -77,6 +77,10 @@ def test_prepare_complex_passes_glycans_through_without_ligand_params(tmp_path):
 
 
 def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path):
+    """Glycoprotein build path: cpptraj prepareforleap is still invoked
+    upstream of the topology load, and the SystemGenerator XML bundle picks
+    up the GLYCAM_06j-1 conversion XML."""
+    from unittest.mock import patch
     from mdclaw import amber_server
 
     class FakeCpptraj:
@@ -107,24 +111,37 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
             )
             return type("ProcResult", (), {"stdout": "prepareforleap ok", "stderr": ""})()
 
-    class FakeTLeap:
-        def is_available(self):
-            return True
-
-        def run(self, args, cwd=None, timeout=None):
-            cwd_path = Path(cwd)
-            script_path = cwd_path / args[1]
-            script = script_path.read_text(encoding="utf-8")
-            assert "source leaprc.GLYCAM_06j-1" in script
-            assert "mol = loadpdb" in script
-            assert "system.glycam.pdb" in script
-            assert "bond mol.1.ND2 mol.2.C1" in script
-            (cwd_path / "system.parm7").write_text("%FLAG TITLE\n", encoding="utf-8")
-            (cwd_path / "system.rst7").write_text("rst\n", encoding="utf-8")
-            return type("ProcResult", (), {"stdout": "2 residues", "stderr": ""})()
-
     monkeypatch.setattr(amber_server, "cpptraj_wrapper", FakeCpptraj())
-    monkeypatch.setattr(amber_server, "tleap_wrapper", FakeTLeap())
+
+    captured: dict = {}
+
+    def _fake_om_build(**kwargs):
+        from mdclaw import forcefield_catalog as _fc
+        from mdclaw.amber_server import _resolve_glycan_name_from_library
+        bundle = _fc.resolve_xml_bundle(
+            protein=_fc.normalize_protein(kwargs["forcefield"]) or kwargs["forcefield"],
+            water=_fc.normalize_water(kwargs["water_model"]) if kwargs["water_model"] else None,
+            glycan=_resolve_glycan_name_from_library(kwargs["glycan_library"]),
+        )
+        captured["bundle"] = bundle
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": list(bundle),
+            },
+        }
+
     glycan_linkages = [{
         "source": "pdb_link",
         "protein": {
@@ -147,13 +164,20 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
         },
     }]
 
-    result = amber_server.build_amber_system(
-        pdb_file=_write_glycoprotein(tmp_path),
-        output_dir=str(tmp_path / "topo"),
-        glycan_linkages=glycan_linkages,
-    )
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=_fake_om_build,
+    ):
+        result = amber_server.build_amber_system(
+            pdb_file=_write_glycoprotein(tmp_path),
+            output_dir=str(tmp_path / "topo"),
+            glycan_linkages=glycan_linkages,
+        )
 
     assert result["success"], result.get("errors")
     assert result["parameters"]["glycan_library"] == "leaprc.GLYCAM_06j-1"
     assert result["glycan_linkage_plan"][0]["status"] == "handled_by_prepareforleap"
     assert result["glycam_prepareforleap"]["prepared_pdb"].endswith("system.glycam.pdb")
+    assert "amber/GLYCAM_06j-1.xml" in captured.get("bundle", []), (
+        "GLYCAM XML must be resolved into the SystemGenerator bundle"
+    )

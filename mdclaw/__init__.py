@@ -10,6 +10,7 @@ __all__ = [
     "genesis_server",
     "solvation_server",
     "amber_server",
+    "openmm_system_server",
     "md_simulation_server",
     "slurm_server",
     "analyze_server",

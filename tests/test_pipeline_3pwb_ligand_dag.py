@@ -188,8 +188,8 @@ class TestPipeline3PWBLigandDag:
         assert result["success"], result.get("errors")
         node_data = read_node(str(job_dir), self.topo_id)
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["parm7"]
-        assert node_data["artifacts"]["rst7"]
+        assert node_data["artifacts"]["system_xml"]
+        assert node_data["artifacts"]["topology_pdb"]
         assert node_data["metadata"]["forcefield"] == "ff19SB"
         assert node_data["metadata"]["water_model"] == "opc"
 

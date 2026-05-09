@@ -79,7 +79,24 @@ mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
 For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
 instead of `--no-is-membrane`.
-To intentionally use the legacy pair, override both sides together: `build_amber_system --forcefield ff14SB --water-model tip3p`.
+
+`build_amber_system` is the curated Amber → OpenMM system builder. It runs
+the prepared PDB through OpenFF Pablo, applies the resolved Amber XML
+bundle via `openmmforcefields.SystemGenerator` (+ `GAFFTemplateGenerator`
+for ligands), and emits the modern artifact triple `system.system.xml` +
+`system.topology.pdb` + `system.state.xml` on the topo node, with
+`metadata.system_artifact_kind="openmm_system_xml"` and a
+`metadata.forcefield_provenance` dict (XML names, sha256, OpenMM /
+openmmforcefields versions, `method.hmr`, ligand Molecules). HMR defaults
+to `--hmr` (4 amu hydrogens) so the run-side default 4 fs timestep is
+loadable; the run-time validator rejects mismatched HMR with
+`modern_system_hmr_mismatch`. The XML triple is the only topology
+contract on the run side — tleap / `parm7` / `rst7` are not produced
+or consumed anywhere. To explore an older protein force field that is
+not the recommended default, override both sides together — e.g.
+`build_amber_system --forcefield ff14SB --water-model tip3p` selects the
+ff14SB bundle and TIP3P water in the SystemGenerator XML list, and is a
+research / comparison choice, not a "legacy artifact format" toggle.
 
 ### Protonation Notes
 - pH 7.4 is physiological default

@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_tleap
+from tests.pipeline_helpers import fetch_pdb_node, node_artifact, require_topology_builder_stack
 
 pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
@@ -21,7 +21,7 @@ def test_modified_nucleic_branch_resolves_into_topology(tmp_path):
         pytest.skip("MDCLAW_MODXNA_DIR is not set")
     if not (os.path.exists(os.path.join(modxna_dir, "modxna.sh"))):
         pytest.skip("MDCLAW_MODXNA_DIR does not contain modxna.sh")
-    require_tleap()
+    require_topology_builder_stack()
 
     job_dir = tmp_path / "job_6jv5_modxna"
 
@@ -84,5 +84,5 @@ def test_modified_nucleic_branch_resolves_into_topology(tmp_path):
     )
     assert built["success"], built.get("errors")
     topo_node = read_node(str(job_dir), topo["node_id"])
-    assert topo_node["artifacts"]["parm7"]
+    assert topo_node["artifacts"]["system_xml"]
     assert topo_node["metadata"]["modxna_params"]

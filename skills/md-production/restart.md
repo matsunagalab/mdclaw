@@ -27,17 +27,21 @@ when a continuous trajectory is required.
 The Python resolver in `mdclaw/_node.py` is authoritative:
 
 - `--continue-from prod_N` restarts from exactly that prod node. It prefers
-  `state.xml` and falls back to `checkpoint.chk` for legacy DAGs. If neither
-  artifact exists, the run fails instead of silently choosing another ancestor.
+  `state.xml` and falls back to `checkpoint.chk` only for same-GPU
+  bit-exact replays (committor / sensitivity analyses). If neither artifact
+  exists, the run fails instead of silently choosing another ancestor.
 - Plain `--parent-node-ids prod_N` walks prod ancestors and then falls back to
   the eq ancestor. Use it only when the exact restart source does not matter.
 - Fresh `eq -> prod` runs restart from the eq state. The eq state is written
   with `final_step=0`, so the requested production time remains the full first
   production length.
 
-`state.xml` is portable across nodes and GPU models. `checkpoint.chk` is kept
-for bit-identical reproduction and legacy DAGs, but binary OpenMM checkpoints
-are platform-specific.
+`state.xml` is portable across nodes and GPU models — it is the
+preferred restart vehicle in every case. `checkpoint.chk` is kept on
+disk for bit-identical reproduction (binary OpenMM checkpoints are
+platform-specific). Topology artifacts are XML-only: every restart
+reads the same `system.xml` + `topology.pdb` + `state.xml` triple from
+the topo ancestor.
 
 ## Switching Ensembles Across Nodes
 

@@ -5,6 +5,15 @@
 **目的**: 別マシンで議論を継続するための文脈復元ドキュメント。
 冒頭の「Continuation prompt」をコピペすれば、別マシンの Claude が続きから議論できる。
 
+> **Legacy note (2026-09 update)**: 本メモが書かれた時点では `build_amber_system` が
+> `tleap` を使い `parm7` / `rst7` を出力していた。現在はその経路は
+> openmmforcefields-unification refactor で書き換えられ、
+> `openmmforcefields.SystemGenerator` + OpenFF Pablo を介して
+> `system.xml` + `topology.pdb` + `state.xml` の modern artifact triple を
+> 出すようになっている。DAG / node 設計、ancestor-based artifact resolution、
+> failure-as-data といったメタな議論は現行設計に概ね引き継がれているが、
+> 具体的なファイル名・ツール名は現行コード（`AGENTS.md` 等）を正とする。
+
 ---
 
 ## 0. Continuation prompt（他マシンの Claude 向け）

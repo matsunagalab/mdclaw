@@ -11,8 +11,17 @@ workflows. It combines:
 - `mdclaw <tool>` CLI tools for concrete MD operations.
 - `skills/*/SKILL.md` runbooks for workflow orchestration.
 - Boltz-2 for AI structure prediction.
-- AmberTools for preparation, topology, and parameterization.
+- AmberTools (`pdb4amber`, `antechamber`, `cpptraj`) for structure preparation.
+- `openmmforcefields` (`SystemGenerator` + `GAFFTemplateGenerator`) for force-field
+  application — replaces the legacy `tleap` script generation.
+- OpenFF Pablo for chemistry-aware PDB → topology loading (CCD-based).
 - OpenMM for equilibration and production MD.
+
+`build_amber_system` and `build_openmm_system` emit a `system.xml` +
+`topology.pdb` + `state.xml` artifact triple — the only topology
+contract on the run side. eq / prod / analyze consume that triple via
+the DAG resolver; the run side never reconstructs a System from
+ForceField XML.
 
 ## Where Things Live
 

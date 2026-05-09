@@ -675,35 +675,72 @@ def test_phosphorylate_residues_node_mode_restore_from_empty_detection_fails(tmp
 # ---------- build_amber_system phosaa autoload -------------------------------
 
 
-def _capture_leap_script(tmp_path):
+def _capture_om_bundle(tmp_path):
     """Helper: returns (captured_dict, side_effect_callable) for patching
-    `mdclaw.amber_server.tleap_wrapper.run`. The fake reads the latest
-    `.leap.in` written under tmp_path so the caller can inspect it.
+    `mdclaw.amber_server._run_openmmforcefields_build`. The fake records the
+    XML bundle resolved by the catalog so the caller can inspect it.
+
+    PR3 retired the tleap script + tleap process, so the previous
+    `_capture_leap_script` helper that scanned `.leap.in` files is no longer
+    meaningful — phosaa autoload now manifests as `amber/phosaa19SB.xml`
+    appearing in the SystemGenerator forcefields bundle.
     """
-    captured = {}
+    captured: dict = {}
 
-    def _fake_tleap_run(*args, **kwargs):
-        from types import SimpleNamespace
-        scripts = sorted(tmp_path.rglob("*.leap.in"))
-        if scripts:
-            captured["script"] = scripts[-1].read_text()
-        return SimpleNamespace(returncode=1, stdout="", stderr="fake-tleap-skip")
+    def _fake_om_build(**kwargs):
+        from mdclaw import forcefield_catalog as _fc
+        from mdclaw.amber_server import (
+            _resolve_dna_name_from_libraries,
+            _resolve_glycan_name_from_library,
+            _resolve_phosaa_name_from_library,
+            _resolve_rna_name_from_libraries,
+        )
+        bundle = _fc.resolve_xml_bundle(
+            protein=_fc.normalize_protein(kwargs["forcefield"]) or kwargs["forcefield"],
+            water=_fc.normalize_water(kwargs["water_model"]) if kwargs["water_model"] else None,
+            phosaa=_resolve_phosaa_name_from_library(kwargs["phosaa_library"]),
+            dna=_resolve_dna_name_from_libraries(kwargs["nucleic_libraries"]),
+            rna=_resolve_rna_name_from_libraries(kwargs["nucleic_libraries"]),
+            glycan=_resolve_glycan_name_from_library(kwargs["glycan_library"]),
+            lipid="lipid21" if kwargs["is_membrane"] else None,
+        )
+        captured["bundle"] = bundle
+        captured["phosaa_library"] = kwargs["phosaa_library"]
+        kwargs["system_xml_file"].write_text("<System/>")
+        kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
+        kwargs["state_xml_file"].write_text("<State/>")
+        return {
+            "success": True,
+            "errors": [],
+            "warnings": [],
+            "system_xml": str(kwargs["system_xml_file"]),
+            "topology_pdb": str(kwargs["topology_pdb_file"]),
+            "state_xml": str(kwargs["state_xml_file"]),
+            "num_atoms": 1,
+            "num_residues": 1,
+            "forcefield_provenance": {
+                "kind": "amber_via_openmmforcefields",
+                "openmm_xml": list(bundle),
+            },
+        }
 
-    return captured, _fake_tleap_run
+    return captured, _fake_om_build
 
 
-def test_build_amber_system_phosaa_autoload_in_tleap_script(tmp_path):
-    """When the input PDB carries SEP, the tleap script must source
-    `leaprc.phosaa19SB` after `leaprc.protein.ff19SB` and the topo node
-    metadata must record the chosen library + residue list."""
+def test_build_amber_system_phosaa_autoload_in_xml_bundle(tmp_path):
+    """When the input PDB carries SEP, the SystemGenerator XML bundle must
+    include `amber/phosaa19SB.xml` after `amber/protein.ff19SB.xml`, and the
+    topo node metadata must record the chosen library + residue list."""
     pdb = tmp_path / "with_sep.pdb"
     out_dir = tmp_path / "topo"
     out_dir.mkdir()
     _write_sep_pdb(pdb)
-    captured, fake_run = _capture_leap_script(tmp_path)
+    captured, fake = _capture_om_bundle(tmp_path)
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run", side_effect=fake_run):
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=fake,
+    ):
         result = build_amber_system(
             pdb_file=str(pdb),
             output_dir=str(out_dir),
@@ -712,15 +749,13 @@ def test_build_amber_system_phosaa_autoload_in_tleap_script(tmp_path):
             water_model="opc",
         )
 
-    # The fake tleap returns failure, so build_amber_system itself reports
-    # !success — but the script content reflects the autoload regardless.
-    assert "script" in captured, "build_amber_system did not write a leap script"
-    script = captured["script"]
-    assert "source leaprc.protein.ff19SB" in script
-    assert "source leaprc.phosaa19SB" in script
-    # Order: phosaa must come AFTER the protein leaprc.
-    assert script.index("leaprc.protein.ff19SB") < script.index("leaprc.phosaa19SB")
-    # And the parameters block should record the library + residues.
+    bundle = captured.get("bundle", [])
+    assert "amber/protein.ff19SB.xml" in bundle
+    assert "amber/phosaa19SB.xml" in bundle
+    # Order: phosaa must come AFTER the protein XML (Amber25 manual ch.14.4.1).
+    assert bundle.index("amber/protein.ff19SB.xml") < bundle.index("amber/phosaa19SB.xml")
+    # The parameters block still records the legacy leaprc string for
+    # downstream evidence-server lookups.
     assert result["parameters"].get("phosaa_library") == "leaprc.phosaa19SB"
     assert {s["name"] for s in result["parameters"].get("ptm_residues", [])} == {"SEP"}
 
@@ -730,10 +765,12 @@ def test_build_amber_system_no_phosaa_when_no_ptm(tmp_path):
     out_dir = tmp_path / "topo"
     out_dir.mkdir()
     _write_ser_pdb(pdb)
-    captured, fake_run = _capture_leap_script(tmp_path)
+    captured, fake = _capture_om_bundle(tmp_path)
 
-    with patch("mdclaw.amber_server.tleap_wrapper.is_available", return_value=True), \
-         patch("mdclaw.amber_server.tleap_wrapper.run", side_effect=fake_run):
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=fake,
+    ):
         build_amber_system(
             pdb_file=str(pdb),
             output_dir=str(out_dir),
@@ -742,8 +779,8 @@ def test_build_amber_system_no_phosaa_when_no_ptm(tmp_path):
             water_model="opc",
         )
 
-    assert "script" in captured
-    assert "phosaa" not in captured["script"]
+    bundle = captured.get("bundle", [])
+    assert not any("phosaa" in xml for xml in bundle)
 
 
 # ---------- sanity ----------------------------------------------------------

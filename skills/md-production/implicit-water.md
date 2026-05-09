@@ -1,5 +1,35 @@
 # Production MD: Implicit Solvent
 
+Officially supported implicit-water models: **HCT, OBC1, OBC2, GBn, GBn2**.
+
+Standard recipe: `build_amber_system --implicit-solvent <MODEL>` on the
+topo node, then `run_production --implicit-solvent <MODEL>` on the prod
+node. `build_amber_system` bakes the matching GB force
+(`implicit/gbn2.xml` etc.) into `system.xml`, stamps the canonical
+model name on `metadata.implicit_solvent`, and the run side validates
+the chain in three layers: a topology guard
+(`implicit_solvent_topology_mismatch` if the topo metadata and runtime
+flag disagree after canonicalization), a runtime lookup
+(`implicit_solvent_model_unsupported` for unknown names — no silent
+OBC2 fallback), and the shim's GB-force presence check
+(`modern_system_implicit_solvent_unsupported` if the saved System has
+no GB force).
+
+Research-mode shipped XML path:
+`build_openmm_system --forcefield-xml … implicit/<model>.xml --implicit-solvent <MODEL>`.
+Same metadata contract, but the user owns the bundle. Missing XML
+returns `implicit_solvent_xml_missing`; bundling two shipped GB XMLs
+without an explicit `--implicit-solvent` returns
+`implicit_solvent_xml_ambiguous`.
+
+External GB XML (third-party, e.g. the Greener group's `GB99dms.xml`)
+is an advanced escape hatch through `build_openmm_system`. mdclaw
+cannot canonicalize a non-catalog GB XML, so the topo node's
+`metadata.implicit_solvent` stays `None` and the run-side topology
+guard cannot validate the build/runtime match — the user must manage
+XML correctness, GB-force presence, and consistency between build and
+run themselves.
+
 ## System Configuration
 
 | Parameter | Value | Notes |
@@ -25,11 +55,17 @@
 
 ### Timestep Guide
 
-| Constraints | HMR | Max Timestep | Recommended |
-|---|---|---|---|
-| HBonds | No | 4 fs | 2 fs (conservative) or 4 fs |
-| AllBonds | Yes | 4 fs | 4 fs |
-| None | No | 1 fs | Not recommended |
+The MDClaw default is HBonds + HMR=True at 4 fs. HMR is a build-time
+choice — it must match what `build_amber_system` / `build_openmm_system`
+baked into `system.xml`, otherwise the run-side XML system validator
+raises `modern_system_hmr_mismatch`.
+
+| Constraints | HMR    | Max Timestep | Recommended                      |
+|-------------|--------|--------------|----------------------------------|
+| HBonds      | True   | 4 fs         | **4 fs** (MDClaw default)        |
+| HBonds      | False  | 2 fs         | 2 fs (no HMR baked into XML)     |
+| AllBonds    | True   | 4 fs         | 4 fs                             |
+| None        | False  | 1 fs         | Not recommended                  |
 
 ---
 
@@ -51,7 +87,7 @@ use `--simulation-time-ns 0.1` as the default sanity check.
 
 > `--pressure-bar 0` disables the barostat (no periodic box in implicit solvent).
 
-`prmtop_file`, `inpcrd_file`, and `restart_from` auto-resolve from DAG
+`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` auto-resolve from DAG
 ancestors. For extension/retry details, read
 `skills/md-production/restart.md`.
 

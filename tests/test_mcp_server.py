@@ -20,7 +20,7 @@ class TestServerRegistry:
     def test_registry_has_all_servers(self):
         from mdclaw._registry import SERVER_REGISTRY
 
-        assert len(SERVER_REGISTRY) == 14
+        assert len(SERVER_REGISTRY) == 15
 
     def test_registry_keys(self):
         from mdclaw._registry import SERVER_REGISTRY
@@ -30,6 +30,7 @@ class TestServerRegistry:
             "structure",
             "solvation",
             "amber",
+            "openmm_system",
             "md_simulation",
             "genesis",
             "literature",
@@ -46,8 +47,13 @@ class TestServerRegistry:
     def test_registry_module_paths(self):
         from mdclaw._registry import SERVER_REGISTRY
 
+        expected_overrides = {
+            # The benchmark package exposes CLI tools directly from
+            # mdclaw/benchmark/__init__.py rather than a *_server module.
+            "benchmark": "mdclaw.benchmark",
+        }
         for name, module_path in SERVER_REGISTRY.items():
-            assert module_path == f"mdclaw.{name}_server"
+            assert module_path == expected_overrides.get(name, f"mdclaw.{name}_server")
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +186,7 @@ class TestPackageInit:
     def test_version(self):
         from mdclaw import __version__
 
-        assert __version__ == "0.5.0"
+        assert __version__ == "0.5.2"
 
 
 if __name__ == "__main__":

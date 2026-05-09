@@ -109,6 +109,27 @@ conda run -n mdclaw mdclaw init_benchmark_run \
 # otherwise falls back to singularity → docker.
 ```
 
+## Developer Validation
+
+Use the `mdclaw` conda environment for benchmark framework checks:
+
+```bash
+# Unit, schema, scorer, and all-task dry-run coverage
+conda run -n mdclaw pytest tests/test_benchmark -v
+
+# Example lifecycle smoke run
+conda run -n mdclaw python examples/benchmark/smoke_run.py
+
+# Benchmark CLI discovery should be clean and not warn about unrelated tools
+conda run -n mdclaw mdclaw list_benchmark_tasks
+```
+
+`tests/test_benchmark/test_all_task_dryrun.py` uses the synthetic submissions
+from `examples/benchmark/fake_submissions.py` to validate, score, and summarize
+all nine tasks in both `honest` and `wrong` modes. It intentionally locks down
+partial and failed statuses for synthetic artifacts, so changes to scorer
+strictness are visible in review without requiring real MD compute.
+
 ## Per-task Workflow
 
 ```bash

@@ -27,8 +27,10 @@ Primary repository sources checked:
 
 ### Core MD And Topology
 
-- OpenMM: cite for MD integration, platforms, reporters, barostats, HMR-enabled simulations, and OpenMM fallback solvation.
-- AmberTools: cite for `tleap`, `antechamber`, `parmchk2`, `pdb4amber`, `sqm`, and Amber topology generation.
+- OpenMM: cite for MD integration, platforms, reporters, barostats, HMR-enabled simulations, OpenMM fallback solvation, and System construction (the openmmforcefields path now drives topology builds).
+- openmmforcefields: cite for `SystemGenerator` + `GAFFTemplateGenerator`, which is the primary topology-build path under `build_amber_system` / `build_openmm_system` (replaces the legacy `tleap` script generation).
+- OpenFF Toolkit / OpenFF Pablo: cite for chemistry-aware PDB → Topology loading (Pablo) and `Molecule` round-tripping for ligand parameterization.
+- AmberTools: cite for `antechamber`, `parmchk2`, `pdb4amber`, `sqm`, `cpptraj` (`prepareforleap`), and per-residue Amber parameter datasets that openmmforcefields converts into XML. `tleap` itself is no longer invoked at topology-build time on the curated path.
 - PACKMOL: cite when explicit solvent or mixed systems are assembled through PACKMOL or PACKMOL-Memgen.
 - PACKMOL-Memgen: cite when `embed_in_membrane` or membrane-building workflows use it.
 - MEMEMBED: cite when membrane-protein orientation through `memembed` is used.
@@ -44,10 +46,10 @@ Primary repository sources checked:
 - TIP3P: cite when `water_model=tip3p`.
 - SPC/E: cite when `water_model=spce`.
 - TIP4P-Ew: cite when `water_model=tip4pew`.
-- GLYCAM06: cite when glycan handling uses `leaprc.GLYCAM_06j-1`.
-- OL15: cite when DNA uses `leaprc.DNA.OL15`.
-- OL3: cite when RNA uses `leaprc.RNA.OL3`.
-- phosaa14SB/phosaa19SB: cite when SEP/TPO/PTR phosphorylation is retained or reintroduced and `leaprc.phosaa*` is loaded.
+- GLYCAM06: cite when glycan handling resolves `amber/GLYCAM_06j-1.xml` (openmmforcefields conversion of `leaprc.GLYCAM_06j-1`) into the SystemGenerator bundle.
+- OL15: cite when DNA resolves `amber/DNA.OL15.xml` (openmmforcefields conversion of `leaprc.DNA.OL15`).
+- OL3: cite when RNA resolves `amber/RNA.OL3.xml` (openmmforcefields conversion of `leaprc.RNA.OL3`).
+- phosaa14SB/phosaa19SB: cite when SEP/TPO/PTR phosphorylation is retained or reintroduced and the matching `amber/phosaa*.xml` is added to the SystemGenerator bundle (replaces the legacy `leaprc.phosaa*` tleap source line).
 - Li/Merz or Joung-Cheatham ion parameters: cite when explicit ion parameter selection is central to the Methods. For OPC/OPC3-specific Li/Merz parameters, prefer the Amber ion-parameter paper with DOI `10.1021/acs.jcim.0c01390` if those files are used.
 
 ### Structure Preparation And Chemistry

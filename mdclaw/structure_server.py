@@ -50,7 +50,7 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
-obabel_wrapper = BaseToolWrapper("obabel")
+obabel_wrapper = BaseToolWrapper("obabel", warn_missing=False)
 
 
 def _read_pdb_heavy_atoms_for_validation(pdb_file: str) -> List[Dict[str, Any]]:
@@ -286,15 +286,17 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
     helper brings the merged PDB in line with it:
 
     - CYX residues *not* in ``disulfide_bonds`` are demoted back to CYS
-      (otherwise tleap would build a CYX residue without an SS bond,
-      leaving SG unprotonated — chemically wrong).
+      (otherwise the Amber CYX template would be applied to a residue
+      without an SS bond, leaving SG unprotonated — chemically wrong).
     - CYS residues that *are* in ``disulfide_bonds`` are promoted to CYX.
 
     Additionally, every final CYX residue has its ``HG`` thiol hydrogen
     stripped. SS-bonded cysteines have their SG bonded to another SG,
-    not to a proton, and tleap aborts with
-    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type`` if an HG atom
-    survives — observed for 5vm0_A and 7on5_A in the 2422-row batch.
+    not to a proton, and the Amber CYX template has no ``HG`` atom — a
+    surviving HG fails template matching at openmmforcefields build time
+    (and historically caused tleap to abort with
+    ``FATAL: Atom .R<CYX N>.A<HG> does not have a type``).
+    Observed for 5vm0_A and 7on5_A in the 2422-row batch.
 
     Runs unconditionally after merge; it is a no-op whenever the
     auto-detection path agrees with pdb2pqr (the common case).
@@ -337,8 +339,9 @@ def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dic
 
             # Drop the thiol hydrogen from every CYX record. This covers
             # both the CYS→CYX promotion path above and pre-existing CYX
-            # residues from pdb2pqr that still carry HG (which tleap
-            # rejects with a FATAL).
+            # residues from pdb2pqr that still carry HG (which would fail
+            # template matching against the Amber CYX residue template at
+            # openmmforcefields build time).
             if final_resname == "CYX" and line[12:16].strip() == "HG":
                 stripped_hg += 1
                 continue
@@ -2519,8 +2522,10 @@ def clean_protein(
                                           instead of modeling them (default: True)
         cap_termini: Flag to indicate that ACE/NME caps should be added to termini.
                      Note: PDBFixer cannot add caps directly. When True, the return dict
-                     will include cap_termini_required=True to indicate that tleap should
-                     be used to add caps during system building. (default: False)
+                     will include cap_termini_required=True to signal that downstream
+                     tooling needs to add caps before openmmforcefields can build the
+                     System (PDBFixer leaves the original termini in place).
+                     (default: False)
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -2539,7 +2544,9 @@ def clean_protein(
             - success: bool - True if cleaning completed without critical errors
             - output_file: str - Path to the cleaned PDB file (*.clean.pdb)
             - input_file: str - Original input file path
-            - cap_termini_required: bool - True if ACE/NME caps need to be added via tleap
+            - cap_termini_required: bool - True if ACE/NME caps still need to be
+              added before openmmforcefields can build the System (PDBFixer cannot
+              add caps directly).
             - operations: list[dict] - Details of each operation performed
             - warnings: list[str] - Non-critical issues encountered
             - errors: list[str] - Critical errors (empty if success=True)
@@ -2887,7 +2894,8 @@ def clean_protein(
         # NOTE: We skip PDBFixer hydrogen addition here and let pdb2pqr + propka
         # handle it instead (with pdb4amber --reduce as fallback). This prevents
         # duplicate/conflicting hydrogens, especially at N-termini of internal
-        # chain breaks (e.g., NALA, NVAL, NGLN) which can cause tleap errors.
+        # chain breaks (e.g., NALA, NVAL, NGLN) which can fail Amber residue
+        # template matching at openmmforcefields build time.
         if add_hydrogens:
             logger.info(f"Skipping PDBFixer hydrogen addition (pH {ph}) - pdb2pqr/propka will handle it")
             result["operations"].append({
@@ -2944,9 +2952,10 @@ def clean_protein(
             # terminal variant naming (NHID/CHIE/etc.) and matching atom
             # lists. User-supplied histidine_states are applied *on top*
             # of the propka result by renaming residues after pdb2pqr
-            # finishes — skipping propka caused tleap to reject atoms on
-            # terminal HIS residues because their N-terminal H1/H2 (or
-            # C-terminal OXT) did not have a defined atom type.
+            # finishes — skipping propka leaves terminal HIS residues
+            # without correct N-terminal H1/H2 (or C-terminal OXT) atom
+            # naming, which fails residue template matching when
+            # openmmforcefields applies the Amber HIS variant template.
             if pdb2pqr_wrapper.is_available() and add_hydrogens:
                 logger.info(f"Using pdb2pqr with propka for pH {ph}")
                 pqr_output = input_path.parent / f"{stem}.pqr"
@@ -3527,7 +3536,9 @@ def run_antechamber_robust(
         ligand_file: Input ligand file (mol2, pdb, sdf)
         output_dir: Output directory
         net_charge: Net molecular charge (auto-estimated if None; ignored for geostd hits)
-        residue_name: 3-letter residue name for tleap (used for geostd lookup)
+        residue_name: 3-letter residue name (used for amber_geostd lookup and
+                      to label the Amber-style PDB consumed by the
+                      openmmforcefields build path)
         charge_method: Charge method (bcc=AM1-BCC, gas=Gasteiger; ignored for geostd hits)
         atom_type: Atom type (gaff, gaff2; ignored for geostd hits)
         max_retries: Maximum retry attempts with different charges
@@ -3959,7 +3970,7 @@ def run_antechamber_robust(
         
         # Generate atom-name-preserving PDB from MOL2 using antechamber
         # This PDB preserves atom names (C1, C2, N1...) that match the MOL2/frcmod
-        # Required for merge_structures and subsequent tleap processing
+        # Required for merge_structures and subsequent openmmforcefields build
         output_pdb = out_dir / f"{input_stem}.amber.pdb"
         logger.info(f"Generating atom-name-preserving PDB: {output_pdb}")
         
@@ -4192,7 +4203,8 @@ def merge_structures(
     - Additional chains: 0-9
     
     Atom names are preserved exactly as they appear in the input files,
-    which is critical for subsequent tleap processing with frcmod files.
+    which is critical for subsequent openmmforcefields builds where the
+    GAFFTemplateGenerator matches by atom name against the mol2/frcmod pair.
     
     Args:
         pdb_files: List of PDB file paths to merge. Accepts:
@@ -4899,7 +4911,8 @@ def prepare_complex(
         # in the output merged.pdb. The list lets a follow-up
         # `phosphorylate_residues --restore-from-detection` re-introduce them
         # on a branched prep node, and lets `build_amber_system` decide
-        # whether to source `leaprc.phosaa*`.
+        # whether to add the matching ``amber/phosaa*.xml`` to the
+        # ``openmmforcefields.SystemGenerator`` bundle.
         from mdclaw.research_server import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
         detected_glycan_linkages = _parse_pdb_glycan_link_records(Path(structure_file))
@@ -5127,8 +5140,10 @@ def prepare_complex(
 
                 result["proteins"].append(protein_result)
 
-        # Step 4: Pass standard DNA/RNA chains through unchanged. tleap will
-        # apply the appropriate NA force field in build_amber_system.
+        # Step 4: Pass standard DNA/RNA chains through unchanged. The
+        # openmmforcefields build path picks up the appropriate
+        # ``amber/DNA.*.xml`` / ``amber/RNA.*.xml`` ForceField in
+        # ``build_amber_system``.
         if split_result.get("nucleic_files"):
             logger.info(f"Step 4: Passing through {len(split_result['nucleic_files'])} nucleic chain(s)...")
             for nucleic_file in split_result["nucleic_files"]:
@@ -5289,6 +5304,9 @@ def prepare_complex(
                     if clean_result["success"]:
                         ligand_result["sdf_file"] = clean_result["sdf_file"]
                         ligand_result["net_charge"] = clean_result["net_charge"]
+                        ligand_result["smiles_used"] = clean_result.get("smiles_used")
+                        ligand_result["smiles_original"] = clean_result.get("smiles_original")
+                        ligand_result["smiles_source"] = clean_result.get("smiles_source")
                         logger.info(f"  ✓ Ligand {ligand_id} ({chain_id}): cleaned, charge={clean_result['net_charge']}")
                         
                         # Run parameterization if requested
@@ -5415,7 +5433,8 @@ def prepare_complex(
             # Add ligand files (use amber.pdb from parameterization for correct atom names)
             for lig in result["ligands"]:
                 if lig["success"]:
-                    # Prefer the amber PDB from parameterization (has correct atom names for tleap)
+                    # Prefer the amber PDB from parameterization (atom names
+                    # match the mol2/frcmod pair consumed by GAFFTemplateGenerator)
                     ligand_pdb = lig.get("pdb_file")
                     if ligand_pdb and Path(ligand_pdb).exists():
                         pdb_files_to_merge.append(ligand_pdb)
@@ -5509,7 +5528,8 @@ def prepare_complex(
                         if dropped_links:
                             result["warnings"].append(
                                 "Glycan LINK record(s) could not be mapped onto merged.pdb "
-                                f"and will not be bonded by tleap: {dropped_links}"
+                                "and will not be wired into the OpenMM topology by "
+                                f"build_amber_system: {dropped_links}"
                             )
                             result["unmapped_glycan_linkages"] = dropped_links
                         glycan_linkages_json = base_dir / "glycan_linkages.json"
@@ -5553,8 +5573,9 @@ def prepare_complex(
                     # own geometric SS detection and may have left CYX
                     # residues that our list does not include (or vice
                     # versa). Without this step, `disulfide_pairs=[]`
-                    # would yield CYX residues in merged.pdb without tleap
-                    # `bond` commands, leaving SG atoms unprotonated.
+                    # would yield CYX residues in merged.pdb without a
+                    # corresponding SG-SG topology bond, leaving SG
+                    # atoms unprotonated.
                     try:
                         reconcile = _reconcile_cyx_cys_in_pdb(
                             merge_result["output_file"],
@@ -5736,6 +5757,9 @@ def prepare_complex(
                     "charge_used": lig.get("charge_used"),
                     "charge_confidence": lig.get("charge_confidence"),
                     "total_charge": lig.get("total_charge"),
+                    "smiles": lig.get("smiles_used"),
+                    "smiles_original": lig.get("smiles_original"),
+                    "smiles_source": lig.get("smiles_source"),
                     "parameter_source": lig.get("parameter_source", "gaff2_antechamber"),
                 }
                 for lig in result["ligands"]
@@ -5799,6 +5823,9 @@ def prepare_complex(
                  "charge_used": lig.get("charge_used"),
                  "charge_confidence": lig.get("charge_confidence"),
                  "total_charge": lig.get("total_charge"),
+                 "smiles": lig.get("smiles_used"),
+                 "smiles_original": lig.get("smiles_original"),
+                 "smiles_source": lig.get("smiles_source"),
                  "parameter_source": lig.get("parameter_source")}
                 for lig in ligands if lig.get("success") and lig.get("mol2_file")
             ]
@@ -6052,13 +6079,104 @@ def create_mutated_structure(
 # =============================================================================
 
 # Map of phospho residue → its plain (post-PDBFixer) counterpart and the
-# hydroxyl hydrogen atom name we must strip so tleap can rebuild the
-# phosphate from `phosaa*.lib` against the existing OG / OG1 / OH oxygen.
+# hydroxyl hydrogen atom name we must strip so the openmmforcefields
+# phosaa XML residue template (``amber/phosaa19SB.xml`` / ``phosaa14SB.xml``
+# / ``phosaa10.xml`` / ``phosfb18.xml``) can rebuild the phosphate atoms
+# against the existing OG / OG1 / OH oxygen when SystemGenerator builds
+# the System. (The XML route only assigns parameters to existing atoms,
+# unlike the legacy tleap path which also added missing atoms — so this
+# tool also has to write ``P`` and ``O1P``/``O2P``/``O3P`` with sensible
+# tetrahedral coordinates.)
 _PHOSPHO_TARGETS = {
-    "SEP": {"source": "SER", "hydroxyl_h": "HG"},
-    "TPO": {"source": "THR", "hydroxyl_h": "HG1"},
-    "PTR": {"source": "TYR", "hydroxyl_h": "HH"},
+    "SEP": {"source": "SER", "hydroxyl_h": "HG", "ester_o": "OG", "parent_c": "CB"},
+    "TPO": {"source": "THR", "hydroxyl_h": "HG1", "ester_o": "OG1", "parent_c": "CB"},
+    "PTR": {"source": "TYR", "hydroxyl_h": "HH", "ester_o": "OH", "parent_c": "CZ"},
 }
+
+
+def _compute_phospho_atom_coords(
+    parent_c_xyz: tuple[float, float, float],
+    ester_o_xyz: tuple[float, float, float],
+    *,
+    p_o_ester_bond: float = 1.60,
+    p_o_terminal_bond: float = 1.50,
+    o_h_bond: float = 0.97,
+) -> dict[str, tuple[float, float, float]]:
+    """Place the phosphate atoms on a tetrahedral phosphorus.
+
+    Geometry (Amber dianion convention; SEP / TPO / PTR all share the
+    same skeleton):
+
+    - ``P`` sits along the parent_C → ester_O direction, extended by
+      ``p_o_ester_bond`` past the ester oxygen.
+    - The three terminal oxygens (``O1P`` / ``O2P`` / ``O3P``) ring P
+      tetrahedrally so each forms a ~109.5° angle with the P-OG / P-OG1
+      / P-OH bond. They are evenly spaced 120° around the C-O axis with
+      arbitrary phase (downstream eq/min relaxes the orientation).
+    - ``HOP2`` / ``HOP3`` are written as protons on ``O2P`` / ``O3P``
+      with the H pointing radially outward from P. Pablo's CCD entries
+      for SEP / TPO / PTR ship the *protonated* (singly-anion or
+      neutral) form and refuse to match unless these hydrogens are
+      present; the topology builder strips them again with
+      ``Modeller.delete`` after Pablo loads so Amber's dianion phosaa
+      templates apply.
+    """
+    import math
+
+    cx, cy, cz = parent_c_xyz
+    ox, oy, oz = ester_o_xyz
+    vx, vy, vz = ox - cx, oy - cy, oz - cz
+    norm = math.sqrt(vx * vx + vy * vy + vz * vz) or 1.0
+    ux, uy, uz = vx / norm, vy / norm, vz / norm
+
+    px = ox + p_o_ester_bond * ux
+    py = oy + p_o_ester_bond * uy
+    pz = oz + p_o_ester_bond * uz
+
+    if abs(ux) < 0.9:
+        rx, ry, rz = 1.0, 0.0, 0.0
+    else:
+        rx, ry, rz = 0.0, 1.0, 0.0
+    dot = rx * ux + ry * uy + rz * uz
+    e1x = rx - dot * ux
+    e1y = ry - dot * uy
+    e1z = rz - dot * uz
+    n = math.sqrt(e1x * e1x + e1y * e1y + e1z * e1z) or 1.0
+    e1x, e1y, e1z = e1x / n, e1y / n, e1z / n
+    e2x = uy * e1z - uz * e1y
+    e2y = uz * e1x - ux * e1z
+    e2z = ux * e1y - uy * e1x
+
+    cos_t = 1.0 / 3.0
+    sin_t = math.sqrt(8.0) / 3.0
+
+    out: dict[str, tuple[float, float, float]] = {}
+    op_data: list[tuple[str, tuple[float, float, float], tuple[float, float, float]]] = []
+    for label, phi in (("O1P", 0.0), ("O2P", 2 * math.pi / 3), ("O3P", 4 * math.pi / 3)):
+        c, s = math.cos(phi), math.sin(phi)
+        dx = cos_t * ux + sin_t * (c * e1x + s * e2x)
+        dy = cos_t * uy + sin_t * (c * e1y + s * e2y)
+        dz = cos_t * uz + sin_t * (c * e1z + s * e2z)
+        op_xyz = (
+            px + p_o_terminal_bond * dx,
+            py + p_o_terminal_bond * dy,
+            pz + p_o_terminal_bond * dz,
+        )
+        out[label] = op_xyz
+        op_data.append((label, op_xyz, (dx, dy, dz)))
+    out["P"] = (px, py, pz)
+    # Protons placed along the P→O direction, extended by ``o_h_bond`` past
+    # each terminal oxygen. Direction-only — bond / angle relax in eq/min.
+    for label, (ox_p, oy_p, oz_p), (dx, dy, dz) in op_data:
+        # ``O2P`` → ``HOP2`` etc. The Pablo CCD entries name the proton
+        # ``HOP{n}`` rather than ``HO{n}P``.
+        h_label = "HOP" + label[1]
+        out[h_label] = (
+            ox_p + o_h_bond * dx,
+            oy_p + o_h_bond * dy,
+            oz_p + o_h_bond * dz,
+        )
+    return out
 
 
 def _build_source_to_merged_chain_map(
@@ -6203,8 +6321,77 @@ def _apply_phosphorylation_to_pdb(
     for s in sites:
         site_map[(s["chain"], int(s["resnum"]))] = s["target"]
 
+    # First pass: gather parent_C and ester_O coordinates per target site so
+    # we can synthesise phosphate-atom positions before the residue closes.
+    site_geometry: dict[tuple, dict[str, tuple[float, float, float]]] = {}
+    with in_path.open() as fin:
+        for line in fin:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:20].strip()
+            chain = line[21:22].strip()
+            try:
+                resnum = int(line[22:26].strip())
+            except ValueError:
+                continue
+            key = (chain, resnum)
+            if key not in site_map:
+                continue
+            spec = _PHOSPHO_TARGETS.get(site_map[key])
+            if spec is None:
+                continue
+            atom_name = line[12:16].strip()
+            if atom_name not in (spec["parent_c"], spec["ester_o"]):
+                continue
+            try:
+                xyz = (float(line[30:38]), float(line[38:46]), float(line[46:54]))
+            except ValueError:
+                continue
+            entry = site_geometry.setdefault(key, {})
+            if atom_name == spec["parent_c"]:
+                entry["parent_c"] = xyz
+            else:
+                entry["ester_o"] = xyz
+
     seen: dict[tuple, str] = {}
     mismatch: list[dict] = []
+    last_serial = 0
+    pending_phospho_lines: list[str] = []
+    current_residue_key: Optional[tuple] = None
+
+    def _emit_phospho_atoms(
+        key: tuple, target: str, last_template_line: str
+    ) -> list[str]:
+        """Build P / O1P / O2P / O3P / HOP2 / HOP3 ATOM records.
+
+        Pablo's CCD ships SEP / TPO / PTR in the protonated form; we
+        emit ``HOP2`` and ``HOP3`` (placed by ``_compute_phospho_atom_coords``)
+        so Pablo's residue match succeeds. ``build_amber_system`` strips
+        these protons after Pablo loads so the dianion phosaa templates
+        used by ``protein.ff*.xml`` apply.
+        """
+        nonlocal last_serial
+        geom = site_geometry.get(key, {})
+        parent_c = geom.get("parent_c")
+        ester_o = geom.get("ester_o")
+        if not parent_c or not ester_o:
+            return []
+        coords = _compute_phospho_atom_coords(parent_c, ester_o)
+        chain_field = last_template_line[21:22]
+        resnum_field = last_template_line[22:26]
+        icode_field = last_template_line[26:27]
+        out_lines: list[str] = []
+        for atom_name in ("P", "O1P", "O2P", "O3P", "HOP2", "HOP3"):
+            x, y, z = coords[atom_name]
+            element = "H" if atom_name.startswith("H") else atom_name[0]
+            atom_field = f"{atom_name:>4}" if len(atom_name) < 4 else atom_name[:4]
+            last_serial += 1
+            out_lines.append(
+                f"ATOM  {last_serial:>5} {atom_field} {target:>3} {chain_field}"
+                f"{resnum_field}{icode_field}   "
+                f"{x:>8.3f}{y:>8.3f}{z:>8.3f}  1.00  0.00          {element:>2}\n"
+            )
+        return out_lines
 
     with in_path.open() as fin, out_path.open("w") as fout:
         for line in fin:
@@ -6215,15 +6402,29 @@ def _apply_phosphorylation_to_pdb(
                 try:
                     resnum = int(resnum_field)
                 except ValueError:
+                    if pending_phospho_lines:
+                        for pl in pending_phospho_lines:
+                            fout.write(pl)
+                        pending_phospho_lines = []
                     fout.write(line)
                     continue
+                try:
+                    last_serial = max(last_serial, int(line[6:11].strip()))
+                except ValueError:
+                    pass
                 atom_name = line[12:16].strip()
                 key = (chain, resnum)
+
+                if current_residue_key is not None and current_residue_key != key:
+                    for pl in pending_phospho_lines:
+                        fout.write(pl)
+                    pending_phospho_lines = []
+                current_residue_key = key
+
                 if key in site_map:
                     target = site_map[key]
                     spec = _PHOSPHO_TARGETS.get(target)
                     if spec is None:
-                        # Already validated upstream, but be defensive.
                         fout.write(line)
                         continue
                     expected_source = spec["source"]
@@ -6239,15 +6440,31 @@ def _apply_phosphorylation_to_pdb(
                             seen[key] = "mismatch"
                         fout.write(line)
                         continue
-                    seen[key] = target
+                    if seen.get(key) != target:
+                        seen[key] = target
+                        # Queue phospho atoms to flush right after the
+                        # last source atom — keeps the residue contiguous
+                        # so PDBFile / Pablo treat them as one residue.
+                        pending_phospho_lines = _emit_phospho_atoms(key, target, line)
                     if atom_name == spec["hydroxyl_h"]:
-                        # Drop the hydroxyl hydrogen — tleap rebuilds the
-                        # phosphate from the phosaa template.
+                        # Drop the original hydroxyl hydrogen — Amber's
+                        # phosaa XMLs assume the dianion form (no H on the
+                        # phosphate oxygens). The phosphate atoms we
+                        # synthesised replace it.
                         continue
                     new_line = line[:17] + f"{target:>3}" + line[20:]
                     fout.write(new_line)
                     continue
+            else:
+                if pending_phospho_lines:
+                    for pl in pending_phospho_lines:
+                        fout.write(pl)
+                    pending_phospho_lines = []
+                current_residue_key = None
             fout.write(line)
+        if pending_phospho_lines:
+            for pl in pending_phospho_lines:
+                fout.write(pl)
 
     applied = [
         {
@@ -6300,8 +6517,13 @@ def phosphorylate_residues(
     counterpart of the requested target (``SEP`` requires ``SER`` etc.).
     The tool renames the residue and strips the hydroxyl hydrogen
     (``HG`` / ``HG1`` / ``HH``); ``OG`` / ``OG1`` / ``OH`` is kept as the
-    phosphate linkage atom. ``build_amber_system`` then rebuilds the phosphate
-    atoms from ``leaprc.phosaa19SB`` / ``phosaa14SB``.
+    phosphate linkage atom. ``build_amber_system`` then routes the matching
+    openmmforcefields phosaa XML — ``amber/phosaa19SB.xml`` (ff19SB),
+    ``amber/phosaa14SB.xml`` (ff14SB), ``amber/phosaa10.xml`` (ff03 /
+    ff99SB legacy), ``amber/phosfb18.xml`` (fb15) — into the
+    ``SystemGenerator`` ForceField bundle so the phosphate atoms get
+    rebuilt by the OpenMM ForceField residue template (no tleap
+    source step is involved).
 
     Args:
         pdb_file: Cleaned PDB (output of ``prepare_complex``). Required

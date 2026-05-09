@@ -1,12 +1,22 @@
 """
-Amber Server - Amber topology and coordinate file generation tools.
+Amber Server — curated Amber → OpenMM System builder.
 
 Provides tools for:
-- Building Amber topology (parm7) and coordinate (rst7) files using tleap
-- Supporting both implicit solvent (no PBC) and explicit solvent (with PBC) systems
-- Handling protein-ligand complexes with custom GAFF2 parameters
+- ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
+  protein / nucleic / glycan / lipid / PTM force fields plus GAFF for ligands
+  via ``openmmforcefields.SystemGenerator`` (with ``GAFFTemplateGenerator`` for
+  small molecules), and emit a portable ``system.xml`` + ``topology.pdb`` +
+  ``state.xml`` triple consumed by ``run_equilibration`` / ``run_production``.
+- Supporting both implicit (no PBC) and explicit (with PBC, optionally
+  membrane) solvent setups.
+- Handling protein-ligand complexes with curated GAFF parameters and
+  ParmEd-bridged metal templates where applicable.
 
-Uses tleap from AmberTools for robust system building.
+The XML triple is the only topology contract on the run side; tleap and
+parm7/rst7 are not produced or consumed anywhere. AmberTools
+(``pdb4amber``, ``antechamber``, ``parmchk2``, ``sqm``, ``cpptraj``)
+remain in use upstream for structure preparation and ligand
+parameterization.
 """
 
 # Configure logging early to suppress noisy third-party logs
@@ -38,13 +48,20 @@ from mdclaw.research_server import (  # noqa: E402
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,
 )
+from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
+from mdclaw import _topology_pablo  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-# Initialize tool wrappers
-tleap_wrapper = BaseToolWrapper("tleap")
+# Initialize tool wrappers.
+# ``tleap`` is no longer used: the curated build path runs through
+# ``openmmforcefields.SystemGenerator`` and emits the modern
+# ``system.xml`` + ``topology.pdb`` + ``state.xml`` triple (PR3 of the
+# openmmforcefields-unification refactor). ``cpptraj`` is still used for
+# the GLYCAM ``prepareforleap`` glycan conversion stage; see
+# ``_prepare_glycam_pdb_with_cpptraj`` for context.
 cpptraj_wrapper = BaseToolWrapper("cpptraj")
 
 
@@ -181,58 +198,6 @@ CANONICAL_PROTEIN_FORCEFIELDS = {
 # =============================================================================
 # Helper Functions
 # =============================================================================
-
-
-def parse_leap_log(log_path: Path) -> Dict[str, Any]:
-    """Parse tleap log file to extract system statistics.
-    
-    Args:
-        log_path: Path to tleap log file
-    
-    Returns:
-        Dict with extracted statistics:
-        - num_atoms: Total number of atoms
-        - num_residues: Total number of residues
-        - warnings: List of warning messages
-        - errors: List of error messages
-    """
-    result = {
-        "num_atoms": None,
-        "num_residues": None,
-        "warnings": [],
-        "errors": []
-    }
-    
-    if not log_path.exists():
-        return result
-    
-    try:
-        content = log_path.read_text()
-        
-        # Extract atom count from "Total number of atoms" or saveamberparm output
-        # Pattern: "Writing parm file with X atoms"
-        atom_match = re.search(r'(\d+)\s+atoms', content, re.IGNORECASE)
-        if atom_match:
-            result["num_atoms"] = int(atom_match.group(1))
-        
-        # Extract residue count
-        # Pattern: "X residues"
-        residue_match = re.search(r'(\d+)\s+residues', content, re.IGNORECASE)
-        if residue_match:
-            result["num_residues"] = int(residue_match.group(1))
-        
-        # Collect warnings
-        for line in content.split('\n'):
-            line_lower = line.lower()
-            if 'warning' in line_lower:
-                result["warnings"].append(line.strip())
-            elif 'error' in line_lower or 'fatal' in line_lower:
-                result["errors"].append(line.strip())
-        
-    except Exception as e:
-        logger.warning(f"Could not parse leap log: {e}")
-    
-    return result
 
 
 def detect_nucleic_content(pdb_path: Path) -> dict:
@@ -376,7 +341,11 @@ def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
 
 
 def _is_builtin_amber_frcmod(value: str) -> bool:
-    """Return True for AmberTools frcmod names loadable by tleap search paths."""
+    """Return True for AmberTools-shipped frcmod names (``frcmod.<...>``).
+
+    These names are resolved at openmmforcefields build time via the
+    ParmEd metal bridge by looking under ``$AMBERHOME/dat/leap/parm/``.
+    """
     return value.strip().startswith("frcmod.")
 
 
@@ -413,7 +382,7 @@ def validate_metal_params(
     metal_params: List[Dict[str, Any]],
     pdb_path: Path,
 ) -> tuple[list[dict], list[str]]:
-    """Validate metal ion parameter records before generating a tleap script."""
+    """Validate metal-ion parameter records before the openmmforcefields build."""
     valid_params: list[dict] = []
     errors: list[str] = []
     pdb_residue_counts = _pdb_residue_instance_counts(pdb_path)
@@ -921,8 +890,11 @@ def fix_ligand_residue_names(pdb_path: Path, output_path: Path,
 def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> dict:
     """Fix inconsistent HIS residue names vs present hydrogen atom names.
 
-    tleap will fail if, for example, a residue is named HIE but contains atom HD1.
-    This can happen when upstream tools label residues but keep hydrogen names.
+    Amber/OpenMM residue template matching at openmmforcefields build time
+    requires the residue name to agree with the hydrogen atoms that are
+    present (e.g. a residue named HIE that still carries HD1 fails to
+    match any HIS template). This can happen when upstream tools relabel
+    residues but keep their original hydrogen names.
 
     Rules (Amber):
     - HID: delta-protonated -> has HD1 (and typically no HE2)
@@ -976,7 +948,7 @@ def fix_histidine_protonation_consistency(pdb_path: Path, output_path: Path) -> 
     # numbers for waters and ions, so a water molecule can share
     # (chain, resnum, icode) with a HIS residue. Without the resname
     # guard, the water's resname would be silently renamed to HID/HIE/HIP
-    # too, corrupting downstream tleap input.
+    # too, breaking residue template matching at openmmforcefields build time.
     _his_family = {"HIS", "HID", "HIE", "HIP"}
     out_lines: list[str] = []
     for line in lines:
@@ -1164,53 +1136,51 @@ def strip_crystal_waters(input_pdb: Path, output_pdb: Path) -> dict:
     return result
 
 
-def _plan_disulfide_tleap_bonds(
+def _plan_disulfide_topology_bonds(
     pdb_path: Path,
     disulfide_pairs: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Map disulfide pairs (from prepare_complex) onto the PDB tleap will load.
+    """Map disulfide pairs (from prepare_complex) onto unit sequential indices.
 
-    tleap's ``bond unit.N.atom`` syntax uses the *unit sequential index*
-    assigned during ``loadpdb`` (1-based, in PDB atom order), not PDB
-    resSeq. For single-chain, contiguously numbered structures the two
-    happen to coincide — but they diverge for homodimers (same resSeq
-    repeated across chains) and when waters/ligands precede the protein.
-    So this function walks the PDB once, builds a ``(chain, resnum) →
-    unit_index`` map, and emits bond lines using the unit index.
+    The openmmforcefields build path adds the SG-SG bond directly to the
+    OpenMM ``Topology`` after loading the prepared PDB through Pablo, so
+    this helper just resolves which residues to wire together. Unit
+    sequential indices (1-based, in PDB atom order) — historically the
+    same numbering tleap used for ``bond mol.N.SG`` — are still the
+    cleanest cross-reference because they survive ``loadpdb`` and Pablo
+    alike for solvated PDBs where resSeq wraps.
 
     Resolution is done **per chain**: for each disulfide pair, every
     chain in the merged PDB that carries both resnums as ``CYX`` yields
-    one bond line. The pair's ``chain`` field is advisory and ignored,
-    because ``merge_structures`` renames chain IDs (A, B, C, …) while
-    the pair's chain comes from the original pre-split structure —
+    one resolved entry. The pair's ``chain`` field is advisory and
+    ignored, because ``merge_structures`` renames chain IDs (A, B, C, …)
+    while the pair's chain comes from the original pre-split structure —
     propagating the mapping is not worth the wiring cost when per-chain
     CYX presence is an equally reliable signal.
 
     Global de-duplication on ``frozenset({idx1, idx2})`` keeps the
     homodimer case (two legitimate disulfide_bonds.json entries listing
     the same pair under different chains) from double-bonding: the
-    first entry emits one line per matching chain, and later entries
-    that resolve to the same indices are recorded as
+    first entry emits one resolved row per matching chain, and later
+    entries that resolve to the same indices are recorded as
     ``emitted_duplicate``.
 
     Returns a dict with:
-        ``bond_lines``: list[str] — ``bond mol.<idx>.SG mol.<idx>.SG``
-            commands to inject into the tleap script.
         ``resolved``: list[dict] — per-pair provenance (``cys1``, ``cys2``,
-            ``source``, ``tleap_residues`` as ``[[idx1, idx2], …]`` — a
-            list because one pair can match multiple chains —, ``status``:
-            ``emitted``, ``emitted_duplicate``, ``skipped_cys_protonated``,
-            or ``unresolved``).
+            ``source``, ``topology_residues`` as ``[[idx1, idx2], …]`` —
+            a list because one pair can match multiple chains —,
+            ``status``: ``emitted``, ``emitted_duplicate``,
+            ``skipped_cys_protonated``, or ``unresolved``).
         ``warnings``: list[str] — human-readable notes for non-emitted pairs.
     """
-    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    plan: Dict[str, Any] = {"resolved": [], "warnings": []}
     if not disulfide_pairs:
         return plan
 
     # Walk the PDB once. ``unit_index`` counts every unique residue in PDB
-    # order (1-based) — this is exactly how tleap numbers residues in a
-    # unit after ``loadpdb``, so ``bond mol.<unit_index>.atom`` resolves
-    # unambiguously even when PDB resSeq collides across chains.
+    # order (1-based) — the openmmforcefields build path consumes this
+    # index when calling ``Topology.addBond`` so it remains a stable
+    # provenance handle even when PDB resSeq collides across chains.
     unit_index = 0
     by_chain: Dict[str, Dict[int, Dict[str, Any]]] = {}
     last_key: Optional[Tuple[str, int, str]] = None
@@ -1261,7 +1231,7 @@ def _plan_disulfide_tleap_bonds(
             "cys1": c1,
             "cys2": c2,
             "source": pair.get("source"),
-            "tleap_residues": None,
+            "topology_residues": None,
             "status": "unresolved",
         }
 
@@ -1305,12 +1275,11 @@ def _plan_disulfide_tleap_bonds(
             if bond_key in emitted_pairs:
                 continue
             emitted_pairs.add(bond_key)
-            plan["bond_lines"].append(f"bond mol.{idx1}.SG mol.{idx2}.SG")
             emitted_indices.append([idx1, idx2])
 
         if emitted_indices:
             record["status"] = "emitted"
-            record["tleap_residues"] = emitted_indices
+            record["topology_residues"] = emitted_indices
         else:
             # Every chain that matched was already covered by an earlier
             # pair — typical for the second entry of a homodimer listing.
@@ -1320,12 +1289,17 @@ def _plan_disulfide_tleap_bonds(
     return plan
 
 
-def _plan_glycan_tleap_bonds(
+def _plan_glycan_topology_bonds(
     pdb_path: Path,
     glycan_linkages: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
-    """Map prepared protein-glycan linkages onto tleap unit indices."""
-    plan: Dict[str, Any] = {"bond_lines": [], "resolved": [], "warnings": []}
+    """Map prepared protein-glycan linkages onto unit sequential indices.
+
+    The openmmforcefields build path consumes ``topology_residues`` from
+    the resolved entries to call ``Topology.addBond`` on the OpenMM
+    topology after Pablo loading.
+    """
+    plan: Dict[str, Any] = {"resolved": [], "warnings": []}
     if not glycan_linkages:
         return plan
 
@@ -1374,7 +1348,7 @@ def _plan_glycan_tleap_bonds(
             "protein": protein,
             "glycan": glycan,
             "source": linkage.get("source"),
-            "tleap_residues": None,
+            "topology_residues": None,
             "status": "unresolved",
         }
         protein_residue = residues.get(protein_key)
@@ -1403,9 +1377,8 @@ def _plan_glycan_tleap_bonds(
             plan["resolved"].append(record)
             continue
         emitted_pairs.add(bond_key)
-        plan["bond_lines"].append(f"bond mol.{idx1}.{protein_atom} mol.{idx2}.{glycan_atom}")
         record["status"] = "emitted"
-        record["tleap_residues"] = [[idx1, idx2]]
+        record["topology_residues"] = [[idx1, idx2]]
         plan["resolved"].append(record)
 
     return plan
@@ -1619,153 +1592,6 @@ def _prepare_glycam_pdb_with_cpptraj(
     return result
 
 
-def _prepareforleap_tleap_lines(
-    prepared_pdb: Path,
-    generated_leap: Path,
-) -> tuple[list[str], list[str]]:
-    """Return vetted prepareforleap LEaP lines and warnings.
-
-    cpptraj can infer close-contact protein-glycan bonds that are not valid
-    GLYCAM linkages, such as ASN.OD1-C1 contacts. Keep bonds only when the
-    protein residue was converted to a GLYCAM linker residue (e.g. NLN).
-    """
-    warnings: list[str] = []
-    residues: dict[int, dict[str, Any]] = {}
-    unit_index = 0
-    last_key: tuple[str, str, str, str] | None = None
-    for pdb_line in prepared_pdb.read_text(encoding="utf-8").splitlines():
-        if not pdb_line.startswith(("ATOM", "HETATM")) or len(pdb_line) < 27:
-            continue
-        key = (
-            pdb_line[21].strip() or "A",
-            pdb_line[22:26].strip(),
-            pdb_line[26].strip(),
-            pdb_line[17:20].strip().upper(),
-        )
-        if key != last_key:
-            unit_index += 1
-            residues[unit_index] = {"resname": key[3]}
-            last_key = key
-
-    filtered: list[str] = []
-    bond_pattern = re.compile(r"^\s*bond\s+mol\.(\d+)\.([^\s]+)\s+mol\.(\d+)\.([^\s]+)")
-    for line in generated_leap.read_text(encoding="utf-8").splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.lower() == "quit":
-            continue
-        match = bond_pattern.match(stripped)
-        if match:
-            idx1 = int(match.group(1))
-            idx2 = int(match.group(3))
-            res1 = residues.get(idx1, {}).get("resname")
-            res2 = residues.get(idx2, {}).get("resname")
-            is_glycan1 = is_glycan_residue_name(res1)
-            is_glycan2 = is_glycan_residue_name(res2)
-            if is_glycan1 != is_glycan2:
-                protein_resname = res2 if is_glycan1 else res1
-                if protein_resname not in GLYCAM_LINKED_PROTEIN_RESNAMES:
-                    warnings.append(
-                        "Skipped prepareforleap protein-glycan bond to "
-                        f"{protein_resname or 'unknown'}; residue was not converted "
-                        "to a GLYCAM linked-protein template."
-                    )
-                    continue
-        filtered.append(line)
-    return filtered, warnings
-
-
-def _add_pdb_info(
-    parm7_path: Path,
-    pdb_path: Path,
-    output_path: Path | None = None,
-) -> dict:
-    """Add PDB info (residue numbers, chain IDs) to Amber topology.
-
-    Uses ParmEd's addPDB action to embed original PDB metadata into the topology.
-    This preserves original PDB residue numbering so that output PDBs from
-    simulations match the initial PDB file.
-
-    Reference: https://github.com/callumjd/AMBER-Membrane_protein_tutorial
-
-    Args:
-        parm7_path: Input Amber topology file
-        pdb_path: Reference PDB with original numbering
-        output_path: Output path (overwrites input if None)
-
-    Returns:
-        dict with:
-            - success: bool - True if PDB info was added successfully
-            - flags_added: list[str] - List of flags added to topology
-            - warnings: list[str] - Non-critical issues
-            - errors: list[str] - Error messages
-    """
-    result = {
-        "success": False,
-        "flags_added": [],
-        "warnings": [],
-        "errors": [],
-    }
-
-    try:
-        import warnings as _warnings
-
-        from parmed.amber import AmberParm
-        from parmed.tools import addPDB
-        from parmed.tools.exceptions import AddPDBWarning
-
-        # Load topology
-        parm = AmberParm(str(parm7_path))
-
-        # Add PDB info (residue numbers, chain IDs, insertion codes, etc.)
-        # Using ParmEd's addPDB action class
-        # Catch AddPDBWarning: tleap reorders ions before water, causing
-        # residue name mismatches for solvent residues (protein metadata
-        # is applied correctly since it comes first in both orderings).
-        with _warnings.catch_warnings(record=True) as caught:
-            _warnings.simplefilter("always")
-            action = addPDB(parm, str(pdb_path))
-            action.execute()
-
-        mismatches = [w for w in caught if issubclass(w.category, AddPDBWarning)]
-        if mismatches:
-            result["warnings"].append(
-                f"PDB/topology residue order mismatch ({len(mismatches)} residues, "
-                "likely ions reordered by tleap) - protein metadata applied correctly"
-            )
-            logger.debug(
-                f"addPDB: {len(mismatches)} residue name mismatches "
-                "(tleap reorders ions before water)"
-            )
-
-        # Check which flags were added
-        expected_flags = [
-            "RESIDUE_CHAINID",
-            "RESIDUE_NUMBER",
-            "RESIDUE_ICODE",
-            "ATOM_NUMBER",
-            "ATOM_ELEMENT",
-        ]
-        for flag in expected_flags:
-            if flag in parm.parm_data:
-                result["flags_added"].append(flag)
-
-        # Save (overwrite or new file)
-        out_path = output_path or parm7_path
-        parm.save(str(out_path), overwrite=True)
-
-        result["success"] = True
-        logger.info(f"Added PDB info to topology: {result['flags_added']}")
-
-    except ImportError:
-        result["errors"].append("ParmEd not installed - cannot add PDB info")
-        logger.warning("ParmEd not available, skipping PDB info addition")
-    except Exception as e:
-        result["errors"].append(f"ParmEd addPDB failed: {str(e)}")
-        logger.warning(f"Could not add PDB info: {e}")
-
-    return result
-
-
 def _resolve_build_amber_node_inputs(
     *,
     job_dir: str,
@@ -1834,102 +1660,140 @@ def build_amber_system(
     nucleic_forcefield: str = "auto",
     glycan_forcefield: str = "auto",
     is_membrane: Optional[bool] = None,
+    hmr: bool = True,
+    implicit_solvent: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
-    """Build Amber topology (parm7) and coordinate (rst7) files using tleap.
-    
-    This tool generates Amber-compatible files from a prepared PDB structure.
-    Supports both implicit solvent (no water, no PBC) and explicit solvent
-    (with water box and PBC) systems.
-    
-    The solvent type is automatically determined:
-    - If box_dimensions is None → implicit solvent (no PBC)
-    - If box_dimensions is provided → explicit solvent (with PBC)
-    
-    For explicit solvent systems, use the box_dimensions from solvate_structure
-    output directly:
-    
-    ```python
-    solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
-    amber_result = build_amber_system(
-        pdb_file=solvate_result["output_file"],
-        box_dimensions=solvate_result["box_dimensions"],
-        water_model="opc"
-    )
-    ```
-    
+    """Build an OpenMM ``System`` for a prepared PDB via openmmforcefields.
+
+    Replaces the legacy tleap path. Internally runs ``openmmforcefields``'
+    ``SystemGenerator`` (with ``GAFFTemplateGenerator`` for ligands) over an
+    OpenFF Pablo-loaded topology, applies the resolved Amber XML bundle
+    from ``forcefield_catalog``, optionally bakes in HMR via
+    ``hydrogenMass=4 amu``, and serializes the result as the modern
+    artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
+    (consumed by ``run_equilibration`` / ``run_production`` in node mode).
+
+    The solvent type is determined from ``box_dimensions`` and
+    ``implicit_solvent``:
+    - ``box_dimensions`` set, ``implicit_solvent`` unset → explicit solvent
+      with PBC (PME, default ff19SB + OPC).
+    - ``box_dimensions`` unset, ``implicit_solvent`` set → implicit solvent
+      (Generalized Born). The matching ``implicit/*.xml`` is loaded by
+      ``SystemGenerator`` so the saved ``system.xml`` carries a
+      ``CustomGBForce`` / ``GBSAOBCForce``.
+    - Both set → ``code="implicit_solvent_explicit_box_conflict"``.
+    - Neither set → vacuum NoCutoff System (research only; the run-side
+      shim rejects vacuum for default eq/prod workflows).
+
+    Example (explicit solvent, default HMR=True)::
+
+        solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
+        amber_result = build_amber_system(
+            pdb_file=solvate_result["output_file"],
+            box_dimensions=solvate_result["box_dimensions"],
+            water_model="opc",
+        )
+
     Args:
-        pdb_file: Input PDB file path. For implicit solvent, use merged.pdb
-                  from merge_structures. For explicit solvent, use solvated.pdb
-                  from solvate_structure.
-        ligand_params: List of ligand parameter dicts. Each dict should have:
-                       - mol2: Path to GAFF2 parameterized MOL2 file
-                       - frcmod: Path to force field modification file
-                       - residue_name: 3-letter residue name (e.g., "LIG")
-                       Example: [{"mol2": "lig.mol2", "frcmod": "lig.frcmod", "residue_name": "LIG"}]
-        modxna_params: List of modified-nucleic parameter dicts. Each dict should have:
-                       - residue_name: 3-letter residue name in the input PDB
-                       - lib/off: Path to modXNA-generated LEaP library
-                       - frcmod: Path to modXNA frcmod file
-        metal_params: List of metal parameter dicts from parameterize_metal_ion.
-                      Each dict should have:
-                      - mol2: Path to metal mol2 file (from metalpdb2mol2.py)
-                      - frcmod: Path to frcmod file (optional, from MCPB.py)
-                      - residue_name: Metal residue name (e.g., "ZN")
-                      Example: [{"mol2": "zn.mol2", "residue_name": "ZN"}]
-        box_dimensions: PBC box dimensions from solvate_structure output.
-                        Required keys: box_a, box_b, box_c (in Angstroms).
-                        If None, builds implicit solvent system (no PBC).
-        forcefield: Protein force field name (default: "ff19SB").
-                    Options: "ff14SB", "ff19SB"
-        water_model: Water model for explicit solvent (default: "opc").
-                     Options: "tip3p", "opc", "tip4pew"
-                     Only used when box_dimensions is provided.
-                     OPC is strongly recommended with ff19SB (Amber Manual 2024).
-        nucleic_forcefield: Standard nucleic acid force-field loading policy.
-                            "auto" loads DNA OL15 and/or RNA OL3 when standard
-                            nucleic residues are present; "none" disables this.
-        is_membrane: Set True for membrane systems to load lipid21 force field.
-                     If omitted in node mode, resolved from DAG metadata.
-                     Only used when box_dimensions is provided. (default: auto/False)
-        output_name: Base name for output files (default: "system").
-                     Creates {output_name}.parm7 and {output_name}.rst7
-        output_dir: Output directory (auto-generated if None)
-    
+        pdb_file: Input PDB. For implicit solvent use ``merged.pdb`` from
+                  ``merge_structures``; for explicit solvent use
+                  ``solvated.pdb`` from ``solvate_structure``.
+        ligand_params: List of ligand parameter dicts; each must carry
+                       ``mol2`` (GAFF-parameterized) and ``residue_name``.
+                       Loaded as OpenFF ``Molecule`` objects so
+                       ``GAFFTemplateGenerator`` can parameterize them.
+        modxna_params / metal_params: Currently unsupported under the
+                       openmmforcefields path; non-empty lists return
+                       structured codes ``modxna_openmm_xml_required`` /
+                       ``metal_openmm_xml_required``. Supply a
+                       pre-converted OpenMM ForceField XML for the
+                       residue through ``build_openmm_system`` (research
+                       escape hatch) or via the ``extra_xml`` follow-up
+                       in the catalog until the ParmEd → OpenMM XML
+                       bridge ships.
+        box_dimensions: ``{"box_a", "box_b", "box_c"}`` in Å from
+                        ``solvate_structure``; ``None`` selects implicit /
+                        vacuum.
+        forcefield: Protein FF (default: ``"ff19SB"``).
+        water_model: Water model for explicit solvent (default: ``"opc"``).
+                     OPC is strongly recommended with ff19SB (Amber25 ch.3.6).
+        nucleic_forcefield: ``"auto"`` loads DNA OL15 / RNA OL3 when
+                            standard nucleic residues are present;
+                            ``"none"`` disables it.
+        is_membrane: Loads lipid21 when ``True``; resolved from DAG
+                     metadata in node mode.
+        hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
+             ``system.xml`` so eq/prod can run a 4 fs timestep without
+             tripping the modern-system contract check. Defaults match
+             ``run_equilibration`` / ``run_production`` so the standard
+             default workflow (build → eq → prod, no kwargs) succeeds.
+        implicit_solvent: GB model name (case-insensitive). Supported:
+                          ``"HCT"``, ``"OBC1"``, ``"OBC2"``, ``"GBn"``,
+                          ``"GBn2"``. When set, the matching
+                          ``implicit/*.xml`` from openmmforcefields is
+                          added to the SystemGenerator bundle and the
+                          resulting ``system.xml`` carries a
+                          Generalized-Born force. Cannot be combined with
+                          ``box_dimensions`` (returns code
+                          ``implicit_solvent_explicit_box_conflict``).
+                          ``forcefield="ff14SB"`` is auto-substituted to
+                          ``"ff14SBonlysc"`` (the GBneck2-tuned variant)
+                          when ``implicit_solvent`` is set.
+        output_name: Stem for the artifact filenames; emits
+                     ``{output_name}.system.xml``,
+                     ``{output_name}.topology.pdb``,
+                     ``{output_name}.state.xml``.
+        output_dir / job_dir / node_id: Standard mdclaw I/O knobs. In
+                     node mode, the topo node's metadata is stamped with
+                     ``system_artifact_kind="openmm_system_xml"`` and a
+                     ``forcefield_provenance`` dict (``method.hmr``,
+                     ``openmm_xml`` bundle, sha256 table, OpenMM /
+                     openmmforcefields versions).
+
     Returns:
         Dict with:
-            - success: bool - True if system building completed successfully
-            - job_id: str - Unique identifier for this operation
-            - output_dir: str - Output directory path
-            - parm7: str - Path to Amber topology file
-            - rst7: str - Path to Amber coordinate file
-            - leap_log: str - Path to tleap log file
-            - leap_script: str - Path to generated tleap script
-            - solvent_type: str - "implicit" or "explicit"
-            - parameters: dict - Parameters used for building
-            - statistics: dict - System statistics (num_atoms, num_residues)
-            - errors: list[str] - Error messages (empty if success=True)
-            - warnings: list[str] - Non-critical issues encountered
+            - ``success``: bool — True when the System built and
+              serialized cleanly.
+            - ``job_id``, ``output_dir``: bookkeeping.
+            - ``system_xml``, ``topology_pdb``, ``state_xml``: absolute
+              paths to the modern artifact triple.
+            - ``solvent_type``: ``"implicit"`` or ``"explicit"``.
+            - ``parameters``: copy of the input parameter selection.
+            - ``forcefield_provenance``: dict capturing the resolved
+              OpenMM XML bundle, ligand Molecules, ``method.hmr``,
+              versions of OpenMM / openmmforcefields / openff-toolkit.
+            - ``statistics``: ``{"num_atoms", "num_residues"}``.
+            - ``code``: structured failure code on failure (e.g.
+              ``metal_openmm_xml_required``,
+              ``implicit_solvent_explicit_box_conflict``,
+              ``implicit_solvent_model_unsupported``,
+              ``implicit_solvent_force_missing``).
+            - ``errors`` / ``warnings``: lists of strings.
     
-    Example (implicit solvent):
-        >>> result = build_amber_system(
-        ...     pdb_file="output/job1/merged.pdb",
-        ...     ligand_params=[{
-        ...         "mol2": "output/job1/ligand.gaff.mol2",
-        ...         "frcmod": "output/job1/ligand.frcmod",
-        ...         "residue_name": "LIG"
-        ...     }]
-        ... )
-    
-    Example (explicit solvent):
+    Example (explicit solvent, ligand, default HMR=True):
         >>> solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
         >>> result = build_amber_system(
         ...     pdb_file=solvate_result["output_file"],
+        ...     ligand_params=[{
+        ...         "mol2": "output/job1/ligand.gaff.mol2",
+        ...         "frcmod": "output/job1/ligand.frcmod",
+        ...         "residue_name": "LIG",
+        ...     }],
         ...     box_dimensions=solvate_result["box_dimensions"],
-        ...     water_model="opc"
+        ...     water_model="opc",
+        ... )
+        >>> result["system_xml"], result["topology_pdb"], result["state_xml"]
+
+    Example (vacuum, no implicit solvent — research only):
+        >>> result = build_amber_system(
+        ...     pdb_file="output/job1/merged.pdb",
+        ...     # no box_dimensions and no implicit_solvent — produces a
+        ...     # vacuum NoCutoff System; eq/prod will reject it because
+        ...     # vacuum is not a recommended ensemble for default workflows.
         ... )
     """
     solvation_water_model = None
@@ -1944,6 +1808,8 @@ def build_amber_system(
                 "nucleic_forcefield": nucleic_forcefield,
                 "glycan_forcefield": glycan_forcefield,
                 "is_membrane": is_membrane,
+                "hmr": hmr,
+                "implicit_solvent": implicit_solvent,
                 "output_name": output_name,
             },
             pdb_file=pdb_file,
@@ -2096,17 +1962,70 @@ def build_amber_system(
             fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
         return blocked
 
-    # Initialize result structure
+    # --- Implicit-solvent guardrails ------------------------------------
+    # Mutual exclusion with an explicit periodic box (these come from
+    # different solvation paths and must not be combined).
+    if implicit_solvent is not None and box_dimensions is not None:
+        blocked = {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "implicit_solvent_explicit_box_conflict",
+            "message": (
+                f"implicit_solvent={implicit_solvent!r} cannot be combined "
+                f"with explicit box_dimensions. Drop one: implicit GB systems "
+                f"are non-periodic, explicit-solvent systems do not need a "
+                f"GB model."
+            ),
+            "errors": [
+                "implicit_solvent and box_dimensions are mutually exclusive."
+            ],
+            "warnings": [],
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked["errors"])
+        return blocked
+
+    # Normalize the GB model name against the catalog. Unknown / typo'd
+    # names fail-fast with a structured code so callers can surface a
+    # clean recommendation.
+    canonical_implicit_solvent: Optional[str] = None
+    if implicit_solvent is not None:
+        canonical_implicit_solvent = _ff_catalog.normalize_implicit_solvent(
+            implicit_solvent
+        )
+        if canonical_implicit_solvent not in _ff_catalog.IMPLICIT_SOLVENT_XML:
+            supported = ", ".join(_ff_catalog.supported_implicit_solvent_models())
+            blocked = {
+                "success": False,
+                "error_type": "ValidationError",
+                "code": "implicit_solvent_model_unsupported",
+                "message": (
+                    f"Unknown implicit-solvent model "
+                    f"{implicit_solvent!r}. Supported: {supported}."
+                ),
+                "errors": [
+                    f"implicit_solvent={implicit_solvent!r} is not in the catalog."
+                ],
+                "warnings": [],
+            }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=blocked["errors"])
+            return blocked
+
+    # Initialize result structure.
+    # The curated build path emits the modern XML triple. Callers should
+    # consume ``system_xml``, ``topology_pdb``, and ``state_xml`` (set by
+    # ``_run_openmmforcefields_build`` on success). The XML triple is the
+    # only topology contract; downstream code (DAG resolver, eq/prod)
+    # never reads anything else.
     job_id = generate_job_id()
     solvent_type = "implicit" if box_dimensions is None else "explicit"
     result = {
         "success": False,
         "job_id": job_id,
         "output_dir": None,
-        "parm7": None,
-        "rst7": None,
-        "leap_log": None,
-        "leap_script": None,
         "solvent_type": solvent_type,
         "parameters": {
             "forcefield": forcefield,
@@ -2153,7 +2072,6 @@ def build_amber_system(
         }
     forcefield = canonical_forcefield
     result["parameters"]["forcefield"] = forcefield
-    protein_ff = PROTEIN_FORCEFIELDS[forcefield]
 
     # Normalize water model up front, even for implicit solvent, so typos never pass silently.
     canonical_water_model = _canonical_water_model_name(water_model)
@@ -2234,7 +2152,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_modxna_parameters",
-                "message": "Invalid modXNA parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid modXNA parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
             if job_dir and node_id:
                 from mdclaw._node import fail_node
@@ -2269,17 +2190,18 @@ def build_amber_system(
             fail_node(job_dir, node_id, errors=err.get("errors", []))
         return {**result, **err}
 
-    # Check tleap availability
-    if not tleap_wrapper.is_available():
-        logger.error("tleap not available")
+    # Check that the openmmforcefields stack is available — replaces the
+    # legacy tleap availability check. (PR3 of openmmforcefields-unification.)
+    try:
+        import openmmforcefields  # noqa: F401
+    except ImportError:
+        logger.error("openmmforcefields not available")
         return create_tool_not_available_error(
-            "tleap",
-            "Install AmberTools or activate the mdclaw conda environment"
+            "openmmforcefields",
+            "Run `conda env update -f environment.yml` to install the openmmforcefields-unification deps"
         )
 
     # Validate water model (for explicit solvent)
-    water_ff = None
-    ion_params = None
     actual_water_model = water_model  # May be overridden by detection
     if box_dimensions:
         # Detect water type in input PDB to prevent mismatch
@@ -2296,18 +2218,17 @@ def build_amber_system(
             three_site = {"tip3p", "spc", "spce"}
             four_site = {"opc", "opc3", "tip4p", "tip4pew"}
 
-            # Check for mismatch - NOTE: tleap can add missing atoms (e.g., EPW for OPC)
-            # packmol-memgen always produces TIP3P-format waters, but tleap will convert
-            # them to the target water model by adding virtual sites (EPW, etc.)
+            # Check for mismatch — under the openmmforcefields path,
+            # ``Modeller.addExtraParticles`` will add virtual sites (EPW, etc.)
+            # for 4-site waters, so a 3-site → 4-site request is fine.
             if detected_type == "tip3p" and requested_type in four_site:
                 logger.info(
                     f"Input PDB has TIP3P-format waters ({detected['atoms_per_water']:.1f} atoms/water). "
-                    f"tleap will add missing atoms for '{water_model}' model (e.g., EPW for OPC)."
+                    f"Modeller.addExtraParticles will add missing atoms for '{water_model}' (e.g., EPW for OPC)."
                 )
                 result["warnings"].append(
-                    f"Note: Input has 3-atom waters, tleap will add virtual sites for {water_model}."
+                    f"Note: Input has 3-atom waters; addExtraParticles will inject virtual sites for {water_model}."
                 )
-                # Do NOT override - let tleap handle the conversion
             elif detected_type in ["opc", "tip4p"] and requested_type in three_site:
                 logger.warning(
                     f"Water model mismatch! Input has 4-site waters but '{water_model}' requested. "
@@ -2318,16 +2239,14 @@ def build_amber_system(
                 )
                 actual_water_model = detected_type
 
-        water_ff = WATER_FORCEFIELDS.get(actual_water_model.lower())
-        if not water_ff:
+        if not _ff_catalog.normalize_water(actual_water_model):
             logger.error(f"Unknown water model: {actual_water_model}")
             return create_validation_error(
                 "water_model",
                 f"Unknown water model: {actual_water_model}",
                 expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
-                actual=actual_water_model
+                actual=actual_water_model,
             )
-        ion_params = WATER_ION_PARAMS.get(actual_water_model.lower(), "frcmod.ionsjc_tip3p")
 
         # Update metadata with actual water model (may differ from requested)
         result["parameters"]["water_model"] = actual_water_model
@@ -2427,7 +2346,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_ligand_parameters",
-                "message": "Invalid ligand parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid ligand parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
     
     # Setup output directory
@@ -2442,16 +2364,16 @@ def build_amber_system(
         out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
     
-    # Output files
-    parm7_file = out_dir / f"{output_name}.parm7"
-    rst7_file = out_dir / f"{output_name}.rst7"
-    leap_script_file = out_dir / f"{output_name}.leap.in"
-    leap_log_file = out_dir / f"{output_name}.leap.log"
+    # Output files. ``build_amber_system`` emits the XML triple consumed
+    # by run_equilibration / run_production through the DAG resolver.
+    system_xml_file = out_dir / f"{output_name}.system.xml"
+    topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
+    state_xml_file = out_dir / f"{output_name}.state.xml"
     
     # Copy and fix PDB file (fix UNL residue names if needed)
-    working_pdb = out_dir / f"{output_name}.tleap_input.pdb"
+    working_pdb = out_dir / f"{output_name}.prepared.pdb"
     ligand_res_names = [lig["residue_name"] for lig in valid_ligands] if valid_ligands else []
-    
+
     # Fix ligand residue names (UNL -> correct name)
     # Note: N-terminal hydrogen naming is handled by pdb4amber --reduce in structure_server.py
     fix_lig_result = fix_ligand_residue_names(pdb_path, working_pdb, ligand_res_names)
@@ -2462,7 +2384,9 @@ def build_amber_system(
             **result,
             "error_type": "ValidationError",
             "code": "ambiguous_ligand_residue_repair",
-            "message": "Ambiguous ligand residue-name repair before tleap.",
+            "message": (
+                "Ambiguous ligand residue-name repair before openmmforcefields build."
+            ),
         }
     if fix_lig_result["unl_count"] > 0:
         result["warnings"].extend(fix_lig_result["replacements"])
@@ -2480,7 +2404,8 @@ def build_amber_system(
     except Exception as e:
         result["warnings"].append(f"Histidine residue name fix failed (continuing): {type(e).__name__}: {e}")
     
-    # Use fixed PDB for tleap
+    # Use the residue-name-repaired PDB as the input to the
+    # openmmforcefields build path below.
     pdb_path = working_pdb
 
     valid_metal_params = []
@@ -2493,7 +2418,10 @@ def build_amber_system(
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_metal_parameters",
-                "message": "Invalid metal parameter records; refusing to run tleap.",
+                "message": (
+                    "Invalid metal parameter records; refusing to run "
+                    "openmmforcefields build."
+                ),
             }
             if _node_mode:
                 from mdclaw._node import fail_node
@@ -2526,10 +2454,12 @@ def build_amber_system(
         if box_dimensions is None:
             result["implicit_ligand_diagnostics"] = implicit_ligand_diagnostics(valid_ligands)
     
-    # PTM detection: scan the input PDB for SEP/TPO/PTR. If present, source
-    # the matching `leaprc.phosaa*` library after the protein leaprc line so
-    # tleap can rebuild the phosphate atoms from the template against the
-    # OG / OG1 / OH oxygen kept by `phosphorylate_residues`.
+    # PTM detection: scan the input PDB for SEP/TPO/PTR. If present, ask
+    # ``forcefield_catalog`` to add the matching ``amber/phosaa*.xml``
+    # bundle (e.g. ``amber/phosaa19SB.xml`` for ff19SB) on top of the
+    # protein force field so the SystemGenerator can apply the phospho-
+    # residue templates against the OG / OG1 / OH oxygen retained by
+    # ``phosphorylate_residues``.
     from mdclaw.research_server import detect_ptm_sites
     ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
     phosaa_library = None
@@ -2538,13 +2468,43 @@ def build_amber_system(
         if phosaa_library is None:
             err = create_validation_error(
                 "forcefield",
-                f"Forcefield '{forcefield}' has no matching `leaprc.phosaa*` "
-                f"library, but the input PDB contains PTM residues "
+                f"Forcefield '{forcefield}' has no matching openmmforcefields "
+                f"phosaa XML (e.g. ``amber/phosaa19SB.xml``), but the input "
+                f"PDB contains PTM residues "
                 f"({sorted({s['name'] for s in ptm_residues_in_input})}).",
                 expected="ff19SB or ff14SB (which pair with phosaa19SB / phosaa14SB)",
                 actual=forcefield,
                 warnings=result["warnings"],
                 code="phospho_forcefield_unsupported",
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=err.get("errors", []))
+            return {**result, **err}
+        # openmmforcefields 0.16.0 ships ``amber/protein.ff14SB.xml`` with
+        # prefixed atom types (``protein-N``…) but ``amber/phosaa14SB.xml``
+        # with unprefixed types — loading both raises ``KeyError: 'N'``
+        # inside ``app.ForceField.loadFile``. Surface a structured fail-fast
+        # so callers get an actionable suggestion (switch to ff19SB +
+        # phosaa19SB) instead of the cryptic upstream KeyError.
+        _PHOSAA_TYPE_PREFIX_BROKEN = {
+            ("ff14SB", "phosaa14SB"),
+            ("ff14SBonlysc", "phosaa14SB"),
+        }
+        if (forcefield, phosaa_library.split(".")[-1]) in _PHOSAA_TYPE_PREFIX_BROKEN:
+            err = create_validation_error(
+                "forcefield",
+                f"Forcefield '{forcefield}' uses the openmmforcefields "
+                f"prefixed-atom-type protein XML (``protein-N``…), but "
+                f"``amber/{phosaa_library.split('.')[-1]}.xml`` ships with "
+                f"unprefixed types — pairing them raises KeyError 'N' inside "
+                f"``app.ForceField`` (atom-type asymmetry not yet fixed "
+                f"upstream). PTM residues detected in input: "
+                f"{sorted({s['name'] for s in ptm_residues_in_input})}.",
+                expected="ff19SB (pairs with phosaa19SB; OPC water recommended)",
+                actual=forcefield,
+                warnings=result["warnings"],
+                code="phospho_forcefield_atom_type_mismatch",
             )
             if _node_mode:
                 from mdclaw._node import fail_node
@@ -2582,46 +2542,10 @@ def build_amber_system(
         pdb_path = Path(glycam_prepare["prepared_pdb"]).resolve()
 
     try:
-        # Build tleap script
-        script_lines = []
-        script_lines.append("# Amber Server - tleap script")
-        script_lines.append(f"# Job ID: {job_id}")
-        script_lines.append(f"# Solvent type: {result['solvent_type']}")
-        script_lines.append("")
-
-        # Load force fields
-        script_lines.append("# Load force fields")
-        if protein_ff:
-            script_lines.append(f"source {protein_ff}")
-        if phosaa_library:
-            # phosaa* must be sourced AFTER the protein leaprc per Amber docs.
-            script_lines.append(f"source {phosaa_library}")
-        for nucleic_library in nucleic_libraries:
-            script_lines.append(f"source {nucleic_library}")
-        if glycan_library:
-            script_lines.append(f"source {glycan_library}")
-        script_lines.append("source leaprc.gaff2")
-        loaded_modxna_frcmods = set()
-        for params in valid_modxna_params:
-            frcmod = params["frcmod"]
-            if frcmod not in loaded_modxna_frcmods:
-                script_lines.append(f"loadamberparams {frcmod}")
-                loaded_modxna_frcmods.add(frcmod)
-            script_lines.append(f"loadoff {params['lib']}")
-        
-        if box_dimensions:
-            # Explicit solvent: check for crystal waters (shouldn't be here if solvate_structure was used)
-            detected_water = detect_water_type(pdb_path)
-            if detected_water["has_waters"]:
-                # Log but keep waters - they were likely added by solvate_structure
-                logger.info(f"Explicit solvent system with {detected_water['water_count']} waters")
-            script_lines.append(f"source {water_ff}")
-            if is_membrane:
-                script_lines.append("source leaprc.lipid21")
-            script_lines.append(f"loadamberparams {ion_params}")
-        else:
-            # Implicit solvent: crystal waters must be removed
-            # GB models don't support discrete water molecules
+        # Implicit-solvent crystal-water cleanup (preserved from the legacy
+        # path): GB models cannot accept discrete water molecules, so strip
+        # any waters that survived the prep stage.
+        if not box_dimensions:
             detected_water = detect_water_type(pdb_path)
             if detected_water["has_waters"]:
                 logger.info(
@@ -2634,263 +2558,124 @@ def build_amber_system(
                         f"GB models don't support discrete water molecules."
                     )
 
-        script_lines.append("")
-        
-        # Load ligand parameters (frcmod BEFORE mol2)
-        if valid_ligands:
-            script_lines.append("# Load ligand parameters")
-            for lig in valid_ligands:
-                script_lines.append(f"loadamberparams {lig['frcmod']}")
-            for lig in valid_ligands:
-                script_lines.append(f"{lig['residue_name']} = loadmol2 {lig['mol2']}")
-            script_lines.append("")
-
-        # Load metal parameters (from MCPB.py or metalpdb2mol2.py)
-        if valid_metal_params:
-            script_lines.append("# Load metal ion parameters")
-            # Load frcmod files first.
-            loaded_metal_frcmods = set()
-            for metal in valid_metal_params:
-                for frcmod in metal.get("frcmods", []):
-                    if frcmod not in loaded_metal_frcmods:
-                        script_lines.append(f"loadamberparams {frcmod}")
-                        loaded_metal_frcmods.add(frcmod)
-            # Load mol2 files
-            for metal in valid_metal_params:
-                resname = metal.get("residue_name", "MET")
-                script_lines.append(f"{resname} = loadmol2 {metal['mol2']}")
-            script_lines.append("")
-
-        # Load structure
-        script_lines.append("# Load structure")
-        if glycam_prepare:
-            prepareforleap_lines, prepareforleap_warnings = _prepareforleap_tleap_lines(
-                prepared_pdb=Path(glycam_prepare["prepared_pdb"]),
-                generated_leap=Path(glycam_prepare["leap_script"]),
-            )
-            if prepareforleap_warnings:
-                result["warnings"].extend(prepareforleap_warnings)
-                for w in prepareforleap_warnings:
-                    logger.warning(w)
-            script_lines.extend(prepareforleap_lines)
-        else:
-            script_lines.append(f"mol = loadpdb {pdb_path}")
-        script_lines.append("")
-
-        # Explicit disulfide bonds: merged.pdb already has CYX on the SS
-        # residues (from prepare_complex), but tleap does not auto-create
-        # SG-SG covalent bonds — they must be declared with `bond`, which
-        # is what this block does.
+        # Disulfide and glycan-linkage planning resolves residue-pair
+        # provenance for the openmmforcefields build; the actual SG-SG /
+        # glycan bonds are added to the OpenMM topology inside
+        # ``_run_openmmforcefields_build``. The resolved-plan shape is
+        # stable agent-facing metadata, so the result keys
+        # (``disulfide_bond_plan``, ``glycan_linkage_plan``) and the
+        # per-record ``topology_residues`` field are part of the public
+        # node metadata contract.
         if disulfide_bonds:
-            ss_plan = _plan_disulfide_tleap_bonds(Path(pdb_path), disulfide_bonds)
-            if ss_plan["bond_lines"]:
-                script_lines.append("# Disulfide bonds (from prepare_complex)")
-                script_lines.extend(ss_plan["bond_lines"])
-                script_lines.append("")
+            ss_plan = _plan_disulfide_topology_bonds(Path(pdb_path), disulfide_bonds)
             if ss_plan["warnings"]:
                 result["warnings"].extend(ss_plan["warnings"])
-                for w in ss_plan["warnings"]:
-                    logger.warning(w)
             result["disulfide_bond_plan"] = ss_plan["resolved"]
 
         if glycan_linkages and not glycam_prepare:
-            glycan_plan = _plan_glycan_tleap_bonds(Path(pdb_path), glycan_linkages)
-            if glycan_plan["bond_lines"]:
-                script_lines.append("# Protein-glycan linkages (from prepare_complex)")
-                script_lines.extend(glycan_plan["bond_lines"])
-                script_lines.append("")
+            glycan_plan = _plan_glycan_topology_bonds(Path(pdb_path), glycan_linkages)
             if glycan_plan["warnings"]:
                 result["warnings"].extend(glycan_plan["warnings"])
-                for w in glycan_plan["warnings"]:
-                    logger.warning(w)
             result["glycan_linkage_plan"] = glycan_plan["resolved"]
         elif glycan_linkages and glycam_prepare:
-            result["glycan_linkage_plan"] = [{
-                **linkage,
-                "status": "handled_by_prepareforleap",
-            } for linkage in glycan_linkages]
+            result["glycan_linkage_plan"] = [
+                {**linkage, "status": "handled_by_prepareforleap"}
+                for linkage in glycan_linkages
+            ]
 
-        # Set box dimensions for explicit solvent
-        if box_dimensions:
-            box_a = box_dimensions.get("box_a", 0)
-            box_b = box_dimensions.get("box_b", 0)
-            box_c = box_dimensions.get("box_c", 0)
+        # Stamp the implicit-solvent decision before resolving the
+        # effective force field — both feed result["parameters"] /
+        # node metadata and need to survive even if the build later fails.
+        result["parameters"]["implicit_solvent"] = canonical_implicit_solvent
 
-            if box_a > 0 and box_b > 0 and box_c > 0:
-                # Check actual coordinate range and adjust box if needed
-                # packmol-memgen can produce coordinates slightly outside the box,
-                # which causes severe clashes at periodic boundaries
-                coord_range = get_coordinate_range(pdb_path)
-                if coord_range.get("success"):
-                    # Add 0.1 Å buffer to avoid boundary clashes
-                    buffer = 0.1
-                    actual_a = coord_range["x_range"] + buffer
-                    actual_b = coord_range["y_range"] + buffer
-                    actual_c = coord_range["z_range"] + buffer
-
-                    # Use the larger of specified or actual dimensions
-                    if actual_a > box_a or actual_b > box_b or actual_c > box_c:
-                        old_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
-                        box_a = max(box_a, actual_a)
-                        box_b = max(box_b, actual_b)
-                        box_c = max(box_c, actual_c)
-                        new_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
-                        logger.warning(
-                            f"Coordinates exceed specified box! Adjusting: {old_box} -> {new_box}"
-                        )
-                        result["warnings"].append(
-                            f"Box size adjusted to fit coordinates: {old_box} -> {new_box}. "
-                            "This prevents periodic boundary clashes."
-                        )
-
-                # Add PBC-safe margin to prevent atom clashes across periodic boundaries
-                # packmol doesn't consider PBC during packing, so atoms at opposite edges
-                # of the box can be very close when the periodic image wraps around.
-                # Adding tolerance (2.0 Å) to the box creates a gap between packed atoms
-                # and the periodic boundary, ensuring at least tolerance distance across PBC.
-                # This is the recommended workaround from packmol documentation.
-                pbc_margin = 2.0  # Same as packmol tolerance
-                old_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
-                box_a += pbc_margin
-                box_b += pbc_margin
-                box_c += pbc_margin
-                new_box = f"{box_a:.2f} x {box_b:.2f} x {box_c:.2f}"
-                logger.info(f"Added PBC margin ({pbc_margin} Å): {old_box} -> {new_box}")
+        # Implicit solvent: pick the effective protein force field. ff14SB is
+        # the standard implicit pair (GBneck2 was parameterized against the
+        # ff99SB-derived ff14SB backbone), but Amber25 ships an explicit
+        # implicit-tuned variant (``ff14SBonlysc``) which uses the same
+        # backbone with sidechains tuned for GB. Auto-substitute it when the
+        # caller picks ff14SB so the standard skill recipe (``--forcefield
+        # ff14SB --implicit-solvent OBC2``) lands on the implicit-tuned XML
+        # without surprising users that explicitly request ff14SBonlysc.
+        # ff19SB + implicit_solvent gets a warning (ff19SB is OPC-tuned and
+        # not endorsed for GB by Amber25 ch.3).
+        effective_forcefield = forcefield
+        if canonical_implicit_solvent is not None:
+            canon_protein_for_implicit = _ff_catalog.normalize_protein(forcefield)
+            if canon_protein_for_implicit == "ff14SB":
+                effective_forcefield = "ff14SBonlysc"
                 result["warnings"].append(
-                    f"PBC-safe margin applied: box expanded by {pbc_margin} Å to prevent "
-                    f"periodic boundary clashes ({old_box} -> {new_box})"
+                    "implicit_solvent: auto-switched protein force field "
+                    "ff14SB -> ff14SBonlysc (the GBneck2-tuned variant). "
+                    "Pass forcefield='ff14SBonlysc' explicitly to silence "
+                    "this notice."
                 )
+            elif canon_protein_for_implicit == "ff19SB":
+                result["warnings"].append(
+                    "implicit_solvent: ff19SB was parameterized for OPC "
+                    "explicit water and is not Amber25's recommended choice "
+                    "for GB models. Prefer ff14SB / ff14SBonlysc for "
+                    "implicit-solvent runs."
+                )
+        result["parameters"]["effective_forcefield"] = effective_forcefield
 
-                script_lines.append("# Set periodic box (with PBC-safe margin)")
-                script_lines.append(f"set mol box {{{box_a:.3f} {box_b:.3f} {box_c:.3f}}}")
-                script_lines.append("")
-            else:
-                result["warnings"].append("Invalid box dimensions provided, skipping PBC setup")
-                logger.warning("Invalid box dimensions, skipping PBC setup")
-        
-        # Check structure
-        script_lines.append("# Check structure")
-        script_lines.append("check mol")
-        script_lines.append("")
-        
-        # Save topology and coordinates
-        script_lines.append("# Save Amber files")
-        script_lines.append(f"saveamberparm mol {parm7_file} {rst7_file}")
-        script_lines.append("")
-        script_lines.append("quit")
-        
-        # Write tleap script
-        leap_script = '\n'.join(script_lines)
-        if valid_ligands:
-            missing_loads = []
-            for lig in valid_ligands:
-                if f"loadamberparams {lig['frcmod']}" not in leap_script:
-                    missing_loads.append(f"loadamberparams:{lig.get('ligand_instance_id') or lig['residue_name']}")
-                if f"{lig['residue_name']} = loadmol2 {lig['mol2']}" not in leap_script:
-                    missing_loads.append(f"loadmol2:{lig.get('ligand_instance_id') or lig['residue_name']}")
-            if missing_loads:
-                result["errors"].append(
-                    "tleap ligand parameter load coverage failed: " + ", ".join(missing_loads)
-                )
-                return {
-                    **result,
-                    "error_type": "ValidationError",
-                    "code": "ligand_tleap_script_coverage_failed",
-                    "message": "Generated tleap script is missing ligand parameter load commands.",
-                }
-        with open(leap_script_file, 'w') as f:
-            f.write(leap_script)
-        
-        result["leap_script"] = str(leap_script_file)
-        logger.info(f"Created tleap script: {leap_script_file}")
-        
-        # Run tleap
-        logger.info("Running tleap...")
-        tleap_timeout = get_timeout("amber")
-        proc_result = tleap_wrapper.run(
-            ['-f', str(leap_script_file)],
-            cwd=out_dir,
-            timeout=tleap_timeout
+        om_result = _run_openmmforcefields_build(
+            pdb_path=pdb_path,
+            output_name=output_name,
+            out_dir=out_dir,
+            system_xml_file=system_xml_file,
+            topology_pdb_file=topology_pdb_file,
+            state_xml_file=state_xml_file,
+            forcefield=effective_forcefield,
+            water_model=actual_water_model if box_dimensions else None,
+            phosaa_library=phosaa_library,
+            nucleic_libraries=nucleic_libraries,
+            glycan_library=glycan_library,
+            is_membrane=bool(is_membrane),
+            box_dimensions=box_dimensions,
+            valid_ligands=valid_ligands or [],
+            valid_metal_params=valid_metal_params or [],
+            valid_modxna_params=valid_modxna_params or [],
+            disulfide_bonds=disulfide_bonds,
+            hmr=hmr,
+            implicit_solvent=canonical_implicit_solvent,
         )
-        
-        # Save log
-        with open(leap_log_file, 'w') as f:
-            if proc_result.stdout:
-                f.write(proc_result.stdout)
-            if proc_result.stderr:
-                f.write("\n--- STDERR ---\n")
-                f.write(proc_result.stderr)
-        
-        result["leap_log"] = str(leap_log_file)
-        logger.info(f"tleap completed, log saved to: {leap_log_file}")
-        
-        # Check if output files were created
-        if parm7_file.exists() and rst7_file.exists():
-            result["parm7"] = str(parm7_file)
-            result["rst7"] = str(rst7_file)
-            result["success"] = True
-            
-            # Parse log for statistics
-            log_stats = parse_leap_log(leap_log_file)
+        result["warnings"].extend(om_result.get("warnings", []))
+        if om_result.get("success"):
+            result["system_xml"] = om_result["system_xml"]
+            result["topology_pdb"] = om_result["topology_pdb"]
+            result["state_xml"] = om_result["state_xml"]
             result["statistics"] = {
-                "num_atoms": log_stats.get("num_atoms"),
-                "num_residues": log_stats.get("num_residues")
+                "num_atoms": om_result["num_atoms"],
+                "num_residues": om_result["num_residues"],
             }
-            
-            # Add any warnings from log
-            if log_stats.get("warnings"):
-                result["warnings"].extend(log_stats["warnings"][:10])  # Limit warnings
-            
-            logger.info("Successfully created Amber files:")
-            logger.info(f"  Topology: {parm7_file}")
-            logger.info(f"  Coordinates: {rst7_file}")
-            if result["statistics"]["num_atoms"]:
-                logger.info(f"  Atoms: {result['statistics']['num_atoms']}")
-
-            # Add PDB information to preserve original residue numbering
-            # Reference: https://github.com/callumjd/AMBER-Membrane_protein_tutorial
-            pdb_info_result = _add_pdb_info(
-                parm7_path=parm7_file,
-                pdb_path=pdb_path,
+            result["forcefield_provenance"] = om_result["forcefield_provenance"]
+            result["success"] = True
+            logger.info("Successfully built System via openmmforcefields:")
+            logger.info(f"  system.xml: {system_xml_file}")
+            logger.info(f"  topology.pdb: {topology_pdb_file}")
+            logger.info(f"  state.xml: {state_xml_file}")
+            logger.info(f"  Atoms: {om_result['num_atoms']}")
+        else:
+            result["errors"].extend(om_result.get("errors", []))
+            # Propagate the helper's structured ``code`` (e.g.
+            # ``metal_openmm_xml_required``) so callers can branch on the
+            # specific failure mode instead of grepping the error string.
+            if om_result.get("code") and not result.get("code"):
+                result["code"] = om_result["code"]
+            logger.error(
+                "openmmforcefields build failed: %s",
+                "; ".join(om_result.get("errors", [])) or "(no error message)",
             )
 
-            if pdb_info_result["success"]:
-                result["pdb_info_added"] = True
-                result["pdb_flags_added"] = pdb_info_result["flags_added"]
-            else:
-                # Non-fatal: original topology is still valid, just with sequential numbering
-                result["warnings"].append(
-                    "PDB info not added - topology uses sequential residue numbering"
-                )
-                if pdb_info_result["errors"]:
-                    result["warnings"].extend(pdb_info_result["errors"])
-        else:
-            result["errors"].append("tleap completed but output files not created")
-            
-            # Try to extract error from log
-            if leap_log_file.exists():
-                log_content = leap_log_file.read_text()
-                # Look for specific error patterns
-                if "Could not open" in log_content:
-                    result["errors"].append("Hint: Some input files could not be opened")
-                if "Unknown residue" in log_content:
-                    result["errors"].append("Hint: Unknown residue type - check ligand parameters")
-                if "FATAL" in log_content:
-                    # Extract fatal error line
-                    for line in log_content.split('\n'):
-                        if 'FATAL' in line:
-                            result["errors"].append(f"tleap: {line.strip()}")
-                            break
-            
-            logger.error("tleap failed to create output files")
-        
     except Exception as e:
         error_msg = f"Error during Amber system building: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
         logger.error(error_msg)
-        
+
         if "timeout" in str(e).lower():
-            result["errors"].append("Hint: tleap timed out. The structure may be too large or complex.")
+            result["errors"].append(
+                "Hint: a long-running operation timed out. The structure may be too large or complex."
+            )
     
     # Save metadata
     metadata_file = out_dir / "amber_metadata.json"
@@ -2902,10 +2687,9 @@ def build_amber_system(
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success"):
             artifacts = {
-                "parm7": f"artifacts/{output_name}.parm7",
-                "rst7": f"artifacts/{output_name}.rst7",
-                "leap_script": f"artifacts/{output_name}.leap.in",
-                "leap_log": f"artifacts/{output_name}.leap.log",
+                "system_xml": f"artifacts/{output_name}.system.xml",
+                "topology_pdb": f"artifacts/{output_name}.topology.pdb",
+                "state_xml": f"artifacts/{output_name}.state.xml",
             }
             if glycam_prepare:
                 artifacts.update({
@@ -2919,9 +2703,14 @@ def build_amber_system(
                 artifacts=artifacts,
                 metadata={
                     "forcefield": result["parameters"].get("forcefield"),
+                    "effective_forcefield": effective_forcefield,
                     "water_model": water_model if solvent_type == "explicit" else None,
                     "solvent_type": solvent_type,
+                    "implicit_solvent": canonical_implicit_solvent,
+                    "hmr": bool(hmr),
                     "is_membrane": is_membrane,
+                    "system_artifact_kind": "openmm_system_xml",
+                    "forcefield_provenance": result.get("forcefield_provenance"),
                     "nucleic_libraries": nucleic_libraries or None,
                     "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
                     "glycan_library": glycan_library,
@@ -2945,6 +2734,1086 @@ def build_amber_system(
 
     return result
 
+
+
+# =============================================================================
+# openmmforcefields + Pablo build helper
+# =============================================================================
+# Replaces the legacy tleap-script generation + tleap-execution path. Inputs
+# are the canonical force-field names (catalog keys, not leaprc strings); the
+# helper resolves the OpenMM XML bundle, loads the PDB via Pablo with a
+# PDBFile fallback, runs SystemGenerator, and serializes the modern artifact
+# triple (system.xml + topology.pdb + state.xml).
+
+
+def _resolve_dna_name_from_libraries(nucleic_libraries: list[str]) -> Optional[str]:
+    """Map a leaprc-style DNA library list to a forcefield_catalog DNA key."""
+    for lib in nucleic_libraries:
+        lower = (lib or "").lower()
+        if "dna.ol15" in lower:
+            return "OL15"
+        if "dna.ol21" in lower:
+            return "OL21"
+        if "dna.bsc0" in lower:
+            return "bsc0"
+        if "dna.bsc1" in lower:
+            return "bsc1"
+    return None
+
+
+def _resolve_rna_name_from_libraries(nucleic_libraries: list[str]) -> Optional[str]:
+    """Map a leaprc-style RNA library list to a forcefield_catalog RNA key."""
+    for lib in nucleic_libraries:
+        lower = (lib or "").lower()
+        if "rna.ol3" in lower:
+            return "OL3"
+        if "rna.roc" in lower:
+            return "ROC"
+        if "rna.yil" in lower:
+            return "YIL"
+    return None
+
+
+def _resolve_phosaa_name_from_library(phosaa_library: Optional[str]) -> Optional[str]:
+    """Map ``leaprc.phosaa19SB`` → ``"phosaa19SB"`` (catalog key)."""
+    if not phosaa_library:
+        return None
+    lower = phosaa_library.lower()
+    for key in ("phosaa19sb", "phosaa14sb", "phosaa10", "phosfb18"):
+        if key in lower:
+            return {"phosaa19sb": "phosaa19SB", "phosaa14sb": "phosaa14SB",
+                    "phosaa10": "phosaa10", "phosfb18": "phosfb18"}[key]
+    return None
+
+
+def _resolve_glycan_name_from_library(glycan_library: Optional[str]) -> Optional[str]:
+    if not glycan_library:
+        return None
+    if "06j-1" in glycan_library.lower():
+        return "GLYCAM_06j-1"
+    return None
+
+
+def _hash_file(path: Path) -> Optional[str]:
+    try:
+        import hashlib
+        with path.open("rb") as fh:
+            return hashlib.sha256(fh.read()).hexdigest()
+    except (OSError, IOError):
+        return None
+
+
+def _run_openmmforcefields_build(
+    *,
+    pdb_path: Path,
+    output_name: str,
+    out_dir: Path,
+    system_xml_file: Path,
+    topology_pdb_file: Path,
+    state_xml_file: Path,
+    forcefield: str,
+    water_model: Optional[str],
+    phosaa_library: Optional[str],
+    nucleic_libraries: list[str],
+    glycan_library: Optional[str],
+    is_membrane: bool,
+    box_dimensions: Optional[Dict[str, float]],
+    valid_ligands: list[Dict[str, Any]],
+    valid_metal_params: list[Dict[str, Any]],
+    valid_modxna_params: list[Dict[str, Any]],
+    disulfide_bonds: Optional[list[Dict[str, Any]]],
+    hmr: bool = True,
+    implicit_solvent: Optional[str] = None,
+    extra_xml: Optional[list[str]] = None,
+    extra_smiles: Optional[list[Tuple[str, str]]] = None,
+) -> Dict[str, Any]:
+    """Build an OpenMM ``System`` for the given prepared PDB.
+
+    Replaces the legacy tleap path. Returns a dict shaped like the
+    ``build_amber_system`` partial-result, with these keys:
+
+    - ``success`` (bool)
+    - ``errors`` (list[str])
+    - ``warnings`` (list[str])
+    - ``system_xml`` / ``topology_pdb`` / ``state_xml`` (str paths) on success
+    - ``num_atoms`` / ``num_residues`` (int) on success
+    - ``forcefield_provenance`` (dict) on success
+    """
+    result: Dict[str, Any] = {"success": False, "errors": [], "warnings": []}
+    extra_xml = list(extra_xml or [])
+    extra_smiles = list(extra_smiles or [])
+
+    # --- 1. Resolve OpenMM XML bundle via the catalog --------------------
+    # Implicit-solvent (GB) systems load an extra ``implicit/*.xml`` from
+    # the openmmforcefields shipped tree, which contributes the
+    # ``CustomGBForce`` (HCT / OBC1 / OBC2 / GBn / GBn2) that
+    # ``XmlSerializer`` then bakes into ``system.xml``. The run-side shim
+    # verifies that force is present before honoring an
+    # ``implicitSolvent`` request, so a missing GB force after build is a
+    # structured-failure case (``implicit_solvent_force_missing``).
+    canon_protein = _ff_catalog.normalize_protein(forcefield) or forcefield
+    canon_water = _ff_catalog.normalize_water(water_model) if water_model else None
+    canon_implicit = (
+        _ff_catalog.normalize_implicit_solvent(implicit_solvent)
+        if implicit_solvent
+        else None
+    )
+    phosaa_name = _resolve_phosaa_name_from_library(phosaa_library)
+    dna_name = _resolve_dna_name_from_libraries(nucleic_libraries)
+    rna_name = _resolve_rna_name_from_libraries(nucleic_libraries)
+    glycan_name = _resolve_glycan_name_from_library(glycan_library)
+    lipid_name = "lipid21" if is_membrane else None
+
+    if canon_implicit and canon_implicit not in _ff_catalog.IMPLICIT_SOLVENT_XML:
+        # The public ``build_amber_system`` already guards this path, but
+        # direct callers of this helper still get a clean structured code.
+        supported = ", ".join(_ff_catalog.supported_implicit_solvent_models())
+        result["errors"].append(
+            f"Unknown implicit-solvent model {implicit_solvent!r}. "
+            f"Supported: {supported}."
+        )
+        result["code"] = "implicit_solvent_model_unsupported"
+        return result
+
+    xml_bundle = _ff_catalog.resolve_xml_bundle(
+        protein=canon_protein,
+        water=canon_water,
+        phosaa=phosaa_name,
+        dna=dna_name,
+        rna=rna_name,
+        glycan=glycan_name,
+        lipid=lipid_name,
+        implicit_solvent=canon_implicit,
+        extra_xml=extra_xml,
+    )
+    if not xml_bundle:
+        result["errors"].append(
+            f"Could not resolve any OpenMM ForceField XML for forcefield={forcefield!r} "
+            f"water={water_model!r}. Use extra_xml to supply specialty FFs."
+        )
+        return result
+
+    # --- 2. Hydrogenate via PDBFixer (defensive) + Pablo load ------------
+    # Pablo's CCD-based loader and SystemGenerator's amber XMLs require every
+    # hydrogen to be present. The mdclaw prep pipeline normally takes care of
+    # this upstream, but unit-test inputs and ad-hoc PDBs may arrive without
+    # explicit hydrogens — re-run PDBFixer here so the build is robust.
+    #
+    # Skip ``addMissingHydrogens`` when the input already carries hydrogens.
+    # PDBFixer's hydrogenation routes through ``Modeller.addHydrogens`` which
+    # only knows standard amino acids and nucleotides; for ligands its
+    # ``_downloadNonstandardDefinitions`` pulls a CCD template and adds the
+    # CCD-listed H atoms on top of any existing H of the same name, giving
+    # duplicate H1/H2/HN1/HN21/etc. for residues like BEN that arrive
+    # already-hydrogenated from antechamber. The duplicates then create
+    # ghost residues during ``PDBFile`` parsing and SystemGenerator fails
+    # with ``No template found for residue``.
+    hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
+    try:
+        from pdbfixer import PDBFixer
+        from openmm.app import PDBFile as _PDBFile
+
+        input_has_hydrogens = False
+        try:
+            with pdb_path.open() as fh:
+                for line in fh:
+                    if line.startswith(("ATOM  ", "HETATM")):
+                        element = line[76:78].strip()
+                        # Element column is canonical; fall back to atom-name
+                        # leading letter for legacy PDBs that omit columns 77-78.
+                        if not element:
+                            element = line[12:14].strip().lstrip("0123456789")[:1]
+                        if element.upper() == "H":
+                            input_has_hydrogens = True
+                            break
+        except OSError:
+            pass
+
+        fixer = PDBFixer(filename=str(pdb_path))
+        fixer.findMissingResidues()
+        fixer.findMissingAtoms()
+        fixer.addMissingAtoms()
+        if not input_has_hydrogens:
+            fixer.addMissingHydrogens(7.0)
+        else:
+            result["warnings"].append(
+                "Input PDB already contains hydrogens; skipping PDBFixer "
+                "addMissingHydrogens to avoid duplicating ligand H atoms."
+            )
+        with hydrogenated_pdb.open("w") as fh:
+            _PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
+        pablo_input = hydrogenated_pdb
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"PDBFixer hydrogenation failed ({type(exc).__name__}: {exc}); "
+            f"using input PDB as-is."
+        )
+        pablo_input = pdb_path
+
+    # Load ligand parameter mol2 files into OpenFF Molecules early so we can
+    # (a) feed Pablo SMILES so its CCD-based loader matches non-CCD ligands
+    # like BEN, and (b) hand the same molecules to ``SystemGenerator`` /
+    # ``GAFFTemplateGenerator`` below. ``Molecule.from_file`` cannot read
+    # GAFF-typed mol2 with the RDKit-only registry, so we go through ParmEd
+    # to preserve TRIPOS bond orders (single / double / aromatic 1.5) — a
+    # bare PDB round-trip would lose the aromatic ring + amidine C=N and
+    # the resulting molecule would no longer match the topology.
+    try:
+        from openff.toolkit import Molecule as _Molecule  # local import
+    except ImportError as exc:
+        result["errors"].append(
+            f"openff-toolkit not importable for ligand load: {exc}. "
+            f"Run `conda env update -f environment.yml`."
+        )
+        return result
+
+    def _load_ligand_molecule(ligand_entry: Dict[str, Any]) -> Any:
+        mol2_path = ligand_entry.get("mol2")
+        smiles = ligand_entry.get("smiles") or ligand_entry.get("smiles_used")
+        if smiles:
+            try:
+                mol = _Molecule.from_smiles(
+                    str(smiles),
+                    hydrogens_are_explicit=False,
+                    allow_undefined_stereo=True,
+                    name=str(ligand_entry.get("residue_name") or ""),
+                )
+                mol.generate_conformers(n_conformers=1)
+                return mol
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Could not build OpenFF Molecule for ligand "
+                    f"{ligand_entry.get('residue_name', '?')!r} from stored "
+                    f"SMILES; falling back to mol2 graph load: "
+                    f"{type(exc).__name__}: {exc}"
+                )
+        try:
+            return _Molecule.from_file(str(mol2_path))
+        except Exception:  # noqa: BLE001
+            pass
+        import parmed
+        from rdkit import Chem
+        struct = parmed.load_file(str(mol2_path), structure=True)
+        rwmol = Chem.RWMol()
+        atom_idx_map: dict[int, int] = {}
+        for atom in struct.atoms:
+            sym = atom.element_name
+            if not sym:
+                sym = atom.name.strip()[:1]
+            rdatom = Chem.Atom(sym)
+            fc = getattr(atom, "formal_charge", None)
+            rdatom.SetFormalCharge(int(fc) if fc is not None else 0)
+            rdatom.SetNoImplicit(True)
+            rdatom.SetProp("_atom_name", atom.name)
+            atom_idx_map[id(atom)] = rwmol.AddAtom(rdatom)
+        bond_type_map = {
+            1: Chem.BondType.SINGLE,
+            2: Chem.BondType.DOUBLE,
+            3: Chem.BondType.TRIPLE,
+            1.5: Chem.BondType.AROMATIC,
+        }
+        for bond in struct.bonds:
+            rwmol.AddBond(
+                atom_idx_map[id(bond.atom1)],
+                atom_idx_map[id(bond.atom2)],
+                bond_type_map.get(bond.order, Chem.BondType.SINGLE),
+            )
+        if struct.atoms and struct.atoms[0].xx is not None:
+            conf = Chem.Conformer(len(struct.atoms))
+            for i, atom in enumerate(struct.atoms):
+                conf.SetAtomPosition(
+                    atom_idx_map[id(atom)], (atom.xx, atom.xy, atom.xz)
+                )
+            rwmol.AddConformer(conf, assignId=True)
+        rdmol = rwmol.GetMol()
+        Chem.SanitizeMol(rdmol)
+        return _Molecule.from_rdkit(
+            rdmol, hydrogens_are_explicit=True, allow_undefined_stereo=True,
+        )
+
+    ligand_molecules: list[Any] = []
+    for lig in valid_ligands or []:
+        mol2 = lig.get("mol2")
+        if not mol2:
+            result["errors"].append(
+                f"Ligand entry {lig.get('residue_name', '?')!r} is missing the "
+                f"``mol2`` field — GAFFTemplateGenerator cannot register the "
+                f"residue without it. Re-run prepare_complex / "
+                f"parameterize_ligand to refresh ligand_params."
+            )
+            return result
+        try:
+            ligand_molecules.append(_load_ligand_molecule(lig))
+        except Exception as exc:  # noqa: BLE001
+            result["errors"].append(
+                f"Failed to load ligand mol2 {mol2}: "
+                f"{type(exc).__name__}: {exc}. The OpenFF GAFF generator "
+                f"needs every ligand as a Molecule; without it the topology "
+                f"build fails downstream with 'No template found'."
+            )
+            result["code"] = "ligand_mol2_load_failed"
+            return result
+
+    # Hand the loaded ligands to Pablo as ``(residue_name, smiles)`` pairs so
+    # its CCD matcher sees the GAFF-typed ligand as a registered
+    # additional definition. Without this, Pablo's PDBFile fallback emits a
+    # topology with zero internal bonds for unknown ligand residues, and
+    # ``SystemGenerator.create_system`` then fails with "No template found"
+    # (graph-isomorphism cannot match an unbonded residue).
+    ligand_extra_smiles: list[Tuple[str, str]] = []
+    for lig, mol in zip(valid_ligands or [], ligand_molecules):
+        residue_name = lig.get("residue_name")
+        if residue_name and mol is not None:
+            try:
+                ligand_extra_smiles.append((residue_name, mol.to_smiles()))
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Could not derive SMILES for ligand {residue_name!r}: "
+                    f"{type(exc).__name__}: {exc}; Pablo may fall back to "
+                    f"PDBFile and emit an under-bonded topology."
+                )
+
+    pablo_smiles = list(extra_smiles) + ligand_extra_smiles
+
+    # Sanitize residue names that Pablo's CCD-based loader does not
+    # recognise: packmol-memgen / Amber emit ions as ``Na+`` / ``Cl-`` /
+    # ``K+`` (3-letter residue name carries the charge sigil), but CCD
+    # ships only the bare element codes ``NA`` / ``CL`` / ``K``. Without
+    # this rewrite Pablo bails on the entire topology and falls back to
+    # ``openmm.app.PDBFile``, which then leaves ligand residues like BEN
+    # without internal bonds — ``SystemGenerator.create_system`` then
+    # fails with the cryptic "No template found for residue 223 (BEN)".
+    # Round-trip Amber's HID/HIE/HIP histidine variants through HIS for
+    # Pablo (CCD only knows HIS), then restore Amber names from each
+    # residue's HD1/HE2 atoms after load so ``protein.ff*.xml``'s
+    # protonation-specific templates apply.
+    # Map non-CCD ion names → CCD canonical (residue + atom). PDBFixer
+    # often re-aligns these fields, so match on stripped value rather than
+    # exact bytes and re-emit with PDB-format padding.
+    _ION_RESNAME_RENAMES = {
+        "Na+": "NA",
+        "Cl-": "CL",
+        "K+": "K",
+    }
+    _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
+
+    his_amber_resids: set[tuple[str, str]] = set()
+    sanitized_input = pablo_input
+    needs_sanitize = False
+    try:
+        with pablo_input.open() as fh:
+            for line in fh:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    rn = line[17:20].strip()
+                    if (rn in _ION_RESNAME_RENAMES
+                            or rn in _HIS_AMBER_VARIANTS):
+                        needs_sanitize = True
+                        break
+    except OSError:
+        pass
+
+    if needs_sanitize:
+        sanitized_input = out_dir / f"{output_name}.pablo_input.pdb"
+        with pablo_input.open() as fh_in, sanitized_input.open("w") as fh_out:
+            for line in fh_in:
+                if line.startswith(("ATOM  ", "HETATM")):
+                    raw_resname = line[17:20]
+                    raw_atom_name = line[12:16]
+                    new_resname = raw_resname
+                    new_atom = raw_atom_name
+                    rn_strip = raw_resname.strip()
+                    an_strip = raw_atom_name.strip()
+                    if rn_strip in _ION_RESNAME_RENAMES:
+                        canonical_res = _ION_RESNAME_RENAMES[rn_strip]
+                        new_resname = f"{canonical_res:>3}"
+                        if an_strip == rn_strip:
+                            new_atom = f"{canonical_res:>4}"
+                    elif rn_strip in _HIS_AMBER_VARIANTS:
+                        chain_id = line[21:22]
+                        resseq = line[22:26]
+                        his_amber_resids.add((chain_id, resseq.strip()))
+                        new_resname = "HIS"
+                    line = (
+                        line[:12] + new_atom + line[16:17]
+                        + new_resname + line[20:]
+                    )
+                fh_out.write(line)
+
+    pablo_result = _topology_pablo.load_topology(
+        sanitized_input, extra_smiles=pablo_smiles
+    )
+    result["warnings"].extend(pablo_result.warnings)
+    omm_topology = pablo_result.topology
+    omm_positions = pablo_result.positions
+
+    # Restore Amber HID/HIE/HIP residue names on the loaded topology so
+    # ``protein.ff*.xml``'s protonation-specific templates apply. Pablo
+    # loaded these as canonical HIS via the CCD; pick the variant from the
+    # H atoms that survived the load (``protein.ff19SB.xml`` lacks a HIS
+    # template entirely so leaving them as HIS would crash create_system).
+    if his_amber_resids:
+        for residue in omm_topology.residues():
+            if residue.name != "HIS":
+                continue
+            chain_id = residue.chain.id or ""
+            if (chain_id, str(residue.id)) not in his_amber_resids:
+                continue
+            atoms = {a.name for a in residue.atoms()}
+            if "HD1" in atoms and "HE2" in atoms:
+                residue.name = "HIP"
+            elif "HD1" in atoms:
+                residue.name = "HID"
+            elif "HE2" in atoms:
+                residue.name = "HIE"
+            else:
+                residue.name = "HID"
+
+    # Strip the HOP2 / HOP3 protons that ``phosphorylate_residues`` added
+    # only so Pablo's CCD-shipped (protonated) PHOSPHOSERINE /
+    # PHOSPHOTHREONINE / PHOSPHOTYROSINE template would match. Amber's
+    # phosaa19SB / phosaa14SB / phosaa10 templates are dianion (no proton
+    # on phosphate oxygens); keeping HOP2 / HOP3 would now make
+    # ``SystemGenerator.create_system`` fail with "Unknown atom names:
+    # HOP2 / HOP3" for the topology side.
+    _PHOSPHO_DROP_HS = {"HOP2", "HOP3", "HOP1"}
+    _PHOSPHO_RES_NAMES = {"SEP", "TPO", "PTR"}
+    drop_atoms = [
+        atom for atom in omm_topology.atoms()
+        if atom.residue.name in _PHOSPHO_RES_NAMES
+        and atom.name in _PHOSPHO_DROP_HS
+    ]
+    if drop_atoms:
+        from openmm.app import Modeller as _Modeller
+        modeller = _Modeller(omm_topology, omm_positions)
+        modeller.delete(drop_atoms)
+        omm_topology = modeller.topology
+        omm_positions = modeller.positions
+
+    # Pablo can still fall back to ``openmm.app.PDBFile`` for GAFF ligands
+    # whose CCD atom naming differs from the prepared Amber PDB. PDBFile
+    # carries the atoms but not the ligand's internal bonds, so copy the
+    # TRIPOS bond graph from mol2 onto every matching residue before
+    # GAFFTemplateGenerator attempts graph isomorphism.
+    ligand_bonds_added = 0
+    if valid_ligands:
+        try:
+            import parmed as _parmed_for_ligands
+
+            existing_bonds = {
+                tuple(sorted((bond.atom1.index, bond.atom2.index)))
+                for bond in omm_topology.bonds()
+            }
+            mol2_bonds_by_residue: dict[str, list[tuple[str, str]]] = {}
+            for lig in valid_ligands:
+                residue_name = str(lig.get("residue_name") or lig.get("ligand_id") or "").upper()
+                mol2 = lig.get("mol2")
+                if not residue_name or not mol2:
+                    continue
+                struct = _parmed_for_ligands.load_file(str(mol2), structure=True)
+                mol2_bonds_by_residue[residue_name] = [
+                    (bond.atom1.name.strip(), bond.atom2.name.strip())
+                    for bond in struct.bonds
+                ]
+            for residue in omm_topology.residues():
+                residue_name = (residue.name or "").upper()
+                mol2_bonds = mol2_bonds_by_residue.get(residue_name)
+                if not mol2_bonds:
+                    continue
+                atom_by_name = {atom.name.strip(): atom for atom in residue.atoms()}
+                for name1, name2 in mol2_bonds:
+                    atom1 = atom_by_name.get(name1)
+                    atom2 = atom_by_name.get(name2)
+                    if atom1 is None or atom2 is None:
+                        continue
+                    key = tuple(sorted((atom1.index, atom2.index)))
+                    if key in existing_bonds:
+                        continue
+                    omm_topology.addBond(atom1, atom2)
+                    existing_bonds.add(key)
+                    ligand_bonds_added += 1
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(
+                f"Could not patch ligand mol2 bonds onto topology: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    if ligand_bonds_added:
+        result["warnings"].append(
+            f"Patched {ligand_bonds_added} ligand bond(s) from mol2 onto the "
+            f"OpenMM topology so GAFF templates can match prepared ligands."
+        )
+
+    # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
+    if disulfide_bonds:
+        added = _topology_pablo.add_disulfide_bonds(omm_topology, disulfide_bonds)
+        if added != len(disulfide_bonds):
+            result["warnings"].append(
+                f"Added {added}/{len(disulfide_bonds)} disulfide bonds; the rest "
+                f"could not be resolved against the loaded topology."
+            )
+
+    # --- 4. Set unit cell for explicit solvent ---------------------------
+    if not box_dimensions:
+        # Implicit / vacuum builds must not carry a periodic box, otherwise
+        # SystemGenerator picks PME and the typical small CRYST1 placeholder
+        # in the input PDB triggers a "cutoff > half box" error during
+        # minimization.
+        try:
+            omm_topology.setPeriodicBoxVectors(None)
+        except Exception:  # noqa: BLE001
+            pass
+
+    if box_dimensions:
+        try:
+            from openmm import unit, Vec3
+            box_a = box_dimensions.get("box_a", 0)
+            box_b = box_dimensions.get("box_b", 0)
+            box_c = box_dimensions.get("box_c", 0)
+            if box_a > 0 and box_b > 0 and box_c > 0:
+                # PBC-safe margin (matches the legacy 2.0 Å buffer policy).
+                pbc_margin = 2.0
+                box_a += pbc_margin
+                box_b += pbc_margin
+                box_c += pbc_margin
+                # Box dims arrive in Å; convert to nm and wrap as a single
+                # Quantity so OpenMM's serializer keeps the float / unit
+                # split consistent (Vec3-Quantity-of-Quantity drops floats).
+                box_vectors = unit.Quantity(
+                    value=[
+                        Vec3(box_a / 10.0, 0.0, 0.0),
+                        Vec3(0.0, box_b / 10.0, 0.0),
+                        Vec3(0.0, 0.0, box_c / 10.0),
+                    ],
+                    unit=unit.nanometer,
+                )
+                omm_topology.setPeriodicBoxVectors(box_vectors)
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(
+                f"Could not set periodic box: {type(exc).__name__}: {exc}"
+            )
+
+    # --- 5. SystemGenerator + Modeller (extra particles, ligand mols) ----
+    try:
+        from openmm import app, unit, XmlSerializer, LangevinIntegrator
+        from openmm.app import Modeller, PDBFile, Simulation
+        from openmmforcefields.generators import SystemGenerator
+    except ImportError as exc:
+        result["errors"].append(
+            f"openmmforcefields stack not importable: {exc}. "
+            f"Run `conda env update -f environment.yml`."
+        )
+        return result
+
+    # SystemGenerator splits the kwargs by periodicity so the same generator
+    # can build either kind of System. HMR is a build-time decision: when
+    # the user opts in we bake ``hydrogenMass=4 amu`` into every System this
+    # generator emits, and the same value is recorded in the provenance dict
+    # so the run-side XML system validator can match it later.
+    common_kwargs: Dict[str, Any] = {"constraints": app.HBonds, "rigidWater": True}
+    if hmr:
+        common_kwargs["hydrogenMass"] = 4.0 * unit.amu
+    periodic_kwargs: Dict[str, Any] = {
+        "nonbondedMethod": app.PME,
+        "nonbondedCutoff": 1.0 * unit.nanometer,
+    }
+    nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
+
+    try:
+        sg = SystemGenerator(
+            forcefields=xml_bundle,
+            small_molecule_forcefield="gaff-2.11",
+            molecules=ligand_molecules or None,
+            forcefield_kwargs=common_kwargs,
+            periodic_forcefield_kwargs=periodic_kwargs,
+            nonperiodic_forcefield_kwargs=nonperiodic_kwargs,
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"SystemGenerator init failed: {type(exc).__name__}: {exc}. "
+            f"Bundle: {xml_bundle}"
+        )
+        return result
+
+    # Metal frcmod+mol2 and modXNA frcmod+lib are NOT yet routed through
+    # SystemGenerator: under the openmmforcefields path they would silently
+    # fall through to the ForceField unmatched, eventually crashing inside
+    # ``create_system`` with an opaque ``No template found`` error. Fail-fast
+    # with a structured ``code`` so callers can route the user toward
+    # ``build_openmm_system`` with a pre-built OpenMM ForceField XML port
+    # of the metal / modXNA parameters until the ParmEd → OpenMM XML
+    # bridge ships in ``forcefield_catalog``.
+    if valid_metal_params:
+        result["errors"].append(
+            f"Metal parameters detected ({len(valid_metal_params)} sets) but the "
+            f"openmmforcefields path does not yet provide a ParmEd → OpenMM XML "
+            f"bridge from frcmod+mol2. Use ``build_openmm_system`` with a "
+            f"pre-converted OpenMM ForceField XML for the metal residue "
+            f"(research escape hatch); the same system.xml + topology.pdb + "
+            f"state.xml triple flows to eq/prod."
+        )
+        result["code"] = "metal_openmm_xml_required"
+        return result
+
+    if valid_modxna_params:
+        result["errors"].append(
+            f"modXNA parameters detected ({len(valid_modxna_params)} sets) but the "
+            f"openmmforcefields path does not yet provide a ParmEd → OpenMM XML "
+            f"bridge from frcmod+lib. Use ``build_openmm_system`` with a "
+            f"pre-converted OpenMM ForceField XML for the modified residue "
+            f"(research escape hatch); the same system.xml + topology.pdb + "
+            f"state.xml triple flows to eq/prod."
+        )
+        result["code"] = "modxna_openmm_xml_required"
+        return result
+
+    # Patch missing intra-residue bonds for residues that the loaded
+    # forcefield knows but Pablo / PDBFile under-bonded. ``packmol-memgen``
+    # does not emit CONECT records for lipid21 residues, and ``cpptraj
+    # prepareforleap`` can leave GLYCAM/NLN residues either wholly unbonded
+    # or partially bonded depending on which CONECT records survived the
+    # PDB round trip. Copy any missing template bond onto the topology so
+    # ``SystemGenerator.create_system`` sees the same residue graph as the
+    # loaded force field.
+    bonds_added = 0
+    existing_internal_bonds = {
+        tuple(sorted((bond.atom1.index, bond.atom2.index)))
+        for bond in omm_topology.bonds()
+        if bond.atom1.residue.index == bond.atom2.residue.index
+    }
+    for residue in list(omm_topology.residues()):
+        atom_by_name = {a.name: a for a in residue.atoms()}
+        if not atom_by_name:
+            continue
+        template = sg.forcefield._templates.get(residue.name)
+        if template is None:
+            continue
+        for tb in template.bonds:
+            n1 = template.atoms[tb[0]].name
+            n2 = template.atoms[tb[1]].name
+            a1 = atom_by_name.get(n1)
+            a2 = atom_by_name.get(n2)
+            if a1 is not None and a2 is not None:
+                key = tuple(sorted((a1.index, a2.index)))
+                if key in existing_internal_bonds:
+                    continue
+                omm_topology.addBond(a1, a2)
+                existing_internal_bonds.add(key)
+                bonds_added += 1
+    if bonds_added:
+        result["warnings"].append(
+            f"Patched {bonds_added} intra-residue bond(s) onto topology "
+            f"residues whose Pablo / PDBFile load left under-bonded "
+            f"(lipid21 / GLYCAM templates supply the missing bonds)."
+        )
+
+    # Patch missing inter-residue (external) bonds. ``packmol-memgen`` and
+    # ``cpptraj prepareforleap`` write residues with the right geometry but
+    # rely on tleap/parmed-side bond inference to connect them. The
+    # template's ``externalBonds`` field tells us which atom in each
+    # residue is supposed to dangle out to a neighbor; a small spatial
+    # search (2.0 Å heavy-atom cutoff) wires them
+    # up. Without this, ``SystemGenerator.create_system`` fails with the
+    # protein-FF "missing 1 C atom externally bonded" cascade once the
+    # adjacent residue (LEU next to a glycan, PA next to PC, etc.) cannot
+    # complete its peptide / lipid linkage.
+    try:
+        from openmm import unit as _unit
+    except ImportError:
+        _unit = None
+    if _unit is not None:
+        # Per-atom external-bond budget so we never exceed what the
+        # template advertises (the budget already reflects existing
+        # cross-residue bonds Pablo / PDBFile produced).
+        existing_bonds: set[tuple[int, int]] = set()
+        cross_bonds_per_atom: dict[int, int] = {}
+        for bond in omm_topology.bonds():
+            i1, i2 = sorted((bond.atom1.index, bond.atom2.index))
+            existing_bonds.add((i1, i2))
+            if bond.atom1.residue.index != bond.atom2.residue.index:
+                cross_bonds_per_atom[bond.atom1.index] = (
+                    cross_bonds_per_atom.get(bond.atom1.index, 0) + 1
+                )
+                cross_bonds_per_atom[bond.atom2.index] = (
+                    cross_bonds_per_atom.get(bond.atom2.index, 0) + 1
+                )
+        ext_candidates: list[tuple[Any, int, str]] = []
+        ext_budget: dict[int, int] = {}
+        for residue in omm_topology.residues():
+            template = sg.forcefield._templates.get(residue.name)
+            if template is None or not template.externalBonds:
+                continue
+            atom_by_name = {a.name: a for a in residue.atoms()}
+            template_external_count: dict[str, int] = {}
+            for ti in template.externalBonds:
+                name = template.atoms[ti].name
+                template_external_count[name] = template_external_count.get(name, 0) + 1
+            for name, expected in template_external_count.items():
+                atom = atom_by_name.get(name)
+                if atom is None:
+                    continue
+                remaining = expected - cross_bonds_per_atom.get(atom.index, 0)
+                if remaining <= 0:
+                    continue
+                ext_budget[atom.index] = remaining
+                ext_candidates.append((atom, atom.residue.index, name))
+        positions_nm = [p.value_in_unit(_unit.nanometer) for p in omm_positions]
+        ext_bonds_added = 0
+        seen_pairs: set[tuple[int, int]] = set()
+        # Two-pass greedy: first pass only considers candidates whose
+        # residue names differ, so a chemically meaningful pair like
+        # ``PC.C21 ↔ OL.C12`` (1.52 Å) wins over a packmol-induced
+        # ``PC.C21 ↔ PC.C21`` overlap (1.37 Å) between adjacent
+        # leaflet lipids. Same-name pairings are still permitted on the
+        # second pass for legitimate glycan-glycan polymerisation
+        # (``0YB ↔ 0YB`` etc.).
+        # 2.0 Å heavy-atom cutoff for both passes — covers C-O / C-C
+        # ester linkages in lipid21 and the GLYCAM glycosidic O-C bond.
+        for restrict_cross_name in (True, False):
+            for i, (atom_a, res_a, _name_a) in enumerate(ext_candidates):
+                if ext_budget.get(atom_a.index, 0) <= 0:
+                    continue
+                best_partner = None
+                best_dist = 0.20
+                xa, ya, za = positions_nm[atom_a.index]
+                for j, (atom_b, res_b, _name_b) in enumerate(ext_candidates):
+                    if i == j:
+                        continue
+                    if res_a == res_b:
+                        continue
+                    if ext_budget.get(atom_b.index, 0) <= 0:
+                        continue
+                    if restrict_cross_name and atom_a.residue.name == atom_b.residue.name:
+                        continue
+                    xb, yb, zb = positions_nm[atom_b.index]
+                    d2 = (xa - xb) ** 2 + (ya - yb) ** 2 + (za - zb) ** 2
+                    if d2 >= best_dist * best_dist:
+                        continue
+                    d = d2 ** 0.5
+                    if d < best_dist:
+                        best_dist = d
+                        best_partner = atom_b
+                if best_partner is not None:
+                    k = tuple(sorted((atom_a.index, best_partner.index)))
+                    if k in existing_bonds or k in seen_pairs:
+                        continue
+                    omm_topology.addBond(atom_a, best_partner)
+                    seen_pairs.add(k)
+                    ext_bonds_added += 1
+                    ext_budget[atom_a.index] -= 1
+                    ext_budget[best_partner.index] = (
+                        ext_budget.get(best_partner.index, 0) - 1
+                    )
+        if ext_bonds_added:
+            result["warnings"].append(
+                f"Patched {ext_bonds_added} inter-residue bond(s) connecting "
+                f"residues whose templates declare external bonds but the "
+                f"loader emitted them unconnected (lipid21 head/tail or "
+                f"GLYCAM glycan-glycan linkages)."
+            )
+        # Debug: residues whose external-bond budget remained > 0 after the
+        # patcher pass — these will fail downstream with "missing N C atom
+        # externally bonded" so surface them as a warning the caller can act
+        # on (typically a packmol-memgen layout where headgroups are too far
+        # apart to bond, or a glycan branch with an unexpected partner).
+        unbonded_externals: list[str] = []
+        for atom_idx, remaining in ext_budget.items():
+            if remaining > 0:
+                atom = next(
+                    (a for a in omm_topology.atoms() if a.index == atom_idx),
+                    None,
+                )
+                if atom is not None:
+                    unbonded_externals.append(
+                        f"{atom.residue.name}#{atom.residue.id}.{atom.name}"
+                    )
+        if unbonded_externals:
+            result["warnings"].append(
+                f"External-bond patcher could not pair {len(unbonded_externals)} "
+                f"atom(s) within the 2.0 Å heavy-atom cutoff: "
+                f"{unbonded_externals[:5]}"
+                f"{'...' if len(unbonded_externals) > 5 else ''}"
+            )
+
+        # Salvage NLN residues whose glycan partner was missing from the
+        # prep output (cpptraj's ``prepareforleap`` writes NLN at every
+        # detected N-glycan site but the matching glycan chain may be
+        # spatially detached after the merge). With no glycan to bond to,
+        # the residue is functionally a plain ASN — rename it so
+        # ``addHydrogens`` can place HD22 from the ASN template and
+        # ``protein.ff*.xml`` matches the side chain.
+        nln_renamed = 0
+        for residue in omm_topology.residues():
+            if residue.name != "NLN":
+                continue
+            nd2 = next((a for a in residue.atoms() if a.name == "ND2"), None)
+            if nd2 is None:
+                continue
+            if ext_budget.get(nd2.index, 0) > 0:
+                residue.name = "ASN"
+                nln_renamed += 1
+        if nln_renamed:
+            result["warnings"].append(
+                f"Renamed {nln_renamed} NLN residue(s) without a matched "
+                f"glycan partner back to ASN (addHydrogens fills in HD22 "
+                f"and the protein FF treats them as plain asparagine)."
+            )
+
+        # Drop orphan GLYCAM residues whose external bonds are still
+        # unpaired — these arise when ``cpptraj prepareforleap`` lays out
+        # a glycan chain whose attachment-site partner (NLN, another
+        # glycan) was relocated by the merge step beyond bond range.
+        # Without a partner the residue is unbonded and the run-side FF
+        # has no template that matches it; ``Modeller.delete`` removes
+        # the dangling residue (and any waters / ions caught by chain
+        # continuity).
+        _GLYCAN_RESNAMES = {
+            "0YB", "4YA", "4YB", "0LB", "VMB", "0MB", "0fA", "2MA", "0LA",
+            "BMA", "MAN", "NAG", "0YA", "4YS", "0LS",
+        }
+        # Iterate: dropping one orphan glycan can leave its neighbour
+        # glycans with their own unpaired external bonds. Recompute the
+        # actual cross-residue bond count from the topology each pass and
+        # delete any GLYCAM residue whose realised external-bond count is
+        # less than its template demands. Cap at a few iterations so a
+        # bug here cannot loop indefinitely on a healthy glycan tree.
+        from openmm.app import Modeller as _ModellerForOrphans
+        all_dropped: list[str] = []
+        for _orphan_pass in range(8):
+            cross_bonds_now: dict[int, int] = {}
+            for bond in omm_topology.bonds():
+                if bond.atom1.residue.index != bond.atom2.residue.index:
+                    cross_bonds_now[bond.atom1.index] = (
+                        cross_bonds_now.get(bond.atom1.index, 0) + 1
+                    )
+                    cross_bonds_now[bond.atom2.index] = (
+                        cross_bonds_now.get(bond.atom2.index, 0) + 1
+                    )
+            this_round: list[Any] = []
+            for residue in omm_topology.residues():
+                if residue.name not in _GLYCAN_RESNAMES:
+                    continue
+                template = sg.forcefield._templates.get(residue.name)
+                if template is None or not template.externalBonds:
+                    continue
+                atom_by_name = {a.name: a for a in residue.atoms()}
+                template_external_count: dict[str, int] = {}
+                for ti in template.externalBonds:
+                    name = template.atoms[ti].name
+                    template_external_count[name] = (
+                        template_external_count.get(name, 0) + 1
+                    )
+                unpaired = False
+                for name, expected in template_external_count.items():
+                    atom = atom_by_name.get(name)
+                    if atom is None:
+                        continue
+                    if cross_bonds_now.get(atom.index, 0) < expected:
+                        unpaired = True
+                        break
+                if unpaired:
+                    this_round.append(residue)
+            if not this_round:
+                break
+            mod = _ModellerForOrphans(omm_topology, omm_positions)
+            mod.delete([a for r in this_round for a in r.atoms()])
+            omm_topology = mod.topology
+            omm_positions = mod.positions
+            all_dropped.extend(f"{r.name}#{r.id}" for r in this_round)
+        if all_dropped:
+            result["warnings"].append(
+                f"Dropped {len(all_dropped)} orphan GLYCAM residue(s) whose "
+                f"external bond partner was missing from the prep output: "
+                f"{all_dropped[:5]}"
+                f"{'...' if len(all_dropped) > 5 else ''}"
+            )
+
+    modeller = Modeller(omm_topology, omm_positions)
+    # Top up residues that the upstream PDBFixer pass left under-hydrogenated
+    # (NLN / GLYCAM linker residues fall through PDBFixer's standard
+    # template list because OpenMM's built-in ``hydrogens.xml`` only knows
+    # standard amino acids/nucleotides. OpenMM ships a separate
+    # ``glycam-hydrogens.xml`` covering NLN / 0YB / 4YA / 4YB / etc. — load
+    # it explicitly via ``Modeller.loadHydrogenDefinitions`` so
+    # ``addHydrogens`` knows which Hs to place where.
+    try:
+        import os as _os
+        import openmm.app as _omm_app_for_data
+        _omm_app_dir = _os.path.dirname(_omm_app_for_data.__file__)
+        _glycam_h_xml = _os.path.join(_omm_app_dir, "data", "glycam-hydrogens.xml")
+        if _os.path.exists(_glycam_h_xml):
+            Modeller.loadHydrogenDefinitions(_glycam_h_xml)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"loadHydrogenDefinitions(glycam-hydrogens.xml) failed: "
+            f"{type(exc).__name__}: {exc}"
+        )
+    try:
+        modeller.addHydrogens(forcefield=sg.forcefield)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"addHydrogens failed (continuing without auto-hydrogen pass): "
+            f"{type(exc).__name__}: {exc}"
+        )
+    try:
+        modeller.addExtraParticles(sg.forcefield)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"addExtraParticles failed (continuing without virtual sites): "
+            f"{type(exc).__name__}: {exc}"
+        )
+
+    try:
+        system = sg.create_system(modeller.topology, molecules=ligand_molecules or None)
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"SystemGenerator.create_system failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    # Verify the GB force is actually attached when implicit_solvent was
+    # requested. If the catalog XML loaded but no Generalized-Born force
+    # ended up in the System (e.g. the protein force field overrode the
+    # implicit residue templates), fail-fast rather than save a System
+    # that the run-side shim would later reject as vacuum-disguised-as-GB.
+    if canon_implicit:
+        gb_force_classes = (
+            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+        )
+        present = {type(f).__name__ for f in system.getForces()}
+        if not (present & set(gb_force_classes)):
+            result["errors"].append(
+                f"implicit_solvent={canon_implicit!r} requested but the built "
+                f"System carries no Generalized-Born force "
+                f"(expected one of {', '.join(gb_force_classes)}). "
+                f"This usually means the protein force field XML overrode "
+                f"the implicit residue templates; try forcefield='ff14SBonlysc'."
+            )
+            result["code"] = "implicit_solvent_force_missing"
+            return result
+
+    # --- 6. Minimize + serialize ----------------------------------------
+    try:
+        integrator = LangevinIntegrator(
+            300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
+        )
+        simulation = Simulation(modeller.topology, system, integrator)
+        simulation.context.setPositions(modeller.positions)
+        simulation.minimizeEnergy(maxIterations=200)
+        state = simulation.context.getState(
+            getPositions=True, getVelocities=True, enforcePeriodicBox=bool(box_dimensions)
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"Energy minimization failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
+    # doesn't choke on `len(int_id)`.
+    for res in modeller.topology.residues():
+        if not isinstance(res.id, str):
+            res.id = str(res.id)
+
+    try:
+        with system_xml_file.open("w") as fh:
+            fh.write(XmlSerializer.serialize(system))
+        with state_xml_file.open("w") as fh:
+            fh.write(XmlSerializer.serialize(state))
+        with topology_pdb_file.open("w") as fh:
+            PDBFile.writeFile(modeller.topology, state.getPositions(), fh, keepIds=True)
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"Serialization failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    # --- 7. Statistics + provenance -------------------------------------
+    num_atoms = modeller.topology.getNumAtoms()
+    num_residues = sum(1 for _ in modeller.topology.residues())
+
+    sha256_table: Dict[str, str] = {}
+    for xml_path in xml_bundle:
+        # Resolve under openmmforcefields if it's a relative-to-package path;
+        # otherwise treat as user-supplied.
+        try:
+            import openmmforcefields  # local import keeps top-of-file slim
+            ff_root = Path(openmmforcefields.__file__).parent / "ffxml"
+            candidate = ff_root / xml_path
+            if candidate.is_file():
+                digest = _hash_file(candidate)
+                if digest:
+                    sha256_table[xml_path] = digest
+                continue
+        except Exception:  # noqa: BLE001
+            pass
+        candidate = Path(xml_path)
+        if candidate.is_file():
+            digest = _hash_file(candidate)
+            if digest:
+                sha256_table[xml_path] = digest
+
+    if box_dimensions:
+        provenance_solvent_type = "explicit"
+    elif canon_implicit:
+        provenance_solvent_type = "implicit"
+    else:
+        provenance_solvent_type = "vacuum"
+
+    provenance: Dict[str, Any] = {
+        "kind": "amber_via_openmmforcefields",
+        "openmm_xml": list(xml_bundle),
+        "extra_xml": list(extra_xml),
+        "small_molecule_forcefield": "gaff-2.11",
+        "ligand_molecules": [
+            {"mol2": str(lig.get("mol2")), "residue_name": lig.get("residue_name")}
+            for lig in (valid_ligands or [])
+        ],
+        "sha256": sha256_table,
+        "method": {
+            "solvent_type": provenance_solvent_type,
+            "protein_forcefield": canon_protein,
+            "nonbonded": "PME" if box_dimensions else "NoCutoff",
+            "cutoff_nm": 1.0 if box_dimensions else None,
+            "constraints": "HBonds",
+            "rigid_water": True,
+            "hmr": bool(hmr),
+            "hydrogen_mass_amu": 4.0 if hmr else 1.008,
+            "implicit_solvent": canon_implicit,
+            "barostat": None,
+            "includes_restraints": False,
+        },
+        "addExtraParticles": True,
+        "manual_bonds": {
+            "disulfides": list(disulfide_bonds or []),
+        },
+    }
+    try:
+        import openmm
+        provenance["openmm_version"] = openmm.version.full_version
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        import openmmforcefields
+        provenance["openmmforcefields_version"] = getattr(
+            openmmforcefields, "__version__", "unknown"
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        from openff.toolkit import __version__ as off_ver
+        provenance["openff_toolkit_version"] = off_ver
+    except Exception:  # noqa: BLE001
+        pass
+
+    result.update({
+        "success": True,
+        "system_xml": str(system_xml_file),
+        "topology_pdb": str(topology_pdb_file),
+        "state_xml": str(state_xml_file),
+        "num_atoms": num_atoms,
+        "num_residues": num_residues,
+        "forcefield_provenance": provenance,
+    })
+    return result
 
 
 # =============================================================================

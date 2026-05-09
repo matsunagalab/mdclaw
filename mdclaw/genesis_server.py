@@ -39,7 +39,7 @@ ensure_directory(WORKING_DIR)
 
 # Initialize Boltz-2 wrapper
 CORRECT_CONDA_ENV = "mdclaw"
-boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV)
+boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV, warn_missing=False)
 
 
 # =============================================================================

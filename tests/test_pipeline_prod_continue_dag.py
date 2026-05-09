@@ -76,8 +76,8 @@ class TestPipelineProdContinueDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
-        assert topo_node["artifacts"]["rst7"]
+        assert topo_node["artifacts"]["system_xml"]
+        assert topo_node["artifacts"]["topology_pdb"]
 
     def test_step5_equilibration(self, job_dir):
         from mdclaw._node import create_node, read_node

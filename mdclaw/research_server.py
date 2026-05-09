@@ -270,15 +270,17 @@ AMINO_ACIDS = {
 WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "D2O"}
 COMMON_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
 # Subset of COMMON_IONS that requires explicit parameterize_metal_ion step.
-# Monovalent buffer ions (Na+, Cl-, K+) are handled by tleap's built-in
-# ion parameters; multivalent cofactors are not.
+# Monovalent buffer ions (Na+, Cl-, K+) are covered by the OpenMM water-
+# model ion XML resolved through ``forcefield_catalog`` (e.g.
+# ``amber14/tip3p_HFE_multivalent.xml``); multivalent cofactors are not.
 MULTIVALENT_METAL_IONS = {"MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
 
-# Phosphorylated amino acid residues recognized by Amber's `phosaa*` libraries.
-# When detected, prepare_complex stamps them on the prep node so a follow-up
-# `phosphorylate_residues` call can re-introduce them after PDBFixer's normal
-# nonstandard-residue replacement, and `build_amber_system` auto-loads the
-# matching `leaprc.phosaa*` library.
+# Phosphorylated amino acid residues recognized by the openmmforcefields
+# ``amber/phosaa*.xml`` bundles. When detected, prepare_complex stamps
+# them on the prep node so a follow-up ``phosphorylate_residues`` call
+# can re-introduce them after PDBFixer's normal nonstandard-residue
+# replacement, and ``build_amber_system`` adds the matching phosaa XML
+# (e.g. ``amber/phosaa19SB.xml``) to the SystemGenerator ForceField bundle.
 PHOSPHO_RESNAMES = {"SEP", "TPO", "PTR"}
 
 # Amber/protonation/terminal residue name variants that should still count as "protein"
@@ -298,9 +300,10 @@ AMBER_PROTEIN_RESIDUES = {
 PROTEIN_RESNAMES = set(AMINO_ACIDS) | set(AMBER_PROTEIN_RESIDUES)
 PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO_ACIDS}
 
-# Standard nucleic-acid residue names supported by Amber's DNA/RNA leaprc files.
-# Modified nucleotides are intentionally detected but not parameterized in this
-# first-pass standard NA path.
+# Standard nucleic-acid residue names supported by the openmmforcefields
+# Amber DNA/RNA bundles (e.g. ``amber/DNA.OL15.xml``, ``amber/RNA.OL3.xml``).
+# Modified nucleotides are intentionally detected but not parameterized in
+# this first-pass standard NA path.
 STANDARD_DNA_RESNAMES = {"DA", "DC", "DG", "DT", "DI"}
 STANDARD_RNA_RESNAMES = {"A", "C", "G", "U", "I"}
 STANDARD_NUCLEIC_RESNAMES = STANDARD_DNA_RESNAMES | STANDARD_RNA_RESNAMES
@@ -2951,8 +2954,10 @@ def inspect_molecules(
             "metal_parameterization_required": bool(multivalent_metal_residues),
             "metal_handling": (
                 "Multivalent metal ion(s) detected. These are NOT parameterized "
-                "automatically by prepare_complex and are NOT covered by tleap's "
-                "built-in ion parameters. Before build_amber_system, run "
+                "automatically by prepare_complex and are NOT covered by the "
+                "OpenMM water-model ion XML that build_amber_system loads "
+                "(e.g. amber14/tip3p_HFE_multivalent.xml). Before "
+                "build_amber_system, run "
                 "`mdclaw parameterize_metal_ion --pdb-file <merged.pdb> "
                 "--output-dir <prep_artifacts>` and pass its mol2/frcmod to "
                 "build_amber_system via --metal-params. "
@@ -2964,7 +2969,10 @@ def inspect_molecules(
                 "prepare_complex. To restore them on a branched prep node, run "
                 "`mdclaw phosphorylate_residues --restore-from-detection` "
                 "after prepare_complex completes. build_amber_system then "
-                "auto-loads `leaprc.phosaa19SB` (ff19SB) / `phosaa14SB` (ff14SB)."
+                "adds the matching openmmforcefields phosaa XML "
+                "(`amber/phosaa19SB.xml` for ff19SB, "
+                "`amber/phosaa14SB.xml` for ff14SB) to the SystemGenerator "
+                "ForceField bundle."
             ) if ptm_residues else None,
         }
 

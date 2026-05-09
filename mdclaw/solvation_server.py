@@ -481,9 +481,11 @@ def solvate_structure(
     with water molecules and optionally adding salt ions for physiological
     conditions.
     
-    The output PDB file can be used for subsequent tleap processing to
-    generate Amber topology files for MD simulation.
-    
+    The output PDB file feeds into ``build_amber_system``, which uses
+    ``openmmforcefields.SystemGenerator`` over an OpenFF Pablo–loaded
+    topology to emit the ``system.xml`` + ``topology.pdb`` + ``state.xml``
+    triple consumed by ``run_equilibration`` / ``run_production``.
+
     Args:
         pdb_file: Input PDB file path (e.g., merged.pdb from merge_structures)
         output_dir: Output directory (auto-generated if None)
@@ -870,9 +872,12 @@ def embed_in_membrane(
     3. Solvating with water above and below the membrane
     4. Optionally adding salt ions
     
-    The output PDB file can be used for subsequent tleap processing to
-    generate Amber topology files for membrane MD simulation.
-    
+    The output PDB file feeds into ``build_amber_system``, which uses
+    ``openmmforcefields.SystemGenerator`` (with the ``amber/lipid21.xml``
+    bundle resolved through ``forcefield_catalog``) over an OpenFF
+    Pablo–loaded topology to emit the ``system.xml`` + ``topology.pdb``
+    + ``state.xml`` triple for membrane MD.
+
     Args:
         pdb_file: Input PDB file path (e.g., merged.pdb from merge_structures).
                   In node mode, auto-resolves from the prep ancestor's

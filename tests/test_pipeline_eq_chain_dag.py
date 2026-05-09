@@ -83,8 +83,9 @@ class TestPipelineEqChainDag:
         )
         assert result["success"], result.get("errors")
         topo_node = read_node(str(job_dir), self.topo_id)
-        assert topo_node["artifacts"]["parm7"]
-        assert topo_node["artifacts"]["rst7"]
+        assert topo_node["artifacts"]["system_xml"]
+        assert topo_node["artifacts"]["topology_pdb"]
+        assert topo_node["artifacts"]["state_xml"]
 
     def test_step5_eq_npt_compress(self, job_dir):
         """Stage 1: NPT with strong heavy-atom restraints (compression)."""
@@ -116,7 +117,8 @@ class TestPipelineEqChainDag:
             platform="CPU",
         )
         assert result["success"], result.get("errors")
-        # First eq has no eq/prod ancestor — runs from inpcrd, not a restart.
+        # First eq has no eq/prod ancestor — runs from the topo state.xml
+        # via the XML topology inputs, not from a restart artifact.
         assert result.get("restarted_from") is None
         eq1 = read_node(str(job_dir), self.eq1_id)
         assert eq1["artifacts"]["state"].endswith("equilibrated.xml")
