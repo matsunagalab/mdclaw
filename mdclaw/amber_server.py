@@ -2967,7 +2967,26 @@ def _run_openmmforcefields_build(
         )
         return result
 
-    def _load_ligand_molecule(mol2_path: str) -> Any:
+    def _load_ligand_molecule(ligand_entry: Dict[str, Any]) -> Any:
+        mol2_path = ligand_entry.get("mol2")
+        smiles = ligand_entry.get("smiles") or ligand_entry.get("smiles_used")
+        if smiles:
+            try:
+                mol = _Molecule.from_smiles(
+                    str(smiles),
+                    hydrogens_are_explicit=False,
+                    allow_undefined_stereo=True,
+                    name=str(ligand_entry.get("residue_name") or ""),
+                )
+                mol.generate_conformers(n_conformers=1)
+                return mol
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Could not build OpenFF Molecule for ligand "
+                    f"{ligand_entry.get('residue_name', '?')!r} from stored "
+                    f"SMILES; falling back to mol2 graph load: "
+                    f"{type(exc).__name__}: {exc}"
+                )
         try:
             return _Molecule.from_file(str(mol2_path))
         except Exception:  # noqa: BLE001
@@ -3024,7 +3043,7 @@ def _run_openmmforcefields_build(
             )
             return result
         try:
-            ligand_molecules.append(_load_ligand_molecule(mol2))
+            ligand_molecules.append(_load_ligand_molecule(lig))
         except Exception as exc:  # noqa: BLE001
             result["errors"].append(
                 f"Failed to load ligand mol2 {mol2}: "
@@ -3170,6 +3189,59 @@ def _run_openmmforcefields_build(
         omm_topology = modeller.topology
         omm_positions = modeller.positions
 
+    # Pablo can still fall back to ``openmm.app.PDBFile`` for GAFF ligands
+    # whose CCD atom naming differs from the prepared Amber PDB. PDBFile
+    # carries the atoms but not the ligand's internal bonds, so copy the
+    # TRIPOS bond graph from mol2 onto every matching residue before
+    # GAFFTemplateGenerator attempts graph isomorphism.
+    ligand_bonds_added = 0
+    if valid_ligands:
+        try:
+            import parmed as _parmed_for_ligands
+
+            existing_bonds = {
+                tuple(sorted((bond.atom1.index, bond.atom2.index)))
+                for bond in omm_topology.bonds()
+            }
+            mol2_bonds_by_residue: dict[str, list[tuple[str, str]]] = {}
+            for lig in valid_ligands:
+                residue_name = str(lig.get("residue_name") or lig.get("ligand_id") or "").upper()
+                mol2 = lig.get("mol2")
+                if not residue_name or not mol2:
+                    continue
+                struct = _parmed_for_ligands.load_file(str(mol2), structure=True)
+                mol2_bonds_by_residue[residue_name] = [
+                    (bond.atom1.name.strip(), bond.atom2.name.strip())
+                    for bond in struct.bonds
+                ]
+            for residue in omm_topology.residues():
+                residue_name = (residue.name or "").upper()
+                mol2_bonds = mol2_bonds_by_residue.get(residue_name)
+                if not mol2_bonds:
+                    continue
+                atom_by_name = {atom.name.strip(): atom for atom in residue.atoms()}
+                for name1, name2 in mol2_bonds:
+                    atom1 = atom_by_name.get(name1)
+                    atom2 = atom_by_name.get(name2)
+                    if atom1 is None or atom2 is None:
+                        continue
+                    key = tuple(sorted((atom1.index, atom2.index)))
+                    if key in existing_bonds:
+                        continue
+                    omm_topology.addBond(atom1, atom2)
+                    existing_bonds.add(key)
+                    ligand_bonds_added += 1
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(
+                f"Could not patch ligand mol2 bonds onto topology: "
+                f"{type(exc).__name__}: {exc}"
+            )
+    if ligand_bonds_added:
+        result["warnings"].append(
+            f"Patched {ligand_bonds_added} ligand bond(s) from mol2 onto the "
+            f"OpenMM topology so GAFF templates can match prepared ligands."
+        )
+
     # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
     if disulfide_bonds:
         added = _topology_pablo.add_disulfide_bonds(omm_topology, disulfide_bonds)
@@ -3294,30 +3366,22 @@ def _run_openmmforcefields_build(
         return result
 
     # Patch missing intra-residue bonds for residues that the loaded
-    # forcefield knows but Pablo / PDBFile produced an unbonded entry
-    # for. ``packmol-memgen`` does not emit CONECT records for lipid21
-    # residues (PA / PC / OL / etc.), and ``cpptraj prepareforleap``
-    # writes GLYCAM residue codes (0YB / 4YA / 4YB / NLN / …) that
-    # neither Pablo's CCD nor ``openmm.app.Topology._proteinResidues``
-    # know how to bond. Without bonds, ``SystemGenerator.create_system``
-    # fails with "the residue has no bonds between its atoms"
-    # (lipid case) or "missing 1 C atom externally bonded" (glycan
-    # cascade onto the linker amino acid). We walk the topology, find
-    # residues that have a template in ``sg.forcefield`` but no
-    # internal bonds yet, and copy the template's bond list onto the
-    # topology so create_system can match.
+    # forcefield knows but Pablo / PDBFile under-bonded. ``packmol-memgen``
+    # does not emit CONECT records for lipid21 residues, and ``cpptraj
+    # prepareforleap`` can leave GLYCAM/NLN residues either wholly unbonded
+    # or partially bonded depending on which CONECT records survived the
+    # PDB round trip. Copy any missing template bond onto the topology so
+    # ``SystemGenerator.create_system`` sees the same residue graph as the
+    # loaded force field.
     bonds_added = 0
+    existing_internal_bonds = {
+        tuple(sorted((bond.atom1.index, bond.atom2.index)))
+        for bond in omm_topology.bonds()
+        if bond.atom1.residue.index == bond.atom2.residue.index
+    }
     for residue in list(omm_topology.residues()):
         atom_by_name = {a.name: a for a in residue.atoms()}
         if not atom_by_name:
-            continue
-        atom_indices = {a.index for a in atom_by_name.values()}
-        has_internal_bond = False
-        for bond in omm_topology.bonds():
-            if bond.atom1.index in atom_indices and bond.atom2.index in atom_indices:
-                has_internal_bond = True
-                break
-        if has_internal_bond:
             continue
         template = sg.forcefield._templates.get(residue.name)
         if template is None:
@@ -3328,12 +3392,16 @@ def _run_openmmforcefields_build(
             a1 = atom_by_name.get(n1)
             a2 = atom_by_name.get(n2)
             if a1 is not None and a2 is not None:
+                key = tuple(sorted((a1.index, a2.index)))
+                if key in existing_internal_bonds:
+                    continue
                 omm_topology.addBond(a1, a2)
+                existing_internal_bonds.add(key)
                 bonds_added += 1
     if bonds_added:
         result["warnings"].append(
             f"Patched {bonds_added} intra-residue bond(s) onto topology "
-            f"residues whose Pablo / PDBFile load left them unbonded "
+            f"residues whose Pablo / PDBFile load left under-bonded "
             f"(lipid21 / GLYCAM templates supply the missing bonds)."
         )
 

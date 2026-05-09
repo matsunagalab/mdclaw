@@ -5304,6 +5304,9 @@ def prepare_complex(
                     if clean_result["success"]:
                         ligand_result["sdf_file"] = clean_result["sdf_file"]
                         ligand_result["net_charge"] = clean_result["net_charge"]
+                        ligand_result["smiles_used"] = clean_result.get("smiles_used")
+                        ligand_result["smiles_original"] = clean_result.get("smiles_original")
+                        ligand_result["smiles_source"] = clean_result.get("smiles_source")
                         logger.info(f"  ✓ Ligand {ligand_id} ({chain_id}): cleaned, charge={clean_result['net_charge']}")
                         
                         # Run parameterization if requested
@@ -5754,6 +5757,9 @@ def prepare_complex(
                     "charge_used": lig.get("charge_used"),
                     "charge_confidence": lig.get("charge_confidence"),
                     "total_charge": lig.get("total_charge"),
+                    "smiles": lig.get("smiles_used"),
+                    "smiles_original": lig.get("smiles_original"),
+                    "smiles_source": lig.get("smiles_source"),
                     "parameter_source": lig.get("parameter_source", "gaff2_antechamber"),
                 }
                 for lig in result["ligands"]
@@ -5817,6 +5823,9 @@ def prepare_complex(
                  "charge_used": lig.get("charge_used"),
                  "charge_confidence": lig.get("charge_confidence"),
                  "total_charge": lig.get("total_charge"),
+                 "smiles": lig.get("smiles_used"),
+                 "smiles_original": lig.get("smiles_original"),
+                 "smiles_source": lig.get("smiles_source"),
                  "parameter_source": lig.get("parameter_source")}
                 for lig in ligands if lig.get("success") and lig.get("mol2_file")
             ]
