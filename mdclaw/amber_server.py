@@ -3489,6 +3489,75 @@ def _run_openmmforcefields_build(
                 f"and the protein FF treats them as plain asparagine)."
             )
 
+        # Drop orphan GLYCAM residues whose external bonds are still
+        # unpaired — these arise when ``cpptraj prepareforleap`` lays out
+        # a glycan chain whose attachment-site partner (NLN, another
+        # glycan) was relocated by the merge step beyond bond range.
+        # Without a partner the residue is unbonded and the run-side FF
+        # has no template that matches it; ``Modeller.delete`` removes
+        # the dangling residue (and any waters / ions caught by chain
+        # continuity).
+        _GLYCAN_RESNAMES = {
+            "0YB", "4YA", "4YB", "0LB", "VMB", "0MB", "0fA", "2MA", "0LA",
+            "BMA", "MAN", "NAG", "0YA", "4YS", "0LS",
+        }
+        # Iterate: dropping one orphan glycan can leave its neighbour
+        # glycans with their own unpaired external bonds. Recompute the
+        # actual cross-residue bond count from the topology each pass and
+        # delete any GLYCAM residue whose realised external-bond count is
+        # less than its template demands. Cap at a few iterations so a
+        # bug here cannot loop indefinitely on a healthy glycan tree.
+        from openmm.app import Modeller as _ModellerForOrphans
+        all_dropped: list[str] = []
+        for _orphan_pass in range(8):
+            cross_bonds_now: dict[int, int] = {}
+            for bond in omm_topology.bonds():
+                if bond.atom1.residue.index != bond.atom2.residue.index:
+                    cross_bonds_now[bond.atom1.index] = (
+                        cross_bonds_now.get(bond.atom1.index, 0) + 1
+                    )
+                    cross_bonds_now[bond.atom2.index] = (
+                        cross_bonds_now.get(bond.atom2.index, 0) + 1
+                    )
+            this_round: list[Any] = []
+            for residue in omm_topology.residues():
+                if residue.name not in _GLYCAN_RESNAMES:
+                    continue
+                template = sg.forcefield._templates.get(residue.name)
+                if template is None or not template.externalBonds:
+                    continue
+                atom_by_name = {a.name: a for a in residue.atoms()}
+                template_external_count: dict[str, int] = {}
+                for ti in template.externalBonds:
+                    name = template.atoms[ti].name
+                    template_external_count[name] = (
+                        template_external_count.get(name, 0) + 1
+                    )
+                unpaired = False
+                for name, expected in template_external_count.items():
+                    atom = atom_by_name.get(name)
+                    if atom is None:
+                        continue
+                    if cross_bonds_now.get(atom.index, 0) < expected:
+                        unpaired = True
+                        break
+                if unpaired:
+                    this_round.append(residue)
+            if not this_round:
+                break
+            mod = _ModellerForOrphans(omm_topology, omm_positions)
+            mod.delete([a for r in this_round for a in r.atoms()])
+            omm_topology = mod.topology
+            omm_positions = mod.positions
+            all_dropped.extend(f"{r.name}#{r.id}" for r in this_round)
+        if all_dropped:
+            result["warnings"].append(
+                f"Dropped {len(all_dropped)} orphan GLYCAM residue(s) whose "
+                f"external bond partner was missing from the prep output: "
+                f"{all_dropped[:5]}"
+                f"{'...' if len(all_dropped) > 5 else ''}"
+            )
+
     modeller = Modeller(omm_topology, omm_positions)
     # Top up residues that the upstream PDBFixer pass left under-hydrogenated
     # (NLN / GLYCAM linker residues fall through PDBFixer's standard
