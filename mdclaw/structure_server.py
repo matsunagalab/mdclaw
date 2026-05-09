@@ -50,7 +50,7 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
-obabel_wrapper = BaseToolWrapper("obabel")
+obabel_wrapper = BaseToolWrapper("obabel", warn_missing=False)
 
 
 def _read_pdb_heavy_atoms_for_validation(pdb_file: str) -> List[Dict[str, Any]]:

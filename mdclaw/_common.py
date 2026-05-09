@@ -312,11 +312,16 @@ def run_command(
 class BaseToolWrapper:
     """Wrapper for external CLI tools (antechamber, parmchk2, cpptraj, etc.)."""
 
-    def __init__(self, tool_name: str, conda_env: Optional[str] = None):
+    def __init__(
+        self,
+        tool_name: str,
+        conda_env: Optional[str] = None,
+        warn_missing: bool = True,
+    ):
         self.tool_name = tool_name
         self.conda_env = conda_env
         self.executable = self._find_executable()
-        if not self.executable:
+        if warn_missing and not self.executable:
             logger.warning(f"{tool_name} not found in PATH")
 
     def _find_executable(self) -> Optional[str]:
