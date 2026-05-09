@@ -6,11 +6,12 @@ guessing. mdclaw uses Pablo as the topology source for both
 ``build_amber_system`` and ``build_openmm_system``; this module wraps the
 Pablo entrypoint with project-specific concerns:
 
-- Auto-download of CCD residue definitions (so non-canonical PDB residues
-  like glycans 0YA / 4YB / NAG load without manual library curation).
-- ``additional_definitions`` builder for modified amino acids (ALY, MTSL,
-  MSE, CYF, CNX) supplied as SMILES strings via the user-facing
-  ``extra_smiles`` argument.
+- Auto-download of CCD residue definitions (so PDB glycan residue names such
+  as NAG / BMA / MAN load without manual library curation).
+- ``additional_definitions`` builder for modified amino acids and GAFF-backed
+  ligands supplied as SMILES strings via the user-facing ``extra_smiles``
+  argument. The residue-name half of each pair is diagnostic; Pablo receives
+  anonymous SMILES-derived definitions and matches by graph / atom composition.
 - Convertor to OpenMM topology + positions, ready to feed
   ``openmmforcefields.SystemGenerator``.
 - Soft fallback to ``openmm.app.PDBFile`` when Pablo fails to identify a
@@ -60,11 +61,11 @@ def build_modaa_residue_definitions(
     """Wrap ``(residue_name, smiles)`` pairs as Pablo ``ResidueDefinition``s.
 
     Pablo's standard library covers canonical amino acids and the CCD-fetchable
-    glycans / nucleotides; modified amino acids like ALY, MTSL, MSE, CYF are
-    not. Callers who know about modAA residues in their PDB pass their SMILES
-    via ``extra_smiles``; this helper turns each tuple into a
-    ``ResidueDefinition.anon_from_smiles`` so Pablo can match them by atom
-    count + element pattern.
+    glycans / nucleotides; modified amino acids and GAFF-backed ligands are not
+    guaranteed to be present by residue name. Callers pass their SMILES via
+    ``extra_smiles``; this helper turns each tuple into an anonymous
+    ``ResidueDefinition.anon_from_smiles`` so Pablo can match by graph / atom
+    composition. The tuple's residue name is retained only for diagnostics.
 
     Returns an empty list if Pablo is not installed (the caller will fall back
     to PDBFile which performs no chemistry checks).

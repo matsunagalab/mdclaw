@@ -94,7 +94,11 @@ This single test exercised three independent gaps:
   catalog-recommended `ff19SB` + `opc` + `phosaa19SB` combination.
   An explicit `phospho_forcefield_atom_type_mismatch` fail-fast in
   `build_amber_system` keeps callers who *do* request `ff14SB` from
-  hitting the cryptic upstream KeyError.
+  hitting the cryptic upstream KeyError. The node metadata still
+  records the legacy Amber library name (`leaprc.phosaa19SB`); the
+  OpenMM build resolves that to the shipped XML
+  (`amber/phosaa19SB.xml`) before constructing the SystemGenerator
+  bundle.
 - Pablo cannot match Amber `HID` / `HIE` / `HIP` against CCD `HIS`.
   The PDB sanitiser in `_run_openmmforcefields_build` rewrites them
   to `HIS` for the load and restores the Amber variant from each
@@ -134,8 +138,10 @@ turned out to be three problems stacked on top of each other:
 - After Pablo loads correctly, GAFFTemplateGenerator still needs the
   ligand SMILES so it can register the residue. Pass each ligand's
   `Molecule.to_smiles()` to `_topology_pablo.load_topology` via
-  `extra_smiles=[(residue_name, smiles), …]` so Pablo's
-  graph-matching identifies BEN / GOL etc.
+  `extra_smiles=[(residue_name, smiles), …]`; the residue name is kept
+  for diagnostics, while Pablo receives an anonymous
+  `ResidueDefinition.anon_from_smiles(smiles)` and matches the residue
+  by graph / atom composition instead of by a CCD name like BEN or GOL.
 
 ### `membrane_dag::test_step4` — lipid21 has bonds, packmol does not
 
@@ -164,10 +170,13 @@ fails with "the residue has no bonds between its atoms". Two pieces:
 
 ### `glycoprotein_dag::test_step3` — the deepest cascade
 
-`cpptraj prepareforleap` emits GLYCAM residue codes
-(`0YB` / `4YA` / `4YB` / `NLN` …) that are *not* CCD entries, so
-Pablo bails on the entire topology. Several independent fixes had
-to land before the test could pass:
+Raw PDB glycan residue names such as `NAG` / `BMA` / `MAN` are CCD
+components that Pablo can generally load. The failure here happened
+after `cpptraj prepareforleap` converted those residues into Amber
+GLYCAM residue codes (`0YB` / `4YA` / `4YB` / `NLN` …); those codes
+are ForceField template names, not CCD entries, so Pablo bailed on the
+entire topology. Several independent fixes had to land before the test
+could pass:
 
 - **`PDBFixer.addMissingHydrogens` skipped when input already
   hydrogenated**: PDBFixer's H pass goes through
@@ -205,11 +214,12 @@ to land before the test could pass:
 `ImportError: cannot import name 'validate_core_schema' from
 'pydantic_core'` and breaks the entire `tests/test_benchmark/*`
 collection. `pip install -U pydantic` pulled `pydantic 2.13.4` +
-`pydantic_core 2.46.4` which restored the collection. The
-`pyproject.toml` pin `pydantic>=2.12.3` was left as-is — pip
-resolves a compatible `pydantic_core` transitively when the env
-is built from scratch; only the partially-upgraded local env hit
-the mismatch.
+`pydantic_core 2.46.4` which restored the collection in that local
+environment. The `pyproject.toml` pin `pydantic>=2.12.3` was left
+as-is — this was not a repository dependency change. A clean solve
+resolves a compatible `pydantic_core` transitively; only the
+partially-upgraded local env hit the mismatch. If this recurs, verify
+the pair with `python -c "import pydantic, pydantic_core; print(pydantic.__version__, pydantic_core.__version__)"`.
 
 ## Read order for future maintainers
 
@@ -219,7 +229,8 @@ already run:
 
 1. PDBFixer hydrogenation conditional (`input_has_hydrogens`)
 2. ParmEd-based ligand mol2 loader (`_load_ligand_molecule`)
-3. Pablo SMILES feed for non-CCD ligands
+3. Pablo SMILES feed for non-CCD ligands (anonymous SMILES-derived
+   residue definitions; names are diagnostic)
 4. PDB sanitiser (`Na+` / `Cl-` / `K+` / `HID` / `HIE` / `HIP` →
    CCD names; restore HID-variant after load)
 5. Strip phospho HOP2 / HOP3 from SEP / TPO / PTR after Pablo

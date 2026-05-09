@@ -3342,7 +3342,7 @@ def _run_openmmforcefields_build(
     # rely on tleap/parmed-side bond inference to connect them. The
     # template's ``externalBonds`` field tells us which atom in each
     # residue is supposed to dangle out to a neighbor; a small spatial
-    # search (1.8 Å heavy-atom cutoff, matching tleap's default) wires them
+    # search (2.0 Å heavy-atom cutoff) wires them
     # up. Without this, ``SystemGenerator.create_system`` fails with the
     # protein-FF "missing 1 C atom externally bonded" cascade once the
     # adjacent residue (LEU next to a glycan, PA next to PC, etc.) cannot
