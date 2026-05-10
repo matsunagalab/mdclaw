@@ -130,7 +130,14 @@ mdclaw update_job_params --job-dir <job_dir> \
    image-capable agent UIs or provide the PNG path, node ID, caption, and source artifact.
    If PyMOL is unavailable (`code=pymol_not_available`), continue the handoff
    without treating it as an equilibration failure.
-3. Tell the user:
+3. If the agent/UI can inspect images, perform the Visual QA checklist from
+   `skills/md-analyze/SKILL.md` and register the result with
+   `register_visual_review`. If image inspection is unavailable, register
+   `reviewer_type=not_available`, `severity=not_reviewed`, and
+   `recommendation=manual_review`. Visual QA is only an obvious-accident
+   check; do not infer scientific correctness from the image. If severity is
+   `high`, ask the user before production.
+4. Tell the user:
    ```
    Equilibration complete. Next:
      /md-production <job_dir>

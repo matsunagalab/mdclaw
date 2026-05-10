@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from mdclaw.visualization_server import render_structure_preview
+from mdclaw.visualization_server import register_visual_review, render_structure_preview
 
 
 PDB_TEXT = """\
@@ -123,10 +123,104 @@ def test_render_structure_preview_reports_missing_pymol(monkeypatch, tmp_path):
     assert result["code"] == "pymol_not_available"
 
 
+def test_register_visual_review_registers_node_artifact(tmp_path):
+    from mdclaw._node import complete_node, create_node, read_node
+
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "prod")
+    preview = job_dir / "nodes" / "prod_001" / "artifacts" / "previews" / "final.preview.png"
+    preview.parent.mkdir(parents=True, exist_ok=True)
+    preview.write_bytes(b"fake-png")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"structure_preview_png": "artifacts/previews/final.preview.png"},
+    )
+
+    result = register_visual_review(
+        job_dir=str(job_dir),
+        node_id="prod_001",
+        reviewer_type="multimodal_llm",
+        severity="none",
+        recommendation="continue",
+        summary="No obvious visual accident detected.",
+        checks={"ligand_position": "not assessable: no ligand visible in this preview"},
+        findings=[],
+        reviewer_model="test-vision-model",
+    )
+
+    assert result["success"] is True
+    assert result["requires_user_confirmation"] is False
+    node = read_node(str(job_dir), "prod_001")
+    assert node["status"] == "completed"
+    assert node["artifacts"]["visual_review_json"] == (
+        "artifacts/previews/visual_review.visual_review.json"
+    )
+    assert node["metadata"]["visual_review"]["reviewer_type"] == "multimodal_llm"
+    review = json.loads(
+        (job_dir / "nodes" / "prod_001" / node["artifacts"]["visual_review_json"]).read_text()
+    )
+    assert review["success"] is True
+    assert review["severity"] == "none"
+    assert review["reviewer_model"] == "test-vision-model"
+    assert "scientific validation" in " ".join(review["limitations"])
+
+
+def test_register_visual_review_not_available_is_non_blocking(tmp_path):
+    result = register_visual_review(
+        output_dir=str(tmp_path),
+        reviewer_type="not_available",
+        severity="not_reviewed",
+        recommendation="manual_review",
+        summary="Image-capable reviewer was not available.",
+    )
+
+    assert result["success"] is True
+    assert result["requires_user_confirmation"] is False
+    review = json.loads((tmp_path / "visual_review.visual_review.json").read_text())
+    assert review["reviewer_type"] == "not_available"
+    assert review["severity"] == "not_reviewed"
+    assert any("No image-capable reviewer" in item for item in review["limitations"])
+
+
+def test_register_visual_review_high_severity_does_not_fail_node(tmp_path):
+    from mdclaw._node import complete_node, create_node, read_node
+
+    job_dir = tmp_path / "job"
+    create_node(str(job_dir), "prod")
+    preview = job_dir / "nodes" / "prod_001" / "artifacts" / "previews" / "bad.preview.png"
+    preview.parent.mkdir(parents=True, exist_ok=True)
+    preview.write_bytes(b"fake-png")
+    complete_node(
+        str(job_dir),
+        "prod_001",
+        artifacts={"structure_preview_png": "artifacts/previews/bad.preview.png"},
+    )
+
+    result = register_visual_review(
+        job_dir=str(job_dir),
+        node_id="prod_001",
+        reviewer_type="human",
+        severity="high",
+        recommendation="user_confirm",
+        summary="Ligand appears far from the complex; user confirmation required.",
+        findings=[{"check": "ligand_position", "severity": "high", "description": "Ligand separated"}],
+    )
+
+    assert result["success"] is True
+    assert result["requires_user_confirmation"] is True
+    node = read_node(str(job_dir), "prod_001")
+    assert node["status"] == "completed"
+    assert node["metadata"]["visual_review"]["severity"] == "high"
+
+
 def test_render_structure_preview_registered_as_tool():
     from mdclaw._cli import _discover_tools
     from mdclaw.visualization_server import TOOLS
 
     assert "render_structure_preview" in TOOLS
+    assert "register_visual_review" in TOOLS
     assert callable(TOOLS["render_structure_preview"])
+    assert callable(TOOLS["register_visual_review"])
     assert "render_structure_preview" in _discover_tools()
+    assert "register_visual_review" in _discover_tools()

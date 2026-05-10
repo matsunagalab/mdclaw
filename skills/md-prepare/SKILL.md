@@ -84,6 +84,13 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
    show it to the user in image-capable agent UIs. Otherwise report the node ID,
    caption, PNG path, and source structure artifact path. If PyMOL is missing
    (`code=pymol_not_available`), do not block preparation.
+   When the agent/UI can inspect images, perform the Visual QA checklist from
+   `skills/md-analyze/SKILL.md` and register it with `register_visual_review`.
+   Visual QA is only an obvious-accident check; never infer force-field,
+   protonation, parameter, or chemistry correctness from the image. If image
+   inspection is unavailable, register `reviewer_type=not_available` and show
+   the PNG path to the user. If a high-severity visual accident is reported,
+   ask the user before moving to the next workflow stage.
 7. After `topo_001` completes, hand off: tell the user to invoke
    `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
    auto-chain into equilibration — each stage is user-initiated.

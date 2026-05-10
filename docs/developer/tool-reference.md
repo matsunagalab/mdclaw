@@ -108,6 +108,12 @@ skill examples.
   Styles include `overview`, `publication`, `ligand_site`, `membrane`,
   `solvent_ions`, and `topology_check`; the manifest records camera/view and
   representation choices for human review.
+- `register_visual_review(...)`: register a best-effort visual QA review of a
+  preview PNG as `visual_review_json`. The tool does not perform image
+  understanding; a multimodal LLM or human reviews the PNG first and records
+  coarse accident-check findings (`severity`, `recommendation`, `findings`,
+  `limitations`). This is not scientific validation and high-severity findings
+  request user confirmation without marking the DAG node failed.
 
 ## `literature_server.py`
 
@@ -156,6 +162,8 @@ skill examples.
 ## `evidence_server.py`
 
 - `generate_md_evidence_report(...)`: JSON evidence summary for one job.
+  Registered `visual_review_json` artifacts are included as evidence artifacts;
+  they are best-effort visual accident checks, not scientific validation.
 - `generate_md_methods_report(...)`: Methods Markdown for one job lineage.
 - `generate_study_methods_report(...)`: Methods report across registered jobs.
 - `generate_study_evidence_report(...)`: JSON evidence summary across a study.

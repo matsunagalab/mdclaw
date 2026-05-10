@@ -106,7 +106,15 @@ with `mdclaw update_job_params` before creating new prod nodes.
    ID, caption, and source artifact path. If PyMOL is unavailable
    (`code=pymol_not_available`), continue the handoff.
 
-3. Present:
+3. If the agent/UI can inspect images, perform the Visual QA checklist from
+   `skills/md-analyze/SKILL.md` and register the result with
+   `register_visual_review`. If image inspection is unavailable, register
+   `reviewer_type=not_available`, `severity=not_reviewed`, and
+   `recommendation=manual_review`. Visual QA is only an obvious-accident
+   check; do not infer scientific correctness from the image. If severity is
+   `high`, ask the user before using the production output downstream.
+
+4. Present:
    ```
    Production complete. Next:
      /md-analyze <job_dir>

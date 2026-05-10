@@ -53,3 +53,35 @@ is produced, display it in image-capable agent UIs; otherwise provide the node
 ID, caption, PNG path, and source structure artifact. If PyMOL is unavailable
 (`code=pymol_not_available`), report that preview rendering was skipped rather
 than treating it as an analysis failure.
+
+## Visual QA
+
+Visual QA is optional and best-effort. It is only for catching obvious visual
+accidents, not for validating force fields, protonation states, parameters,
+chemistry, or small clashes.
+
+If the current agent/UI can inspect images, open the `structure_preview_png`
+and check only:
+
+- The main structure is visible and not cut off.
+- Expected components (protein/nucleic/ligand/lipid/water/ion) are not
+  obviously missing.
+- Ligands or cofactors are not obviously far away from the expected complex.
+- Membrane systems do not show an obviously broken protein/membrane placement.
+- Water, ions, or lipids do not form impossible-looking clumps, isolation, or
+  severe overlap.
+- Anything not visible from the image is explicitly marked as not assessable.
+
+Record the result with:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <node_id> \
+  register_visual_review --reviewer-type multimodal_llm \
+  --severity none --recommendation continue \
+  --summary "No obvious visual accident detected."
+```
+
+If the agent cannot inspect images, register `--reviewer-type not_available
+--severity not_reviewed --recommendation manual_review` and show the PNG path
+to the user. If severity is `high`, ask the user before advancing to the next
+workflow step, but do not mark the DAG node failed solely from visual QA.
