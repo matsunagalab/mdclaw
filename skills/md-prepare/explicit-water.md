@@ -133,7 +133,8 @@ interaction policy.
 2. Tell the user:
    ```
    Preparation complete. Next:
-     /md-equilibration job_xxx
+     Continue with skills/md-equilibration/SKILL.md on this job_dir.
+     Shortcut, if available: /md-equilibration <job_dir>
    ```
-   `/md-prepare` does not auto-invoke equilibration — each stage is
+   Preparation does not auto-invoke equilibration — each stage is
    user-initiated.

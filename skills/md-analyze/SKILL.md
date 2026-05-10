@@ -8,8 +8,9 @@ description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Rou
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
 `skills/common/node-cli-patterns.md` before acting.
 
-Analysis is always user-initiated. `/md-production` does not chain into
-`/md-analyze`; the user invokes this skill when ready.
+Analysis is always user-initiated. Production does not chain into analysis;
+the user or harness invokes this skill when ready. In harnesses with slash
+commands, `/md-analyze` is the shortcut.
 
 ## Route To The Right Runbook
 

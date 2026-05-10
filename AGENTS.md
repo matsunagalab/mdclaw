@@ -1,6 +1,6 @@
 # AGENTS.md
 
-This file provides guidance to Codex when working with this repository.
+This file provides guidance to AI coding agents working with this repository.
 
 ## Project Overview
 
@@ -31,14 +31,14 @@ skills/                    # Domain knowledge (platform-agnostic .md)
   md-analyze/SKILL.md        # Trajectory analysis
   hpc-run/SKILL.md           # HPC/SLURM job management
 
-.Codex/commands/           # Dev-only: local slash commands (/md-prepare etc.)
+.claude/commands/          # Dev-only: local slash commands (/md-prepare etc.)
   md-prepare.md             #   Thin wrappers that read skills/*/SKILL.md
   md-equilibration.md       #   Not needed when installed as plugin
   md-production.md
   md-analyze.md
   hpc-run.md
 
-.Codex-plugin/              # Plugin marketplace metadata
+.claude-plugin/             # Plugin marketplace metadata
   plugin.json
   marketplace.json
 
@@ -101,7 +101,7 @@ tests/                      # 4-level test suite
   test_study_server.py      # Optional study/campaign helpers
   test_visualization_server.py # PyMOL preview rendering tests
   test_evidence_server.py   # Evidence report helpers
-  manual_checklist.md       # Level 4: Manual Codex tests
+  manual_checklist.md       # Level 4: Manual interactive tests
 ```
 
 ## Development Workflow
@@ -139,7 +139,8 @@ Skills in `skills/*/SKILL.md` reference tools via CLI (`mdclaw <tool> ...`). Whe
 
 ### Skill Workflow & Job Directory Structure
 
-User flow: `/md-prepare` -> `/md-equilibration` -> `/md-production` -> `/md-analyze`
+User flow: `md-prepare` -> `md-equilibration` -> `md-production` -> `md-analyze`
+(`/md-*` forms are slash-command shortcuts when the harness provides them.)
 
 **Schema v3 (node-based, only supported schema):**
 
@@ -267,7 +268,7 @@ Plugin (GitHub repo)              SIF (GHCR)
 ├── skills/SKILL.md               ├── mdclaw/*.py (baked in)
 ├── bin/mdclaw (wrapper)          ├── mdclaw CLI
 ├── hooks/ (auto-downloads SIF)   └── AmberTools, OpenMM, PyTorch
-└── .Codex-plugin/plugin.json
+└── .claude-plugin/plugin.json
          ↕ version tag keeps them in sync ↕
 ```
 
@@ -277,8 +278,8 @@ Plugin (GitHub repo)              SIF (GHCR)
 # 1. Update version in all 4 locations (must match)
 #    - mdclaw/__init__.py         __version__ = "X.Y.Z"
 #    - pyproject.toml              version = "X.Y.Z"
-#    - .Codex-plugin/plugin.json  "version": "X.Y.Z"
-#    - .Codex-plugin/marketplace.json  "version": "X.Y.Z"
+#    - .claude-plugin/plugin.json  "version": "X.Y.Z"
+#    - .claude-plugin/marketplace.json  "version": "X.Y.Z"
 
 # 2. Commit, tag, push
 git add -A && git commit -m "release: vX.Y.Z"
@@ -305,8 +306,8 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 |------|-------|
 | `mdclaw/__init__.py` | `__version__` |
 | `pyproject.toml` | `version` |
-| `.Codex-plugin/plugin.json` | `version` |
-| `.Codex-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
+| `.claude-plugin/plugin.json` | `version` |
+| `.claude-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
 
 ## Development Commands
 

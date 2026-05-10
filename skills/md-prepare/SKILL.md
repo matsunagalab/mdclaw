@@ -91,9 +91,10 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
    inspection is unavailable, register `reviewer_type=not_available` and show
    the PNG path to the user. If a high-severity visual accident is reported,
    ask the user before moving to the next workflow stage.
-7. After `topo_001` completes, hand off: tell the user to invoke
-   `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
-   auto-chain into equilibration — each stage is user-initiated.
+7. After `topo_001` completes, hand off to the equilibration skill on the
+   same `job_dir`. In harnesses with slash commands, `/md-equilibration` is
+   the shortcut. This skill does not auto-chain into equilibration — each
+   stage is user-initiated.
 
 ## Step 0: Parse and Confirm
 

@@ -29,7 +29,9 @@ run or an extension. For a candidate prod node, use
 `validation.blocking_codes` if it is not ready.
 (`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool. For convenience, `pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the common eq → prod handoff matches by default. You can override `--pressure-bar` to switch ensembles freely — the saved eq state is reusable across NPT/NVT thanks to the ensemble-agnostic loader. See `skills/md-production/restart.md` "Switching Ensembles Across Nodes" for details.)
 
-If no completed eq node exists, suggest `/md-equilibration <job_dir>` first.
+If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.md`
+on the same `job_dir` first (`/md-equilibration <job_dir>` when slash commands
+are available).
 
 ## Default Decision Rule
 
@@ -117,11 +119,13 @@ with `mdclaw update_job_params` before creating new prod nodes.
 4. Present:
    ```
    Production complete. Next:
-     /md-analyze <job_dir>
+     Continue with skills/md-analyze/SKILL.md on this job_dir.
+     Shortcut, if available: /md-analyze <job_dir>
    
    To branch from same equilibration:
-     /md-production <job_dir>
+     Run this production skill again on the same job_dir.
+     Shortcut, if available: /md-production <job_dir>
    ```
 
-`/md-production` does not auto-invoke analysis — `/md-analyze` is always
-a user-initiated follow-up step.
+Production does not auto-invoke analysis — the analysis skill is always a
+user-initiated follow-up step.

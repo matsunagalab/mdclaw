@@ -25,13 +25,14 @@ The container (~4.6 GB) downloads automatically on first session start.
   450+ is the theoretical floor, 520+ is what we actively verify)
 
 `bin/mdclaw` chooses the runtime in this order:
-- `MDCLAW_RUNTIME=singularity|apptainer|docker` if you set it explicitly
+- `MDCLAW_RUNTIME=conda|singularity|apptainer|docker` if you set it explicitly
+- otherwise a conda env named `mdclaw` if it exists
 - otherwise `singularity` if a `.sif` is available
 - otherwise `apptainer` if a `.sif` is available
 - otherwise `docker`
 
-If no container runtime is available, `bin/mdclaw` falls back to a local
-`mdclaw` on your `PATH` (for example from a conda environment or `pip install -e .`).
+If no managed runtime is available, `bin/mdclaw` falls back to a local
+`mdclaw` on your `PATH` (for example from `pip install -e .`).
 For local development, use `conda env create -f environment.yml`; that
 environment includes conda-only scientific tools and `pymol-open-source` for
 headless structure preview rendering. A plain pip install does not provide the
@@ -40,6 +41,15 @@ PyMOL executable.
 The session-start hook downloads the container automatically:
 - on HPC, it prefers a `.sif` for Singularity/Apptainer
 - on desktop, it falls back to pulling the Docker image
+
+For a generic harness without plugin support:
+
+1. Put this repository where the harness can read `skills/`.
+2. Add `bin/mdclaw` to `PATH`, or install the Python package and expose the
+   `mdclaw` CLI.
+3. Use one runtime: conda (`environment.yml`), SIF (`MDCLAW_SIF`), or Docker
+   (`MDCLAW_DOCKER_IMAGE`). If slash commands are unavailable, have the
+   harness read the relevant `skills/<name>/SKILL.md` directly.
 
 ### Skills
 
@@ -103,6 +113,10 @@ Skill sequencing is always **user-initiated**: `/md-prepare` →
 the end of its stage and tells the user the next command to run. There is
 no automatic end-to-end chaining — you run the next stage yourself when you
 are ready.
+
+Those `/md-*` commands are shortcuts. The portable sequence is the same set of
+runbooks: `skills/md-prepare/SKILL.md` → `skills/md-equilibration/SKILL.md` →
+`skills/md-production/SKILL.md` → `skills/md-analyze/SKILL.md`.
 
 ### Defaults
 
@@ -289,7 +303,8 @@ Skills work directly via `.claude/commands/` when running Claude Code in
 the repo — no plugin install needed. In this dev mode, slash commands
 have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-equilibration`,
 `/md-production`, `/md-analyze`, `/hpc-run` (the `/mdclaw:*` form only
-exists when installed as a plugin).
+exists when installed as a plugin). Other harnesses can read the same
+`skills/*/SKILL.md` files directly and invoke `mdclaw` through Bash.
 
 Local reference PDFs or manuals can be kept under `ref/`. That directory is
 ignored by git and is intended for developer reference material only.

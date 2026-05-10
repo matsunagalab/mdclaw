@@ -20,7 +20,8 @@ retrying.
 3. Create and run a `prep` node with `prepare_complex`.
 4. Create and run a `solv` node with `solvate_structure`.
 5. Create and run a `topo` node with `build_amber_system`.
-6. Hand off to `/md-equilibration`; do not auto-chain stages.
+6. Hand off to `skills/md-equilibration/SKILL.md`; use `/md-equilibration`
+   only as a harness shortcut. Do not auto-chain stages.
 
 ## Resume Flow
 

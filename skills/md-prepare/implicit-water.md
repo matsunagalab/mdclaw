@@ -69,7 +69,7 @@ Calling contract:
 - Ligand parameters auto-resolve from the `prep` ancestor's artifacts.
 - Highly charged ligands and close contacts are recorded as topology
   diagnostics and do not stop the workflow or select a special
-  equilibration branch — `/md-equilibration` uses the same standard
+  equilibration branch — the equilibration skill uses the same standard
   staged minimization and low-temperature warmup protocol for all
   systems.
 
@@ -133,7 +133,8 @@ Failure codes you may see (run side, after the topology resolver):
 2. Tell the user:
    ```
    Preparation complete. Next:
-     /md-equilibration <job_dir>
+     Continue with skills/md-equilibration/SKILL.md on this job_dir.
+     Shortcut, if available: /md-equilibration <job_dir>
    ```
-   `/md-prepare` does not auto-invoke equilibration — each stage is
+   Preparation does not auto-invoke equilibration — each stage is
    user-initiated.

@@ -140,7 +140,8 @@ mdclaw update_job_params --job-dir <job_dir> \
 4. Tell the user:
    ```
    Equilibration complete. Next:
-     /md-production <job_dir>
+     Continue with skills/md-production/SKILL.md on this job_dir.
+     Shortcut, if available: /md-production <job_dir>
    ```
-   `/md-equilibration` does not auto-invoke production — each stage is
+   Equilibration does not auto-invoke production — each stage is
    user-initiated.

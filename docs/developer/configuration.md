@@ -40,6 +40,18 @@ Notes:
 - `MDCLAW_MODXNA_DIR` must contain `modxna.sh` and `dat/frcmod.modxna`.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.
 
+## Generic Harness Runtime
+
+Non-plugin harnesses do not need a special integration layer. Make `skills/`
+readable, put `mdclaw` on `PATH`, and provide one runtime:
+
+- conda: create `environment.yml` and install the package in that environment.
+- SIF: set `MDCLAW_SIF=/path/to/mdclaw.sif`.
+- Docker: set `MDCLAW_DOCKER_IMAGE` if using a non-default image.
+
+`bin/mdclaw` auto-selects conda first, then SIF with Singularity/Apptainer, then
+Docker, and finally a local `mdclaw` command if one is already on `PATH`.
+
 ## CLI Basics
 
 ```bash

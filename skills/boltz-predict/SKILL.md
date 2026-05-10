@@ -184,8 +184,8 @@ If they want to continue to MD simulation:
 > ```bash
 > mdclaw prepare_complex --structure-file /path/to/predicted_model.pdb
 > ```
-> **If you are using the Claude/Cursor slash-command workflow, `/md-prepare`
-> is the interactive equivalent."**
+> **If your harness provides slash commands, `/md-prepare` is the
+> interactive shortcut for the same preparation skill."**
 
 ---
 
