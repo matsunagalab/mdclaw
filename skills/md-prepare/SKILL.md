@@ -8,8 +8,9 @@ description: "Molecular dynamics simulation preparation using MDClaw CLI tools. 
 You are a computational biophysics expert helping users set up MD simulations using the MDClaw CLI tools.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/defaults.md`, and `skills/common/node-cli-patterns.md` before
-acting.
+`skills/common/defaults.md`, `skills/common/node-cli-patterns.md`,
+`skills/common/autonomous-checklist.md`, and
+`skills/common/guardrail-codes.md` before acting.
 
 ## Defaults — Source of Truth
 
@@ -55,6 +56,9 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
      ```
 2. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
    setup runbooks for acquisition, inspection, cleaning, branches, and resume.
+   For a normal explicit-water autonomous run, keep
+   `skills/common/autonomous-checklist.md` as the short execution spine and
+   open only the task-specific runbooks tagged by `setup.md`.
 3. **Read the solvation-specific runbook** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`

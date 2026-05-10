@@ -138,6 +138,10 @@ skill examples.
 
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
   to production continuation and records explicit extension intent.
+- `inspect_job(...)`: read-only summary of node statuses, leaves, claims, open
+  needs, warnings, and the progress index for weak-agent re-entry.
+- `explain_node(...)`: read-only node details plus execution-context validation
+  and auto-resolved inputs for a candidate node.
 - `update_job_params(...)`: merge workflow-level metadata into `progress.json`.
 - `update_node_status(...)`: synchronized node and progress status update path.
 

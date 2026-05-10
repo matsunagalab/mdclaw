@@ -18,3 +18,11 @@ Rules:
 - Do not manually wire topology, restart state, or trajectory paths in normal
   DAG flows.
 - One `job_dir` has one physical system and one `source` root.
+- Never emit angle-bracket placeholders literally. Resolve `<job_dir>`,
+  `<node_id>`, parent IDs, and numeric values from tool JSON before running a
+  command.
+- Use `mdclaw --list-json` when unsure about flags, defaults, or whether a tool
+  requires node context.
+- Use `mdclaw inspect_job --job-dir "$JD"` and
+  `mdclaw explain_node --job-dir "$JD" --node-id <node_id>` for re-entry
+  instead of manually inferring readiness from prose.

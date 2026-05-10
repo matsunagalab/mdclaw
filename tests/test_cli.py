@@ -51,6 +51,30 @@ class TestToolDiscovery:
             assert "description" in info, f"{name} missing 'description'"
             assert callable(info["fn"]), f"{name} fn is not callable"
 
+    def test_duplicate_tool_names_are_rejected(self, monkeypatch):
+        import sys
+        import types
+        from mdclaw import _cli
+
+        mod_a = types.ModuleType("fake_mdclaw_server_a")
+        mod_b = types.ModuleType("fake_mdclaw_server_b")
+
+        def fake_tool() -> dict:
+            return {"success": True}
+
+        mod_a.TOOLS = {"fake_tool": fake_tool}
+        mod_b.TOOLS = {"fake_tool": fake_tool}
+        monkeypatch.setitem(sys.modules, "fake_mdclaw_server_a", mod_a)
+        monkeypatch.setitem(sys.modules, "fake_mdclaw_server_b", mod_b)
+        monkeypatch.setattr(
+            _cli,
+            "SERVER_REGISTRY",
+            {"a": "fake_mdclaw_server_a", "b": "fake_mdclaw_server_b"},
+        )
+
+        with pytest.raises(ValueError, match="Duplicate tool name 'fake_tool'"):
+            _cli._discover_tools()
+
     def test_async_detection(self):
         from mdclaw._cli import _discover_tools
 
@@ -275,6 +299,33 @@ class TestArgparseConstruction:
         args = parser.parse_args(["--list"])
         assert args.list_tools is True
 
+    def test_list_json_flag(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args(["--list-json"])
+        assert args.list_tools_json is True
+
+    def test_tool_list_json_schema(self):
+        from mdclaw._cli import _tool_list_json, _discover_tools
+
+        tools = _discover_tools()
+        payload = _tool_list_json(tools)
+
+        assert payload["success"] is True
+        assert payload["total"] == len(tools)
+        tool_names = {tool["name"] for tool in payload["tools"]}
+        assert "solvate_structure" in tool_names
+        solvate = next(tool for tool in payload["tools"]
+                       if tool["name"] == "solvate_structure")
+        assert solvate["requires_node"] is True
+        params = {param["name"]: param for param in solvate["parameters"]}
+        assert params["pdb_file"]["cli_flag"] == "--pdb-file"
+        assert params["water_model"]["default"] == "opc"
+        assert params["salt"]["cli_action"] == "boolean_optional"
+
 
 # ---------------------------------------------------------------------------
 # Parameter Coercion
@@ -391,6 +442,16 @@ class TestSubprocessCLI:
         assert result.returncode == 0
         assert "solvate_structure" in result.stdout
         assert "Total:" in result.stdout
+
+    def test_list_json(self):
+        result = subprocess.run(
+            [sys.executable, "-m", "mdclaw._cli", "--list-json"],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        payload = json.loads(result.stdout)
+        assert payload["success"] is True
+        assert any(tool["name"] == "solvate_structure" for tool in payload["tools"])
 
     def test_tool_help(self):
         result = subprocess.run(

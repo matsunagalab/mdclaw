@@ -543,9 +543,14 @@ def create_file_not_found_error(file_path: str, file_type: str = "file") -> dict
     error_msg = f"{file_type} not found: {file_path}"
     return {
         "success": False, "error_type": "FileNotFoundError",
+        "code": "file_not_found",
         "message": error_msg,
         "hints": [f"Verify the {file_type} path is correct", "Check that the file exists"],
-        "context": {"file_path": file_path, "file_type": file_type},
+        "context": {
+            "file_path": file_path,
+            "file_type": file_type,
+            "code": "file_not_found",
+        },
         "recoverable": True, "errors": [error_msg], "warnings": [],
     }
 
@@ -558,7 +563,8 @@ def create_tool_not_available_error(
     hints.append(install_hint or "Ensure AmberTools is installed and conda environment is activated")
     return {
         "success": False, "error_type": "ToolNotAvailableError",
+        "code": "tool_not_available",
         "message": f"Required tool '{tool_name}' not found",
-        "hints": hints, "context": {"tool_name": tool_name},
+        "hints": hints, "context": {"tool_name": tool_name, "code": "tool_not_available"},
         "recoverable": False, "errors": [f"Tool not found: {tool_name}"], "warnings": [],
     }

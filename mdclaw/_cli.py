@@ -61,6 +61,12 @@ def _discover_tools() -> dict[str, dict]:
             continue
         module_tools = getattr(mod, "TOOLS", {})
         for tool_name, fn in module_tools.items():
+            if tool_name in tools:
+                first_server = tools[tool_name]["server"]
+                raise ValueError(
+                    f"Duplicate tool name '{tool_name}' registered by "
+                    f"servers '{first_server}' and '{server_name}'"
+                )
             tools[tool_name] = {
                 "fn": fn,
                 "is_async": inspect.iscoroutinefunction(fn),
@@ -191,6 +197,10 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
     parser.add_argument(
         "--list", action="store_true", dest="list_tools",
         help="List all available tools grouped by server.",
+    )
+    parser.add_argument(
+        "--list-json", action="store_true", dest="list_tools_json",
+        help="List available tools and CLI parameters as machine-readable JSON.",
     )
     parser.add_argument(
         "--job-dir", type=str, default=None, dest="_global_job_dir",
@@ -359,6 +369,106 @@ def _load_json_cli(value: str, field: str):
 # --list output
 # ---------------------------------------------------------------------------
 
+def _type_label(hint) -> str:
+    """Return a compact, stable label for a CLI parameter type."""
+    inner, is_optional = _unwrap_optional(hint)
+    if inner is inspect.Parameter.empty:
+        label = "str"
+    elif inner is bool:
+        label = "bool"
+    elif inner is int:
+        label = "int"
+    elif inner is float:
+        label = "float"
+    elif inner is str:
+        label = "str"
+    elif _is_list_of_str(inner):
+        label = "list[str]"
+    elif _is_dict_type(inner):
+        label = "dict"
+    elif _is_list_of_dict(inner):
+        label = "list[dict]"
+    elif _is_list_of_list(inner):
+        label = "list[list]"
+    else:
+        label = getattr(inner, "__name__", str(inner))
+    return f"Optional[{label}]" if is_optional else label
+
+
+def _jsonable_default(value):
+    """Normalize inspect defaults for JSON schema output."""
+    if value is inspect.Parameter.empty:
+        return None
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    if isinstance(value, (list, dict)):
+        return value
+    return str(value)
+
+
+def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
+    sig = inspect.signature(fn)
+    hints = {}
+    try:
+        hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
+                 if k != "return"}
+    except Exception:
+        pass
+
+    params = []
+    for pname, param in sig.parameters.items():
+        if pname.startswith("_"):
+            continue
+        hint = hints.get(pname, param.annotation)
+        if hint is inspect.Parameter.empty:
+            hint = str
+        inner, is_optional = _unwrap_optional(hint)
+        required = param.default is inspect.Parameter.empty and not is_optional
+        cli_flag = f"--{pname.replace('_', '-')}"
+        entry = {
+            "name": pname,
+            "cli_flag": cli_flag,
+            "type": _type_label(hint),
+            "required": required,
+            "has_default": param.default is not inspect.Parameter.empty,
+            "default": _jsonable_default(param.default),
+        }
+        if inner is bool:
+            entry["cli_action"] = "boolean_optional"
+        elif _is_list_of_str(inner):
+            entry["nargs"] = "+"
+        elif _takes_json(inner):
+            entry["expects_json"] = True
+        if tool_name in _JOB_DIR_DATA_TOOLS and pname == "job_dir":
+            entry["job_dir_role"] = "data"
+        params.append(entry)
+    return params
+
+
+def _tool_list_json(tools: dict[str, dict]) -> dict:
+    """Build a machine-readable projection of discovered CLI tools."""
+    payload = {
+        "success": True,
+        "version": __version__,
+        "total": len(tools),
+        "tools": [],
+    }
+    for tool_name, info in sorted(tools.items()):
+        description = info["description"]
+        summary = description.split("\n")[0].strip() if description else ""
+        payload["tools"].append({
+            "name": tool_name,
+            "server": info["server"],
+            "summary": summary,
+            "description": description,
+            "is_async": info["is_async"],
+            "requires_node": tool_name in _NODE_REQUIRED_TOOLS,
+            "job_dir_is_data": tool_name in _JOB_DIR_DATA_TOOLS,
+            "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
+        })
+    return payload
+
+
 def _print_tool_list(tools: dict[str, dict]) -> None:
     """Print tools grouped by server."""
     by_server: dict[str, list[tuple[str, str]]] = {}
@@ -420,6 +530,12 @@ def main(argv: list[str] | None = None) -> None:
     # --list
     if args.list_tools:
         _print_tool_list(tools)
+        sys.exit(0)
+
+    # --list-json
+    if args.list_tools_json:
+        json.dump(_tool_list_json(tools), sys.stdout, indent=2, default=str)
+        print()
         sys.exit(0)
 
     # No subcommand
@@ -519,6 +635,7 @@ def main(argv: list[str] | None = None) -> None:
         error_out = {
             "success": False,
             "error": str(e),
+            "message": str(e),
             "error_type": type(e).__name__,
             "code": "unhandled_exception",
         }

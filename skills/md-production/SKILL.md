@@ -22,7 +22,11 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 
 ## Prerequisites
 
-Read `progress.json` -- find a completed `eq` node.
+Run `mdclaw inspect_job --job-dir <job_dir>` and use the JSON result to find a
+completed `eq` or `prod` node, depending on whether this is a fresh production
+run or an extension. For a candidate prod node, use
+`mdclaw explain_node --job-dir <job_dir> --node-id <prod_node_id>` and branch on
+`validation.blocking_codes` if it is not ready.
 (`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool. For convenience, `pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the common eq → prod handoff matches by default. You can override `--pressure-bar` to switch ensembles freely — the saved eq state is reusable across NPT/NVT thanks to the ensemble-agnostic loader. See `skills/md-production/restart.md` "Switching Ensembles Across Nodes" for details.)
 
 If no completed eq node exists, suggest `/md-equilibration <job_dir>` first.

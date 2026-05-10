@@ -24,7 +24,10 @@ Extract parameters from the user's request and present a summary.
 
 ## Prerequisites
 
-Read `progress.json` -- find a completed `topo` node.
+Run `mdclaw inspect_job --job-dir <job_dir>` and use the JSON result to find a
+completed `topo` node. For a candidate eq node, use
+`mdclaw explain_node --job-dir <job_dir> --node-id <eq_node_id>` and branch on
+`validation.blocking_codes` if it is not ready.
 (`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tool.)
 If topology metadata contains ligand charge or clash diagnostics, record them
 for reporting, but do not choose a different equilibration protocol. All NVT

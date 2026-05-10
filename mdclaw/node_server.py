@@ -5,6 +5,8 @@ from mdclaw._node import (
     claim_node,
     clear_node_need,
     create_node,
+    explain_node,
+    inspect_job,
     rebuild_progress_index,
     record_node_need_attempt,
     release_node_claim,
@@ -14,6 +16,8 @@ from mdclaw._node import (
 
 TOOLS = {
     "create_node": create_node,
+    "inspect_job": inspect_job,
+    "explain_node": explain_node,
     "update_job_params": update_job_params,
     "update_node_status": update_node_status,
     "rebuild_progress_index": rebuild_progress_index,

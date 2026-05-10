@@ -114,6 +114,15 @@ class TestImportServers:
         assert "update_job_params" in TOOLS
         assert callable(TOOLS["update_job_params"])
 
+    def test_node_server_exposes_read_only_inspection_tools(self):
+        """Weak-agent re-entry uses read-only node inspection tools."""
+        from mdclaw.node_server import TOOLS
+
+        assert "inspect_job" in TOOLS
+        assert callable(TOOLS["inspect_job"])
+        assert "explain_node" in TOOLS
+        assert callable(TOOLS["explain_node"])
+
     def test_node_server_exposes_create_node_with_continue_from(self):
         """continue_from must remain an exposed parameter of create_node
         so skill docs that call `--continue-from` keep working."""

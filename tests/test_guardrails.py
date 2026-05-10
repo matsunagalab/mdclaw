@@ -5,6 +5,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from mdclaw._common import (
+    create_file_not_found_error,
+    create_tool_not_available_error,
+)
 from mdclaw.amber_server import (
     _canonical_water_model_name as amber_canonical_water_model_name,
     _evaluate_forcefield_water_guardrails,
@@ -46,6 +50,18 @@ def _write_minimal_metal_pdb(path: Path) -> None:
         "HETATM    1 ZN   ZN  A   1      10.000  10.000  10.000  1.00 20.00          ZN\n"
         "END\n"
     )
+
+
+def test_common_file_and_tool_errors_have_stable_codes():
+    missing = create_file_not_found_error("missing.pdb", "structure file")
+    assert missing["success"] is False
+    assert missing["code"] == "file_not_found"
+    assert missing["context"]["code"] == "file_not_found"
+
+    unavailable = create_tool_not_available_error("pdb4amber")
+    assert unavailable["success"] is False
+    assert unavailable["code"] == "tool_not_available"
+    assert unavailable["context"]["code"] == "tool_not_available"
 
 
 def test_build_amber_system_blocks_ff19sb_tip3p():

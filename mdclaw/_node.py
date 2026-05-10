@@ -1416,41 +1416,52 @@ def validate_node_execution_context(
     disagree with the actual parameters for this run.
     """
     errors: list[str] = []
+    blocking_codes: list[str] = []
+
+    def add_error(code: str, message: str) -> None:
+        errors.append(message)
+        if code not in blocking_codes:
+            blocking_codes.append(code)
+
     jd = Path(job_dir)
     node_json = jd / "nodes" / node_id / "node.json"
     if not node_json.exists():
         return {
             "success": False,
             "code": "node_missing",
+            "blocking_codes": ["node_missing"],
             "errors": [f"Node '{node_id}' does not exist under {job_dir}"],
         }
 
     node = read_node(job_dir, node_id)
     node_type = node.get("node_type")
     if node_type != expected_node_type:
-        errors.append(
+        add_error(
+            "node_type_mismatch",
             f"Node '{node_id}' has type '{node_type}', expected '{expected_node_type}'"
         )
 
     progress = _load_progress_v3(jd / "progress.json")
     index = (progress or {}).get("nodes", {})
     if node_id not in index:
-        errors.append(f"Node '{node_id}' is missing from progress.json")
+        add_error("node_missing_from_progress", f"Node '{node_id}' is missing from progress.json")
 
     allowed_parent_types = _ALLOWED_PARENT_TYPES.get(expected_node_type, frozenset())
     for parent_id in node.get("parent_node_ids", []):
         parent_entry = index.get(parent_id)
         parent_type = parent_entry.get("type") if parent_entry else None
         if parent_type not in allowed_parent_types:
-            errors.append(
+            add_error(
+                "parent_type_invalid",
                 f"Node '{node_id}' cannot run with parent '{parent_id}' "
                 f"of type '{parent_type}'; expected one of {sorted(allowed_parent_types)}"
             )
         if parent_entry is None:
-            errors.append(f"Parent node '{parent_id}' is missing from progress.json")
+            add_error("parent_missing_from_progress", f"Parent node '{parent_id}' is missing from progress.json")
             continue
         if parent_entry.get("status") != "completed":
-            errors.append(
+            add_error(
+                "parent_not_completed",
                 f"Parent node '{parent_id}' must be completed before running "
                 f"'{node_id}' (status={parent_entry.get('status')!r})"
             )
@@ -1458,17 +1469,21 @@ def validate_node_execution_context(
     for dep_id in node.get("dependency_node_ids", []):
         dep_entry = index.get(dep_id)
         if dep_entry is None:
-            errors.append(f"Dependency node '{dep_id}' is missing from progress.json")
+            add_error("dependency_missing_from_progress", f"Dependency node '{dep_id}' is missing from progress.json")
             continue
         if dep_entry.get("status") != "completed":
-            errors.append(
+            add_error(
+                "dependency_not_completed",
                 f"Dependency node '{dep_id}' must be completed before running "
                 f"'{node_id}' (status={dep_entry.get('status')!r})"
             )
 
     if expected_node_type == "source":
         if node.get("parent_node_ids") or node.get("dependency_node_ids"):
-            errors.append("source nodes are DAG roots and cannot have parents/dependencies")
+            add_error(
+                "source_has_parent_or_dependency",
+                "source nodes are DAG roots and cannot have parents/dependencies",
+            )
 
     actual_conditions = actual_conditions or {}
     declared_conditions = node.get("conditions", {}) or {}
@@ -1477,7 +1492,8 @@ def validate_node_execution_context(
             # Strict: a declared condition is a contract the tool must
             # cross-check. Silently skipping keys absent from
             # actual_conditions defeats the purpose of declaring them.
-            errors.append(
+            add_error(
+                "condition_missing",
                 f"Tool did not include declared condition '{key}' in "
                 f"actual_conditions; node declared {key}={expected!r} but "
                 f"the runtime call provided no value to cross-check"
@@ -1488,13 +1504,15 @@ def validate_node_execution_context(
             # A declared condition is only useful if the runtime call can
             # verify it. ``None`` means the tool did not have a concrete
             # value to check against the declared contract.
-            errors.append(
+            add_error(
+                "condition_unverifiable",
                 f"actual_conditions[{key!r}] is None; node declared "
                 f"{key}={expected!r} but the condition cannot be cross-checked"
             )
             continue
         if not _values_match(expected, actual):
-            errors.append(
+            add_error(
+                "condition_mismatch",
                 f"Node condition mismatch for '{key}': declared {expected!r}, "
                 f"actual {actual!r}"
             )
@@ -1502,6 +1520,7 @@ def validate_node_execution_context(
     return {
         "success": not errors,
         "code": "node_execution_context_invalid" if errors else "ok",
+        "blocking_codes": blocking_codes,
         "errors": errors,
     }
 
@@ -1529,6 +1548,142 @@ def find_nodes(
             continue
         result[nid] = info
     return result
+
+
+def inspect_job(job_dir: str) -> dict:
+    """Return a compact read-only summary of a schema-v3 job directory."""
+    jd = Path(job_dir).resolve()
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
+        return {
+            "success": False,
+            "code": "progress_missing_or_invalid",
+            "message": f"progress.json is missing or invalid under {jd}",
+            "job_dir": str(jd),
+            "nodes": {},
+            "warnings": [],
+        }
+
+    nodes = progress.get("nodes", {})
+    status_counts = {status: 0 for status in sorted(NODE_STATUSES)}
+    for info in nodes.values():
+        status = info.get("status")
+        if status in status_counts:
+            status_counts[status] += 1
+
+    referenced_parents: set[str] = set()
+    for info in nodes.values():
+        referenced_parents.update(info.get("parents", []))
+    leaf_nodes = sorted(nid for nid in nodes if nid not in referenced_parents)
+
+    nodes_by_status: dict[str, list[str]] = {
+        status: sorted(
+            nid for nid, info in nodes.items()
+            if info.get("status") == status
+        )
+        for status in sorted(NODE_STATUSES)
+    }
+    open_needs = {
+        nid: {
+            "open_needs_count": info.get("open_needs_count", 0),
+            "open_need_types": info.get("open_need_types", []),
+            "open_need_attempts_count": info.get("open_need_attempts_count", 0),
+            "attempted_node_ids": info.get("attempted_node_ids", []),
+        }
+        for nid, info in nodes.items()
+        if info.get("open_needs_count")
+    }
+    claims = {
+        nid: info["claim"]
+        for nid, info in nodes.items()
+        if isinstance(info.get("claim"), dict)
+    }
+
+    return {
+        "success": True,
+        "code": "ok",
+        "job_dir": str(jd),
+        "job_id": progress.get("job_id"),
+        "schema_version": progress.get("schema_version"),
+        "params": progress.get("params", {}),
+        "node_count": len(nodes),
+        "status_counts": status_counts,
+        "leaf_nodes": leaf_nodes,
+        "nodes_by_status": nodes_by_status,
+        "failed_nodes": nodes_by_status.get("failed", []),
+        "running_nodes": nodes_by_status.get("running", []),
+        "pending_nodes": nodes_by_status.get("pending", []),
+        "open_needs": open_needs,
+        "claims": claims,
+        "progress_warnings": progress.get("warnings", []),
+        "nodes": nodes,
+    }
+
+
+def explain_node(
+    job_dir: str,
+    node_id: str,
+    expected_node_type: Optional[str] = None,
+    actual_conditions: Optional[dict] = None,
+) -> dict:
+    """Return read-only node details plus validation and resolved inputs."""
+    jd = Path(job_dir).resolve()
+    node_json = jd / "nodes" / node_id / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "message": f"Node '{node_id}' does not exist under {jd}",
+            "job_dir": str(jd),
+            "node_id": node_id,
+        }
+
+    node = read_node(str(jd), node_id)
+    node_type = node.get("node_type")
+    expected = expected_node_type or node_type
+    progress = _load_progress_v3(jd / "progress.json") or {}
+    nodes_index = progress.get("nodes", {})
+    progress_entry = nodes_index.get(node_id, {})
+    parent_statuses = {
+        parent_id: (nodes_index.get(parent_id) or {}).get("status")
+        for parent_id in node.get("parent_node_ids", [])
+    }
+    dependency_statuses = {
+        dep_id: (nodes_index.get(dep_id) or {}).get("status")
+        for dep_id in node.get("dependency_node_ids", [])
+    }
+
+    validation = validate_node_execution_context(
+        str(jd),
+        node_id,
+        expected,
+        actual_conditions=actual_conditions,
+    )
+    resolved_inputs = resolve_node_inputs(str(jd), node_id, node_type)
+    input_errors = resolved_inputs.get("input_resolution_errors", [])
+
+    return {
+        "success": True,
+        "code": "ok",
+        "job_dir": str(jd),
+        "node_id": node_id,
+        "node_type": node_type,
+        "status": node.get("status"),
+        "label": node.get("label"),
+        "parents": node.get("parent_node_ids", []),
+        "dependencies": node.get("dependency_node_ids", []),
+        "parent_statuses": parent_statuses,
+        "dependency_statuses": dependency_statuses,
+        "conditions": node.get("conditions", {}),
+        "artifact_keys": sorted((node.get("artifacts") or {}).keys()),
+        "metadata_errors": (node.get("metadata") or {}).get("errors", []),
+        "warnings": node.get("warnings", []),
+        "progress_entry": progress_entry,
+        "validation": validation,
+        "ready_to_run": validation.get("success") is True and not input_errors,
+        "resolved_inputs": resolved_inputs,
+        "missing_inputs": input_errors,
+    }
 
 
 def get_ancestors(job_dir: str, node_id: str) -> list[str]:

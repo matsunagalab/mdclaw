@@ -23,6 +23,8 @@ from mdclaw._node import (
     get_ancestors,
     get_children,
     init_progress_v3,
+    explain_node,
+    inspect_job,
     read_node,
     rebuild_progress_index,
     record_node_need_attempt,
@@ -210,6 +212,7 @@ class TestValidateNodeExecutionContext:
         ctx = validate_node_execution_context(str(job_dir), "solv_001", "solv")
 
         assert ctx["success"] is False
+        assert "parent_not_completed" in ctx["blocking_codes"]
         assert any("must be completed" in e for e in ctx["errors"])
 
     def test_rejects_wrong_parent_type(self, job_dir):
@@ -221,6 +224,7 @@ class TestValidateNodeExecutionContext:
         ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq")
 
         assert ctx["success"] is False
+        assert "parent_type_invalid" in ctx["blocking_codes"]
         # eq accepts {"topo", "eq"} parents — rejection message lists
         # both as the allowed set.
         assert any("expected one of ['eq', 'topo']" in e for e in ctx["errors"])
@@ -245,6 +249,7 @@ class TestValidateNodeExecutionContext:
         )
 
         assert ctx["success"] is False
+        assert "condition_mismatch" in ctx["blocking_codes"]
         assert any("condition mismatch" in e for e in ctx["errors"])
 
     def test_accepts_completed_parent_and_matching_conditions(self, job_dir):
@@ -291,6 +296,7 @@ class TestValidateNodeExecutionContext:
         )
 
         assert ctx["success"] is False
+        assert "condition_missing" in ctx["blocking_codes"]
         assert any("did not include declared condition 'pressure_bar'" in e
                    for e in ctx["errors"])
 
@@ -316,8 +322,62 @@ class TestValidateNodeExecutionContext:
         )
 
         assert ctx["success"] is False
+        assert "condition_unverifiable" in ctx["blocking_codes"]
         assert any("actual_conditions['device_index'] is None" in e
                    for e in ctx["errors"])
+
+
+# ── Read-only inspection helpers ───────────────────────────────────────────
+
+
+class TestReadOnlyInspection:
+
+    def test_inspect_job_summarizes_statuses_and_leaves(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(str(job_dir), "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+        begin_node(str(job_dir), "solv_001")
+
+        summary = inspect_job(str(job_dir))
+
+        assert summary["success"] is True
+        assert summary["code"] == "ok"
+        assert summary["node_count"] == 2
+        assert summary["status_counts"]["completed"] == 1
+        assert summary["status_counts"]["running"] == 1
+        assert summary["leaf_nodes"] == ["solv_001"]
+        assert summary["running_nodes"] == ["solv_001"]
+        assert "prep_001" in summary["nodes"]
+
+    def test_explain_node_returns_validation_and_inputs(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(str(job_dir), "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merge/merged.pdb"})
+        create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+
+        explanation = explain_node(str(job_dir), "solv_001")
+
+        assert explanation["success"] is True
+        assert explanation["node_type"] == "solv"
+        assert explanation["parents"] == ["prep_001"]
+        assert explanation["parent_statuses"] == {"prep_001": "completed"}
+        assert explanation["validation"]["success"] is True
+        assert explanation["ready_to_run"] is True
+        assert explanation["resolved_inputs"]["pdb_file"].endswith(
+            "prep_001/artifacts/merge/merged.pdb"
+        )
+
+    def test_explain_node_surfaces_blockers(self, job_dir):
+        create_node(str(job_dir), "prep")
+        create_node(str(job_dir), "solv", parent_node_ids=["prep_001"])
+
+        explanation = explain_node(str(job_dir), "solv_001")
+
+        assert explanation["success"] is True
+        assert explanation["ready_to_run"] is False
+        assert "parent_not_completed" in explanation["validation"]["blocking_codes"]
+        assert explanation["missing_inputs"]
 
 
 # ── complete_node strict artifact validation ──────────────────────────────
