@@ -103,6 +103,8 @@ skill examples.
   artifact from the current node, parent, or ancestors, writes a ray-rendered
   preview PNG plus PyMOL script and manifest under `artifacts/previews/`, and
   registers `structure_preview_png` / `structure_preview_manifest` on the node.
+  The executed Python script is `structure_preview_pymol_script`; the companion
+  `.pml` preview is registered separately as `structure_preview_pymol_pml`.
   Styles include `overview`, `publication`, `ligand_site`, `membrane`,
   `solvent_ions`, and `topology_check`; the manifest records camera/view and
   representation choices for human review.

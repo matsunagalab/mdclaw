@@ -48,8 +48,8 @@ mdclaw --job-dir <job_dir> --node-id <node_id> \
 
 Prefer `--style ligand_site` for ligand binding sites, `--style membrane` for
 membrane systems, and `--style solvent_ions --show-solvent` when water/ion
-placement is the inspection target. If `structure_preview_png` is produced,
-display it in image-capable agent UIs; otherwise provide the node ID, caption,
-PNG path, and source structure artifact. If PyMOL is unavailable
+placement is the inspection target. If `output_png` / `structure_preview_png`
+is produced, display it in image-capable agent UIs; otherwise provide the node
+ID, caption, PNG path, and source structure artifact. If PyMOL is unavailable
 (`code=pymol_not_available`), report that preview rendering was skipped rather
 than treating it as an analysis failure.

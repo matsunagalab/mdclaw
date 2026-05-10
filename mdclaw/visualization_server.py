@@ -447,6 +447,8 @@ def render_structure_preview(
         "success": False,
         "structure_file": None,
         "output_png": None,
+        "structure_preview_png": None,
+        "structure_preview_manifest": None,
         "manifest": None,
         "pymol_script": None,
         "pymol_pml": None,
@@ -663,6 +665,8 @@ def render_structure_preview(
         "success": True,
         "structure_file": str(structure_path),
         "output_png": str(output_png),
+        "structure_preview_png": str(output_png),
+        "structure_preview_manifest": str(manifest_file),
         "manifest": str(manifest_file),
         "pymol_script": str(pymol_py),
         "pymol_pml": str(pymol_pml),
@@ -679,7 +683,8 @@ def render_structure_preview(
         artifacts = {
             "structure_preview_png": rel(output_png),
             "structure_preview_manifest": rel(manifest_file),
-            "structure_preview_pymol_script": rel(pymol_pml),
+            "structure_preview_pymol_script": rel(pymol_py),
+            "structure_preview_pymol_pml": rel(pymol_pml),
         }
         metadata = {
             "tool": "render_structure_preview",

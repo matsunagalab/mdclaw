@@ -342,33 +342,36 @@ def build_openmm_system(
 
     canonical_implicit: Optional[str] = None
     if implicit_solvent is not None:
-        canonical = _fc.normalize_implicit_solvent(implicit_solvent)
-        if canonical not in _fc.IMPLICIT_SOLVENT_XML:
-            supported = ", ".join(_fc.supported_implicit_solvent_models())
-            result["errors"].append(
-                f"Unknown implicit_solvent={implicit_solvent!r}. "
-                f"Supported: {supported}."
-            )
-            return _emit_failure({
-                **result,
-                "code": "implicit_solvent_model_unsupported",
-            })
-        expected_xml = _fc.IMPLICIT_SOLVENT_XML[canonical]
-        if not any(
-            _xml_entry_matches_catalog(entry, expected_xml)
-            for entry in forcefield_xml
-        ):
-            result["errors"].append(
-                f"build_openmm_system requested implicit_solvent={canonical!r}, "
-                f"but forcefield_xml does not include {expected_xml!r}. "
-                f"Add it to forcefield_xml, or use "
-                f"build_amber_system --implicit-solvent {canonical}."
-            )
-            return _emit_failure({
-                **result,
-                "code": "implicit_solvent_xml_missing",
-            })
-        canonical_implicit = canonical
+        if str(implicit_solvent).strip().lower() == "custom":
+            canonical_implicit = "custom"
+        else:
+            canonical = _fc.normalize_implicit_solvent(implicit_solvent)
+            if canonical not in _fc.IMPLICIT_SOLVENT_XML:
+                supported = ", ".join((*_fc.supported_implicit_solvent_models(), "custom"))
+                result["errors"].append(
+                    f"Unknown implicit_solvent={implicit_solvent!r}. "
+                    f"Supported: {supported}."
+                )
+                return _emit_failure({
+                    **result,
+                    "code": "implicit_solvent_model_unsupported",
+                })
+            expected_xml = _fc.IMPLICIT_SOLVENT_XML[canonical]
+            if not any(
+                _xml_entry_matches_catalog(entry, expected_xml)
+                for entry in forcefield_xml
+            ):
+                result["errors"].append(
+                    f"build_openmm_system requested implicit_solvent={canonical!r}, "
+                    f"but forcefield_xml does not include {expected_xml!r}. "
+                    f"Add it to forcefield_xml, or use "
+                    f"build_amber_system --implicit-solvent {canonical}."
+                )
+                return _emit_failure({
+                    **result,
+                    "code": "implicit_solvent_xml_missing",
+                })
+            canonical_implicit = canonical
     else:
         inferred, matched = _detect_implicit_solvent_xml(forcefield_xml)
         if len(matched) > 1:
@@ -504,23 +507,32 @@ def build_openmm_system(
     # template overrode the implicit definitions), and the run-side shim
     # would later run vacuum dynamics under the GB label. Mirror of the
     # ``build_amber_system`` ``implicit_solvent_force_missing`` guard.
+    gb_force_classes = (
+        "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
+    )
+    present_forces = {type(f).__name__ for f in system.getForces()}
+    has_gb_force = bool(present_forces & set(gb_force_classes))
     if canonical_implicit is not None:
-        gb_force_classes = (
-            "GBSAOBCForce", "CustomGBForce", "AmoebaGeneralizedKirkwoodForce",
-        )
-        present = {type(f).__name__ for f in system.getForces()}
-        if not (present & set(gb_force_classes)):
+        if not has_gb_force:
             result["errors"].append(
                 f"implicit_solvent={canonical_implicit!r} requested but the "
                 f"built System carries no Generalized-Born force "
                 f"(expected one of {', '.join(gb_force_classes)}). "
-                f"Check that the ``implicit/*.xml`` was loaded after the "
+                f"Check that the GB XML was loaded after the "
                 f"protein force field XML."
             )
             return _emit_failure({
                 **result,
                 "code": "implicit_solvent_force_missing",
             })
+    elif has_gb_force:
+        canonical_implicit = "custom"
+        result["parameters"]["implicit_solvent"] = canonical_implicit
+        result["warnings"].append(
+            "System carries a GB / implicit-solvent force from custom XML; "
+            "recording implicit_solvent='custom'. Downstream run_* calls must "
+            "also pass --implicit-solvent custom."
+        )
 
     try:
         integrator = LangevinIntegrator(

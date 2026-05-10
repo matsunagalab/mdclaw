@@ -385,6 +385,9 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "get_alphafold_structure",
     "register_local_structure",
     "prepare_complex",
+    "create_mutated_structure",
+    "phosphorylate_residues",
+    "prepare_modified_nucleic",
     "solvate_structure",
     "embed_in_membrane",
     "build_amber_system",
@@ -396,6 +399,8 @@ _NODE_REQUIRED_TOOLS = frozenset({
     "analyze_rmsd",
     "analyze_distance",
     "analyze_q_value",
+    "analyze_rmsf",
+    "analyze_contact_frequency",
 })
 
 # For these tools, ``job_dir`` is data being registered or inspected rather

@@ -602,7 +602,7 @@ def solvate_structure(
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "solv")
         if "input_resolution_error" in _inputs:
-            return create_validation_error(
+            blocked = create_validation_error(
                 "job_dir/node_id",
                 _inputs["input_resolution_error"],
                 expected="Completed prep ancestor with merged_pdb artifact",
@@ -612,11 +612,14 @@ def solvate_structure(
                 },
                 code="input_resolution_blocked",
             )
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked.get("errors", []))
+            return blocked
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
 
     if not pdb_file:
-        return create_validation_error(
+        blocked = create_validation_error(
             "pdb_file",
             "pdb_file is required",
             expected="Explicit PDB path, or --job-dir/--node-id for DAG auto-resolve",
@@ -624,12 +627,19 @@ def solvate_structure(
             hints=["Run prepare_complex first or execute in node mode from a solv node."],
             code="missing_pdb_file",
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=blocked.get("errors", []))
+        return blocked
 
     # Validate input file (resolve to absolute path for conda run compatibility)
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
         logger.error(f"Input PDB file not found: {pdb_file}")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
 
     # Check packmol-memgen availability; fall back to OpenMM if not available
@@ -1031,6 +1041,9 @@ def embed_in_membrane(
         result["errors"].append(
             "pdb_file is required (pass explicitly or use --job-dir/--node-id for DAG auto-resolve)"
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
 
     result["input_file"] = str(pdb_file)
@@ -1040,6 +1053,9 @@ def embed_in_membrane(
     if not pdb_path.exists():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
         logger.error(f"Input PDB file not found: {pdb_file}")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
     
     # Check packmol-memgen availability
@@ -1047,6 +1063,9 @@ def embed_in_membrane(
         result["errors"].append("packmol-memgen not found in PATH")
         result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
         logger.error("packmol-memgen not available")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
 
     # Setup output directory

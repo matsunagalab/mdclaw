@@ -388,7 +388,20 @@ def get_timeout(timeout_type: str) -> int:
     env_key = f"MDCLAW_{timeout_type.upper()}_TIMEOUT"
     env_val = os.getenv(env_key)
     if env_val is not None:
-        return int(env_val)
+        try:
+            timeout = int(env_val)
+            if timeout <= 0:
+                raise ValueError("timeout must be positive")
+            return timeout
+        except (TypeError, ValueError):
+            fallback = _TIMEOUT_DEFAULTS.get(timeout_type, _TIMEOUT_DEFAULTS["default"])
+            logger.warning(
+                "Ignoring invalid %s=%r; using default timeout %s seconds",
+                env_key,
+                env_val,
+                fallback,
+            )
+            return fallback
     return _TIMEOUT_DEFAULTS.get(timeout_type, _TIMEOUT_DEFAULTS["default"])
 
 

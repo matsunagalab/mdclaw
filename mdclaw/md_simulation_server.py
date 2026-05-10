@@ -87,9 +87,12 @@ def _resolve_implicit_solvent_model(
     """
     from mdclaw import forcefield_catalog as _fc
 
+    if str(implicit_solvent).strip().lower() == "custom":
+        return None, None
+
     canon = _fc.normalize_implicit_solvent(implicit_solvent)
     if canon not in _fc.IMPLICIT_SOLVENT_XML:
-        supported = ", ".join(_fc.supported_implicit_solvent_models())
+        supported = ", ".join((*_fc.supported_implicit_solvent_models(), "custom"))
         return None, {
             "code": "implicit_solvent_model_unsupported",
             "errors": [
@@ -154,14 +157,17 @@ def _check_topology_implicit_solvent_match(
     if topology_implicit_solvent is None:
         canon_topo: Optional[str] = None
     else:
-        normalized = _fc.normalize_implicit_solvent(topology_implicit_solvent)
-        if normalized not in _fc.IMPLICIT_SOLVENT_XML:
+        if str(topology_implicit_solvent).strip().lower() == "custom":
+            normalized = "custom"
+        else:
+            normalized = _fc.normalize_implicit_solvent(topology_implicit_solvent)
+        if normalized != "custom" and normalized not in _fc.IMPLICIT_SOLVENT_XML:
             return {
                 "code": "implicit_solvent_topology_metadata_invalid",
                 "errors": [
                     f"Topo node metadata records implicit_solvent="
                     f"{topology_implicit_solvent!r}, which is not a "
-                    f"recognized GB model. The node.json metadata may "
+                    f"recognized GB model or 'custom'. The node.json metadata may "
                     f"be corrupt; rebuild the topo node via "
                     f"build_amber_system."
                 ],
@@ -175,10 +181,22 @@ def _check_topology_implicit_solvent_match(
     if runtime_implicit_solvent is None:
         canon_run: Optional[str] = None
     else:
-        normalized = _fc.normalize_implicit_solvent(runtime_implicit_solvent)
-        # Unknown runtime names are caught later by
-        # ``_resolve_implicit_solvent_model`` with the same code path; we
-        # leave that responsibility there to keep error precedence stable.
+        if str(runtime_implicit_solvent).strip().lower() == "custom":
+            normalized = "custom"
+        else:
+            normalized = _fc.normalize_implicit_solvent(runtime_implicit_solvent)
+        if normalized != "custom" and normalized not in _fc.IMPLICIT_SOLVENT_XML:
+            supported = ", ".join((*_fc.supported_implicit_solvent_models(), "custom"))
+            return {
+                "code": "implicit_solvent_model_unsupported",
+                "errors": [
+                    f"Unknown implicit-solvent model {runtime_implicit_solvent!r}. "
+                    f"Supported: {supported}."
+                ],
+                "message": (
+                    f"Unknown runtime implicit_solvent={runtime_implicit_solvent!r}."
+                ),
+            }
         canon_run = normalized
 
     if canon_topo == canon_run:

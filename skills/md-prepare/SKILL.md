@@ -76,8 +76,8 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
    ```
    For ligand complexes use `--style ligand_site`; for membranes use
    `--style membrane`; for solvation checks use `--style solvent_ions
-   --show-solvent`. If a `structure_preview_png` artifact is produced, show
-   it to the user in image-capable agent UIs. Otherwise report the node ID,
+   --show-solvent`. If `output_png` / `structure_preview_png` is produced,
+   show it to the user in image-capable agent UIs. Otherwise report the node ID,
    caption, PNG path, and source structure artifact path. If PyMOL is missing
    (`code=pymol_not_available`), do not block preparation.
 7. After `topo_001` completes, hand off: tell the user to invoke

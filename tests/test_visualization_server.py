@@ -53,6 +53,8 @@ def test_render_structure_preview_direct_mode(monkeypatch, tmp_path):
 
     assert result["success"] is True
     assert result["output_png"].endswith("direct.preview.png")
+    assert result["structure_preview_png"] == result["output_png"]
+    assert result["structure_preview_manifest"] == result["manifest"]
     assert result["manifest"].endswith("direct.preview_manifest.json")
     script_text = (tmp_path / "previews" / "direct.preview.py").read_text()
     assert "user_selection = None" in script_text
@@ -94,6 +96,12 @@ def test_render_structure_preview_registers_analyze_node(monkeypatch, tmp_path):
     )
     assert node["artifacts"]["structure_preview_manifest"] == (
         "artifacts/previews/prod_preview.preview_manifest.json"
+    )
+    assert node["artifacts"]["structure_preview_pymol_script"] == (
+        "artifacts/previews/prod_preview.preview.py"
+    )
+    assert node["artifacts"]["structure_preview_pymol_pml"] == (
+        "artifacts/previews/prod_preview.preview.pml"
     )
     assert node["metadata"]["preview"]["style"] == "publication"
     progress = json.loads((job_dir / "progress.json").read_text())

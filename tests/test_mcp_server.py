@@ -156,6 +156,19 @@ class TestConfig:
 
         assert get_timeout("amber") == 999
 
+    def test_invalid_env_override_falls_back(self, monkeypatch):
+        """Invalid timeout env vars should not crash CLI discovery or tools."""
+        monkeypatch.setenv("MDCLAW_SOLVATION_TIMEOUT", "not-an-int")
+        from mdclaw._common import get_timeout
+
+        assert get_timeout("solvation") == 7200
+
+    def test_non_positive_env_override_falls_back(self, monkeypatch):
+        monkeypatch.setenv("MDCLAW_DEFAULT_TIMEOUT", "0")
+        from mdclaw._common import get_timeout
+
+        assert get_timeout("default") == 300
+
 
 # ---------------------------------------------------------------------------
 # HPC Utilities (get_module_loads)

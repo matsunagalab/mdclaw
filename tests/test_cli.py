@@ -142,6 +142,20 @@ class TestArgparseConstruction:
             main(["fetch_structure", "--source", "pdb", "--pdb-id", "1AKE"])
         assert exc_info.value.code != 0
 
+    def test_node_required_tool_set_covers_dag_mutators(self):
+        """Tools that create or complete workflow nodes must be CLI-gated."""
+        from mdclaw._cli import _NODE_REQUIRED_TOOLS
+
+        expected = {
+            "create_mutated_structure",
+            "phosphorylate_residues",
+            "prepare_modified_nucleic",
+            "analyze_rmsf",
+            "analyze_contact_frequency",
+        }
+        assert expected <= _NODE_REQUIRED_TOOLS
+        assert "render_structure_preview" not in _NODE_REQUIRED_TOOLS
+
     def test_optional_params_have_defaults(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

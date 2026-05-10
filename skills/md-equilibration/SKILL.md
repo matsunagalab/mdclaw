@@ -123,8 +123,8 @@ mdclaw update_job_params --job-dir <job_dir> \
    mdclaw --job-dir <job_dir> --node-id <eq_node_id> \
      render_structure_preview --style overview --ray
    ```
-   If the tool returns `structure_preview_png`, display it in image-capable
-   agent UIs or provide the PNG path, node ID, caption, and source artifact.
+   If the tool returns `output_png` / `structure_preview_png`, display it in
+   image-capable agent UIs or provide the PNG path, node ID, caption, and source artifact.
    If PyMOL is unavailable (`code=pymol_not_available`), continue the handoff
    without treating it as an equilibration failure.
 3. Tell the user:

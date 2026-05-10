@@ -740,7 +740,12 @@ def _apply_status(
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
         nodes = progress.setdefault("nodes", {})
-        nodes[node_id] = _node_progress_summary(data)
+        # Another writer may have updated node.json in the gap between our
+        # node write and this index refresh. Re-read the per-node source of
+        # truth while holding progress.lock so the global index never mirrors
+        # an older snapshot over a newer node state.
+        latest_data = _read_node_json_path(node_json) or data
+        nodes[node_id] = _node_progress_summary(latest_data)
         _atomic_write_json(pj, progress)
 
 
@@ -1281,8 +1286,6 @@ def update_job_params(job_dir: str, params: dict) -> dict:
         }
 
     jd = Path(job_dir).resolve()
-    _load_progress_v3(jd / "progress.json", create_if_missing=True)
-
     update_job_summaries(str(jd), params=params)
 
     progress = _load_progress_v3(jd / "progress.json")

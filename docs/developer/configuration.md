@@ -18,7 +18,7 @@ returns `code=pymol_not_available` without blocking MD workflow tools.
 ```bash
 export MDCLAW_OUTPUT_DIR="."
 export MDCLAW_DEFAULT_TIMEOUT=300
-export MDCLAW_SOLVATION_TIMEOUT=600
+export MDCLAW_SOLVATION_TIMEOUT=7200
 export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_AMBER_TIMEOUT=3600
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600

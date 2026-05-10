@@ -2351,6 +2351,33 @@ class TestCheckTopologyImplicitSolventMatch:
         assert err["code"] == "implicit_solvent_topology_mismatch"
         assert "GBn2" in " ".join(err["errors"])
 
+    def test_custom_implicit_topo_requires_custom_runtime(self):
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        assert _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="custom",
+            runtime_implicit_solvent="custom",
+        ) is None
+
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="custom",
+            runtime_implicit_solvent=None,
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_topology_mismatch"
+
+    def test_unknown_runtime_implicit_model_is_not_reported_as_mismatch(self):
+        from mdclaw.md_simulation_server import (
+            _check_topology_implicit_solvent_match,
+        )
+        err = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent="OBC2",
+            runtime_implicit_solvent="MAGIC_GB",
+        )
+        assert err is not None
+        assert err["code"] == "implicit_solvent_model_unsupported"
+
     def test_corrupt_topo_metadata_returns_distinct_code(self):
         """A garbage value in ``node.json`` ``metadata.implicit_solvent``
         surfaces as ``implicit_solvent_topology_metadata_invalid`` so it

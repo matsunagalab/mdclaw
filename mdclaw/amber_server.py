@@ -2357,7 +2357,7 @@ def build_amber_system(
     # Setup output directory
     _node_mode = job_dir and node_id
     if _node_mode:
-        from mdclaw._node import begin_node
+        from mdclaw._node import begin_node, fail_node
         out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         begin_node(job_dir, node_id)
@@ -2365,6 +2365,16 @@ def build_amber_system(
         base_dir = Path(output_dir) if output_dir else WORKING_DIR
         out_dir = create_unique_subdir(base_dir, "topology")
     result["output_dir"] = str(out_dir)
+
+    def _fail_running_topo(blocked: dict) -> dict:
+        if _node_mode:
+            fail_node(
+                job_dir,
+                node_id,
+                errors=blocked.get("errors", []),
+                warnings=blocked.get("warnings", []),
+            )
+        return blocked
     
     # Output files. ``build_amber_system`` emits the XML triple consumed
     # by run_equilibration / run_production through the DAG resolver.
@@ -2382,14 +2392,14 @@ def build_amber_system(
     if not fix_lig_result.get("success", True):
         result["errors"].extend(fix_lig_result.get("errors", []))
         logger.error(f"Ligand residue-name repair failed: {fix_lig_result.get('errors', [])}")
-        return {
+        return _fail_running_topo({
             **result,
             "error_type": "ValidationError",
             "code": "ambiguous_ligand_residue_repair",
             "message": (
                 "Ambiguous ligand residue-name repair before openmmforcefields build."
             ),
-        }
+        })
     if fix_lig_result["unl_count"] > 0:
         result["warnings"].extend(fix_lig_result["replacements"])
 
@@ -2435,12 +2445,12 @@ def build_amber_system(
     if ligand_coverage_errors:
         result["errors"].extend(ligand_coverage_errors)
         logger.error(f"Ligand template coverage failed: {ligand_coverage_errors}")
-        return {
+        return _fail_running_topo({
             **result,
             "error_type": "ValidationError",
             "code": "ligand_template_coverage_failed",
             "message": "Ligand parameter residue names do not match the topology input PDB.",
-        }
+        })
 
     if valid_ligands:
         ligand_contact_diagnostics = validate_initial_ligand_contacts(
