@@ -114,6 +114,14 @@ class TestImportServers:
         assert "update_job_params" in TOOLS
         assert callable(TOOLS["update_job_params"])
 
+    def test_benchmark_exposes_generic_submission_template(self):
+        """External agents need a submission scaffold that does not depend on
+        MDClaw job directories."""
+        from mdclaw.benchmark import TOOLS
+
+        assert "create_benchmark_submission_template" in TOOLS
+        assert callable(TOOLS["create_benchmark_submission_template"])
+
     def test_node_server_exposes_read_only_inspection_tools(self):
         """Weak-agent re-entry uses read-only node inspection tools."""
         from mdclaw.node_server import TOOLS

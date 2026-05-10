@@ -14,6 +14,45 @@
     "T08_communicate_t4l_dynamics",
     "T09_study_t4l_wt_vs_l99a_methods"
   ],
+  "families": {
+    "system_preparation": {
+      "display_name": "System Preparation & Guardrails",
+      "score_axis": "preparation",
+      "intent": "Build MD-ready system artifacts when the chemistry is supported, and refuse unsafe parameterization with structured guardrails when it is not.",
+      "task_ids": [
+        "T02_prep_metalloenzyme_guardrail",
+        "T03_prep_ligand_pose_t4l_benzene"
+      ]
+    },
+    "engine_reliability": {
+      "display_name": "Execution / Engine Reliability",
+      "score_axis": "execution",
+      "intent": "Run, save, reload, and continue short MD simulations while preserving finite energies and trajectory integrity.",
+      "task_ids": [
+        "T01_engine_smoke",
+        "T04_exec_short_protein_md",
+        "T05_exec_restart_continue"
+      ]
+    },
+    "scientific_answer": {
+      "display_name": "Scientific Answer vs Experimental Truth",
+      "score_axis": "scientific_answer",
+      "intent": "Answer mutation or binding-effect questions against held-back experimental direction with calibrated confidence and limitations.",
+      "task_ids": [
+        "T06_answer_stability_t4l_l99a",
+        "T07_answer_ppi_hotspot_barnase_d39a"
+      ]
+    },
+    "evidence_communication": {
+      "display_name": "Evidence & Methods Communication",
+      "score_axis": "evidence_communication",
+      "intent": "Package figures, metrics, captions, Methods text, provenance, and limitations so the result is auditable.",
+      "task_ids": [
+        "T08_communicate_t4l_dynamics",
+        "T09_study_t4l_wt_vs_l99a_methods"
+      ]
+    }
+  },
   "notes": [
     "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
     "Curator-fixed PDBs; ground truth held in <task>/truth/ (scorer-only).",

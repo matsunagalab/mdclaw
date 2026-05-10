@@ -9,9 +9,12 @@ import pytest
 from pydantic import ValidationError
 
 from mdclaw.benchmark.models import (
+    BackendInfo,
     SCORE_AXES,
     DeterministicCheck,
     GroundTruthCheck,
+    HarnessInfo,
+    ModelInfo,
     SubmissionManifest,
     Task,
 )
@@ -74,6 +77,16 @@ def test_submission_manifest_status_enum():
             "task_id": "x",
             "status": "weird",
         })
+
+
+def test_external_backend_harness_model_metadata_validate():
+    backend = BackendInfo(name="gromacs", version="2024.4", container="gromacs:2024.4")
+    harness = HarnessInfo(name="external-python-script", version="1.0", adapter="lab-adapter")
+    model = ModelInfo(name="custom-md-agent", provider="local", version="0.1")
+
+    assert backend.name == "gromacs"
+    assert harness.name == "external-python-script"
+    assert model.provider == "local"
 
 
 def test_score_axes_constant_matches_literal():

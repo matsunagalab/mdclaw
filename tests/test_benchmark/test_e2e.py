@@ -78,6 +78,87 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
     assert summ["scores"]["execution"] is None  # no execution-axis tasks
 
 
+def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
+    """External agents should not need an MDClaw job_dir: a generic template
+    plus backend/harness/model metadata should validate, score, and summarize."""
+    task_id = "T06_answer_stability_t4l_l99a"
+    task_file = DATASET_DIR / "tasks" / task_id / "task.json"
+    if not task_file.exists():
+        pytest.skip("v1.0 dataset not present")
+
+    output_dir = tmp_path / "benchmark_runs"
+    run_id = "external_agent_t06"
+    init = cli.init_benchmark_run(
+        output_dir=str(output_dir),
+        run_id=run_id,
+        execution_mode="plan_only",
+        judge_mode="deterministic",
+        backend_name="gromacs",
+        backend_version="2024.4",
+        harness_name="external-python-script",
+        harness_version="1.0",
+        model_name="custom-md-agent",
+        model_provider="local",
+        task_ids=[task_id],
+    )
+    assert init["success"], init
+
+    run_dir = output_dir / run_id
+    run_config = json.loads((run_dir / "run_config.json").read_text())
+    assert run_config["backend"]["name"] == "gromacs"
+    assert run_config["harness"]["name"] == "external-python-script"
+    assert run_config["model"]["name"] == "custom-md-agent"
+
+    environment = json.loads((run_dir / "environment.json").read_text())
+    assert environment["scorer"]["name"] == "mdclaw.benchmark"
+
+    sub_dir = run_dir / "tasks" / task_id / "submission"
+    template = cli.create_benchmark_submission_template(
+        task_id=task_id,
+        run_id=run_id,
+        output_dir=str(sub_dir),
+        dataset_dir=str(DATASET_DIR),
+        agent_name="external-agent",
+        backend_name="gromacs",
+        harness_name="external-python-script",
+        model_name="custom-md-agent",
+    )
+    assert template["success"], template
+    assert template["validation"]["success"], template
+
+    evidence = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "summary": "External-agent fixture answer.",
+        "effect": {"direction": "destabilizing", "confidence": "high"},
+        "limitations": ["test fixture"],
+    }
+    (sub_dir / "evidence_report.json").write_text(json.dumps(evidence))
+    manifest_path = sub_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["status"] = "completed"
+    manifest_path.write_text(json.dumps(manifest))
+
+    validation = cli.validate_benchmark_submission(str(task_file), str(sub_dir))
+    assert validation["success"], validation
+
+    score = cli.score_benchmark_submission(
+        task_file=str(task_file),
+        submission_dir=str(sub_dir),
+        run_id=run_id,
+        output_file=str(sub_dir.parent / "score.json"),
+    )
+    assert score["success"], score
+    assert score["score"]["weighted_total"] == 1.0
+
+    summary = cli.summarize_benchmark_run(run_dir=str(run_dir))
+    assert summary["success"], summary
+    assert summary["summary"]["backend"]["name"] == "gromacs"
+    assert summary["summary"]["harness"]["name"] == "external-python-script"
+    assert summary["summary"]["model"]["name"] == "custom-md-agent"
+
+
 def test_summary_dedup_on_re_run(tmp_path: Path):
     """summarize_benchmark_run twice must NOT stack rows in summaries.jsonl."""
     if not (DATASET_DIR / "tasks" / "T06_answer_stability_t4l_l99a" / "task.json").exists():

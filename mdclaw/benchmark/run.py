@@ -41,6 +41,9 @@ def _environment_record() -> dict[str, Any]:
         "cwd": os.getcwd(),
         "python": sys.version,
         "platform": platform.platform(),
+        "scorer": {"name": "mdclaw.benchmark", "version": MDCLAW_VERSION},
+        # Kept for compatibility with existing run records; use scorer.version
+        # for new consumers.
         "mdclaw_version": MDCLAW_VERSION,
         "env": {
             "MDCLAW_LOG_LEVEL": os.environ.get("MDCLAW_LOG_LEVEL"),
@@ -110,8 +113,8 @@ def init_benchmark_run(
     run_id: str = "",
     execution_mode: str = "lite",
     judge_mode: str = "deterministic",
-    backend_name: str = "mdclaw",
-    backend_version: str = MDCLAW_VERSION,
+    backend_name: str = "unknown",
+    backend_version: str = "",
     backend_container: str = "",
     harness_name: str = "unknown",
     harness_version: str = "",
@@ -126,6 +129,10 @@ def init_benchmark_run(
     task_ids: Optional[list[str]] = None,
 ) -> dict[str, Any]:
     """Create a benchmark run skeleton on disk and append a row to runs.jsonl.
+
+    ``backend_*`` describes the MD engine/toolchain under test, ``harness_*``
+    describes the agent runner, and ``model_*`` describes the LLM or model when
+    applicable. The scorer itself is recorded separately in ``environment.json``.
 
     Returns a JSON-serializable dict (preserving the v0.1 CLI contract).
     """

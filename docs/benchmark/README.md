@@ -1,9 +1,10 @@
 # MDAgentBench v1.0
 
 MDAgentBench is a tool-agnostic benchmark contract for molecular dynamics
-agents. It evaluates MDClaw as one backend, but the submission format is just
-files on disk, so Claude Code, Cursor, OpenCode, raw OpenMM scripts, GROMACS
-workflows, or other harnesses can be compared with the same scorer.
+agents. MDClaw is one supported backend, but it is not required: Claude Code,
+Cursor, OpenCode, raw OpenMM scripts, GROMACS workflows, or lab-specific agents
+can all be compared by writing the same `submission/` files and running the
+same scorer.
 
 The v1.0 release replaces the v0.1 pilot with:
 
@@ -16,8 +17,29 @@ The v1.0 release replaces the v0.1 pilot with:
   submitted JSON.
 - Per-axis aggregation that divides by the number of tasks where each axis
   is in scope, so a perfect run reaches 1.0 on every populated axis.
-- Self-contained execution in either the `mdclaw:latest` container or a
-  `mdclaw` conda env. `bin/mdclaw` auto-selects.
+- A self-contained scorer/validator runtime in either the `mdclaw:latest`
+  container or a `mdclaw` conda env. The agent being evaluated may use any
+  separate MD toolchain as long as it emits the benchmark artifacts.
+
+New to the benchmark? External agents and programs should start with
+[`external-agents.md`](external-agents.md). It explains which files are public,
+which files are scorer-only, what to submit, and what the scorer compares.
+
+## Benchmark Families
+
+MDAgentBench v1.0 is organized around four benchmark families. These families
+describe the human intent of each task; the scoring contract still uses the
+machine-readable `primary_score` and `secondary_scores` fields in `task.json`.
+
+| Family | What It Tests | Scored By | Tasks |
+|---|---|---|---|
+| **System Preparation & Guardrails** | Whether an agent can produce MD-ready system artifacts, preserve key chemistry, and refuse unsafe parameterization when required. | Required files, structured guardrail codes, ligand-pose RMSD recomputation. | T02, T03 |
+| **Execution / Engine Reliability** | Whether an agent can run short MD, produce reloadable trajectories, avoid NaNs, and continue cleanly from restart state. | Completion flags, finite-energy/no-NaN checks, trajectory rescans, restart-continuity checks. | T01, T04, T05 |
+| **Scientific Answer vs Experimental Truth** | Whether an agent can answer a mutation or binding-effect question with the correct experimental direction and calibrated limits. | Held-back ground-truth comparisons in `truth/`. | T06, T07 |
+| **Evidence & Methods Communication** | Whether an agent can package figures, metrics, captions, Methods text, provenance, and limitations so the result is auditable. | Figure/file checks, caption ↔ metrics consistency, Methods/provenance requirements. | T08, T09 |
+
+Use the family names for discussion and task selection. Use the canonical
+`task_id` values for submissions and scoring.
 
 ## Scores
 
@@ -59,17 +81,20 @@ benchmarks/mdagentbench/
 
 Pilot tasks (v1.0):
 
-| Task | Primary | Target system | Source |
-|---|---|---|---|
-| T01_engine_smoke | execution | Chignolin (5AWL) | Honda 2008 |
-| T02_prep_metalloenzyme_guardrail | preparation | Carbonic anhydrase (2CBA) | — |
-| T03_prep_ligand_pose_t4l_benzene | preparation | T4L L99A + benzene (181L) | Morton 1995 |
-| T04_exec_short_protein_md | execution | T4 lysozyme WT (2LZM) | — |
-| T05_exec_restart_continue | execution | Chignolin (5AWL) | — |
-| T06_answer_stability_t4l_l99a | scientific_answer | T4L L99A vs WT | Eriksson 1992 |
-| T07_answer_ppi_hotspot_barnase_d39a | scientific_answer | Barnase D39A | Schreiber & Fersht 1995 |
-| T08_communicate_t4l_dynamics | evidence_communication | T4L WT trajectory | — |
-| T09_study_t4l_wt_vs_l99a_methods | evidence_communication | T4L WT vs L99A study | Eriksson 1992 |
+| Task | Short Name | Family | Primary | Mode | Intent |
+|---|---|---|---|---|---|
+| T01_engine_smoke | Engine smoke MD | Execution / Engine Reliability | execution | lite | Run tiny chignolin MD and prove the engine can emit a finite, reloadable trajectory. |
+| T02_prep_metalloenzyme_guardrail | Metal guardrail refusal | System Preparation & Guardrails | preparation | dry_run | Refuse unsafe Zn metalloenzyme preparation with the expected structured guardrail code. |
+| T03_prep_ligand_pose_t4l_benzene | Ligand-pose preparation | System Preparation & Guardrails | preparation | lite | Build T4L L99A + benzene while preserving the crystal ligand pose within RMSD tolerance. |
+| T04_exec_short_protein_md | Short protein MD | Execution / Engine Reliability | execution | lite | Prepare, equilibrate, and run short T4 lysozyme MD with trajectory integrity checks. |
+| T05_exec_restart_continue | Restart continuation | Execution / Engine Reliability | execution | lite | Split chignolin MD into restart chunks and verify step/frame continuity. |
+| T06_answer_stability_t4l_l99a | Stability direction answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether T4L L99A stabilizes or destabilizes relative to WT. |
+| T07_answer_ppi_hotspot_barnase_d39a | Binding hotspot answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether barnase D39A weakens binding in the barnase-barstar complex. |
+| T08_communicate_t4l_dynamics | Figure/metrics communication | Evidence & Methods Communication | evidence_communication | dry_run | Produce dynamics figures and captions whose numeric claims match `metrics.json`. |
+| T09_study_t4l_wt_vs_l99a_methods | Study methods package | Evidence & Methods Communication | evidence_communication | dry_run | Package a WT-vs-L99A study design with Methods, provenance, and evidence. |
+
+For design rationale and system-selection notes, see
+[`docs/research/mdagentbench_v1_design.md`](../research/mdagentbench_v1_design.md).
 
 ## Submission Contract
 
@@ -91,10 +116,25 @@ Only the artifacts are scored. The scorer never reads chat transcripts,
 tool calls, or harness logs. Provenance md5 references are recomputed
 on the scorer side.
 
-## Self-contained execution
+Machine-readable schemas live under `benchmarks/mdagentbench/schemas/`:
 
-Run benchmark commands either entirely inside the `mdclaw:latest` container
-(Mode A) or entirely inside a `mdclaw` conda env (Mode B). **Never mix.**
+- `task.schema.json` for task contracts.
+- `submission_manifest.schema.json` for `submission/manifest.json`.
+- `score.schema.json` for scorer output.
+
+External adapters should treat these schemas plus the task's
+`required_outputs` as the stable interface.
+
+## Scorer Runtime
+
+Run benchmark validation/scoring commands either entirely inside the
+`mdclaw:latest` container (Mode A) or entirely inside a `mdclaw` conda env
+(Mode B). **Never mix scorer runtimes inside one run.**
+
+This runtime is for listing tasks, validating submissions, scoring, and
+summarizing. The agent or MD program under test can run elsewhere, including a
+GROMACS installation, a standalone OpenMM script, another container, or an LLM
+harness, as long as it writes the required `submission/` files.
 
 ```bash
 # Mode A — container self-contained
@@ -133,7 +173,7 @@ strictness are visible in review without requiring real MD compute.
 ## Per-task Workflow
 
 ```bash
-# 1. Read task.json + input/, build submission/.
+# 1. The agent under test reads task.json + input/ and builds submission/.
 # 2. Validate:
 mdclaw validate_benchmark_submission \
   --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json \
@@ -170,7 +210,25 @@ manual in v1.0:
 `mdclaw run_llm_judge` will land in v1.x. With `--judge-mode deterministic`
 (default) the secondary axes return `null`; they are not silently zeroed.
 
-## MDClaw Adapter
+## Generic Submission Template
+
+For external agents that need a starting directory, use the generic template
+tool. It does not require an MDClaw `job_dir`:
+
+```bash
+mdclaw create_benchmark_submission_template \
+  --task-id T06_answer_stability_t4l_l99a \
+  --run-id <run_id> \
+  --output-dir benchmark_runs/<run_id>/tasks/T06_answer_stability_t4l_l99a/submission \
+  --agent-name my-agent \
+  --backend-name gromacs \
+  --harness-name external-script
+```
+
+The template is intentionally conservative (`manifest.status="partial"`). Fill
+in task-specific metrics, evidence, and artifacts before scoring.
+
+## Optional MDClaw Adapter
 
 `export_mdclaw_submission` creates a partial-status submission skeleton from
 an MDClaw `job_dir`:

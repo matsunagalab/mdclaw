@@ -42,7 +42,8 @@ def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
         "run_id": run_id,
         "task_id": task_id,
         "agent": {"name": "fake_submissions.py", "mode": mode},
-        "backend": {"name": "mdclaw", "version": "0.5.2"},
+        "backend": {"name": "synthetic-fixture", "version": "1.0"},
+        "harness": {"name": "fake_submissions.py"},
         "scripts": [],
         "raw_outputs": [],
     }

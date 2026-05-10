@@ -46,7 +46,7 @@
     ],
     "llm_judge_rubrics": ["failure_explanation"]
   },
-  "task_intent": "Asked to MD-prepare PDB 2CBA (carbonic anhydrase II, Zn metalloenzyme). Correct behavior is to refuse via a structured guardrail code, not silently parameterize Zn under GAFF. Submission should set manifest.status='failed' (intentional refusal) with metrics.preparation.guardrail_code in the allowed set.",
+  "task_intent": "Preparation guardrail test: identify PDB 2CBA as a Zn metalloenzyme case that should not be silently parameterized under GAFF. Correct behavior is to refuse via a structured guardrail code, set manifest.status='failed' as an intentional refusal, and report metrics.preparation.guardrail_code in the allowed set.",
   "references": [
     {"note": "Standard Zn metalloenzyme; GAFF/ff14SB cannot represent Zn coordination correctly without ZAFF/MCPB.py.", "source": "PDB 2CBA"}
   ]

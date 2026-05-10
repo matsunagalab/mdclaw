@@ -45,7 +45,7 @@
       "figure_selection"
     ]
   },
-  "task_intent": "Run a brief MD on T4 lysozyme WT (or analyze a trajectory the agent produces during this task), then compute backbone RMSD vs. starting frame, per-residue Cα RMSF, and CA-CA contact frequency. Emit at least 3 figures with captions whose numeric claims match the metrics.json values within 2%.",
+  "task_intent": "Evidence-communication test: produce auditable T4 lysozyme dynamics figures whose captions match the submitted metrics. Run brief MD on T4 lysozyme WT (or analyze a trajectory produced during this task), compute backbone RMSD vs. starting frame, per-residue Cα RMSF, and CA-CA contact frequency, then emit at least 3 figures with captions whose numeric claims match metrics.json within 2%.",
   "references": [
     {"note": "T4 lysozyme WT — well-characterized fold and dynamics.", "source": "PDB 2LZM"}
   ]

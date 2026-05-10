@@ -3,9 +3,9 @@
 The public CLI surface (``init_benchmark_run``, ``validate_benchmark_submission``,
 ``score_benchmark_submission``, ``summarize_benchmark_run``,
 ``list_benchmark_tasks``, ``validate_benchmark_task``, ``write_benchmark_schemas``,
-``create_pilot_benchmark``, ``export_mdclaw_submission``) is preserved so that
-the registry and skill docs continue to work. Internal implementation is split
-across submodules:
+``create_pilot_benchmark``, ``create_benchmark_submission_template``,
+``export_mdclaw_submission``) is preserved so that the registry and skill docs
+continue to work. Internal implementation is split across submodules:
 
 - ``models``: pydantic v2 BaseModels for Task, Submission, Score, RunConfig.
 - ``integrity``: md5 verification, trajectory rescan, manifest/metrics
@@ -20,6 +20,7 @@ across submodules:
 """
 
 from mdclaw.benchmark.cli import (
+    create_benchmark_submission_template,
     create_pilot_benchmark,
     export_mdclaw_submission,
     init_benchmark_run,
@@ -35,6 +36,7 @@ TOOLS = {
     "list_benchmark_tasks": list_benchmark_tasks,
     "write_benchmark_schemas": write_benchmark_schemas,
     "create_pilot_benchmark": create_pilot_benchmark,
+    "create_benchmark_submission_template": create_benchmark_submission_template,
     "validate_benchmark_task": validate_benchmark_task,
     "validate_benchmark_submission": validate_benchmark_submission,
     "score_benchmark_submission": score_benchmark_submission,

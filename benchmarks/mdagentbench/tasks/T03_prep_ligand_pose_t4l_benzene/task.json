@@ -40,7 +40,7 @@
     "ground_truth_checks": [],
     "llm_judge_rubrics": ["overclaim_detection", "limitations"]
   },
-  "task_intent": "Prepare an MD-ready system from PDB 181L (T4 lysozyme L99A with benzene bound in the engineered internal cavity). After clean / parameterize / build / minimize, write the final benzene heavy-atom RMSD against input/ligand_reference.pdb (the crystal pose) into metrics.preparation.ligand_heavy_atom_rmsd_angstrom. The scorer recomputes the same RMSD with mdtraj and verifies the agent's value is within 0.05 Å of the recomputation.",
+  "task_intent": "Ligand-preparation test: build an MD-ready system from PDB 181L while preserving the benzene crystal pose in the T4 lysozyme L99A cavity. After clean / parameterize / build / minimize, write the final benzene heavy-atom RMSD against input/ligand_reference.pdb into metrics.preparation.ligand_heavy_atom_rmsd_angstrom; the scorer recomputes the same RMSD with mdtraj and checks agreement within 0.05 Å.",
   "references": [
     {"note": "Morton et al. 1995 — internal cavity benzene binding to T4L L99A.", "source": "PDB 181L"},
     {"note": "Eriksson et al. 1992 — L99A cavity-creating mutation context.", "source": "doi:10.1126/science.1553543"}

@@ -58,7 +58,7 @@
     ],
     "llm_judge_rubrics": ["methods_traceability", "limitations"]
   },
-  "task_intent": "Package a WT vs L99A T4 lysozyme study as a methods bundle: WT and mutant roles in provenance.study.roles, methods.md draft describing the comparison protocol, evidence_report with effect.direction (destabilizing) anchored to literature, and decision_log capturing key choices.",
+  "task_intent": "Evidence-and-methods test: package a WT vs L99A T4 lysozyme comparison as an auditable study bundle. Include WT and mutant roles in provenance.study.roles, a methods.md draft describing the comparison protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices.",
   "references": [
     {"note": "Eriksson et al. 1992 — L99A destabilization.", "source": "doi:10.1126/science.1553543"},
     {"note": "T4 lysozyme WT.", "source": "PDB 2LZM"}

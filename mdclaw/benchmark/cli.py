@@ -30,6 +30,28 @@ from mdclaw.benchmark.run import (
 _DEFAULT_DATASET_DIR = "benchmarks/mdagentbench"
 
 
+def _build_family_lookup(dataset: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for family_key, family in (dataset.get("families") or {}).items():
+        if not isinstance(family, dict):
+            continue
+        for task_id in family.get("task_ids") or []:
+            lookup[str(task_id)] = {
+                "family": family_key,
+                "family_display_name": family.get("display_name", family_key),
+                "family_intent": family.get("intent", ""),
+            }
+    return lookup
+
+
+def _intent_summary(task_intent: str) -> str:
+    """Return a compact one-sentence summary for task discovery output."""
+    first_sentence = task_intent.split(". ", 1)[0].strip()
+    if first_sentence and not first_sentence.endswith("."):
+        first_sentence += "."
+    return first_sentence
+
+
 # ---------------------------------------------------------------------------
 # Discovery
 
@@ -47,6 +69,7 @@ def list_benchmark_tasks(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, A
         return {"success": False, "errors": [f"dataset.json invalid: {exc}"]}
 
     tasks_meta: list[dict[str, Any]] = []
+    family_lookup = _build_family_lookup(dataset)
     for task_id in dataset.get("task_ids", []):
         task_path = Path(dataset_dir) / "tasks" / task_id / "task.json"
         if not task_path.is_file():
@@ -60,10 +83,15 @@ def list_benchmark_tasks(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, A
         tasks_meta.append({
             "task_id": task.task_id,
             "category": task.category,
+            "family": family_lookup.get(task.task_id, {}).get("family"),
+            "family_display_name": family_lookup.get(task.task_id, {}).get(
+                "family_display_name"
+            ),
             "primary_score": task.primary_score,
             "secondary_scores": list(task.secondary_scores),
             "execution_mode": task.execution_mode,
             "time_limit_minutes": task.time_limit_minutes,
+            "intent_summary": _intent_summary(task.task_intent),
         })
 
     return {
@@ -71,6 +99,7 @@ def list_benchmark_tasks(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, A
         "benchmark_version": dataset.get("benchmark_version", "MDAgentBench-v1.0"),
         "schema_version": dataset.get("schema_version", "1.0"),
         "task_count": len(tasks_meta),
+        "families": dataset.get("families", {}),
         "tasks": tasks_meta,
     }
 
@@ -210,7 +239,193 @@ def create_pilot_benchmark(
 
 
 # ---------------------------------------------------------------------------
-# MDClaw job adapter
+# Generic and backend-specific submission adapters
+
+
+def _normalize_submission_relpath(rel_path: str) -> str:
+    return rel_path.split("/", 1)[1] if rel_path.startswith("submission/") else rel_path
+
+
+def _manifest_outputs_for_template(required_outputs: list[str]) -> dict[str, Any]:
+    normalized = [_normalize_submission_relpath(path) for path in required_outputs]
+    outputs: dict[str, Any] = {
+        "metrics": "metrics.json" if "metrics.json" in normalized else None,
+        "provenance": "provenance.json" if "provenance.json" in normalized else None,
+        "evidence_report": (
+            "evidence_report.json" if "evidence_report.json" in normalized else None
+        ),
+        "decision_log": "decision_log.jsonl" if "decision_log.jsonl" in normalized else None,
+        "methods": "methods.md" if "methods.md" in normalized else None,
+        "figures": [path for path in normalized if path.startswith("figures/")],
+        "topology": [path for path in normalized if path.startswith("topology/")],
+        "trajectories": [
+            path for path in normalized
+            if path.startswith("trajectories/") or path.endswith((".dcd", ".xtc"))
+        ],
+        "checkpoints": [
+            path for path in normalized
+            if path.startswith("checkpoints/") or path.endswith((".chk", ".xml"))
+        ],
+        "prepared_structure": (
+            "prepared_structure.pdb" if "prepared_structure.pdb" in normalized else None
+        ),
+    }
+    return outputs
+
+
+def _write_template_file(path: Path, content: str, overwrite: bool) -> bool:
+    if path.exists() and not overwrite:
+        return False
+    ensure_directory(path.parent)
+    path.write_text(content)
+    return True
+
+
+def create_benchmark_submission_template(
+    task_id: str,
+    run_id: str,
+    output_dir: str,
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    task_file: str = "",
+    agent_name: str = "external-agent",
+    backend_name: str = "unknown",
+    harness_name: str = "external",
+    model_name: str = "unknown",
+    status: str = "partial",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Create a generic submission skeleton for any agent or MD backend.
+
+    This tool is intentionally independent of MDClaw job directories. It reads
+    the public task contract, creates the required submission files, and leaves
+    task-specific metrics/evidence for the external agent to fill in.
+    """
+    task_path = Path(task_file) if task_file else Path(dataset_dir) / "tasks" / task_id / "task.json"
+    try:
+        task = validation.load_task(task_path)
+    except (ValidationError, json.JSONDecodeError, FileNotFoundError) as exc:
+        return {"success": False, "errors": [f"task file invalid: {exc}"]}
+    if task.task_id != task_id:
+        return {
+            "success": False,
+            "errors": [f"task_id={task_id!r} does not match task file {task.task_id!r}"],
+        }
+
+    out_dir = Path(output_dir)
+    ensure_directory(out_dir)
+
+    required_outputs = [_normalize_submission_relpath(path) for path in task.required_outputs]
+    standard_files = {
+        "manifest.json",
+        "metrics.json",
+        "provenance.json",
+        "evidence_report.json",
+        "decision_log.jsonl",
+        "methods.md",
+    }
+    files_to_create = set(required_outputs) | {
+        "manifest.json",
+        "provenance.json",
+        "evidence_report.json",
+    }
+    if "metrics.json" in required_outputs:
+        files_to_create.add("metrics.json")
+
+    files_written: list[str] = []
+    skipped_existing: list[str] = []
+
+    def write(rel: str, content: str) -> None:
+        target = out_dir / rel
+        if _write_template_file(target, content, overwrite):
+            files_written.append(str(target))
+        else:
+            skipped_existing.append(str(target))
+
+    manifest_payload = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task.task_id,
+        "status": status,
+        "outputs": _manifest_outputs_for_template(required_outputs),
+        "limitations": [
+            "Generated by create_benchmark_submission_template; fill task-specific "
+            "metrics, evidence, and artifacts before scoring."
+        ],
+    }
+    write("manifest.json", json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n")
+
+    if "metrics.json" in files_to_create:
+        metrics_payload = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "task_id": task.task_id,
+            "preparation": {},
+            "execution": {},
+            "analysis": {},
+            "runtime": {},
+            "_template_note": "Fill task-specific deterministic values before scoring.",
+        }
+        write("metrics.json", json.dumps(metrics_payload, indent=2, sort_keys=True) + "\n")
+
+    provenance_payload = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task.task_id,
+        "agent": {"name": agent_name},
+        "backend": {"name": backend_name},
+        "harness": {"name": harness_name},
+        "model": {"name": model_name},
+        "scripts": [],
+        "raw_outputs": [],
+    }
+    write("provenance.json", json.dumps(provenance_payload, indent=2, sort_keys=True) + "\n")
+
+    evidence_payload = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task.task_id,
+        "summary": "Template evidence report. Replace with task-specific evidence.",
+        "limitations": ["Template generated before task-specific work was completed."],
+        "effect": {"direction": None, "confidence": None},
+        "figure_captions": [],
+    }
+    write("evidence_report.json", json.dumps(evidence_payload, indent=2, sort_keys=True) + "\n")
+
+    if "decision_log.jsonl" in files_to_create:
+        write(
+            "decision_log.jsonl",
+            json.dumps({
+                "event": "template_created",
+                "task_id": task.task_id,
+                "note": "Replace or append task-specific decisions.",
+            }, sort_keys=True) + "\n",
+        )
+    if "methods.md" in files_to_create:
+        write("methods.md", "# Methods\n\nTemplate. Replace with task-specific methods.\n")
+
+    for rel in sorted(files_to_create - standard_files):
+        suffix = Path(rel).suffix.lower()
+        if suffix == ".pdb":
+            content = "REMARK Template placeholder. Replace before scoring.\n"
+        elif suffix in {".json"}:
+            content = "{}\n"
+        else:
+            content = "Template placeholder. Replace before scoring.\n"
+        write(rel, content)
+
+    validation_result = validate_benchmark_submission(str(task_path), str(out_dir))
+    return {
+        "success": not skipped_existing,
+        "task_id": task.task_id,
+        "submission_dir": str(out_dir),
+        "files_written": files_written,
+        "skipped_existing": skipped_existing,
+        "validation": validation_result,
+        "errors": (
+            ["some files already exist; pass overwrite=True to replace them"]
+            if skipped_existing else []
+        ),
+    }
 
 
 def export_mdclaw_submission(
@@ -306,5 +521,6 @@ __all__ = [
     "summarize_benchmark_run",
     "write_benchmark_schemas",
     "create_pilot_benchmark",
+    "create_benchmark_submission_template",
     "export_mdclaw_submission",
 ]

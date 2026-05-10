@@ -42,7 +42,7 @@
     ],
     "llm_judge_rubrics": ["confidence_calibration", "overclaim_detection"]
   },
-  "task_intent": "Predict the direction of ΔΔG for T4 lysozyme L99A relative to WT (PDB 2LZM). Report effect.direction in evidence_report.json with calibrated confidence and explicit limitations.",
+  "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM). Report effect.direction in evidence_report.json with calibrated confidence and explicit limitations.",
   "references": [
     {"note": "Eriksson et al. 1992 — cavity-creating mutation, +4-5 kcal/mol destabilization.", "source": "doi:10.1126/science.1553543"},
     {"note": "FireProtDB curated single mutation database.", "source": "FireProtDB"},

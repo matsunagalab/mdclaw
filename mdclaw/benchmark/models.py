@@ -270,18 +270,32 @@ class Score(BaseModel):
 
 
 class BackendInfo(BaseModel):
-    name: str = "mdclaw"
+    """MD engine or workflow used by the agent under test.
+
+    Examples: ``mdclaw``, ``openmm-script``, ``gromacs``, ``amber``,
+    ``synthetic``. This is separate from the scorer runtime.
+    """
+
+    name: str = "unknown"
     version: str = ""
     container: str = ""
 
 
 class HarnessInfo(BaseModel):
+    """Agent runner or orchestration harness.
+
+    Examples: ``cursor``, ``claude-code``, ``opencode``,
+    ``external-python-script``, or a lab-specific runner.
+    """
+
     name: str = "unknown"
     version: str = ""
     adapter: str = ""
 
 
 class ModelInfo(BaseModel):
+    """LLM or non-LLM agent model used by the harness, when applicable."""
+
     name: str = "unknown"
     provider: str = "unknown"
     version: str = ""

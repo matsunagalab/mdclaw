@@ -42,7 +42,7 @@
     ],
     "llm_judge_rubrics": ["confidence_calibration", "limitations"]
   },
-  "task_intent": "Predict the direction of ΔΔG_bind for barnase D39A in the barnase-barstar complex (PDB 1BRS). Report effect.direction with calibrated confidence and explicit limitations.",
+  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS). Report effect.direction with calibrated confidence and explicit limitations.",
   "references": [
     {"note": "Schreiber & Fersht 1995 — energetics of the barnase-barstar interaction by alanine scan. D39A is a hotspot.", "source": "doi:10.1006/jmbi.1995.0237"},
     {"note": "SKEMPI 2.0 curated mutation effects in protein interactions.", "source": "SKEMPI 2.0"},

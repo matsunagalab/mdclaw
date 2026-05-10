@@ -75,7 +75,7 @@
       "limitations"
     ]
   },
-  "task_intent": "Run an end-to-end short MD on T4 lysozyme WT (PDB 2LZM): prepare with ff14SB/TIP3P, equilibrate with positional restraints, then perform >= 100 ps NVT production, emit a DCD trajectory with >= 50 frames, and report finite/no-NaN.",
+  "task_intent": "End-to-end execution test: prepare, equilibrate, and run short protein MD on T4 lysozyme WT (PDB 2LZM). Use ff14SB/TIP3P, equilibrate with positional restraints, perform >= 100 ps NVT production, emit a DCD trajectory with >= 50 frames, and report finite/no-NaN.",
   "references": [
     {
       "note": "T4 lysozyme WT, Matthews lab thermodynamic series.",

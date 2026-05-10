@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from mdclaw.benchmark import cli
 from mdclaw.benchmark.models import SCORE_AXES, Task
 
 
@@ -30,6 +31,51 @@ def test_dataset_json_matches_task_directories():
 
     assert dataset["task_count"] == len(task_ids)
     assert sorted(task_ids) == task_dirs
+
+
+def test_dataset_families_cover_each_task_once():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+    task_ids = set(dataset["task_ids"])
+    axes = set(SCORE_AXES)
+    covered: list[str] = []
+
+    families = dataset.get("families") or {}
+    assert set(families) == {
+        "system_preparation",
+        "engine_reliability",
+        "scientific_answer",
+        "evidence_communication",
+    }
+
+    for family_key, family in families.items():
+        assert family["display_name"], family_key
+        assert family["intent"], family_key
+        assert family["score_axis"] in axes
+        assert family["task_ids"], family_key
+        covered.extend(family["task_ids"])
+
+        for task_id in family["task_ids"]:
+            task = Task.model_validate_json(
+                (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+            )
+            assert task.primary_score == family["score_axis"]
+
+    assert set(covered) == task_ids
+    assert len(covered) == len(set(covered))
+
+
+def test_list_benchmark_tasks_surfaces_family_and_intent_summary():
+    result = cli.list_benchmark_tasks(str(DATASET_DIR))
+
+    assert result["success"], result
+    assert result["families"]
+    assert result["task_count"] == 9
+
+    for task in result["tasks"]:
+        assert task["family"]
+        assert task["family_display_name"]
+        assert task["intent_summary"]
+        assert task["intent_summary"].endswith(".")
 
 
 def test_task_contracts_match_dataset_and_score_axes():

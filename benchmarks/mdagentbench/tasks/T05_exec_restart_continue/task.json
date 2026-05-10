@@ -58,7 +58,7 @@
       "provenance_traceability"
     ]
   },
-  "task_intent": "Split a chignolin NVT MD into two equal chunks; save state.xml after chunk 1, load it on a fresh Simulation for chunk 2, concatenate chunk 1 + chunk 2 trajectories with mdtraj. Verify that step counters are contiguous (chunk1.end == chunk2.start) and that concat frame count equals sum of source frames.",
+  "task_intent": "Restart-continuation test: split chignolin NVT MD into two chunks and prove that restarting from saved state preserves the simulation timeline. Save state.xml after chunk 1, load it on a fresh Simulation for chunk 2, concatenate both trajectories with mdtraj, and verify contiguous step counters plus matching concat frame counts.",
   "references": [
     {
       "note": "Honda et al. 2008 — chignolin CLN025.",

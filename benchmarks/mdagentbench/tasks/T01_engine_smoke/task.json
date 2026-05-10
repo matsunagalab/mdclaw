@@ -63,7 +63,7 @@
     "ground_truth_checks": [],
     "llm_judge_rubrics": []
   },
-  "task_intent": "Run a 10 ps Langevin NVT smoke MD on chignolin (CLN025, PDB 5AWL) starting from the supplied PDB. Report finite energy, no NaN, and emit a trajectory file the scorer can re-load.",
+  "task_intent": "Execution smoke test: run a tiny 10 ps Langevin NVT MD on chignolin (CLN025, PDB 5AWL) to prove the engine can produce a finite, reloadable trajectory. Report finite energy, no NaN, and emit a trajectory file the scorer can re-load.",
   "references": [
     {
       "note": "Honda et al. 2008 — chignolin CLN025 designed mini-protein.",
