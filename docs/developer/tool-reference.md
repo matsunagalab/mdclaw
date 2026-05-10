@@ -96,6 +96,17 @@ skill examples.
 - `run_production(...)`: production MD with HMR, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata.
 
+## `visualization_server.py`
+
+- `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF
+  structure artifacts. In node mode it resolves a representative structure
+  artifact from the current node, parent, or ancestors, writes a ray-rendered
+  preview PNG plus PyMOL script and manifest under `artifacts/previews/`, and
+  registers `structure_preview_png` / `structure_preview_manifest` on the node.
+  Styles include `overview`, `publication`, `ligand_site`, `membrane`,
+  `solvent_ions`, and `topology_check`; the manifest records camera/view and
+  representation choices for human review.
+
 ## `literature_server.py`
 
 - `pubmed_search(...)`: PubMed search.

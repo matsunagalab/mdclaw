@@ -74,6 +74,7 @@ mdclaw/                    # All Python code consolidated here
   metal_server.py           # Metal ion parameterization
   slurm_server.py           # SLURM job submission & management
   node_server.py            # Node management tools (create_node)
+  visualization_server.py   # PyMOL headless structure preview rendering
   study_server.py           # Optional multi-job study/campaign index
   evidence_server.py        # Lightweight MD/job/study evidence reports
 
@@ -98,6 +99,7 @@ tests/                      # 4-level test suite
   test_node.py              # Node system unit tests (lifecycle, IDs, events)
   test_event.py             # Event system tests
   test_study_server.py      # Optional study/campaign helpers
+  test_visualization_server.py # PyMOL preview rendering tests
   test_evidence_server.py   # Evidence report helpers
   manual_checklist.md       # Level 4: Manual Codex tests
 ```
@@ -461,6 +463,9 @@ pytest tests/test_pipeline_prod_continue_dag.py -v --basetemp=./test_output
 - `create_node(job_dir, node_type, parent_node_ids, dependency_node_ids, label, conditions, continue_from)` - Create a node in the job graph. `continue_from=<prod_id>` is sugar for `parent_node_ids=[<prod_id>]` restricted to `node_type=prod`; it validates that the referenced node is a prod, rejects mixing with `parent_node_ids`, and stamps `metadata.continued_from` on the new `node.json` to document extension intent. A `job_dir` is limited to one `source` root so a single DAG always describes one physical system; branch from `prep` onward for variants. At runtime, `resolve_node_inputs("prod")` reads `metadata.continued_from` and restarts *only* from that specific prod's `state` / `checkpoint` artifact (no silent fallback); if neither is present, it returns `restart_from_error` and `run_production` fails before touching OpenMM.
 - `update_job_params(job_dir, params)` - Merge job-level metadata into `progress.json.params`. Use this to persist workflow-wide settings such as `execution_mode` (`autonomous` / `human_in_the_loop`) without hand-editing progress files.
 - `update_node_status(job_dir, node_id, status)` - Update a node's status on both `node.json` (plus `updated_at`) and the `progress.json` index under the proper file locks. This is the single writer-path for status so the DAG index stays in sync for re-entry and monitoring. Callers that only want to merge unrelated metadata (e.g. `slurm_job_id`) can continue to edit `node.json` directly — only the status field needs the cross-file sync.
+
+### visualization_server.py
+- `render_structure_preview(structure_file, output_dir, output_name, style, width, height, dpi, ray, background, selection, show_solvent, show_ions, show_lipids, highlight_ligands, camera_preset, zoom_buffer, structure_artifact_key, source_node_id, job_dir, node_id)` - Generate a PyMOL headless, ray-rendered PNG preview for a PDB/mmCIF structure. In node mode it resolves a representative structure artifact from the current node, parent, or ancestors, writes `*.preview.png`, `*.preview.pml`, and `*.preview_manifest.json` under `artifacts/previews/`, and registers `structure_preview_png` / `structure_preview_manifest` for agent-visible human review. Styles include `overview`, `publication`, `ligand_site`, `membrane`, `solvent_ions`, and `topology_check`; PyMOL absence returns `code=pymol_not_available` and should not block MD workflow progression.
 
 ### study_server.py
 - `init_study(study_dir, title, objective, description, metadata, overwrite)` - Create an optional study/campaign directory with `study.json`, `jobs/`, `annotations/`, and `evidence/`. This never creates workflow nodes and never relaxes the single-source `job_dir` invariant.

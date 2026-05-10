@@ -35,3 +35,21 @@ Confirm these fields before running analysis:
 
 Create an `analyze` node first, then run analysis tools with both `--job-dir`
 and `--node-id`.
+
+## Structure Preview
+
+When the user wants a human-readable structural snapshot, or when a completed
+prod/analyze artifact would benefit from visual inspection, run:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <node_id> \
+  render_structure_preview --style overview --ray
+```
+
+Prefer `--style ligand_site` for ligand binding sites, `--style membrane` for
+membrane systems, and `--style solvent_ions --show-solvent` when water/ion
+placement is the inspection target. If `structure_preview_png` is produced,
+display it in image-capable agent UIs; otherwise provide the node ID, caption,
+PNG path, and source structure artifact. If PyMOL is unavailable
+(`code=pymol_not_available`), report that preview rendering was skipped rather
+than treating it as an analysis failure.

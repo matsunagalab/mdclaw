@@ -67,7 +67,20 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
 5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
    solvation runbook. Create nodes first, then run workflow tools with
    both `--job-dir` and `--node-id`.
-6. After `topo_001` completes, hand off: tell the user to invoke
+6. After each completed structural node where human inspection is useful
+   (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
+   available:
+   ```bash
+   mdclaw --job-dir <job_dir> --node-id <node_id> \
+     render_structure_preview --style overview --ray
+   ```
+   For ligand complexes use `--style ligand_site`; for membranes use
+   `--style membrane`; for solvation checks use `--style solvent_ions
+   --show-solvent`. If a `structure_preview_png` artifact is produced, show
+   it to the user in image-capable agent UIs. Otherwise report the node ID,
+   caption, PNG path, and source structure artifact path. If PyMOL is missing
+   (`code=pymol_not_available`), do not block preparation.
+7. After `topo_001` completes, hand off: tell the user to invoke
    `/md-equilibration` on the same `job_dir`. `/md-prepare` does not
    auto-chain into equilibration — each stage is user-initiated.
 

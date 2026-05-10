@@ -9,6 +9,7 @@ dependencies:
   - rdkit>=2023.9.1
   - openblas
   - matplotlib
+  - pymol-open-source
   - pymbar>=4.2.0,<5
   # --- openmmforcefields-unification (PR3+) ---
   # OpenMM 8.5.1 is the floor for openmmforcefields>=0.15.1; 8.6 brings

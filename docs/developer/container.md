@@ -1,7 +1,8 @@
 # Container Build And Distribution
 
 The production image contains CUDA runtime, PyTorch, AmberTools, OpenMM,
-Boltz-2, and the `mdclaw` CLI.
+Boltz-2, PyMOL (`pymol-open-source`, for headless structure previews), and the
+`mdclaw` CLI.
 
 ## Build And Test
 

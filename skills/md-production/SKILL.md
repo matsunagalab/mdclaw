@@ -91,7 +91,18 @@ with `mdclaw update_job_params` before creating new prod nodes.
 
 1. Verify prod node status is `completed`.
 
-2. Present:
+2. Run a best-effort final-structure preview when PyMOL is available:
+   ```bash
+   mdclaw --job-dir <job_dir> --node-id <prod_node_id> \
+     render_structure_preview --style publication --ray
+   ```
+   Use `--style ligand_site` for ligand-binding systems and `--style
+   membrane` for membrane proteins. If a preview PNG is produced, show it to
+   the user in image-capable agent UIs; otherwise provide the PNG path, node
+   ID, caption, and source artifact path. If PyMOL is unavailable
+   (`code=pymol_not_available`), continue the handoff.
+
+3. Present:
    ```
    Production complete. Next:
      /md-analyze <job_dir>

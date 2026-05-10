@@ -7,6 +7,12 @@ conda env create -f environment.yml
 conda activate mdclaw
 ```
 
+`environment.yml` is the authoritative local development environment. It
+includes conda-only or conda-preferred scientific/runtime dependencies such as
+AmberTools, OpenMM, RDKit, PDBFixer, and `pymol-open-source`. The PyMOL package
+is required only for `render_structure_preview`; when it is missing, that tool
+returns `code=pymol_not_available` without blocking MD workflow tools.
+
 ## Common Environment Variables
 
 ```bash
@@ -16,6 +22,7 @@ export MDCLAW_SOLVATION_TIMEOUT=600
 export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_AMBER_TIMEOUT=3600
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
+export MDCLAW_VISUALIZATION_TIMEOUT=300
 export MDCLAW_LOG_LEVEL=WARNING
 export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"

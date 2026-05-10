@@ -6,7 +6,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     # Structure preparation
-    # Note: openmm, pdbfixer, rdkit, ambertools are conda-only.
+    # Note: openmm, pdbfixer, rdkit, ambertools, and pymol-open-source are
+    # conda-only / conda-preferred runtime dependencies.
     # See environment.yml for full setup.
     "pdb2pqr>=3.1.0",
     "propka>=3.5.0",

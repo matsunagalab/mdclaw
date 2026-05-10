@@ -20,7 +20,7 @@ class TestServerRegistry:
     def test_registry_has_all_servers(self):
         from mdclaw._registry import SERVER_REGISTRY
 
-        assert len(SERVER_REGISTRY) == 15
+        assert len(SERVER_REGISTRY) == 16
 
     def test_registry_keys(self):
         from mdclaw._registry import SERVER_REGISTRY
@@ -38,6 +38,7 @@ class TestServerRegistry:
             "slurm",
             "node",
             "analyze",
+            "visualization",
             "study",
             "evidence",
             "benchmark",
@@ -139,6 +140,7 @@ class TestConfig:
         assert get_timeout("membrane") == 7200
         assert get_timeout("amber") == 3600  # bumped in Fix A to cover ~450-residue fusions
         assert get_timeout("md_simulation") == 3600
+        assert get_timeout("visualization") == 300
         assert get_timeout("structure") == 600
 
     def test_timeout_unknown_type(self):

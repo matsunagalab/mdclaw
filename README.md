@@ -32,6 +32,10 @@ The container (~4.6 GB) downloads automatically on first session start.
 
 If no container runtime is available, `bin/mdclaw` falls back to a local
 `mdclaw` on your `PATH` (for example from a conda environment or `pip install -e .`).
+For local development, use `conda env create -f environment.yml`; that
+environment includes conda-only scientific tools and `pymol-open-source` for
+headless structure preview rendering. A plain pip install does not provide the
+PyMOL executable.
 
 The session-start hook downloads the container automatically:
 - on HPC, it prefers a `.sif` for Singularity/Apptainer

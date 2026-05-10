@@ -378,6 +378,7 @@ _TIMEOUT_DEFAULTS = {
     # systems, override via MDCLAW_AMBER_TIMEOUT=<seconds>.
     "amber": 3600,
     "md_simulation": 3600,
+    "visualization": 300,
     "slurm": 120,
 }
 
