@@ -158,6 +158,33 @@ class TestResearchServer:
         node_data = read_node(str(job_dir), node["node_id"])
         assert node_data["status"] == "pending"
 
+    def test_inspect_molecules_auto_resolves_source_artifact(self, small_pdb, tmp_path):
+        """Node-mode inspection may omit structure_file when a source artifact exists."""
+        from mdclaw._node import create_node
+        from research_server import inspect_molecules, register_local_structure
+
+        job_dir = tmp_path / "job_inspect_autoresolve"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "source")
+        assert node["success"]
+        registered = register_local_structure(
+            file_path=small_pdb,
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert registered["success"], registered.get("errors")
+
+        result = inspect_molecules(
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+        )
+        assert result["success"], result.get("errors")
+        assert Path(result["source_file"]).name == "small_protein.pdb"
+        inspection_json = (
+            job_dir / "nodes" / node["node_id"] / "artifacts" / "inspection.json"
+        )
+        assert inspection_json.exists()
+
     @pytest.mark.asyncio
     async def test_source_structure_local_node_mode(self, small_pdb, tmp_path):
         """fetch_structure(source='local') records local file provenance."""

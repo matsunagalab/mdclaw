@@ -2078,8 +2078,12 @@ def split_molecules(
                             Default is False (crystal waters are excluded even if "water"
                             is in include_types). For most MD simulations, crystal waters
                             should be excluded and bulk solvent added via solvate_structure.
-        include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
-                           e.g., ["A:ACP:501"]). If specified, only these ligands are extracted.
+        include_ligand_ids: List of ligand unique IDs to include (format:
+                           "author_chain:resname:resnum", e.g.,
+                           ["A:ACP:501"]). If specified, only these ligands
+                           are extracted. If select_chains omitted a requested
+                           ligand's label chain, the chain is auto-included
+                           with a ``ligand_chain_auto_included`` adjustment.
                            Use inspect_molecules to get available ligand unique IDs.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). If specified, these ligands are
@@ -2141,6 +2145,7 @@ def split_molecules(
         "all_chains": [],
         "chain_file_info": [],
         "include_types": include_types,
+        "selection_adjustments": [],
         "errors": [],
         "warnings": []
     }
@@ -2289,6 +2294,35 @@ def split_molecules(
                             f"on mmCIF entries with multi-letter author IDs (e.g. 'F' -> "
                             f"auth 'FFF')."
                         )
+            if include_ligand_ids is not None and "ligand" in include_types:
+                requested = set(include_ligand_ids)
+                matching_ligands = [
+                    c for c in analysis["chains"]
+                    if c.get("chain_type") == "ligand"
+                    and c.get("unique_id") in requested
+                ]
+                auto_added = sorted(
+                    c["chain_id"]
+                    for c in matching_ligands
+                    if c.get("chain_id") not in selected_chain_ids
+                )
+                if auto_added:
+                    selected_chain_ids |= set(auto_added)
+                    adjustment = {
+                        "code": "ligand_chain_auto_included",
+                        "message": (
+                            "Requested ligand(s) were outside select_chains; "
+                            "their label chain(s) were added automatically."
+                        ),
+                        "added_chain_ids": auto_added,
+                        "requested_ligand_ids": sorted(requested),
+                    }
+                    result["selection_adjustments"].append(adjustment)
+                    result["warnings"].append(
+                        "ligand_chain_auto_included: requested ligand(s) "
+                        f"{sorted(requested)} require ligand label chain(s) "
+                        f"{auto_added}, which were added to select_chains."
+                    )
         else:
             # Default: select all chains (type filtering happens later)
             selected_chain_ids = set(c["chain_id"] for c in analysis["chains"])
@@ -4743,8 +4777,12 @@ def prepare_complex(
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
-        include_ligand_ids: List of ligand unique IDs to include (format: "chain:resname:resnum",
-                           e.g., ["A:ACP:501"]). If specified, only these ligands are processed.
+        include_ligand_ids: List of ligand unique IDs to include (format:
+                           "author_chain:resname:resnum", e.g.,
+                           ["A:ACP:501"]). If specified, only these ligands
+                           are processed. Requested ligand label chains are
+                           auto-included when select_chains would otherwise
+                           omit them.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). These ligands are skipped.
         optimize_ligands: Run MMFF94 optimization on ligands (default: False).

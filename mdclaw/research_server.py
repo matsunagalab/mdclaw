@@ -2535,8 +2535,55 @@ def detect_ptm_sites(structure_file: str) -> list[dict]:
     return sites
 
 
+def _resolve_inspection_structure_file(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    structure_file: Optional[str],
+) -> dict:
+    """Resolve an inspection input from the current source node or ancestor."""
+    if structure_file:
+        return {"structure_file": structure_file}
+    if not (job_dir and node_id):
+        return {
+            "structure_file": None,
+            "input_resolution_error": "structure_file is required when job_dir/node_id are not provided",
+            "input_resolution_errors": [
+                "Pass --structure-file explicitly or run with --job-dir/--node-id so the source artifact can be auto-resolved."
+            ],
+        }
+
+    from mdclaw._node import get_ancestors, read_node, resolve_artifact
+
+    errors: list[str] = []
+    for anc_id in get_ancestors(job_dir, node_id):
+        try:
+            node = read_node(job_dir, anc_id)
+        except (json.JSONDecodeError, OSError) as exc:
+            errors.append(f"Could not read node '{anc_id}': {exc}")
+            continue
+        if node.get("node_type") != "source":
+            continue
+        rel_path = (node.get("artifacts") or {}).get("structure_file")
+        if not rel_path:
+            errors.append(f"Source node '{anc_id}' has no structure_file artifact")
+            continue
+        resolved = resolve_artifact(job_dir, anc_id, rel_path)
+        return {
+            "structure_file": str(resolved),
+            "structure_resolved_from_node_id": anc_id,
+        }
+
+    if not errors:
+        errors.append(f"No source ancestor found for node '{node_id}'")
+    return {
+        "structure_file": None,
+        "input_resolution_error": errors[0],
+        "input_resolution_errors": errors,
+    }
+
+
 def inspect_molecules(
-    structure_file: str,
+    structure_file: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -2575,6 +2622,8 @@ def inspect_molecules(
 
     Args:
         structure_file: Path to the mmCIF (.cif) or PDB (.pdb/.ent) file to inspect.
+            In node mode, this is optional and auto-resolves from the current
+            source node or a source ancestor's ``structure_file`` artifact.
         job_dir: Optional job directory (schema v3). When provided together
             with ``node_id``, the inspection summary is written as
             ``inspection.json`` into that node's artifacts directory and an
@@ -2603,11 +2652,16 @@ def inspect_molecules(
             - errors: list[str]
             - warnings: list[str]
     """
+    _resolved_structure = _resolve_inspection_structure_file(
+        job_dir, node_id, structure_file
+    )
+    structure_file = _resolved_structure["structure_file"]
+
     logger.info(f"Inspecting molecules in: {structure_file}")
 
     result = {
         "success": False,
-        "source_file": str(structure_file),
+        "source_file": str(structure_file) if structure_file else None,
         "file_format": None,
         "header": {},
         "entities": [],
@@ -2631,6 +2685,23 @@ def inspect_molecules(
         "errors": [],
         "warnings": [],
     }
+
+    if _resolved_structure.get("input_resolution_error"):
+        return {
+            **result,
+            **create_validation_error(
+                "structure_file",
+                _resolved_structure["input_resolution_error"],
+                expected="Explicit structure path, or --job-dir/--node-id with a source artifact",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _resolved_structure.get(
+                        "input_resolution_errors", []
+                    ),
+                },
+                code="input_resolution_blocked",
+            ),
+        }
 
     # Check for gemmi dependency
     try:

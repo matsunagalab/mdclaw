@@ -89,6 +89,13 @@ class TestImportServers:
         param = sig.parameters["random_seed"]
         assert param.default is None, "random_seed default should be None"
 
+    def test_md_simulation_platform_preflight_registered(self):
+        """Local-run feasibility preflight is exposed as a CLI/MCP tool."""
+        from mdclaw.md_simulation_server import TOOLS
+
+        assert "inspect_openmm_platforms" in TOOLS
+        assert callable(TOOLS["inspect_openmm_platforms"])
+
     def test_node_server_exposes_update_node_status(self):
         """Batch workflows depend on `mdclaw update_node_status` being a
         CLI-registered tool so that status edits stay consistent across

@@ -15,8 +15,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic import ValidationError
-
 from mdclaw import __version__ as MDCLAW_VERSION
 from mdclaw._common import ensure_directory
 from mdclaw.benchmark import scoring
@@ -24,7 +22,6 @@ from mdclaw.benchmark.models import (
     BackendInfo,
     BudgetSpec,
     HarnessInfo,
-    JudgeMode,
     ModelInfo,
     RunConfig,
     RunSummary,

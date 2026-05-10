@@ -10,6 +10,20 @@ compatible with production settings.
 
 ### Run Equilibration
 
+Before local execution of an explicit-water system, verify the post-solvation
+atom count and available OpenMM platforms:
+
+```bash
+mdclaw inspect_openmm_platforms \
+  --atom-count <solv.statistics.total_atoms> \
+  --solvent-type explicit
+```
+
+If no CUDA/OpenCL platform is available and the system is classified
+`not_recommended` or `slow_on_cpu`, do not start the default local
+equilibration automatically. Use `/hpc-run`, or deliberately choose a shorter
+smoke-test protocol such as `--nvt-steps 2500 --npt-steps 2500`.
+
 ```bash
 mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> --pressure-bar 1.0

@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from mdclaw._common import ensure_directory
 from mdclaw.benchmark import judge, scoring, validation
 from mdclaw.benchmark.models import (
-    SCORE_AXES,
     SubmissionManifest,
     Task,
 )

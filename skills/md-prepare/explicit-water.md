@@ -45,6 +45,21 @@ mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
 To override, pass `--pdb-file` explicitly.
 
+After solvation, run a local feasibility preflight before topology/eq/prod if
+the next stages will run on this machine:
+
+```bash
+mdclaw inspect_openmm_platforms \
+  --atom-count <result.statistics.total_atoms> \
+  --solvent-type explicit
+```
+
+If `local_feasibility` is `not_recommended` or `slow_on_cpu`, do not silently
+continue into local topology/equilibration/production. Tell the user whether a
+CUDA/OpenCL platform was detected and prefer `/hpc-run`, or explicitly switch
+to a shorter smoke-test protocol. Reducing the water box is a debugging choice
+that changes the system and should be stated as such.
+
 ### Membrane
 
 Use the same `solv` node type for membrane embedding:

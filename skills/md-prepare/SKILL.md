@@ -89,8 +89,8 @@ systems.
 |-----------|-------|
 | Target | (PDB ID / sequence / file — exactly as the user wrote) |
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
-| Chain(s) | (if specified) |
-| Ligands | include / exclude |
+| Chain(s) | (if specified; after inspection, expand to ligand label chains when ligands should be included) |
+| Ligands | include / exclude (use inspected ligand `unique_id` values) |
 | Solvation | explicit (default) / implicit |
 | Mutations | (if any — one-letter notation, e.g. K27A) |
 | Production length | (if specified) |
@@ -104,6 +104,11 @@ AMBER defaults (`ff14SB + tip3p`, FF99SB-ILDN, `tip3p` water, etc.).
 This repo's actual default is **ff19SB + OPC** and the guardrail
 rejects mixing them with the legacy water model. Trust the runbooks,
 not your prior knowledge.
+
+**Common chain/ligand failure mode**: treating "chain A ligandあり" as
+`--select-chains A` only. Ligands often live on separate subchains, even when
+their `author_chain` is A. Inspect first and include the ligand label chain(s)
+plus the ligand `unique_id` in `--include-ligand-ids`.
 
 ## Interaction Mode
 

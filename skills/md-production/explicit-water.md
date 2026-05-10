@@ -31,6 +31,20 @@ XML system validator raises `modern_system_hmr_mismatch`.
 
 ### Local Execution
 
+Before launching local explicit-water production, check whether OpenMM has a
+GPU platform and whether the atom count is reasonable for local execution:
+
+```bash
+mdclaw inspect_openmm_platforms \
+  --atom-count <solv.statistics.total_atoms> \
+  --solvent-type explicit
+```
+
+The autonomous `0.1 ns` sanity default is a production-length policy, not a
+wall-time guarantee. If the preflight returns `slow_on_cpu` or
+`not_recommended`, use `/hpc-run` or make an explicit short smoke-test choice
+instead of silently waiting on local CPU.
+
 ```bash
 mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --simulation-time-ns <user_specified> \
@@ -103,7 +117,7 @@ read `skills/md-production/restart.md`.
 |---|---|---|
 | SHAKE constraint failure | Bad geometry | Reduce to 2 fs, or re-prepare |
 | NaN energies | Clashes | Re-equilibrate or re-prepare |
-| Slow performance | GPU not detected | Check `--platform CUDA` |
+| Slow performance | GPU not detected, or explicit-water PME intentionally running on CPU | Check `inspect_openmm_platforms`; use `--platform CUDA` when available or hand off to `/hpc-run` |
 | Barostat instability | Temperature mismatch | Match barostat and integrator T |
 | `Ensemble switch:` warning in `result["warnings"]` | NPT-saved eq state used in an NVT prod context, or vice versa | Safe to ignore — the loader transfers only positions/velocities/box, so barostat parameters are dropped (NPT → NVT) or the new barostat starts in its default state and re-equilibrates volume over the first few ps (NVT → NPT). Set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on prod; no eq re-run needed. |
 

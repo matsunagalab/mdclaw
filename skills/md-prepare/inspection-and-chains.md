@@ -18,5 +18,32 @@ Use the resulting JSON to decide:
 Chain ID rule:
 
 - For PDB input, pass the author chain ID from column 22.
-- For mmCIF input, pass the short chain ID shown by MDClaw inspection.
+- For mmCIF input, pass the per-chain `chain_id` shown by MDClaw
+  inspection (`label_asym_id`) to `--select-chains`.
 - Do not use gemmi's internal generated PDB chain names such as `Axp`.
+
+Ligand selection rule:
+
+- `--select-chains` gates every molecular type, including ligands. If you
+  select only the protein chain, ligands on separate mmCIF/PDB subchains are
+  excluded before `--include-ligand-ids` is considered.
+- `chains[].unique_id` is the ligand identifier to pass to
+  `--include-ligand-ids`. Its first field is the ligand's `author_chain`
+  (`auth_asym_id`), not the mmCIF label chain.
+- When the user says "chain X with ligand", inspect first, then include:
+  1. Protein/nucleic/glycan label chains whose `chain_id == X` or
+     `author_chain == X`.
+  2. Ligand label chains whose `author_chain == X`.
+  3. The exact ligand `unique_id` values in `--include-ligand-ids`.
+
+Example: in 1AKE mmCIF, AP5 is conceptually on author chain `A` but may be
+stored as a separate ligand label chain such as `C`, with
+`unique_id="A:AP5:215"`. For "1AKE chain A ligandあり", prepare with the
+protein label and the ligand label:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --select-chains A C \
+  --include-types protein nucleic glycan ligand \
+  --include-ligand-ids A:AP5:215
+```

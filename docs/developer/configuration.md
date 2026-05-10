@@ -45,4 +45,8 @@ mdclaw solvate_structure --pdb-file merged.pdb --dist 15.0 --salt --saltcon 0.15
 mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chains": ["A"]}'
 ```
 
+When preserving ligands while narrowing chains, include the ligand's chain as
+reported by `inspect_molecules`; `select_chains=["A"]` alone is protein-chain
+selection and can drop hetero ligands on separate subchains.
+
 Skills reference these tools through the same CLI.

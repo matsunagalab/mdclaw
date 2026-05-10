@@ -164,6 +164,22 @@ class TestArgparseConstruction:
         assert args.lipids == "POPC"
         assert args.water_model == "opc"  # default
 
+    def test_inspect_molecules_structure_file_is_optional_for_autoresolve(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        _pick_existing_tool(tools, "inspect_molecules")
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "--job-dir",
+            "job_xxx",
+            "--node-id",
+            "source_001",
+            "inspect_molecules",
+        ])
+        assert args.structure_file is None
+
     def test_bool_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

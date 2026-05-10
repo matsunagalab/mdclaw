@@ -2681,11 +2681,94 @@ def run_production(
     return result
 
 
+def inspect_openmm_platforms(
+    atom_count: Optional[int] = None,
+    solvent_type: str = "explicit",
+) -> dict:
+    """Report available OpenMM platforms and local-run feasibility guidance.
+
+    This is a lightweight preflight helper for agents before launching local
+    explicit-water topology/equilibration/production. It does not run MD.
+    """
+    result = {
+        "success": False,
+        "platforms": [],
+        "gpu_platforms": [],
+        "fastest_platform": None,
+        "atom_count": atom_count,
+        "solvent_type": solvent_type,
+        "local_feasibility": None,
+        "recommendation": None,
+        "warnings": [],
+        "errors": [],
+    }
+    try:
+        from openmm import Platform
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"OpenMM platform inspection failed: {type(exc).__name__}: {exc}"
+        )
+        result["code"] = "openmm_platform_inspection_failed"
+        return result
+
+    try:
+        platform_names = [
+            Platform.getPlatform(i).getName()
+            for i in range(Platform.getNumPlatforms())
+        ]
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(
+            f"Could not enumerate OpenMM platforms: {type(exc).__name__}: {exc}"
+        )
+        result["code"] = "openmm_platform_inspection_failed"
+        return result
+
+    gpu_platforms = [p for p in platform_names if p in {"CUDA", "OpenCL"}]
+    result["platforms"] = platform_names
+    result["gpu_platforms"] = gpu_platforms
+    result["fastest_platform"] = platform_names[-1] if platform_names else None
+    result["success"] = True
+
+    if atom_count is None:
+        result["local_feasibility"] = "unknown"
+        result["recommendation"] = (
+            "Provide atom_count from solvate_structure statistics to classify "
+            "local explicit-water feasibility."
+        )
+        return result
+
+    explicit = str(solvent_type).strip().lower() == "explicit"
+    if explicit and not gpu_platforms and atom_count >= 30000:
+        result["local_feasibility"] = "not_recommended"
+        result["recommendation"] = (
+            "Explicit-water local CPU execution is likely slow for this system. "
+            "Use /hpc-run or shorten equilibration/production deliberately for "
+            "a smoke test before starting a full local run."
+        )
+        result["warnings"].append(
+            "No CUDA/OpenCL platform detected for a large explicit-water system."
+        )
+    elif explicit and not gpu_platforms and atom_count >= 10000:
+        result["local_feasibility"] = "slow_on_cpu"
+        result["recommendation"] = (
+            "Local CPU execution may be slow. Prefer a GPU platform or use "
+            "short explicit smoke-test steps before longer runs."
+        )
+    else:
+        result["local_feasibility"] = "reasonable"
+        result["recommendation"] = (
+            "Local execution is not blocked by the simple platform/atom-count "
+            "preflight. Continue with explicit platform selection when needed."
+        )
+    return result
+
+
 # =============================================================================
 # Tool Registry
 # =============================================================================
 
 TOOLS = {
+    "inspect_openmm_platforms": inspect_openmm_platforms,
     "run_equilibration": run_equilibration,
     "run_production": run_production,
 }

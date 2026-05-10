@@ -11,7 +11,6 @@ Public entry points:
 
 from __future__ import annotations
 
-import json
 import statistics
 from pathlib import Path
 from typing import Any, Optional
@@ -25,7 +24,6 @@ from mdclaw.benchmark.models import (
     LLMJudgeResult,
     RuntimeRecord,
     Score,
-    ScoreAxis,
     Task,
 )
 

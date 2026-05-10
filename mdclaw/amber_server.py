@@ -30,8 +30,9 @@ logger = setup_logger(__name__)
 
 import json  # noqa: E402
 import re  # noqa: E402
+from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import List, Optional, Dict, Any, Tuple  # noqa: E402
+from typing import Callable, List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     CANONICAL_WATER_MODELS,
@@ -44,6 +45,7 @@ from mdclaw._common import (  # noqa: E402
     normalize_choice, split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
+from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw.research_server import (  # noqa: E402
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,
@@ -2638,9 +2640,14 @@ def build_amber_system(
             disulfide_bonds=disulfide_bonds,
             hmr=hmr,
             implicit_solvent=canonical_implicit_solvent,
+            stage_callback=(
+                (lambda stage: _record_topology_build_stage(job_dir, node_id, stage))
+                if _node_mode else None
+            ),
         )
         result["warnings"].extend(om_result.get("warnings", []))
         if om_result.get("success"):
+            _record_topology_build_stage(job_dir, node_id, "completed")
             result["system_xml"] = om_result["system_xml"]
             result["topology_pdb"] = om_result["topology_pdb"]
             result["state_xml"] = om_result["state_xml"]
@@ -2803,6 +2810,35 @@ def _hash_file(path: Path) -> Optional[str]:
         return None
 
 
+def _record_topology_build_stage(
+    job_dir: Optional[str],
+    node_id: Optional[str],
+    stage: str,
+) -> None:
+    """Best-effort progress breadcrumb for long topology builds."""
+    if not (job_dir and node_id):
+        return
+    node_dir = Path(job_dir) / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return
+    timestamp = datetime.now(timezone.utc).isoformat()
+    try:
+        with file_lock(node_dir / "node.lock"):
+            data = json.loads(node_json.read_text())
+            metadata = data.setdefault("metadata", {})
+            metadata["topology_build_stage"] = stage
+            metadata["topology_build_stage_updated_at"] = timestamp
+            history = metadata.setdefault("topology_build_stage_history", [])
+            if not history or history[-1].get("stage") != stage:
+                history.append({"stage": stage, "updated_at": timestamp})
+            tmp = node_json.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, indent=2, default=str))
+            os.replace(str(tmp), str(node_json))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Could not record topology build stage %s: %s", stage, exc)
+
+
 def _run_openmmforcefields_build(
     *,
     pdb_path: Path,
@@ -2826,6 +2862,7 @@ def _run_openmmforcefields_build(
     implicit_solvent: Optional[str] = None,
     extra_xml: Optional[list[str]] = None,
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
+    stage_callback: Optional[Callable[[str], None]] = None,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -2843,7 +2880,12 @@ def _run_openmmforcefields_build(
     extra_xml = list(extra_xml or [])
     extra_smiles = list(extra_smiles or [])
 
+    def _stage(stage: str) -> None:
+        if stage_callback:
+            stage_callback(stage)
+
     # --- 1. Resolve OpenMM XML bundle via the catalog --------------------
+    _stage("resolve_forcefield_xml")
     # Implicit-solvent (GB) systems load an extra ``implicit/*.xml`` from
     # the openmmforcefields shipped tree, which contributes the
     # ``CustomGBForce`` (HCT / OBC1 / OBC2 / GBn / GBn2) that
@@ -2909,6 +2951,7 @@ def _run_openmmforcefields_build(
     # ghost residues during ``PDBFile`` parsing and SystemGenerator fails
     # with ``No template found for residue``.
     hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
+    _stage("pdbfixer_hydrogenation")
     try:
         from pdbfixer import PDBFixer
         from openmm.app import PDBFile as _PDBFile
@@ -3031,6 +3074,7 @@ def _run_openmmforcefields_build(
             rdmol, hydrogens_are_explicit=True, allow_undefined_stereo=True,
         )
 
+    _stage("load_ligand_molecules")
     ligand_molecules: list[Any] = []
     for lig in valid_ligands or []:
         mol2 = lig.get("mol2")
@@ -3139,6 +3183,7 @@ def _run_openmmforcefields_build(
                     )
                 fh_out.write(line)
 
+    _stage("pablo_load")
     pablo_result = _topology_pablo.load_topology(
         sanitized_input, extra_smiles=pablo_smiles
     )
@@ -3317,6 +3362,7 @@ def _run_openmmforcefields_build(
     }
     nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
 
+    _stage("system_generator_init")
     try:
         sg = SystemGenerator(
             forcefields=xml_bundle,
@@ -3626,6 +3672,7 @@ def _run_openmmforcefields_build(
                 f"{'...' if len(all_dropped) > 5 else ''}"
             )
 
+    _stage("modeller_prepare")
     modeller = Modeller(omm_topology, omm_positions)
     # Top up residues that the upstream PDBFixer pass left under-hydrogenated
     # (NLN / GLYCAM linker residues fall through PDBFixer's standard
@@ -3661,6 +3708,7 @@ def _run_openmmforcefields_build(
             f"{type(exc).__name__}: {exc}"
         )
 
+    _stage("system_generator_create_system")
     try:
         system = sg.create_system(modeller.topology, molecules=ligand_molecules or None)
     except Exception as exc:  # noqa: BLE001
@@ -3691,6 +3739,7 @@ def _run_openmmforcefields_build(
             return result
 
     # --- 6. Minimize + serialize ----------------------------------------
+    _stage("initial_minimization")
     try:
         integrator = LangevinIntegrator(
             300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
@@ -3713,6 +3762,7 @@ def _run_openmmforcefields_build(
         if not isinstance(res.id, str):
             res.id = str(res.id)
 
+    _stage("serialization")
     try:
         with system_xml_file.open("w") as fh:
             fh.write(XmlSerializer.serialize(system))
@@ -3726,6 +3776,7 @@ def _run_openmmforcefields_build(
         )
         return result
 
+    _stage("collect_provenance")
     # --- 7. Statistics + provenance -------------------------------------
     num_atoms = modeller.topology.getNumAtoms()
     num_residues = sum(1 for _ in modeller.topology.residues())

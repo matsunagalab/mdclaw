@@ -291,3 +291,67 @@ def test_split_molecules_pdb_input_no_fallback_warning(pdb_simple, tmp_path):
     assert len(r["protein_files"]) == 1
     # No fallback warning for PDB inputs.
     assert not any("author_chain fallback" in w for w in r["warnings"]), r["warnings"]
+
+
+_CIF_PROTEIN_A_LIGAND_C_AUTH_A = """\
+data_TEST
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   1 N N   . ALA A 1 1   ? 0.0 0.0 0.0 1.0 0.0 ? 1   ALA A N   1
+ATOM   2 C CA  . ALA A 1 1   ? 1.5 0.0 0.0 1.0 0.0 ? 1   ALA A CA  1
+ATOM   3 C C   . ALA A 1 1   ? 2.0 1.5 0.0 1.0 0.0 ? 1   ALA A C   1
+ATOM   4 O O   . ALA A 1 1   ? 1.5 2.5 0.0 1.0 0.0 ? 1   ALA A O   1
+HETATM 5 P P1  . AP5 C 2 215 ? 5.0 0.0 0.0 1.0 0.0 ? 215 AP5 A P1  1
+HETATM 6 O O1  . AP5 C 2 215 ? 6.5 0.0 0.0 1.0 0.0 ? 215 AP5 A O1  1
+#
+"""
+
+
+@pytest.fixture
+def cif_protein_a_ligand_c_auth_a(tmp_path: Path) -> str:
+    p = tmp_path / "protein_a_ligand_c_auth_a.cif"
+    p.write_text(_CIF_PROTEIN_A_LIGAND_C_AUTH_A, encoding="utf-8")
+    return str(p)
+
+
+def test_split_molecules_auto_includes_requested_ligand_chain(
+    cif_protein_a_ligand_c_auth_a,
+    tmp_path,
+):
+    """Explicit ligand IDs should not be silently dropped by protein-only chain selection."""
+    from mdclaw.structure_server import split_molecules
+
+    out_dir = tmp_path / "out_ligand_auto_add"
+    r = split_molecules(
+        structure_file=cif_protein_a_ligand_c_auth_a,
+        output_dir=str(out_dir),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        include_ligand_ids=["A:AP5:215"],
+    )
+    assert r["success"], r.get("errors")
+    assert len(r["protein_files"]) == 1
+    assert len(r["ligand_files"]) == 1
+    assert r["selection_adjustments"][0]["code"] == "ligand_chain_auto_included"
+    assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]

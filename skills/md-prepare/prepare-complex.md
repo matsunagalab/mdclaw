@@ -11,6 +11,27 @@ mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
 
 In node mode, `structure_file` resolves from the source ancestor.
 
+`--select-chains` is a chain gate for all included molecular types. If the
+selected protein chain has ligands on separate ligand chains, include those
+ligand label chains too, or omit `--select-chains` and filter with
+`--include-ligand-ids` / `--exclude-ligand-ids`.
+
+Use `inspect_molecules` output to build ligand selections:
+
+- For mmCIF, pass per-chain `chain_id` values (`label_asym_id`) to
+  `--select-chains`.
+- Pass ligand `chains[].unique_id` values to `--include-ligand-ids`; the first
+  field of `unique_id` is `author_chain`, not the label chain.
+- For "chain A with ligand" in 1AKE-like mmCIF files, AP5 can be
+  `author_chain=A`, `chain_id=C`, `unique_id=A:AP5:215`; use:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --select-chains A C \
+  --include-types protein nucleic glycan ligand \
+  --include-ligand-ids A:AP5:215
+```
+
 Important outputs:
 
 - `merged_pdb`: downstream structure for solvation or topology.
