@@ -24,6 +24,8 @@ The v1.0 release replaces the v0.1 pilot with:
 New to the benchmark? External agents and programs should start with
 [`external-agents.md`](external-agents.md). It explains which files are public,
 which files are scorer-only, what to submit, and what the scorer compares.
+To automate comparisons across harnesses and OpenRouter model slugs, see
+[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
 
 ## Benchmark Families
 
@@ -227,6 +229,14 @@ mdclaw create_benchmark_submission_template \
 
 The template is intentionally conservative (`manifest.status="partial"`). Fill
 in task-specific metrics, evidence, and artifacts before scoring.
+
+## OpenRouter Harness Matrix
+
+For automated `harness × model × task` comparisons, use OpenRouter as the model
+router and keep each harness responsible for writing standard `submission/`
+artifacts. See [`openrouter-harness-matrix.md`](openrouter-harness-matrix.md)
+for matrix config examples, provenance requirements, mock-mode testing, and
+fallback/reproducibility guidance.
 
 ## Optional MDClaw Adapter
 

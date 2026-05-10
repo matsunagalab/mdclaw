@@ -5,6 +5,9 @@ It may use GROMACS, OpenMM scripts, Amber, another workflow manager, or a
 custom LLM harness. The scorer only compares files under `submission/` against
 the public task contract and scorer-only truth files.
 
+For automated `harness × model` experiments using OpenRouter, see
+[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
+
 ## What To Read
 
 Read these files before running your agent:
@@ -127,6 +130,22 @@ mdclaw score_benchmark_submission \
 mdclaw summarize_benchmark_run \
   --run-dir benchmark_runs/20260510_external_gromacs_t06
 ```
+
+## Automating Harness And Model Matrices
+
+For larger comparisons, treat the harness and model router as separate axes:
+
+- `harness`: Pydantic AI, OpenAI Agents SDK, LangGraph, smolagents, Cursor,
+  Claude Code, OpenCode, or a custom script.
+- `model router`: OpenRouter, direct provider APIs, local vLLM, etc.
+- `model`: the concrete model slug, such as
+  `anthropic/claude-sonnet-4-5` or `openai/gpt-5.5`.
+
+OpenRouter is convenient because many harnesses can use it through an
+OpenAI-compatible API, native OpenRouter integration, or LiteLLM. Record the
+model slug and provider routing settings in `provenance.json` so results remain
+auditable. The detailed workflow is in
+[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
 
 ## Minimal T06 Submission
 

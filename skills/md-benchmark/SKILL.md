@@ -18,6 +18,10 @@ read only the public task files and write the standard `submission/` artifacts.
 Use `mdclaw` commands below as the scorer/validator interface, not as a
 requirement on the agent under test.
 
+For automated comparisons across many harnesses and OpenRouter model slugs,
+read and follow `skills/md-benchmark-openrouter/SKILL.md` in addition to this
+skill. The long-form guide is `docs/benchmark/openrouter-harness-matrix.md`.
+
 ## Core Contract
 
 Each task has:
@@ -214,6 +218,8 @@ For external agents and programs, the shortest contract is:
 5. Validate, score, and summarize with the `mdclaw` benchmark commands.
 
 The detailed external-user guide is `docs/benchmark/external-agents.md`.
+For OpenRouter-backed harness/model matrix runs, use
+`docs/benchmark/openrouter-harness-matrix.md`.
 
 ## Generic Submission Template
 
