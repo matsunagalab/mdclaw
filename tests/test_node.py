@@ -2318,6 +2318,54 @@ class TestDAGAutoResolve:
         assert "topo_002" in msg
         assert "topology_pdb" in msg
 
+    def test_resolver_does_not_skip_nearest_topo_missing_system_xml(self, job_dir):
+        """A nearest topo that lacks system_xml is still the selected topo.
+
+        The resolver must report that broken nearest topo rather than walking
+        upward to an older complete topo, because that would silently bind a
+        different physical System into the run node.
+        """
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(
+            jd, "prep_001",
+            artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+        )
+        create_node(jd, "solv", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "solv_001",
+            artifacts={
+                "solvated_pdb": "artifacts/solvated.pdb",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            },
+        )
+
+        create_node(jd, "topo", parent_node_ids=["solv_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+
+        create_node(jd, "topo", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "topo_002",
+            artifacts={"topology_pdb": "artifacts/topology.pdb"},
+        )
+        create_node(jd, "eq", parent_node_ids=["topo_002"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+
+        assert "system_xml_file" not in inputs
+        assert "topology_pdb_file" not in inputs
+        assert "input_resolution_error" in inputs
+        msg = inputs["input_resolution_error"]
+        assert "topo_002" in msg
+        assert "system_xml" in msg
+
 
 
 # ── Structured (non-path) artifact propagation ─────────────────────────────

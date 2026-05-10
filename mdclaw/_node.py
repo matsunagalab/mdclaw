@@ -1535,19 +1535,7 @@ def get_ancestors(job_dir: str, node_id: str) -> list[str]:
     if progress is None:
         return [node_id]
     nodes = progress.get("nodes", {})
-
-    visited: list[str] = []
-    queue = [node_id]
-    seen = set()
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
-        visited.append(nid)
-        parents = nodes.get(nid, {}).get("parents", [])
-        queue.extend(parents)
-    return visited
+    return [node_id, *_iter_ancestor_ids(nodes, node_id)]
 
 
 def get_children(job_dir: str, node_id: str) -> list[str]:
@@ -1564,6 +1552,19 @@ def get_children(job_dir: str, node_id: str) -> list[str]:
 def resolve_artifact(job_dir: str, node_id: str, rel_path: str) -> Path:
     """Resolve a relative artifact path to an absolute path."""
     return (Path(job_dir) / "nodes" / node_id / rel_path).resolve()
+
+
+def _iter_ancestor_ids(nodes_index: dict, node_id: str):
+    """Yield ancestors in the canonical progress-index BFS order."""
+    queue = list(nodes_index.get(node_id, {}).get("parents", []))
+    seen = {node_id}
+    while queue:
+        nid = queue.pop(0)
+        if nid in seen:
+            continue
+        seen.add(nid)
+        yield nid
+        queue.extend(nodes_index.get(nid, {}).get("parents", []))
 
 
 def find_ancestor_artifact(
@@ -1608,16 +1609,8 @@ def find_ancestor_artifact(
         return None
     nodes_index = progress.get("nodes", {})
 
-    # BFS upward through parents
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
+    for nid in _iter_ancestor_ids(nodes_index, node_id):
         info = nodes_index.get(nid, {})
-        parents = info.get("parents", [])
         if info.get("type") == ancestor_type:
             # Matching-type ancestor — try to read the artifact. If this node
             # doesn't carry the key (incomplete run, missing/broken node.json),
@@ -1639,8 +1632,6 @@ def find_ancestor_artifact(
                     return _resolve_structured_artifact_paths(
                         value, jd / "nodes" / nid
                     )
-        # Keep searching upward regardless of whether the type matched.
-        queue.extend(parents)
     return None
 
 
@@ -1663,15 +1654,8 @@ def find_ancestor_metadata(
         return None
     nodes_index = progress.get("nodes", {})
 
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
+    for nid in _iter_ancestor_ids(nodes_index, node_id):
         info = nodes_index.get(nid, {})
-        parents = info.get("parents", [])
         if info.get("type") == ancestor_type:
             node_json_path = jd / "nodes" / nid / "node.json"
             if node_json_path.exists():
@@ -1682,7 +1666,6 @@ def find_ancestor_metadata(
                 value = ndata.get("metadata", {}).get(metadata_key)
                 if value is not None:
                     return value
-        queue.extend(parents)
     return None
 
 
@@ -1787,36 +1770,24 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     """
     result: dict = {}
 
-    topo_id = _find_ancestor_node_with_artifact(
-        job_dir, node_id, "topo", "system_xml"
-    )
+    topo_id = _find_ancestor_node_id(job_dir, node_id, "topo")
     if topo_id is None:
-        nearest_topo = _find_ancestor_node_id(job_dir, node_id, "topo")
-        if nearest_topo is not None:
-            _record_input_resolution_error(
-                result,
-                f"Nearest topo ancestor '{nearest_topo}' has no "
-                f"``system_xml`` artifact. Run ``build_amber_system`` "
-                f"or ``build_openmm_system`` to produce the modern XML "
-                f"triple (``system_xml`` + ``topology_pdb`` + "
-                f"``state_xml``).",
-            )
-        else:
-            _record_input_resolution_error(
-                result,
-                f"No topo ancestor found for '{node_id}'.",
-            )
+        _record_input_resolution_error(
+            result,
+            f"No topo ancestor found for '{node_id}'.",
+        )
         return result
 
     sys_xml = _read_artifact_from_node(job_dir, topo_id, "system_xml")
     topo_pdb = _read_artifact_from_node(job_dir, topo_id, "topology_pdb")
     state_xml = _read_artifact_from_node(job_dir, topo_id, "state_xml")
-    if sys_xml is None or topo_pdb is None:
+    if sys_xml is None or topo_pdb is None or state_xml is None:
         _record_input_resolution_error(
             result,
             f"Topo ancestor '{topo_id}' is missing the XML triple: "
             f"system_xml={'ok' if sys_xml else 'MISSING'}, "
-            f"topology_pdb={'ok' if topo_pdb else 'MISSING'}. The "
+            f"topology_pdb={'ok' if topo_pdb else 'MISSING'}, "
+            f"state_xml={'ok' if state_xml else 'MISSING'}. The "
             f"triple must be emitted atomically by build_amber_system "
             f"/ build_openmm_system; do not mix artifacts across topo "
             f"nodes.",
@@ -1824,8 +1795,7 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
         return result
     result["system_xml_file"] = sys_xml
     result["topology_pdb_file"] = topo_pdb
-    if state_xml:
-        result["state_xml_file"] = state_xml
+    result["state_xml_file"] = state_xml
     result["topology_resolved_from_node_id"] = topo_id
     # Surface build-time choices the run side needs to validate against
     # runtime kwargs. ``implicit_solvent`` is the load-bearing one
@@ -1842,47 +1812,6 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     result["topology_hmr"] = topo_meta.get("hmr")
     result["topology_solvent_type"] = topo_meta.get("solvent_type")
     return result
-
-
-def _find_ancestor_node_with_artifact(
-    job_dir: str,
-    node_id: str,
-    ancestor_type: str,
-    artifact_key: str,
-) -> Optional[str]:
-    """Walk parents BFS-style and return the *first* matching-type ancestor
-    whose ``artifacts`` dict contains ``artifact_key`` (with a non-None value).
-
-    Mirrors :func:`find_ancestor_artifact`'s walk order but yields the *node
-    id* rather than the resolved path. Callers use this to atomically pin
-    follow-up reads to the same node — see ``_resolve_topology_files``'s
-    triple-atomicity invariant.
-    """
-    jd = Path(job_dir)
-    progress = _load_progress_v3(jd / "progress.json")
-    if progress is None:
-        return None
-    nodes_index = progress.get("nodes", {})
-
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
-        info = nodes_index.get(nid, {})
-        if info.get("type") == ancestor_type:
-            nj = jd / "nodes" / nid / "node.json"
-            if nj.exists():
-                try:
-                    data = json.loads(nj.read_text())
-                except (json.JSONDecodeError, OSError):
-                    data = {}
-                if data.get("artifacts", {}).get(artifact_key) is not None:
-                    return nid
-        queue.extend(info.get("parents", []))
-    return None
 
 
 def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
@@ -1981,13 +1910,7 @@ def _select_md_restart_ancestor(
         return {}
     nodes_index = progress.get("nodes", {})
 
-    queue = list(nodes_index.get(node_id, {}).get("parents", []))
-    seen = {node_id}
-    while queue:
-        nid = queue.pop(0)
-        if nid in seen:
-            continue
-        seen.add(nid)
+    for nid in _iter_ancestor_ids(nodes_index, node_id):
         info = nodes_index.get(nid, {})
         if info.get("type") in ("prod", "eq"):
             state = _read_artifact_from_node(job_dir, nid, "state")
@@ -2022,7 +1945,6 @@ def _select_md_restart_ancestor(
                         f"the DAG to drop it from the lineage)."
                     ),
                 }
-        queue.extend(info.get("parents", []))
     return {}
 
 
@@ -2680,32 +2602,12 @@ def _find_ancestor_node_id(
     *anc_type*, using the same BFS ordering :func:`find_ancestor_artifact`
     uses. Needed so ``read_ancestor_final_step`` reads the metadata from
     the exact ancestor whose artifact ``resolve_node_inputs`` picked."""
-    from collections import deque
     jd = Path(job_dir)
-    start = jd / "nodes" / node_id / "node.json"
-    if not start.exists():
+    progress = _load_progress_v3(jd / "progress.json")
+    if progress is None:
         return None
-    try:
-        start_data = json.loads(start.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    seen: set[str] = {node_id}
-    queue = deque(start_data.get("parent_node_ids", []))
-    while queue:
-        cur_id = queue.popleft()
-        if cur_id in seen:
-            continue
-        seen.add(cur_id)
-        nj = jd / "nodes" / cur_id / "node.json"
-        if not nj.exists():
-            continue
-        try:
-            cur_data = json.loads(nj.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        if cur_data.get("node_type") == anc_type:
+    nodes_index = progress.get("nodes", {})
+    for cur_id in _iter_ancestor_ids(nodes_index, node_id):
+        if nodes_index.get(cur_id, {}).get("type") == anc_type:
             return cur_id
-        for pid in cur_data.get("parent_node_ids", []):
-            if pid not in seen:
-                queue.append(pid)
     return None
