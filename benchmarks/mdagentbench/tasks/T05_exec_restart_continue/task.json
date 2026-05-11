@@ -7,6 +7,18 @@
     "evidence_communication"
   ],
   "execution_mode": "lite",
+  "capability_tags": [
+    "tool_execution",
+    "restart_continuation",
+    "trajectory_artifact"
+  ],
+  "environment_type": "local_md_runtime",
+  "requires_tools": [
+    "md_engine",
+    "state_restart",
+    "trajectory_writer"
+  ],
+  "evaluation_target": "agent_restart_reliability",
   "time_limit_minutes": 30,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
@@ -49,6 +61,8 @@
         "check_type": "trajectory_rescan",
         "trajectory_path": "../work/traj_concat.dcd",
         "topology_path": "../work/system.topology.pdb",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
         "require_min_frames": 4,
         "weight": 0.3
       }

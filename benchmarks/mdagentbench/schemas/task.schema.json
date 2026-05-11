@@ -36,12 +36,14 @@
         "check_type": {
           "enum": [
             "required_files",
+            "forbidden_files",
             "json_equals",
             "json_max",
             "json_min",
             "json_min_length",
             "json_allowed_values",
             "trajectory_rescan",
+            "topology_solvent_rescan",
             "rmsd_recompute",
             "metrics_caption_consistency"
           ],
@@ -51,6 +53,21 @@
         "equals": {
           "default": null,
           "title": "Equals"
+        },
+        "forbidden_outputs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Forbidden Outputs"
         },
         "json_file": {
           "anyOf": [
@@ -112,6 +129,18 @@
           "default": null,
           "title": "Min Value"
         },
+        "min_water_residues": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Water Residues"
+        },
         "reference_pdb": {
           "anyOf": [
             {
@@ -156,6 +185,18 @@
           "default": null,
           "title": "Required Outputs"
         },
+        "required_solvent_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Solvent Type"
+        },
         "selection": {
           "anyOf": [
             {
@@ -173,6 +214,18 @@
           "title": "Tolerance Angstrom",
           "type": "number"
         },
+        "topology_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topology Manifest Path"
+        },
         "topology_path": {
           "anyOf": [
             {
@@ -185,6 +238,18 @@
           "default": null,
           "title": "Topology Path"
         },
+        "trajectory_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Trajectory Manifest Path"
+        },
         "trajectory_path": {
           "anyOf": [
             {
@@ -196,6 +261,21 @@
           ],
           "default": null,
           "title": "Trajectory Path"
+        },
+        "water_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Water Residue Names"
         },
         "weight": {
           "default": 1.0,
@@ -403,6 +483,13 @@
   "additionalProperties": false,
   "description": "v1.0 task contract.\n\nNote the deliberate absence of any ``truth.expected_*`` fields here:\nground truth lives in ``<task_dir>/truth/`` and is scorer-only.",
   "properties": {
+    "capability_tags": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Capability Tags",
+      "type": "array"
+    },
     "category": {
       "enum": [
         "engine_sanity",
@@ -412,6 +499,30 @@
       ],
       "title": "Category",
       "type": "string"
+    },
+    "environment_type": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Environment Type"
+    },
+    "evaluation_target": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Evaluation Target"
     },
     "execution_mode": {
       "enum": [
@@ -463,6 +574,13 @@
         "type": "string"
       },
       "title": "Required Outputs",
+      "type": "array"
+    },
+    "requires_tools": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Requires Tools",
       "type": "array"
     },
     "schema_version": {

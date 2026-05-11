@@ -179,10 +179,10 @@ directory.
 
 | Task | Primary axis | Mode | Target system |
 |---|---|---|---|
-| T01_engine_smoke | execution | lite | Chignolin (5AWL) |
+| T01_engine_smoke | execution | lite | Chignolin (5AWL), explicit TIP3P water |
 | T02_prep_metalloenzyme_guardrail | preparation | dry_run | Carbonic anhydrase II (2CBA) |
 | T03_prep_ligand_pose_t4l_benzene | preparation | lite | T4L L99A + benzene (181L) |
-| T04_exec_short_protein_md | execution | lite | T4 lysozyme WT (2LZM) |
+| T04_exec_short_protein_md | execution | lite | T4 lysozyme WT (2LZM), explicit TIP3P water |
 | T05_exec_restart_continue | execution | lite | Chignolin (5AWL) |
 | T06_answer_stability_t4l_l99a | scientific_answer | plan_only | T4 lysozyme L99A |
 | T07_answer_ppi_hotspot_barnase_d39a | scientific_answer | plan_only | Barnase D39A on 1BRS |

@@ -59,6 +59,34 @@ def test_deterministic_check_requires_check_type():
         DeterministicCheck.model_validate({"check_id": "x", "weight": 1.0})
 
 
+def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
+    check = DeterministicCheck.model_validate({
+        "check_id": "traj",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
+    })
+    assert check.trajectory_manifest_path == "outputs.trajectories.0"
+
+    forbidden = DeterministicCheck.model_validate({
+        "check_id": "no_prepared",
+        "check_type": "forbidden_files",
+        "forbidden_outputs": ["prepared_structure.pdb"],
+    })
+    assert forbidden.forbidden_outputs == ["prepared_structure.pdb"]
+
+    solvent = DeterministicCheck.model_validate({
+        "check_id": "explicit_water",
+        "check_type": "topology_solvent_rescan",
+        "topology_manifest_path": "outputs.topology.0",
+        "required_solvent_type": "explicit_water",
+        "water_residue_names": ["HOH", "WAT"],
+        "min_water_residues": 10,
+    })
+    assert solvent.required_solvent_type == "explicit_water"
+    assert solvent.min_water_residues == 10
+
+
 def test_ground_truth_check_requires_paths():
     with pytest.raises(ValidationError):
         GroundTruthCheck.model_validate({"check_id": "x", "weight": 1.0})
@@ -77,6 +105,23 @@ def test_submission_manifest_status_enum():
             "task_id": "x",
             "status": "weird",
         })
+
+
+def test_task_supports_optional_agent_benchmark_metadata():
+    task = Task.model_validate({
+        "schema_version": "1.0",
+        "task_id": "x",
+        "category": "engine_sanity",
+        "primary_score": "execution",
+        "execution_mode": "lite",
+        "task_intent": "x",
+        "capability_tags": ["tool_execution"],
+        "environment_type": "local_md_runtime",
+        "requires_tools": ["md_engine"],
+        "evaluation_target": "agent_execution_reliability",
+    })
+    assert task.capability_tags == ["tool_execution"]
+    assert task.environment_type == "local_md_runtime"
 
 
 def test_external_backend_harness_model_metadata_validate():

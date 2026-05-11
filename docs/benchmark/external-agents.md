@@ -1,9 +1,9 @@
 # External Agents And Programs
 
-MDAgentBench is an artifact contract. Your agent does not need to use MDClaw.
-It may use GROMACS, OpenMM scripts, Amber, another workflow manager, or a
-custom LLM harness. The scorer only compares files under `submission/` against
-the public task contract and scorer-only truth files.
+MDAgentBench is an artifact-based agent benchmark contract. Your agent does not
+need to use MDClaw. It may use GROMACS, OpenMM scripts, Amber, MDCrow, another
+workflow manager, or a custom LLM harness. The scorer only compares files under
+`submission/` against the public task contract and scorer-only truth files.
 
 For automated `harness × model` experiments using OpenRouter, see
 [`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
@@ -64,6 +64,22 @@ common files are:
   `prepared_structure.pdb` for ligand-preparation tasks, `figures/` for
   communication tasks, and `methods.md` for study-methods tasks.
 
+For execution tasks, trajectory and topology artifacts can be supplied through
+`manifest.outputs` rather than copied to a benchmark-specific fixed filename:
+
+```json
+{
+  "outputs": {
+    "trajectories": ["ckpt_exports/traj.dcd"],
+    "topology": ["ckpt_exports/topology.pdb"]
+  }
+}
+```
+
+Paths are resolved relative to the `submission/` directory. This keeps the
+benchmark agent-independent: an agent with a file registry only needs to point
+the manifest at the relevant exported files.
+
 ## What The Scorer Compares
 
 The scorer does not read chat transcripts, tool-call logs, or private harness
@@ -79,6 +95,30 @@ state. It reads `task.json`, scorer-only `truth/` when needed, and your
   held-back truth in `truth/experimental_truth.json`.
 - Evidence-communication tasks compare figure/method artifacts and check that
   numeric caption claims match `metrics.json`.
+
+## MDCrow-Style File Registries
+
+MDCrow stores generated files in a checkpoint directory and tracks them through
+file IDs in `ckpt/paths_registry.json`. MDAgentBench does not need a
+MDCrow-specific adapter if the final submission records the relevant files in
+the standard manifest.
+
+A generic MDCrow-style workflow is:
+
+1. Start the benchmark run with `harness_name="mdcrow"` and
+   `backend_name="mdcrow-openmm"` or the backend actually used.
+2. Give the agent only `task.json` and `input/`; do not expose `truth/` or
+   `scorer/`.
+3. Let MDCrow run normally and produce its checkpoint files.
+4. Export or copy the relevant files under `submission/`, for example
+   `submission/mdcrow/traj.dcd` and `submission/mdcrow/topology.pdb`.
+5. Write `manifest.json` with `outputs.trajectories` and `outputs.topology`
+   pointing at those files.
+6. Write `metrics.json`, `evidence_report.json`, and `provenance.json` with the
+   model, harness, backend, and any raw-output hashes available.
+
+The same pattern applies to any other file-registry agent. The benchmark
+contract is the `submission/` directory, not the internal registry.
 
 ## Standard Flow
 

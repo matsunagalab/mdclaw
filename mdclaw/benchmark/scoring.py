@@ -169,6 +169,16 @@ def _check_required_files(check: DeterministicCheck, submission_dir: Path,
     return True, 1.0, f"all {len(paths)} required outputs present"
 
 
+def _check_forbidden_files(check: DeterministicCheck, submission_dir: Path,
+                           **_):
+    paths = check.forbidden_outputs or []
+    present = [p for p in paths
+               if _resolve_relative(submission_dir, p).exists()]
+    if present:
+        return False, 0.0, f"forbidden files present: {present}"
+    return True, 1.0, f"all {len(paths)} forbidden outputs absent"
+
+
 def _check_json_equals(check: DeterministicCheck, submission_dir: Path,
                        metrics: dict, **_):
     value = _read_json_path(submission_dir, check, metrics_default=metrics)
@@ -232,11 +242,19 @@ def _check_json_allowed_values(check: DeterministicCheck, submission_dir: Path,
 
 
 def _check_trajectory_rescan(check: DeterministicCheck, submission_dir: Path,
-                             **_):
-    if not check.trajectory_path or not check.topology_path:
-        return False, 0.0, "trajectory_path and topology_path required"
-    traj_path = _resolve_relative(submission_dir, check.trajectory_path)
-    top_path = _resolve_relative(submission_dir, check.topology_path)
+                             manifest: dict, **_):
+    traj_rel = _manifest_artifact_path(
+        manifest, check.trajectory_manifest_path, "outputs.trajectories.0",
+    ) or check.trajectory_path
+    top_rel = _manifest_artifact_path(
+        manifest, check.topology_manifest_path, "outputs.topology.0",
+    ) or check.topology_path
+    if not traj_rel or not top_rel:
+        return False, 0.0, (
+            "trajectory/topology path required via task path or manifest outputs"
+        )
+    traj_path = _resolve_relative(submission_dir, traj_rel)
+    top_path = _resolve_relative(submission_dir, top_rel)
     n_frames, has_nan, msg = integrity.rescan_trajectory_for_nan(traj_path, top_path)
     if n_frames is None:
         return False, 0.0, msg
@@ -246,6 +264,58 @@ def _check_trajectory_rescan(check: DeterministicCheck, submission_dir: Path,
     if has_nan:
         return False, 0.0, f"{msg}; NaN coordinates detected"
     return True, 1.0, msg
+
+
+def _check_topology_solvent_rescan(check: DeterministicCheck,
+                                   submission_dir: Path,
+                                   manifest: dict, **_):
+    top_rel = _manifest_artifact_path(
+        manifest, check.topology_manifest_path, "outputs.topology.0",
+    ) or check.topology_path
+    if not top_rel:
+        return False, 0.0, "topology path required via task path or manifest outputs"
+
+    topology_path = _resolve_relative(submission_dir, top_rel)
+    if not topology_path.is_file():
+        return False, 0.0, f"topology file not found: {topology_path}"
+
+    water_names = {
+        str(name).strip().upper()
+        for name in (check.water_residue_names or ["HOH", "WAT", "TIP3", "TP3"])
+    }
+    min_water = int(check.min_water_residues or 1)
+    water_residues: set[tuple[str, str, str, str]] = set()
+
+    try:
+        with topology_path.open() as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                resname = line[17:20].strip().upper()
+                if resname not in water_names:
+                    continue
+                chain_id = line[21].strip()
+                resseq = line[22:26].strip()
+                icode = line[26].strip()
+                water_residues.add((chain_id, resseq, icode, resname))
+    except OSError as exc:
+        return False, 0.0, f"could not read topology file: {exc}"
+
+    water_count = len(water_residues)
+    required = (check.required_solvent_type or "explicit_water").strip().lower()
+    if required != "explicit_water":
+        return False, 0.0, f"unsupported required_solvent_type {required!r}"
+    if water_count < min_water:
+        return (
+            False,
+            0.0,
+            f"found {water_count} water residues in topology; require >= {min_water}",
+        )
+    return (
+        True,
+        1.0,
+        f"found {water_count} water residues in topology; require >= {min_water}",
+    )
 
 
 def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
@@ -303,12 +373,14 @@ def _check_metrics_caption_consistency(check: DeterministicCheck,
 
 _DETERMINISTIC_DISPATCH = {
     "required_files": _check_required_files,
+    "forbidden_files": _check_forbidden_files,
     "json_equals": _check_json_equals,
     "json_max": _check_json_max,
     "json_min": _check_json_min,
     "json_min_length": _check_json_min_length,
     "json_allowed_values": _check_json_allowed_values,
     "trajectory_rescan": _check_trajectory_rescan,
+    "topology_solvent_rescan": _check_topology_solvent_rescan,
     "rmsd_recompute": _check_rmsd_recompute,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
 }
@@ -560,6 +632,33 @@ def _resolve_relative(submission_dir: Path, rel: str) -> Path:
 def manifest_value(submission_dir: Path, dotted: str) -> Optional[Any]:
     manifest = integrity.read_json_safe(submission_dir / "manifest.json")
     return integrity._safe_path(manifest, dotted)
+
+
+def _manifest_artifact_path(
+    manifest: dict, preferred_path: Optional[str], fallback_path: str,
+) -> Optional[str]:
+    value = _safe_path_with_index(manifest, preferred_path or fallback_path)
+    if isinstance(value, str):
+        return value
+    return None
+
+
+def _safe_path_with_index(obj: Any, dotted: str) -> Any:
+    cur = obj
+    for part in dotted.split("."):
+        if isinstance(cur, list):
+            try:
+                idx = int(part)
+            except ValueError:
+                return None
+            if idx < 0 or idx >= len(cur):
+                return None
+            cur = cur[idx]
+        elif isinstance(cur, dict) and part in cur:
+            cur = cur[part]
+        else:
+            return None
+    return cur
 
 
 def _read_json_path(submission_dir: Path, check: DeterministicCheck,

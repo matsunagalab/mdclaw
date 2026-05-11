@@ -5,6 +5,16 @@
   "primary_score": "preparation",
   "secondary_scores": [],
   "execution_mode": "dry_run",
+  "capability_tags": [
+    "chemistry_guardrail",
+    "structured_refusal",
+    "provenance_reporting"
+  ],
+  "environment_type": "artifact_only",
+  "requires_tools": [
+    "structure_inspection"
+  ],
+  "evaluation_target": "agent_guardrail_judgment",
   "time_limit_minutes": 30,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
@@ -22,6 +32,14 @@
   "scoring": {
     "deterministic_checks": [
       {
+        "check_id": "intentional_refusal_status",
+        "check_type": "json_equals",
+        "json_file": "manifest.json",
+        "json_path": "status",
+        "equals": "failed",
+        "weight": 0.25
+      },
+      {
         "check_id": "structured_guardrail_reported",
         "check_type": "json_allowed_values",
         "json_file": "metrics.json",
@@ -31,7 +49,15 @@
           "invalid_ligand_parameters",
           "low_confidence_charge"
         ],
-        "weight": 1.0
+        "weight": 0.5
+      },
+      {
+        "check_id": "no_prepared_structure_emitted",
+        "check_type": "forbidden_files",
+        "forbidden_outputs": [
+          "prepared_structure.pdb"
+        ],
+        "weight": 0.25
       }
     ],
     "ground_truth_checks": [

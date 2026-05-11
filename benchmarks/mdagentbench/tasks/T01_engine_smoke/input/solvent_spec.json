@@ -3,5 +3,6 @@
   "ion_concentration_mol_per_l": 0.15,
   "ion_pair": "NaCl",
   "buffer_distance_angstrom": 12.0,
-  "box_shape": "octahedral"
+  "box_shape": "octahedral",
+  "solvent_type": "explicit"
 }

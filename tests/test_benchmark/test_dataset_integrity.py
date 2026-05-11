@@ -27,7 +27,11 @@ def _walk_keys(value: Any):
 def test_dataset_json_matches_task_directories():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
     task_ids = dataset["task_ids"]
-    task_dirs = sorted(path.name for path in (DATASET_DIR / "tasks").iterdir() if path.is_dir())
+    task_dirs = sorted(
+        path.name
+        for path in (DATASET_DIR / "tasks").iterdir()
+        if path.is_dir() and (path / "task.json").is_file()
+    )
 
     assert dataset["task_count"] == len(task_ids)
     assert sorted(task_ids) == task_dirs
@@ -125,3 +129,22 @@ def test_task_input_files_exist():
         )
         for rel_path in declared_inputs:
             assert (task_dir / rel_path).is_file(), f"missing input for {task_id}: {rel_path}"
+
+
+def test_execution_tasks_require_explicit_water_topology_rescan():
+    for task_id, min_water in {
+        "T01_engine_smoke": 100,
+        "T04_exec_short_protein_md": 1000,
+    }.items():
+        task = Task.model_validate_json(
+            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+        )
+        checks = {
+            check.check_id: check
+            for check in task.scoring.deterministic_checks
+        }
+        check = checks["explicit_water_topology"]
+        assert check.check_type == "topology_solvent_rescan"
+        assert check.required_solvent_type == "explicit_water"
+        assert check.topology_manifest_path == "outputs.topology.0"
+        assert check.min_water_residues == min_water

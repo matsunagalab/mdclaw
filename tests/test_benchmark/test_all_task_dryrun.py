@@ -81,10 +81,10 @@ def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
     summary, tasks = _score_fake_run(tmp_path, "honest")
 
     assert summary["n_tasks"] == 9
-    assert summary["overall_score"] == pytest.approx(0.61)
+    assert summary["overall_score"] == pytest.approx(0.57)
     assert summary["scores"] == {
         "preparation": pytest.approx(0.5),
-        "execution": pytest.approx(0.7167),
+        "execution": pytest.approx(0.5167),
         "scientific_answer": pytest.approx(1.0),
         "evidence_communication": pytest.approx(1.0),
     }

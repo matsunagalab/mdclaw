@@ -1,10 +1,13 @@
 # MDAgentBench v1.0
 
-MDAgentBench is a tool-agnostic benchmark contract for molecular dynamics
-agents. MDClaw is one supported backend, but it is not required: Claude Code,
-Cursor, OpenCode, raw OpenMM scripts, GROMACS workflows, or lab-specific agents
-can all be compared by writing the same `submission/` files and running the
-same scorer.
+MDAgentBench is an artifact-based benchmark dataset for molecular dynamics
+agents. It follows the same broad pattern as SWE-bench, GAIA, WebArena, and
+OSWorld: public task files and inputs are separated from scorer-only truth,
+agents write standardized submissions, and an independent scorer evaluates the
+artifacts. MDClaw is one supported backend, but it is not required: Claude Code,
+Cursor, OpenCode, MDCrow, raw OpenMM scripts, GROMACS workflows, or lab-specific
+agents can all be compared by writing the same `submission/` files and running
+the same scorer.
 
 The v1.0 release replaces the v0.1 pilot with:
 
@@ -20,6 +23,13 @@ The v1.0 release replaces the v0.1 pilot with:
 - A self-contained scorer/validator runtime in either the `mdclaw:latest`
   container or a `mdclaw` conda env. The agent being evaluated may use any
   separate MD toolchain as long as it emits the benchmark artifacts.
+
+MDAgentBench is not an LLM-only benchmark. A run measures the combined behavior
+of an agent workflow, its harness, the underlying model, and the MD backend.
+For model-only comparisons, keep the harness and backend fixed and record the
+model/provider routing in `provenance.json` and `run_config.json`. For harness
+comparisons, keep the model and backend fixed. For backend comparisons, keep
+the agent and model fixed.
 
 New to the benchmark? External agents and programs should start with
 [`external-agents.md`](external-agents.md). It explains which files are public,
@@ -85,10 +95,10 @@ Pilot tasks (v1.0):
 
 | Task | Short Name | Family | Primary | Mode | Intent |
 |---|---|---|---|---|---|
-| T01_engine_smoke | Engine smoke MD | Execution / Engine Reliability | execution | lite | Run tiny chignolin MD and prove the engine can emit a finite, reloadable trajectory. |
-| T02_prep_metalloenzyme_guardrail | Metal guardrail refusal | System Preparation & Guardrails | preparation | dry_run | Refuse unsafe Zn metalloenzyme preparation with the expected structured guardrail code. |
+| T01_engine_smoke | Engine smoke MD | Execution / Engine Reliability | execution | lite | Run tiny chignolin MD in explicit TIP3P water and prove the engine can emit a finite, reloadable trajectory. |
+| T02_prep_metalloenzyme_guardrail | Metal guardrail refusal | System Preparation & Guardrails | preparation | dry_run | Refuse unsafe Zn metalloenzyme preparation with `manifest.status="failed"`, the expected structured guardrail code, and no prepared structure artifact. |
 | T03_prep_ligand_pose_t4l_benzene | Ligand-pose preparation | System Preparation & Guardrails | preparation | lite | Build T4L L99A + benzene while preserving the crystal ligand pose within RMSD tolerance. |
-| T04_exec_short_protein_md | Short protein MD | Execution / Engine Reliability | execution | lite | Prepare, equilibrate, and run short T4 lysozyme MD with trajectory integrity checks. |
+| T04_exec_short_protein_md | Short protein MD | Execution / Engine Reliability | execution | lite | Prepare, equilibrate, and run >=100 ps explicit-water T4 lysozyme MD with trajectory and solvent-topology integrity checks. |
 | T05_exec_restart_continue | Restart continuation | Execution / Engine Reliability | execution | lite | Split chignolin MD into restart chunks and verify step/frame continuity. |
 | T06_answer_stability_t4l_l99a | Stability direction answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether T4L L99A stabilizes or destabilizes relative to WT. |
 | T07_answer_ppi_hotspot_barnase_d39a | Binding hotspot answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether barnase D39A weakens binding in the barnase-barstar complex. |
@@ -115,8 +125,25 @@ submission/
 ```
 
 Only the artifacts are scored. The scorer never reads chat transcripts,
-tool calls, or harness logs. Provenance md5 references are recomputed
+tool calls, or private harness logs. Provenance md5 references are recomputed
 on the scorer side.
+
+Execution tasks may submit trajectory and topology artifacts either at the
+legacy task-specified `../work/...` paths or through `manifest.outputs`:
+
+```json
+{
+  "outputs": {
+    "trajectories": ["mdcrow/traj.dcd"],
+    "topology": ["mdcrow/topology.pdb"]
+  }
+}
+```
+
+This manifest-driven path is intended for external agents with their own file
+registries, such as MDCrow's `ckpt/paths_registry.json`. They do not need a
+MDCrow-specific adapter as long as the final `submission/` files point to
+reloadable artifacts.
 
 Machine-readable schemas live under `benchmarks/mdagentbench/schemas/`:
 
@@ -124,8 +151,8 @@ Machine-readable schemas live under `benchmarks/mdagentbench/schemas/`:
 - `submission_manifest.schema.json` for `submission/manifest.json`.
 - `score.schema.json` for scorer output.
 
-External adapters should treat these schemas plus the task's
-`required_outputs` as the stable interface.
+External agents should treat these schemas, the task's `required_outputs`, and
+manifest artifact paths as the stable interface.
 
 ## Scorer Runtime
 

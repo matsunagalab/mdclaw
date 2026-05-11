@@ -1,15 +1,12 @@
 # MDAgentBench v1.0 — Design Reference
 
-> **Legacy note (2026-09 update)**: This design reference was written
-> before the openmmforcefields-unification refactor. References to
-> `system.parm7` / `system.rst7` describe the v1.0 task contract as
-> originally drafted; the current `build_amber_system` emits
-> `system.system.xml` + `system.topology.pdb` + `system.state.xml`
-> instead, and the live benchmark task definitions in
-> `benchmarks/mdagentbench/tasks/T0{1,4,5}/task.json` use
-> `topology_path: ../work/system.topology.pdb`. Treat the parm7/rst7
-> phrasing in this document as the original specification rather than
-> the current contract.
+> **v1.0.1 note**: This design reference was originally drafted before the
+> openmmforcefields-unification refactor. The live contract is artifact-based
+> and backend-neutral: agents submit a reloadable topology/trajectory pair via
+> `manifest.outputs` or the legacy task-defined `../work/...` paths. MDClaw's
+> curated topology path emits `system.system.xml` + `system.topology.pdb` +
+> `system.state.xml`; external backends may submit equivalent artifacts as long
+> as the scorer can reload them.
 
 This document is the design reference for the v1.0 ground-up rebuild of
 MDAgentBench. It supersedes the v0.1 pilot dataset and the
@@ -51,6 +48,55 @@ v1.0 contract and the rationale for each design decision.
   entirely inside the `mdclaw:latest` container, or entirely inside a
   `mdclaw` conda env. The wrapper `bin/mdclaw` decides at invocation time
   and stays inside the chosen runtime; no host-vs-container shimming.
+
+## Relation to established agent benchmarks
+
+MDAgentBench follows the same structural pattern as established agent
+benchmarks while specializing the environment and artifacts for molecular
+dynamics:
+
+- **SWE-bench style separation**: public task inputs are separate from hidden
+  evaluator material. Here, agents read `task.json` and `input/`, while the
+  scorer reads `truth/` and re-runs deterministic checks on submitted artifacts.
+- **GAIA style capability layering**: tasks are simple to state but require
+  multiple agent capabilities. MDAgentBench labels task modes as `plan_only`,
+  `dry_run`, or `lite`, and v1.0.1 adds optional capability metadata so readers
+  can distinguish LLM-heavy, artifact-heavy, and execution-heavy tasks.
+- **WebArena / OSWorld style functional correctness**: the final state matters
+  more than the action trace. MDAgentBench scores reloadable trajectories,
+  recomputed RMSD, guardrail codes, metrics/caption consistency, and held-back
+  scientific truth rather than chat transcripts or private tool logs.
+- **AgentBench / ToolBench style tool-use evaluation**: the benchmark measures
+  an agent using tools in an environment, not just a language model. The run
+  metadata keeps `model`, `harness`, and `backend` separate so comparisons can
+  hold two of the three fixed while varying the third.
+
+The benchmark unit is the `submission/` directory. MDClaw, MDCrow, a raw OpenMM
+script, GROMACS, or another lab agent can participate if it writes the standard
+manifest, metrics, evidence, provenance, and task artifacts.
+
+## What v1.0 measures and does not measure
+
+MDAgentBench v1.0 primarily measures **agent workflow performance**: choosing
+reasonable MD actions, producing auditable artifacts, refusing unsafe
+parameterization, running or describing short simulations, and communicating
+limitations. It can support LLM comparisons only when the harness and backend
+are held fixed. It can support harness comparisons only when the model and
+backend are held fixed. It can support backend comparisons only when the agent
+and model are held fixed.
+
+The modes intentionally emphasize different components:
+
+- `plan_only`: LLM knowledge, literature reasoning, and calibrated scientific
+  answer formation.
+- `dry_run`: artifact packaging, guardrail judgment, provenance, and methods
+  communication without expensive MD.
+- `lite`: tool execution, MD engine reliability, trajectory emission, and
+  restart handling.
+
+v1.0 does not try to benchmark long production science, 1 ns+ statistical
+convergence, HPC scheduling quality, or truth-trajectory analysis correctness.
+Those belong in v1.1+ tasks so v1.0 scores remain comparable.
 
 ## Target system selection
 
@@ -96,16 +142,17 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
 - **Primary axis**: `execution`
 - **Secondary axes**: none
 - **Inputs**: `5AWL.pdb`, `solvent_spec.json` (TIP3P, 0.15 M NaCl)
-- **Task intent**: 10 ps Langevin NVT on chignolin in implicit or explicit
-  solvent. Agent reports finite energy and no NaN.
+- **Task intent**: 10 ps Langevin NVT on chignolin in explicit TIP3P water.
+  Agent reports finite energy and no NaN.
 - **Truth**: none (procedural).
 - **Deterministic checks**:
   1. `execution.completed == true`, `finite_energy == true`, `no_nan == true`
      (read from `metrics.json`).
   2. **Trajectory re-scan**: scorer loads the submitted DCD/XTC, confirms
      `n_frames > 0` and that no frame contains NaN coordinates.
-  3. `manifest.outputs.trajectories` non-empty AND every referenced path
-     exists.
+  3. **Solvent topology re-scan**: scorer loads `manifest.outputs.topology.0`
+     and confirms the submitted topology contains at least 100 explicit water
+     residues (`HOH` / `WAT` / equivalent names).
 
 ### T02 — prep_metalloenzyme_guardrail (2CBA)
 - **Primary axis**: `preparation`
@@ -136,8 +183,9 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
   visible to the agent for the comparison to be defined).
 - **Deterministic checks**:
   1. `submission/prepared_structure.pdb` exists.
-  2. `submission/topology/system.parm7` and `system.rst7` exist (or
-     equivalents — schema allows multiple toolchain backends).
+  2. `submission/manifest.json` records backend-equivalent topology/system
+     artifacts, such as MDClaw's OpenMM XML triple or another reloadable
+     topology representation.
   3. `metrics.preparation.ligand_heavy_atom_rmsd_angstrom <= 0.5` AND scorer
      re-computes the same RMSD using `mdtraj` against
      `input/ligand_reference.pdb` and confirms the agent's value matches
@@ -147,15 +195,19 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
 - **Primary axis**: `execution`
 - **Secondary axes**: `evidence_communication`
 - **Inputs**: `2LZM.pdb`, `prep_request.json` (similar to T03), MD parameters
-  (`md_protocol.json`: equilibration schedule, production length 1 ns NVT).
-- **Task intent**: End-to-end short MD of T4L WT. Equilibrate then 1 ns NVT.
+  (`md_protocol.json`: equilibration schedule, production length 100 ps NVT).
+- **Task intent**: End-to-end short explicit-water MD of T4L WT. Equilibrate
+  then run at least 100 ps NVT production. A 1 ns version is intentionally
+  deferred to v1.1+.
 - **Truth**: none (procedural).
 - **Deterministic checks**:
   1. `execution.{completed, finite_energy, no_nan} == true`.
   2. Scorer loads the submitted production trajectory, confirms ≥ 50 frames
      and no NaN.
-  3. `metrics.execution.simulated_time_ps >= 1000` and matches what the
+  3. `metrics.execution.simulated_time_ps >= 100` and matches what the
      scorer reads from the trajectory file metadata.
+  4. Scorer loads `manifest.outputs.topology.0` and confirms the submitted
+     topology contains at least 1000 explicit water residues.
 
 ### T05 — exec_restart_continue (chignolin)
 - **Primary axis**: `execution`
@@ -205,23 +257,17 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
 ### T08 — communicate_t4l_dynamics
 - **Primary axis**: `evidence_communication`
 - **Secondary axes**: none
-- **Inputs**: `reference_trajectory.dcd` (curator-supplied 10 ns T4L WT
-  trajectory in `input/`), `system.parm7` (matching topology),
-  `analysis_request.json` (RMSD reference frame, RMSF selection,
-  contact cutoff).
+- **Inputs**: `2LZM.pdb` and `analysis_request.json` (RMSD reference frame,
+  RMSF selection, contact cutoff).
 - **Task intent**: Produce RMSD, per-residue RMSF, and CA–CA contact figures
   with captions and methods that are arithmetically traceable to the metrics.
-- **Truth**: scorer re-runs the same analyses on `reference_trajectory.dcd`
-  (also held in `truth/expected_metrics.json`) and confirms the agent's
-  reported numbers match within 1 % relative tolerance.
+- **Truth**: none in v1.0. The deterministic scorer checks that figure captions
+  are internally consistent with submitted `metrics.json`. A future v1.1 task
+  should add a curator-held reference trajectory and expected metrics.
 - **Deterministic checks**:
   1. `manifest.outputs.figures` length ≥ 3.
   2. Each referenced figure file exists.
-  3. `metrics.analysis.rmsd.mean_angstrom`,
-     `metrics.analysis.rmsf.mean_angstrom`,
-     `metrics.analysis.contacts.high_occupancy_pairs_above_0.5` match the
-     scorer-recomputed values within tolerance.
-  4. Caption strings (in `evidence_report.figure_captions[].caption`) cite the
+  3. Caption strings (in `evidence_report.figure_captions[].caption`) cite the
      same numeric values as in `metrics.json` (string-match within tolerance).
 
 ### T09 — study_wt_mutant_methods (T4L WT vs L99A)

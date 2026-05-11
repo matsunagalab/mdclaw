@@ -5,6 +5,17 @@
   "primary_score": "execution",
   "secondary_scores": [],
   "execution_mode": "lite",
+  "capability_tags": [
+    "tool_execution",
+    "openmm_execution",
+    "trajectory_artifact"
+  ],
+  "environment_type": "local_md_runtime",
+  "requires_tools": [
+    "md_engine",
+    "trajectory_writer"
+  ],
+  "evaluation_target": "agent_execution_reliability",
   "time_limit_minutes": 30,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
@@ -33,7 +44,7 @@
         "json_file": "metrics.json",
         "json_path": "execution.completed",
         "equals": true,
-        "weight": 0.3
+        "weight": 0.15
       },
       {
         "check_id": "finite_energy",
@@ -41,7 +52,7 @@
         "json_file": "metrics.json",
         "json_path": "execution.finite_energy",
         "equals": true,
-        "weight": 0.2
+        "weight": 0.125
       },
       {
         "check_id": "no_nan",
@@ -49,24 +60,41 @@
         "json_file": "metrics.json",
         "json_path": "execution.no_nan",
         "equals": true,
-        "weight": 0.2
+        "weight": 0.125
       },
       {
         "check_id": "trajectory_rescan",
         "check_type": "trajectory_rescan",
         "trajectory_path": "../work/traj.dcd",
         "topology_path": "../work/system.topology.pdb",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
         "require_min_frames": 5,
-        "weight": 0.3
+        "weight": 0.25
+      },
+      {
+        "check_id": "explicit_water_topology",
+        "check_type": "topology_solvent_rescan",
+        "topology_path": "../work/system.topology.pdb",
+        "topology_manifest_path": "outputs.topology.0",
+        "required_solvent_type": "explicit_water",
+        "water_residue_names": [
+          "HOH",
+          "WAT",
+          "TIP3",
+          "TP3"
+        ],
+        "min_water_residues": 100,
+        "weight": 0.35
       }
     ],
     "ground_truth_checks": [],
     "llm_judge_rubrics": []
   },
-  "task_intent": "Execution smoke test: run a tiny 10 ps Langevin NVT MD on chignolin (CLN025, PDB 5AWL) to prove the engine can produce a finite, reloadable trajectory. Report finite energy, no NaN, and emit a trajectory file the scorer can re-load.",
+  "task_intent": "Execution smoke test: run a tiny 10 ps Langevin NVT MD on chignolin (CLN025, PDB 5AWL) in explicit TIP3P water to prove the engine can produce a finite, reloadable trajectory. Report finite energy, no NaN, emit a trajectory file the scorer can re-load, and emit a topology PDB containing explicit water residues.",
   "references": [
     {
-      "note": "Honda et al. 2008 — chignolin CLN025 designed mini-protein.",
+      "note": "Honda et al. 2008 \u2014 chignolin CLN025 designed mini-protein.",
       "source": "PDB 5AWL"
     }
   ]

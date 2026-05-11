@@ -43,12 +43,14 @@ ScoreStatus = Literal["passed", "partial", "failed"]
 
 DeterministicCheckType = Literal[
     "required_files",
+    "forbidden_files",
     "json_equals",
     "json_max",
     "json_min",
     "json_min_length",
     "json_allowed_values",
     "trajectory_rescan",
+    "topology_solvent_rescan",
     "rmsd_recompute",
     "metrics_caption_consistency",
 ]
@@ -101,6 +103,8 @@ class DeterministicCheck(BaseModel):
 
     # required_files / required_outputs lists relative paths under submission/
     required_outputs: Optional[list[str]] = None
+    # forbidden_files / forbidden_outputs lists paths that must not exist.
+    forbidden_outputs: Optional[list[str]] = None
 
     # json_equals / json_max / json_min thresholds
     equals: Any = None
@@ -116,7 +120,14 @@ class DeterministicCheck(BaseModel):
     # trajectory_rescan
     trajectory_path: Optional[str] = None
     topology_path: Optional[str] = None
+    trajectory_manifest_path: Optional[str] = None
+    topology_manifest_path: Optional[str] = None
     require_min_frames: Optional[int] = None
+
+    # topology_solvent_rescan
+    required_solvent_type: Optional[str] = None
+    water_residue_names: Optional[list[str]] = None
+    min_water_residues: Optional[int] = None
 
     # rmsd_recompute
     reference_pdb: Optional[str] = None  # relative to task input dir
@@ -179,6 +190,10 @@ class Task(BaseModel):
     inputs: TaskInputs = Field(default_factory=TaskInputs)
     required_outputs: list[str] = Field(default_factory=list)
     not_scored_here: list[ScoreAxis] = Field(default_factory=list)
+    capability_tags: list[str] = Field(default_factory=list)
+    environment_type: Optional[str] = None
+    requires_tools: list[str] = Field(default_factory=list)
+    evaluation_target: Optional[str] = None
     scoring: TaskScoring = Field(default_factory=TaskScoring)
     task_intent: str
     references: list[TaskReference] = Field(default_factory=list)

@@ -1,6 +1,20 @@
 {
   "benchmark_version": "MDAgentBench-v1.0",
   "schema_version": "1.0",
+  "benchmark_type": "artifact_based_agent_benchmark",
+  "evaluation_unit": "submission_artifacts",
+  "agent_independent": true,
+  "public_private_split": {
+    "public": [
+      "dataset.json",
+      "tasks/<task_id>/task.json",
+      "tasks/<task_id>/input/"
+    ],
+    "private_to_scorer": [
+      "tasks/<task_id>/truth/",
+      "tasks/<task_id>/scorer/"
+    ]
+  },
   "released": "2026-05-06",
   "task_count": 9,
   "task_ids": [

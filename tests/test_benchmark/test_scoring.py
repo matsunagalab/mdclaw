@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
@@ -242,6 +241,125 @@ def test_json_min_length_check(tmp_path: Path):
     )
     score = scoring.score_submission(task, tmp_path)
     assert score.deterministic_checks[0].passed is True
+
+
+def test_forbidden_files_check(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_bad_file",
+            check_type="forbidden_files",
+            forbidden_outputs=["prepared_structure.pdb"],
+            weight=1.0,
+        )],
+    )
+    _write_submission(tmp_path, manifest={"task_id": "t", "status": "completed"})
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text("END\n")
+    score_with_file = scoring.score_submission(task, tmp_path)
+    failed = score_with_file.deterministic_checks[0]
+    assert failed.passed is False
+    assert "forbidden files present" in failed.message
+
+
+def test_trajectory_rescan_uses_manifest_outputs(tmp_path: Path, monkeypatch):
+    observed = {}
+
+    def fake_rescan(traj_path: Path, top_path: Path):
+        observed["traj_path"] = traj_path
+        observed["top_path"] = top_path
+        return 8, False, "fake loaded 8 frames"
+
+    monkeypatch.setattr(scoring.integrity, "rescan_trajectory_for_nan", fake_rescan)
+    task = _make_task(
+        primary="execution",
+        det_checks=[DeterministicCheck(
+            check_id="traj",
+            check_type="trajectory_rescan",
+            trajectory_path="../work/default_traj.dcd",
+            topology_path="../work/default_topology.pdb",
+            trajectory_manifest_path="outputs.trajectories.0",
+            topology_manifest_path="outputs.topology.0",
+            require_min_frames=4,
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "trajectories": ["mdcrow/traj.dcd"],
+                "topology": ["mdcrow/topology.pdb"],
+            },
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+    assert observed["traj_path"] == (tmp_path / "mdcrow/traj.dcd").resolve()
+    assert observed["top_path"] == (tmp_path / "mdcrow/topology.pdb").resolve()
+
+
+def test_topology_solvent_rescan_requires_explicit_water(tmp_path: Path):
+    task = _make_task(
+        primary="execution",
+        det_checks=[DeterministicCheck(
+            check_id="explicit_water",
+            check_type="topology_solvent_rescan",
+            topology_manifest_path="outputs.topology.0",
+            water_residue_names=["HOH", "WAT"],
+            min_water_residues=2,
+            weight=1.0,
+        )],
+    )
+    (tmp_path / "system.topology.pdb").write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "HETATM    2  O   HOH B   2       1.000   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    3  O   HOH B   3       2.000   0.000   0.000  1.00  0.00           O\n"
+        "END\n"
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"topology": ["system.topology.pdb"]},
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+    assert "found 2 water residues" in score.deterministic_checks[0].message
+
+
+def test_topology_solvent_rescan_fails_for_implicit_topology(tmp_path: Path):
+    task = _make_task(
+        primary="execution",
+        det_checks=[DeterministicCheck(
+            check_id="explicit_water",
+            check_type="topology_solvent_rescan",
+            topology_manifest_path="outputs.topology.0",
+            min_water_residues=1,
+            weight=1.0,
+        )],
+    )
+    (tmp_path / "system.topology.pdb").write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "END\n"
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"topology": ["system.topology.pdb"]},
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is False
+    assert "require >= 1" in score.deterministic_checks[0].message
 
 
 def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):

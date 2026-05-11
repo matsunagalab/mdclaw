@@ -7,6 +7,12 @@ and then asks the MDAgentBench scorer to validate and score those artifacts.
 
 The example uses T06 because it is a plan-only scientific-answer task and does
 not require real MD compute.
+
+Execution-capable agents such as MDCrow should follow the same pattern: write
+normal ``manifest.json`` / ``metrics.json`` / ``evidence_report.json`` /
+``provenance.json`` files, and register reloadable trajectory/topology artifacts
+under ``manifest.outputs``. No MDClaw DAG or agent-specific adapter is required
+by the scorer.
 """
 
 from __future__ import annotations
