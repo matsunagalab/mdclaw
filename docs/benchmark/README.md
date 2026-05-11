@@ -82,6 +82,7 @@ benchmarks/mdagentbench/
     submission_manifest.schema.json
     score.schema.json
   tasks/<task_id>/
+    prompt.md          # plain-language prompt for the agent under test
     task.json
     input/             # agent-readable inputs (PDB, configs, references)
     truth/             # scorer-only ground truth — DO NOT READ FROM AGENT
@@ -97,8 +98,8 @@ Pilot tasks (v1.0):
 | T03_prep_ligand_pose_t4l_benzene | Ligand-pose preparation | System Preparation & Guardrails | preparation | lite | Build T4L L99A + benzene while preserving the crystal ligand pose within RMSD tolerance. |
 | T04_exec_short_protein_md | Short protein MD | Execution / Engine Reliability | execution | lite | Prepare, equilibrate, and run >=100 ps explicit-water T4 lysozyme MD with trajectory and solvent-topology integrity checks. |
 | T05_exec_restart_continue | Restart continuation | Execution / Engine Reliability | execution | lite | Split chignolin MD into restart chunks and verify step/frame continuity. |
-| T06_answer_stability_t4l_l99a | Stability direction answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether T4L L99A stabilizes or destabilizes relative to WT. |
-| T07_answer_ppi_hotspot_barnase_d39a | Binding hotspot answer | Scientific Answer vs Experimental Truth | scientific_answer | plan_only | Predict whether barnase D39A weakens binding in the barnase-barstar complex. |
+| T06_answer_stability_t4l_l99a | Stability direction answer | Scientific Answer vs Experimental Truth | scientific_answer | lite | Predict whether T4L L99A stabilizes or destabilizes relative to WT using MD-derived evidence. |
+| T07_answer_ppi_hotspot_barnase_d39a | Binding hotspot answer | Scientific Answer vs Experimental Truth | scientific_answer | lite | Predict whether barnase D39A weakens binding in the barnase-barstar complex using MD-derived evidence. |
 | T08_communicate_t4l_dynamics | Figure/metrics communication | Evidence & Methods Communication | evidence_communication | dry_run | Produce dynamics figures and captions whose numeric claims match `metrics.json`. |
 | T09_study_t4l_wt_vs_l99a_methods | Study methods package | Evidence & Methods Communication | evidence_communication | dry_run | Package a WT-vs-L99A study design with Methods, provenance, and evidence. |
 
@@ -209,7 +210,7 @@ scorer strictness are visible in review without requiring real MD compute.
 ## Per-task Workflow
 
 ```bash
-# 1. The agent under test reads task.json + input/ and builds submission/.
+# 1. The agent under test reads prompt.md + task.json + input/ and builds submission/.
 # 2. Validate:
 mdclaw validate_benchmark_submission \
   --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json \

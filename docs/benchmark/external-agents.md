@@ -11,6 +11,8 @@ Read these files before running your agent:
 
 - `benchmarks/mdagentbench/dataset.json`: task list, benchmark version, and
   family metadata.
+- `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`: plain-language public
+  prompt suitable for handing directly to an MD agent.
 - `benchmarks/mdagentbench/tasks/<task_id>/task.json`: public task contract,
   scoring axes, required outputs, public inputs, and deterministic checks.
 - `benchmarks/mdagentbench/tasks/<task_id>/input/`: public task inputs such as
@@ -111,8 +113,8 @@ A generic MDCrow-style workflow is:
 
 1. Start the benchmark run with `harness_name="mdcrow"` and
    `backend_name="mdcrow-openmm"` or the backend actually used.
-2. Give the agent only `task.json` and `input/`; do not expose `truth/` or
-   `scorer/`.
+2. Give the agent only `prompt.md`, `task.json`, and `input/`; do not expose
+   `truth/` or `scorer/`.
 3. Let MDCrow run normally and produce its checkpoint files.
 4. Export or copy the relevant files under `submission/`, for example
    `submission/mdcrow/traj.dcd` and `submission/mdcrow/topology.pdb`.
@@ -132,7 +134,7 @@ Initialize a run with metadata for the agent under test:
 mdclaw init_benchmark_run \
   --output-dir benchmark_runs \
   --run-id 20260510_external_gromacs_t06 \
-  --execution-mode plan_only \
+  --execution-mode lite \
   --judge-mode deterministic \
   --backend-name gromacs \
   --backend-version 2024.4 \
@@ -152,9 +154,9 @@ mdclaw create_benchmark_submission_template \
   --harness-name external-python-script
 ```
 
-Run your agent or external program. It should read only `task.json` and
-`input/`, then replace the template values with real metrics, evidence, and
-artifacts. When the submission is genuinely complete, update
+Run your agent or external program. It should read only `prompt.md`,
+`task.json`, and `input/`, then replace the template values with real metrics,
+evidence, and artifacts. When the submission is genuinely complete, update
 `manifest.status` from the template default `partial` to `completed`; otherwise
 leave it `partial` or use `blocked` / intentional `failed` as appropriate.
 
@@ -177,8 +179,9 @@ mdclaw summarize_benchmark_run \
 
 ## Minimal T06 Submission
 
-For `T06_answer_stability_t4l_l99a`, a minimal external-agent submission can
-score without running MD because the task is `plan_only`. The key comparison is:
+For `T06_answer_stability_t4l_l99a`, a completed external-agent submission must
+include MD-derived evidence and real WT / mutant trajectory artifacts. The key
+scientific comparison is:
 
 ```text
 submission/evidence_report.json: effect.direction
@@ -204,9 +207,11 @@ Example `evidence_report.json`:
 }
 ```
 
-Execution tasks are different: `metrics.json` alone is not enough. If a task
-declares a `trajectory_rescan` check, the scorer reloads the trajectory named
-in the task contract and compares frame count and NaN status.
+This example illustrates the answer field only; it is not a valid leaderboard
+submission by itself. Scientific-answer and execution tasks both require real
+artifacts when `task.json` declares trajectory or artifact integrity checks. If
+a task declares a `trajectory_rescan` check, the scorer reloads the trajectory
+named in the manifest and compares frame count and NaN status.
 
 ## Schemas
 

@@ -97,6 +97,34 @@ def test_task_contracts_match_dataset_and_score_axes():
         assert set(task.not_scored_here).issubset(axes)
 
 
+def test_public_agent_prompts_exist_and_define_access_boundary():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+
+    for task_id in dataset["task_ids"]:
+        task = Task.model_validate_json(
+            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+        )
+        prompt_file = DATASET_DIR / "tasks" / task_id / "prompt.md"
+        assert prompt_file.is_file(), f"missing public prompt for {task_id}"
+        prompt = prompt_file.read_text()
+
+        assert task_id in prompt
+        assert "Use only" in prompt
+        assert "Do not read" in prompt
+        assert "truth/" in prompt
+        assert "scorer/" in prompt
+        assert "task.json" in prompt
+        for rel_path in (
+            list(task.inputs.structures)
+            + list(task.inputs.ligands)
+            + list(task.inputs.trajectories)
+            + list(task.inputs.config_files)
+        ):
+            assert rel_path in prompt, f"{task_id} prompt omits input {rel_path}"
+        for rel_path in task.required_outputs:
+            assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
+
+
 def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

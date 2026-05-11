@@ -21,7 +21,7 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
 
 
 def test_e2e_smoke_run_for_t06(tmp_path: Path):
-    """T06 (answer_stability_t4l_l99a) is the smallest plan_only task with a
+    """T06 (answer_stability_t4l_l99a) is a compact scientific-answer task with a
     real ground-truth comparison. We init a run, drop a 4-file submission,
     validate, score, and summarize."""
 
