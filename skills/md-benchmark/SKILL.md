@@ -220,35 +220,67 @@ directory.
 
 Before reaching for a hand-written OpenMM/GROMACS script, run the MDClaw
 DAG tools. They produce the artifacts the scorer is looking for and apply
-the enforced forcefield-water guardrails. The standard explicit-water
-chain is:
+the enforced forcefield-water guardrails. **Do not guess the argument
+names** — every tool takes its parameters as JSON via `--json-input` (or
+positional args via `--args`). Run `mdclaw <tool> --help` to confirm.
+
+The standard explicit-water chain (T01-style):
 
 ```bash
-# Create the job (one physical system per job_dir)
-mdclaw create_node --job-dir <run_task_dir>/job --node-id prep_001 \
-  --source-file <input/structure.pdb>
+JD=benchmark_runs/<run_id>/tasks/<task_id>/job
 
-# Pipeline (each node writes artifacts the agent then references in submission/)
-mdclaw --job-dir <jd> --node-id prep_001 prepare_complex --select-chains A
-mdclaw --job-dir <jd> --node-id solv_001 solvate_structure --water-model tip3p
-mdclaw --job-dir <jd> --node-id topo_001 build_amber_system \
-  --forcefield ff14SB --water-model tip3p
-mdclaw --job-dir <jd> --node-id eq_001  run_equilibration  --total-time-ns 0.1
-mdclaw --job-dir <jd> --node-id prod_001 run_production    --simulation-time-ns 0.01
+# Step 1: prepare protein. job_dir + node_id are GLOBAL flags passed to
+# the mdclaw CLI itself; tool params go inside --json-input.
+mdclaw --job-dir "$JD" --node-id prep_001 prepare_complex --json-input \
+  '{"structure_file": "benchmarks/mdagentbench/tasks/<task_id>/input/<pdb>", "select_chains": ["A"]}'
+
+# Step 2: solvate
+mdclaw --job-dir "$JD" --node-id solv_001 solvate_structure --json-input \
+  '{"pdb_file": "<prep merged PDB from prep_001 artifacts>", "water_model": "tip3p", "dist": 12.0}'
+
+# Step 3: build Amber system → emits system.xml + topology.pdb + state.xml
+mdclaw --job-dir "$JD" --node-id topo_001 build_amber_system --json-input \
+  '{"pdb_file": "<solvated PDB from solv_001 artifacts>", "forcefield": "ff14SB", "water_model": "tip3p"}'
+
+# Step 4: equilibration (consumes the topo_001 XML triple)
+mdclaw --job-dir "$JD" --node-id eq_001 run_equilibration --json-input \
+  '{"system_xml_file": "<topo_001>/system.xml", "topology_pdb_file": "<topo_001>/topology.pdb", "state_xml_file": "<topo_001>/state.xml", "temperature_kelvin": 300.0, "npt_steps": 50000}'
+
+# Step 5: production
+mdclaw --job-dir "$JD" --node-id prod_001 run_production --json-input \
+  '{"system_xml_file": "<eq_001>/system.xml", "topology_pdb_file": "<eq_001>/topology.pdb", "state_xml_file": "<eq_001>/state.xml", "simulation_time_ns": 0.01, "temperature_kelvin": 300.0}'
 ```
 
-Map node outputs into the submission:
+Each node writes its artifacts under
+`$JD/<node_id>/artifacts/`. Inspect them with `ls $JD/<node_id>/artifacts/`
+or `mdclaw inspect_node`. Then copy / list them in `submission/`:
 
-- `prep_001/artifacts/merged.pdb` → `submission/prepared_structure.pdb` (T03).
-- `prod_001/artifacts/trajectory.dcd` + `topo_001/artifacts/topology.pdb`
-  → list under `manifest.outputs.trajectories` and
-  `manifest.outputs.topology` (T01/T04/T05).
-- Real energies / temperatures from the run → `metrics.json`.
+- `prep_001/artifacts/<merged>.pdb` → `submission/prepared_structure.pdb`
+  (required by T03).
+- `prod_001/artifacts/<trajectory>.dcd` → list under
+  `manifest.outputs.trajectories[]`; the topology written by
+  `build_amber_system` (or `prep_001` if running without solvation) goes
+  under `manifest.outputs.topology[]` (T01/T04/T05).
+- Real energies / temperatures / frame counts → `metrics.json`.
+
+**Verify argument names before invoking.** Common pitfalls:
+
+- `solvate_structure` uses `dist` (Å buffer) and `cubic` (bool), not
+  `box_distance` / `box_type`.
+- `build_amber_system` uses `forcefield` (e.g. `"ff14SB"`) and
+  `water_model` (e.g. `"tip3p"`), not `force_field` or `water-model`.
+- `run_equilibration` and `run_production` consume the **XML triple**
+  emitted by `build_amber_system`, not the raw PDB.
+- `--node-id` and `--job-dir` are global flags **before** the subcommand;
+  every tool parameter belongs inside `--json-input`.
 
 Detailed runbooks live in `skills/md-prepare/SKILL.md`,
 `skills/md-equilibration/SKILL.md`, `skills/md-production/SKILL.md`.
 Only write a custom script if the canonical pipeline cannot represent
-the task — and record the justification in `decision_log.jsonl`.
+the task — and record the justification in `decision_log.jsonl`. If
+the pipeline call fails, capture the full stderr in `decision_log.jsonl`
+**before** marking the task `blocked`; an empty
+`evidence_report.limitations: ["execution blocked"]` is insufficient.
 
 4. Validate before scoring:
 

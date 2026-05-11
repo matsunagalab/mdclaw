@@ -81,7 +81,10 @@ def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
     summary, tasks = _score_fake_run(tmp_path, "honest")
 
     assert summary["n_tasks"] == 9
-    assert summary["overall_score"] == pytest.approx(0.57)
+    # 0.57 → 0.5589 after v1.0.x adds integrity_checks to T03/T04/T05
+    # (small evidence_report stubs trip artifact_min_bytes warnings; axes
+    # are unchanged).
+    assert summary["overall_score"] == pytest.approx(0.5589)
     assert summary["scores"] == {
         "preparation": pytest.approx(0.5),
         "execution": pytest.approx(0.5167),
@@ -113,7 +116,9 @@ def test_all_task_wrong_fake_submission_scores_are_stable(tmp_path: Path):
     summary, tasks = _score_fake_run(tmp_path, "wrong")
 
     assert summary["n_tasks"] == 9
-    assert summary["overall_score"] == pytest.approx(0.0711)
+    # 0.0711 → 0.0656 after the new T03/T04/T05 integrity_checks fire on
+    # the wrong fixture's thin evidence_report; axes themselves unchanged.
+    assert summary["overall_score"] == pytest.approx(0.0656)
     assert summary["scores"] == {
         "preparation": pytest.approx(0.25),
         "execution": pytest.approx(0.0333),
