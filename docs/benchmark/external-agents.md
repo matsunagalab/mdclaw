@@ -128,6 +128,29 @@ contract is the `submission/` directory, not the internal registry.
 
 ## Standard Flow
 
+For full-suite runs, prefer the suite runner. It creates the run directory,
+invokes your agent once per task, captures stdout/stderr, validates and scores
+each submission, and writes `summary.json`:
+
+```bash
+conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
+  "dataset_dir": "benchmarks/mdagentbench",
+  "output_dir": "benchmark_runs",
+  "run_id": "20260510_external_gromacs",
+  "backend": "command",
+  "agent_command": "python run_agent.py --task-dir {task_dir} --submission-dir {submission_dir}",
+  "backend_name": "gromacs",
+  "harness_name": "external-python-script",
+  "model_name": "my-agent"
+}'
+```
+
+Your command receives paths through placeholders; it should read only
+`{prompt_file}`, `{task_file}`, and files under `{task_dir}/input/`, then write
+the required files under `{submission_dir}`.
+
+The lower-level per-task commands remain useful for debugging:
+
 Initialize a run with metadata for the agent under test:
 
 ```bash

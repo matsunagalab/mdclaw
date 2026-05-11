@@ -9,6 +9,7 @@ real MD; it only exercises the deterministic-check + status path.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -218,6 +219,94 @@ def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
     assert summary["summary"]["backend"]["name"] == "gromacs"
     assert summary["summary"]["harness"]["name"] == "external-python-script"
     assert summary["summary"]["model"]["name"] == "custom-md-agent"
+
+
+def test_run_benchmark_suite_command_backend_scores_agent_submission(tmp_path: Path):
+    task_id = "T02_prep_metalloenzyme_guardrail"
+    task_file = DATASET_DIR / "tasks" / task_id / "task.json"
+    if not task_file.exists():
+        pytest.skip("v1.0 dataset not present")
+
+    agent_script = tmp_path / "agent.py"
+    agent_script.write_text(
+        """
+import argparse
+import json
+from pathlib import Path
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--task-dir", required=True)
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+args = parser.parse_args()
+
+task_dir = Path(args.task_dir)
+submission_dir = Path(args.submission_dir)
+submission_dir.mkdir(parents=True, exist_ok=True)
+task = json.loads((task_dir / "task.json").read_text())
+task_id = task["task_id"]
+
+(submission_dir / "manifest.json").write_text(json.dumps({
+    "schema_version": "1.0",
+    "run_id": args.run_id,
+    "task_id": task_id,
+    "status": "failed",
+    "outputs": {
+        "metrics": "metrics.json",
+        "provenance": "provenance.json",
+        "evidence_report": "evidence_report.json"
+    }
+}))
+(submission_dir / "metrics.json").write_text(json.dumps({
+    "preparation": {
+        "completed": False,
+        "guardrail_code": "metal_containing_ligand_blocked"
+    }
+}))
+(submission_dir / "provenance.json").write_text(json.dumps({
+    "agent": {"name": "fixture-command-agent"}
+}))
+(submission_dir / "evidence_report.json").write_text(json.dumps({
+    "summary": "Intentional structured refusal for Zn metalloenzyme.",
+    "limitations": [
+        "2CBA contains a catalytic zinc site; standard GAFF-style preparation is unsafe.",
+        "A valid production workflow would require a specialized bonded or nonbonded metal model, not silent generic ligand parameterization."
+    ]
+}))
+print(f"wrote submission for {task_id}")
+""".lstrip()
+    )
+
+    result = cli.run_benchmark_suite(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(tmp_path / "benchmark_runs"),
+        run_id="suite_command_t02",
+        backend="command",
+        agent_command=(
+            f"{sys.executable} {agent_script} "
+            "--task-dir {task_dir} --submission-dir {submission_dir} --run-id {run_id}"
+        ),
+        task_ids=[task_id],
+        backend_name="fixture-md",
+        harness_name="fixture-command",
+        model_name="fixture-agent",
+        timeout_seconds_per_task=30,
+    )
+
+    assert result["success"], result
+    task_result = result["tasks"][0]
+    assert task_result["validation"]["success"], task_result
+    assert task_result["score"]["status"] == "passed"
+    assert task_result["score"]["weighted_total"] == 1.0
+
+    run_task_dir = tmp_path / "benchmark_runs" / "suite_command_t02" / "tasks" / task_id
+    assert (run_task_dir / "prompt.md").is_file()
+    assert (run_task_dir / "task.json").is_file()
+    execution = json.loads((run_task_dir / "execution.json").read_text())
+    assert execution["returncode"] == 0
+    assert "wrote submission" in (run_task_dir / "agent_stdout.log").read_text()
+    summary = json.loads((tmp_path / "benchmark_runs" / "suite_command_t02" / "summary.json").read_text())
+    assert summary["overall_score"] == 1.0
 
 
 def test_summary_dedup_on_re_run(tmp_path: Path):

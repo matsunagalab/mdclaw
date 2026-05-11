@@ -8,6 +8,9 @@ dict so the dispatcher in ``mdclaw._cli`` can emit it as stdout.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
@@ -181,6 +184,339 @@ def init_benchmark_run(*args, **kwargs):
 
 def summarize_benchmark_run(*args, **kwargs):
     return _summarize_benchmark_run(*args, **kwargs)
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _load_dataset(dataset_dir: Path) -> dict[str, Any]:
+    dataset_path = dataset_dir / "dataset.json"
+    return json.loads(dataset_path.read_text())
+
+
+def _task_ids_from_dataset(dataset_dir: Path, task_ids: Optional[list[str]]) -> list[str]:
+    if task_ids:
+        return [str(task_id) for task_id in task_ids]
+    dataset = _load_dataset(dataset_dir)
+    return [str(task_id) for task_id in dataset.get("task_ids", [])]
+
+
+def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str]:
+    copied: dict[str, str] = {}
+    for name in ("prompt.md", "task.json"):
+        src = task_dir / name
+        if src.is_file():
+            dst = run_task_dir / name
+            ensure_directory(dst.parent)
+            shutil.copy2(src, dst)
+            copied[name] = str(dst)
+    return copied
+
+
+def _format_agent_command(
+    agent_command: str,
+    *,
+    task_id: str,
+    run_id: str,
+    task_dir: Path,
+    run_task_dir: Path,
+    submission_dir: Path,
+) -> str:
+    return agent_command.format(
+        task_id=task_id,
+        run_id=run_id,
+        task_dir=str(task_dir),
+        run_task_dir=str(run_task_dir),
+        prompt_file=str(task_dir / "prompt.md"),
+        task_file=str(task_dir / "task.json"),
+        submission_dir=str(submission_dir),
+    )
+
+
+def _write_runner_blocked_submission(
+    *,
+    task: Task,
+    submission_dir: Path,
+    run_id: str,
+    message: str,
+) -> None:
+    ensure_directory(submission_dir)
+    required_outputs = [_normalize_submission_relpath(path) for path in task.required_outputs]
+    manifest = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task.task_id,
+        "status": "blocked",
+        "outputs": _manifest_outputs_for_template(required_outputs),
+        "limitations": [message],
+        "errors": [{"stage": "runner", "code": "agent_command_failed", "message": message}],
+    }
+    (submission_dir / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+    if "metrics.json" in required_outputs:
+        (submission_dir / "metrics.json").write_text(
+            json.dumps({
+                "schema_version": "1.0",
+                "run_id": run_id,
+                "task_id": task.task_id,
+                "execution": {"completed": False},
+                "runner": {"blocked": True, "message": message},
+            }, indent=2, sort_keys=True) + "\n"
+        )
+    (submission_dir / "provenance.json").write_text(
+        json.dumps({
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "task_id": task.task_id,
+            "source": "run_benchmark_suite",
+            "runner_status": "blocked",
+        }, indent=2, sort_keys=True) + "\n"
+    )
+    evidence = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task.task_id,
+        "summary": message,
+        "limitations": [message],
+    }
+    (submission_dir / "evidence_report.json").write_text(
+        json.dumps(evidence, indent=2, sort_keys=True) + "\n"
+    )
+    if "methods.md" in required_outputs:
+        (submission_dir / "methods.md").write_text(
+            "# Methods\n\nNo methods were produced because the runner blocked.\n"
+        )
+    if "decision_log.jsonl" in required_outputs:
+        (submission_dir / "decision_log.jsonl").write_text(
+            json.dumps({
+                "timestamp": _utc_now(),
+                "event": "runner_blocked",
+                "message": message,
+            }, sort_keys=True) + "\n"
+        )
+    if "figures" in required_outputs:
+        ensure_directory(submission_dir / "figures")
+
+
+def _run_agent_command(
+    *,
+    command: str,
+    cwd: Path,
+    timeout_seconds: int,
+    stdout_file: Path,
+    stderr_file: Path,
+) -> dict[str, Any]:
+    started_at = _utc_now()
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(cwd),
+            shell=True,
+            text=True,
+            capture_output=True,
+            timeout=timeout_seconds,
+            check=False,
+        )
+        stdout_file.write_text(completed.stdout)
+        stderr_file.write_text(completed.stderr)
+        return {
+            "started_at": started_at,
+            "finished_at": _utc_now(),
+            "command": command,
+            "cwd": str(cwd),
+            "timeout_seconds": timeout_seconds,
+            "timed_out": False,
+            "returncode": completed.returncode,
+            "stdout_file": str(stdout_file),
+            "stderr_file": str(stderr_file),
+        }
+    except subprocess.TimeoutExpired as exc:
+        stdout_file.write_text(exc.stdout or "")
+        stderr_file.write_text(exc.stderr or "")
+        return {
+            "started_at": started_at,
+            "finished_at": _utc_now(),
+            "command": command,
+            "cwd": str(cwd),
+            "timeout_seconds": timeout_seconds,
+            "timed_out": True,
+            "returncode": None,
+            "stdout_file": str(stdout_file),
+            "stderr_file": str(stderr_file),
+        }
+
+
+def run_benchmark_suite(
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    output_dir: str = "benchmark_runs",
+    run_id: str = "",
+    backend: str = "command",
+    agent_command: str = "",
+    task_ids: Optional[list[str]] = None,
+    timeout_seconds_per_task: int = 3600,
+    judge_mode: str = "deterministic",
+    execution_mode: str = "lite",
+    backend_name: str = "",
+    backend_version: str = "",
+    harness_name: str = "",
+    harness_version: str = "",
+    model_name: str = "unknown",
+    model_provider: str = "unknown",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Run a benchmark suite through a backend adapter, then score it.
+
+    This is the harness layer analogous to SWE-bench/HELM runners: it gives the
+    agent only the public task surface (``prompt.md`` + ``task.json`` +
+    ``input/``), collects ``submission/`` artifacts, and delegates scoring to
+    the existing deterministic scorer.
+
+    Backends:
+    - ``command``: run ``agent_command`` once per task. The command can use
+      ``{task_dir}``, ``{run_task_dir}``, ``{prompt_file}``, ``{task_file}``,
+      ``{submission_dir}``, ``{task_id}``, and ``{run_id}`` placeholders.
+    - ``submission_only``: do not run an agent; validate/score existing
+      ``benchmark_runs/<run_id>/tasks/<task_id>/submission`` directories.
+    """
+    dataset_path = Path(dataset_dir)
+    if not (dataset_path / "dataset.json").is_file():
+        return {"success": False, "errors": [f"dataset.json not found at {dataset_path}"]}
+    backend = backend.strip()
+    if backend not in {"command", "submission_only"}:
+        return {
+            "success": False,
+            "errors": [f"unsupported backend {backend!r}; use 'command' or 'submission_only'"],
+        }
+    if backend == "command" and not agent_command:
+        return {"success": False, "errors": ["agent_command is required for command backend"]}
+
+    selected_task_ids = _task_ids_from_dataset(dataset_path, task_ids)
+    if not run_id:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_suite")
+
+    run_dir = Path(output_dir) / run_id
+    if run_dir.exists() and overwrite:
+        shutil.rmtree(run_dir)
+    if run_dir.exists() and not (run_dir / "run_config.json").is_file():
+        return {
+            "success": False,
+            "errors": [f"run_dir already exists but is not a benchmark run: {run_dir}"],
+        }
+
+    init = init_benchmark_run(
+        output_dir=output_dir,
+        run_id=run_id,
+        execution_mode=execution_mode,
+        judge_mode=judge_mode,
+        backend_name=backend_name or backend,
+        backend_version=backend_version,
+        harness_name=harness_name or "run_benchmark_suite",
+        harness_version=harness_version,
+        harness_adapter=backend,
+        model_name=model_name,
+        model_provider=model_provider,
+        task_ids=selected_task_ids,
+    )
+    if not init.get("success"):
+        return init
+
+    task_results: list[dict[str, Any]] = []
+    for task_id in selected_task_ids:
+        task_dir = dataset_path / "tasks" / task_id
+        task_file = task_dir / "task.json"
+        run_task_dir = run_dir / "tasks" / task_id
+        submission_dir = run_task_dir / "submission"
+        ensure_directory(run_task_dir)
+        ensure_directory(submission_dir)
+        copied_public_files = _copy_public_task_files(task_dir, run_task_dir)
+
+        result: dict[str, Any] = {
+            "task_id": task_id,
+            "task_dir": str(task_dir),
+            "run_task_dir": str(run_task_dir),
+            "submission_dir": str(submission_dir),
+            "public_files": copied_public_files,
+        }
+        try:
+            task = validation.load_task(task_file)
+        except (ValidationError, json.JSONDecodeError, FileNotFoundError) as exc:
+            result.update({"success": False, "errors": [f"task file invalid: {exc}"]})
+            task_results.append(result)
+            continue
+
+        execution_record: dict[str, Any] = {
+            "backend": backend,
+            "task_id": task_id,
+            "run_id": run_id,
+            "started_at": _utc_now(),
+            "submission_dir": str(submission_dir),
+        }
+        if backend == "command":
+            command = _format_agent_command(
+                agent_command,
+                task_id=task_id,
+                run_id=run_id,
+                task_dir=task_dir,
+                run_task_dir=run_task_dir,
+                submission_dir=submission_dir,
+            )
+            execution_record.update(_run_agent_command(
+                command=command,
+                cwd=Path.cwd(),
+                timeout_seconds=timeout_seconds_per_task,
+                stdout_file=run_task_dir / "agent_stdout.log",
+                stderr_file=run_task_dir / "agent_stderr.log",
+            ))
+            if execution_record.get("timed_out") or execution_record.get("returncode") != 0:
+                _write_runner_blocked_submission(
+                    task=task,
+                    submission_dir=submission_dir,
+                    run_id=run_id,
+                    message=(
+                        "Agent command failed or timed out; runner wrote a blocked "
+                        "submission so the suite can still be summarized."
+                    ),
+                )
+        else:
+            execution_record["note"] = "submission_only backend: no agent command executed"
+            execution_record["finished_at"] = _utc_now()
+
+        (run_task_dir / "execution.json").write_text(
+            json.dumps(execution_record, indent=2, sort_keys=True, default=str) + "\n"
+        )
+
+        validation_result = validate_benchmark_submission(str(task_file), str(submission_dir))
+        score_result = score_benchmark_submission(
+            task_file=str(task_file),
+            submission_dir=str(submission_dir),
+            run_id=run_id,
+            output_file=str(run_task_dir / "score.json"),
+        )
+        result.update({
+            "success": bool(score_result.get("success")),
+            "execution": execution_record,
+            "validation": validation_result,
+            "score": score_result.get("score"),
+            "score_file": score_result.get("score_file"),
+            "errors": score_result.get("errors", []),
+        })
+        task_results.append(result)
+
+    summary = summarize_benchmark_run(run_dir=str(run_dir))
+    return {
+        "success": bool(summary.get("success")) and all(
+            bool(item.get("success")) for item in task_results
+        ),
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "backend": backend,
+        "tasks": task_results,
+        "summary": summary.get("summary"),
+        "summary_file": summary.get("summary_file"),
+        "errors": summary.get("errors", []),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -518,6 +854,7 @@ __all__ = [
     "validate_benchmark_submission",
     "score_benchmark_submission",
     "init_benchmark_run",
+    "run_benchmark_suite",
     "summarize_benchmark_run",
     "write_benchmark_schemas",
     "create_pilot_benchmark",

@@ -235,6 +235,53 @@ The runner appends durable records to:
 Both are last-write-wins on `run_id` so re-summarizing replaces stale rows
 instead of stacking duplicates.
 
+## Suite Runner
+
+For agent-to-agent comparisons, use `run_benchmark_suite`. This is the
+benchmark harness layer: it gives each backend only the public task surface,
+captures execution logs, validates the resulting submission, scores it, and
+summarizes the suite.
+
+```bash
+conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
+  "dataset_dir": "benchmarks/mdagentbench",
+  "output_dir": "benchmark_runs",
+  "run_id": "my_agent_run",
+  "backend": "command",
+  "agent_command": "python run_agent.py --task-dir {task_dir} --submission-dir {submission_dir}",
+  "timeout_seconds_per_task": 3600,
+  "backend_name": "gromacs",
+  "harness_name": "my-agent-harness",
+  "model_name": "my-agent"
+}'
+```
+
+The `command` backend accepts these placeholders:
+
+- `{task_id}` and `{run_id}`
+- `{task_dir}` for the canonical public task directory
+- `{run_task_dir}` for the per-run task directory
+- `{prompt_file}` and `{task_file}`
+- `{submission_dir}` for the directory the agent must populate
+
+Each task run writes:
+
+```text
+benchmark_runs/<run_id>/tasks/<task_id>/
+  prompt.md
+  task.json
+  execution.json
+  agent_stdout.log
+  agent_stderr.log
+  submission/
+  score.json
+```
+
+Use `backend="submission_only"` when submissions already exist and you only
+want validation, scoring, and aggregation. This mirrors common benchmark
+harnesses: the runner is responsible for standardized execution and durable
+records, while the scorer remains artifact-based and backend-independent.
+
 ## Structured LLM Judge
 
 Human judges are not part of the benchmark. Qualitative scoring is wired but
