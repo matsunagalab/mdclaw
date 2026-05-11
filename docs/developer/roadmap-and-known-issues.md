@@ -2,6 +2,24 @@
 
 ## Known Issues
 
+### Benchmark Integrity Rollout
+
+MDAgentBench v1.0.x keeps task `integrity_policy` values in `warn` mode while
+external-agent submissions are still being calibrated. The intent is not to
+leave warn mode indefinitely:
+
+- v1.1 should switch benchmark tasks that have artifact integrity checks to
+  `integrity_policy="reject"`.
+- Before that switch, run at least one honest external-agent pass through the
+  full task set and confirm that no honest submission loses more than 0.2
+  weighted-total points from integrity warnings alone.
+- Any known fabricated/template-derived regression fixture, such as the
+  2026-05-11 Haiku v1 T06 submission, must remain below its historical
+  unpenalized score when rescored under warn mode.
+- If an honest submission warns, either tighten the task instructions/schema or
+  document why the warning represents a real contract violation before
+  enabling reject mode.
+
 ### packmol-memgen NumPy Compatibility
 
 Some packmol-memgen versions still reference removed NumPy aliases.

@@ -15,6 +15,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+_DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
+_PMID_RE = re.compile(r"\bPMID\s*:?\s*\d+\b", re.IGNORECASE)
+_URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+
+
 def hash_file(path: str | Path, algorithm: str = "md5") -> Optional[str]:
     """Stream-hash a file. Returns ``None`` if the file does not exist."""
     p = Path(path)
@@ -377,10 +382,11 @@ def check_citation_pool(
           "primary_reference": {"doi": "10.1126/...", "citation": "..."}
         }
 
-    Citation entries can be either strings (matched substring vs DOI / pool
-    name) or dicts with ``doi``/``source``/``pool`` fields. The check is
-    intentionally lenient — it catches blatant fabrication ("I made up this
-    DOI"), not minor formatting differences.
+    Citation entries can be either strings or dicts with structured
+    ``doi``/``pmid``/``source``/``pool`` fields. The primary reference DOI is
+    accepted directly. Data-pool citations must name an allowed pool and carry
+    a concrete anchor (DOI, PMID, URL, record_id, or accession). A pool name
+    appearing only in prose is not enough.
     """
     if not allowed_pool_file.is_file():
         return [f"citation pool file not found: {allowed_pool_file}"]
@@ -392,7 +398,6 @@ def check_citation_pool(
     allowed_pools = [str(p).strip().lower()
                      for p in pool.get("allowed_source_pools") or []]
     primary_doi = str((pool.get("primary_reference") or {}).get("doi") or "").lower()
-    allowed_dois = {primary_doi} if primary_doi else set()
 
     citations = _safe_path(evidence, citation_field)
     if not citations:
@@ -400,24 +405,60 @@ def check_citation_pool(
     if not isinstance(citations, list):
         return [f"evidence_report {citation_field}: expected list, got {type(citations).__name__}"]
 
+    def _norm(value: Any) -> str:
+        return str(value or "").strip().lower()
+
+    def _valid_doi(value: Any) -> bool:
+        return bool(_DOI_RE.search(str(value or "")))
+
+    def _valid_pmid(value: Any) -> bool:
+        text = str(value or "").strip()
+        return text.isdigit() or bool(_PMID_RE.search(text))
+
+    def _valid_url(value: Any) -> bool:
+        return bool(_URL_RE.match(str(value or "").strip()))
+
     warnings: list[str] = []
     for i, entry in enumerate(citations):
         if isinstance(entry, str):
-            blob = entry.lower()
+            blob = entry.strip()
+            blob_lower = blob.lower()
+            has_primary_doi = bool(primary_doi and primary_doi in blob_lower)
+            has_pool = any(pool_name in blob_lower for pool_name in allowed_pools)
+            has_anchor = _valid_doi(blob) or bool(_PMID_RE.search(blob)) or ("http" in blob_lower)
         elif isinstance(entry, dict):
-            parts = [str(entry.get(k, "")) for k in
-                     ("doi", "source", "pool", "pmid", "url", "citation")]
-            blob = " ".join(parts).lower()
+            blob = " ".join(str(entry.get(k, "")) for k in (
+                "doi", "source", "pool", "pmid", "url", "citation", "note",
+            ))
+            source = _norm(entry.get("source"))
+            pool_name = _norm(entry.get("pool"))
+            has_pool = source in allowed_pools or pool_name in allowed_pools
+            doi = _norm(entry.get("doi"))
+            citation = _norm(entry.get("citation"))
+            has_primary_doi = bool(
+                primary_doi and (doi == primary_doi or primary_doi in citation)
+            )
+            has_anchor = (
+                _valid_doi(entry.get("doi"))
+                or _valid_pmid(entry.get("pmid"))
+                or _valid_url(entry.get("url"))
+                or bool(str(entry.get("record_id") or entry.get("accession") or "").strip())
+            )
         else:
             warnings.append(f"{citation_field}[{i}]: unrecognized entry type")
             continue
         if not blob.strip():
             warnings.append(f"{citation_field}[{i}]: empty citation entry")
             continue
-        # Match if any allowed pool name or the primary DOI appears in the blob.
-        if any(pool_name in blob for pool_name in allowed_pools):
+        if has_primary_doi:
             continue
-        if allowed_dois and any(doi in blob for doi in allowed_dois if doi):
+        if has_pool and has_anchor:
+            continue
+        if has_pool:
+            warnings.append(
+                f"{citation_field}[{i}]: allowed pool citation lacks DOI, "
+                "PMID, URL, record_id, or accession anchor"
+            )
             continue
         warnings.append(
             f"{citation_field}[{i}]: not anchored to allowed pool "

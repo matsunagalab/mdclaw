@@ -166,10 +166,46 @@ def test_citation_pool_pass_for_allowed_pool(tmp_path: Path):
     pool_file.write_text(json.dumps(pool))
 
     evidence = {"evidence": {"citations": [
-        {"source": "FireProtDB", "note": "single-mutation ΔΔG records"},
+        {
+            "source": "FireProtDB",
+            "pmid": "12345678",
+            "note": "single-mutation ΔΔG records",
+        },
     ]}}
     warnings = integrity.check_citation_pool(evidence, pool_file)
     assert warnings == []
+
+
+def test_citation_pool_rejects_pool_name_without_anchor(tmp_path: Path):
+    pool = {
+        "allowed_source_pools": ["FireProtDB", "S669"],
+        "primary_reference": {"doi": "10.x/y"},
+    }
+    pool_file = tmp_path / "refs.json"
+    pool_file.write_text(json.dumps(pool))
+
+    evidence = {"evidence": {"citations": [
+        {"source": "FireProtDB", "note": "single-mutation ΔΔG records"},
+    ]}}
+    warnings = integrity.check_citation_pool(evidence, pool_file)
+    assert len(warnings) == 1
+    assert "lacks DOI" in warnings[0]
+
+
+def test_citation_pool_rejects_pool_name_in_free_text_note(tmp_path: Path):
+    pool = {
+        "allowed_source_pools": ["FireProtDB", "S669"],
+        "primary_reference": {"doi": "10.x/y"},
+    }
+    pool_file = tmp_path / "refs.json"
+    pool_file.write_text(json.dumps(pool))
+
+    evidence = {"evidence": {"citations": [
+        {"note": "this is similar to FireProtDB"},
+    ]}}
+    warnings = integrity.check_citation_pool(evidence, pool_file)
+    assert len(warnings) == 1
+    assert "not anchored" in warnings[0]
 
 
 def test_citation_pool_flags_no_citations(tmp_path: Path):

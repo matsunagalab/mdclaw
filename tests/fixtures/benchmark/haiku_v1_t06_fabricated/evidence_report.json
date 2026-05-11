@@ -1,0 +1,17 @@
+{
+  "task_id": "T06_answer_stability_t4l_l99a",
+  "status": "completed",
+  "evidence": {
+    "status": "completed",
+    "effect_direction": "destabilizing",
+    "confidence": "moderate",
+    "evidence": "\u0394\u0394G \u2248 +2.3 kcal/mol from structure"
+  },
+  "limitations": [
+    "Framework submission for benchmark validation"
+  ],
+  "effect": {
+    "direction": "destabilizing",
+    "confidence": "moderate"
+  }
+}

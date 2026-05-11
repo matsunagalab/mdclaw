@@ -18,6 +18,7 @@ from mdclaw.benchmark.validation import load_task
 
 
 _BENCH_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "mdagentbench" / "tasks"
+_FIXTURE_ROOT = Path(__file__).resolve().parents[1] / "fixtures" / "benchmark"
 
 
 def _write_fabricated_t06(submission_dir: Path):
@@ -98,7 +99,11 @@ def _write_honest_t06(submission_dir: Path):
                         "mutation, +4-5 kcal/mol destabilization."
                     ),
                 },
-                {"source": "FireProtDB", "note": "single-mutation ΔΔG records"},
+                {
+                    "source": "FireProtDB",
+                    "record_id": "FireProtDB:T4L-L99A",
+                    "note": "single-mutation ΔΔG records",
+                },
             ],
         },
         "limitations": [
@@ -117,10 +122,10 @@ def _write_honest_t06(submission_dir: Path):
     (submission_dir / "provenance.json").write_text(json.dumps(provenance))
 
 
-def test_warn_policy_penalizes_fabricated_t06(tmp_path: Path):
+def test_warn_policy_penalizes_synthetic_fabricated_t06(tmp_path: Path):
     """Fabricated T06 submission still earned 0.60 before v1.0.x integrity
-    checks. After the new checks fire, the integrity penalty knocks it down
-    by 0.2 (the cap) so weighted_total drops to ~0.4."""
+    checks. A completed fabricated submission still keeps its status credit in
+    warn mode, but the artifact penalty must prevent a clean 1.0."""
     task_dir = _BENCH_ROOT / "T06_answer_stability_t4l_l99a"
     task = load_task(task_dir / "task.json")
     submission_dir = tmp_path / "submission"
@@ -135,10 +140,35 @@ def test_warn_policy_penalizes_fabricated_t06(tmp_path: Path):
     )
     # Truth still matches => primary axis = 1.0 from ground_truth check
     assert score.scores["scientific_answer"] == 1.0
-    # Penalty floor is -0.2 (4 warnings × 0.05, capped); weighted_total
+    # Penalty cap is -0.2 (4 warnings × 0.05, capped); weighted_total
     # was 1.0 pre-penalty, so it should sit at ~0.8.
     assert 0.75 <= score.weighted_total <= 0.85, (
         f"warn-phase weighted_total={score.weighted_total} outside expected range"
+    )
+
+
+def test_warn_policy_pins_real_haiku_v1_t06_regression_fixture():
+    """Pin the actual 2026-05-11 Haiku v1 T06 submission shape.
+
+    This is the regression fixture for the observed failure mode: a partial
+    template-derived submission matched the truth string and previously sat at
+    0.60 with no integrity warning. Future scorer edits must keep it below
+    that old score.
+    """
+    task_dir = _BENCH_ROOT / "T06_answer_stability_t4l_l99a"
+    task = load_task(task_dir / "task.json")
+    submission_dir = _FIXTURE_ROOT / "haiku_v1_t06_fabricated"
+
+    score = scoring.score_submission(
+        task, submission_dir, run_id="haiku_v1_fixture", task_dir=task_dir,
+    )
+
+    assert score.integrity_warnings, (
+        "real Haiku v1 fixture should produce integrity warnings"
+    )
+    assert score.scores["scientific_answer"] == 1.0
+    assert score.weighted_total < 0.6, (
+        "real fabricated fixture must not regress to the old 0.60 score"
     )
 
 
