@@ -1,12 +1,9 @@
 # External Agents And Programs
 
-MDAgentBench is an artifact-based agent benchmark contract. Your agent does not
-need to use MDClaw. It may use GROMACS, OpenMM scripts, Amber, MDCrow, another
-workflow manager, or a custom LLM harness. The scorer only compares files under
+MDAgentBench is an artifact-based benchmark contract. Your agent does not need
+to use MDClaw. It may use GROMACS, OpenMM scripts, Amber, MDCrow, another
+workflow manager, or a custom LLM runner. The scorer only compares files under
 `submission/` against the public task contract and scorer-only truth files.
-
-For automated `harness × model` experiments using OpenRouter, see
-[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
 
 ## What To Read
 
@@ -58,7 +55,7 @@ common files are:
   `execution.simulated_time_ps`, ligand RMSD, or analysis summary values.
 - `evidence_report.json`: scientific conclusion, figure captions, limitations,
   and `effect.direction` for scientific-answer tasks.
-- `provenance.json`: agent, harness, backend, model, scripts, raw outputs, and
+- `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
   md5 records when available.
 - Task artifacts: trajectories/checkpoints for execution tasks,
   `prepared_structure.pdb` for ligand-preparation tasks, `figures/` for
@@ -82,7 +79,7 @@ the manifest at the relevant exported files.
 
 ## What The Scorer Compares
 
-The scorer does not read chat transcripts, tool-call logs, or private harness
+The scorer does not read chat transcripts, tool-call logs, or private runner
 state. It reads `task.json`, scorer-only `truth/` when needed, and your
 `submission/` files.
 
@@ -115,7 +112,7 @@ A generic MDCrow-style workflow is:
 5. Write `manifest.json` with `outputs.trajectories` and `outputs.topology`
    pointing at those files.
 6. Write `metrics.json`, `evidence_report.json`, and `provenance.json` with the
-   model, harness, backend, and any raw-output hashes available.
+   model, runner, backend, and any raw-output hashes available.
 
 The same pattern applies to any other file-registry agent. The benchmark
 contract is the `submission/` directory, not the internal registry.
@@ -171,22 +168,6 @@ mdclaw summarize_benchmark_run \
   --run-dir benchmark_runs/20260510_external_gromacs_t06
 ```
 
-## Automating Harness And Model Matrices
-
-For larger comparisons, treat the harness and model router as separate axes:
-
-- `harness`: Pydantic AI, OpenAI Agents SDK, LangGraph, smolagents, Cursor,
-  Claude Code, OpenCode, or a custom script.
-- `model router`: OpenRouter, direct provider APIs, local vLLM, etc.
-- `model`: the concrete model slug, such as
-  `anthropic/claude-sonnet-4-5` or `openai/gpt-5.5`.
-
-OpenRouter is convenient because many harnesses can use it through an
-OpenAI-compatible API, native OpenRouter integration, or LiteLLM. Record the
-model slug and provider routing settings in `provenance.json` so results remain
-auditable. The detailed workflow is in
-[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
-
 ## Minimal T06 Submission
 
 For `T06_answer_stability_t4l_l99a`, a minimal external-agent submission can
@@ -229,4 +210,4 @@ Machine-readable schemas are checked in under
 - `submission_manifest.schema.json`: `submission/manifest.json` shape.
 - `score.schema.json`: scorer output shape.
 
-Use these schemas when building adapters for other agents or workflow systems.
+Use these schemas when building runners for other agents or workflow systems.

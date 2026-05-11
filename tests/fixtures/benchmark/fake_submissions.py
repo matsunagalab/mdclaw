@@ -1,7 +1,7 @@
 #!/usr/bin/env python
-"""Generate hand-built submissions for all 9 v1.0 pilot tasks.
+"""Generate hand-built test submissions for all 9 v1.0 pilot tasks.
 
-Used by Phase 5 validation to verify the framework end-to-end without
+Used by benchmark tests to verify the framework end-to-end without
 requiring real MD compute. Two modes:
 
     --mode honest   passing answers where deterministic alone is enough
@@ -11,7 +11,7 @@ requiring real MD compute. Two modes:
                     (the framework must score these low)
 
 Usage:
-    python examples/benchmark/fake_submissions.py \\
+    python tests/fixtures/benchmark/fake_submissions.py \\
         --run-dir benchmark_runs/v10_dryrun_container \\
         --mode honest
 """
@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
 
 

@@ -108,7 +108,7 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
 
 def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
     """External agents should not need an MDClaw job_dir: a generic template
-    plus backend/harness/model metadata should validate, score, and summarize."""
+    plus backend/runner/model metadata should validate, score, and summarize."""
     task_id = "T06_answer_stability_t4l_l99a"
     task_file = DATASET_DIR / "tasks" / task_id / "task.json"
     if not task_file.exists():

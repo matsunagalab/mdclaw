@@ -6,10 +6,7 @@ These cover the difference between v0.1 (JSON-trust) and v1.0 (re-verify).
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-
-import pytest
 
 from mdclaw.benchmark import integrity
 

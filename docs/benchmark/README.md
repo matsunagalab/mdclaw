@@ -1,13 +1,12 @@
 # MDAgentBench v1.0
 
 MDAgentBench is an artifact-based benchmark dataset for molecular dynamics
-agents. It follows the same broad pattern as SWE-bench, GAIA, WebArena, and
-OSWorld: public task files and inputs are separated from scorer-only truth,
-agents write standardized submissions, and an independent scorer evaluates the
-artifacts. MDClaw is one supported backend, but it is not required: Claude Code,
-Cursor, OpenCode, MDCrow, raw OpenMM scripts, GROMACS workflows, or lab-specific
-agents can all be compared by writing the same `submission/` files and running
-the same scorer.
+agents. It follows the same broad pattern as SWE-bench and GAIA: public task
+files and inputs are separated from scorer-only truth, agents write
+standardized submissions, and an independent scorer evaluates the artifacts.
+MDClaw is the repository that currently ships the dataset and scorer, but it
+is not part of the task contract. Any agent, model, or MD backend can be
+compared by writing the same `submission/` files and running the same scorer.
 
 The v1.0 release replaces the v0.1 pilot with:
 
@@ -25,17 +24,15 @@ The v1.0 release replaces the v0.1 pilot with:
   separate MD toolchain as long as it emits the benchmark artifacts.
 
 MDAgentBench is not an LLM-only benchmark. A run measures the combined behavior
-of an agent workflow, its harness, the underlying model, and the MD backend.
-For model-only comparisons, keep the harness and backend fixed and record the
-model/provider routing in `provenance.json` and `run_config.json`. For harness
+of an agent workflow, its runner, the underlying model, and the MD backend.
+For model-only comparisons, keep the runner and backend fixed and record the
+model/provider routing in `provenance.json` and `run_config.json`. For runner
 comparisons, keep the model and backend fixed. For backend comparisons, keep
 the agent and model fixed.
 
 New to the benchmark? External agents and programs should start with
 [`external-agents.md`](external-agents.md). It explains which files are public,
 which files are scorer-only, what to submit, and what the scorer compares.
-To automate comparisons across harnesses and OpenRouter model slugs, see
-[`openrouter-harness-matrix.md`](openrouter-harness-matrix.md).
 
 ## Benchmark Families
 
@@ -110,7 +107,7 @@ For design rationale and system-selection notes, see
 
 ## Submission Contract
 
-Every harness writes a `submission/` directory:
+Every evaluated system writes a `submission/` directory:
 
 ```text
 submission/
@@ -125,7 +122,7 @@ submission/
 ```
 
 Only the artifacts are scored. The scorer never reads chat transcripts,
-tool calls, or private harness logs. Provenance md5 references are recomputed
+tool calls, or private runner logs. Provenance md5 references are recomputed
 on the scorer side.
 
 Execution tasks may submit trajectory and topology artifacts either at the
@@ -163,7 +160,7 @@ Run benchmark validation/scoring commands either entirely inside the
 This runtime is for listing tasks, validating submissions, scoring, and
 summarizing. The agent or MD program under test can run elsewhere, including a
 GROMACS installation, a standalone OpenMM script, another container, or an LLM
-harness, as long as it writes the required `submission/` files.
+runner, as long as it writes the required `submission/` files.
 
 ```bash
 # Mode A — container self-contained
@@ -186,18 +183,15 @@ Use the `mdclaw` conda environment for benchmark framework checks:
 # Unit, schema, scorer, and all-task dry-run coverage
 conda run -n mdclaw pytest tests/test_benchmark -v
 
-# Example lifecycle smoke run
-conda run -n mdclaw python examples/benchmark/smoke_run.py
-
 # Benchmark CLI discovery should be clean and not warn about unrelated tools
 conda run -n mdclaw mdclaw list_benchmark_tasks
 ```
 
 `tests/test_benchmark/test_all_task_dryrun.py` uses the synthetic submissions
-from `examples/benchmark/fake_submissions.py` to validate, score, and summarize
-all nine tasks in both `honest` and `wrong` modes. It intentionally locks down
-partial and failed statuses for synthetic artifacts, so changes to scorer
-strictness are visible in review without requiring real MD compute.
+from `tests/fixtures/benchmark/fake_submissions.py` to validate, score, and
+summarize all nine tasks in both `honest` and `wrong` modes. It intentionally
+locks down partial and failed statuses for synthetic artifacts, so changes to
+scorer strictness are visible in review without requiring real MD compute.
 
 ## Per-task Workflow
 
@@ -256,30 +250,6 @@ mdclaw create_benchmark_submission_template \
 
 The template is intentionally conservative (`manifest.status="partial"`). Fill
 in task-specific metrics, evidence, and artifacts before scoring.
-
-## OpenRouter Harness Matrix
-
-For automated `harness × model × task` comparisons, use OpenRouter as the model
-router and keep each harness responsible for writing standard `submission/`
-artifacts. See [`openrouter-harness-matrix.md`](openrouter-harness-matrix.md)
-for matrix config examples, provenance requirements, mock-mode testing, and
-fallback/reproducibility guidance.
-
-## Optional MDClaw Adapter
-
-`export_mdclaw_submission` creates a partial-status submission skeleton from
-an MDClaw `job_dir`:
-
-```bash
-mdclaw export_mdclaw_submission \
-  --job-dir job_2lzm \
-  --task-id T04_exec_short_protein_md \
-  --run-id <run_id> \
-  --output-dir benchmark_runs/<run_id>/tasks/T04_exec_short_protein_md/submission
-```
-
-The skeleton has `manifest.status="partial"`. The agent must still fill in
-task-specific deterministic metrics and evidence claims.
 
 ## Migration from v0.1
 

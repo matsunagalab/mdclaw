@@ -17,7 +17,7 @@ from mdclaw.benchmark import cli
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
-FAKE_SUBMISSIONS = REPO_ROOT / "examples" / "benchmark" / "fake_submissions.py"
+FAKE_SUBMISSIONS = REPO_ROOT / "tests" / "fixtures" / "benchmark" / "fake_submissions.py"
 
 
 def _load_fake_submissions():

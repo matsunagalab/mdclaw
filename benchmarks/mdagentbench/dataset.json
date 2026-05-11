@@ -70,6 +70,6 @@
   "notes": [
     "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
     "Curator-fixed PDBs; ground truth held in <task>/truth/ (scorer-only).",
-    "Designed for self-contained execution in either mdclaw:latest container or a 'mdclaw' conda env."
+    "Scored through the repository's benchmark CLI; agents may use any MD backend that emits the submission contract."
   ]
 }

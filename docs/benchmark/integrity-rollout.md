@@ -39,8 +39,8 @@ following hold in the v1.0.x telemetry:
 
 1. **No false positives across two consecutive releases.** The integrity
    warnings recorded for that task on the dataset's reference honest
-   submission (e.g. `examples/benchmark/fake_submissions.py` honest mode
-   for the curator side, and at least one external harness for the
+   submission (e.g. `tests/fixtures/benchmark/fake_submissions.py` honest mode
+   for the curator side, and at least one external runner for the
    ecosystem side) must be zero.
 2. **At least one observed real-world fabrication detected.** Either a
    `tests/fixtures/benchmark/*` regression fixture, a logged Haiku-class
@@ -49,7 +49,7 @@ following hold in the v1.0.x telemetry:
    the artifact layer is actually catching the failure mode, not just
    noisy on edge cases).
 3. **Documented in the changelog.** Each promotion lands in a release
-   note so external harnesses know to revalidate.
+   note so external runners know to revalidate.
 
 ## Rollout order
 
@@ -138,7 +138,7 @@ scaffold emits. Until that list converges, hold T09 in warn.
 ## Promotion history
 
 - **v1.1 (2026-05-11): T02 + T08 promoted to reject.** Honest
-  `fake_submissions.py` fixtures and the Haiku v3/v4 telemetry showed
+  `tests/fixtures/benchmark/fake_submissions.py` fixtures and the Haiku v3/v4 telemetry showed
   zero false positives on these tasks; the regression tests
   `test_reject_policy_zeros_silent_refusal_t02_submission` and
   `test_reject_policy_zeros_text_disguised_as_png_t08` pin the new
@@ -148,7 +148,7 @@ scaffold emits. Until that list converges, hold T09 in warn.
   confirms no false positives on the citation_pool / md_metrics
   checks. Currently a blocked T06 generates several integrity
   warnings, which is correct (a blocked submission is at 0 already)
-  but should be documented in release notes so external harnesses
+  but should be documented in release notes so external runners
   do not over-react.
 - v1.3+ (planned): T09, then T01/T03/T04/T05 in lockstep.
 
