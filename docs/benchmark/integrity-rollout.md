@@ -21,16 +21,16 @@ was previously optional — would suddenly score zero under a hard reject
 without a grace window. Warn mode gives those agents a few release
 cycles to migrate while still penalizing fabrication.
 
-## Current state (v1.0.x)
+## Current state (v1.1)
 
 | Task | `integrity_policy` | Active integrity checks |
 |---|---|---|
-| T02 prep guardrail | warn | min_bytes, template_markers |
+| **T02 prep guardrail** | **reject** (v1.1) | min_bytes, template_markers |
 | T06 stability answer | warn | min_bytes, template_markers, evidence_completeness, citation_pool |
 | T07 PPI hotspot | warn | min_bytes, template_markers, evidence_completeness, citation_pool |
-| T08 figures | warn | figures_are_png, min_bytes, template_markers |
+| **T08 figures** | **reject** (v1.1) | figures_are_png, min_bytes, template_markers |
 | T09 study methods | warn | min_bytes, template_markers, markdown_structure, evidence_completeness |
-| T01, T03, T04, T05 | warn (no integrity_checks block yet) | — |
+| T01, T03, T04, T05 | warn | min_bytes, template_markers (T03 also status_artifact_floor) |
 
 ## Criteria for promoting a task to reject
 
@@ -135,17 +135,22 @@ Interpretation: T09 is the most fragile across honest runs because the
 template-marker list does not yet match every template string the
 scaffold emits. Until that list converges, hold T09 in warn.
 
-## Promotion ETA (working notes)
+## Promotion history
 
-- v1.0.1 (next patch): keep all in warn; collect more external-agent
-  telemetry.
-- v1.1: promote T08 + T02 to reject.
-- v1.2: promote T06 + T07 to reject (only after the integrity gap on
-  blocked submissions is reviewed — currently a blocked T06 still
-  generates 5 warnings, which is correct behavior but should be
-  documented in the release notes so external harnesses do not over-react).
-- v1.3+: T09, then T01/T03/T04/T05 in lockstep with their new
-  integrity_checks blocks.
+- **v1.1 (2026-05-11): T02 + T08 promoted to reject.** Honest
+  `fake_submissions.py` fixtures and the Haiku v3/v4 telemetry showed
+  zero false positives on these tasks; the regression tests
+  `test_reject_policy_zeros_silent_refusal_t02_submission` and
+  `test_reject_policy_zeros_text_disguised_as_png_t08` pin the new
+  behavior (50-byte refusal explanation or text-as-PNG figure now
+  clamps weighted_total to 0).
+- v1.2 (planned): promote T06 + T07 once a second honest-run cycle
+  confirms no false positives on the citation_pool / md_metrics
+  checks. Currently a blocked T06 generates several integrity
+  warnings, which is correct (a blocked submission is at 0 already)
+  but should be documented in release notes so external harnesses
+  do not over-react.
+- v1.3+ (planned): T09, then T01/T03/T04/T05 in lockstep.
 
 These dates are not contractual; promotion follows the criteria, not
 the calendar.

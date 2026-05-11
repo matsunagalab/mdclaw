@@ -248,3 +248,126 @@ def test_reject_policy_leaves_honest_t06_untouched(tmp_path: Path):
         task, submission_dir, run_id="honest_reject", task_dir=task_dir,
     )
     assert score.weighted_total == 1.0
+
+
+# ---------------------------------------------------------------------------
+# T02 / T08 reject-phase promotions (shipped in v1.1)
+
+
+def test_reject_policy_zeros_silent_refusal_t02_submission(tmp_path: Path):
+    """T02 ships with integrity_policy='reject'. A "refusal" submission that
+    sets manifest.status='failed' + correct guardrail_code but leaves
+    evidence_report.json as a 50-byte stub must clamp to 0.0 instead of
+    earning ground-truth credit. The agent should not be able to refuse
+    without explaining why."""
+    task_dir = _BENCH_ROOT / "T02_prep_metalloenzyme_guardrail"
+    task = load_task(task_dir / "task.json")
+    assert task.scoring.integrity_policy == "reject", (
+        "T02 must remain on reject policy for this regression test"
+    )
+
+    submission_dir = tmp_path / "submission"
+    submission_dir.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "schema_version": "1.0",
+        "task_id": "T02_prep_metalloenzyme_guardrail",
+        "run_id": "silent_refusal",
+        "status": "failed",
+        "outputs": {},
+        "limitations": ["intentional refusal"],
+    }
+    metrics = {
+        "preparation": {
+            "guardrail_code": "metal_containing_ligand_blocked",
+            "status": "blocked_by_guardrail",
+        },
+    }
+    # Sub-200-byte evidence_report — a silent refusal with no explanation.
+    evidence = {"summary": "blocked"}
+    (submission_dir / "manifest.json").write_text(json.dumps(manifest))
+    (submission_dir / "metrics.json").write_text(json.dumps(metrics))
+    (submission_dir / "evidence_report.json").write_text(json.dumps(evidence))
+    (submission_dir / "provenance.json").write_text(json.dumps(
+        {"task_id": "T02_prep_metalloenzyme_guardrail"}
+    ))
+
+    score = scoring.score_submission(
+        task, submission_dir, run_id="t02_silent_refusal", task_dir=task_dir,
+    )
+
+    assert score.integrity_warnings, (
+        "silent refusal should trip evidence_report_real_bytes integrity check"
+    )
+    assert score.weighted_total == 0.0
+    assert score.status == "failed"
+
+
+def test_reject_policy_zeros_text_disguised_as_png_t08(tmp_path: Path):
+    """T08 ships with integrity_policy='reject'. A submission that lists
+    .png files in manifest.outputs.figures but writes text into them
+    must clamp to 0.0 — figures must be real raster images."""
+    task_dir = _BENCH_ROOT / "T08_communicate_t4l_dynamics"
+    task = load_task(task_dir / "task.json")
+    assert task.scoring.integrity_policy == "reject", (
+        "T08 must remain on reject policy for this regression test"
+    )
+
+    submission_dir = tmp_path / "submission"
+    figures_dir = submission_dir / "figures"
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    # Three text files masquerading as PNGs.
+    for name in ("rmsd.png", "rmsf.png", "contacts.png"):
+        (figures_dir / name).write_text(
+            f"This is a caption for {name}, not a real figure.\n"
+        )
+
+    manifest = {
+        "schema_version": "1.0",
+        "task_id": "T08_communicate_t4l_dynamics",
+        "run_id": "text_as_png",
+        "status": "completed",
+        "outputs": {
+            "figures": [
+                "figures/rmsd.png", "figures/rmsf.png", "figures/contacts.png",
+            ],
+            "evidence_report": "evidence_report.json",
+            "metrics": "metrics.json",
+        },
+        "limitations": [],
+    }
+    metrics = {
+        "analysis": {"rmsd": {"mean_angstrom": 1.21}},
+    }
+    # Provide a realistic-sized evidence_report so the figure-magic check is
+    # what actually clamps the score (not the bytes/template checks).
+    evidence = {
+        "schema_version": "1.0",
+        "summary": (
+            "Three figures listed in manifest.outputs.figures, captioned in "
+            "evidence_report.figure_captions. Numbers match metrics.json."
+        ),
+        "figure_captions": [
+            {"path": "figures/rmsd.png", "caption": "RMSD mean 1.21 Å"},
+        ],
+        "limitations": ["Synthetic regression fixture; figures are text."],
+    }
+    (submission_dir / "manifest.json").write_text(json.dumps(manifest))
+    (submission_dir / "metrics.json").write_text(json.dumps(metrics))
+    (submission_dir / "evidence_report.json").write_text(json.dumps(evidence))
+    (submission_dir / "provenance.json").write_text(json.dumps(
+        {"task_id": "T08_communicate_t4l_dynamics"}
+    ))
+
+    score = scoring.score_submission(
+        task, submission_dir, run_id="t08_text_png", task_dir=task_dir,
+    )
+
+    assert score.integrity_warnings, (
+        "text-disguised-as-PNG should trip figures_are_png integrity check"
+    )
+    # At least one warning must point at the figures check specifically.
+    assert any("[figures_are_real_png]" in w for w in score.integrity_warnings), (
+        f"expected figures_are_real_png warning, got: {score.integrity_warnings}"
+    )
+    assert score.weighted_total == 0.0
+    assert score.status == "failed"

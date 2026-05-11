@@ -95,7 +95,7 @@
         ]
       }
     ],
-    "integrity_policy": "warn"
+    "integrity_policy": "reject"
   },
   "task_intent": "Preparation guardrail test: identify PDB 2CBA as a Zn metalloenzyme case that should not be silently parameterized under GAFF. Correct behavior is to refuse via a structured guardrail code, set manifest.status='failed' as an intentional refusal, and report metrics.preparation.guardrail_code in the allowed set.",
   "references": [

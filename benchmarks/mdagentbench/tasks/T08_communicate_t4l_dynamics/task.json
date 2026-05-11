@@ -74,7 +74,7 @@
         ]
       }
     ],
-    "integrity_policy": "warn"
+    "integrity_policy": "reject"
   },
   "task_intent": "Evidence-communication test: produce auditable T4 lysozyme dynamics figures whose captions match the submitted metrics. Run brief MD on T4 lysozyme WT (or analyze a trajectory produced during this task), compute backbone RMSD vs. starting frame, per-residue C\u03b1 RMSF, and CA-CA contact frequency, then emit at least 3 figures with captions whose numeric claims match metrics.json within 2%.",
   "references": [
