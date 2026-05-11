@@ -68,6 +68,7 @@ IntegrityCheckType = Literal[
     "citation_pool",
     "figures_are_png",
     "status_artifact_floor",
+    "manifest_artifact_floor",
 ]
 
 IntegrityPolicy = Literal["warn", "reject"]
@@ -214,6 +215,12 @@ class IntegrityCheck(BaseModel):
     # status_artifact_floor: floors enforced only when manifest.status == "completed"
     # (e.g. {"prepared_structure.pdb": 5000, "methods.md": 1024})
     status_floor: Optional[dict[str, int]] = None
+
+    # manifest_artifact_floor: read a manifest list path such as
+    # outputs.trajectories and require at least min_count existing artifacts,
+    # each with min_bytes. Used when JSON metrics alone are not sufficient.
+    manifest_path: Optional[str] = None
+    min_count: Optional[int] = None
 
 
 class TaskScoring(BaseModel):
@@ -417,5 +424,4 @@ class RunSummary(BaseModel):
     scores: dict[str, Optional[float]] = Field(default_factory=dict)
     task_scores: list[dict] = Field(default_factory=list)
     runtime: dict = Field(default_factory=dict)
-
 

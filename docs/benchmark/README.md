@@ -175,6 +175,19 @@ conda run -n mdclaw mdclaw init_benchmark_run \
 # otherwise falls back to singularity → docker.
 ```
 
+## Run Types
+
+There are two distinct run types:
+
+- **Scorer/CI fixture runs** use synthetic submissions under
+  `tests/fixtures/benchmark/`. They exercise the dataset schema, validation,
+  scoring, aggregation, and regression checks without running MD. These runs
+  are not leaderboard evidence.
+- **Leaderboard runs** must submit real task artifacts. Execution and
+  MD-derived scientific-answer tasks must provide reloadable trajectory /
+  topology files or other task-required artifacts through `manifest.outputs`;
+  JSON metrics alone are not accepted as proof of work.
+
 ## Developer Validation
 
 Use the `mdclaw` conda environment for benchmark framework checks:

@@ -58,6 +58,10 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
     (sub_dir / "metrics.json").write_text(json.dumps({
         "md_analysis": {"production_time_ns": 5.0},
     }))
+    traj_dir = sub_dir / "trajectories"
+    traj_dir.mkdir()
+    (traj_dir / "wt.dcd").write_bytes(b"w" * 2048)
+    (traj_dir / "mutant.dcd").write_bytes(b"m" * 2048)
     # Honest evidence_report for the redesigned MD-derived T06: pool-anchored
     # citations + md_metrics that support the direction.
     (sub_dir / "evidence_report.json").write_text(json.dumps({
@@ -183,6 +187,10 @@ def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
     (sub_dir / "metrics.json").write_text(json.dumps({
         "md_analysis": {"production_time_ns": 5.0},
     }))
+    traj_dir = sub_dir / "trajectories"
+    traj_dir.mkdir(exist_ok=True)
+    (traj_dir / "wt.dcd").write_bytes(b"w" * 2048)
+    (traj_dir / "mutant.dcd").write_bytes(b"m" * 2048)
     manifest_path = sub_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["status"] = "completed"

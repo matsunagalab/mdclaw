@@ -113,6 +113,10 @@ def score_submission(
     )
     if integrity_rejected:
         weighted_total = 0.0
+        axis_scores = {
+            axis: (0.0 if value is not None else None)
+            for axis, value in axis_scores.items()
+        }
 
     # 7b. warn-phase penalty (per-warning -0.05, capped at -0.2). Applies under
     # both policies; under "reject" it just turns 0 into 0.

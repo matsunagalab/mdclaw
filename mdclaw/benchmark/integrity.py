@@ -528,6 +528,42 @@ def check_status_artifact_floor(
     return warnings
 
 
+def check_manifest_artifact_floor(
+    manifest: dict[str, Any],
+    submission_dir: Path,
+    manifest_path: str,
+    min_count: int = 1,
+    min_bytes: int = 1,
+) -> list[str]:
+    """Require artifacts listed in a manifest field to exist on disk.
+
+    Unlike ``json_min_length``, this verifies the files themselves rather than
+    trusting the manifest list. Paths are resolved relative to ``submission/``.
+    """
+    value = _safe_path(manifest, manifest_path)
+    if not isinstance(value, list):
+        return [
+            f"manifest {manifest_path}: expected list, got "
+            f"{type(value).__name__ if value is not None else 'missing'}"
+        ]
+
+    warnings: list[str] = []
+    if len(value) < min_count:
+        warnings.append(
+            f"manifest {manifest_path}: listed {len(value)} artifacts, "
+            f"require >= {min_count}"
+        )
+
+    for i, rel in enumerate(value):
+        if not isinstance(rel, str) or not rel.strip():
+            warnings.append(f"manifest {manifest_path}[{i}]: empty artifact path")
+            continue
+        warn = check_artifact_min_bytes(submission_dir, rel, min_bytes)
+        if warn:
+            warnings.append(f"manifest {manifest_path}[{i}]: {warn}")
+    return warnings
+
+
 def run_artifact_integrity(
     submission_dir: Path,
     integrity_checks: list[Any],
@@ -596,6 +632,15 @@ def run_artifact_integrity(
             elif ctype == "status_artifact_floor":
                 ws = check_status_artifact_floor(
                     manifest, submission_dir, check.status_floor or {},
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "manifest_artifact_floor":
+                ws = check_manifest_artifact_floor(
+                    manifest,
+                    submission_dir,
+                    check.manifest_path or "",
+                    min_count=int(check.min_count or 1),
+                    min_bytes=int(check.min_bytes or 1),
                 )
                 warnings.extend(f"[{check.check_id}] {w}" for w in ws)
             else:

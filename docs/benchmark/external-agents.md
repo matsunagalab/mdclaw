@@ -93,6 +93,13 @@ state. It reads `task.json`, scorer-only `truth/` when needed, and your
 - Evidence-communication tasks compare figure/method artifacts and check that
   numeric caption claims match `metrics.json`.
 
+For leaderboard-style runs, JSON claims are never enough when a task asks for
+MD-derived evidence. The manifest must point at real trajectory, topology,
+prepared-structure, figure, or methods artifacts as required by the task, and
+the scorer may verify file existence, byte floors, reloadability, and derived
+metrics. Synthetic submissions under `tests/fixtures/benchmark/` are for scorer
+CI only and should not be interpreted as agent performance.
+
 ## MDCrow-Style File Registries
 
 MDCrow stores generated files in a checkpoint directory and tracks them through

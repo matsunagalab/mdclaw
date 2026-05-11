@@ -363,6 +363,211 @@
       "title": "GroundTruthCheck",
       "type": "object"
     },
+    "IntegrityCheck": {
+      "additionalProperties": false,
+      "description": "An artifact-level check that verifies the bytes on disk, not JSON values.\n\nEach check_type interprets the optional fields differently; the\nintegrity layer dispatches on ``check_type``. Failures produce warning\nstrings that the scoring layer either records as ``integrity_warnings``\n(warn policy) or uses to clamp scores to zero (reject policy).",
+      "properties": {
+        "allowed_pool_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Pool File"
+        },
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "check_type": {
+          "enum": [
+            "artifact_min_bytes",
+            "template_markers",
+            "markdown_structure",
+            "evidence_completeness",
+            "citation_pool",
+            "figures_are_png",
+            "status_artifact_floor",
+            "manifest_artifact_floor"
+          ],
+          "title": "Check Type",
+          "type": "string"
+        },
+        "citation_field": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Citation Field"
+        },
+        "figures_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Figures Manifest Path"
+        },
+        "forbid_markers": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Forbid Markers"
+        },
+        "manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Manifest Path"
+        },
+        "min_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Bytes"
+        },
+        "min_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Count"
+        },
+        "min_figure_bytes": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Figure Bytes"
+        },
+        "min_h2": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min H2"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "required_keys": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Keys"
+        },
+        "required_sections": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Sections"
+        },
+        "status_floor": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status Floor"
+        },
+        "weight": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "check_id",
+        "check_type"
+      ],
+      "title": "IntegrityCheck",
+      "type": "object"
+    },
     "TaskInputs": {
       "description": "Curator-supplied inputs. Empty lists mean the task does not require\nthat kind of artifact (NOT 'agent picks one'). v1.0 every task ships\na fully-specified set.",
       "properties": {
@@ -467,6 +672,22 @@
           },
           "title": "Ground Truth Checks",
           "type": "array"
+        },
+        "integrity_checks": {
+          "items": {
+            "$ref": "#/$defs/IntegrityCheck"
+          },
+          "title": "Integrity Checks",
+          "type": "array"
+        },
+        "integrity_policy": {
+          "default": "warn",
+          "enum": [
+            "warn",
+            "reject"
+          ],
+          "title": "Integrity Policy",
+          "type": "string"
         },
         "llm_judge_rubrics": {
           "items": {

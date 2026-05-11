@@ -81,14 +81,14 @@ def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
     summary, tasks = _score_fake_run(tmp_path, "honest")
 
     assert summary["n_tasks"] == 9
-    # 0.57 → 0.5589 after v1.0.x adds integrity_checks to T03/T04/T05
-    # (small evidence_report stubs trip artifact_min_bytes warnings; axes
-    # are unchanged).
-    assert summary["overall_score"] == pytest.approx(0.5589)
+    # Synthetic fixtures are scorer/CI fixtures, not leaderboard evidence.
+    # T06/T07 now require real trajectory artifacts and therefore reject the
+    # JSON-only fixture despite correct answer strings.
+    assert summary["overall_score"] == pytest.approx(0.3367)
     assert summary["scores"] == {
         "preparation": pytest.approx(0.5),
         "execution": pytest.approx(0.5167),
-        "scientific_answer": pytest.approx(1.0),
+        "scientific_answer": pytest.approx(0.0),
         "evidence_communication": pytest.approx(1.0),
     }
 
@@ -98,8 +98,8 @@ def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
         "T03_prep_ligand_pose_t4l_benzene": "failed",
         "T04_exec_short_protein_md": "partial",
         "T05_exec_restart_continue": "partial",
-        "T06_answer_stability_t4l_l99a": "passed",
-        "T07_answer_ppi_hotspot_barnase_d39a": "passed",
+        "T06_answer_stability_t4l_l99a": "failed",
+        "T07_answer_ppi_hotspot_barnase_d39a": "failed",
         "T08_communicate_t4l_dynamics": "partial",
         "T09_study_t4l_wt_vs_l99a_methods": "partial",
     }

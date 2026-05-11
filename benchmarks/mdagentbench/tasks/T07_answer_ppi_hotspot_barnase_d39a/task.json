@@ -101,13 +101,20 @@
         ]
       },
       {
+        "check_id": "real_md_trajectory_artifacts",
+        "check_type": "manifest_artifact_floor",
+        "manifest_path": "outputs.trajectories",
+        "min_count": 2,
+        "min_bytes": 1024
+      },
+      {
         "check_id": "citations_in_allowed_pool",
         "check_type": "citation_pool",
         "allowed_pool_file": "input/references.json",
         "citation_field": "evidence.citations"
       }
     ],
-    "integrity_policy": "warn"
+    "integrity_policy": "reject"
   },
   "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS) from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (\u0394interface SASA, \u0394 inter-chain contact count, \u0394 hydrogen-bond count, \u0394 salt-bridge count, \u0394 water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
   "references": [

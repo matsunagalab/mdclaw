@@ -134,6 +134,10 @@ def _write_honest_t06(submission_dir: Path):
     (submission_dir / "metrics.json").write_text(json.dumps(metrics))
     (submission_dir / "evidence_report.json").write_text(json.dumps(evidence))
     (submission_dir / "provenance.json").write_text(json.dumps(provenance))
+    traj_dir = submission_dir / "trajectories"
+    traj_dir.mkdir()
+    (traj_dir / "wt_md.dcd").write_bytes(b"w" * 2048)
+    (traj_dir / "mutant_md.dcd").write_bytes(b"m" * 2048)
 
 
 def test_warn_policy_penalizes_synthetic_fabricated_t06(tmp_path: Path):
@@ -142,6 +146,7 @@ def test_warn_policy_penalizes_synthetic_fabricated_t06(tmp_path: Path):
     warn mode, but the artifact penalty must prevent a clean 1.0."""
     task_dir = _BENCH_ROOT / "T06_answer_stability_t4l_l99a"
     task = load_task(task_dir / "task.json")
+    task.scoring.integrity_policy = "warn"
     submission_dir = tmp_path / "submission"
     _write_fabricated_t06(submission_dir)
 
@@ -175,6 +180,7 @@ def test_warn_policy_pins_real_haiku_v1_t06_regression_fixture():
     """
     task_dir = _BENCH_ROOT / "T06_answer_stability_t4l_l99a"
     task = load_task(task_dir / "task.json")
+    task.scoring.integrity_policy = "warn"
     submission_dir = _FIXTURE_ROOT / "haiku_v1_t06_fabricated"
 
     score = scoring.score_submission(
@@ -219,6 +225,7 @@ def test_warn_policy_leaves_honest_t06_untouched(tmp_path: Path):
     should fire from the artifact layer, and weighted_total should hit 1.0."""
     task_dir = _BENCH_ROOT / "T06_answer_stability_t4l_l99a"
     task = load_task(task_dir / "task.json")
+    task.scoring.integrity_policy = "warn"
     submission_dir = tmp_path / "submission"
     _write_honest_t06(submission_dir)
 

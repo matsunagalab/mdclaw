@@ -26,8 +26,8 @@ cycles to migrate while still penalizing fabrication.
 | Task | `integrity_policy` | Active integrity checks |
 |---|---|---|
 | **T02 prep guardrail** | **reject** (v1.1) | min_bytes, template_markers |
-| T06 stability answer | warn | min_bytes, template_markers, evidence_completeness, citation_pool |
-| T07 PPI hotspot | warn | min_bytes, template_markers, evidence_completeness, citation_pool |
+| **T06 stability answer** | **reject** (v1.2) | min_bytes, template_markers, evidence_completeness, manifest_artifact_floor, citation_pool |
+| **T07 PPI hotspot** | **reject** (v1.2) | min_bytes, template_markers, evidence_completeness, manifest_artifact_floor, citation_pool |
 | **T08 figures** | **reject** (v1.1) | figures_are_png, min_bytes, template_markers |
 | T09 study methods | warn | min_bytes, template_markers, markdown_structure, evidence_completeness |
 | T01, T03, T04, T05 | warn | min_bytes, template_markers (T03 also status_artifact_floor) |
@@ -62,8 +62,8 @@ Promote in increasing order of risk to legitimate external submissions:
    evidence_report bytes from warn to reject only catches "completed
    refusal with empty explanation," which is itself dishonest.
 3. **T06, T07** (scientific answer): MD-evidence requirement is the
-   point. After two release cycles where honest external agents either
-   produce `evidence.md_metrics` or block, promote.
+   point. These now require real trajectory artifacts listed under
+   `manifest.outputs.trajectories` in addition to `evidence.md_metrics`.
 4. **T09** (study methods): Markdown structure + min_bytes are easier to
    game with a verbose template than the others, so this is the riskiest
    to promote — wait until external submissions consistently provide
@@ -144,12 +144,10 @@ scaffold emits. Until that list converges, hold T09 in warn.
   `test_reject_policy_zeros_text_disguised_as_png_t08` pin the new
   behavior (50-byte refusal explanation or text-as-PNG figure now
   clamps weighted_total to 0).
-- v1.2 (planned): promote T06 + T07 once a second honest-run cycle
-  confirms no false positives on the citation_pool / md_metrics
-  checks. Currently a blocked T06 generates several integrity
-  warnings, which is correct (a blocked submission is at 0 already)
-  but should be documented in release notes so external runners
-  do not over-react.
+- **v1.2 (2026-05-11): T06 + T07 promoted to reject.** These tasks now
+  require real MD trajectory artifacts listed in
+  `manifest.outputs.trajectories`; synthetic fixture runs are treated as
+  scorer CI only, not leaderboard evidence.
 - v1.3+ (planned): T09, then T01/T03/T04/T05 in lockstep.
 
 These dates are not contractual; promotion follows the criteria, not

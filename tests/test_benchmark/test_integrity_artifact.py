@@ -275,6 +275,37 @@ def test_status_floor_waives_when_partial(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# manifest_artifact_floor
+
+
+def test_manifest_artifact_floor_checks_listed_files(tmp_path: Path):
+    (tmp_path / "traj_a.dcd").write_bytes(b"x" * 2048)
+    manifest = {"outputs": {"trajectories": ["traj_a.dcd", "missing.dcd"]}}
+    warnings = integrity.check_manifest_artifact_floor(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+        min_count=2,
+        min_bytes=1024,
+    )
+    assert len(warnings) == 1
+    assert "missing.dcd" in warnings[0]
+
+
+def test_manifest_artifact_floor_requires_min_count(tmp_path: Path):
+    manifest = {"outputs": {"trajectories": []}}
+    warnings = integrity.check_manifest_artifact_floor(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+        min_count=2,
+        min_bytes=1024,
+    )
+    assert len(warnings) == 1
+    assert "require >= 2" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
 # run_artifact_integrity dispatch
 
 

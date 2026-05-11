@@ -14,6 +14,7 @@ from mdclaw.benchmark.models import (
     DeterministicCheck,
     GroundTruthCheck,
     HarnessInfo,
+    IntegrityCheck,
     ModelInfo,
     SubmissionManifest,
     Task,
@@ -85,6 +86,19 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     })
     assert solvent.required_solvent_type == "explicit_water"
     assert solvent.min_water_residues == 10
+
+
+def test_integrity_check_supports_manifest_artifact_floor():
+    check = IntegrityCheck.model_validate({
+        "check_id": "real_trajectories",
+        "check_type": "manifest_artifact_floor",
+        "manifest_path": "outputs.trajectories",
+        "min_count": 2,
+        "min_bytes": 1024,
+    })
+    assert check.manifest_path == "outputs.trajectories"
+    assert check.min_count == 2
+    assert check.min_bytes == 1024
 
 
 def test_ground_truth_check_requires_paths():
