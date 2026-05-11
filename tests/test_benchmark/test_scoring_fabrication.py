@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mdclaw.benchmark import scoring
 from mdclaw.benchmark.validation import load_task
 
@@ -57,8 +59,9 @@ def _write_fabricated_t06(submission_dir: Path):
 
 
 def _write_honest_t06(submission_dir: Path):
-    """An honest submission: matches the truth and has real citations
-    drawn from input/references.json, with real reasoning and limitations."""
+    """An honest submission for the redesigned MD-derived T06 task: ground
+    truth direction matches AND the agent supplies WT/mutant trajectories,
+    MD analysis metrics, and citations anchored to the curated pool."""
     submission_dir.mkdir(parents=True, exist_ok=True)
     manifest = {
         "schema_version": "1.0",
@@ -69,51 +72,62 @@ def _write_honest_t06(submission_dir: Path):
             "metrics": "metrics.json",
             "provenance": "provenance.json",
             "evidence_report": "evidence_report.json",
+            "trajectories": [
+                "trajectories/wt_md.dcd",
+                "trajectories/mutant_md.dcd",
+            ],
         },
         "limitations": [],
         "errors": [],
     }
-    metrics = {"answer": {"effect_direction": "destabilizing"}}
-    # ~600 bytes, real citations from FireProtDB + Eriksson 1992 (the primary
-    # reference DOI), real reasoning, real limitations.
+    metrics = {
+        "answer": {"effect_direction": "destabilizing"},
+        "md_analysis": {
+            "production_time_ns": 10.0,
+            "wt": {"cavity_volume_angstrom_cubed": 142.0,
+                    "ca_rmsf_core_angstrom": 0.81},
+            "mutant": {"cavity_volume_angstrom_cubed": 177.2,
+                        "ca_rmsf_core_angstrom": 0.99},
+        },
+    }
     evidence = {
         "task_id": "T06_answer_stability_t4l_l99a",
         "status": "completed",
-        "effect": {
-            "direction": "destabilizing",
-            "confidence": "high",
-        },
+        "effect": {"direction": "destabilizing", "confidence": "high"},
         "evidence": {
             "reasoning": (
-                "L99A removes a packing leucine from the buried cavity of T4 "
-                "lysozyme. Cavity-creating mutations in hydrophobic cores "
-                "destabilize the fold by ~2-4 kcal/mol unless rescued by a "
-                "bound ligand. FireProtDB curates this and related "
-                "single-site ΔΔG values."
+                "Comparative WT vs L99A MD shows the mutant has +35.2 Å³ of "
+                "cavity volume, +0.18 Å Cα RMSF in the core, and seven fewer "
+                "core hydrophobic contacts. All MD-derived indicators "
+                "support loss of packing free energy."
             ),
             "citations": [
                 {
-                    "doi": "10.1126/science.1553543",
-                    "citation": (
-                        "Eriksson AE et al. Science 1992 — cavity-creating "
-                        "mutation, +4-5 kcal/mol destabilization."
-                    ),
-                },
-                {
                     "source": "FireProtDB",
                     "record_id": "FireProtDB:T4L-L99A",
-                    "note": "single-mutation ΔΔG records",
+                    "pmid": "1553543",
+                    "note": "FireProtDB curated entry for T4L L99A",
+                },
+                {
+                    "source": "S669",
+                    "record_id": "S669:T4L-L99A",
+                    "note": "S669 benchmark single-mutation entry",
                 },
             ],
+            "md_metrics": {
+                "delta_cavity_volume_angstrom_cubed": 35.2,
+                "delta_ca_rmsf_core_angstrom": 0.18,
+                "delta_hydrophobic_contacts_core": -7,
+            },
         },
         "limitations": [
-            "Plan-only task; no fresh MD run performed.",
-            "Confidence reflects literature evidence, not new simulation.",
+            "Short MD (10 ns per replica) used as a packing proxy; no FEP/TI.",
+            "Single replica per system; statistical error not quantified.",
         ],
     }
     provenance = {
         "task_id": "T06_answer_stability_t4l_l99a",
-        "evidence_sources": ["FireProtDB", "doi:10.1126/science.1553543"],
+        "evidence_sources": ["FireProtDB:T4L-L99A", "S669:T4L-L99A"],
     }
 
     (submission_dir / "manifest.json").write_text(json.dumps(manifest))
@@ -138,11 +152,15 @@ def test_warn_policy_penalizes_synthetic_fabricated_t06(tmp_path: Path):
     assert score.integrity_warnings, (
         "fabricated submission should produce integrity warnings"
     )
-    # Truth still matches => primary axis = 1.0 from ground_truth check
-    assert score.scores["scientific_answer"] == 1.0
-    # Penalty cap is -0.2 (4 warnings × 0.05, capped); weighted_total
-    # was 1.0 pre-penalty, so it should sit at ~0.8.
-    assert 0.75 <= score.weighted_total <= 0.85, (
+    # Redesigned T06 has 3 deterministic checks on the primary axis:
+    # ground_truth (w=1.0, passes) + md_trajectories_present (w=0.3, fails) +
+    # md_production_time_min (w=0.2, fails). With no MD evidence the primary
+    # axis caps at 1.0/1.5 = 0.6667, not 1.0 — matching the truth string
+    # alone no longer earns a clean primary score.
+    assert score.scores["scientific_answer"] == pytest.approx(0.6667, abs=1e-3)
+    # On top of that the integrity layer takes -0.2 (penalty cap from
+    # several missing-evidence warnings), so weighted_total lands ~0.47.
+    assert 0.4 <= score.weighted_total <= 0.55, (
         f"warn-phase weighted_total={score.weighted_total} outside expected range"
     )
 
@@ -166,7 +184,11 @@ def test_warn_policy_pins_real_haiku_v1_t06_regression_fixture():
     assert score.integrity_warnings, (
         "real Haiku v1 fixture should produce integrity warnings"
     )
-    assert score.scores["scientific_answer"] == 1.0
+    # Direction matches the truth, but the redesigned task requires WT/mutant
+    # trajectories + md_production_time, neither of which the Haiku v1
+    # fabricated submission provides. Primary axis caps at 0.6667; integrity
+    # penalty knocks the total down further.
+    assert score.scores["scientific_answer"] == pytest.approx(0.6667, abs=1e-3)
     assert score.weighted_total < 0.6, (
         "real fabricated fixture must not regress to the old 0.60 score"
     )

@@ -4,8 +4,8 @@
   "category": "experimental_ground_truth",
   "primary_score": "scientific_answer",
   "secondary_scores": ["evidence_communication"],
-  "execution_mode": "plan_only",
-  "time_limit_minutes": 60,
+  "execution_mode": "lite",
+  "time_limit_minutes": 120,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
@@ -28,6 +28,22 @@
         "json_path": "effect.direction",
         "allowed_values": ["weakened_binding", "strengthened_binding", "neutral"],
         "weight": 0.0
+      },
+      {
+        "check_id": "md_trajectories_present",
+        "check_type": "json_min_length",
+        "json_file": "manifest.json",
+        "json_path": "outputs.trajectories",
+        "min_length": 2,
+        "weight": 0.3
+      },
+      {
+        "check_id": "md_production_time_minimum",
+        "check_type": "json_min",
+        "json_file": "metrics.json",
+        "json_path": "md_analysis.production_time_ns",
+        "min_value": 1.0,
+        "weight": 0.2
       }
     ],
     "ground_truth_checks": [
@@ -57,7 +73,12 @@
       {
         "check_id": "answer_evidence_complete",
         "check_type": "evidence_completeness",
-        "required_keys": ["effect.direction", "limitations", "evidence.citations"]
+        "required_keys": [
+          "effect.direction",
+          "limitations",
+          "evidence.citations",
+          "evidence.md_metrics"
+        ]
       },
       {
         "check_id": "citations_in_allowed_pool",
@@ -68,10 +89,9 @@
     ],
     "integrity_policy": "warn"
   },
-  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS). Report effect.direction with calibrated confidence and explicit limitations.",
+  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS) from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (Δinterface SASA, Δ inter-chain contact count, Δ hydrogen-bond count, Δ salt-bridge count, Δ water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
   "references": [
-    {"note": "Schreiber & Fersht 1995 — energetics of the barnase-barstar interaction by alanine scan. D39A is a hotspot.", "source": "doi:10.1006/jmbi.1995.0237"},
-    {"note": "SKEMPI 2.0 curated mutation effects in protein interactions.", "source": "SKEMPI 2.0"},
-    {"note": "ASEdb alanine-scanning energetics database.", "source": "ASEdb"}
+    {"note": "SKEMPI 2.0 curated PPI mutation effects (scorer-side citation pool).", "source": "SKEMPI"},
+    {"note": "ASEdb alanine-scanning energetics database (scorer-side citation pool).", "source": "ASEdb"}
   ]
 }

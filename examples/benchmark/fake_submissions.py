@@ -187,83 +187,164 @@ def make_t05(sub_dir: Path, run_id: str, mode: str):
 
 def make_t06(sub_dir: Path, run_id: str, mode: str):
     direction = "destabilizing" if mode == "honest" else "stabilizing"
-    _write(sub_dir / "manifest.json", {
+    has_md = (mode == "honest")
+    manifest = {
         "schema_version": "1.0", "run_id": run_id,
         "task_id": "T06_answer_stability_t4l_l99a",
         "status": "completed",
-        "outputs": {"evidence_report": "evidence_report.json"},
-    })
+        "outputs": {
+            "evidence_report": "evidence_report.json",
+            "metrics": "metrics.json",
+            "trajectories": (
+                ["trajectories/wt_md.dcd", "trajectories/mutant_md.dcd"]
+                if has_md else []
+            ),
+        },
+    }
+    _write(sub_dir / "manifest.json", manifest)
     _write(sub_dir / "provenance.json", _common_provenance(
         run_id, "T06_answer_stability_t4l_l99a", mode))
+    metrics: dict = {
+        "schema_version": "1.0",
+        "task_id": "T06_answer_stability_t4l_l99a",
+    }
+    if has_md:
+        metrics["md_analysis"] = {
+            "production_time_ns": 10.0,
+            "wt": {"core_sasa_angstrom_sq": 1820.4,
+                    "cavity_volume_angstrom_cubed": 142.0,
+                    "ca_rmsf_core_angstrom": 0.81,
+                    "hydrophobic_contacts_core": 184},
+            "mutant": {"core_sasa_angstrom_sq": 1832.8,
+                        "cavity_volume_angstrom_cubed": 177.2,
+                        "ca_rmsf_core_angstrom": 0.99,
+                        "hydrophobic_contacts_core": 177},
+        }
+    _write(sub_dir / "metrics.json", metrics)
+    evidence_block: dict = {
+        "reasoning": (
+            "Comparative WT vs L99A MD shows the mutant has a larger packing "
+            "cavity (+35.2 Å³), reduced hydrophobic contact count in the "
+            "core (−7), elevated Cα RMSF in the mutated region (+0.18 Å), "
+            "and slightly higher core SASA (+12.4 Å²). All four MD-derived "
+            "indicators are consistent with loss of packing free energy."
+            if has_md else
+            "Literature-anchored answer for T4L L99A vs WT (synthetic fixture; no MD run)."
+        ),
+        "citations": [
+            {"source": "FireProtDB",
+             "record_id": "FireProtDB:T4L-L99A",
+             "pmid": "1553543",
+             "note": "FireProtDB curated entry for T4L L99A stability"},
+            {"source": "S669",
+             "record_id": "S669:T4L-L99A",
+             "note": "S669 benchmark single-mutation entry"},
+        ],
+    }
+    if has_md:
+        evidence_block["md_metrics"] = {
+            "delta_cavity_volume_angstrom_cubed": 35.2,
+            "delta_core_sasa_angstrom_sq": 12.4,
+            "delta_ca_rmsf_core_angstrom": 0.18,
+            "delta_hydrophobic_contacts_core": -7,
+        }
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0", "task_id": "T06_answer_stability_t4l_l99a",
-        "summary": "Literature-anchored answer for T4L L99A vs WT.",
+        "summary": (
+            "MD-derived answer for T4L L99A vs WT, anchored to "
+            "FireProtDB/S669 curated records for confidence calibration."
+            if has_md else
+            "Literature-anchored answer for T4L L99A vs WT (synthetic fixture)."
+        ),
         "effect": {"direction": direction, "confidence": "high"},
-        "evidence": {
-            "reasoning": (
-                "L99A is a canonical cavity-creating mutation in the buried "
-                "hydrophobic core of T4 lysozyme. Cavity-creating mutations "
-                "lose ~2-4 kcal/mol of packing stability unless rescued by a "
-                "bound ligand; the WT vs L99A comparison is one of the most "
-                "thoroughly characterized stability benchmarks in the "
-                "structural-biology literature."
-            ),
-            "citations": [
-                {
-                    "doi": "10.1126/science.1553543",
-                    "citation": (
-                        "Eriksson AE et al. Science 1992 — cavity-creating "
-                        "mutation, +4-5 kcal/mol destabilization."
-                    ),
-                },
-                {"source": "FireProtDB",
-                 "note": "single-mutation ΔΔG records confirm destabilization"},
-            ],
-        },
+        "evidence": evidence_block,
         "limitations": [
-            "No fresh MD run performed; answer is literature-anchored.",
-            "Confidence reflects the experimental literature, not new simulation.",
+            "Short MD (10 ns per replica) used as packing proxy; no FEP/TI.",
+            "Single replica per system; statistical error not quantified.",
+        ] if has_md else [
+            "Synthetic fixture; no MD was run.",
         ],
     })
 
 
 def make_t07(sub_dir: Path, run_id: str, mode: str):
     direction = "weakened_binding" if mode == "honest" else "strengthened_binding"
-    _write(sub_dir / "manifest.json", {
+    has_md = (mode == "honest")
+    manifest = {
         "schema_version": "1.0", "run_id": run_id,
         "task_id": "T07_answer_ppi_hotspot_barnase_d39a",
         "status": "completed",
-        "outputs": {"evidence_report": "evidence_report.json"},
-    })
+        "outputs": {
+            "evidence_report": "evidence_report.json",
+            "metrics": "metrics.json",
+            "trajectories": (
+                ["trajectories/wt_complex.dcd", "trajectories/mutant_complex.dcd"]
+                if has_md else []
+            ),
+        },
+    }
+    _write(sub_dir / "manifest.json", manifest)
     _write(sub_dir / "provenance.json", _common_provenance(
         run_id, "T07_answer_ppi_hotspot_barnase_d39a", mode))
+    metrics: dict = {
+        "schema_version": "1.0",
+        "task_id": "T07_answer_ppi_hotspot_barnase_d39a",
+    }
+    if has_md:
+        metrics["md_analysis"] = {
+            "production_time_ns": 10.0,
+            "wt": {"interface_sasa_angstrom_sq": 1480.0,
+                    "interface_contacts": 86,
+                    "interface_hbonds": 14,
+                    "interface_salt_bridges": 4},
+            "mutant": {"interface_sasa_angstrom_sq": 1391.0,
+                        "interface_contacts": 71,
+                        "interface_hbonds": 10,
+                        "interface_salt_bridges": 3},
+        }
+    _write(sub_dir / "metrics.json", metrics)
+    evidence_block: dict = {
+        "reasoning": (
+            "Comparative WT vs D39A MD of the barnase-barstar complex shows "
+            "the mutant interface loses 89 Å² of buried SASA, 15 inter-chain "
+            "atomic contacts, 4 hydrogen bonds, and 1 salt bridge over the "
+            "10 ns production. All four MD-derived indicators are consistent "
+            "with weakened interface free energy."
+            if has_md else
+            "Literature-anchored answer for barnase D39A (synthetic fixture; no MD run)."
+        ),
+        "citations": [
+            {"source": "SKEMPI",
+             "record_id": "SKEMPI:1BRS:D39A",
+             "pmid": "7551997",
+             "note": "SKEMPI curated entry for barnase D39A vs barstar"},
+            {"source": "ASEdb",
+             "record_id": "ASEdb:barnase-barstar:D39A",
+             "note": "ASEdb alanine-scan record"},
+        ],
+    }
+    if has_md:
+        evidence_block["md_metrics"] = {
+            "delta_interface_sasa_angstrom_sq": -89.0,
+            "delta_interface_contacts": -15,
+            "delta_interface_hbonds": -4,
+            "delta_interface_salt_bridges": -1,
+        }
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
-        "summary": "Literature-anchored answer for barnase D39A vs WT against barstar.",
+        "summary": (
+            "MD-derived answer for barnase D39A vs WT binding to barstar, "
+            "anchored to SKEMPI/ASEdb curated records for confidence."
+            if has_md else
+            "Literature-anchored answer for barnase D39A (synthetic fixture)."
+        ),
         "effect": {"direction": direction, "confidence": "high"},
-        "evidence": {
-            "reasoning": (
-                "D39 is the canonical hot-spot residue at the barnase-barstar "
-                "interface. The Schreiber & Fersht 1995 alanine scan reports "
-                "the largest single-mutation ΔΔG_binding at this position, "
-                "and SKEMPI's curated records confirm a substantial loss of "
-                "affinity for D39A."
-            ),
-            "citations": [
-                {
-                    "doi": "10.1006/jmbi.1995.0237",
-                    "citation": (
-                        "Schreiber & Fersht 1995 — alanine-scan of the "
-                        "barnase-barstar interface."
-                    ),
-                },
-                {"source": "SKEMPI",
-                 "note": "curated mutation effects on PPI binding"},
-            ],
-        },
+        "evidence": evidence_block,
         "limitations": [
-            "No MM/PBSA or FEP run; answer is literature-anchored only.",
-            "Confidence reflects published alanine-scan, not new computation.",
+            "Short MD (10 ns per replica) used as interface proxy; no MM/PBSA or FEP.",
+            "Single replica per system; statistical error not quantified.",
+        ] if has_md else [
+            "Synthetic fixture; no MD was run.",
         ],
     })
 

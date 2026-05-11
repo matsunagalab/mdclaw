@@ -45,26 +45,39 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
         "schema_version": "1.0",
         "task_id": "T06_answer_stability_t4l_l99a",
         "status": "completed",
-        "outputs": {"evidence_report": "evidence_report.json"},
+        "outputs": {
+            "evidence_report": "evidence_report.json",
+            "metrics": "metrics.json",
+            "trajectories": [
+                "trajectories/wt.dcd",
+                "trajectories/mutant.dcd",
+            ],
+        },
     }))
     (sub_dir / "provenance.json").write_text(json.dumps({"agent": "test"}))
-    # Honest evidence_report for an answer-only task: real citations drawn
-    # from input/references.json (FireProtDB + Eriksson 1992 primary DOI) so
-    # the v1.0.x integrity layer does not penalize the smoke fixture.
+    (sub_dir / "metrics.json").write_text(json.dumps({
+        "md_analysis": {"production_time_ns": 5.0},
+    }))
+    # Honest evidence_report for the redesigned MD-derived T06: pool-anchored
+    # citations + md_metrics that support the direction.
     (sub_dir / "evidence_report.json").write_text(json.dumps({
         "effect": {"direction": "destabilizing", "confidence": "high"},
         "evidence": {
             "reasoning": (
-                "T4 lysozyme L99A is the canonical cavity-creating mutation "
-                "destabilizing the hydrophobic core by 4-5 kcal/mol."
+                "Smoke fixture: comparative WT vs L99A MD shows cavity volume "
+                "growth and elevated core RMSF — consistent with destabilization."
             ),
             "citations": [
-                {"doi": "10.1126/science.1553543",
-                 "citation": "Eriksson AE et al. Science 1992."},
-                {"source": "FireProtDB", "note": "single-mutation ΔΔG records"},
+                {"source": "FireProtDB", "record_id": "FireProtDB:T4L-L99A",
+                 "pmid": "1553543",
+                 "note": "single-mutation ΔΔG record"},
             ],
+            "md_metrics": {
+                "delta_cavity_volume_angstrom_cubed": 35.0,
+                "delta_ca_rmsf_core_angstrom": 0.2,
+            },
         },
-        "limitations": ["Smoke-test fixture; no MD was actually run."],
+        "limitations": ["Smoke-test fixture; trajectories are listed for the test arithmetic only."],
     }))
 
     task_file = str(DATASET_DIR / "tasks" / "T06_answer_stability_t4l_l99a" / "task.json")
@@ -149,22 +162,35 @@ def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
         "effect": {"direction": "destabilizing", "confidence": "high"},
         "evidence": {
             "reasoning": (
-                "External agent fixture: real OpenRouter / GROMACS / custom "
-                "runs would replace this with model-generated reasoning. "
-                "T4L L99A removes a packing leucine from the hydrophobic core."
+                "External-agent fixture: comparative MD on WT vs L99A "
+                "shows cavity growth and elevated core RMSF, supporting "
+                "destabilization."
             ),
             "citations": [
-                {"doi": "10.1126/science.1553543",
-                 "citation": "Eriksson AE et al. Science 1992."},
-                {"source": "FireProtDB", "note": "ΔΔG records"},
+                {"source": "FireProtDB",
+                 "record_id": "FireProtDB:T4L-L99A",
+                 "pmid": "1553543",
+                 "note": "single-mutation ΔΔG record"},
             ],
+            "md_metrics": {
+                "delta_cavity_volume_angstrom_cubed": 32.0,
+                "delta_ca_rmsf_core_angstrom": 0.18,
+            },
         },
         "limitations": ["test fixture; no real external-agent run performed"],
     }
     (sub_dir / "evidence_report.json").write_text(json.dumps(evidence))
+    (sub_dir / "metrics.json").write_text(json.dumps({
+        "md_analysis": {"production_time_ns": 5.0},
+    }))
     manifest_path = sub_dir / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
     manifest["status"] = "completed"
+    manifest["outputs"]["trajectories"] = [
+        "trajectories/wt.dcd",
+        "trajectories/mutant.dcd",
+    ]
+    manifest["outputs"]["metrics"] = "metrics.json"
     manifest_path.write_text(json.dumps(manifest))
 
     validation = cli.validate_benchmark_submission(str(task_file), str(sub_dir))

@@ -4,8 +4,8 @@
   "category": "experimental_ground_truth",
   "primary_score": "scientific_answer",
   "secondary_scores": ["evidence_communication"],
-  "execution_mode": "plan_only",
-  "time_limit_minutes": 60,
+  "execution_mode": "lite",
+  "time_limit_minutes": 120,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
@@ -28,6 +28,22 @@
         "json_path": "effect.direction",
         "allowed_values": ["destabilizing", "stabilizing", "neutral"],
         "weight": 0.0
+      },
+      {
+        "check_id": "md_trajectories_present",
+        "check_type": "json_min_length",
+        "json_file": "manifest.json",
+        "json_path": "outputs.trajectories",
+        "min_length": 2,
+        "weight": 0.3
+      },
+      {
+        "check_id": "md_production_time_minimum",
+        "check_type": "json_min",
+        "json_file": "metrics.json",
+        "json_path": "md_analysis.production_time_ns",
+        "min_value": 1.0,
+        "weight": 0.2
       }
     ],
     "ground_truth_checks": [
@@ -57,7 +73,12 @@
       {
         "check_id": "answer_evidence_complete",
         "check_type": "evidence_completeness",
-        "required_keys": ["effect.direction", "limitations", "evidence.citations"]
+        "required_keys": [
+          "effect.direction",
+          "limitations",
+          "evidence.citations",
+          "evidence.md_metrics"
+        ]
       },
       {
         "check_id": "citations_in_allowed_pool",
@@ -68,10 +89,9 @@
     ],
     "integrity_policy": "warn"
   },
-  "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM). Report effect.direction in evidence_report.json with calibrated confidence and explicit limitations.",
+  "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM) from MD-derived evidence. Run short comparative MD of WT and the L99A mutant, populate metrics.md_analysis with quantitative differences (core SASA, cavity volume, packing density, Cα RMSF in the mutated region, hydrophobic contact count, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
   "references": [
-    {"note": "Eriksson et al. 1992 — cavity-creating mutation, +4-5 kcal/mol destabilization.", "source": "doi:10.1126/science.1553543"},
-    {"note": "FireProtDB curated single mutation database.", "source": "FireProtDB"},
-    {"note": "S669 / Ssym single-mutation ΔΔG benchmark.", "source": "S669"}
+    {"note": "FireProtDB curated single-mutation ΔΔG database (scorer-side citation pool).", "source": "FireProtDB"},
+    {"note": "S669 / Ssym single-mutation ΔΔG benchmark (scorer-side citation pool).", "source": "S669"}
   ]
 }

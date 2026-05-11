@@ -1,8 +1,4 @@
 {
   "allowed_source_pools": ["SKEMPI", "ASEdb"],
-  "primary_reference": {
-    "doi": "10.1006/jmbi.1995.0237",
-    "citation": "Schreiber G, Fersht AR. Energetics of protein-protein interactions: analysis of the barnase-barstar interface by single mutations and double mutant cycles. J. Mol. Biol. 1995, 248:478-486."
-  },
-  "note": "Predict effect.direction for D39A on barnase relative to WT barnase against barstar."
+  "note": "Predict effect.direction from MD-derived metrics. Run short comparative MD of the WT complex and the D39A mutant complex against barstar and report quantitative differences across the interface (Δinterface SASA, Δ inter-chain contact count, Δ hydrogen-bond count, Δ salt-bridge count, Δ binding-pocket water occupancy, etc.) in metrics.md_analysis and evidence_report.evidence.md_metrics. Cite a record from the pools above (SKEMPI entry + PMID/DOI, ASEdb record) only for confidence calibration — the direction itself must be supported by your MD numbers, not by recalling the literature."
 }

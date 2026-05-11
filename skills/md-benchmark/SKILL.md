@@ -48,7 +48,7 @@ human-facing intent labels; the scorer still reads `primary_score` and
 |---|---|---|---|---|
 | System Preparation & Guardrails | Build MD-ready inputs when chemistry is supported; refuse when parameterization would be unsafe. | PDB files, ligand references, prep requests. | `prepared_structure.pdb`, topology artifacts, guardrail code, ligand RMSD metrics. | T02, T03 |
 | Execution / Engine Reliability | Prove the MD engine can run, save, reload, and continue short simulations without corrupt trajectories. | PDB files, solvent specs, MD/restart protocols. | Trajectories, checkpoints/states, finite-energy/no-NaN metrics, restart-continuity metrics. | T01, T04, T05 |
-| Scientific Answer vs Experimental Truth | Answer a mutation or binding-effect question using the allowed public evidence, with confidence and limitations. | Structure, mutation request, allowed citation pool. | `evidence_report.effect.direction`, confidence, limitations, provenance. | T06, T07 |
+| Scientific Answer vs Experimental Truth | Predict a mutation or binding-effect direction **from MD-derived metrics**, with confidence and limitations. Literature is for confidence calibration only — direction must be supported by the agent's MD numbers, not by recalling a famous paper. | Structure, mutation request, allowed citation pool (database names + neutral note — no spoiler DOI). | Comparative WT vs mutant trajectories under `manifest.outputs.trajectories[]`, `metrics.md_analysis.production_time_ns`, `evidence_report.evidence.md_metrics` with quantitative deltas, `effect.direction`, confidence, limitations, citations from the pool. | T06, T07 |
 | Evidence & Methods Communication | Package analysis and methods so another scientist can audit the numeric claims and workflow choices. | Analysis request, study brief, structures or generated trajectories. | Figures, captions, `metrics.json`, `methods.md`, study provenance, limitations. | T08, T09 |
 
 Task short names:
@@ -307,9 +307,15 @@ Additionally for execution tasks (T01/T04/T05):
 For T03 (ligand preparation): `prepared_structure.pdb` contains both the
 protein and the ligand with reasonable coordinates.
 
-For T06 / T07 (scientific answer): `evidence_report.evidence.citations`
-draws from `input/references.json` (`allowed_source_pools` + `primary_reference.doi`).
-The v1.0.x integrity layer cross-checks this pool.
+For T06 / T07 (scientific answer): comparative WT vs mutant MD trajectories
+are listed under `manifest.outputs.trajectories` (>=2 entries),
+`metrics.md_analysis.production_time_ns` is at least 1.0, and
+`evidence_report.evidence.md_metrics` has at least one quantitative delta
+(ΔSASA, Δcavity volume, Δinterface contacts, Δ hydrogen-bond count, etc.)
+that defends the chosen direction. Citations in
+`evidence_report.evidence.citations` draw from `input/references.json`
+`allowed_source_pools` and each entry has a concrete anchor (DOI, PMID,
+URL, or `record_id`/`accession`). Pool name alone in free text is rejected.
 
 For T08 / T09 (communication): every caption number appears in
 `metrics.json` with the same value, and `methods.md` has at least two

@@ -131,25 +131,38 @@ def _mock_evidence(task_id: str, run_id: str) -> dict[str, Any]:
         "T06_answer_stability_t4l_l99a": "destabilizing",
         "T07_answer_ppi_hotspot_barnase_d39a": "weakened_binding",
     }
-    # Citation hooks aligned with each task's input/references.json allowed pool
-    # so the mock submission satisfies the v1.0.x citation_pool integrity check.
+    # Pool-anchored citations: pool name + record_id and (when available) PMID.
+    # Real OpenRouter runs replace this with the model's own MD-derived
+    # reasoning, md_metrics, and citations.
     citations_by_task: dict[str, list[dict[str, str]]] = {
         "T06_answer_stability_t4l_l99a": [
-            {
-                "doi": "10.1126/science.1553543",
-                "citation": "Eriksson AE et al. Science 1992 — L99A destabilization.",
-            },
             {"source": "FireProtDB",
-             "note": "single-mutation ΔΔG records confirm destabilization"},
+             "record_id": "FireProtDB:T4L-L99A",
+             "pmid": "1553543",
+             "note": "FireProtDB curated entry for T4L L99A"},
+            {"source": "S669",
+             "record_id": "S669:T4L-L99A",
+             "note": "S669 benchmark single-mutation entry"},
         ],
         "T07_answer_ppi_hotspot_barnase_d39a": [
-            {
-                "doi": "10.1006/jmbi.1995.0237",
-                "citation": "Schreiber & Fersht 1995 — barnase-barstar alanine scan.",
-            },
             {"source": "SKEMPI",
-             "note": "curated mutation effects on PPI binding"},
+             "record_id": "SKEMPI:1BRS:D39A",
+             "pmid": "7551997",
+             "note": "SKEMPI curated entry for barnase D39A"},
+            {"source": "ASEdb",
+             "record_id": "ASEdb:barnase-barstar:D39A",
+             "note": "ASEdb alanine-scan record"},
         ],
+    }
+    md_metrics_by_task: dict[str, dict[str, float]] = {
+        "T06_answer_stability_t4l_l99a": {
+            "delta_cavity_volume_angstrom_cubed": 35.0,
+            "delta_ca_rmsf_core_angstrom": 0.18,
+        },
+        "T07_answer_ppi_hotspot_barnase_d39a": {
+            "delta_interface_sasa_angstrom_sq": -85.0,
+            "delta_interface_hbonds": -4,
+        },
     }
     direction = directions.get(task_id)
     return {
@@ -163,11 +176,12 @@ def _mock_evidence(task_id: str, run_id: str) -> dict[str, Any]:
         "effect": {"direction": direction, "confidence": "high" if direction else "low"},
         "evidence": {
             "reasoning": (
-                "Mock answer anchored to the curator-supplied allowed source pool "
-                "from input/references.json. Real OpenRouter runs replace this "
-                "with the model's own reasoning."
+                "Mock MD-derived answer: synthetic deltas listed under md_metrics "
+                "support the chosen direction. Real OpenRouter runs replace this "
+                "with the model's own reasoning grounded in actual MD output."
             ),
             "citations": citations_by_task.get(task_id, []),
+            "md_metrics": md_metrics_by_task.get(task_id, {}),
         },
         "limitations": ["Mock mode; no model call and no new MD were run."],
         "figure_captions": [],
@@ -226,6 +240,33 @@ def call_openrouter(
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n")
+
+
+def _apply_mock_md_outputs(submission_dir: Path, task_id: str) -> None:
+    """Mock helper: science-answer tasks (T06/T07) now require comparative WT
+    vs mutant MD evidence. The mock has no real MD to attach, so we write a
+    minimal metrics.json with md_analysis.production_time_ns and patch the
+    manifest's outputs.trajectories list so the deterministic checks pass.
+
+    Real OpenRouter runs override this via the model's own response and
+    real MD harness — this helper is only for plumbing tests (mock=True).
+    """
+    metrics_path = submission_dir / "metrics.json"
+    metrics = _read_json(metrics_path) if metrics_path.exists() else {}
+    metrics.setdefault("schema_version", "1.0")
+    metrics.setdefault("task_id", task_id)
+    metrics["md_analysis"] = {"production_time_ns": 10.0, "note": "mock"}
+    _write_json(metrics_path, metrics)
+
+    manifest_path = submission_dir / "manifest.json"
+    manifest = _read_json(manifest_path)
+    outputs = manifest.setdefault("outputs", {})
+    outputs["trajectories"] = [
+        "trajectories/wt_md.dcd",
+        "trajectories/mutant_md.dcd",
+    ]
+    outputs.setdefault("metrics", "metrics.json")
+    _write_json(manifest_path, manifest)
 
 
 def _update_manifest_status(submission_dir: Path, status: str, error: dict[str, str] | None = None) -> None:
@@ -326,6 +367,11 @@ def _run_task(
             evidence.setdefault("run_id", run_id)
             evidence.setdefault("task_id", task_id)
         _write_json(submission_dir / "evidence_report.json", evidence)
+        if mock and task_id in {
+            "T06_answer_stability_t4l_l99a",
+            "T07_answer_ppi_hotspot_barnase_d39a",
+        }:
+            _apply_mock_md_outputs(submission_dir, task_id)
         status = "completed" if evidence.get("effect", {}).get("direction") else "partial"
         _update_manifest_status(submission_dir, status)
         _update_provenance(submission_dir, harness, model, response_payload)
