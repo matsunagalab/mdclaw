@@ -48,8 +48,23 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
         "outputs": {"evidence_report": "evidence_report.json"},
     }))
     (sub_dir / "provenance.json").write_text(json.dumps({"agent": "test"}))
+    # Honest evidence_report for an answer-only task: real citations drawn
+    # from input/references.json (FireProtDB + Eriksson 1992 primary DOI) so
+    # the v1.0.x integrity layer does not penalize the smoke fixture.
     (sub_dir / "evidence_report.json").write_text(json.dumps({
-        "effect": {"direction": "destabilizing", "confidence": "high"}
+        "effect": {"direction": "destabilizing", "confidence": "high"},
+        "evidence": {
+            "reasoning": (
+                "T4 lysozyme L99A is the canonical cavity-creating mutation "
+                "destabilizing the hydrophobic core by 4-5 kcal/mol."
+            ),
+            "citations": [
+                {"doi": "10.1126/science.1553543",
+                 "citation": "Eriksson AE et al. Science 1992."},
+                {"source": "FireProtDB", "note": "single-mutation ΔΔG records"},
+            ],
+        },
+        "limitations": ["Smoke-test fixture; no MD was actually run."],
     }))
 
     task_file = str(DATASET_DIR / "tasks" / "T06_answer_stability_t4l_l99a" / "task.json")
@@ -130,9 +145,21 @@ def test_external_agent_template_and_metadata_survive_summary(tmp_path: Path):
         "schema_version": "1.0",
         "run_id": run_id,
         "task_id": task_id,
-        "summary": "External-agent fixture answer.",
+        "summary": "External-agent fixture answer for T4L L99A stability.",
         "effect": {"direction": "destabilizing", "confidence": "high"},
-        "limitations": ["test fixture"],
+        "evidence": {
+            "reasoning": (
+                "External agent fixture: real OpenRouter / GROMACS / custom "
+                "runs would replace this with model-generated reasoning. "
+                "T4L L99A removes a packing leucine from the hydrophobic core."
+            ),
+            "citations": [
+                {"doi": "10.1126/science.1553543",
+                 "citation": "Eriksson AE et al. Science 1992."},
+                {"source": "FireProtDB", "note": "ΔΔG records"},
+            ],
+        },
+        "limitations": ["test fixture; no real external-agent run performed"],
     }
     (sub_dir / "evidence_report.json").write_text(json.dumps(evidence))
     manifest_path = sub_dir / "manifest.json"

@@ -40,7 +40,33 @@
         "weight": 1.0
       }
     ],
-    "llm_judge_rubrics": ["confidence_calibration", "limitations"]
+    "llm_judge_rubrics": ["confidence_calibration", "limitations"],
+    "integrity_checks": [
+      {
+        "check_id": "evidence_report_real_bytes",
+        "check_type": "artifact_min_bytes",
+        "path": "evidence_report.json",
+        "min_bytes": 400
+      },
+      {
+        "check_id": "evidence_report_not_template",
+        "check_type": "template_markers",
+        "path": "evidence_report.json",
+        "forbid_markers": ["Template placeholder", "Replace before scoring", "Replace with"]
+      },
+      {
+        "check_id": "answer_evidence_complete",
+        "check_type": "evidence_completeness",
+        "required_keys": ["effect.direction", "limitations", "evidence.citations"]
+      },
+      {
+        "check_id": "citations_in_allowed_pool",
+        "check_type": "citation_pool",
+        "allowed_pool_file": "input/references.json",
+        "citation_field": "evidence.citations"
+      }
+    ],
+    "integrity_policy": "warn"
   },
   "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS). Report effect.direction with calibrated confidence and explicit limitations.",
   "references": [

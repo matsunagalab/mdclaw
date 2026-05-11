@@ -67,6 +67,16 @@ def score_submission(
         integrity.manifest_metrics_consistency(manifest, metrics)
     )
 
+    # 2b. artifact integrity (re-verify bytes on disk, not just JSON values)
+    artifact_warnings = integrity.run_artifact_integrity(
+        submission_dir,
+        task.scoring.integrity_checks,
+        manifest=manifest,
+        evidence=evidence,
+        task_dir=task_dir,
+    )
+    integrity_warnings.extend(artifact_warnings)
+
     # 3. deterministic checks
     for check in task.scoring.deterministic_checks:
         result = _run_deterministic(
@@ -94,13 +104,30 @@ def score_submission(
         status, weighted_total, axis_scores, ground_truth_results,
     )
 
-    # 7. integrity penalty (per-warning -0.05, capped at -0.2)
+    # 7a. reject-phase clamp — if the task opts in to integrity_policy="reject"
+    # and any artifact integrity warning fired, weighted_total drops to 0.
+    # This is a hard contract: the agent cannot earn primary score with a
+    # template-stub submission.
+    integrity_rejected = bool(
+        task.scoring.integrity_policy == "reject" and artifact_warnings
+    )
+    if integrity_rejected:
+        weighted_total = 0.0
+
+    # 7b. warn-phase penalty (per-warning -0.05, capped at -0.2). Applies under
+    # both policies; under "reject" it just turns 0 into 0.
     if integrity_warnings:
         penalty = min(0.05 * len(integrity_warnings), 0.2)
         weighted_total = max(0.0, weighted_total - penalty)
 
     score_status = _score_status(weighted_total, deterministic_results,
                                  ground_truth_results)
+    if integrity_rejected:
+        # Reject overrides the "any check passed → partial" rule: if the
+        # artifact layer rejected the submission, the run did not produce
+        # work worth crediting, even if a deterministic string-equality check
+        # happens to match.
+        score_status = "failed"
 
     runtime = _extract_runtime(manifest, metrics)
 

@@ -56,7 +56,40 @@
         "weight": 1.0
       }
     ],
-    "llm_judge_rubrics": ["methods_traceability", "limitations"]
+    "llm_judge_rubrics": ["methods_traceability", "limitations"],
+    "integrity_checks": [
+      {
+        "check_id": "methods_real_bytes",
+        "check_type": "artifact_min_bytes",
+        "path": "methods.md",
+        "min_bytes": 500
+      },
+      {
+        "check_id": "methods_not_template",
+        "check_type": "template_markers",
+        "path": "methods.md",
+        "forbid_markers": ["Replace with", "Template", "TODO"]
+      },
+      {
+        "check_id": "methods_has_structure",
+        "check_type": "markdown_structure",
+        "path": "methods.md",
+        "min_h2": 2,
+        "required_sections": ["Methods", "Limitations"]
+      },
+      {
+        "check_id": "evidence_report_real_bytes",
+        "check_type": "artifact_min_bytes",
+        "path": "evidence_report.json",
+        "min_bytes": 400
+      },
+      {
+        "check_id": "answer_evidence_complete",
+        "check_type": "evidence_completeness",
+        "required_keys": ["effect.direction", "limitations"]
+      }
+    ],
+    "integrity_policy": "warn"
   },
   "task_intent": "Evidence-and-methods test: package a WT vs L99A T4 lysozyme comparison as an auditable study bundle. Include WT and mutant roles in provenance.study.roles, a methods.md draft describing the comparison protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices.",
   "references": [

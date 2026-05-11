@@ -131,6 +131,26 @@ def _mock_evidence(task_id: str, run_id: str) -> dict[str, Any]:
         "T06_answer_stability_t4l_l99a": "destabilizing",
         "T07_answer_ppi_hotspot_barnase_d39a": "weakened_binding",
     }
+    # Citation hooks aligned with each task's input/references.json allowed pool
+    # so the mock submission satisfies the v1.0.x citation_pool integrity check.
+    citations_by_task: dict[str, list[dict[str, str]]] = {
+        "T06_answer_stability_t4l_l99a": [
+            {
+                "doi": "10.1126/science.1553543",
+                "citation": "Eriksson AE et al. Science 1992 — L99A destabilization.",
+            },
+            {"source": "FireProtDB",
+             "note": "single-mutation ΔΔG records confirm destabilization"},
+        ],
+        "T07_answer_ppi_hotspot_barnase_d39a": [
+            {
+                "doi": "10.1006/jmbi.1995.0237",
+                "citation": "Schreiber & Fersht 1995 — barnase-barstar alanine scan.",
+            },
+            {"source": "SKEMPI",
+             "note": "curated mutation effects on PPI binding"},
+        ],
+    }
     direction = directions.get(task_id)
     return {
         "schema_version": "1.0",
@@ -141,6 +161,14 @@ def _mock_evidence(task_id: str, run_id: str) -> dict[str, Any]:
             "Do not use mock mode for leaderboard evidence."
         ),
         "effect": {"direction": direction, "confidence": "high" if direction else "low"},
+        "evidence": {
+            "reasoning": (
+                "Mock answer anchored to the curator-supplied allowed source pool "
+                "from input/references.json. Real OpenRouter runs replace this "
+                "with the model's own reasoning."
+            ),
+            "citations": citations_by_task.get(task_id, []),
+        },
         "limitations": ["Mock mode; no model call and no new MD were run."],
         "figure_captions": [],
     }

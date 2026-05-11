@@ -248,3 +248,321 @@ def read_json_safe(path: str | Path) -> dict[str, Any]:
         return json.loads(Path(path).read_text())
     except Exception:
         return {}
+
+
+# ---------------------------------------------------------------------------
+# Artifact integrity checks (v1.0.x)
+#
+# These verify the bytes on disk, not JSON values. They catch the failure mode
+# where an agent leaves submission template stubs in place (53-byte PDB,
+# 57-byte methods.md, text masquerading as PNG) while flipping
+# manifest.status to "completed". String-equality checks in the deterministic
+# layer cannot see these.
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+
+
+def check_artifact_min_bytes(
+    submission_dir: Path, path: str, min_bytes: int
+) -> Optional[str]:
+    """Return a warning message if the artifact is missing or shorter than
+    ``min_bytes``; ``None`` if it meets the floor.
+    """
+    target = (submission_dir / path).resolve()
+    if not target.is_file():
+        return f"{path}: file not found (required >= {min_bytes} bytes)"
+    size = target.stat().st_size
+    if size < min_bytes:
+        return f"{path}: {size} bytes < required {min_bytes} (likely template stub)"
+    return None
+
+
+def check_template_markers(
+    submission_dir: Path, path: str, forbid_markers: list[str]
+) -> Optional[str]:
+    """Return a warning message if ``path`` contains any of ``forbid_markers``.
+
+    Used to detect leftover template scaffolds like ``"Template placeholder.
+    Replace before scoring."`` or ``"Replace with task-specific methods."``
+    that the create_benchmark_submission_template tool emits.
+    """
+    target = (submission_dir / path).resolve()
+    if not target.is_file():
+        return f"{path}: file not found (cannot scan for template markers)"
+    try:
+        text = target.read_text(errors="replace")
+    except OSError as exc:
+        return f"{path}: read failed ({exc})"
+    hits = [m for m in forbid_markers if m.lower() in text.lower()]
+    if hits:
+        return f"{path}: contains template marker(s) {hits!r} — replace before submitting"
+    return None
+
+
+def check_markdown_structure(
+    submission_dir: Path,
+    path: str,
+    min_h2: int = 0,
+    required_sections: Optional[list[str]] = None,
+) -> list[str]:
+    """Return warnings for a markdown artifact (e.g. methods.md) that lacks
+    the expected structure.
+
+    - ``min_h2``: minimum number of level-2 headings.
+    - ``required_sections``: case-insensitive heading titles (any level) that
+      must appear. E.g. ["Methods", "Limitations", "References"].
+    """
+    target = (submission_dir / path).resolve()
+    if not target.is_file():
+        return [f"{path}: markdown file not found"]
+    try:
+        lines = target.read_text(errors="replace").splitlines()
+    except OSError as exc:
+        return [f"{path}: read failed ({exc})"]
+
+    h2_count = 0
+    headings_lower: list[str] = []
+    for raw in lines:
+        line = raw.strip()
+        if line.startswith("## "):
+            h2_count += 1
+        m = re.match(r"^(#{1,6})\s+(.*)$", line)
+        if m:
+            headings_lower.append(m.group(2).strip().lower())
+
+    warnings: list[str] = []
+    if h2_count < min_h2:
+        warnings.append(f"{path}: only {h2_count} H2 heading(s); require >= {min_h2}")
+    for section in required_sections or []:
+        if section.strip().lower() not in headings_lower:
+            warnings.append(
+                f"{path}: missing required section heading {section!r}"
+            )
+    return warnings
+
+
+def check_evidence_completeness(
+    evidence: dict[str, Any], required_keys: list[str]
+) -> list[str]:
+    """Return warnings for ``evidence_report.json`` keys that are missing,
+    null, or empty.
+
+    Each entry in ``required_keys`` is a dotted path like
+    ``"evidence.citations"`` or ``"limitations"``. The check fails if the
+    resolved value is None, "", [], or {}.
+    """
+    warnings: list[str] = []
+    for key in required_keys:
+        value = _safe_path(evidence, key)
+        if value is None:
+            warnings.append(f"evidence_report.json missing key {key!r}")
+            continue
+        if isinstance(value, (str, list, dict)) and len(value) == 0:
+            warnings.append(f"evidence_report.json key {key!r} is empty")
+    return warnings
+
+
+def check_citation_pool(
+    evidence: dict[str, Any],
+    allowed_pool_file: Path,
+    citation_field: str = "evidence.citations",
+) -> list[str]:
+    """Verify that every citation in the agent's evidence_report draws from
+    the curator-supplied pool.
+
+    ``allowed_pool_file`` is a JSON file with shape::
+
+        {
+          "allowed_source_pools": ["FireProtDB", "S669", ...],
+          "primary_reference": {"doi": "10.1126/...", "citation": "..."}
+        }
+
+    Citation entries can be either strings (matched substring vs DOI / pool
+    name) or dicts with ``doi``/``source``/``pool`` fields. The check is
+    intentionally lenient — it catches blatant fabrication ("I made up this
+    DOI"), not minor formatting differences.
+    """
+    if not allowed_pool_file.is_file():
+        return [f"citation pool file not found: {allowed_pool_file}"]
+    try:
+        pool = json.loads(allowed_pool_file.read_text())
+    except Exception as exc:  # pragma: no cover -- malformed pool file
+        return [f"citation pool unreadable: {exc}"]
+
+    allowed_pools = [str(p).strip().lower()
+                     for p in pool.get("allowed_source_pools") or []]
+    primary_doi = str((pool.get("primary_reference") or {}).get("doi") or "").lower()
+    allowed_dois = {primary_doi} if primary_doi else set()
+
+    citations = _safe_path(evidence, citation_field)
+    if not citations:
+        return [f"evidence_report {citation_field}: no citations to validate"]
+    if not isinstance(citations, list):
+        return [f"evidence_report {citation_field}: expected list, got {type(citations).__name__}"]
+
+    warnings: list[str] = []
+    for i, entry in enumerate(citations):
+        if isinstance(entry, str):
+            blob = entry.lower()
+        elif isinstance(entry, dict):
+            parts = [str(entry.get(k, "")) for k in
+                     ("doi", "source", "pool", "pmid", "url", "citation")]
+            blob = " ".join(parts).lower()
+        else:
+            warnings.append(f"{citation_field}[{i}]: unrecognized entry type")
+            continue
+        if not blob.strip():
+            warnings.append(f"{citation_field}[{i}]: empty citation entry")
+            continue
+        # Match if any allowed pool name or the primary DOI appears in the blob.
+        if any(pool_name in blob for pool_name in allowed_pools):
+            continue
+        if allowed_dois and any(doi in blob for doi in allowed_dois if doi):
+            continue
+        warnings.append(
+            f"{citation_field}[{i}]: not anchored to allowed pool "
+            f"{allowed_pools!r} or primary DOI {primary_doi!r}"
+        )
+    return warnings
+
+
+def check_png_magic(path: Path) -> Optional[str]:
+    """Return a warning if ``path`` does not start with the PNG magic bytes.
+
+    Catches the failure mode of writing a text caption file with a ``.png``
+    name and listing it under ``manifest.outputs.figures``.
+    """
+    if not path.is_file():
+        return f"{path.name}: file not found"
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(len(_PNG_MAGIC))
+    except OSError as exc:
+        return f"{path.name}: read failed ({exc})"
+    if head != _PNG_MAGIC:
+        return f"{path.name}: not a PNG (magic bytes mismatch)"
+    return None
+
+
+def check_figures_are_png(
+    submission_dir: Path,
+    figures: list[str],
+    min_figure_bytes: int = 1024,
+) -> list[str]:
+    """Run :func:`check_png_magic` and a byte-floor check across every figure
+    listed in ``manifest.outputs.figures``.
+    """
+    warnings: list[str] = []
+    for fig in figures or []:
+        target = (submission_dir / fig).resolve()
+        bytes_warn = check_artifact_min_bytes(submission_dir, fig, min_figure_bytes)
+        if bytes_warn:
+            warnings.append(bytes_warn)
+            continue
+        magic_warn = check_png_magic(target)
+        if magic_warn:
+            warnings.append(magic_warn)
+    return warnings
+
+
+def check_status_artifact_floor(
+    manifest: dict[str, Any],
+    submission_dir: Path,
+    status_floor: dict[str, int],
+) -> list[str]:
+    """Only when ``manifest.status == "completed"`` enforce minimum byte sizes
+    for the artifacts in ``status_floor``. A status of partial / blocked /
+    failed implicitly waives these floors (since the agent already admitted
+    the work was incomplete).
+    """
+    if (manifest.get("status") or "completed") != "completed":
+        return []
+    warnings: list[str] = []
+    for rel, floor in status_floor.items():
+        warn = check_artifact_min_bytes(submission_dir, rel, floor)
+        if warn:
+            warnings.append(
+                f"manifest.status='completed' but {warn}"
+            )
+    return warnings
+
+
+def run_artifact_integrity(
+    submission_dir: Path,
+    integrity_checks: list[Any],
+    manifest: dict[str, Any],
+    evidence: dict[str, Any],
+    task_dir: Optional[Path] = None,
+) -> list[str]:
+    """Dispatch every ``IntegrityCheck`` for a task and collect warning strings.
+
+    ``integrity_checks`` is iterated by ``check_type`` and dispatched to the
+    appropriate helper above. Unknown check types are recorded as warnings
+    rather than raising, so a forward-compatible scorer can read older
+    task.json files.
+    """
+    warnings: list[str] = []
+    for check in integrity_checks or []:
+        ctype = getattr(check, "check_type", None)
+        try:
+            if ctype == "artifact_min_bytes":
+                w = check_artifact_min_bytes(
+                    submission_dir, check.path, int(check.min_bytes or 0),
+                )
+                if w:
+                    warnings.append(f"[{check.check_id}] {w}")
+            elif ctype == "template_markers":
+                w = check_template_markers(
+                    submission_dir, check.path, check.forbid_markers or [],
+                )
+                if w:
+                    warnings.append(f"[{check.check_id}] {w}")
+            elif ctype == "markdown_structure":
+                ws = check_markdown_structure(
+                    submission_dir, check.path,
+                    min_h2=int(check.min_h2 or 0),
+                    required_sections=check.required_sections or [],
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "evidence_completeness":
+                ws = check_evidence_completeness(
+                    evidence, check.required_keys or [],
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "citation_pool":
+                if task_dir is None or not check.allowed_pool_file:
+                    warnings.append(
+                        f"[{check.check_id}] citation_pool needs task_dir and allowed_pool_file"
+                    )
+                    continue
+                ws = check_citation_pool(
+                    evidence,
+                    (task_dir / check.allowed_pool_file).resolve(),
+                    citation_field=check.citation_field or "evidence.citations",
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "figures_are_png":
+                figs = _safe_path(
+                    manifest,
+                    check.figures_manifest_path or "outputs.figures",
+                ) or []
+                ws = check_figures_are_png(
+                    submission_dir,
+                    list(figs) if isinstance(figs, list) else [],
+                    min_figure_bytes=int(check.min_figure_bytes or 1024),
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "status_artifact_floor":
+                ws = check_status_artifact_floor(
+                    manifest, submission_dir, check.status_floor or {},
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            else:
+                warnings.append(
+                    f"[{check.check_id}] unknown integrity check_type {ctype!r}"
+                )
+        except Exception as exc:  # pragma: no cover -- defensive
+            warnings.append(
+                f"[{check.check_id}] integrity check raised {type(exc).__name__}: {exc}"
+            )
+    return warnings

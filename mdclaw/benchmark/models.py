@@ -55,6 +55,23 @@ DeterministicCheckType = Literal[
     "metrics_caption_consistency",
 ]
 
+# Artifact-integrity checks run before deterministic checks and produce
+# warnings (and optionally a reject-phase clamp). They look at the bytes of
+# files the agent submitted, not at the JSON values inside them, so they are
+# the layer that catches "manifest says completed but methods.md is the
+# template stub" — a failure mode that string-equality checks miss.
+IntegrityCheckType = Literal[
+    "artifact_min_bytes",
+    "template_markers",
+    "markdown_structure",
+    "evidence_completeness",
+    "citation_pool",
+    "figures_are_png",
+    "status_artifact_floor",
+]
+
+IntegrityPolicy = Literal["warn", "reject"]
+
 
 SCORE_AXES: tuple[ScoreAxis, ...] = (
     "preparation",
@@ -157,10 +174,57 @@ class GroundTruthCheck(BaseModel):
     weight: float = Field(ge=0.0, le=1.0, default=1.0)
 
 
+class IntegrityCheck(BaseModel):
+    """An artifact-level check that verifies the bytes on disk, not JSON values.
+
+    Each check_type interprets the optional fields differently; the
+    integrity layer dispatches on ``check_type``. Failures produce warning
+    strings that the scoring layer either records as ``integrity_warnings``
+    (warn policy) or uses to clamp scores to zero (reject policy).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    check_id: str
+    check_type: IntegrityCheckType
+    weight: float = Field(ge=0.0, le=1.0, default=1.0)
+
+    # artifact_min_bytes: relative path under submission/ and minimum byte size
+    path: Optional[str] = None
+    min_bytes: Optional[int] = None
+
+    # template_markers: substrings that mark unfilled template content
+    forbid_markers: Optional[list[str]] = None
+
+    # markdown_structure: minimum H2 count and required section titles
+    min_h2: Optional[int] = None
+    required_sections: Optional[list[str]] = None
+
+    # evidence_completeness: required keys under evidence_report.evidence
+    required_keys: Optional[list[str]] = None
+
+    # citation_pool: relative path (from task_dir) to the allowed pool JSON
+    allowed_pool_file: Optional[str] = None
+    citation_field: Optional[str] = None  # JSON path inside evidence_report.json
+
+    # figures_are_png: min bytes per figure and which manifest field lists them
+    min_figure_bytes: Optional[int] = None
+    figures_manifest_path: Optional[str] = None
+
+    # status_artifact_floor: floors enforced only when manifest.status == "completed"
+    # (e.g. {"prepared_structure.pdb": 5000, "methods.md": 1024})
+    status_floor: Optional[dict[str, int]] = None
+
+
 class TaskScoring(BaseModel):
     deterministic_checks: list[DeterministicCheck] = Field(default_factory=list)
     ground_truth_checks: list[GroundTruthCheck] = Field(default_factory=list)
     llm_judge_rubrics: list[str] = Field(default_factory=list)
+    integrity_checks: list[IntegrityCheck] = Field(default_factory=list)
+    # "warn" only records warnings; "reject" clamps weighted_total to 0 on any
+    # integrity failure. v1.0.x ships with "warn"; later releases flip to
+    # "reject" once submissions in the wild have been migrated.
+    integrity_policy: IntegrityPolicy = "warn"
 
 
 class TaskReference(BaseModel):

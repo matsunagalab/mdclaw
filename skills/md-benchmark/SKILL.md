@@ -63,7 +63,77 @@ Task short names:
 - `T08_communicate_t4l_dynamics`: Figure/metrics communication.
 - `T09_study_t4l_wt_vs_l99a_methods`: Study methods package.
 
-## Critical Rules
+## Honesty Contract (read first)
+
+The scorer trusts files, not narratives. Fabricated values, template
+placeholders left in place, and `manifest.status="completed"` on work that
+was never actually run are the worst failure modes for this benchmark —
+worse than honestly reporting that the task was not solved.
+
+Hard rules — violating any of these invalidates the submission:
+
+1. **No fabricated numbers.** Every value under `metrics.json`,
+   `evidence_report.json`, and any caption must come from a file the agent
+   actually produced in this run. Do not write "typical Chignolin energy"
+   or library-recalled numbers (a small-model agent has already done this
+   once — a 10 ps NVT scoring run was reduced to hardcoded
+   `final_potential_energy_kcalmol: -1238.92`, with no trajectory on disk).
+   If you have no number, omit the field or set it to `null` and explain
+   in `evidence_report.limitations`.
+2. **No placeholder artifacts.** A 57-byte `methods.md` template, a
+   53-byte stub `prepared_structure.pdb`, or a text file named
+   `figure.png` is a violation. Either replace the placeholder with the
+   real artifact, or remove the file from `manifest.outputs` and drop
+   `manifest.status` to `partial` / `blocked`.
+3. **`manifest.status` reflects reality, not effort:**
+   - `completed` — every required output is real, validated, and produced
+     by this run.
+   - `partial` (× 0.6) — some required outputs are real, others are
+     missing. Use when work was done but incomplete.
+   - `blocked` (× 0) — execution did not run or failed irrecoverably.
+     The scorer returns zero; that is the correct outcome.
+   - `failed` — reserved for **intentional** structured refusal that the
+     task contract asks for (e.g. T02 metal guardrail). Do not use
+     `failed` to mean "my run crashed."
+4. **`evidence_report.limitations` is mandatory** whenever `status` is not
+   `completed`. State exactly what was not run and why.
+
+The scorer re-runs deterministic checks (md5, trajectory load, RMSD
+recompute, caption-vs-metrics consistency) and v1.0.x adds artifact
+integrity checks (file size floors, PNG magic bytes, citation pools,
+template-marker detection). Lying in `metrics.json` produces mismatches
+and a lower score than an honest `blocked`.
+
+## Anti-patterns (do not do this)
+
+Observed real failure modes from agents. Treat these as bugs, not shortcuts:
+
+- **"I'll write my own OpenMM script instead of using MDClaw tools."**
+  Custom one-off scripts silently fail (no output, wrong forcefield/water
+  pairing, missing periodic box). The MDClaw DAG tools
+  (`prepare_complex`, `solvate_structure`, `build_amber_system`,
+  `run_equilibration`, `run_production`) exist so the agent does not have
+  to re-derive these workflows. Use them first — see § 3a below.
+- **"The run was silent / produced `(No output)` — I'll fill in plausible
+  numbers from training data."** Never. A silent run means the run did
+  not happen. Set `manifest.status="blocked"` and record the failure in
+  `decision_log.jsonl` and `evidence_report.limitations`.
+- **"I'll keep the submission template defaults and flip status to
+  `completed`."** Template files (53-byte PDB, 57-byte `methods.md`,
+  default placeholders) are partial-by-design. Either replace them with
+  real outputs or leave `status="partial"`.
+- **"I'll write `figure_rmsd.png` as a text caption file."** Figures must
+  be real raster/vector image files. The v1.0.x integrity layer checks
+  PNG magic bytes; a text file with a `.png` extension is rejected.
+- **"T06/T07/T09 are plan-only, so I can answer purely from memory."**
+  Even plan-only tasks require the answer to be grounded in the public
+  inputs and citation pool listed in `input/references.json`. Record
+  citations under `evidence_report.evidence.citations`; the scorer
+  cross-checks them against the allowed pool.
+
+## Other Critical Rules
+
+(The Honesty Contract above takes precedence over everything in this section.)
 
 - Before producing a submission, read `task.json` and the task's `input/`
   directory only. **Do not read `truth/`, `scorer/`, or `expected/`.**
@@ -71,13 +141,10 @@ Task short names:
   on the files listed in `manifest.json` plus the task contract.
 - Curator-fixed inputs: every task ships its own concrete PDB and config
   files in `input/`. Do not select different cases.
-- Honesty first: only set boolean success metrics to `true` when the
-  artifacts support them. If work was not run or is uncertain, use
-  `manifest.status="partial"` (× 0.6 multiplier) or `"blocked"` (zero) and
-  explain in `evidence_report.limitations`.
-- For T02-style structured refusal: set `manifest.status="failed"` and emit
-  `metrics.preparation.guardrail_code` from the allowed set; that earns full
-  credit when the truth file confirms the expected guardrail.
+- For T02-style **intentional** structured refusal: set
+  `manifest.status="failed"` and emit `metrics.preparation.guardrail_code`
+  from the allowed set; that earns full credit when the expected guardrail
+  matches.
 - The scorer re-runs computations (md5, trajectory load, RMSD recompute,
   caption ↔ metrics consistency). Submitted JSON values are
   cross-validated; they are not trusted blindly.
@@ -144,9 +211,44 @@ directory.
      --model-name <llm-or-agent-model>
    ```
 
-3. For each task, read `task.json` + `input/`, do the work, write
+3. For each task, read `task.json` + `input/`, then **do the actual work**
+   using the canonical MDClaw pipeline (next subsection). Write
    `submission/` under
    `benchmark_runs/<run_id>/tasks/<task_id>/submission/`.
+
+### 3a. Canonical MDClaw pipeline (use before writing custom code)
+
+Before reaching for a hand-written OpenMM/GROMACS script, run the MDClaw
+DAG tools. They produce the artifacts the scorer is looking for and apply
+the enforced forcefield-water guardrails. The standard explicit-water
+chain is:
+
+```bash
+# Create the job (one physical system per job_dir)
+mdclaw create_node --job-dir <run_task_dir>/job --node-id prep_001 \
+  --source-file <input/structure.pdb>
+
+# Pipeline (each node writes artifacts the agent then references in submission/)
+mdclaw --job-dir <jd> --node-id prep_001 prepare_complex --select-chains A
+mdclaw --job-dir <jd> --node-id solv_001 solvate_structure --water-model tip3p
+mdclaw --job-dir <jd> --node-id topo_001 build_amber_system \
+  --forcefield ff14SB --water-model tip3p
+mdclaw --job-dir <jd> --node-id eq_001  run_equilibration  --total-time-ns 0.1
+mdclaw --job-dir <jd> --node-id prod_001 run_production    --simulation-time-ns 0.01
+```
+
+Map node outputs into the submission:
+
+- `prep_001/artifacts/merged.pdb` → `submission/prepared_structure.pdb` (T03).
+- `prod_001/artifacts/trajectory.dcd` + `topo_001/artifacts/topology.pdb`
+  → list under `manifest.outputs.trajectories` and
+  `manifest.outputs.topology` (T01/T04/T05).
+- Real energies / temperatures from the run → `metrics.json`.
+
+Detailed runbooks live in `skills/md-prepare/SKILL.md`,
+`skills/md-equilibration/SKILL.md`, `skills/md-production/SKILL.md`.
+Only write a custom script if the canonical pipeline cannot represent
+the task — and record the justification in `decision_log.jsonl`.
 
 4. Validate before scoring:
 
@@ -174,6 +276,72 @@ directory.
 
    `runs.jsonl` and `summaries.jsonl` are appended with last-write-wins
    semantics on `run_id`.
+
+## Pre-submission Self-check
+
+Run this checklist **before** flipping `manifest.status` to `completed` and
+calling `score_benchmark_submission`. If any item fails, downgrade to
+`partial` or `blocked` rather than ignoring it.
+
+For every task:
+
+- [ ] `manifest.json` references only files that actually exist on disk
+  under `submission/`.
+- [ ] No file under `submission/` is the template default. Sanity-check
+  sizes: a real `prepared_structure.pdb` is typically > 5 KB; a real
+  `methods.md` is typically > 1 KB; a real figure (`.png`/`.svg`) is not
+  a text file.
+- [ ] Every numeric field in `metrics.json` traces back to a file the
+  agent produced in this run (not training-data recall, not a value
+  copied from another task's example).
+- [ ] If `manifest.status != "completed"`,
+  `evidence_report.limitations` lists what was not run and why.
+
+Additionally for execution tasks (T01/T04/T05):
+
+- [ ] `manifest.outputs.trajectories` and `manifest.outputs.topology`
+  point at files that `mdtraj.load()` can open. The scorer reloads them.
+- [ ] `metrics.execution.no_nan` is `true` only after the agent actually
+  ran a NaN scan over the trajectory.
+
+For T03 (ligand preparation): `prepared_structure.pdb` contains both the
+protein and the ligand with reasonable coordinates.
+
+For T06 / T07 (scientific answer): `evidence_report.evidence.citations`
+draws from `input/references.json` (`allowed_source_pools` + `primary_reference.doi`).
+The v1.0.x integrity layer cross-checks this pool.
+
+For T08 / T09 (communication): every caption number appears in
+`metrics.json` with the same value, and `methods.md` has at least two
+H2 sections (`## Methods`, `## Limitations`).
+
+`mdclaw validate_benchmark_submission` catches some — but not all — of
+these. Validation success does not mean honesty.
+
+## Failure Recovery
+
+When a pipeline step fails (silent OpenMM, missing forcefield, OOM,
+container error, ligand parameterization refused, …):
+
+1. **Do not** fabricate metrics or fall back to "typical values."
+2. Capture the failure in `decision_log.jsonl`:
+
+   ```json
+   {"event": "execution_failed", "node": "prod_001",
+    "stderr_tail": "...", "next_action": "mark blocked"}
+   ```
+
+3. Set `manifest.status` according to what is actually on disk:
+   - Nothing usable → `blocked`.
+   - Some real artifacts (prep succeeded, prod failed) → `partial`,
+     and list only the real artifacts under `manifest.outputs`.
+4. Populate `evidence_report.limitations` with a one-line root cause and
+   what would be needed to recover (e.g. "OpenMM CUDA platform
+   unavailable in container; would re-run with `--platform CPU`").
+5. Re-run `validate_benchmark_submission` to confirm the partial / blocked
+   manifest is internally consistent, then score. A `blocked` submission
+   with honest evidence scores zero — which is the correct outcome, not
+   something to hide.
 
 ## Pilot tasks (v1.0)
 

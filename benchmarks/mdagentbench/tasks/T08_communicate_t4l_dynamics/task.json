@@ -43,7 +43,28 @@
       "caption_to_data_consistency",
       "overclaim_detection",
       "figure_selection"
-    ]
+    ],
+    "integrity_checks": [
+      {
+        "check_id": "figures_are_real_png",
+        "check_type": "figures_are_png",
+        "figures_manifest_path": "outputs.figures",
+        "min_figure_bytes": 1024
+      },
+      {
+        "check_id": "evidence_report_real_bytes",
+        "check_type": "artifact_min_bytes",
+        "path": "evidence_report.json",
+        "min_bytes": 400
+      },
+      {
+        "check_id": "evidence_report_not_template",
+        "check_type": "template_markers",
+        "path": "evidence_report.json",
+        "forbid_markers": ["Template placeholder", "Replace before scoring", "Replace with"]
+      }
+    ],
+    "integrity_policy": "warn"
   },
   "task_intent": "Evidence-communication test: produce auditable T4 lysozyme dynamics figures whose captions match the submitted metrics. Run brief MD on T4 lysozyme WT (or analyze a trajectory produced during this task), compute backbone RMSD vs. starting frame, per-residue Cα RMSF, and CA-CA contact frequency, then emit at least 3 figures with captions whose numeric claims match metrics.json within 2%.",
   "references": [
