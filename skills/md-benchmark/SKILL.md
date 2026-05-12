@@ -1,5 +1,5 @@
 ---
-name: MD Benchmark
+name: md-benchmark
 description: "Run MDAgentBench tasks with prompt-driven MD agents and deterministic scorer commands. Use for benchmark runs, agent submissions, and comparing MD agents."
 ---
 

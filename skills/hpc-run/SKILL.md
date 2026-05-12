@@ -1,5 +1,5 @@
 ---
-name: HPC Run
+name: hpc-run
 description: "SLURM-based HPC submission for MDClaw workflow nodes. Handles cluster inspection, single-node and job-array submission, status sync to the DAG, and production restart extensions."
 ---
 

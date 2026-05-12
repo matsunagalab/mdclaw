@@ -1,5 +1,5 @@
 ---
-name: MD Analyze
+name: md-analyze
 description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Routes concat, metric, and troubleshooting workflows through focused runbooks."
 ---
 

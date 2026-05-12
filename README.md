@@ -12,12 +12,35 @@ It works with Claude Code, Cursor, Windsurf, or any AI coding assistant.
 
 ### Install
 
+Claude Code plugin:
+
 ```
 /plugin marketplace add matsunagalab/mdclaw
 /plugin install mdclaw@mdclaw
 ```
 
 The container (~4.6 GB) downloads automatically on first session start.
+
+Pi:
+
+```bash
+pi install git:github.com/matsunagalab/mdclaw@main
+```
+
+OpenCode, Codex, and other repo-local agents:
+
+```bash
+git clone https://github.com/matsunagalab/mdclaw
+cd mdclaw
+scripts/install-agent-skills.sh
+scripts/mdclaw-doctor.sh
+```
+
+`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` entries for
+portable Agent Skills discovery. Use `scripts/install-agent-skills.sh --copy`
+instead if your agent does not follow symlinks. `scripts/mdclaw-doctor.sh`
+checks the CLI runtime, OpenMM platforms, AmberTools executables, container
+runtime detection, and skill installation.
 
 **Requirements:**
 - Container runtime: Singularity/Apptainer (HPC) or Docker (macOS/desktop)
@@ -44,12 +67,16 @@ The session-start hook downloads the container automatically:
 
 For a generic harness without plugin support:
 
-1. Put this repository where the harness can read `skills/`.
+1. Put this repository where the harness can read `skills/`, or run
+   `scripts/install-agent-skills.sh` so it can read `.agents/skills/`.
 2. Add `bin/mdclaw` to `PATH`, or install the Python package and expose the
    `mdclaw` CLI.
 3. Use one runtime: conda (`environment.yml`), SIF (`MDCLAW_SIF`), or Docker
    (`MDCLAW_DOCKER_IMAGE`). If slash commands are unavailable, have the
    harness read the relevant `skills/<name>/SKILL.md` directly.
+
+See `docs/agents/deployment.md` for Pi, OpenCode, Codex, Claude Code, and
+generic Agent Skills deployment notes.
 
 ### Skills
 

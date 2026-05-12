@@ -1,5 +1,5 @@
 ---
-name: MD Equilibration
+name: md-equilibration
 description: "Equilibration (standard staged minimization -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and writes restart artifacts for production handoff."
 ---
 

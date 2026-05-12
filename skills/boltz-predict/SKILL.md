@@ -1,5 +1,5 @@
 ---
-name: Boltz Predict
+name: boltz-predict
 description: "AI-driven protein structure prediction using Boltz-2 for single proteins, multimers, and protein-ligand complexes."
 ---
 
@@ -197,4 +197,3 @@ If they want to continue to MD simulation:
 | PubChem lookup fails | Ask user to provide SMILES directly |
 | Boltz-2 prediction fails | Check: protein sequences valid, SMILES validated, conda env activated |
 | MSA file not found | Ask user to verify file path or use MSA server (default) |
-

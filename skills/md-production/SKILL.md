@@ -1,5 +1,5 @@
 ---
-name: MD Production
+name: md-production
 description: "Production molecular dynamics simulation using MDClaw CLI tools and OpenMM. Runs MD from an equilibrated state, with HMR, restart, and HPC submission support."
 ---
 
