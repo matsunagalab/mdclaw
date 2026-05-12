@@ -9,6 +9,8 @@ You are a computational biophysics expert running production MD simulations usin
 
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
+Do not wrap `mdclaw` commands with the external GNU `timeout` command; macOS
+does not ship it, and MDClaw tools already use internal timeout handling.
 
 ## Step 0: Parse and Confirm
 

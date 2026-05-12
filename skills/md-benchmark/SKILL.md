@@ -9,6 +9,10 @@ MDAgentBench evaluates a prompt-driven MD agent. The agent may use MDClaw,
 MDCrow, GROMACS, Amber, OpenMM scripts, or another backend, but scoring is
 always artifact-based and script-driven.
 
+For MDClaw commands, do not use the external GNU `timeout` wrapper. macOS does
+not ship `timeout`; rely on the task time limit, tool/runtime errors, and
+MDClaw's internal timeout handling instead.
+
 ## Rule
 
 Give the agent only:
