@@ -13,6 +13,10 @@ All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON 
 ## Step 0: Parse and Confirm
 
 Extract parameters from the user's request and present a summary.
+If the user specifies a duration in ns/ps/time units, do **not** convert it to
+steps yourself. Use `nvt_time_ns` / `npt_time_ns` in node conditions and
+`--nvt-time-ns` / `--npt-time-ns` when invoking `run_equilibration`. The tool
+will convert durations to steps using the actual `timestep_fs`.
 
 | Parameter | Value |
 |-----------|-------|
@@ -40,18 +44,22 @@ warmup before normal NVT.
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids topo_001 \
   --label "300K" \
-  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0}'
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
+                 "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
 ```
 
 For replicates or different conditions:
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids topo_001 --label "310K" \
-  --conditions '{"temperature_kelvin": 310, "pressure_bar": 1.0}'
+  --conditions '{"temperature_kelvin": 310, "pressure_bar": 1.0,
+                 "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids topo_001 --label "300K_seed42" \
-  --conditions '{"temperature_kelvin": 300, "random_seed": 42}'
+  --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
+                 "nvt_time_ns": 1.0, "npt_time_ns": 1.0,
+                 "random_seed": 42}'
 ```
 
 ## Multi-Stage Chaining (NPT → NVT → NPT etc.)
@@ -71,21 +79,21 @@ introduced as needed.
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids topo_001 --label "stage1_npt_compress" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
-                 "nvt_steps": 0, "npt_steps": 50000,
+                 "nvt_time_ns": 0, "npt_time_ns": 0.2,
                  "restraint_atoms": "heavy", "restraint_force_constant": 500.0}'
 
 # Stage 2: NVT thermalization with weaker CA restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids eq_001 --label "stage2_nvt_thermalize" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 0,
-                 "nvt_steps": 50000, "npt_steps": 0,
+                 "nvt_time_ns": 0.2, "npt_time_ns": 0,
                  "restraint_atoms": "CA", "restraint_force_constant": 50.0}'
 
 # Stage 3: NPT density relaxation, no restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
   --parent-node-ids eq_002 --label "stage3_npt_relax" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
-                 "nvt_steps": 0, "npt_steps": 50000,
+                 "nvt_time_ns": 0, "npt_time_ns": 0.2,
                  "restraint_force_constant": 0.0}'
 ```
 

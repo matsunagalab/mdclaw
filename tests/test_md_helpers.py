@@ -14,8 +14,10 @@ from mdclaw.md_simulation_server import (
     _compute_step_plan,
     _dcd_has_valid_header,
     _detect_ensemble_mismatch,
+    _equilibration_steps_from_time_ns,
     _node_previously_failed,
     _resolve_dcd_append_mode,
+    _resolve_equilibration_stage_steps,
     run_production,
 )
 from mdclaw._node import (
@@ -97,6 +99,58 @@ class TestComputeStepPlan:
     ):
         plan = _compute_step_plan(0.0, timestep_fs, current_step)
         assert plan["start_time_ns"] == pytest.approx(expected_ns)
+
+
+class TestEquilibrationTimeResolution:
+    """Covers user-facing equilibration duration flags.
+
+    Weak agents should not need to convert ns to MD steps themselves; the
+    tool resolves the requested time against the active timestep.
+    """
+
+    def test_time_ns_uses_four_fs_hmr_default_arithmetic(self):
+        assert _equilibration_steps_from_time_ns(0.1, 4.0) == 25_000
+
+    def test_time_ns_uses_two_fs_non_hmr_arithmetic(self):
+        assert _equilibration_steps_from_time_ns(0.1, 2.0) == 50_000
+
+    def test_stage_resolution_prefers_time_flag_without_agent_math(self):
+        steps, requested_time_ns, effective_time_ns = _resolve_equilibration_stage_steps(
+            stage_name="nvt",
+            steps=None,
+            time_ns=0.1,
+            default_steps=250_000,
+            timestep_fs=4.0,
+        )
+        assert steps == 25_000
+        assert requested_time_ns == pytest.approx(0.1)
+        assert effective_time_ns == pytest.approx(0.1)
+
+    def test_stage_resolution_preserves_legacy_default_steps(self):
+        steps, requested_time_ns, effective_time_ns = _resolve_equilibration_stage_steps(
+            stage_name="nvt",
+            steps=None,
+            time_ns=None,
+            default_steps=250_000,
+            timestep_fs=4.0,
+        )
+        assert steps == 250_000
+        assert requested_time_ns is None
+        assert effective_time_ns == pytest.approx(1.0)
+
+    def test_stage_resolution_rejects_time_and_steps_together(self):
+        with pytest.raises(ValueError, match="specify either nvt_time_ns or nvt_steps"):
+            _resolve_equilibration_stage_steps(
+                stage_name="nvt",
+                steps=50_000,
+                time_ns=0.1,
+                default_steps=250_000,
+                timestep_fs=4.0,
+            )
+
+    def test_stage_resolution_rejects_sub_step_positive_time(self):
+        with pytest.raises(ValueError, match="shorter than one integration step"):
+            _equilibration_steps_from_time_ns(1e-12, 4.0)
 
 
 class TestDcdHasValidHeader:
@@ -757,6 +811,70 @@ class TestRunEquilibrationFailNodeCoverage:
         assert result.get("code") == "restart_from_unavailable"
         eq_node = read_node(str(jd), "eq_002")
         assert eq_node["status"] == "failed", eq_node["status"]
+
+
+class TestRunEquilibrationTimeFlags:
+    """Public API guards for weak-agent-safe equilibration durations."""
+
+    def test_rejects_time_and_steps_for_same_stage_before_openmm(self):
+        from mdclaw.md_simulation_server import run_equilibration
+
+        result = run_equilibration(
+            system_xml_file="missing.xml",
+            topology_pdb_file="missing.pdb",
+            nvt_time_ns=0.1,
+            nvt_steps=50_000,
+        )
+        assert result["success"] is False
+        assert result["code"] == "equilibration_time_step_conflict"
+        assert "nvt_time_ns or nvt_steps" in result["message"]
+
+    def test_declared_time_conditions_validate_against_resolved_steps(
+        self, tmp_path,
+    ):
+        """Time conditions are checked against resolved runtime values.
+
+        The call stops at XML parsing, after node context validation, so the
+        test stays light while still covering the DAG condition contract.
+        """
+        from mdclaw._node import create_node
+        from mdclaw.md_simulation_server import run_equilibration
+
+        jd = tmp_path / "job"
+        jd.mkdir()
+        TestRunEquilibrationFailNodeCoverage()._seed_minimal_dag(
+            jd, complete_topo=True,
+        )
+        topo_artifacts = jd / "nodes" / "topo_001" / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        (topo_artifacts / "system.xml").write_text("<placeholder/>")
+        (topo_artifacts / "topology.pdb").write_text("REMARK\nEND\n")
+        (topo_artifacts / "state.xml").write_text("<placeholder/>")
+        create_node(
+            str(jd),
+            "eq",
+            parent_node_ids=["topo_001"],
+            conditions={
+                "temperature_kelvin": 300.0,
+                "pressure_bar": 1.0,
+                "nvt_time_ns": 0.1,
+                "npt_time_ns": 0.1,
+                "nvt_steps": 25_000,
+                "npt_steps": 25_000,
+            },
+        )
+
+        result = run_equilibration(
+            job_dir=str(jd),
+            node_id="eq_001",
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_time_ns=0.1,
+            npt_time_ns=0.1,
+        )
+        assert result["success"] is False
+        assert result.get("code") != "node_execution_context_invalid"
+        assert not any("condition" in error for error in result.get("errors", []))
 
 
 class TestXMLSystemContractValidation:

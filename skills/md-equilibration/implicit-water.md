@@ -45,7 +45,8 @@ production settings.
 mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
-  --implicit-solvent GBn2
+  --implicit-solvent GBn2 \
+  --nvt-time-ns <NVT_NS>
 ```
 
 `system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor.
@@ -62,8 +63,14 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 - NVT only: implicit solvent has no periodic box, so no barostat
 - `--implicit-solvent` is required for GB simulations; omitting it is vacuum,
   not implicit solvent
-- NVT default length: 250000 steps at 4 fs (1 ns). Override with
-  `--nvt-steps <N>` (e.g. `--nvt-steps 2500` for a 10 ps sanity run).
+- NVT default length: 1 ns. If the user gives an equilibration duration,
+  pass it as `--nvt-time-ns <ns>` and keep `--pressure-bar 0`.
+- Do not convert ns/ps to steps in the agent. The tool converts time to
+  steps using the active `timestep_fs` (default 4 fs with HMR).
+- Low-level override: use `--nvt-steps <N>` only when the user explicitly
+  asks for step counts. Do not pass both `--nvt-time-ns` and `--nvt-steps`.
+- Do not request a positive `--npt-time-ns` for implicit solvent; NPT is not
+  applicable when `--pressure-bar 0`.
 - Positional restraints prevent structural collapse during heating.
   `--restraint-atoms` accepts:
   - `CA` (default): alpha carbons only

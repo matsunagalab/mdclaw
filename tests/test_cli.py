@@ -539,6 +539,41 @@ class TestHPCParameters:
         ])
         assert args_default.restart_from is None
 
+    def test_equilibration_time_flags(self):
+        """run_equilibration exposes duration flags so agents do not
+        convert ns to steps themselves."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_equilibration",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
+            "--nvt-time-ns", "0.1",
+            "--npt-time-ns", "0.1",
+        ])
+        assert args.nvt_time_ns == 0.1
+        assert args.npt_time_ns == 0.1
+        assert args.nvt_steps is None
+        assert args.npt_steps is None
+
+    def test_equilibration_time_flags_in_list_json(self):
+        from mdclaw._cli import _discover_tools, _tool_list_json
+
+        tools = _discover_tools()
+        payload = _tool_list_json(tools)
+        run_eq = next(
+            tool for tool in payload["tools"]
+            if tool["name"] == "run_equilibration"
+        )
+        flags = {param["cli_flag"]: param for param in run_eq["parameters"]}
+        assert "--nvt-time-ns" in flags
+        assert "--npt-time-ns" in flags
+        assert flags["--nvt-time-ns"]["type"] == "Optional[float]"
+        assert flags["--npt-time-ns"]["type"] == "Optional[float]"
+
     def test_hmr_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

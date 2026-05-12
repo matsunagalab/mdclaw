@@ -103,7 +103,10 @@ skill examples.
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
 - `run_equilibration(...)`: staged minimization, warmup, NVT, and optional NPT.
-  In node mode topology inputs resolve from the `topo` ancestor.
+  In node mode topology inputs resolve from the `topo` ancestor. Agents should
+  prefer `nvt_time_ns` / `npt_time_ns` (CLI: `--nvt-time-ns` /
+  `--npt-time-ns`) for user-facing duration requests; explicit
+  `nvt_steps` / `npt_steps` remain available for low-level reproducibility.
 - `run_production(...)`: production MD with HMR, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata.
 

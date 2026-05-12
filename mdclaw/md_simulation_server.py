@@ -849,6 +849,47 @@ def _compute_step_plan(
     }
 
 
+def _equilibration_steps_from_time_ns(time_ns: float, timestep_fs: float) -> int:
+    """Convert an equilibration stage duration to an integer step count."""
+    if time_ns < 0:
+        raise ValueError("time_ns must be non-negative")
+    if timestep_fs <= 0:
+        raise ValueError("timestep_fs must be positive")
+    steps = int(round(time_ns * 1_000_000 / timestep_fs))
+    if time_ns > 0 and steps <= 0:
+        raise ValueError("time_ns is shorter than one integration step")
+    return steps
+
+
+def _resolve_equilibration_stage_steps(
+    *,
+    stage_name: str,
+    steps: Optional[int],
+    time_ns: Optional[float],
+    default_steps: int,
+    timestep_fs: float,
+) -> tuple[int, Optional[float], float]:
+    """Resolve user-facing time/step inputs for one equilibration stage.
+
+    Returns ``(resolved_steps, requested_time_ns, effective_time_ns)``.
+    ``requested_time_ns`` is only populated when the caller used a duration
+    flag; ``effective_time_ns`` always reflects the resolved step count at
+    the active timestep.
+    """
+    if steps is not None and time_ns is not None:
+        raise ValueError(
+            f"{stage_name}: specify either {stage_name}_time_ns or "
+            f"{stage_name}_steps, not both"
+        )
+    if time_ns is not None:
+        resolved_steps = _equilibration_steps_from_time_ns(time_ns, timestep_fs)
+        return resolved_steps, float(time_ns), resolved_steps * timestep_fs / 1_000_000
+    resolved_steps = default_steps if steps is None else steps
+    if resolved_steps < 0:
+        raise ValueError(f"{stage_name}_steps must be non-negative")
+    return resolved_steps, None, resolved_steps * timestep_fs / 1_000_000
+
+
 def _record_production_node_result(
     *,
     result: dict,
@@ -901,8 +942,10 @@ def run_equilibration(
     state_xml_file: Optional[str] = None,
     temperature_kelvin: float = 300.0,
     pressure_bar: Optional[float] = 1.0,
-    nvt_steps: int = 250000,
-    npt_steps: int = 250000,
+    nvt_steps: Optional[int] = None,
+    npt_steps: Optional[int] = None,
+    nvt_time_ns: Optional[float] = None,
+    npt_time_ns: Optional[float] = None,
     restraint_atoms: str = "CA",
     restraint_force_constant: float = 100.0,
     name: Optional[str] = None,
@@ -958,12 +1001,19 @@ def run_equilibration(
             - > 0 (e.g., 1.0): NVT + NPT equilibration (for NPT production)
             - 0 or None: NVT only (for NVT production or implicit solvent)
             Default: 1.0
-        nvt_steps: Number of NVT heating steps (default: 250000 = 1 ns at 4 fs).
-            Override with e.g. `--nvt-steps 2500` (10 ps) for a fast
-            sanity run.
-        npt_steps: Number of NPT equilibration steps (default: 250000 = 1 ns at 4 fs).
-            Only used when pressure_bar > 0; ignored otherwise. Override
-            with e.g. `--npt-steps 5000` (20 ps) for a fast sanity run.
+        nvt_steps: Number of NVT heating steps. Low-level explicit-step
+            override; mutually exclusive with nvt_time_ns. Defaults to
+            250000 (= 1 ns at 4 fs) when neither is specified.
+        npt_steps: Number of NPT equilibration steps. Low-level explicit-step
+            override; mutually exclusive with npt_time_ns. Defaults to
+            250000 (= 1 ns at 4 fs) when neither is specified, and is set
+            to 0 when NPT is not applicable.
+        nvt_time_ns: User-facing NVT duration in ns. Prefer this for
+            natural-language requests such as "0.1 ns NVT"; the tool
+            converts it to steps using timestep_fs.
+        npt_time_ns: User-facing NPT duration in ns. Prefer this for
+            natural-language requests such as "0.1 ns NPT"; the tool
+            converts it to steps using timestep_fs.
         restraint_atoms: Atom selection for restraints. Options:
             - "CA": alpha carbons only (default, recommended)
             - "backbone": backbone heavy atoms (N, CA, C, O)
@@ -1018,6 +1068,50 @@ def run_equilibration(
           - warnings: list[str]
     """
     pressure_bar = _effective_pressure_bar(pressure_bar, implicit_solvent)
+
+    try:
+        (
+            nvt_steps,
+            requested_nvt_time_ns,
+            effective_nvt_time_ns,
+        ) = _resolve_equilibration_stage_steps(
+            stage_name="nvt",
+            steps=nvt_steps,
+            time_ns=nvt_time_ns,
+            default_steps=250000,
+            timestep_fs=timestep_fs,
+        )
+        (
+            npt_steps,
+            requested_npt_time_ns,
+            effective_npt_time_ns,
+        ) = _resolve_equilibration_stage_steps(
+            stage_name="npt",
+            steps=npt_steps,
+            time_ns=npt_time_ns,
+            default_steps=250000,
+            timestep_fs=timestep_fs,
+        )
+    except ValueError as exc:
+        return create_validation_error(
+            "equilibration_time",
+            str(exc),
+            expected=(
+                "Use --nvt-time-ns/--npt-time-ns for durations, or "
+                "--nvt-steps/--npt-steps for explicit step counts, but do not "
+                "set both for the same stage"
+            ),
+            actual=(
+                f"nvt_time_ns={nvt_time_ns!r}, nvt_steps={nvt_steps!r}, "
+                f"npt_time_ns={npt_time_ns!r}, npt_steps={npt_steps!r}, "
+                f"timestep_fs={timestep_fs!r}"
+            ),
+            hints=[
+                "For a user-facing duration like 0.1 ns NVT, pass only --nvt-time-ns 0.1.",
+                "For explicit step counts, remove the matching time flag.",
+            ],
+            code="equilibration_time_step_conflict",
+        )
 
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
@@ -1130,6 +1224,10 @@ def run_equilibration(
                 "pressure_bar": pressure_bar,
                 "nvt_steps": nvt_steps,
                 "npt_steps": npt_steps,
+                "nvt_time_ns": effective_nvt_time_ns,
+                "npt_time_ns": effective_npt_time_ns,
+                "requested_nvt_time_ns": requested_nvt_time_ns,
+                "requested_npt_time_ns": requested_npt_time_ns,
                 "restraint_atoms": restraint_atoms,
                 "restraint_force_constant": restraint_force_constant,
                 "is_membrane": is_membrane,
@@ -1173,6 +1271,11 @@ def run_equilibration(
         "checkpoint_file": None,
         "nvt_steps": 0,
         "npt_steps": 0,
+        "requested_nvt_time_ns": requested_nvt_time_ns,
+        "requested_npt_time_ns": requested_npt_time_ns,
+        "effective_nvt_time_ns": effective_nvt_time_ns,
+        "effective_npt_time_ns": effective_npt_time_ns,
+        "timestep_fs": timestep_fs,
         "restraint_atoms": restraint_atoms,
         "restraint_count": 0,
         "relaxation_protocol": None,
@@ -1301,6 +1404,14 @@ def run_equilibration(
                    and not implicit_solvent and is_periodic)
         if not run_npt:
             npt_steps = 0
+            effective_npt_time_ns = 0.0
+            result["npt_steps"] = 0
+            result["effective_npt_time_ns"] = 0.0
+            if requested_npt_time_ns is not None and requested_npt_time_ns > 0:
+                result["warnings"].append(
+                    "npt_time_ns was provided, but NPT is disabled for this "
+                    "equilibration context; no NPT steps will run."
+                )
             if implicit_solvent:
                 logger.info("Implicit solvent: NVT equilibration only")
             elif not pressure_bar or pressure_bar == 0:
@@ -1812,6 +1923,11 @@ def run_equilibration(
                     "platform": result.get("platform"),
                     "nvt_steps": nvt_steps,
                     "npt_steps": npt_steps,
+                    "requested_nvt_time_ns": requested_nvt_time_ns,
+                    "requested_npt_time_ns": requested_npt_time_ns,
+                    "effective_nvt_time_ns": effective_nvt_time_ns,
+                    "effective_npt_time_ns": effective_npt_time_ns,
+                    "timestep_fs": timestep_fs,
                     "restraint_atoms": restraint_atoms,
                     "restraint_count": result.get("restraint_count"),
                     "temperature_kelvin": temperature_kelvin,
