@@ -19,7 +19,7 @@ dependencies = [
     "parmed>=4.3.0",
 
     # Data models & validation
-    "pydantic>=2.12.3",
+    "pydantic>=2.4",
 
     # HTTP & networking
     "httpx>=0.28.1",
