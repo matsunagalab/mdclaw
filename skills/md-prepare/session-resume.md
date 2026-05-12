@@ -10,6 +10,10 @@ To resume a preparation workflow:
    before deciding whether to retry or branch.
 5. Preserve `progress.json.params.execution_mode`.
 
+Do not delete node directories or rerun the same prep/solv/topo node with
+changed molecular contents. Preserve evidence and create a fresh node from the
+nearest valid completed ancestor.
+
 If a `topo` node is `running`, do not launch another topology build from the
 same parent just because the CLI has been quiet. Read
 `nodes/<topo_id>/node.json` and check:

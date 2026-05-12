@@ -22,8 +22,22 @@ Use `inspect_molecules` output to build ligand selections:
   `--select-chains`.
 - Pass ligand `chains[].unique_id` values to `--include-ligand-ids`; the first
   field of `unique_id` is `author_chain`, not the label chain.
-- For "chain A with ligand" in 1AKE-like mmCIF files, AP5 can be
-  `author_chain=A`, `chain_id=C`, `unique_id=A:AP5:215`; use:
+
+Ligand-free systems:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --select-chains A \
+  --include-types protein nucleic glycan \
+  --no-process-ligands
+```
+
+Do not express "no ligands" as `--include-ligand-ids []` or as a bare
+`--include-ligand-ids` flag. Omit the flag entirely unless one or more ligand
+IDs are being included.
+
+For "chain A with ligand" in 1AKE-like mmCIF files, AP5 can be
+`author_chain=A`, `chain_id=C`, `unique_id=A:AP5:215`; use:
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
@@ -42,3 +56,11 @@ Important outputs:
 
 If ligand preparation returns a blocking structured result, do not retry the
 same command. Follow `workflow_recommendation.options`.
+
+After `prepare_complex` succeeds, verify the completed node before solvation:
+
+- If the user requested no ligand, confirm the prep node has no
+  `artifacts.ligand_params`.
+- If the wrong ligand or chain choice was used, create a new prep node from
+  the same source ancestor. Do not rerun the existing prep node with changed
+  molecular contents.

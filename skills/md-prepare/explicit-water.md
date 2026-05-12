@@ -45,6 +45,12 @@ mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
 `pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
 To override, pass `--pdb-file` explicitly.
 
+Before topology, do a quick request-match check: for ligand-free systems,
+the prep node must not carry `ligand_params`, and the `solvated_pdb` must not
+contain source ligands. If either check fails, branch from the valid ancestor;
+do not rerun the same node with changed inputs. Prefer node artifacts and PDB
+contents over stale prose fields in logs or metadata.
+
 After solvation, run a local feasibility preflight before topology/eq/prod if
 the next stages will run on this machine:
 
@@ -94,6 +100,13 @@ mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
 For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
 instead of `--no-is-membrane`.
+
+If topology output is quiet, inspect `nodes/<topo_id>/node.json` and report
+`metadata.topology_build_stage`, `metadata.topology_build_stage_updated_at`,
+and `metadata.topology_build_stage_history`. Long OPC/explicit-water stages
+such as `modeller_prepare`, `system_generator_create_system`, and
+`initial_minimization` can be slow on CPU; retry or branch only after the node
+has failed, completed, or the user explicitly abandons it.
 
 `build_amber_system` is the curated Amber → OpenMM system builder. It runs
 the prepared PDB through OpenFF Pablo, applies the resolved Amber XML

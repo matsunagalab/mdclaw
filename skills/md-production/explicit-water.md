@@ -45,6 +45,10 @@ wall-time guarantee. If the preflight returns `slow_on_cpu` or
 `not_recommended`, use `/hpc-run` or make an explicit short smoke-test choice
 instead of silently waiting on local CPU.
 
+Platform policy: do not pass `--platform CPU` unless the user explicitly asks
+for CPU-only debugging. Prefer the tool default `--platform auto`; if an
+explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
+
 ```bash
 mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
   --simulation-time-ns <user_specified> \
@@ -89,8 +93,11 @@ Inside the job script, omit `--system-xml-file`, `--topology-pdb-file`, `--state
 ## GPU / HMR
 
 ```bash
-# GPU selection
+# Usually omit --platform and let MDClaw/OpenMM choose the fastest available.
+
+# Explicit GPU selection, only when needed
 --platform CUDA --device-index "0"
+--platform OpenCL --device-index "0"
 
 # Disable HMR (not recommended)
 --no-hmr --timestep-fs 2.0
@@ -117,7 +124,7 @@ read `skills/md-production/restart.md`.
 |---|---|---|
 | SHAKE constraint failure | Bad geometry | Reduce to 2 fs, or re-prepare |
 | NaN energies | Clashes | Re-equilibrate or re-prepare |
-| Slow performance | GPU not detected, or explicit-water PME intentionally running on CPU | Check `inspect_openmm_platforms`; use `--platform CUDA` when available or hand off to `/hpc-run` |
+| Slow performance | GPU not detected, or explicit-water PME running on CPU | Check `inspect_openmm_platforms`; omit `--platform`, use `--platform CUDA` / `--platform OpenCL` when available, or hand off to `/hpc-run` |
 | Barostat instability | Temperature mismatch | Match barostat and integrator T |
 | `Ensemble switch:` warning in `result["warnings"]` | NPT-saved eq state used in an NVT prod context, or vice versa | Safe to ignore — the loader transfers only positions/velocities/box, so barostat parameters are dropped (NPT → NVT) or the new barostat starts in its default state and re-equilibrates volume over the first few ps (NVT → NPT). Set `--pressure-bar 0` (NVT) or `--pressure-bar 1.0` (NPT) on prod; no eq re-run needed. |
 

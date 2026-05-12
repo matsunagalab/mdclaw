@@ -15,12 +15,20 @@ retrying.
 
 ## Normal Explicit-Water Flow
 
-1. Create and run a `source` node.
+1. Create and run a `source` node. Do not run schema-v3 workflow tools
+   without first creating the node and then passing both `--job-dir` and
+   `--node-id`.
 2. Inspect molecules and decide chains / ligands from tool JSON.
 3. Create and run a `prep` node with `prepare_complex`.
-4. Create and run a `solv` node with `solvate_structure`.
-5. Create and run a `topo` node with `build_amber_system`.
-6. Hand off to `skills/md-equilibration/SKILL.md`; use `/md-equilibration`
+4. Verify the completed prep output matches the user request before solvation:
+   check the prepared `merged_pdb` path from JSON/node artifacts, and if the
+   user requested no ligand, confirm no ligand artifact such as
+   `ligand_params` is registered on the prep node.
+5. Create and run a `solv` node with `solvate_structure`.
+6. Run `inspect_openmm_platforms --atom-count <total_atoms> --solvent-type explicit`
+   after solvation before local topology/eq/prod.
+7. Create and run a `topo` node with `build_amber_system`.
+8. Hand off to `skills/md-equilibration/SKILL.md`; use `/md-equilibration`
    only as a harness shortcut. Do not auto-chain stages.
 
 ## Resume Flow
@@ -31,6 +39,11 @@ retrying.
    resolved.
 4. If `validation.blocking_codes` is non-empty, use those codes rather than
    parsing human-readable error strings.
+5. Do not rerun a completed or partially run workflow node with different
+   settings. Create a new node/branch instead, so stale artifacts from the
+   old attempt cannot mix with the new result.
+6. Do not delete node directories as recovery. Preserve DAG evidence, inspect
+   state with `inspect_job` / `explain_node`, and branch from a valid ancestor.
 
 ## Substitution Rule
 

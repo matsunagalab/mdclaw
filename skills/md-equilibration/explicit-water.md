@@ -24,6 +24,10 @@ If no CUDA/OpenCL platform is available and the system is classified
 equilibration automatically. Use `/hpc-run`, or deliberately choose a shorter
 smoke-test protocol such as `--nvt-steps 2500 --npt-steps 2500`.
 
+Platform policy: do not pass `--platform CPU` unless the user explicitly asks
+for CPU-only debugging. Prefer the tool default `--platform auto`; if an
+explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
+
 ```bash
 mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> --pressure-bar 1.0

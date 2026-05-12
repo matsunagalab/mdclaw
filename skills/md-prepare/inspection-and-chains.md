@@ -30,6 +30,11 @@ Ligand selection rule:
 - `chains[].unique_id` is the ligand identifier to pass to
   `--include-ligand-ids`. Its first field is the ligand's `author_chain`
   (`auth_asym_id`), not the mmCIF label chain.
+- When the user says "no ligand" / "ligandなし", exclude ligands explicitly in
+  the prep command by omitting `ligand` from `--include-types` and passing
+  `--no-process-ligands`. Do not pass `--include-ligand-ids []` or a bare
+  `--include-ligand-ids`; the CLI expects one or more values when the flag is
+  present.
 - When the user says "chain X with ligand", inspect first, then include:
   1. Protein/nucleic/glycan label chains whose `chain_id == X` or
      `author_chain == X`.
@@ -47,3 +52,5 @@ mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --include-types protein nucleic glycan ligand \
   --include-ligand-ids A:AP5:215
 ```
+
+For ligand-free command examples, use `skills/md-prepare/prepare-complex.md`.

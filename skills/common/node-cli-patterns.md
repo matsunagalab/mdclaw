@@ -14,10 +14,19 @@ mdclaw --job-dir "$JD" --node-id prep_001 prepare_complex
 Rules:
 
 - Never pass `--node-id` without `--job-dir`.
+- In schema-v3 mode, create the workflow node first, then run the mutating
+  workflow tool with both `--job-dir` and `--node-id`; do not try a bare
+  workflow command and then add node context after it fails.
 - Let workflow tools auto-resolve ancestor artifacts whenever possible.
 - Do not manually wire topology, restart state, or trajectory paths in normal
   DAG flows.
 - One `job_dir` has one physical system and one `source` root.
+- Treat workflow node artifacts as immutable evidence for one attempted
+  parameter set. If the chain/ligand/solvent choice was wrong, create a new
+  node or new branch instead of rerunning the same node with changed inputs.
+- Never remove node directories with `rm -rf` as normal recovery. Preserve
+  `node.json`, artifacts, and events; use `inspect_job` / `explain_node` to
+  decide the next valid branch.
 - Never emit angle-bracket placeholders literally. Resolve `<job_dir>`,
   `<node_id>`, parent IDs, and numeric values from tool JSON before running a
   command.
