@@ -3783,7 +3783,14 @@ def _run_openmmforcefields_build(
 
     _stage("system_generator_create_system")
     try:
-        system = sg.create_system(modeller.topology, molecules=ligand_molecules or None)
+        # Use the same filtered list as SystemGenerator(...) init. Passing the
+        # full ``ligand_molecules`` would invite ``create_system`` to fall back
+        # to GAFFTemplateGenerator (and antechamber+sqm AM1-BCC) for any
+        # converted ligand whose XML template fails to match — defeating the
+        # whole point of the auto-conversion path.
+        system = sg.create_system(
+            modeller.topology, molecules=ligand_molecules_for_gaff or None
+        )
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
             f"SystemGenerator.create_system failed: {type(exc).__name__}: {exc}"

@@ -203,6 +203,14 @@ def _task_ids_from_dataset(dataset_dir: Path, task_ids: Optional[list[str]]) -> 
 
 
 def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str]:
+    """Stage the public task surface under ``run_task_dir``.
+
+    The agent-facing inputs documented in the benchmark contract are
+    ``prompt.md``, ``task.json``, and the optional ``input/`` directory.
+    Files are overwritten in place; ``input/`` is merged with
+    ``dirs_exist_ok=True`` so re-runs of the same task don't fail when
+    leftover files happen to share names.
+    """
     copied: dict[str, str] = {}
     for name in ("prompt.md", "task.json"):
         src = task_dir / name
@@ -211,6 +219,12 @@ def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str
             ensure_directory(dst.parent)
             shutil.copy2(src, dst)
             copied[name] = str(dst)
+    input_src = task_dir / "input"
+    if input_src.is_dir():
+        input_dst = run_task_dir / "input"
+        ensure_directory(input_dst.parent)
+        shutil.copytree(input_src, input_dst, dirs_exist_ok=True)
+        copied["input"] = str(input_dst)
     return copied
 
 
@@ -300,6 +314,20 @@ def _write_runner_blocked_submission(
         ensure_directory(submission_dir / "figures")
 
 
+def _coerce_capture(value: Any) -> str:
+    """Coerce a ``subprocess`` capture buffer to ``str`` for ``write_text``.
+
+    Even when ``subprocess.run(text=True)`` is requested, ``TimeoutExpired``
+    can return ``bytes`` for whatever happened to be buffered when the
+    timer fired. ``Path.write_text`` only accepts ``str``, so normalize.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 def _run_agent_command(
     *,
     command: str,
@@ -333,8 +361,13 @@ def _run_agent_command(
             "stderr_file": str(stderr_file),
         }
     except subprocess.TimeoutExpired as exc:
-        stdout_file.write_text(exc.stdout or "")
-        stderr_file.write_text(exc.stderr or "")
+        # ``subprocess.TimeoutExpired.stdout`` / ``stderr`` can be ``bytes``
+        # even when ``text=True`` was requested (CPython surfaces whatever
+        # was buffered when the timer fired). Normalize before writing so
+        # the runner can still record the blocked submission instead of
+        # crashing on the second-level TypeError.
+        stdout_file.write_text(_coerce_capture(exc.stdout))
+        stderr_file.write_text(_coerce_capture(exc.stderr))
         return {
             "started_at": started_at,
             "finished_at": _utc_now(),
