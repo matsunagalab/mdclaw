@@ -30,7 +30,34 @@ tests/                   Four-level test suite
 - `_event.py`: append-only event log.
 - `_node.py`: schema v3 job DAG and node state management.
 - `_cli.py`: CLI entry point and global `--job-dir` / `--node-id` injection.
+- `_ligand_xml.py`: ParmEd-based bridge that bakes prep-computed ligand
+  `mol2 + frcmod` pairs into self-contained OpenMM ForceField XML files,
+  stacked under `openmmforcefields`'s shipped `gaff-2.2.20.xml`. Lets
+  `build_amber_system` skip the `GAFFTemplateGenerator` AM1-BCC path for
+  ligands that already carry curated charges and frcmod additions.
 - `*_server.py`: tool modules; each exposes a `TOOLS` dict.
+
+## Topology-build Pipeline (`build_amber_system`)
+
+Stages recorded under `topo_NNN/metadata.topology_build_stage_history`:
+
+```text
+resolve_forcefield_xml -> convert_ligand_xml -> pdbfixer_hydrogenation ->
+load_ligand_molecules -> pablo_load -> system_generator_init ->
+modeller_prepare -> system_generator_create_system -> initial_minimization ->
+serialization -> collect_provenance -> completed
+```
+
+`convert_ligand_xml` calls `_ligand_xml.convert_amber_ligand_to_openmm_xml`
+for every ligand with `parameter_source ∈ {"amber_geostd",
+"gaff2_antechamber"}`. Successful conversions land under
+`artifacts/ligand_xml/<RES>.xml` and are appended to the
+`SystemGenerator(forcefields=...)` bundle via
+`forcefield_catalog.resolve_xml_bundle(gaff_base="gaff-2.2.20",
+extra_xml=[...])`. Converted ligands are removed from
+`SystemGenerator(molecules=...)` so `GAFFTemplateGenerator` is bypassed.
+Per-ligand conversion failures fall back to the legacy GAFF path with a
+warning.
 
 ## Schema v3 DAG Invariants
 

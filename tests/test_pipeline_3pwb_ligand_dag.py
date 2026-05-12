@@ -193,6 +193,14 @@ class TestPipeline3PWBLigandDag:
         assert node_data["metadata"]["forcefield"] == "ff19SB"
         assert node_data["metadata"]["water_model"] == "opc"
 
+        # auto-converted ligand XML bypasses GAFFTemplateGenerator.
+        provenance = result.get("forcefield_provenance", {})
+        auto = provenance.get("auto_converted_ligand_xml") or []
+        converted_names = {entry["residue_name"] for entry in auto}
+        assert "BEN" in converted_names, auto
+        assert "GOL" in converted_names, auto
+        assert provenance.get("gaff_base") == "gaff-2.2.20"
+
     # Step 6: equilibration (auto-resolves topology from topo)
     def test_step6_equilibration(self, job_dir):
         from md_simulation_server import run_equilibration

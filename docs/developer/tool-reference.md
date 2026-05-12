@@ -60,7 +60,18 @@ skill examples.
   metal, modXNA, glycan, nucleic acid, water-model, and PTM guardrails via
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
-  artifacts plus a `forcefield_provenance` dict on the `topo` node.
+  artifacts plus a `forcefield_provenance` dict on the `topo` node. Ligands
+  with `parameter_source ∈ {"amber_geostd", "gaff2_antechamber"}` are baked
+  into a self-contained OpenMM ForceField XML by `mdclaw._ligand_xml`
+  before the SystemGenerator is constructed, stacked under
+  `openmmforcefields`'s shipped `gaff-2.2.20.xml` base (the new
+  `forcefield_catalog.resolve_xml_bundle(gaff_base=...)` slot), and dropped
+  from `SystemGenerator(molecules=...)`. This skips
+  `GAFFTemplateGenerator`'s antechamber + AM1-BCC re-derivation, which
+  previously hung for highly charged ligands like AP5 (5 phosphates, -5e).
+  Per-ligand failures fall back to the legacy `molecules=` path with a
+  warning. The provenance dict carries `auto_converted_ligand_xml` and
+  `gaff_base` for the run-side hash check.
   Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
   "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
   matching `implicit/*.xml` is added to the SystemGenerator bundle so

@@ -2927,6 +2927,59 @@ def _run_openmmforcefields_build(
         result["code"] = "implicit_solvent_model_unsupported"
         return result
 
+    # Bake prep-computed mol2+frcmod into OpenMM ForceField XML so the
+    # GAFFTemplateGenerator AM1-BCC path can be skipped entirely. Without
+    # this, `SystemGenerator(molecules=...)` re-derives AM1-BCC partial
+    # charges via antechamber+sqm at first `sg.forcefield` access, which
+    # hangs for highly charged ligands like AP5 (5 phosphates, -5e).
+    _stage("convert_ligand_xml")
+    from mdclaw._ligand_xml import convert_amber_ligand_to_openmm_xml
+
+    auto_ligand_xml: list[str] = []
+    converted_residue_names: set[str] = set()
+    auto_converted_provenance: list[Dict[str, Any]] = []
+    for lig in valid_ligands or []:
+        source = (lig.get("parameter_source") or "").strip()
+        if source not in {"amber_geostd", "gaff2_antechamber"}:
+            continue
+        residue_name = lig.get("residue_name")
+        if not residue_name:
+            continue
+        if residue_name in converted_residue_names:
+            # One template covers every instance of the same residue.
+            continue
+        mol2 = lig.get("mol2")
+        frcmod = lig.get("frcmod")
+        if not mol2 or not frcmod:
+            continue
+        xml_out = out_dir / "ligand_xml" / f"{residue_name}.xml"
+        conv = convert_amber_ligand_to_openmm_xml(
+            Path(mol2), Path(frcmod), residue_name, xml_out
+        )
+        if conv["success"]:
+            auto_ligand_xml.append(conv["xml_path"])
+            converted_residue_names.add(residue_name)
+            auto_converted_provenance.append(
+                {
+                    "residue_name": residue_name,
+                    "xml_path": conv["xml_path"],
+                    "atom_count": conv["atom_count"],
+                    "bond_count": conv["bond_count"],
+                    "parameter_source": source,
+                }
+            )
+            if conv.get("warnings"):
+                result["warnings"].extend(conv["warnings"])
+        else:
+            # Per-ligand fallback: leave this ligand on the GAFFTemplateGenerator
+            # path so an isolated conversion bug does not break the whole build.
+            result["warnings"].append(
+                f"Ligand {residue_name!r} XML auto-conversion failed "
+                f"({conv.get('code')}): {'; '.join(conv.get('errors', []))[:200]}. "
+                f"Falling back to GAFFTemplateGenerator for this ligand."
+            )
+
+    gaff_base = "gaff-2.2.20" if auto_ligand_xml else None
     xml_bundle = _ff_catalog.resolve_xml_bundle(
         protein=canon_protein,
         water=canon_water,
@@ -2936,7 +2989,8 @@ def _run_openmmforcefields_build(
         glycan=glycan_name,
         lipid=lipid_name,
         implicit_solvent=canon_implicit,
-        extra_xml=extra_xml,
+        gaff_base=gaff_base,
+        extra_xml=list(auto_ligand_xml) + list(extra_xml),
     )
     if not xml_bundle:
         result["errors"].append(
@@ -3372,12 +3426,21 @@ def _run_openmmforcefields_build(
     }
     nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
 
+    # Auto-converted ligands have their parameters and residue template baked
+    # into the xml_bundle already, so excluding them from ``molecules=`` is
+    # what prevents GAFFTemplateGenerator from running antechamber+sqm on
+    # AM1-BCC at first ``sg.forcefield`` access (the AP5 hang).
+    ligand_molecules_for_gaff = [
+        mol for lig, mol in zip(valid_ligands or [], ligand_molecules)
+        if (lig.get("residue_name") or "") not in converted_residue_names
+    ]
+
     _stage("system_generator_init")
     try:
         sg = SystemGenerator(
             forcefields=xml_bundle,
             small_molecule_forcefield="gaff-2.11",
-            molecules=ligand_molecules or None,
+            molecules=ligand_molecules_for_gaff or None,
             forcefield_kwargs=common_kwargs,
             periodic_forcefield_kwargs=periodic_kwargs,
             nonperiodic_forcefield_kwargs=nonperiodic_kwargs,
@@ -3828,6 +3891,8 @@ def _run_openmmforcefields_build(
             {"mol2": str(lig.get("mol2")), "residue_name": lig.get("residue_name")}
             for lig in (valid_ligands or [])
         ],
+        "auto_converted_ligand_xml": list(auto_converted_provenance),
+        "gaff_base": gaff_base,
         "sha256": sha256_table,
         "method": {
             "solvent_type": provenance_solvent_type,

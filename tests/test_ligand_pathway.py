@@ -56,6 +56,116 @@ class TestFrcmodValidation:
 
 
 # ---------------------------------------------------------------------------
+# Level 1: Ligand mol2+frcmod → OpenMM XML conversion
+# ---------------------------------------------------------------------------
+
+class TestLigandXmlConversion:
+    """Verify mol2+frcmod → OpenMM ForceField XML round-trip.
+
+    Bypasses GAFFTemplateGenerator AM1-BCC so highly charged ligands (e.g.
+    AP5, -5e, 5 phosphates) don't hang the topology build at first
+    ``sg.forcefield`` access.
+    """
+
+    def test_mol2_missing(self, tmp_path, sample_frcmod_clean):
+        from mdclaw._ligand_xml import convert_amber_ligand_to_openmm_xml
+
+        r = convert_amber_ligand_to_openmm_xml(
+            tmp_path / "nope.mol2",
+            sample_frcmod_clean,
+            "TST",
+            tmp_path / "out.xml",
+        )
+        assert r["success"] is False
+        assert r["code"] == "ligand_xml_mol2_missing"
+
+    def test_frcmod_missing(self, tmp_path):
+        from mdclaw._ligand_xml import convert_amber_ligand_to_openmm_xml
+
+        (tmp_path / "stub.mol2").write_text("@<TRIPOS>MOLECULE\nX\n0 0 0\nSMALL\n")
+        r = convert_amber_ligand_to_openmm_xml(
+            tmp_path / "stub.mol2",
+            tmp_path / "missing.frcmod",
+            "X",
+            tmp_path / "out.xml",
+        )
+        assert r["success"] is False
+        assert r["code"] == "ligand_xml_frcmod_missing"
+
+    def test_tst_round_trip(self, fake_geostd_dir, tmp_path):
+        """TST fixture from amber_geostd → OpenMM ForceField loads template."""
+        from mdclaw._ligand_xml import (
+            convert_amber_ligand_to_openmm_xml,
+            get_gaff_base_xml_path,
+        )
+
+        mol2 = fake_geostd_dir / "t" / "TST.mol2"
+        frcmod = fake_geostd_dir / "t" / "TST.frcmod"
+        out = tmp_path / "TST.xml"
+        r = convert_amber_ligand_to_openmm_xml(mol2, frcmod, "TST", out)
+        assert r["success"], r["errors"]
+        assert r["xml_path"] == str(out)
+        assert r["atom_count"] == 4
+        assert r["bond_count"] == 3
+
+        # Stack with shipped GAFF base XML and verify ForceField picks up TST.
+        base = get_gaff_base_xml_path("gaff-2.2.20")
+        assert base, "openmmforcefields gaff-2.2.20.xml not found"
+
+        from openmm.app import ForceField
+
+        ff = ForceField(base, str(out))
+        assert "TST" in ff._templates
+        tpl = ff._templates["TST"]
+        assert len(tpl.atoms) == 4
+        assert len(tpl.bonds) == 3
+
+    def test_residue_name_renamed_on_mismatch(self, fake_geostd_dir, tmp_path):
+        from mdclaw._ligand_xml import convert_amber_ligand_to_openmm_xml
+
+        mol2 = fake_geostd_dir / "t" / "TST.mol2"
+        frcmod = fake_geostd_dir / "t" / "TST.frcmod"
+        out = tmp_path / "RENAMED.xml"
+        r = convert_amber_ligand_to_openmm_xml(mol2, frcmod, "REN", out)
+        assert r["success"], r["errors"]
+        # Warning surfaced about the rename.
+        assert any("renaming" in w for w in r["warnings"])
+        # The emitted XML carries the requested name, not the mol2's.
+        assert 'name="REN"' in out.read_text()
+        assert 'name="TST"' not in out.read_text()
+
+
+class TestGaffBaseSlot:
+    """resolve_xml_bundle gaff_base slot insertion."""
+
+    def test_gaff_base_inserted_before_extras(self):
+        from mdclaw.forcefield_catalog import resolve_xml_bundle
+
+        bundle = resolve_xml_bundle(
+            protein="ff19SB",
+            water="opc",
+            gaff_base="gaff-2.2.20",
+            extra_xml=["/tmp/fake.xml"],
+        )
+        # Find positions
+        gaff_idx = next(
+            (i for i, p in enumerate(bundle) if p.endswith("gaff-2.2.20.xml")), -1
+        )
+        extra_idx = next(
+            (i for i, p in enumerate(bundle) if p == "/tmp/fake.xml"), -1
+        )
+        assert gaff_idx >= 0
+        assert extra_idx >= 0
+        assert gaff_idx < extra_idx
+
+    def test_no_gaff_base_when_unset(self):
+        from mdclaw.forcefield_catalog import resolve_xml_bundle
+
+        bundle = resolve_xml_bundle(protein="ff19SB", water="opc")
+        assert not any("gaff-2.2.20" in p for p in bundle)
+
+
+# ---------------------------------------------------------------------------
 # Level 1: Known cofactor charge lookup
 # ---------------------------------------------------------------------------
 
