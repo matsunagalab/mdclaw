@@ -80,7 +80,7 @@ RUN mamba install -n base -y conda-pack && \
     mamba clean -afy
 
 # =============================================================================
-# Stage 2: Build OpenMM from source with CUDA 12.4
+# Stage 2: Build OpenMM from source against CUDA 11.8
 # =============================================================================
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-devel-ubuntu22.04 AS openmm-builder
 
@@ -103,8 +103,11 @@ ENV PATH="/opt/mdclaw/bin:$PATH"
 # Cython is needed for OpenMM Python wrappers
 RUN /opt/mdclaw/bin/pip install --no-cache-dir cython
 
-# Clone OpenMM (pinned release for reproducibility)
-ARG OPENMM_VERSION=8.2.0
+# Clone OpenMM (pinned release for reproducibility).
+# Must satisfy openmmforcefields>=0.16.0, which imports openmm.app.topology.MergedResidue
+# (added in OpenMM 8.5). environment.yml floors openmm at 8.5.1; we pin the source
+# build to the same release tag so the Stage 2 install does not downgrade the API.
+ARG OPENMM_VERSION=8.5.1
 RUN git clone --depth 1 --branch ${OPENMM_VERSION} \
     https://github.com/openmm/openmm.git /build/openmm
 

@@ -37,7 +37,8 @@ singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
 - Docker image size is roughly 11.4 GB; SIF size is roughly 4.6 GB.
 - Minimum actively verified NVIDIA driver is 520.
 - The image ships CUDA 11.8 to cover mixed HPC clusters with older drivers.
-- OpenMM 8.2.0 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
-  the driver floor.
+- OpenMM 8.5.1 is source-built against CUDA 11.8 so NVRTC-generated PTX matches
+  the driver floor. 8.5.1 is the floor required by openmmforcefields >= 0.16
+  (uses `openmm.app.topology.MergedResidue`, added in 8.5).
 - NVRTC and nvrtc-builtins are copied into `/opt/mdclaw/lib/` so the slim
   runtime image can JIT without using a devel base image.
