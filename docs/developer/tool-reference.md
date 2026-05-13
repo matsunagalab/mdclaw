@@ -188,14 +188,9 @@ skill examples.
   modes, and short intent summaries.
 - `init_benchmark_run(...)`: create a benchmark run directory and record
   backend / harness / model metadata for the agent under test.
-- `create_benchmark_submission_template(...)`: create a generic
-  `submission/` scaffold for any external agent or MD backend without requiring
-  an MDClaw `job_dir`.
 - `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`: validate
   task contracts and submitted artifacts.
 - `score_benchmark_submission(...)`, `summarize_benchmark_run(...)`: score one
   task submission and aggregate a run.
 - `write_benchmark_schemas(...)`: regenerate task / manifest / score JSON
   schemas from pydantic models.
-- `export_mdclaw_submission(...)`: optional MDClaw `job_dir` adapter that writes
-  a conservative partial-status submission skeleton.

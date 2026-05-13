@@ -296,20 +296,22 @@ This means:
 
 MDClaw includes a tool-agnostic benchmark contract for evaluating MD agents
 across preparation, execution, scientific interpretation, and publication-ready
-evidence packaging. The checked-in pilot is under `benchmarks/mdagentbench/`,
-with a 30-task Lite v0.1 skeleton under `benchmarks/mdagentbench_lite_v0_1/`.
+evidence packaging. The checked-in dataset is under `benchmarks/mdagentbench/`.
+Agents receive each task's `prompt.md` and write a standard `submission/`
+directory. The benchmark code reads `task.json` only for validation, scoring,
+and run summaries.
 
 Useful commands:
 
 ```bash
-mdclaw create_pilot_benchmark --benchmark-dir benchmarks/mdagentbench --overwrite
-mdclaw init_benchmark_run --output-dir benchmark_runs --execution-mode dry_run
-mdclaw score_benchmark_submission --task-file benchmarks/mdagentbench/tasks/exec_short_protein_md/task.json --submission-dir submission
+mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <run_id>
+mdclaw validate_benchmark_submission --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json --submission-dir <submission_dir>
+mdclaw score_benchmark_submission --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file benchmark_runs/<run_id>/tasks/T01_engine_smoke/score.json
 mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```
 
 See `docs/benchmark/README.md` for the task schema, submission contract,
-structured LLM judge format, append-only result ledgers, and MDClaw adapter.
+structured LLM judge format, and append-only result ledgers.
 
 ---
 

@@ -3,7 +3,7 @@
 MDAgentBench is an artifact-based benchmark contract. Your agent does not need
 to use MDClaw. It may use GROMACS, OpenMM scripts, Amber, MDCrow, another
 workflow manager, or a custom LLM runner. The scorer only compares files under
-`submission/` against the public task contract and scorer-only truth files.
+`submission/` against the canonical task contract and scorer-only truth files.
 
 ## What To Read
 
@@ -11,15 +11,19 @@ Give the agent the prompt as the task. The prompt names the public structures,
 identifiers, protocols, and outputs it must handle; retrieving those public
 sources is part of the evaluated behavior.
 
-Read these files before running or wrapping your agent:
+The evaluated agent should read only:
+
+- `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`: plain-language public
+  prompt suitable for handing directly to an MD agent.
+
+Harness or evaluator code may also read:
 
 - `benchmarks/mdagentbench/dataset.json`: task list, benchmark version, and
   family metadata.
-- `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`: plain-language public
-  prompt suitable for handing directly to an MD agent.
 - `benchmarks/mdagentbench/tasks/<task_id>/task.json`: runner/scorer contract,
   scoring axes, required outputs, time limits, and deterministic checks. It is
-  not a solution script and should not contain task-specific execution commands.
+  not a solution script, should not contain task-specific execution commands,
+  and should not be given to the agent under test.
 
 Do not let the agent under test read:
 
@@ -50,8 +54,8 @@ benchmark_runs/<run_id>/
   summary.json
 ```
 
-Required files vary by task. Check `task.json.required_outputs` first. The
-common files are:
+Required files vary by task. Evaluator or harness code can read
+`task.json.required_outputs` before launching the agent. The common files are:
 
 - `manifest.json`: `run_id`, `task_id`, `status`, and paths to submitted
   artifacts.
@@ -137,31 +141,6 @@ contract is the `submission/` directory, not the internal registry.
 
 ## Standard Flow
 
-For full-suite runs, prefer the suite runner. It creates the run directory,
-invokes your agent once per task, captures stdout/stderr, validates and scores
-each submission, and writes `summary.json`:
-
-```bash
-conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
-  "dataset_dir": "benchmarks/mdagentbench",
-  "output_dir": "benchmark_runs",
-  "run_id": "20260510_external_gromacs",
-  "backend": "command",
-  "agent_command": "python run_agent.py --prompt-file {prompt_file} --submission-dir {submission_dir}",
-  "backend_name": "gromacs",
-  "harness_name": "external-python-script",
-  "model_name": "my-agent"
-}'
-```
-
-Your command receives paths through placeholders. The evaluated agent should
-treat `{prompt_file}` as the task statement, retrieve public sources named in
-that prompt, and write the required files under `{submission_dir}`.
-`{task_file}` is available to harness code for time limits and required-output
-metadata, but it is not a per-task execution recipe.
-
-The lower-level per-task commands remain useful for debugging:
-
 Initialize a run with metadata for the agent under test:
 
 ```bash
@@ -176,24 +155,19 @@ mdclaw init_benchmark_run \
   --model-name my-agent
 ```
 
-Create a submission scaffold:
+Run your agent or external program yourself. Give it the task prompt and a
+target submission directory, for example:
 
 ```bash
-mdclaw create_benchmark_submission_template \
-  --task-id T06_answer_stability_t4l_l99a \
-  --run-id 20260510_external_gromacs_t06 \
-  --output-dir benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/submission \
-  --agent-name my-agent \
-  --backend-name gromacs \
-  --harness-name external-python-script
+python run_agent.py \
+  --prompt-file benchmarks/mdagentbench/tasks/T06_answer_stability_t4l_l99a/prompt.md \
+  --submission-dir benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/submission
 ```
 
-Run your agent or external program. It should solve the prompt, retrieve public
-sources as needed, then replace the template values with real metrics,
-evidence, provenance, and artifacts. When the submission is genuinely complete,
-update `manifest.status` from the template default `partial` to `completed`;
-otherwise leave it `partial` or use `blocked` / intentional `failed` as
-appropriate.
+It should solve the prompt, retrieve public sources as needed, and write real
+metrics, evidence, provenance, and artifacts. When the submission is genuinely
+complete, set `manifest.status` to `completed`; otherwise use `partial`,
+`blocked`, or intentional `failed` as appropriate.
 
 Validate and score:
 
@@ -253,7 +227,7 @@ named in the manifest and compares frame count and NaN status.
 Machine-readable schemas are checked in under
 `benchmarks/mdagentbench/schemas/`:
 
-- `task.schema.json`: public task contract.
+- `task.schema.json`: evaluator-side task contract.
 - `submission_manifest.schema.json`: `submission/manifest.json` shape.
 - `score.schema.json`: scorer output shape.
 

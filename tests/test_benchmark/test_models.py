@@ -25,6 +25,17 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
 
 
+def _task_dirs() -> list[Path]:
+    tasks_dir = DATASET_DIR / "tasks"
+    if not tasks_dir.exists():
+        return []
+    return sorted(
+        path
+        for path in tasks_dir.iterdir()
+        if path.is_dir() and (path / "task.json").is_file()
+    )
+
+
 def test_task_schema_version_locked_to_v1():
     """A task with schema_version != '1.0' fails to validate."""
     payload = {
@@ -157,13 +168,9 @@ def test_score_axes_constant_matches_literal():
     )
 
 
-@pytest.mark.parametrize("task_dir", sorted(
-    (DATASET_DIR / "tasks").iterdir() if (DATASET_DIR / "tasks").exists() else []
-))
+@pytest.mark.parametrize("task_dir", _task_dirs())
 def test_pilot_tasks_validate(task_dir):
     """Every shipped pilot task.json must pass pydantic validation."""
     task_file = task_dir / "task.json"
-    if not task_file.is_file():
-        pytest.skip(f"no task.json under {task_dir}")
     payload = json.loads(task_file.read_text())
     Task.model_validate(payload)

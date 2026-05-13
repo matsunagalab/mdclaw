@@ -287,9 +287,9 @@ def check_template_markers(
 ) -> Optional[str]:
     """Return a warning message if ``path`` contains any of ``forbid_markers``.
 
-    Used to detect leftover template scaffolds like ``"Template placeholder.
-    Replace before scoring."`` or ``"Replace with task-specific methods."``
-    that the create_benchmark_submission_template tool emits.
+    Used to detect leftover scaffold text from legacy templates, such as
+    ``"Template placeholder. Replace before scoring."`` or
+    ``"Replace with task-specific methods."``.
     """
     target = (submission_dir / path).resolve()
     if not target.is_file():

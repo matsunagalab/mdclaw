@@ -231,7 +231,7 @@ mdclaw score_benchmark_submission \
 mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```
 
-The runner appends durable records to:
+The run tools append durable records to:
 
 - `benchmark_runs/runs.jsonl`
 - `benchmark_runs/summaries.jsonl`
@@ -239,52 +239,26 @@ The runner appends durable records to:
 Both are last-write-wins on `run_id` so re-summarizing replaces stale rows
 instead of stacking duplicates.
 
-## Suite Runner
+## Agent Execution
 
-For agent-to-agent comparisons, use `run_benchmark_suite`. This is the
-benchmark harness layer: it stages a prompt-only task directory for each
-backend, captures execution logs, validates the resulting submission, scores
-it, and summarizes the suite.
+MDAgentBench does not launch the agent. Use the active skill, lab harness, or
+external program to give the agent `prompt.md` and a target `submission/`
+directory. Keep `task.json`, `truth/`, and `scorer/` on the evaluator side.
+Then validate, score, and summarize the submitted artifacts with the commands
+above.
 
-```bash
-conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
-  "dataset_dir": "benchmarks/mdagentbench",
-  "output_dir": "benchmark_runs",
-  "run_id": "my_agent_run",
-  "backend": "command",
-  "agent_command": "python run_agent.py --prompt-file {prompt_file} --submission-dir {submission_dir}",
-  "timeout_seconds_per_task": 3600,
-  "backend_name": "gromacs",
-  "harness_name": "my-agent-harness",
-  "model_name": "my-agent"
-}'
-```
-
-The `command` backend accepts these placeholders:
-
-- `{task_id}` and `{run_id}`
-- `{task_dir}` and `{run_task_dir}` for the staged public task directory
-- `{prompt_file}` for the task prompt
-- `{task_file}` for the staged task metadata used by runners/scorers
-- `{submission_dir}` for the directory the agent must populate
-
-Each task run writes:
+A typical task run writes:
 
 ```text
 benchmark_runs/<run_id>/tasks/<task_id>/
   prompt.md
-  task.json
-  execution.json
-  agent_stdout.log
-  agent_stderr.log
   submission/
   score.json
 ```
 
-Use `backend="submission_only"` when submissions already exist and you only
-want validation, scoring, and aggregation. This mirrors common benchmark
-harnesses: the runner is responsible for standardized execution and durable
-records, while the scorer remains artifact-based and backend-independent.
+If a harness records stdout, stderr, or execution metadata, keep those files
+outside `submission/` unless the task explicitly asks for them. The scorer is
+artifact-based and backend-independent.
 
 ## Structured LLM Judge
 
@@ -297,24 +271,6 @@ manual in v1.0:
 
 `mdclaw run_llm_judge` will land in v1.x. With `--judge-mode deterministic`
 (default) the secondary axes return `null`; they are not silently zeroed.
-
-## Generic Submission Template
-
-For external agents that need a starting directory, use the generic template
-tool. It does not require an MDClaw `job_dir`:
-
-```bash
-mdclaw create_benchmark_submission_template \
-  --task-id T06_answer_stability_t4l_l99a \
-  --run-id <run_id> \
-  --output-dir benchmark_runs/<run_id>/tasks/T06_answer_stability_t4l_l99a/submission \
-  --agent-name my-agent \
-  --backend-name gromacs \
-  --harness-name external-script
-```
-
-The template is intentionally conservative (`manifest.status="partial"`). Fill
-in task-specific metrics, evidence, and artifacts before scoring.
 
 ## Migration from v0.1
 

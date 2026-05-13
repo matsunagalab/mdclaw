@@ -120,8 +120,6 @@ Placeholder: run MDCrow from the task prompt, then export the standard
 
 Placeholder: any agent is valid if it solves the prompt, retrieves public
 sources as needed, and writes the standard `submission/` directory.
-Process-based agents can be wrapped with `run_benchmark_suite
-backend="command"`.
 
 ## Scorer
 
