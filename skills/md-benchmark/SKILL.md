@@ -73,6 +73,13 @@ Write this evidence in `provenance.json`, `evidence_report.json`, and a
 decision log when useful. If no required stage was attempted, the submission is
 not a valid MDClaw benchmark attempt.
 
+## Full Benchmark Claim
+
+Do not call a run a full benchmark unless every selected task is validated,
+scored, and summarized, and the MD execution / comparative-answer tasks were
+genuinely attempted. If long MD tasks only received blocked placeholders, report
+the run as partial or blocked-only, not full.
+
 ## MDClaw Agent
 
 For MDClaw, launch one sub-agent per task and give it this prompt:
