@@ -81,6 +81,7 @@ test_plan.md
 
 # Local benchmark run outputs (validation artifacts, never commit)
 benchmark_runs/
+contact_frequency_output/
 
 # Mac
 .DS_Store
@@ -90,4 +91,6 @@ benchmark_runs/
 *.bak
 job_*/
 batch_*/
+split/
+summary_*.json
 .mdclaw_session
