@@ -1,33 +1,64 @@
-# MDClaw: Your personal MD assistant
+# MDClaw
 
-**From PDB ID to production-ready MD simulation — automated.**
+MDClaw is an agent-facing molecular dynamics workflow toolkit for the
+Amber/OpenMM ecosystem. It gives an AI agent short runbooks, a `mdclaw` CLI,
+and a durable job DAG so the agent can prepare systems, run equilibration and
+production MD, analyze trajectories, and report evidence without hand-editing
+state files.
 
-MDClaw turns any PDB structure, FASTA sequence, or ligand SMILES into an
-Amber/OpenMM simulation through AI-powered tools and domain knowledge.
-It works with Claude Code, Cursor, Windsurf, or any AI coding assistant.
+MDClaw is split into two things that are deployed together but should be
+understood separately:
 
----
+| Layer | What It Is | Main Files |
+|---|---|---|
+| Agent guidance | Skills/runbooks that tell an agent what to do | `skills/`, `.agents/skills/`, `.claude/commands/` |
+| MD runtime | The scientific software stack and CLI that perform the work | `bin/mdclaw`, `mdclaw/`, `container/`, `hooks/` |
 
-## For Users
+The skills are text and are portable across agent harnesses. The runtime is
+provided by a conda environment, Singularity/Apptainer SIF, Docker image, or a
+local editable install.
 
-### Install
+## Install / Deploy
 
-Claude Code plugin:
+Choose the path that matches your agent. After installation, run
+`scripts/mdclaw-doctor.sh` when using a repo checkout; it checks the runtime,
+OpenMM, AmberTools, container availability, and skill discovery.
 
-```
+### Claude Code Plugin
+
+Use this when you want `/mdclaw:*` slash commands and the plugin-managed
+container hook.
+
+```text
 /plugin marketplace add matsunagalab/mdclaw
 /plugin install mdclaw@mdclaw
 ```
 
-The container (~4.6 GB) downloads automatically on first session start.
+The plugin provides:
 
-Pi:
+- `.claude-plugin/`: marketplace metadata.
+- `hooks/hooks.json`: SessionStart hook that runs `scripts/setup-container.sh`.
+- `bin/mdclaw`: runtime wrapper that chooses conda, SIF, or Docker.
+- `skills/`: the same runbooks used by other agents.
+
+The container is downloaded on first session start. On HPC it prefers a SIF
+for Singularity/Apptainer; on desktop it can use Docker.
+
+### Pi
+
+Pi reads skills from the repository package metadata:
 
 ```bash
 pi install git:github.com/matsunagalab/mdclaw@main
 ```
 
-OpenCode, Codex, and other repo-local agents:
+`package.json` points Pi at `./skills`. You still need one MD runtime:
+the `mdclaw` conda env, a SIF through `MDCLAW_SIF`, Docker through
+`MDCLAW_DOCKER_IMAGE`, or the plugin/container wrapper.
+
+### Codex, OpenCode, and Generic Agents
+
+Use this path when an agent discovers skills from `.agents/skills`.
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw
@@ -36,272 +67,144 @@ scripts/install-agent-skills.sh
 scripts/mdclaw-doctor.sh
 ```
 
-`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` entries for
-portable Agent Skills discovery. Use `scripts/install-agent-skills.sh --copy`
-instead if your agent does not follow symlinks. `scripts/mdclaw-doctor.sh`
-checks the CLI runtime, OpenMM platforms, AmberTools executables, container
-runtime detection, and skill installation.
+`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` symlinks to
+`skills/<name>`. Use `scripts/install-agent-skills.sh --copy` if your agent or
+filesystem does not follow symlinks.
 
-**Requirements:**
-- Container runtime: Singularity/Apptainer (HPC) or Docker (macOS/desktop)
-- GPU (optional): NVIDIA driver 520+ (the image ships CUDA 11.8; driver
-  450+ is the theoretical floor, 520+ is what we actively verify)
+### Repo-Local Claude Code Development
 
-`bin/mdclaw` chooses the runtime in this order:
-- `MDCLAW_RUNTIME=conda|singularity|apptainer|docker` if you set it explicitly
-- otherwise a conda env named `mdclaw` if it exists
-- otherwise `singularity` if a `.sif` is available
-- otherwise `apptainer` if a `.sif` is available
-- otherwise `docker`
-
-If no managed runtime is available, `bin/mdclaw` falls back to a local
-`mdclaw` on your `PATH` (for example from `pip install -e .`).
-For local development, use `conda env create -f environment.yml`; that
-environment includes conda-only scientific tools and `pymol-open-source` for
-headless structure preview rendering. A plain pip install does not provide the
-PyMOL executable.
-
-The session-start hook downloads the container automatically:
-- on HPC, it prefers a `.sif` for Singularity/Apptainer
-- on desktop, it falls back to pulling the Docker image
-
-For a generic harness without plugin support:
-
-1. Put this repository where the harness can read `skills/`, or run
-   `scripts/install-agent-skills.sh` so it can read `.agents/skills/`.
-2. Add `bin/mdclaw` to `PATH`, or install the Python package and expose the
-   `mdclaw` CLI.
-3. Use one runtime: conda (`environment.yml`), SIF (`MDCLAW_SIF`), or Docker
-   (`MDCLAW_DOCKER_IMAGE`). If slash commands are unavailable, have the
-   harness read the relevant `skills/<name>/SKILL.md` directly.
-
-See `docs/agents/deployment.md` for Pi, OpenCode, Codex, Claude Code, and
-generic Agent Skills deployment notes.
-
-### Skills
-
-| Command | Purpose |
-|---------|---------|
-| `/mdclaw:md-prepare` | Structure → cleaning → solvation → topology |
-| `/mdclaw:md-equilibration` | Energy minimization → NVT heating → NPT density (also supports multi-stage NPT → NVT → NPT chains via eq → eq DAG) |
-| `/mdclaw:md-production` | Production MD (NPT/NVT, HMR, checkpoint restart) |
-| `/mdclaw:md-analyze` | RMSD, RMSF, energy, hydrogen bonds |
-| `/mdclaw:hpc-run` | SLURM job submission, monitoring, restart |
-
-### Examples
-
-```
-> /mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
-> /mdclaw:md-equilibration job_a1b2c3d4
-> /mdclaw:md-production job_a1b2c3d4, 10 ns
-> /mdclaw:md-production job_a1b2c3d4, 100 ns with seed 42
-```
-
-HPC:
-```
-> /mdclaw:hpc-run submit 100 ns MD of 1AKE to GPU partition on node gpu01
-> /loop 15m /mdclaw:hpc-run check job 12345 and report when done
-```
-
-You can also call `mdclaw <tool>` directly. For DAG workflow tools
-(`fetch_structure`, `prepare_complex`, `solvate_structure`,
-`build_amber_system`, `run_equilibration`, `run_production`, etc.),
-create a node first and then pass both `--job-dir` and `--node-id`.
-See `mdclaw --list`.
-
-### Nucleic Acids
-
-Standard DNA/RNA chains are supported through the same DAG workflow: include
-`nucleic` during preparation and `build_amber_system` resolves the matching
-`amber/DNA.OL15.xml` / `amber/RNA.OL3.xml` from `forcefield_catalog` into
-the SystemGenerator bundle. Modified nucleotides are handled as an explicit prep
-branch with `prepare_modified_nucleic`, which requires `MDCLAW_MODXNA_DIR`
-unless the environment already provides `modxna.sh` and `dat/frcmod.modxna`.
-MDClaw can auto-fill curated modXNA fragment presets such as `5CM`, while
-unknown modifications still require explicit `backbone` / `sugar` / `base`
-fragment IDs. See `skills/md-prepare/branches.md` for the workflow.
-
-### Execution Mode
-
-MDClaw tracks **how much it asks** the user during a skill:
-
-- `execution_mode=autonomous` (default): proceed with user-specified values and
-  repo defaults. Ask only when a required choice is missing, the target is
-  ambiguous, or a structured failure needs a user decision.
-- `execution_mode=human_in_the_loop`: stop at each decision checkpoint and ask
-  before continuing.
-
-The mode is stored in `progress.json.params`, so later skills on the same
-`job_dir` reuse the same behavior without re-inferring it from chat history.
-
-Skill sequencing is always **user-initiated**: `/md-prepare` →
-`/md-equilibration` → `/md-production` → `/md-analyze`. Each skill stops at
-the end of its stage and tells the user the next command to run. There is
-no automatic end-to-end chaining — you run the next stage yourself when you
-are ready.
-
-Those `/md-*` commands are shortcuts. The portable sequence is the same set of
-runbooks: `skills/md-prepare/SKILL.md` → `skills/md-equilibration/SKILL.md` →
-`skills/md-production/SKILL.md` → `skills/md-analyze/SKILL.md`.
-
-### Defaults
-
-ff19SB + OPC water, 15 Å buffer, 0.15 M NaCl, 300 K, 1 bar (NPT),
-LangevinMiddleIntegrator with HMR (4 fs timestep, hydrogenMass=4 amu),
-HBonds constraints, PME for explicit water. Equilibration uses CA
-positional restraints (100 kJ/mol/nm²) for NVT (250000 steps, 4 fs = 1 ns) +
-NPT (250000 steps, 4 fs = 1 ns). Override the stage lengths with
-`--nvt-steps` / `--npt-steps` on `run_equilibration`.
-
-Need finer control? Multi-stage equilibration (e.g. NPT compress → NVT
-thermalize → NPT relax with per-stage restraint atoms and force constants)
-is supported via eq → eq DAG chaining — see the "Multi-Stage Chaining"
-section in `skills/md-equilibration/SKILL.md`. Ensembles can also be
-switched freely between nodes (NPT eq → NVT prod, etc.); the saved XML
-state is portable across barostat configurations.
-
-### Output Structure
-
-Each pipeline step is an independent **node** with its own directory,
-state file, and artifacts. Parent-child relationships form a DAG:
-
-```
-job_a1b2c3d4/
-  progress.json                ← thin index of nodes + cached summaries
-  nodes/
-    source_001/                 ← structure acquisition root
-      node.json
-      artifacts/
-        1AKE.pdb
-    prep_001/                  ← structure preparation
-      node.json                ← node state, artifacts, metadata
-      artifacts/
-        split/ merge/
-    solv_001/                  ← solvation
-      node.json
-      artifacts/
-        solvated.pdb
-    topo_001/                  ← topology (shared by all eq/prod)
-      node.json
-      artifacts/
-        system.system.xml      ← serialized OpenMM System
-        system.topology.pdb    ← OpenMM Topology + box vectors
-        system.state.xml       ← post-minimization state
-    eq_001/                    ← equilibration at 300K
-      node.json
-      artifacts/
-        equilibrated.xml       ← portable state (loaded by default)
-        equilibrated.chk       ← binary checkpoint (kept for reproducibility)
-    prod_001/                  ← production 300K
-      node.json
-      artifacts/
-        trajectory.dcd
-        state.xml              ← portable state (end + periodic)
-        checkpoint.chk         ← binary checkpoint (periodic)
-    eq_002/                    ← equilibration at 310K (branch)
-      ...
-    prod_002/                  ← production 310K (branch)
-      ...
-  events/                      ← append-only audit log
-```
-
-The same topology node can be reused for multiple equilibrations at
-different temperatures. Each equilibration can branch into multiple
-productions (different seeds, lengths, etc.). For multi-stage
-equilibration (e.g. NPT compress → NVT thermalize → NPT relax), chain
-eq nodes by parenting each onto the previous eq — the next node
-auto-resumes from its parent's `state.xml` regardless of ensemble.
-
-One `job_dir` represents one physical system. Keep a single `source` root per
-job and use branching after `prep` to explore preparation, equilibration, and
-production variants.
-
-### Optional Study Directories
-
-For multi-system or campaign-level work, keep the per-system `job_dir`
-contract above and add an optional `study_dir` that indexes multiple jobs:
+When working directly in this repository, `.claude/commands/` exposes local
+development slash commands:
 
 ```text
-study_mutation_screen/
-  study.json
-  decisions.jsonl             # optional cross-job decision log
-  question_history.jsonl      # optional question/revision history
-  token_ledger.jsonl          # optional LLM/token accounting
-  annotations/                # optional external model or user context
-  evidence/                   # optional study-level evidence reports
-  jobs/
-    wt/
-      progress.json
-      nodes/source_001/...
-    mut_v148a/
-      progress.json
-      nodes/source_001/...
+/md-prepare
+/md-equilibration
+/md-production
+/md-analyze
+/hpc-run
 ```
 
-Use `mdclaw init_study`, `mdclaw add_study_job`,
-`mdclaw record_study_decision`, and `mdclaw summarize_study` to maintain
-this layer. It is intentionally optional: ordinary one-system MD workflows do
-not need a `study_dir`.
+These are thin wrappers around `skills/*/SKILL.md`. The plugin-installed form
+uses `/mdclaw:md-prepare`, `/mdclaw:md-equilibration`, and so on.
 
-For a runnable skeleton, see `examples/study/`:
+### Local Runtime
+
+For development or non-plugin usage, create the conda environment:
 
 ```bash
-bash examples/study/mutation_campaign.sh
+conda env create -f environment.yml
+conda activate mdclaw
+pip install -e .
+mdclaw --list
 ```
 
-The example creates a WT-vs-mutant campaign scaffold, registers two planned
-`job_dir`s, and records a question, decision, and token-ledger entry without
-running molecular dynamics.
+`bin/mdclaw` chooses a runtime in this order:
 
-### Evidence And Methods Reports
+1. `MDCLAW_RUNTIME=conda|singularity|apptainer|docker`, if set.
+2. A conda env named `mdclaw`, if available.
+3. Singularity/Apptainer with `MDCLAW_SIF` or an auto-downloaded SIF.
+4. Docker image `ghcr.io/matsunagalab/mdclaw:<version-or-latest>`.
+5. A local `mdclaw` on `PATH`.
 
-MDClaw can emit lightweight evidence and manuscript-oriented Methods reports
-from completed DAG state:
+See `docs/agents/deployment.md` for the full deployment matrix and
+`docs/developer/container.md` for container details.
+
+## Basic Workflow
+
+The normal user-facing sequence is:
+
+```text
+md-prepare -> md-equilibration -> md-production -> md-analyze
+```
+
+Example prompts for a skill-aware agent:
+
+```text
+/mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
+/mdclaw:md-equilibration job_a1b2c3d4
+/mdclaw:md-production job_a1b2c3d4, 10 ns
+/mdclaw:md-analyze RMSD and RMSF for job_a1b2c3d4
+```
+
+The equivalent repo-local Claude Code commands omit the `mdclaw:` prefix.
+
+You can also call the CLI directly. DAG workflow tools need an explicit
+`--job-dir` and `--node-id`; skills usually create and pass those for you.
 
 ```bash
-mdclaw generate_md_evidence_report --job-dir job_a1b2c3d4
-mdclaw generate_md_methods_report --job-dir job_a1b2c3d4
-
-mdclaw generate_study_evidence_report --study-dir study_mutation_screen
-mdclaw generate_study_methods_report --study-dir study_mutation_screen
+mdclaw --list
+mdclaw fetch_structure --help
+mdclaw inspect_molecules --structure-file structure.pdb
 ```
 
-Evidence reports are JSON summaries for downstream tools or notebooks. Methods
-reports are Markdown drafts that trace the selected node lineage, include a
-Mermaid workflow schematic, and select BibTeX entries from
-`docs/research/mdclaw_citation_inventory.md` when available.
+## Job DAG In One Picture
 
-### State Management
+Every job is a DAG of workflow nodes. Tools mutate node state; skills only
+decide what to run next.
 
-- **Skills** decide what to run (orchestration only, no state mutation)
-- **Tools** execute and self-record results via `begin_node`/`complete_node`/`fail_node`
-- Input files are **auto-resolved from the DAG**: e.g.,
-  `run_equilibration` finds the `system.xml` + `topology.pdb` +
-  `state.xml` triple from its `topo` ancestor automatically. The XML
-  triple is the only topology contract on the run side
+```mermaid
+flowchart LR
+  source[source_001<br/>fetch] --> prep[prep_001<br/>prepare]
+  prep --> solv[solv_001<br/>solvate]
+  solv --> topo[topo_001<br/>OpenMM XML triple]
+  topo --> eq1[eq_001<br/>equilibrate]
+  eq1 --> prod1[prod_001<br/>production]
+  eq1 --> eq2[eq_002<br/>branch / staged eq]
+  eq2 --> prod2[prod_002<br/>production branch]
+```
 
-| File | Scope | Updated by |
-|------|-------|------------|
-| `progress.json` | Job-level: node index (type, status, parents), cached system/params | Tools (automatic) |
-| `node.json` | Per-node: artifacts, metadata, conditions, warnings | Tools (automatic) |
-| `events/*.json` | Audit trail: one file per event (no locking needed) | Tools (automatic) |
+Key rules:
 
-This means:
-- **Resume** works by reading `progress.json` — even across sessions or agents
-- **Branching** is natural: create new nodes with different parents
-- **Parallel agents** can work on different nodes concurrently (lock files prevent conflicts)
-- **Direct CLI use** still updates state correctly as long as workflow tools run with `--job-dir` and `--node-id`
+- One `job_dir` is one physical system with one `source` root.
+- Variants branch after `prep`, `solv`, `topo`, `eq`, or `prod`.
+- `topo` writes the modern OpenMM triple: `system.system.xml`,
+  `system.topology.pdb`, and `system.state.xml`.
+- `eq` and `prod` auto-resolve their inputs from ancestor nodes.
+- `progress.json` is only an index; each node owns its own `node.json`,
+  lock, and `artifacts/`.
 
-### MDAgentBench
+Detailed DAG structure, study directories, and node invariants live in
+`docs/developer/architecture.md`.
 
-MDClaw includes a tool-agnostic benchmark contract for evaluating MD agents
-across preparation, execution, scientific interpretation, and publication-ready
-evidence packaging. The checked-in dataset is under `benchmarks/mdagentbench/`.
-Agents receive each task's `prompt.md` and write a standard `submission/`
-directory. The benchmark code reads `task.json` only for validation, scoring,
-and run summaries.
+## Repository Map
 
-Useful commands:
+| Path | Role |
+|---|---|
+| `skills/` | Portable agent runbooks. This is the source of truth for skill behavior. |
+| `.agents/skills/` | Generic Agent Skills discovery entries, symlinked to `skills/`. |
+| `.claude/commands/` | Repo-local Claude Code slash-command wrappers for development. |
+| `.claude-plugin/` | Claude plugin marketplace metadata. |
+| `hooks/` | Plugin lifecycle hooks, including container setup. |
+| `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
+| `mdclaw/` | Python package and CLI tool implementations. |
+| `container/` | Docker/Singularity build assets. |
+| `benchmarks/mdagentbench/` | MDAgentBench dataset and scorer contracts. |
+| `docs/agents/` | Deployment notes for agent harnesses. |
+| `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
+| `tests/` | Unit, smoke, benchmark, and integration tests. |
+
+## What MDClaw Supports
+
+- Protein systems with Amber ff19SB / OpenMM.
+- Explicit solvent setup, defaulting to OPC, 15 A buffer, and 0.15 M salt.
+- HMR production runs with 4 fs timestep by default.
+- Standard DNA/RNA through OL15/OL3 XMLs.
+- Ligand preparation through curated Amber/OpenMM pathways where supported.
+- Branching workflows for mutations, PTMs, modified nucleic acids, membrane
+  embedding, alternate equilibration protocols, and production variants.
+- SLURM submission and restart/extension workflows through `hpc-run`.
+
+Some chemistry remains deliberately guarded. If a force-field conversion or
+parameterization path is not safe, tools return structured error codes instead
+of silently building a dubious system.
+
+## Benchmarking
+
+MDClaw includes MDAgentBench under `benchmarks/mdagentbench/`. The benchmark is
+agent-agnostic: evaluated agents read `prompt.md` and write `submission/`;
+the scorer reads `task.json`, scorer-only truth files, and submitted artifacts.
+
+Useful scorer commands:
 
 ```bash
 mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <run_id>
@@ -310,58 +213,39 @@ mdclaw score_benchmark_submission --task-file benchmarks/mdagentbench/tasks/T01_
 mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```
 
-See `docs/benchmark/README.md` for the task schema, submission contract,
-structured LLM judge format, and append-only result ledgers.
+See `docs/benchmark/README.md` for the benchmark contract.
 
----
-
-## For Developers
-
-### Setup
+## Developer Quickstart
 
 ```bash
-git clone https://github.com/matsunagalab/mdclaw.git
-cd mdclaw
-./bin/mdclaw --list             # uses container (Singularity or Docker)
-# OR for full local install:
-conda env create -f environment.yml && conda activate mdclaw && pip install -e .
+conda env create -f environment.yml
+conda activate mdclaw
+pip install -e .
+ruff check mdclaw/
+pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 ```
 
-Skills work directly via `.claude/commands/` when running Claude Code in
-the repo — no plugin install needed. In this dev mode, slash commands
-have **no `mdclaw:` prefix**: use `/md-prepare`, `/md-equilibration`,
-`/md-production`, `/md-analyze`, `/hpc-run` (the `/mdclaw:*` form only
-exists when installed as a plugin). Other harnesses can read the same
-`skills/*/SKILL.md` files directly and invoke `mdclaw` through Bash.
+Short agent guidance is mirrored in `CLAUDE.md` and `AGENTS.md`; keep those
+files identical. Long-form references:
 
-Local reference PDFs or manuals can be kept under `ref/`. That directory is
-ignored by git and is intended for developer reference material only.
+- `docs/developer/architecture.md`
+- `docs/developer/tool-reference.md`
+- `docs/developer/cli-internals.md`
+- `docs/developer/testing.md`
+- `docs/developer/configuration.md`
+- `docs/developer/container.md`
+- `docs/developer/release.md`
 
-### Daily Cycle
+## Release
 
+Follow `docs/developer/release.md`. Version tags must stay synchronized across
+the Python package, plugin metadata, marketplace metadata, and container image.
+
+Users update the plugin with:
+
+```text
+/plugin update mdclaw@mdclaw
 ```
-1. Edit code in mdclaw/ or skills/
-2. conda run -n mdclaw ruff check mdclaw/
-3. conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
-4. Test skills in a new Claude Code conversation
-5. Commit
-```
-
-See `CLAUDE.md` / `AGENTS.md` for the mirrored short agent guide and
-`docs/developer/` for tool reference, architecture details, test levels,
-container internals, release steps, and configuration.
-
-### Release
-
-```bash
-# Full version-sync, container test, and GHCR publish flow:
-# docs/developer/release.md
-```
-
-Users update via `/plugin update mdclaw@mdclaw`. SessionStart hook
-re-downloads the container on the next session.
-
----
 
 ## License
 
@@ -369,6 +253,6 @@ MIT
 
 ## Citations
 
-- **Boltz-2**: S. Passaro et al., bioRxiv (2025). doi:10.1101/2025.06.14.659707
-- **AmberTools**: D. A. Case et al., J. Chem. Inf. Model. 63, 6183 (2023).
-- **OpenMM**: P. Eastman et al., J. Phys. Chem. B 128, 109 (2024).
+- Boltz-2: S. Passaro et al., bioRxiv (2025). doi:10.1101/2025.06.14.659707
+- AmberTools: D. A. Case et al., J. Chem. Inf. Model. 63, 6183 (2023).
+- OpenMM: P. Eastman et al., J. Phys. Chem. B 128, 109 (2024).
