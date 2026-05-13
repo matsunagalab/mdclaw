@@ -326,6 +326,35 @@ class TestArgparseConstruction:
         assert params["water_model"]["default"] == "opc"
         assert params["salt"]["cli_action"] == "boolean_optional"
 
+    def test_pep604_optional_params_are_typed_in_parser_and_list_json(self):
+        from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "parameterize_metal_ion",
+            "--metal-resname", "ZN",
+            "--metal-charge", "2",
+        ])
+        assert args.metal_charge == 2
+
+        if "search_structures" in tools:
+            args = parser.parse_args([
+                "search_structures",
+                "--query", "kinase",
+                "--no-has-ligand",
+            ])
+            assert args.has_ligand is False
+
+        payload = _tool_list_json(tools)
+        parameterize = next(
+            tool for tool in payload["tools"]
+            if tool["name"] == "parameterize_metal_ion"
+        )
+        params = {param["name"]: param for param in parameterize["parameters"]}
+        assert params["metal_charge"]["type"] == "Optional[int]"
+
 
 # ---------------------------------------------------------------------------
 # Parameter Coercion
@@ -341,6 +370,13 @@ class TestParameterCoercion:
 
         inner, is_opt = _unwrap_optional(Optional[str])
         assert inner is str
+        assert is_opt is True
+
+    def test_unwrap_pep604_optional(self):
+        from mdclaw._cli import _unwrap_optional
+
+        inner, is_opt = _unwrap_optional(int | None)
+        assert inner is int
         assert is_opt is True
 
     def test_unwrap_non_optional(self):
@@ -383,6 +419,7 @@ class TestParameterCoercion:
 
         assert _takes_json(dict) is True
         assert _takes_json(list[dict]) is True
+        assert _takes_json(list[dict] | None) is True
         # Optional[list[dict]] strips down to list[dict]
         assert _takes_json(list[Dict[str, str]]) is True
         assert _takes_json(str) is False
@@ -411,6 +448,7 @@ class TestParameterCoercion:
         from mdclaw._cli import _coerce_value
 
         assert _coerce_value("42", int) == 42
+        assert _coerce_value("42", int | None) == 42
 
     def test_coerce_float(self):
         from mdclaw._cli import _coerce_value
@@ -451,7 +489,10 @@ class TestSubprocessCLI:
         assert result.returncode == 0
         payload = json.loads(result.stdout)
         assert payload["success"] is True
-        assert any(tool["name"] == "solvate_structure" for tool in payload["tools"])
+        tool_names = {tool["name"] for tool in payload["tools"]}
+        assert "solvate_structure" in tool_names
+        assert "init_benchmark_run" not in tool_names
+        assert "summarize_benchmark_run" not in tool_names
 
     def test_tool_help(self):
         result = subprocess.run(

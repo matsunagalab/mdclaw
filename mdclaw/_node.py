@@ -1240,6 +1240,27 @@ def fail_node(
                 details={"errors": errors or []})
 
 
+def fail_node_from_result(
+    job_dir: str | None,
+    node_id: str | None,
+    result: dict,
+    *,
+    default_error: str = "tool failed",
+) -> dict:
+    """Mark ``node_id`` failed from a structured tool result and return it."""
+    if job_dir and node_id:
+        errors = result.get("errors") or []
+        if not errors:
+            errors = [result.get("message") or result.get("error") or default_error]
+        fail_node(
+            job_dir,
+            node_id,
+            errors=[str(error) for error in errors],
+            warnings=result.get("warnings") or None,
+        )
+    return result
+
+
 # ── Progress-level cached summaries ────────────────────────────────────────
 
 def update_job_summaries(

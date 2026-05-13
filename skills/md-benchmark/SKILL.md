@@ -75,8 +75,8 @@ not a valid MDClaw benchmark attempt.
 
 ## Full Benchmark Claim
 
-Do not call a run a full benchmark unless every selected task is validated,
-scored, and summarized, and the MD execution / comparative-answer tasks were
+Do not call a run a full benchmark unless every selected task is validated and
+scored, and the MD execution / comparative-answer tasks were
 genuinely attempted. If long MD tasks only received blocked placeholders, report
 the run as partial or blocked-only, not full.
 
@@ -128,5 +128,4 @@ After the agent writes `submission/`, score only with scripts:
 ```bash
 mdclaw validate_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir>
 mdclaw score_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file <run_task_dir>/score.json
-mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```

@@ -4940,7 +4940,7 @@ def prepare_complex(
     result["source_structure_id"] = _resolved_structure.get("source_structure_id")
 
     if _resolved_structure.get("input_resolution_error"):
-        return {
+        blocked = {
             **result,
             **create_validation_error(
                 "job_dir/node_id",
@@ -4953,6 +4953,15 @@ def prepare_complex(
                 code="input_resolution_blocked",
             ),
         }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="prepare_complex input resolution blocked",
+            )
+        return blocked
 
     if job_dir and node_id:
         _ctx = _validate_prepare_node_context(
@@ -4976,10 +4985,17 @@ def prepare_complex(
             source_model_id=source_model_id,
         )
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            blocked = {"success": False, "error_type": "ValidationError", **_ctx}
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="prepare_complex node execution context invalid",
+            )
 
     if not structure_file:
-        return {
+        blocked = {
             **result,
             **create_validation_error(
                 "structure_file",
@@ -4990,12 +5006,29 @@ def prepare_complex(
                 code="missing_structure_file",
             ),
         }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="prepare_complex missing structure_file",
+            )
+        return blocked
 
     # Validate input file
     structure_path = Path(structure_file)
     if not structure_path.exists():
         result["errors"].append(f"Structure file not found: {structure_file}")
         logger.error(f"Structure file not found: {structure_file}")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                result,
+                default_error="prepare_complex structure file not found",
+            )
         return result
 
     # Setup output directory.
@@ -6071,7 +6104,14 @@ def create_mutated_structure(
             actual_conditions={"sequence": sequence, "seq_file": seq_file, "name": name},
         )
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            blocked = {"success": False, "error_type": "ValidationError", **_ctx}
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="create_mutated_structure node execution context invalid",
+            )
 
     # Auto-resolve input from nearest prep ancestor (the cleaned merged.pdb,
     # not the raw source structure — mutation runs AFTER prepare_complex).
@@ -6086,6 +6126,14 @@ def create_mutated_structure(
         result["errors"].append(
             "Provide exactly one of `sequence` or `seq_file`."
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                result,
+                default_error="create_mutated_structure sequence input invalid",
+            )
         return result
 
     if not pdb_file:
@@ -6093,11 +6141,27 @@ def create_mutated_structure(
             "pdb_file is required (or pass --job-dir/--node-id with a prep "
             "ancestor that provides a merged_pdb artifact)."
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                result,
+                default_error="create_mutated_structure missing pdb_file",
+            )
         return result
 
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.is_file():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                result,
+                default_error="create_mutated_structure input PDB file not found",
+            )
         return result
 
     # Resolve output base_dir + begin_node
@@ -6679,6 +6743,14 @@ def phosphorylate_residues(
             "Provide exactly one of: --sites (JSON list), --sites-str "
             "('CHAIN:RESNUM:TARGET,...'), or --restore-from-detection."
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                result,
+                default_error="phosphorylate_residues site mode invalid",
+            )
         return result
 
     if job_dir and node_id:
@@ -6694,7 +6766,14 @@ def phosphorylate_residues(
             },
         )
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            blocked = {"success": False, "error_type": "ValidationError", **_ctx}
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="phosphorylate_residues node execution context invalid",
+            )
 
     # Resolve site list
     resolved_sites: list[dict] = []
@@ -7097,7 +7176,14 @@ def prepare_modified_nucleic(
         actual_conditions={"modifications": modifications},
     )
     if not ctx["success"]:
-        return {"success": False, "error_type": "ValidationError", **ctx}
+        blocked = {"success": False, "error_type": "ValidationError", **ctx}
+        from mdclaw._node import fail_node_from_result
+        return fail_node_from_result(
+            job_dir,
+            node_id,
+            blocked,
+            default_error="prepare_modified_nucleic node execution context invalid",
+        )
 
     merged_pdb = find_ancestor_artifact(job_dir, node_id, "prep", "merged_pdb")
     residue_mapping_path = find_ancestor_artifact(job_dir, node_id, "prep", "residue_mapping")

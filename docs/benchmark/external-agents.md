@@ -141,18 +141,12 @@ contract is the `submission/` directory, not the internal registry.
 
 ## Standard Flow
 
-Initialize a run with metadata for the agent under test:
+Create or choose a run directory with your harness/admin script. The benchmark
+agent should only receive the task prompt and a target submission directory;
+do not expose `truth/` or `scorer/`.
 
 ```bash
-mdclaw init_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id 20260510_external_gromacs_t06 \
-  --execution-mode lite \
-  --judge-mode deterministic \
-  --backend-name gromacs \
-  --backend-version 2024.4 \
-  --harness-name external-python-script \
-  --model-name my-agent
+mkdir -p benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/submission
 ```
 
 Run your agent or external program yourself. Give it the task prompt and a
@@ -181,9 +175,6 @@ mdclaw score_benchmark_submission \
   --submission-dir benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/submission \
   --run-id 20260510_external_gromacs_t06 \
   --output-file benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/score.json
-
-mdclaw summarize_benchmark_run \
-  --run-dir benchmark_runs/20260510_external_gromacs_t06
 ```
 
 ## Minimal T06 Submission

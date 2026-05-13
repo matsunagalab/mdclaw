@@ -72,6 +72,6 @@
   "notes": [
     "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
     "Prompt-only tasks name public sources; ground truth is held in <task>/truth/ (scorer-only).",
-    "Scored through the repository benchmark CLI; agents may use any MD backend that emits the submission contract."
+    "Validated and scored through the repository benchmark CLI; agents may use any MD backend that emits the submission contract."
   ]
 }

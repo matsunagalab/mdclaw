@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from mdclaw.benchmark import cli
+from mdclaw.benchmark import run as benchmark_run
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -29,7 +30,7 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
         pytest.skip("v1.0 dataset not present")
 
     output_dir = tmp_path / "benchmark_runs"
-    init = cli.init_benchmark_run(
+    init = benchmark_run.init_benchmark_run(
         output_dir=str(output_dir),
         run_id="e2e_smoke_t06",
         execution_mode="plan_only",
@@ -101,7 +102,7 @@ def test_e2e_smoke_run_for_t06(tmp_path: Path):
     assert payload["weighted_total"] == 1.0
     assert payload["scores"]["scientific_answer"] == 1.0
 
-    summary = cli.summarize_benchmark_run(run_dir=str(output_dir / "e2e_smoke_t06"))
+    summary = benchmark_run.summarize_benchmark_run(run_dir=str(output_dir / "e2e_smoke_t06"))
     assert summary["success"]
     summ = summary["summary"]
     assert summ["n_tasks"] == 1
@@ -116,7 +117,7 @@ def test_summary_dedup_on_re_run(tmp_path: Path):
         pytest.skip("v1.0 dataset not present")
 
     output_dir = tmp_path / "benchmark_runs"
-    cli.init_benchmark_run(
+    benchmark_run.init_benchmark_run(
         output_dir=str(output_dir),
         run_id="dedup_smoke",
         execution_mode="plan_only",
@@ -139,8 +140,8 @@ def test_summary_dedup_on_re_run(tmp_path: Path):
         output_file=str(sub_dir.parent / "score.json"),
     )
 
-    cli.summarize_benchmark_run(run_dir=str(output_dir / "dedup_smoke"))
-    cli.summarize_benchmark_run(run_dir=str(output_dir / "dedup_smoke"))
+    benchmark_run.summarize_benchmark_run(run_dir=str(output_dir / "dedup_smoke"))
+    benchmark_run.summarize_benchmark_run(run_dir=str(output_dir / "dedup_smoke"))
 
     rows = (output_dir / "summaries.jsonl").read_text().splitlines()
     assert len(rows) == 1, f"expected exactly one summary row, got {len(rows)}"

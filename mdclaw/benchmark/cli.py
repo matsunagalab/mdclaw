@@ -19,13 +19,6 @@ from mdclaw.benchmark.models import (
     SubmissionManifest,
     Task,
 )
-from mdclaw.benchmark.run import (
-    init_benchmark_run as _init_benchmark_run,
-)
-from mdclaw.benchmark.run import (
-    summarize_benchmark_run as _summarize_benchmark_run,
-)
-
 
 _DEFAULT_DATASET_DIR = "benchmarks/mdagentbench"
 
@@ -172,18 +165,6 @@ def score_benchmark_submission(
 
 
 # ---------------------------------------------------------------------------
-# Run lifecycle (re-exported from run.py)
-
-
-def init_benchmark_run(*args, **kwargs):
-    return _init_benchmark_run(*args, **kwargs)
-
-
-def summarize_benchmark_run(*args, **kwargs):
-    return _summarize_benchmark_run(*args, **kwargs)
-
-
-# ---------------------------------------------------------------------------
 # Schema / dataset maintenance
 
 
@@ -218,7 +199,5 @@ __all__ = [
     "validate_benchmark_task",
     "validate_benchmark_submission",
     "score_benchmark_submission",
-    "init_benchmark_run",
-    "summarize_benchmark_run",
     "write_benchmark_schemas",
 ]

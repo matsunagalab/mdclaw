@@ -708,3 +708,50 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
     assert helper_called["yes"] is False, (
         "Condition mismatch must short-circuit before the build helper runs."
     )
+    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+
+
+def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
+    from mdclaw.amber_server import build_amber_system
+
+    job_dir = tmp_path / "job_topo_missing_input"
+    update_job_params(str(job_dir), {"water_model": "opc"})
+    node = create_node(str(job_dir), "topo")
+    assert node["success"] is True
+
+    result = build_amber_system(job_dir=str(job_dir), node_id=node["node_id"])
+
+    assert result["success"] is False
+    assert result["code"] in {"input_resolution_blocked", "missing_pdb_file"}
+    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+
+
+def test_prepare_complex_node_input_resolution_marks_failed(tmp_path):
+    from mdclaw.structure_server import prepare_complex
+
+    job_dir = tmp_path / "job_prep_missing_source"
+    node = create_node(str(job_dir), "prep")
+    assert node["success"] is True
+
+    result = prepare_complex(job_dir=str(job_dir), node_id=node["node_id"])
+
+    assert result["success"] is False
+    assert result["code"] in {"input_resolution_blocked", "missing_structure_file"}
+    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"
+
+
+def test_solvate_structure_node_condition_mismatch_marks_failed(tmp_path):
+    job_dir = tmp_path / "job_solv_condition_mismatch"
+    node = create_node(str(job_dir), "solv", conditions={"water_model": "opc"})
+    assert node["success"] is True
+
+    result = solvate_structure(
+        pdb_file="missing.pdb",
+        water_model="tip3p",
+        job_dir=str(job_dir),
+        node_id=node["node_id"],
+    )
+
+    assert result["success"] is False
+    assert any("condition" in error for error in result.get("errors", []))
+    assert read_node(str(job_dir), node["node_id"])["status"] == "failed"

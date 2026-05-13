@@ -12,16 +12,14 @@ under ``submission/`` for validation and scoring.
 - ``judge``: LLM-judge file consumption (interface; full automation deferred).
 - ``validation``: task and submission validators (pydantic + structural).
 - ``run``: ``init_benchmark_run`` / ``summarize_benchmark_run`` and the durable
-  run records (``runs.jsonl`` / ``summaries.jsonl``).
-- ``cli``: scorer/validator tool functions exposed via the ``TOOLS`` dict and
-  the schema export tool.
+  run records (``runs.jsonl`` / ``summaries.jsonl``), used by harness/admin code.
+- ``cli``: task discovery, scorer/validator tool functions exposed via the
+  ``TOOLS`` dict, and the schema export tool.
 """
 
 from mdclaw.benchmark.cli import (
-    init_benchmark_run,
     list_benchmark_tasks,
     score_benchmark_submission,
-    summarize_benchmark_run,
     validate_benchmark_submission,
     validate_benchmark_task,
     write_benchmark_schemas,
@@ -33,6 +31,4 @@ TOOLS = {
     "validate_benchmark_task": validate_benchmark_task,
     "validate_benchmark_submission": validate_benchmark_submission,
     "score_benchmark_submission": score_benchmark_submission,
-    "init_benchmark_run": init_benchmark_run,
-    "summarize_benchmark_run": summarize_benchmark_run,
 }

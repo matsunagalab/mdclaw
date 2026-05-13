@@ -194,11 +194,11 @@ skill examples.
 
 - `list_benchmark_tasks(...)`: list MDAgentBench tasks, families, scoring axes,
   modes, and short intent summaries.
-- `init_benchmark_run(...)`: create a benchmark run directory and record
-  backend / harness / model metadata for the agent under test.
 - `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`: validate
   task contracts and submitted artifacts.
-- `score_benchmark_submission(...)`, `summarize_benchmark_run(...)`: score one
-  task submission and aggregate a run.
+- `score_benchmark_submission(...)`: score one task submission.
 - `write_benchmark_schemas(...)`: regenerate task / manifest / score JSON
   schemas from pydantic models.
+
+Run setup and aggregation helpers live in `mdclaw.benchmark.run` for
+harness/admin code, but are not exposed as `mdclaw` CLI tools.

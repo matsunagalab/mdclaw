@@ -161,19 +161,20 @@ Run benchmark validation/scoring commands either entirely inside the
 `mdclaw:latest` container (Mode A) or entirely inside a `mdclaw` conda env
 (Mode B). **Never mix scorer runtimes inside one run.**
 
-This runtime is for listing tasks, validating submissions, scoring, and
-summarizing. The agent or MD program under test can run elsewhere, including a
-GROMACS installation, a standalone OpenMM script, another container, or an LLM
-runner, as long as it writes the required `submission/` files.
+This runtime is for listing tasks, validating submissions, and scoring. The
+agent or MD program under test can run elsewhere, including a GROMACS
+installation, a standalone OpenMM script, another container, or an LLM runner,
+as long as it writes the required `submission/` files. Run-directory setup and
+aggregation are harness/admin responsibilities, not agent-facing CLI steps.
 
 ```bash
 # Mode A — container self-contained
 docker run --rm -v "$PWD:/work" -w /work mdclaw:latest \
-  mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <id>
+  mdclaw validate_benchmark_submission --task-file <task.json> --submission-dir <submission_dir>
 
 # Mode B — conda self-contained
-conda run -n mdclaw mdclaw init_benchmark_run \
-  --output-dir benchmark_runs --run-id <id>
+conda run -n mdclaw mdclaw validate_benchmark_submission \
+  --task-file <task.json> --submission-dir <submission_dir>
 
 # bin/mdclaw wrapper auto-selects Mode B when a 'mdclaw' conda env exists,
 # otherwise falls back to singularity → docker.
@@ -227,11 +228,10 @@ mdclaw score_benchmark_submission \
   --run-id <run_id> \
   --output-file benchmark_runs/<run_id>/tasks/T01_engine_smoke/score.json
 
-# 4. Aggregate:
-mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```
 
-The run tools append durable records to:
+Harness/admin code may use `mdclaw.benchmark.run` to create run directories and
+aggregate per-task `score.json` files. Those helpers append durable records to:
 
 - `benchmark_runs/runs.jsonl`
 - `benchmark_runs/summaries.jsonl`

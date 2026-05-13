@@ -16,6 +16,7 @@ import inspect
 import json
 import logging
 import sys
+import types
 from pathlib import Path
 from typing import Union, get_args, get_origin
 
@@ -83,9 +84,11 @@ def _discover_tools() -> dict[str, dict]:
 def _unwrap_optional(hint):
     """If hint is Optional[X] (Union[X, None]), return (X, True). Else (hint, False)."""
     origin = get_origin(hint)
-    if origin is Union:
+    if origin is Union or origin is types.UnionType:
         args = get_args(hint)
         non_none = [a for a in args if a is not type(None)]
+        if len(non_none) == len(args):
+            return hint, False
         if len(non_none) == 1:
             return non_none[0], True
         return hint, True  # complex Union — treat as optional
@@ -151,6 +154,7 @@ def _takes_json(hint) -> bool:
     ``list[str]`` stays on the plain ``nargs='+'`` path — that's a
     better CLI UX for flat lists.
     """
+    hint, _ = _unwrap_optional(hint)
     return _is_dict_type(hint) or _is_list_of_dict(hint) or _is_list_of_list(hint)
 
 

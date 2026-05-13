@@ -1610,7 +1610,11 @@ def _resolve_build_amber_node_inputs(
     is_membrane: Optional[bool],
 ) -> dict:
     """Validate and merge DAG-resolved inputs for ``build_amber_system``."""
-    from mdclaw._node import resolve_node_inputs, validate_node_execution_context
+    from mdclaw._node import (
+        fail_node_from_result,
+        resolve_node_inputs,
+        validate_node_execution_context,
+    )
 
     ctx = validate_node_execution_context(
         job_dir,
@@ -1619,19 +1623,29 @@ def _resolve_build_amber_node_inputs(
         actual_conditions=actual_conditions,
     )
     if not ctx["success"]:
-        return {"success": False, "error_type": "ValidationError", **ctx}
+        return fail_node_from_result(
+            job_dir,
+            node_id,
+            {"success": False, "error_type": "ValidationError", **ctx},
+            default_error="build_amber_system node execution context invalid",
+        )
 
     inputs = resolve_node_inputs(job_dir, node_id, "topo")
     if "input_resolution_error" in inputs:
-        return create_validation_error(
-            "job_dir/node_id",
-            inputs["input_resolution_error"],
-            expected="Completed solv/prep ancestor with topology input artifacts",
-            actual=f"job_dir={job_dir}, node_id={node_id}",
-            context_extra={
-                "input_resolution_errors": inputs.get("input_resolution_errors", []),
-            },
-            code="input_resolution_blocked",
+        return fail_node_from_result(
+            job_dir,
+            node_id,
+            create_validation_error(
+                "job_dir/node_id",
+                inputs["input_resolution_error"],
+                expected="Completed solv/prep ancestor with topology input artifacts",
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": inputs.get("input_resolution_errors", []),
+                },
+                code="input_resolution_blocked",
+            ),
+            default_error="build_amber_system input resolution blocked",
         )
     return {
         "success": True,
@@ -1841,7 +1855,7 @@ def build_amber_system(
         is_membrane = False
 
     if not pdb_file:
-        return create_validation_error(
+        blocked = create_validation_error(
             "pdb_file",
             "pdb_file is required",
             expected="Explicit PDB path, or --job-dir/--node-id for DAG auto-resolve",
@@ -1849,6 +1863,15 @@ def build_amber_system(
             hints=["Run solvate_structure first for explicit solvent, or prepare_complex for implicit topology."],
             code="missing_pdb_file",
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system missing pdb_file",
+            )
+        return blocked
 
     logger.info(f"Building Amber system from: {pdb_file}")
 
@@ -2062,7 +2085,7 @@ def build_amber_system(
     canonical_forcefield = _canonical_forcefield_name(forcefield)
     if not canonical_forcefield:
         logger.error(f"Unknown force field: {forcefield}")
-        return {
+        blocked = {
             **result,
             **create_validation_error(
                 "forcefield",
@@ -2072,6 +2095,15 @@ def build_amber_system(
                 warnings=result["warnings"],
             ),
         }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system unknown forcefield",
+            )
+        return blocked
     forcefield = canonical_forcefield
     result["parameters"]["forcefield"] = forcefield
 
@@ -2079,7 +2111,7 @@ def build_amber_system(
     canonical_water_model = _canonical_water_model_name(water_model)
     if not canonical_water_model:
         logger.error(f"Unknown water model: {water_model}")
-        return {
+        blocked = {
             **result,
             **create_validation_error(
                 "water_model",
@@ -2089,6 +2121,15 @@ def build_amber_system(
                 warnings=result["warnings"],
             ),
         }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system unknown water_model",
+            )
+        return blocked
     water_model = canonical_water_model
     result["parameters"]["water_model"] = (
         water_model if solvent_type == "explicit" else None
@@ -2118,7 +2159,7 @@ def build_amber_system(
         compatibility_results = _evaluate_forcefield_water_guardrails(forcefield, water_model)
         blocking_results, warning_results = split_guardrail_results(compatibility_results)
         if blocking_results:
-            return {
+            blocked = {
                 **result,
                 **create_validation_error_from_guardrails(
                     "water_model",
@@ -2128,6 +2169,15 @@ def build_amber_system(
                     actual=f"{forcefield} + {water_model}",
                 ),
             }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="build_amber_system water model blocked",
+                )
+            return blocked
         result["warnings"].extend(guardrail_messages(warning_results))
 
     # Validate input PDB file and detect standard nucleic content after
@@ -2135,7 +2185,16 @@ def build_amber_system(
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.exists():
         logger.error(f"Input PDB file not found: {pdb_file}")
-        return create_file_not_found_error(str(pdb_file), "Input PDB file")
+        blocked = create_file_not_found_error(str(pdb_file), "Input PDB file")
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system input PDB file not found",
+            )
+        return blocked
 
     nucleic_content = detect_nucleic_content(pdb_path)
     result["nucleic_content"] = nucleic_content
@@ -2198,10 +2257,19 @@ def build_amber_system(
         import openmmforcefields  # noqa: F401
     except ImportError:
         logger.error("openmmforcefields not available")
-        return create_tool_not_available_error(
+        blocked = create_tool_not_available_error(
             "openmmforcefields",
             "Run `conda env update -f environment.yml` to install the openmmforcefields-unification deps"
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system dependency missing",
+            )
+        return blocked
 
     # Validate water model (for explicit solvent)
     actual_water_model = water_model  # May be overridden by detection
@@ -2243,12 +2311,21 @@ def build_amber_system(
 
         if not _ff_catalog.normalize_water(actual_water_model):
             logger.error(f"Unknown water model: {actual_water_model}")
-            return create_validation_error(
+            blocked = create_validation_error(
                 "water_model",
                 f"Unknown water model: {actual_water_model}",
                 expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
                 actual=actual_water_model,
             )
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="build_amber_system unknown detected water_model",
+                )
+            return blocked
 
         # Update metadata with actual water model (may differ from requested)
         result["parameters"]["water_model"] = actual_water_model
@@ -2324,7 +2401,7 @@ def build_amber_system(
             if name and not is_glycan_residue_name(name)
         )
         if unsupported_glycans:
-            return {
+            blocked = {
                 **result,
                 **create_validation_error(
                     "glycan_metadata",
@@ -2335,6 +2412,15 @@ def build_amber_system(
                 ),
                 "code": "unsupported_glycan_residue",
             }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="build_amber_system unsupported glycan residue",
+                )
+            return blocked
     result["parameters"]["glycan_library"] = glycan_library
 
     # Validate ligand parameters
@@ -2344,7 +2430,7 @@ def build_amber_system(
         if ligand_errors:
             result["errors"].extend(ligand_errors)
             logger.error(f"Ligand validation failed: {ligand_errors}")
-            return {
+            blocked = {
                 **result,
                 "error_type": "ValidationError",
                 "code": "invalid_ligand_parameters",
@@ -2353,6 +2439,15 @@ def build_amber_system(
                     "openmmforcefields build."
                 ),
             }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="build_amber_system invalid ligand parameters",
+                )
+            return blocked
     
     # Setup output directory
     _node_mode = job_dir and node_id
@@ -3956,4 +4051,3 @@ def _run_openmmforcefields_build(
 TOOLS = {
     "build_amber_system": build_amber_system,
 }
-

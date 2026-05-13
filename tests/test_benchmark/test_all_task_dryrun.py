@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from mdclaw.benchmark import cli
+from mdclaw.benchmark import run as benchmark_run
 from tests.test_benchmark import _fake_submissions
 
 
@@ -24,7 +25,7 @@ def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:
     assert listed["success"], listed
 
     run_id = f"all_task_{mode}"
-    init = cli.init_benchmark_run(
+    init = benchmark_run.init_benchmark_run(
         output_dir=str(tmp_path),
         run_id=run_id,
         execution_mode="dry_run",
@@ -52,7 +53,7 @@ def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:
         assert scored["success"], scored
         task_results[task_id] = scored["score"]
 
-    summary = cli.summarize_benchmark_run(run_dir=str(run_dir))
+    summary = benchmark_run.summarize_benchmark_run(run_dir=str(run_dir))
     assert summary["success"], summary
     summary_payload = summary["summary"]
     summary_tasks = {

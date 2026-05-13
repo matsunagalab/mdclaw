@@ -569,12 +569,21 @@ def solvate_structure(
 
     canonical_water_model = _normalize_water_model_name(water_model)
     if not canonical_water_model:
-        return create_validation_error(
+        blocked = create_validation_error(
             "water_model",
             f"Unknown water model: {water_model}",
             expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
             actual=water_model,
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="solvate_structure unknown water_model",
+            )
+        return blocked
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
 
@@ -595,7 +604,14 @@ def solvate_structure(
             },
         )
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            blocked = {"success": False, "error_type": "ValidationError", **_ctx}
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="solvate_structure node execution context invalid",
+            )
     
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id and not pdb_file:
@@ -993,12 +1009,21 @@ def embed_in_membrane(
 
     canonical_water_model = _normalize_water_model_name(water_model)
     if not canonical_water_model:
-        return create_validation_error(
+        blocked = create_validation_error(
             "water_model",
             f"Unknown water model: {water_model}",
             expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
             actual=water_model,
         )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="embed_in_membrane unknown water_model",
+            )
+        return blocked
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
 
@@ -1024,7 +1049,14 @@ def embed_in_membrane(
             },
         )
         if not _ctx["success"]:
-            return {"success": False, "error_type": "ValidationError", **_ctx}
+            blocked = {"success": False, "error_type": "ValidationError", **_ctx}
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="embed_in_membrane node execution context invalid",
+            )
 
     # Auto-resolve input from DAG when in node mode and pdb_file not provided
     if job_dir and node_id and not pdb_file:
@@ -1284,4 +1316,3 @@ TOOLS = {
     "embed_in_membrane": embed_in_membrane,
     "list_available_lipids": list_available_lipids,
 }
-
