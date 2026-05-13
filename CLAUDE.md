@@ -1,7 +1,8 @@
-# CLAUDE.md
+# MDClaw Agent Guide
 
-This file is the always-read agent guide for MDClaw. Keep it short. Put long
-reference material under `docs/developer/` and link to it from here.
+This guide is mirrored as both `CLAUDE.md` and `AGENTS.md`. Keep the two copies
+identical. Keep it short. Put long reference material under `docs/developer/`
+and link to it from here.
 
 ## Project Overview
 
@@ -82,7 +83,7 @@ Core schema v3 rules:
 - One `job_dir` represents one physical system with exactly one `source` root.
 - Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod`.
 - `eq` accepts both `topo` and prior `eq` parents (multi-stage equilibration
-  chains, e.g. NPT compress → NVT thermalize → NPT relax).
+  chains, e.g. NPT compress -> NVT thermalize -> NPT relax).
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.

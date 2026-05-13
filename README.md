@@ -347,9 +347,9 @@ ignored by git and is intended for developer reference material only.
 5. Commit
 ```
 
-See `CLAUDE.md` for the short agent guide and `docs/developer/` for tool
-reference, architecture details, test levels, container internals, release
-steps, and configuration.
+See `CLAUDE.md` / `AGENTS.md` for the mirrored short agent guide and
+`docs/developer/` for tool reference, architecture details, test levels,
+container internals, release steps, and configuration.
 
 ### Release
 
