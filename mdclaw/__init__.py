@@ -1,6 +1,7 @@
-"""MDClaw - AI-powered molecular dynamics setup.
+"""MDClaw - skills and CLIs for vibe-MD simulations.
 
-CLI tools + skills architecture for MD simulation preparation.
+The package provides tools for MD preparation, simulation, analysis, and
+evidence capture in autonomous scientific investigation.
 """
 
 __version__ = "0.5.2"

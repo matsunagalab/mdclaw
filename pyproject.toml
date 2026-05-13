@@ -1,7 +1,7 @@
 [project]
 name = "mdclaw"
 version = "0.5.2"
-description = "MDClaw - AI-powered Molecular Dynamics Setup"
+description = "MDClaw - skills and CLIs for vibe-MD simulations and autonomous scientific investigation"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

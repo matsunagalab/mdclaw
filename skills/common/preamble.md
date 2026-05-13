@@ -10,4 +10,4 @@
 - The portable skill contract is Markdown + `mdclaw` CLI. Slash commands
   such as `/md-prepare` are optional shortcuts in harnesses that provide them.
 - Do not infer Amber/OpenMM defaults from training data. Tool signatures,
-  structured guardrails, and these runbooks are authoritative.
+  structured guardrails, and the MDClaw skill instructions are authoritative.

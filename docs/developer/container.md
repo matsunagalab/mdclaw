@@ -1,8 +1,12 @@
-# Container Build And Distribution
+# Container Runtime Build And Distribution
 
-The production image contains CUDA runtime, PyTorch, AmberTools, OpenMM,
-Boltz-2, PyMOL (`pymol-open-source`, for headless structure previews), and the
-`mdclaw` CLI.
+The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
+CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2, and PyMOL
+(`pymol-open-source`, for headless structure previews).
+
+It is not a separate skill distribution. Agent-facing skill text stays in
+`skills/`; Docker and Singularity/Apptainer only provide the execution
+environment behind `mdclaw <tool>`.
 
 ## Build And Test
 
@@ -25,6 +29,8 @@ docker push ghcr.io/matsunagalab/mdclaw:latest
 The GHCR package must be public for unauthenticated Singularity pulls.
 
 ## Singularity
+
+The Docker image published to GHCR is also the source for the HPC SIF:
 
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest

@@ -2,25 +2,25 @@
 
 MDClaw deployment has two separate concerns:
 
-1. **Agent skill discovery**: how the agent finds the MDClaw runbooks.
+1. **Agent skill discovery**: how the agent finds the MDClaw skills.
 2. **MD runtime execution**: how `mdclaw <tool>` reaches AmberTools, OpenMM,
    Python dependencies, and optional GPU/container support.
 
-Keeping these separate avoids most deployment confusion. Skills tell the agent
-what to run; conda, SIF, Docker, or a local install provide the scientific
-software stack.
+Keeping these separate avoids most deployment confusion. Skills help the agent
+turn a scientific request into MD actions; conda, SIF, Docker, or a local
+install provide the scientific software stack used by the CLI.
 
 ## Directory Roles
 
 | Path | Role | Commit Status |
 |---|---|---|
-| `skills/<name>/SKILL.md` | Source-of-truth runbooks. All harnesses should ultimately read these. | Tracked |
+| `skills/<name>/SKILL.md` | Source-of-truth MDClaw skills. All harnesses should ultimately read these. | Tracked |
 | `.agents/skills/<name>` | Generic Agent Skills discovery entries, symlinked to `skills/<name>`. | Tracked symlinks; can be regenerated |
 | `.claude/skills/<name>` | Repo-local Claude Code skill discovery entries, symlinked to `skills/<name>`. | Tracked symlinks; can be regenerated |
 | `.claude-plugin/` | Claude plugin marketplace metadata. | Tracked distribution metadata |
-| `hooks/hooks.json` | Claude plugin lifecycle hooks. SessionStart runs container setup. | Tracked plugin hook |
+| `hooks/hooks.json` | Claude plugin lifecycle hooks. SessionStart prepares the packaged MD runtime. | Tracked plugin hook |
 | `bin/mdclaw` | Runtime wrapper. Chooses conda, Singularity/Apptainer, Docker, or local CLI. | Tracked executable |
-| `container/` | Docker/Singularity image build assets. | Tracked runtime build |
+| `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. | Tracked runtime build |
 
 These directories are intentionally not all the same thing. For example,
 `.claude-plugin/` does not contain the skills; it tells Claude how to install
@@ -31,7 +31,7 @@ of truth; they are discovery surfaces that mirror `skills/`.
 
 | User / Harness | Skill Discovery | Runtime Path | Commands |
 |---|---|---|---|
-| Claude Code plugin user | Plugin exposes `skills/` and `/mdclaw:*` commands | `bin/mdclaw` plus SessionStart container setup | `/plugin install mdclaw@mdclaw` |
+| Claude Code plugin user | Plugin exposes `skills/` and `/mdclaw:*` commands | `bin/mdclaw` plus SessionStart runtime setup | `/plugin install mdclaw@mdclaw` |
 | Repo-local Claude Code developer | `.claude/skills/` mirrors `skills/` | Usually conda env `mdclaw`; `bin/mdclaw` also works | Open repo, use discovered skills |
 | Pi | `package.json` points Pi at `./skills` | Conda, SIF, Docker, or local CLI | `pi install git:github.com/matsunagalab/mdclaw@main` |
 | Codex / OpenCode / generic skill harness | `.agents/skills/` mirrors `skills/` | Conda, SIF, Docker, or local CLI | `scripts/install-agent-skills.sh` |
@@ -47,7 +47,7 @@ Install from the plugin marketplace:
 ```
 
 The plugin install provides `skills/`, `bin/mdclaw`, plugin metadata, and the
-SessionStart hook. The hook runs:
+SessionStart hook. The hook prepares the packaged MD runtime by running:
 
 ```text
 scripts/setup-container.sh
@@ -57,6 +57,10 @@ That script checks the plugin version, then either:
 
 - pulls a Singularity/Apptainer SIF from GHCR when available, or
 - pulls the Docker image as a desktop fallback.
+
+The container is only the scientific execution environment for `mdclaw <tool>`.
+It is not a second skill source and does not change the prompt-facing MDClaw
+skills.
 
 The plugin command namespace is prefixed:
 
@@ -141,6 +145,10 @@ Host-side SLURM tools run natively because they need `sbatch`, `squeue`,
 `sinfo`, `sacct`, and `scancel`. Compute-heavy tools run inside the selected
 runtime when possible.
 
+SIF and Docker are two forms of the same packaged MD runtime. Use them when
+the host does not already provide the conda scientific stack, or when a
+reproducible runtime boundary is more useful than a local editable install.
+
 ### Conda Runtime
 
 ```bash
@@ -169,7 +177,8 @@ singularity exec --nv "$MDCLAW_SIF" python -m openmm.testInstallation
 
 ### Docker Runtime
 
-Docker is the easiest desktop container path:
+Docker is the easiest desktop container path. It uses the same GHCR image that
+can be converted to a SIF for Singularity/Apptainer on HPC:
 
 ```bash
 export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest

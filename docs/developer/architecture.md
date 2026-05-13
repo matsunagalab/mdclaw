@@ -1,14 +1,15 @@
 # MDClaw Developer Architecture
 
-MDClaw is easiest to understand as a small set of layers that meet at the
-`mdclaw` CLI. Agent-facing files decide what should happen. Python tool modules
-do the work. The node DAG records what actually happened.
+MDClaw provides skills and CLIs for vibe-MD simulations and autonomous
+scientific investigation. The skills turn scientific intent into MD actions,
+the Python tool modules do the work, and the node DAG records what actually
+happened.
 
 ## Mental Model
 
 | Layer | Responsibility | Main Files |
 |---|---|---|
-| Agent guidance | Short runbooks that an agent reads before choosing tools | `skills/`, `.agents/skills/`, `.claude/skills/` |
+| Skill layer | Agent-facing MD decision policy and procedures | `skills/`, `.agents/skills/`, `.claude/skills/` |
 | CLI and dispatch | Parse command-line calls, discover tools, inject node context | `bin/mdclaw`, `mdclaw/_cli.py`, `mdclaw/_registry.py` |
 | Tool execution | Fetch structures, prepare systems, build OpenMM XML, run MD, analyze output | `mdclaw/*_server.py` |
 | State and evidence | Record node status, artifacts, events, and reports | `mdclaw/_node.py`, `mdclaw/_event.py`, `mdclaw/evidence_server.py` |
@@ -16,7 +17,7 @@ do the work. The node DAG records what actually happened.
 
 The key design split is:
 
-- **Skills decide what to run.**
+- **Skills translate scientific intent into tool choices.**
 - **Tools run it and record state.**
 - **The DAG is the source of truth for workflow progress.**
 
@@ -41,8 +42,8 @@ flowchart LR
 
 Important boundaries:
 
-- `skills/*/SKILL.md` should contain orchestration guidance, not hidden state
-  mutation logic.
+- `skills/*/SKILL.md` should contain scientific decision policy and tool-use
+  procedure, not hidden state mutation logic.
 - `_cli.py` is the common entry point for direct users and agents.
 - `_registry.py` maps public tool names to `mdclaw/*_server.py` functions.
 - Workflow tools receive `job_dir` and `node_id`, then call `begin_node`,
@@ -54,14 +55,14 @@ Important boundaries:
 
 | Path | Role |
 |---|---|
-| `skills/` | Source-of-truth skill runbooks. |
+| `skills/` | Source-of-truth MDClaw skills. |
 | `.agents/skills/` | Generic Agent Skills discovery surface, normally symlinked to `skills/`. |
 | `.claude/skills/` | Repo-local Claude Code skill discovery surface, normally symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
-| `hooks/` | Plugin lifecycle hooks, including container setup. |
+| `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper that selects conda, SIF, Docker, or local CLI. |
 | `mdclaw/` | Python package, CLI dispatch, server tools, state helpers. |
-| `container/` | Docker/Singularity build assets. |
+| `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
 | `scripts/` | Setup, doctor, release, and maintenance scripts. |
 | `benchmarks/mdagentbench/` | Benchmark prompts, scorer-only metadata, and truth artifacts. |
 | `docs/` | User, agent, developer, benchmark, and research documentation. |

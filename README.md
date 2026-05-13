@@ -1,10 +1,10 @@
 # MDClaw
 
-MDClaw is an agent-facing molecular dynamics workflow toolkit for the
-Amber/OpenMM ecosystem. It gives an AI agent short runbooks, a `mdclaw` CLI,
-and a durable job DAG so the agent can prepare systems, run equilibration and
-production MD, analyze trajectories, and report evidence without hand-editing
-state files.
+MDClaw provides skills and CLIs for vibe-MD simulations and autonomous
+scientific investigation in the Amber/OpenMM ecosystem. It helps an AI agent
+turn scientific intent into reproducible atomistic work: prepare systems, run
+equilibration and production MD, analyze trajectories, branch hypotheses, and
+package evidence with provenance.
 
 ## What MDClaw Can Do
 
@@ -28,12 +28,12 @@ understood separately:
 
 | Layer | What It Is | Main Files |
 |---|---|---|
-| Agent guidance | Skills/runbooks that tell an agent what to do | `skills/`, `.agents/skills/`, `.claude/skills/` |
+| Skill layer | Agent-facing MD decision policy and procedures | `skills/`, `.agents/skills/`, `.claude/skills/` |
 | MD runtime | The scientific software stack and CLI that perform the work | `bin/mdclaw`, `mdclaw/`, `container/`, `hooks/` |
 
-The skills are text and are portable across agent harnesses. The runtime is
-provided by a conda environment, Singularity/Apptainer SIF, Docker image, or a
-local editable install.
+The skills are text and are portable across agent harnesses. The MD runtime is
+the packaged scientific stack behind the CLI: a conda environment,
+Singularity/Apptainer SIF, Docker image, or local editable install.
 
 ## Install / Deploy
 
@@ -43,8 +43,8 @@ OpenMM, AmberTools, container availability, and skill discovery.
 
 ### Claude Code Plugin
 
-Use this when you want `/mdclaw:*` slash commands and the plugin-managed
-container hook.
+Use this when you want `/mdclaw:*` slash commands and plugin-managed runtime
+setup.
 
 ```text
 /plugin marketplace add matsunagalab/mdclaw
@@ -54,12 +54,14 @@ container hook.
 The plugin provides:
 
 - `.claude-plugin/`: marketplace metadata.
-- `hooks/hooks.json`: SessionStart hook that runs `scripts/setup-container.sh`.
+- `hooks/hooks.json`: SessionStart hook that prepares the packaged MD runtime.
 - `bin/mdclaw`: runtime wrapper that chooses conda, SIF, or Docker.
-- `skills/`: the same runbooks used by other agents.
+- `skills/`: the same MDClaw skills used by other agents.
 
-The container is downloaded on first session start. On HPC it prefers a SIF
-for Singularity/Apptainer; on desktop it can use Docker.
+The plugin prepares the container runtime on first session start. On HPC it
+prefers a SIF for Singularity/Apptainer; on desktop it can use Docker. This is
+only the execution environment for `mdclaw <tool>`; skill discovery remains the
+same text files under `skills/`.
 
 ### Pi
 
@@ -160,14 +162,14 @@ hide too many scientific and operational choices.
 
 | Path | Role |
 |---|---|
-| `skills/` | Portable agent runbooks. This is the source of truth for skill behavior. |
+| `skills/` | Portable MDClaw skills. This is the source of truth for skill behavior. |
 | `.agents/skills/` | Generic Agent Skills discovery entries, symlinked to `skills/`. |
 | `.claude/skills/` | Repo-local Claude Code skill discovery entries, symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
-| `hooks/` | Plugin lifecycle hooks, including container setup. |
+| `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
 | `mdclaw/` | Python package and CLI tool implementations. |
-| `container/` | Docker/Singularity build assets. |
+| `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
 | `benchmarks/mdagentbench/` | MDAgentBench dataset and scorer contracts. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |

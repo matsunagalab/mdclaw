@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Download the MDClaw container matching the plugin version.
+# Prepare the packaged MDClaw runtime matching the plugin version.
 #
 # Priority: Singularity/Apptainer (SIF) > Docker (image pull)
 #   - Singularity/Apptainer: preferred on HPC clusters

@@ -51,6 +51,8 @@ readable, put `mdclaw` on `PATH`, and provide one runtime:
 
 `bin/mdclaw` auto-selects conda first, then SIF with Singularity/Apptainer, then
 Docker, and finally a local `mdclaw` command if one is already on `PATH`.
+The SIF and Docker options are packaged MD runtimes for the CLI; they do not
+replace or duplicate the agent-facing skill files.
 
 ## CLI Basics
 

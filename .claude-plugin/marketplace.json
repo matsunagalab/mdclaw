@@ -4,14 +4,14 @@
     "name": "matsunagalab"
   },
   "metadata": {
-    "description": "AI-powered Molecular Dynamics tools and skills for Claude Code",
+    "description": "Skills and CLIs for vibe-MD simulations and autonomous scientific investigation",
     "version": "0.5.2"
   },
   "plugins": [
     {
       "name": "mdclaw",
       "source": "./",
-      "description": "MD preparation, simulation, and analysis skills with CLI tools for the Amber/OpenMM ecosystem",
+      "description": "MDClaw skills and CLI tools for preparing systems, running MD, analyzing trajectories, and packaging atomistic evidence",
       "version": "0.5.2",
       "license": "MIT",
       "keywords": ["molecular-dynamics", "amber", "openmm"],

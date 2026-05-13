@@ -6,11 +6,12 @@ and link to it from here.
 
 ## Project Overview
 
-MDClaw is an AI-assisted system for building Amber/OpenMM molecular dynamics
-workflows. It combines:
+MDClaw provides skills and CLIs for vibe-MD simulations and autonomous
+scientific investigation in the Amber/OpenMM ecosystem. It combines:
 
 - `mdclaw <tool>` CLI tools for concrete MD operations.
-- `skills/*/SKILL.md` runbooks for workflow orchestration.
+- `skills/*/SKILL.md` instructions for translating scientific intent into MD
+  actions.
 - Boltz-2 for AI structure prediction.
 - AmberTools (`pdb4amber`, `antechamber`, `cpptraj`) for structure preparation.
 - `openmmforcefields` (`SystemGenerator` + `GAFFTemplateGenerator`) for force-field
@@ -27,7 +28,7 @@ ForceField XML.
 ## Where Things Live
 
 - `mdclaw/`: Python package and CLI tool implementations.
-- `skills/`: platform-agnostic workflow guidance.
+- `skills/`: platform-agnostic MDClaw skill instructions.
 - `.agents/skills/`, `.claude/skills/`: skill discovery mirrors of `skills/`.
 - `.claude-plugin/`, `bin/`, `hooks/`: plugin distribution and runtime wrapper.
 - `tests/`: unit, smoke, and pipeline tests.
@@ -78,7 +79,7 @@ md-prepare -> md-equilibration -> md-production -> md-analyze
 
 Core schema v3 rules:
 
-- `skill = what to run`; skills orchestrate only and do not mutate state.
+- `skill = scientific intent and procedure`; skills do not mutate state.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
 - One `job_dir` represents one physical system with exactly one `source` root.
 - Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod`.

@@ -1,7 +1,7 @@
 # Release Workflow
 
-Skills and the containerized tools ship through separate channels. Keep the
-plugin metadata and Python package version in sync.
+Skills and the containerized MD runtime ship through separate channels. Keep
+the plugin metadata, Python package version, and image tags in sync.
 
 ## Version Locations
 
@@ -23,12 +23,12 @@ git commit -m "release: vX.Y.Z"
 git tag vX.Y.Z
 git push origin main --tags
 
-# 3. Build and test the image
+# 3. Build and test the packaged MD runtime image
 docker build -f container/Dockerfile -t mdclaw:latest .
 docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
   mdclaw:latest bash /work/test.sh
 
-# 4. Push versioned and latest images
+# 4. Push versioned and latest runtime images
 docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:X.Y.Z
 docker tag mdclaw:latest ghcr.io/matsunagalab/mdclaw:latest
 docker push ghcr.io/matsunagalab/mdclaw:X.Y.Z

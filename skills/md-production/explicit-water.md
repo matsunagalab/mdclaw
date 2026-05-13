@@ -67,7 +67,8 @@ For extension/retry details, read `skills/md-production/restart.md`.
 ### SLURM Execution (HPC)
 
 For long runs, multi-replicate sweeps, or fan-out across many systems, hand off
-to `/hpc-run`. Do not duplicate sbatch patterns here; use the focused runbooks:
+to HPC execution. Do not duplicate sbatch patterns here; use the focused
+HPC guidance:
 
 - `skills/hpc-run/submit-single.md`
 - `skills/hpc-run/submit-array.md`

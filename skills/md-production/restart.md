@@ -2,7 +2,7 @@
 
 Use this page only when a production run is being extended, retried, or
 debugged. Normal first-time production runs can stay in `SKILL.md` and the
-solvent-specific runbook.
+solvent-specific guidance page.
 
 ## Recommended Extension Path
 

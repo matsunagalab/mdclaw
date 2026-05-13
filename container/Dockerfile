@@ -1,4 +1,8 @@
-# MDClaw: All-in-one container (GPU/CPU unified)
+# MDClaw: packaged Amber/OpenMM runtime for skills and CLIs
+# Provides the scientific software stack behind `mdclaw <tool>` for vibe-MD
+# simulations, autonomous scientific investigation, and reproducible atomistic
+# evidence. Skills remain text files under `skills/`; this image is the
+# execution environment.
 # 3-stage build: mambaforge -> OpenMM source build (CUDA 11.8) -> slim runtime
 #
 # Driver compatibility:
@@ -133,6 +137,12 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 # Stage 3: Slim runtime
 # =============================================================================
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-runtime-ubuntu22.04
+
+LABEL org.opencontainers.image.title="MDClaw" \
+      org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs: vibe-MD simulations, autonomous scientific investigation, and reproducible atomistic evidence." \
+      org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
+      org.opencontainers.image.documentation="https://github.com/matsunagalab/mdclaw#readme" \
+      org.opencontainers.image.licenses="MIT"
 
 # Minimal runtime dependencies
 RUN apt-get update && \

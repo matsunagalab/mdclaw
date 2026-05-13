@@ -1,6 +1,6 @@
 ---
 name: md-analyze
-description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Routes concat, metric, and troubleshooting workflows through focused runbooks."
+description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Routes concat, metric, and troubleshooting workflows through focused guidance pages."
 ---
 
 # MD Analyze
@@ -12,7 +12,7 @@ Analysis is always user-initiated. Production does not chain into analysis;
 the user or harness invokes this skill when ready. In harnesses with slash
 commands, `/md-analyze` is the shortcut.
 
-## Route To The Right Runbook
+## Route To The Right Guidance
 
 - Combine a production lineage into an analysis trajectory:
   `skills/md-analyze/concat.md`

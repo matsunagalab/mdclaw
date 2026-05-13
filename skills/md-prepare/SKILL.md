@@ -21,7 +21,7 @@ pairing is enforced by guardrails — `ff19SB + tip3p` is rejected as a
 structured error (code `forcefield_water_blocked`).
 
 Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
-guardrails are authoritative; the runbooks provide quick references:
+guardrails are authoritative; the skill guidance provides quick references:
 
 - `skills/md-prepare/defaults-and-guardrails.md` — preparation defaults,
   guardrails, and ligand failure policy
@@ -30,14 +30,14 @@ guardrails are authoritative; the runbooks provide quick references:
   salt)
 - `skills/md-prepare/implicit-water.md` — implicit-solvent defaults
 
-Read the relevant runbook **before** writing any value into the Step 0
+Read the relevant guidance page **before** writing any value into the Step 0
 confirmation summary or executing any tool.
 
 ## Workflow
 
 The required execution order is **read → confirm → execute**. Do not
 present defaults to the user, and do not run any tool, before the
-runbooks for the relevant solvation mode have been read.
+guidance pages for the relevant solvation mode have been read.
 
 This skill prepares **one physical system per job directory**. Do not
 create multiple source roots in the same DAG. Use DAG branching only
@@ -55,21 +55,21 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
        --params '{"execution_mode":"autonomous"}'
      ```
 2. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
-   setup runbooks for acquisition, inspection, cleaning, branches, and resume.
+   setup guidance for acquisition, inspection, cleaning, branches, and resume.
    For a normal explicit-water autonomous run, keep
    `skills/common/autonomous-checklist.md` as the short execution spine and
-   open only the task-specific runbooks tagged by `setup.md`.
-3. **Read the solvation-specific runbook** — required before stating
+   open only the task-specific guidance pages tagged by `setup.md`.
+3. **Read the solvation-specific guidance page** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
    - Implicit solvent → `skills/md-prepare/implicit-water.md`
 4. **Now present the Step 0 confirmation summary** (see Step 0 below)
    to the user. Only the fields enumerated there belong in the table —
    forcefield, water model, box geometry, etc. are tool-level defaults
-   surfaced from the runbooks read in steps 2–3 and are not part of
+   surfaced from the guidance pages read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
 5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
-   solvation runbook. Create nodes first, then run workflow tools with
+   solvation guidance. Create nodes first, then run workflow tools with
    both `--job-dir` and `--node-id`.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
@@ -98,11 +98,11 @@ a post-prep prep node; see `skills/md-prepare/branches.md`).
 
 ## Step 0: Parse and Confirm
 
-Run this **after** Workflow steps 2–3 (the runbooks have been read).
+Run this **after** Workflow steps 2–3 (the guidance pages have been read).
 
 The summary table includes only the fields listed below. Do **not**
 add forcefield, water model, box geometry, or any other tool-level
-default to this table — those values come from the runbooks and are
+default to this table — those values come from the guidance pages and are
 applied silently by the tools unless the user explicitly named one.
 
 The target identifier is the most important parameter — copy it
@@ -127,7 +127,7 @@ autonomous. Misidentifying the target cannot be recovered later.
 **Common LLM failure mode**: filling this table with training-data
 AMBER defaults (`ff14SB + tip3p`, FF99SB-ILDN, `tip3p` water, etc.).
 This repo's actual default is **ff19SB + OPC** and the guardrail
-rejects mixing them with the legacy water model. Trust the runbooks,
+rejects mixing them with the legacy water model. Trust the skill guidance,
 not your prior knowledge.
 
 **Common chain/ligand failure mode**: treating "chain A ligandあり" as

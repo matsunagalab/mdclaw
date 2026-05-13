@@ -16,9 +16,9 @@ Structure preparation remains a login-node or interactive step. HPC submission
 starts after a `topo` node exists and the next `eq` or `prod` node can resolve
 its inputs from the DAG.
 
-## Route To The Right Runbook
+## Route To The Right Guidance
 
-- Cluster discovery, resource policy, or container setup:
+- Cluster discovery, resource policy, or packaged runtime setup:
   `skills/hpc-run/discovery-policy.md`
 - One DAG node as one SLURM job:
   `skills/hpc-run/submit-single.md`

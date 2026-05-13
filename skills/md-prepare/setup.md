@@ -1,7 +1,7 @@
 # MD Prepare Setup Router
 
-Read the focused runbooks needed for the user's request instead of loading one
-large setup document.
+Read the focused guidance pages needed for the user's request instead of
+loading one large setup document.
 
 Required baseline:
 
