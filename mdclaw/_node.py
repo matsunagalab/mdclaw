@@ -38,9 +38,16 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
     Ensures that a crash mid-write never leaves a truncated or corrupt file.
     """
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, default=str))
-    os.replace(str(tmp), str(path))
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        tmp.write_text(json.dumps(data, indent=2, default=str))
+        os.replace(str(tmp), str(path))
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
@@ -299,10 +306,14 @@ def _node_progress_summary(node_data: dict) -> dict:
     return entry
 
 
-def _read_node_json_path(node_json: Path) -> Optional[dict]:
+def _read_node_json_path(node_json: Path, *, strict: bool = False) -> Optional[dict]:
     try:
         return json.loads(node_json.read_text())
-    except (json.JSONDecodeError, OSError):
+    except json.JSONDecodeError as exc:
+        if strict:
+            raise ValueError(f"Corrupt node.json at {node_json}: {exc}") from exc
+        return None
+    except OSError:
         return None
 
 
@@ -313,7 +324,11 @@ def _sync_progress_node_entry(job_dir: str, node_id: str, node_data: dict) -> No
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
         nodes = progress.setdefault("nodes", {})
-        nodes[node_id] = _node_progress_summary(node_data)
+        node_json = jd / "nodes" / node_id / "node.json"
+        latest_data = _read_node_json_path(node_json, strict=True)
+        if latest_data is None:
+            latest_data = node_data
+        nodes[node_id] = _node_progress_summary(latest_data)
         _atomic_write_json(pj, progress)
 
 
@@ -691,6 +706,7 @@ def _apply_status(
     *,
     payload: Optional[dict] = None,
     clear_metadata_keys: Optional[list[str]] = None,
+    artifact_paths_for_hash: Optional[dict] = None,
 ) -> None:
     """The sole writer-path for node status.
 
@@ -721,9 +737,29 @@ def _apply_status(
 
     node_dir = Path(job_dir) / "nodes" / node_id
     node_json = node_dir / "node.json"
-    data = None
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if artifact_paths_for_hash:
+            artifact_hashes = {}
+            for key, rel_path in artifact_paths_for_hash.items():
+                if not isinstance(rel_path, str) or not rel_path:
+                    continue
+                full_path = node_dir / rel_path
+                if not full_path.is_file():
+                    raise ValueError(
+                        f"complete_node: artifact '{key}' file missing: {rel_path} "
+                        f"(expected at {full_path})"
+                    )
+                digest = _sha256_path(full_path)
+                if not digest:
+                    raise ValueError(
+                        f"complete_node: artifact '{key}' could not be hashed: {rel_path}"
+                    )
+                artifact_hashes[key] = digest
+            if artifact_hashes:
+                metadata_payload = dict(merged.get("metadata") or {})
+                metadata_payload["artifact_sha256"] = artifact_hashes
+                merged["metadata"] = metadata_payload
         if clear_metadata_keys and isinstance(data.get("metadata"), dict):
             for k in clear_metadata_keys:
                 data["metadata"].pop(k, None)
@@ -741,18 +777,13 @@ def _apply_status(
                 data[key] = value
         _atomic_write_json(node_json, data)
 
-    jd = Path(job_dir)
-    with file_lock(jd / "progress.lock"):
-        pj = jd / "progress.json"
-        progress = _load_progress_v3(pj, create_if_missing=True)
-        nodes = progress.setdefault("nodes", {})
-        # Another writer may have updated node.json in the gap between our
-        # node write and this index refresh. Re-read the per-node source of
-        # truth while holding progress.lock so the global index never mirrors
-        # an older snapshot over a newer node state.
-        latest_data = _read_node_json_path(node_json) or data
-        nodes[node_id] = _node_progress_summary(latest_data)
-        _atomic_write_json(pj, progress)
+        jd = Path(job_dir)
+        with file_lock(jd / "progress.lock"):
+            pj = jd / "progress.json"
+            progress = _load_progress_v3(pj, create_if_missing=True)
+            nodes = progress.setdefault("nodes", {})
+            nodes[node_id] = _node_progress_summary(data)
+            _atomic_write_json(pj, progress)
 
 
 def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
@@ -833,6 +864,18 @@ def claim_node(
         claimed_by = metadata.get("claimed_by")
         claim_expires_at = metadata.get("claim_expires_at")
         expiry = _parse_iso_datetime(claim_expires_at)
+        if claimed_by and claim_expires_at and expiry is None:
+            return {
+                "success": False,
+                "code": "invalid_claim_expiry",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "claim_expires_at": claim_expires_at,
+                "error": (
+                    f"Node '{node_id}' has an invalid claim_expires_at "
+                    f"value: {claim_expires_at!r}"
+                ),
+            }
         claim_active = expiry is not None and expiry > now
         if claimed_by and claimed_by != agent_id and claim_active:
             return {
@@ -1193,30 +1236,20 @@ def complete_node(
     immediately rather than producing a completed node with broken outputs.
     """
     artifacts = normalize_artifact_paths(job_dir, node_id, artifacts)
-    artifact_hashes = {}
-    node_dir = Path(job_dir) / "nodes" / node_id
-    for key, rel_path in artifacts.items():
-        if not isinstance(rel_path, str) or not rel_path:
-            continue
-        full_path = node_dir / rel_path
-        if not full_path.is_file():
-            raise ValueError(
-                f"complete_node: artifact '{key}' file missing: {rel_path} "
-                f"(expected at {full_path})"
-            )
-        digest = _sha256_path(full_path)
-        if digest:
-            artifact_hashes[key] = digest
     payload: dict = {"artifacts": artifacts}
     merged_metadata = dict(metadata or {})
-    if artifact_hashes:
-        merged_metadata["artifact_sha256"] = artifact_hashes
     if merged_metadata:
         payload["metadata"] = merged_metadata
     if warnings:
         payload["warnings"] = warnings
 
-    _apply_status(job_dir, node_id, "completed", payload=payload)
+    _apply_status(
+        job_dir,
+        node_id,
+        "completed",
+        payload=payload,
+        artifact_paths_for_hash=artifacts,
+    )
     write_event(job_dir, node_id, "tool_completed", success=True)
 
 

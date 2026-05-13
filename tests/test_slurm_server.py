@@ -4,6 +4,7 @@ All SLURM commands are mocked — no actual SLURM installation required.
 """
 
 import json
+import shlex
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -193,6 +194,20 @@ class TestSubmitJob:
         result = submit_job(script="echo test")
         assert result["success"] is False
         assert "sbatch" in str(result.get("errors") or result.get("message", ""))
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_sbatch_directive_newline_rejected(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        result = submit_job(
+            script="echo test",
+            partition="cpu\n#SBATCH --account=hacked",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "sbatch_directive_injection"
+        mock_run.assert_not_called()
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
@@ -1357,8 +1372,7 @@ class TestSubmitJobNodeIntegration:
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
-    def test_missing_node_becomes_warning_not_error(self, mock_run, mock_check, tmp_path, monkeypatch):
-        """If node.json doesn't exist, submission still succeeds; stamp falls through as a warning."""
+    def test_missing_node_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = tmp_path / "empty_job"
         jd.mkdir()
@@ -1370,8 +1384,83 @@ class TestSubmitJobNodeIntegration:
             node_id="prod_001",
             output_dir=str(tmp_path),
         )
-        assert result["success"] is True
-        assert any("stamp skipped" in w for w in result["warnings"])
+        assert result["success"] is False
+        assert result["code"] == "slurm_node_unavailable"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_existing_slurm_job_id_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_duplicate", ["prod_001"])
+        node_file = jd / "nodes" / "prod_001" / "node.json"
+        node = json.loads(node_file.read_text())
+        node["metadata"]["slurm_job_id"] = "77777"
+        node_file.write_text(json.dumps(node))
+
+        result = submit_job(
+            script="echo test",
+            job_dir=str(jd),
+            node_id="prod_001",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "slurm_node_already_submitted"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_in_flight_submission_marker_blocks_second_submitter(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_race", ["prod_001"])
+        second_result = {}
+
+        def side_effect(cmd, **kwargs):
+            assert cmd[0] == "sbatch"
+            second_result["result"] = submit_job(
+                script="echo second",
+                job_name="second_submitter",
+                job_dir=str(jd),
+                node_id="prod_001",
+                output_dir=str(tmp_path),
+            )
+            return _mock_run_command(stdout="Submitted batch job 88888\n")
+
+        mock_run.side_effect = side_effect
+
+        first = submit_job(
+            script="echo first",
+            job_name="first_submitter",
+            job_dir=str(jd),
+            node_id="prod_001",
+            output_dir=str(tmp_path),
+        )
+
+        assert first["success"] is True, first
+        assert second_result["result"]["success"] is False
+        assert second_result["result"]["code"] == "slurm_node_submission_in_progress"
+        assert mock_run.call_count == 1
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["metadata"]["slurm_job_id"] == "88888"
+        assert "slurm_submission_intent_id" not in node["metadata"]
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_malformed_sbatch_job_id_rejected(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 12345; touch x\n")
+
+        result = submit_job(
+            script="echo test",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["slurm_job_id"] is None
+        assert "Could not parse sbatch output" in result["errors"][0]
 
 
 class TestCheckJobNodeSync:
@@ -1614,6 +1703,29 @@ class TestSubmitArrayJob:
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
+    def test_array_banner_quotes_job_and_node_values(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 123\n")
+        jd = _make_job_with_nodes(tmp_path, "job; touch pwned", ["prod_001; touch pwned"])
+        injected_node = "prod_001; touch pwned"
+
+        result = submit_array_job(
+            tasks=[{
+                "job_dir": str(jd),
+                "node_id": injected_node,
+                "command": "echo safe-command",
+            }],
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is True, result
+        content = Path(result["script_file"]).read_text()
+        assert "printf '%s %s %s\\n'" in content
+        assert shlex.quote(f"node_id={injected_node}") in content
+        assert "echo [array_task=" not in content
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
     def test_max_concurrent_applied(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jds = [_make_job_with_nodes(tmp_path, f"j{i}", ["prod_001"]) for i in range(5)]
@@ -1648,6 +1760,139 @@ class TestSubmitArrayJob:
         )
         assert result["success"] is False
         assert "command" in json.dumps(result, default=str)
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_sbatch_directive_newline_rejected_for_array(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_array_injection", ["prod_001"])
+        result = submit_array_job(
+            tasks=[{"job_dir": str(jd), "node_id": "prod_001", "command": "echo x"}],
+            dependency="afterok:1\n#SBATCH --account=hacked",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "sbatch_directive_injection"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_array_missing_node_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+
+        result = submit_array_job(
+            tasks=[{"job_dir": str(tmp_path / "missing_job"), "node_id": "prod_001", "command": "echo x"}],
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "slurm_node_unavailable"
+        mock_run.assert_not_called()
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server._stamp_slurm_on_node", return_value="stamp failed")
+    @patch("mdclaw.slurm_server.run_command")
+    def test_array_stamp_failure_scancels_parent_and_fails(
+        self, mock_run, mock_stamp, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_array_stamp_fail", ["prod_001"])
+        commands = []
+
+        def side_effect(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[0] == "sbatch":
+                return _mock_run_command(stdout="Submitted batch job 99999\n")
+            if cmd[0] == "scancel":
+                return _mock_run_command(stdout="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_run.side_effect = side_effect
+
+        result = submit_array_job(
+            tasks=[{"job_dir": str(jd), "node_id": "prod_001", "command": "echo x"}],
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["parent_job_id"] == "99999"
+        assert result["errors"] == ["stamp failed"]
+        assert ["scancel", "99999"] in commands
+        assert _read_job_records() == []
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert "slurm_submission_intent_id" not in node["metadata"]
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_array_later_stamp_failure_rolls_back_prior_stamped_node(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        from mdclaw import slurm_server as slurm_mod
+
+        monkeypatch.chdir(tmp_path)
+        jd0 = _make_job_with_nodes(tmp_path, "job_array_stamp_ok", ["prod_001"])
+        jd1 = _make_job_with_nodes(tmp_path, "job_array_stamp_bad", ["prod_001"])
+        commands = []
+
+        def command_side_effect(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[0] == "sbatch":
+                return _mock_run_command(stdout="Submitted batch job 99999\n")
+            if cmd[0] == "scancel":
+                return _mock_run_command(stdout="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_run.side_effect = command_side_effect
+        real_stamp = slurm_mod._stamp_slurm_on_node
+        stamp_calls = []
+
+        def stamp_side_effect(*args, **kwargs):
+            stamp_calls.append((args, kwargs))
+            if len(stamp_calls) == 1:
+                return real_stamp(*args, **kwargs)
+            return "stamp failed"
+
+        with patch(
+            "mdclaw.slurm_server._stamp_slurm_on_node",
+            side_effect=stamp_side_effect,
+        ):
+            result = submit_array_job(
+                tasks=[
+                    {
+                        "job_dir": str(jd0),
+                        "node_id": "prod_001",
+                        "command": "echo first",
+                    },
+                    {
+                        "job_dir": str(jd1),
+                        "node_id": "prod_001",
+                        "command": "echo second",
+                    },
+                ],
+                output_dir=str(tmp_path),
+            )
+
+        assert result["success"] is False
+        assert result["parent_job_id"] == "99999"
+        assert result["errors"] == ["stamp failed"]
+        assert ["scancel", "99999"] in commands
+        assert _read_job_records() == []
+
+        first = json.loads((jd0 / "nodes" / "prod_001" / "node.json").read_text())
+        first_meta = first["metadata"]
+        for key in (
+            "slurm_job_id",
+            "slurm_parent_job_id",
+            "slurm_array_task_id",
+            "slurm_submission_intent_id",
+        ):
+            assert key not in first_meta
+        assert first["status"] != "queued"
+
+        second = json.loads((jd1 / "nodes" / "prod_001" / "node.json").read_text())
+        assert "slurm_submission_intent_id" not in second["metadata"]
+        assert "slurm_array_task_id" not in second["metadata"]
 
 
 class TestListTrackedJobsFilters:

@@ -152,6 +152,59 @@ def ensure_directory(path: Union[str, Path]) -> Path:
     return path
 
 
+def atomic_write_text_group(items: list[tuple[Union[str, Path], str]]) -> None:
+    """Write multiple text files, rolling back final paths on commit failure."""
+    tmp_paths: list[Path] = []
+    backups: list[tuple[Path, Path]] = []
+    committed: set[Path] = set()
+    token = f"{os.getpid()}.{uuid.uuid4().hex}"
+    try:
+        prepared: list[tuple[Path, Path]] = []
+        for path_like, text in items:
+            path = Path(path_like)
+            tmp = path.with_name(f".{path.name}.tmp.{token}")
+            tmp.write_text(text, encoding="utf-8")
+            tmp_paths.append(tmp)
+            prepared.append((tmp, path))
+        for _tmp, path in prepared:
+            if path.exists():
+                backup = path.with_name(f".{path.name}.backup.{token}")
+                os.replace(str(path), str(backup))
+                backups.append((path, backup))
+        for tmp, path in prepared:
+            os.replace(str(tmp), str(path))
+            committed.add(path)
+    except Exception:
+        for path in committed:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for path, backup in reversed(backups):
+            try:
+                if backup.exists():
+                    os.replace(str(backup), str(path))
+            except OSError:
+                pass
+        for tmp in tmp_paths:
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        for _path, backup in backups:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+    finally:
+        for _path, backup in backups:
+            try:
+                backup.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 def create_unique_subdir(base_dir: Union[str, Path], name: str) -> Path:
     """Create a uniquely-named subdirectory (appends _2, _3, ... if exists)."""
     base_path = Path(base_dir).resolve()

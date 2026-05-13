@@ -49,6 +49,7 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
 ```
+`--conditions` is one JSON string argument; quote it as shown.
 
 For replicates or different conditions:
 ```bash
@@ -136,6 +137,8 @@ mdclaw update_job_params --job-dir <job_dir> \
    mdclaw --job-dir <job_dir> --node-id <eq_node_id> \
      render_structure_preview --style overview --ray
    ```
+   In node mode, `render_structure_preview` resolves `structure_file` from
+   node artifacts; pass `--structure-file` only to override.
    If the tool returns `output_png` / `structure_preview_png`, display it in
    image-capable agent UIs or provide the PNG path, node ID, caption, and source artifact.
    If PyMOL is unavailable (`code=pymol_not_available`), continue the handoff

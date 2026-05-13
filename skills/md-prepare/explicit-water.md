@@ -73,7 +73,7 @@ Use the same `solv` node type for membrane embedding:
 ```bash
 mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
 mdclaw --job-dir job_xxx --node-id solv_001 embed_in_membrane \
-  --lipids POPC --ratio 1 --dist 15.0 --dist-wat 17.5 \
+  --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
   --salt --saltcon 0.15
 ```
 
@@ -100,6 +100,7 @@ mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
 `pdb_file` is auto-resolved from the `solv` parent's `solvated_pdb` artifact.
 For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
 instead of `--no-is-membrane`.
+These are boolean optional CLI flags; do not pass `true` / `false` values.
 
 If topology output is quiet, inspect `nodes/<topo_id>/node.json` and report
 `metadata.topology_build_stage`, `metadata.topology_build_stage_updated_at`,

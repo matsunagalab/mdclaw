@@ -58,6 +58,18 @@ class TestWriteEvent:
         assert "cli" not in ev
         assert "details" not in ev
 
+    def test_tmp_file_cleaned_when_replace_fails(self, job_dir, monkeypatch):
+        from mdclaw import _event
+
+        def fail_replace(src, dst):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(_event.os, "replace", fail_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            write_event(str(job_dir), "prep_001", "node_created")
+
+        assert list((job_dir / "events").glob(".*.tmp.*")) == []
+
 
 class TestReadEvents:
 

@@ -659,6 +659,8 @@ def _load_state_into_simulation(
     restart_path: Path,
     *,
     is_periodic: bool,
+    temperature_kelvin: Optional[float] = None,
+    random_seed: Optional[int] = None,
 ) -> dict:
     """Load a saved OpenMM state into ``simulation`` regardless of ensemble.
 
@@ -687,22 +689,112 @@ def _load_state_into_simulation(
     """
     if restart_path.suffix == ".xml":
         from openmm import XmlSerializer
-        state = XmlSerializer.deserialize(restart_path.read_text())
-        simulation.context.setPositions(state.getPositions())
+        from openmm.unit import kelvin
+        state_text = restart_path.read_text()
         try:
-            simulation.context.setVelocities(state.getVelocities())
+            state = XmlSerializer.deserialize(state_text)
+        except Exception as exc:
+            raise ValueError(
+                f"Restart state could not be deserialized: {exc}"
+            ) from exc
+        expected_particles = simulation.system.getNumParticles()
+        positions = state.getPositions()
+        if len(positions) != expected_particles:
+            raise ValueError(
+                "Restart state particle count mismatch: "
+                f"state positions={len(positions)}, system particles={expected_particles}"
+            )
+        simulation.context.setPositions(positions)
+        info = {
+            "format": "xml",
+            "velocities_present": True,
+            "velocities_rethermalized": False,
+            "box_vectors_dropped": False,
+        }
+        try:
+            velocities = state.getVelocities()
         except Exception as e:
+            info["velocities_present"] = False
             logger.warning(
                 f"Saved state at {restart_path} has no velocities "
                 f"({e}); resuming with re-thermalized velocities."
             )
+            if temperature_kelvin is None:
+                raise ValueError(
+                    "Restart state has no velocities and no temperature was "
+                    "provided for re-thermalization"
+                ) from e
+            if random_seed is not None:
+                simulation.context.setVelocitiesToTemperature(
+                    temperature_kelvin * kelvin, int(random_seed)
+                )
+            else:
+                simulation.context.setVelocitiesToTemperature(
+                    temperature_kelvin * kelvin
+                )
+            info["velocities_rethermalized"] = True
+        else:
+            if len(velocities) != expected_particles:
+                raise ValueError(
+                    "Restart state velocity count mismatch: "
+                    f"state velocities={len(velocities)}, "
+                    f"system particles={expected_particles}"
+                )
+            simulation.context.setVelocities(velocities)
         if is_periodic:
             box = state.getPeriodicBoxVectors()
             if box is not None:
                 simulation.context.setPeriodicBoxVectors(*box)
-        return {"format": "xml"}
+        elif "<PeriodicBoxVectors" in state_text:
+            logger.warning(
+                "Saved state contains periodic box vectors, but the current "
+                "System is non-periodic; dropping box vectors during restart."
+            )
+            info["box_vectors_dropped"] = True
+        return info
     simulation.loadCheckpoint(str(restart_path))
     return {"format": "checkpoint"}
+
+
+_OPENMM_RANDOM_SEED_MODULUS = 2_147_483_647
+
+
+def _restart_random_seed(
+    random_seed: Optional[int],
+    restart_step: Optional[int],
+) -> Optional[int]:
+    """Derive a deterministic non-zero RNG seed for a restarted segment."""
+    if random_seed is None:
+        return None
+    offset = max(1, int(restart_step or 0))
+    seed = int(random_seed)
+    return ((seed + offset - 1) % _OPENMM_RANDOM_SEED_MODULUS) + 1
+
+
+def _save_checkpoint_atomic(simulation, path: Path) -> None:
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        simulation.saveCheckpoint(str(tmp))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _save_state_atomic(simulation, path: Path) -> None:
+    tmp = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    try:
+        simulation.saveState(str(tmp))
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 # DCD fixed-record-84 + "CORD" magic. OpenMM/CHARMM DCD always emit this
@@ -1479,14 +1571,33 @@ def run_equilibration(
         result["restraint_count"] = restraint_count
         logger.info(f"Applied restraints to {restraint_count} atoms ({restraint_atoms})")
 
+        restart_seed_step: Optional[int] = None
+        if restart_path is not None and _node_mode:
+            from mdclaw._node import read_ancestor_final_step
+            restart_seed_step = read_ancestor_final_step(
+                job_dir, node_id,
+                restart_node_id=_restart_from_node_id,
+            )
+        effective_random_seed = (
+            _restart_random_seed(random_seed, restart_seed_step)
+            if restart_path is not None else random_seed
+        )
+        if random_seed is not None:
+            result["random_seed"] = random_seed
+            if restart_path is not None:
+                result["effective_random_seed"] = effective_random_seed
+                result["random_seed_restart_offset"] = max(
+                    1, int(restart_seed_step or 0)
+                )
+
         # NVT integrator (matches run_production: LangevinMiddle, same timestep, HMR via system)
         integrator_nvt = LangevinMiddleIntegrator(
             temperature_kelvin * kelvin,
             1.0 / picosecond,
             timestep_fs * femtoseconds,
         )
-        if random_seed is not None:
-            integrator_nvt.setRandomNumberSeed(random_seed)
+        if effective_random_seed is not None:
+            integrator_nvt.setRandomNumberSeed(effective_random_seed)
 
         # Platform selection
         PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
@@ -1528,7 +1639,19 @@ def run_equilibration(
             # this NVT system because barostat parameters are dropped.
             _eq_load_info = _load_state_into_simulation(
                 sim_nvt, restart_path, is_periodic=is_periodic,
+                temperature_kelvin=temperature_kelvin,
+                random_seed=effective_random_seed,
             )
+            if _eq_load_info.get("velocities_rethermalized"):
+                result["warnings"].append(
+                    "Restart state had no velocities; re-thermalized "
+                    f"at {temperature_kelvin} K."
+                )
+            if _eq_load_info.get("box_vectors_dropped"):
+                result["warnings"].append(
+                    "Restart state contained periodic box vectors, but this "
+                    "equilibration is non-periodic; dropped box vectors."
+                )
             logger.info(
                 f"Equilibration restarted from {_eq_load_info['format']} "
                 f"({restart_path})"
@@ -1695,17 +1818,20 @@ def run_equilibration(
 
             # Add barostat
             if is_membrane:
-                system_npt.addForce(MonteCarloMembraneBarostat(
+                npt_barostat = MonteCarloMembraneBarostat(
                     pressure_bar * bar, 0.0 * bar * nanometer,
                     temperature_kelvin * kelvin,
                     MonteCarloMembraneBarostat.XYIsotropic,
                     MonteCarloMembraneBarostat.ZFree,
                     25,
-                ))
+                )
             else:
-                system_npt.addForce(MonteCarloBarostat(
+                npt_barostat = MonteCarloBarostat(
                     pressure_bar * bar, temperature_kelvin * kelvin,
-                ))
+                )
+            if effective_random_seed is not None:
+                npt_barostat.setRandomNumberSeed(effective_random_seed)
+            system_npt.addForce(npt_barostat)
 
             # NPT integrator (matches run_production: LangevinMiddle, same timestep)
             integrator_npt = LangevinMiddleIntegrator(
@@ -1713,8 +1839,8 @@ def run_equilibration(
                 1.0 / picosecond,
                 timestep_fs * femtoseconds,
             )
-            if random_seed is not None:
-                integrator_npt.setRandomNumberSeed(random_seed)
+            if effective_random_seed is not None:
+                integrator_npt.setRandomNumberSeed(effective_random_seed)
 
             if platform_obj:
                 sim_npt = Simulation(xml_inputs.topology, system_npt, integrator_npt,
@@ -1751,11 +1877,11 @@ def run_equilibration(
             # Save final state from NPT
             final_state = sim_npt.context.getState(getPositions=True)
             final_positions = final_state.getPositions()
-            sim_npt.saveState(str(out_dir / "equilibration.xml"))
+            _save_state_atomic(sim_npt, out_dir / "equilibration.xml")
         else:
             # Implicit solvent: save from NVT
             final_positions = nvt_positions
-            sim_nvt.saveState(str(out_dir / "equilibration.xml"))
+            _save_state_atomic(sim_nvt, out_dir / "equilibration.xml")
 
         result["state_file"] = str(out_dir / "equilibration.xml")
         result["stages_completed"] = ["NVT"] if npt_steps == 0 else ["NVT", "NPT"]
@@ -1809,19 +1935,22 @@ def run_equilibration(
         if (pressure_bar is not None and pressure_bar > 0
                 and is_periodic and not implicit_solvent):
             if is_membrane:
-                system_clean.addForce(MonteCarloMembraneBarostat(
+                clean_barostat = MonteCarloMembraneBarostat(
                     pressure_bar * bar,
                     0.0 * bar * nanometer,
                     temperature_kelvin * kelvin,
                     MonteCarloMembraneBarostat.XYIsotropic,
                     MonteCarloMembraneBarostat.ZFree,
                     25,
-                ))
+                )
             else:
-                system_clean.addForce(MonteCarloBarostat(
+                clean_barostat = MonteCarloBarostat(
                     pressure_bar * bar,
                     temperature_kelvin * kelvin,
-                ))
+                )
+            if effective_random_seed is not None:
+                clean_barostat.setRandomNumberSeed(effective_random_seed)
+            system_clean.addForce(clean_barostat)
 
         # Integrator — same type and parameters as run_production's default.
         integrator_clean = LangevinMiddleIntegrator(
@@ -1829,6 +1958,8 @@ def run_equilibration(
             1.0 / picosecond,
             timestep_fs * femtoseconds,
         )
+        if effective_random_seed is not None:
+            integrator_clean.setRandomNumberSeed(effective_random_seed)
 
         if platform_obj:
             sim_clean = Simulation(
@@ -1846,7 +1977,7 @@ def run_equilibration(
         # execute the full requested simulation length.
 
         checkpoint_file = out_dir / f"{pref}equilibrated.chk"
-        sim_clean.saveCheckpoint(str(checkpoint_file))
+        _save_checkpoint_atomic(sim_clean, checkpoint_file)
         result["checkpoint_file"] = str(checkpoint_file)
         logger.info(f"Saved equilibrated checkpoint (currentStep=0): {checkpoint_file}")
 
@@ -1857,7 +1988,7 @@ def run_equilibration(
         # positions/velocities/box. On a heterogeneous cluster this is
         # what run_production should use.
         state_file = out_dir / f"{pref}equilibrated.xml"
-        sim_clean.saveState(str(state_file))
+        _save_state_atomic(sim_clean, state_file)
         result["state_file_prod_ready"] = str(state_file)
         logger.info(f"Saved equilibrated state (cross-node portable): {state_file}")
 
@@ -2362,6 +2493,18 @@ def run_production(
             result["code"] = exc.code
             return _fail_node_if_running(job_dir, node_id, result)
 
+        restart_seed_step: Optional[int] = None
+        if restart_from and _node_mode:
+            from mdclaw._node import read_ancestor_final_step
+            restart_seed_step = read_ancestor_final_step(
+                job_dir, node_id,
+                restart_node_id=_restart_from_node_id,
+            )
+        effective_random_seed = (
+            _restart_random_seed(random_seed, restart_seed_step)
+            if restart_from else random_seed
+        )
+
         # Add barostat if NPT (only for periodic explicit solvent systems).
         # ``pressure_bar=0`` is conventionally NVT (matches
         # ``_effective_pressure_bar`` and the docstring's "0 or None: NVT"
@@ -2390,8 +2533,8 @@ def run_production(
                     pressure_bar * bar,
                     temperature_kelvin * kelvin
                 )
-            if random_seed is not None:
-                barostat.setRandomNumberSeed(random_seed)
+            if effective_random_seed is not None:
+                barostat.setRandomNumberSeed(effective_random_seed)
             system.addForce(barostat)
             ensemble = "NPT"
         elif implicit_solvent and pressure_bar is not None and pressure_bar > 0:
@@ -2425,9 +2568,15 @@ def run_production(
             1.0 / picosecond,
             timestep_fs * femtoseconds
         )
+        if effective_random_seed is not None:
+            integrator.setRandomNumberSeed(effective_random_seed)
         if random_seed is not None:
-            integrator.setRandomNumberSeed(random_seed)
             result["random_seed"] = random_seed
+            if restart_from:
+                result["effective_random_seed"] = effective_random_seed
+                result["random_seed_restart_offset"] = max(
+                    1, int(restart_seed_step or 0)
+                )
 
         # Platform selection
         PLATFORM_MAP = {"cuda": "CUDA", "opencl": "OpenCL", "cpu": "CPU", "reference": "Reference"}
@@ -2557,7 +2706,19 @@ def run_production(
 
             _load_info = _load_state_into_simulation(
                 simulation, restart_path, is_periodic=is_periodic,
+                temperature_kelvin=temperature_kelvin,
+                random_seed=effective_random_seed,
             )
+            if _load_info.get("velocities_rethermalized"):
+                result["warnings"].append(
+                    "Restart state had no velocities; re-thermalized "
+                    f"at {temperature_kelvin} K."
+                )
+            if _load_info.get("box_vectors_dropped"):
+                result["warnings"].append(
+                    "Restart state contained periodic box vectors, but this "
+                    "production is non-periodic; dropped box vectors."
+                )
             # Restore the cumulative step counter from the *same*
             # ancestor whose artifact we just loaded — eq→prod and
             # prod→prod extension preserves the timeline. The state
@@ -2711,8 +2872,8 @@ def run_production(
 
         # Save final checkpoint + state (periodic reporter may not have
         # fired for short runs). Both formats so downstream can choose.
-        simulation.saveCheckpoint(str(checkpoint_file))
-        simulation.saveState(str(state_file))
+        _save_checkpoint_atomic(simulation, checkpoint_file)
+        _save_state_atomic(simulation, state_file)
         logger.info(f"Final checkpoint saved: {checkpoint_file}")
         logger.info(f"Final state saved: {state_file}")
 
@@ -2906,4 +3067,3 @@ TOOLS = {
     "run_equilibration": run_equilibration,
     "run_production": run_production,
 }
-

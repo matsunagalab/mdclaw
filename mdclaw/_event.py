@@ -57,10 +57,17 @@ def write_event(
         event["details"] = details
 
     event_path = events_dir / filename
-    # Use atomic write: write to tmp then rename
-    tmp_path = event_path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(event, indent=2, default=str))
-    os.replace(str(tmp_path), str(event_path))
+    # Use atomic write: write to tmp then rename.
+    tmp_path = events_dir / f".{filename}.tmp.{os.getpid()}"
+    try:
+        tmp_path.write_text(json.dumps(event, indent=2, default=str))
+        os.replace(str(tmp_path), str(event_path))
+    except Exception:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
     logger.debug(f"Event written: {event_path.name}")
     return event_path

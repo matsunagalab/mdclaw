@@ -5,8 +5,10 @@ Covers: _lock.py, _node.py lifecycle, node_server.py registration.
 
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -38,6 +40,7 @@ from mdclaw._node import (
     validate_node_execution_context,
 )
 from mdclaw._node import complete_node as _real_complete_node
+from mdclaw._node import _sync_progress_node_entry
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
 
 
@@ -432,6 +435,90 @@ class TestCompleteNodeStrictArtifacts:
 
         node = read_node(str(job_dir), "solv_001")
         assert node["status"] == "pending"
+
+    def test_hash_failure_does_not_complete_node(self, job_dir):
+        create_node(str(job_dir), "solv")
+        node_id = "solv_001"
+        artifact_file = job_dir / "nodes" / node_id / "artifacts" / "solvated.pdb"
+        artifact_file.parent.mkdir(parents=True, exist_ok=True)
+        artifact_file.write_text("ATOM      1  N   ALA A   1\n")
+
+        with patch("mdclaw._node._sha256_path", return_value=None):
+            with pytest.raises(ValueError, match="could not be hashed"):
+                _real_complete_node(
+                    str(job_dir),
+                    node_id,
+                    artifacts={"solvated_pdb": "artifacts/solvated.pdb"},
+                )
+
+        node = read_node(str(job_dir), node_id)
+        assert node["status"] == "pending"
+
+    def test_sync_progress_rereads_node_json_instead_of_stale_caller_data(self, job_dir):
+        create_node(str(job_dir), "solv")
+        node_id = "solv_001"
+        stale = read_node(str(job_dir), node_id)
+        latest = dict(stale)
+        latest["status"] = "failed"
+        latest["metadata"] = {"errors": ["newer failure"]}
+        node_json = job_dir / "nodes" / node_id / "node.json"
+        node_json.write_text(json.dumps(latest))
+
+        _sync_progress_node_entry(str(job_dir), node_id, stale)
+
+        progress = json.loads((job_dir / "progress.json").read_text())
+        assert progress["nodes"][node_id]["status"] == "failed"
+
+    def test_sync_progress_rejects_corrupt_node_json(self, job_dir):
+        create_node(str(job_dir), "solv")
+        node_id = "solv_001"
+        stale = read_node(str(job_dir), node_id)
+        node_json = job_dir / "nodes" / node_id / "node.json"
+        node_json.write_text("{bad json")
+
+        with pytest.raises(ValueError, match="Corrupt node.json"):
+            _sync_progress_node_entry(str(job_dir), node_id, stale)
+
+    def test_concurrent_complete_node_updates_progress_consistently(self, job_dir):
+        node_ids = []
+        for _ in range(8):
+            created = create_node(str(job_dir), "prod")
+            node_id = created["node_id"]
+            node_ids.append(node_id)
+            artifact = job_dir / "nodes" / node_id / "artifacts" / "state.xml"
+            artifact.parent.mkdir(parents=True, exist_ok=True)
+            artifact.write_text(f"<State node='{node_id}'/>\n")
+
+        def complete_one(node_id: str) -> None:
+            _real_complete_node(
+                str(job_dir),
+                node_id,
+                artifacts={"state": "artifacts/state.xml"},
+            )
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            list(pool.map(complete_one, node_ids))
+
+        progress = json.loads((job_dir / "progress.json").read_text())
+        for node_id in node_ids:
+            node = read_node(str(job_dir), node_id)
+            assert node["status"] == "completed"
+            assert progress["nodes"][node_id]["status"] == "completed"
+            assert "state" in node["metadata"]["artifact_sha256"]
+
+    def test_atomic_write_json_cleans_tmp_on_replace_failure(self, tmp_path, monkeypatch):
+        from mdclaw import _node
+
+        out = tmp_path / "node.json"
+
+        def fail_replace(src, dst):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(_node.os, "replace", fail_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            _node._atomic_write_json(out, {"status": "pending"})
+
+        assert list(tmp_path.glob(".*.tmp.*")) == []
 
 
 # ── continue_from sugar (prod extension) ───────────────────────────────────
@@ -1081,6 +1168,27 @@ class TestNodeClaim:
         assert result["success"] is True
         node = read_node(jd, "prod_001")
         assert node["metadata"]["claimed_by"] == "agent-b"
+
+    def test_claim_node_rejects_invalid_existing_expiry(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        update_node(
+            jd,
+            "prod_001",
+            {
+                "metadata": {
+                    "claimed_by": "agent-a",
+                    "claim_expires_at": "not-a-date",
+                }
+            },
+        )
+
+        result = claim_node(jd, "prod_001", "agent-b", lease_seconds=60)
+
+        assert result["success"] is False
+        assert result["code"] == "invalid_claim_expiry"
+        node = read_node(jd, "prod_001")
+        assert node["metadata"]["claimed_by"] == "agent-a"
 
     def test_release_node_claim_removes_metadata_and_progress_summary(self, job_dir):
         jd = str(job_dir)

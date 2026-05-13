@@ -21,6 +21,7 @@ of scope for this PR.
 
 from __future__ import annotations
 
+import io
 import os
 import sys
 from pathlib import Path
@@ -30,6 +31,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,  # noqa: F401  (kept for parity / future extension)
+    atomic_write_text_group,
     create_file_not_found_error,
     create_tool_not_available_error,
     create_unique_subdir,
@@ -559,12 +561,18 @@ def build_openmm_system(
             res.id = str(res.id)
 
     try:
-        with system_xml_file.open("w") as fh:
-            fh.write(XmlSerializer.serialize(system))
-        with state_xml_file.open("w") as fh:
-            fh.write(XmlSerializer.serialize(state))
-        with topology_pdb_file.open("w") as fh:
-            PDBFile.writeFile(modeller.topology, state.getPositions(), fh, keepIds=True)
+        topology_buffer = io.StringIO()
+        PDBFile.writeFile(
+            modeller.topology,
+            state.getPositions(),
+            topology_buffer,
+            keepIds=True,
+        )
+        atomic_write_text_group([
+            (system_xml_file, XmlSerializer.serialize(system)),
+            (state_xml_file, XmlSerializer.serialize(state)),
+            (topology_pdb_file, topology_buffer.getvalue()),
+        ])
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
             f"Serialization failed: {type(exc).__name__}: {exc}"

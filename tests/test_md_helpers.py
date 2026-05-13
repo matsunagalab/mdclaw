@@ -5,6 +5,7 @@ non-slow pytest lane. See test_server_smoke.py for the full simulation
 smoke tests.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,7 @@ from mdclaw.md_simulation_server import (
     _node_previously_failed,
     _resolve_dcd_append_mode,
     _resolve_equilibration_stage_steps,
+    run_equilibration,
     run_production,
 )
 from mdclaw._node import (
@@ -458,7 +460,7 @@ class TestLoadStateIntoSimulation:
         )
 
         n_particles = 8
-        box_nm = 2.0
+        box_nm = 6.0
 
         system = System()
         nb = NonbondedForce()
@@ -571,6 +573,95 @@ class TestLoadStateIntoSimulation:
         # under the legacy loadState path.
         nvt.step(1)
 
+    def test_xml_state_without_velocities_rethermalizes(self, tmp_path):
+        from openmm.unit import nanometer, picosecond
+
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        src = self._build_lj_simulation(with_barostat=False)
+        self._seed_positions_velocities(src)
+        state_path = tmp_path / "positions_only.xml"
+        src.saveState(str(state_path))
+        state_path.write_text(
+            re.sub(
+                r"\s*<Velocities>.*?</Velocities>",
+                "",
+                state_path.read_text(),
+                flags=re.DOTALL,
+            )
+        )
+
+        target = self._build_lj_simulation(with_barostat=False)
+        info = _load_state_into_simulation(
+            target,
+            state_path,
+            is_periodic=True,
+            temperature_kelvin=300.0,
+            random_seed=123,
+        )
+
+        assert info["format"] == "xml"
+        assert info["velocities_present"] is False
+        assert info["velocities_rethermalized"] is True
+        state = target.context.getState(getVelocities=True)
+        velocities = state.getVelocities(asNumpy=True).value_in_unit(
+            nanometer / picosecond
+        )
+        assert abs(velocities).sum() > 0
+        target.step(1)
+
+    def test_xml_particle_count_mismatch_rejected(self, tmp_path):
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        src = self._build_lj_simulation(with_barostat=False)
+        self._seed_positions_velocities(src)
+        state_path = tmp_path / "bad_particle_count.xml"
+        src.saveState(str(state_path))
+        state_path.write_text(
+            re.sub(
+                r"\s*<Position [^>]*/>",
+                "",
+                state_path.read_text(),
+                count=1,
+            )
+        )
+
+        target = self._build_lj_simulation(with_barostat=False)
+        with pytest.raises(ValueError, match="Restart state could not be deserialized"):
+            _load_state_into_simulation(target, state_path, is_periodic=True)
+
+    def test_xml_velocity_count_mismatch_is_hard_failure(
+        self, monkeypatch, tmp_path
+    ):
+        from openmm import XmlSerializer
+
+        from mdclaw.md_simulation_server import _load_state_into_simulation
+
+        src = self._build_lj_simulation(with_barostat=False)
+        self._seed_positions_velocities(src)
+        state_path = tmp_path / "bad_velocity_count.xml"
+        state_path.write_text("<State/>")
+        state = src.context.getState(getPositions=True, getVelocities=True)
+        positions = state.getPositions()
+        velocities = list(state.getVelocities())[:-1]
+
+        class FakeState:
+            def getPositions(self):
+                return positions
+
+            def getVelocities(self):
+                return velocities
+
+        monkeypatch.setattr(
+            XmlSerializer,
+            "deserialize",
+            staticmethod(lambda _text: FakeState()),
+        )
+
+        target = self._build_lj_simulation(with_barostat=False)
+        with pytest.raises(ValueError, match="Restart state velocity count mismatch"):
+            _load_state_into_simulation(target, state_path, is_periodic=True)
+
     def test_chk_path_takes_load_checkpoint_branch(self, tmp_path):
         """Binary checkpoint route requires identical System layout but
         is the fast same-GPU bit-exact path. Verify the loader returns
@@ -588,6 +679,31 @@ class TestLoadStateIntoSimulation:
         assert info["format"] == "checkpoint"
         # And the resumed context must be steppable.
         target.step(1)
+
+
+class TestRestartPersistenceHelpers:
+    def test_restart_random_seed_offsets_and_avoids_zero(self):
+        from mdclaw.md_simulation_server import _restart_random_seed
+
+        assert _restart_random_seed(None, 100) is None
+        assert _restart_random_seed(42, 0) == 43
+        assert _restart_random_seed(42, 100) == 142
+
+    def test_atomic_checkpoint_save_cleans_temp_on_failure(self, tmp_path):
+        from mdclaw.md_simulation_server import _save_checkpoint_atomic
+
+        out = tmp_path / "checkpoint.chk"
+
+        class FakeSimulation:
+            def saveCheckpoint(self, path):
+                Path(path).write_text("partial")
+                raise RuntimeError("disk full")
+
+        with pytest.raises(RuntimeError, match="disk full"):
+            _save_checkpoint_atomic(FakeSimulation(), out)
+
+        assert not out.exists()
+        assert list(tmp_path.glob(".*.tmp.*")) == []
 
 
 class TestRestartFromErrorFailsNode:
@@ -875,6 +991,49 @@ class TestRunEquilibrationTimeFlags:
         assert result["success"] is False
         assert result.get("code") != "node_execution_context_invalid"
         assert not any("condition" in error for error in result.get("errors", []))
+
+
+class TestXMLTriplePartialOutputs:
+    """Run-side consumers must not treat partial XML triples as success."""
+
+    def test_equilibration_rejects_missing_state_xml_when_path_is_provided(
+        self, tmp_path
+    ):
+        system_xml = tmp_path / "system.xml"
+        topology_pdb = tmp_path / "topology.pdb"
+        state_xml = tmp_path / "state.xml"
+        system_xml.write_text("<placeholder/>")
+        topology_pdb.write_text("REMARK fake\nEND\n")
+
+        result = run_equilibration(
+            system_xml_file=str(system_xml),
+            topology_pdb_file=str(topology_pdb),
+            state_xml_file=str(state_xml),
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert any("state.xml not found" in error for error in result["errors"])
+
+    def test_production_rejects_missing_state_xml_when_path_is_provided(
+        self, tmp_path
+    ):
+        system_xml = tmp_path / "system.xml"
+        topology_pdb = tmp_path / "topology.pdb"
+        state_xml = tmp_path / "state.xml"
+        system_xml.write_text("<placeholder/>")
+        topology_pdb.write_text("REMARK fake\nEND\n")
+
+        result = run_production(
+            system_xml_file=str(system_xml),
+            topology_pdb_file=str(topology_pdb),
+            state_xml_file=str(state_xml),
+            simulation_time_ns=0.001,
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert any("state.xml not found" in error for error in result["errors"])
 
 
 class TestXMLSystemContractValidation:

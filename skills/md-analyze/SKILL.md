@@ -47,6 +47,9 @@ mdclaw --job-dir <job_dir> --node-id <node_id> \
   render_structure_preview --style overview --ray
 ```
 
+In node mode, `render_structure_preview` resolves `structure_file` from node
+artifacts; pass `--structure-file` only to override.
+
 Prefer `--style ligand_site` for ligand binding sites, `--style membrane` for
 membrane systems, and `--style solvent_ions --show-solvent` when water/ion
 placement is the inspection target. If `output_png` / `structure_preview_png`

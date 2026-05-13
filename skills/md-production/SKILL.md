@@ -55,6 +55,7 @@ mdclaw create_node --job-dir <job_dir> --node-type prod \
   --label "100ns" \
   --conditions '{"simulation_time_ns": 100}'
 ```
+`--conditions` is one JSON string argument; quote it as shown.
 
 **Branching** (multiple prod from same eq):
 ```bash
@@ -104,6 +105,8 @@ with `mdclaw update_job_params` before creating new prod nodes.
    mdclaw --job-dir <job_dir> --node-id <prod_node_id> \
      render_structure_preview --style publication --ray
    ```
+   In node mode, `render_structure_preview` resolves `structure_file` from
+   node artifacts; pass `--structure-file` only to override.
    Use `--style ligand_site` for ligand-binding systems and `--style
    membrane` for membrane proteins. If a preview PNG is produced, show it to
    the user in image-capable agent UIs; otherwise provide the PNG path, node

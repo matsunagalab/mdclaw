@@ -158,6 +158,12 @@ def _takes_json(hint) -> bool:
     return _is_dict_type(hint) or _is_list_of_dict(hint) or _is_list_of_list(hint)
 
 
+def _is_path_type(hint) -> bool:
+    """True for pathlib.Path CLI parameters, including Optional[Path]."""
+    inner, _ = _unwrap_optional(hint)
+    return inner is Path
+
+
 def _coerce_value(value, hint):
     """Coerce a CLI value to the target type."""
     if hint is None or hint is inspect.Parameter.empty:
@@ -174,6 +180,10 @@ def _coerce_value(value, hint):
         return float(value)
     if inner is str:
         return str(value)
+    if inner is Path:
+        if isinstance(value, Path):
+            return value
+        return Path(value)
     if _is_list_of_str(inner):
         # nargs='+' gives us a list already
         if isinstance(value, list):
@@ -299,6 +309,14 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
                     required=False,
                     help=f"(float, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
                 )
+            elif _is_path_type(inner):
+                sub.add_argument(
+                    cli_name,
+                    type=Path,
+                    default=param.default if param.default is not inspect.Parameter.empty else None,
+                    required=False,
+                    help=f"(Path, default: {param.default if param.default is not inspect.Parameter.empty else 'required'})",
+                )
             else:
                 # Default: str
                 sub.add_argument(
@@ -386,6 +404,8 @@ def _type_label(hint) -> str:
         label = "float"
     elif inner is str:
         label = "str"
+    elif _is_path_type(inner):
+        label = "Path"
     elif _is_list_of_str(inner):
         label = "list[str]"
     elif _is_dict_type(inner):
@@ -559,6 +579,18 @@ def main(argv: list[str] | None = None) -> None:
     # Build kwargs
     if args.json_input:
         kwargs = _load_json_cli(args.json_input, "--json-input")
+        sig = inspect.signature(fn)
+        hints = {}
+        try:
+            hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
+                     if k != "return"}
+        except Exception:
+            pass
+        for pname, value in list(kwargs.items()):
+            if pname not in sig.parameters or value is None:
+                continue
+            hint = hints.get(pname, sig.parameters[pname].annotation)
+            kwargs[pname] = _coerce_value(value, hint)
     else:
         sig = inspect.signature(fn)
         hints = {}
@@ -592,6 +624,7 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             if _takes_json(_unwrap_optional(hint)[0]) and isinstance(value, str):
                 value = _load_json_cli(value, f"--{pname.replace('_', '-')}")
+            value = _coerce_value(value, hint)
             kwargs[pname] = value
 
         if missing:

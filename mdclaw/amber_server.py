@@ -28,6 +28,7 @@ from mdclaw._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
+import io  # noqa: E402
 import json  # noqa: E402
 import re  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
@@ -36,6 +37,7 @@ from typing import Callable, List, Optional, Dict, Any, Tuple  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     CANONICAL_WATER_MODELS,
+    atomic_write_text_group,
     ensure_directory, create_unique_subdir, generate_job_id,
     BaseToolWrapper, create_file_not_found_error, create_tool_not_available_error,
     create_guardrail_result, create_validation_error,
@@ -47,6 +49,7 @@ from mdclaw._common import (  # noqa: E402
 from mdclaw._common import get_timeout  # noqa: E402
 from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw.research_server import (  # noqa: E402
+    PHOSPHO_RESNAMES,
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,
 )
@@ -90,6 +93,105 @@ PHOSAA_LIBRARY_FOR_FF = {
     "ff14SB": "leaprc.phosaa14SB",
     "ff14SBonlysc": "leaprc.phosaa14SB",
 }
+
+
+def _gemmi_available() -> bool:
+    try:
+        import gemmi  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def _scan_pdb_text_for_ptm_residues(path: Path) -> list[dict]:
+    sites = []
+    seen = set()
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return sites
+    for line in lines:
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 26:
+            continue
+        name = line[17:20].strip()
+        if name not in PHOSPHO_RESNAMES:
+            continue
+        chain = line[21].strip()
+        try:
+            resnum = int(line[22:26])
+        except ValueError:
+            resnum = None
+        key = (chain, resnum, name)
+        if key in seen:
+            continue
+        seen.add(key)
+        sites.append({"chain": chain, "resnum": resnum, "name": name})
+    return sites
+
+
+_PABLO_ION_RESNAME_RENAMES = {
+    "NA": "NA",
+    "NA+": "NA",
+    "SOD": "NA",
+    "CL": "CL",
+    "CL-": "CL",
+    "CLA": "CL",
+    "K": "K",
+    "K+": "K",
+    "POT": "K",
+    "MG": "MG",
+    "MG+": "MG",
+    "MG2": "MG",
+    "ZN": "ZN",
+    "ZN+": "ZN",
+    "ZN2": "ZN",
+    "CA": "CA",
+    "CA+": "CA",
+    "CA2": "CA",
+    "FE": "FE",
+    "FE+": "FE",
+    "FE2": "FE",
+    "FE3": "FE",
+    "MN": "MN",
+    "MN2": "MN",
+    "CU": "CU",
+    "CU1": "CU",
+    "CU2": "CU",
+    "CO": "CO",
+    "CO2": "CO",
+}
+
+
+def _normalize_pdb_chain_id(chain_id: Optional[str]) -> str:
+    return str(chain_id or "").strip()
+
+
+def _canonical_pablo_ion_resname(resname: str) -> Optional[str]:
+    return _PABLO_ION_RESNAME_RENAMES.get(str(resname or "").strip().upper())
+
+
+def _ion_element_symbol(canonical_resname: str) -> str:
+    return canonical_resname[:1] + canonical_resname[1:].lower()
+
+
+def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
+    if not line.startswith(("ATOM  ", "HETATM")):
+        return line, False
+    raw_resname = line[17:20]
+    raw_atom_name = line[12:16]
+    canonical_res = _canonical_pablo_ion_resname(raw_resname)
+    if canonical_res is None:
+        return line, False
+    rn_key = raw_resname.strip().upper()
+    an_key = raw_atom_name.strip().upper()
+    new_resname = f"{canonical_res:>3}"
+    new_atom = raw_atom_name
+    if an_key in {rn_key, canonical_res}:
+        new_atom = f"{canonical_res:>4}"
+    rewritten = line[:12] + new_atom + line[16:17] + new_resname + line[20:]
+    element = _ion_element_symbol(canonical_res)
+    rewritten = f"{rewritten[:76]:<76}{element:>2}{rewritten[78:] if len(rewritten) > 78 else ''}"
+    return rewritten, rewritten != line
 
 WATER_FORCEFIELDS = {
     "tip3p": "leaprc.water.tip3p",
@@ -1886,7 +1988,25 @@ def build_amber_system(
                     ligand_params = json.loads(lig_json.read_text())
                     logger.info(f"Auto-loaded ligand_params ({len(ligand_params)} ligands) from {lig_json}")
                 except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"Found {lig_json} but could not read: {e}")
+                    blocked = create_validation_error(
+                        "ligand_params",
+                        f"Found {lig_json} but could not read it: {e}",
+                        expected="valid ligand_params.json from prepare_complex",
+                        actual=str(lig_json),
+                        hints=[
+                            "Re-run prepare_complex or parameterize_ligand to refresh ligand_params.json."
+                        ],
+                        code="ligand_params_load_failed",
+                    )
+                    if job_dir and node_id:
+                        from mdclaw._node import fail_node_from_result
+                        return fail_node_from_result(
+                            job_dir,
+                            node_id,
+                            blocked,
+                            default_error="build_amber_system ligand_params load failed",
+                        )
+                    return blocked
                 break
 
     # Auto-detect disulfide_bonds.json if not provided (written by prepare_complex
@@ -2568,7 +2688,28 @@ def build_amber_system(
     # residue templates against the OG / OG1 / OH oxygen retained by
     # ``phosphorylate_residues``.
     from mdclaw.research_server import detect_ptm_sites
-    ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
+    if _gemmi_available():
+        ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
+    else:
+        ptm_residues_in_input = _scan_pdb_text_for_ptm_residues(pdb_path)
+        if ptm_residues_in_input:
+            err = create_validation_error(
+                "gemmi",
+                "gemmi is required to validate phosphorylated residues before "
+                "building a topology.",
+                expected="gemmi import succeeds when SEP/TPO/PTR residues are present",
+                actual=f"gemmi unavailable; PTM residues={ptm_residues_in_input}",
+                warnings=result["warnings"],
+                code="phospho_detection_requires_gemmi",
+            )
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(job_dir, node_id, errors=err.get("errors", []))
+            return {**result, **err}
+        result["warnings"].append(
+            "gemmi is not installed; phosphorylated-residue detection was "
+            "limited to PDB text residue-name scanning."
+        )
     phosaa_library = None
     if ptm_residues_in_input:
         phosaa_library = PHOSAA_LIBRARY_FOR_FF.get(forcefield)
@@ -2772,22 +2913,33 @@ def build_amber_system(
             # Propagate the helper's structured ``code`` (e.g.
             # ``metal_openmm_xml_required``) so callers can branch on the
             # specific failure mode instead of grepping the error string.
-            if om_result.get("code") and not result.get("code"):
-                result["code"] = om_result["code"]
+            if not result.get("code"):
+                result["code"] = (
+                    om_result.get("code") or "openmmforcefields_build_failed"
+                )
             logger.error(
                 "openmmforcefields build failed: %s",
                 "; ".join(om_result.get("errors", [])) or "(no error message)",
             )
 
+    except TimeoutError as e:
+        error_msg = f"Error during Amber system building: TimeoutError: {str(e)}"
+        result["errors"].append(error_msg)
+        result["errors"].append(
+            "Hint: a long-running operation timed out. The structure may be too large or complex."
+        )
+        result["code"] = "openmmforcefields_build_timeout"
+        logger.error(error_msg)
+    except MemoryError as e:
+        error_msg = f"Error during Amber system building: MemoryError: {str(e)}"
+        result["errors"].append(error_msg)
+        result["code"] = "openmmforcefields_build_memory_error"
+        logger.error(error_msg)
     except Exception as e:
         error_msg = f"Error during Amber system building: {type(e).__name__}: {str(e)}"
         result["errors"].append(error_msg)
+        result["code"] = result.get("code") or "openmmforcefields_build_failed"
         logger.error(error_msg)
-
-        if "timeout" in str(e).lower():
-            result["errors"].append(
-                "Hint: a long-running operation timed out. The structure may be too large or complex."
-            )
     
     # Save metadata
     metadata_file = out_dir / "amber_metadata.json"
@@ -3293,11 +3445,6 @@ def _run_openmmforcefields_build(
     # Map non-CCD ion names → CCD canonical (residue + atom). PDBFixer
     # often re-aligns these fields, so match on stripped value rather than
     # exact bytes and re-emit with PDB-format padding.
-    _ION_RESNAME_RENAMES = {
-        "Na+": "NA",
-        "Cl-": "CL",
-        "K+": "K",
-    }
     _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
 
     his_amber_resids: set[tuple[str, str]] = set()
@@ -3308,7 +3455,7 @@ def _run_openmmforcefields_build(
             for line in fh:
                 if line.startswith(("ATOM  ", "HETATM")):
                     rn = line[17:20].strip()
-                    if (rn in _ION_RESNAME_RENAMES
+                    if (_canonical_pablo_ion_resname(rn) is not None
                             or rn in _HIS_AMBER_VARIANTS):
                         needs_sanitize = True
                         break
@@ -3321,25 +3468,15 @@ def _run_openmmforcefields_build(
             for line in fh_in:
                 if line.startswith(("ATOM  ", "HETATM")):
                     raw_resname = line[17:20]
-                    raw_atom_name = line[12:16]
-                    new_resname = raw_resname
-                    new_atom = raw_atom_name
                     rn_strip = raw_resname.strip()
-                    an_strip = raw_atom_name.strip()
-                    if rn_strip in _ION_RESNAME_RENAMES:
-                        canonical_res = _ION_RESNAME_RENAMES[rn_strip]
-                        new_resname = f"{canonical_res:>3}"
-                        if an_strip == rn_strip:
-                            new_atom = f"{canonical_res:>4}"
+                    rewritten, ion_changed = _rewrite_pablo_ion_pdb_line(line)
+                    if ion_changed:
+                        line = rewritten
                     elif rn_strip in _HIS_AMBER_VARIANTS:
-                        chain_id = line[21:22]
+                        chain_id = _normalize_pdb_chain_id(line[21:22])
                         resseq = line[22:26]
                         his_amber_resids.add((chain_id, resseq.strip()))
-                        new_resname = "HIS"
-                    line = (
-                        line[:12] + new_atom + line[16:17]
-                        + new_resname + line[20:]
-                    )
+                        line = line[:17] + "HIS" + line[20:]
                 fh_out.write(line)
 
     _stage("pablo_load")
@@ -3359,7 +3496,7 @@ def _run_openmmforcefields_build(
         for residue in omm_topology.residues():
             if residue.name != "HIS":
                 continue
-            chain_id = residue.chain.id or ""
+            chain_id = _normalize_pdb_chain_id(residue.chain.id)
             if (chain_id, str(residue.id)) not in his_amber_resids:
                 continue
             atoms = {a.name for a in residue.atoms()}
@@ -3939,12 +4076,18 @@ def _run_openmmforcefields_build(
 
     _stage("serialization")
     try:
-        with system_xml_file.open("w") as fh:
-            fh.write(XmlSerializer.serialize(system))
-        with state_xml_file.open("w") as fh:
-            fh.write(XmlSerializer.serialize(state))
-        with topology_pdb_file.open("w") as fh:
-            PDBFile.writeFile(modeller.topology, state.getPositions(), fh, keepIds=True)
+        topology_buffer = io.StringIO()
+        PDBFile.writeFile(
+            modeller.topology,
+            state.getPositions(),
+            topology_buffer,
+            keepIds=True,
+        )
+        atomic_write_text_group([
+            (system_xml_file, XmlSerializer.serialize(system)),
+            (state_xml_file, XmlSerializer.serialize(state)),
+            (topology_pdb_file, topology_buffer.getvalue()),
+        ])
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
             f"Serialization failed: {type(exc).__name__}: {exc}"

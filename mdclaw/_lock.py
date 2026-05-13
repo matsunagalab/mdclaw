@@ -30,10 +30,17 @@ def file_lock(lock_path: Path) -> Generator[None, None, None]:
     """
     lock_path = Path(lock_path)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    fd = open(lock_path, "w")
+    fd = None
+    locked = False
     try:
+        fd = open(lock_path, "w")
         fcntl.flock(fd, fcntl.LOCK_EX)
+        locked = True
         yield
     finally:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-        fd.close()
+        if fd is not None:
+            try:
+                if locked:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                fd.close()

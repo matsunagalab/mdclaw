@@ -250,7 +250,14 @@ def build_source_bundle(
     candidates_dir.mkdir(parents=True, exist_ok=True)
 
     structures: list[dict[str, Any]] = []
+    metadata_out = dict(metadata or {})
+    candidate_metadata_provided = candidate_metadata is not None
     candidate_metadata = candidate_metadata or []
+    if candidate_metadata_provided and len(candidate_metadata) != len(structure_paths):
+        metadata_out.setdefault("warnings", []).append(
+            "candidate_metadata length does not match structure_paths; "
+            "missing entries were filled with source-file provenance only."
+        )
     for input_index, raw_path in enumerate(structure_paths):
         annotation = (
             candidate_metadata[input_index]
@@ -312,7 +319,7 @@ def build_source_bundle(
         "source_id": source_id,
         "storage_contract": "candidate_files",
         "structures": structures,
-        "metadata": metadata or {},
+        "metadata": metadata_out,
     }
 
 
@@ -320,7 +327,7 @@ def write_source_bundle(source_node_dir: Path, bundle: dict[str, Any]) -> str:
     """Write ``source_bundle.json`` under a source node's artifacts directory."""
     out = source_node_dir / "artifacts" / "source_bundle.json"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(bundle, indent=2, default=str))
+    out.write_text(json.dumps(bundle, indent=2, default=str) + "\n")
     return _node_relative(out, source_node_dir)
 
 
@@ -394,14 +401,14 @@ def select_source_structure(
 
     if selection.get("model_index") is not None:
         requested_index = int(selection["model_index"])
-        for record in structures:
-            origin = record.get("origin") or {}
-            if (
-                origin.get("model_index") == requested_index
-                or origin.get("model_rank") == requested_index
-                or record.get("rank") == requested_index
-            ):
-                return record
+        for get_value in (
+            lambda record: (record.get("origin") or {}).get("model_index"),
+            lambda record: (record.get("origin") or {}).get("model_rank"),
+            lambda record: record.get("rank"),
+        ):
+            for record in structures:
+                if get_value(record) == requested_index:
+                    return record
         raise ValueError(f"model_index {requested_index!r} was not found in source_bundle")
 
     if len(structures) == 1:

@@ -133,3 +133,58 @@ def test_multi_file_bundle_requires_explicit_structure_selection(tmp_path):
     selected = select_source_structure(bundle, {"structure_id": "candidate_002"})
     assert selected["candidate_file"].endswith("candidates/candidate_002.pdb")
     assert selected["raw_file"].endswith("candidate_b.pdb")
+
+
+def test_source_model_index_selection_prefers_exact_index_before_rank():
+    bundle = {
+        "schema_version": 1,
+        "structures": [
+            {
+                "structure_id": "rank_two",
+                "origin": {"model_index": 1, "model_rank": 2},
+            },
+            {
+                "structure_id": "index_two",
+                "origin": {"model_index": 2, "model_rank": 3},
+            },
+        ],
+    }
+
+    selected = select_source_structure(bundle, {"model_index": 2})
+    assert selected["structure_id"] == "index_two"
+
+
+def test_source_bundle_records_candidate_metadata_length_warning(tmp_path):
+    source_node_dir = tmp_path / "job" / "nodes" / "source_001"
+    source_artifacts = source_node_dir / "artifacts"
+    source_artifacts.mkdir(parents=True)
+    first = source_artifacts / "candidate_a.pdb"
+    second = source_artifacts / "candidate_b.pdb"
+    first.write_text("HEADER A\n")
+    second.write_text("HEADER B\n")
+
+    bundle = build_source_bundle(
+        source_type="boltz2",
+        source_id="boltz2_test",
+        structure_paths=[first, second],
+        source_node_dir=source_node_dir,
+        candidate_metadata=[{"label": "first only"}],
+    )
+
+    assert "candidate_metadata length does not match" in bundle["metadata"]["warnings"][0]
+
+
+def test_write_source_bundle_ends_with_newline(tmp_path):
+    source_node_dir = tmp_path / "job" / "nodes" / "source_001"
+    bundle = {
+        "schema_version": 1,
+        "source_type": "test",
+        "source_id": "x",
+        "storage_contract": "candidate_files",
+        "structures": [{"structure_id": "candidate_001"}],
+        "metadata": {},
+    }
+
+    rel = write_source_bundle(source_node_dir, bundle)
+
+    assert (source_node_dir / rel).read_text().endswith("\n")

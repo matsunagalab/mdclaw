@@ -9,6 +9,7 @@ import json
 import subprocess
 import sys
 from importlib.util import find_spec
+from pathlib import Path
 
 import pytest
 
@@ -260,6 +261,60 @@ class TestArgparseConstruction:
         json_str = '{"pdb_file": "test.pdb", "water_model": "opc"}'
         args = parser.parse_args(["solvate_structure", "--json-input", json_str])
         assert args.json_input == json_str
+
+    def test_path_params_parse_as_path(self):
+        from mdclaw._cli import _build_parser
+
+        def fake_tool(input_path: Path) -> dict:
+            return {"success": True, "input_path": str(input_path)}
+
+        parser = _build_parser({
+            "fake_path": {
+                "fn": fake_tool,
+                "description": "fake path tool",
+                "is_async": False,
+                "server": "fake",
+            }
+        })
+
+        args = parser.parse_args(["fake_path", "--input-path", "input.pdb"])
+        assert isinstance(args.input_path, Path)
+        assert args.input_path == Path("input.pdb")
+
+    def test_json_input_values_are_coerced_to_annotations(self, monkeypatch, capsys):
+        from mdclaw import _cli
+
+        def fake_tool(count: int, input_path: Path) -> dict:
+            return {
+                "success": True,
+                "count_type": type(count).__name__,
+                "input_path_type": type(input_path).__name__,
+            }
+
+        monkeypatch.setattr(
+            _cli,
+            "_discover_tools",
+            lambda: {
+                "fake_tool": {
+                    "fn": fake_tool,
+                    "description": "fake tool",
+                    "is_async": False,
+                    "server": "fake",
+                }
+            },
+        )
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "fake_tool",
+                "--json-input",
+                '{"count": "7", "input_path": "input.pdb"}',
+            ])
+
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["count_type"] == "int"
+        assert payload["input_path_type"] == "PosixPath"
 
     def test_invalid_json_input_returns_structured_json(self, capsys):
         from mdclaw._cli import main

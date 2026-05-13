@@ -14,7 +14,9 @@ import json
 import logging
 import os
 import re
+import shlex
 import subprocess
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -33,7 +35,10 @@ from mdclaw._common import (
     run_command,
     split_guardrail_results,
 )
+from mdclaw._lock import file_lock
 from mdclaw._node import (
+    _atomic_write_json,
+    _sync_progress_node_entry,
     fail_node,
     read_node,
     update_node,
@@ -43,11 +48,197 @@ from mdclaw._node import (
 # File-argument flags used to auto-extract bind paths for Singularity
 _FILE_ARG_PATTERN = re.compile(r"--[\w-]*file\s+(\S+)")
 _DIR_ARG_PATTERN = re.compile(r"--[\w-]*dir\s+(\S+)")
+_SUBMITTED_BATCH_JOB_RE = re.compile(r"^\s*Submitted batch job (\d+)\s*$")
+_SLURM_JOB_ID_RE = re.compile(r"^\d+(?:_\d+)?$")
+_SLURM_SUBMISSION_METADATA_KEYS = (
+    "slurm_job_id",
+    "slurm_script_file",
+    "slurm_stdout_log",
+    "slurm_stderr_log",
+    "slurm_submitted_at",
+    "slurm_array_task_id",
+    "slurm_parent_job_id",
+)
+_SLURM_SUBMISSION_INTENT_KEYS = (
+    "slurm_submission_intent_id",
+    "slurm_submission_kind",
+    "slurm_submission_intent_at",
+    "slurm_submission_prior_status",
+)
 
 # Job tracking file
 _JOBS_JSONL = ".mdclaw_jobs.jsonl"
 
 logger = logging.getLogger(__name__)
+
+
+def _validate_sbatch_directive_value(field: str, value: Any) -> Optional[dict]:
+    """Reject control characters in values interpolated into #SBATCH lines."""
+    if value is None:
+        return None
+    text = str(value)
+    if any(ch in text for ch in ("\n", "\r", "\0")):
+        return create_validation_error(
+            field,
+            "SBATCH directive values must not contain newline or NUL characters",
+            expected="single-line value",
+            actual=repr(text),
+            code="sbatch_directive_injection",
+        )
+    return None
+
+
+def _validate_sbatch_directive_values(values: dict[str, Any]) -> Optional[dict]:
+    for field, value in values.items():
+        error = _validate_sbatch_directive_value(field, value)
+        if error:
+            return error
+    return None
+
+
+def _validate_slurm_job_id(job_id: str) -> Optional[dict]:
+    if _SLURM_JOB_ID_RE.fullmatch(str(job_id)):
+        return None
+    return create_validation_error(
+        "job_id",
+        "SLURM job_id must be numeric, optionally followed by _<array_task_id>.",
+        expected="12345 or 12345_0",
+        actual=str(job_id),
+        code="invalid_slurm_job_id",
+    )
+
+
+def _validate_node_ready_for_slurm_submit(job_dir: str, node_id: str) -> Optional[dict]:
+    try:
+        node = read_node(str(Path(job_dir).resolve()), node_id)
+    except Exception as exc:  # noqa: BLE001
+        return create_validation_error(
+            "job_dir/node_id",
+            f"Cannot read DAG node before SLURM submission: {exc}",
+            expected="existing writable node.json",
+            actual=f"job_dir={job_dir!r}, node_id={node_id!r}",
+            code="slurm_node_unavailable",
+        )
+    existing = (node.get("metadata") or {}).get("slurm_job_id")
+    if existing:
+        return create_validation_error(
+            "node_id",
+            f"Node {node_id!r} already has slurm_job_id={existing!r}.",
+            expected="node without existing SLURM submission metadata",
+            actual=f"slurm_job_id={existing!r}",
+            hints=["Create a new node for a new submission or clear stale metadata explicitly."],
+            code="slurm_node_already_submitted",
+        )
+    intent = (node.get("metadata") or {}).get("slurm_submission_intent_id")
+    if intent:
+        return create_validation_error(
+            "node_id",
+            f"Node {node_id!r} already has an in-flight SLURM submission.",
+            expected="node without existing SLURM submission metadata",
+            actual=f"slurm_submission_intent_id={intent!r}",
+            hints=["Wait for the active submitter to finish, or clear stale metadata explicitly."],
+            code="slurm_node_submission_in_progress",
+        )
+    return None
+
+
+def _reserve_slurm_submission_on_node(
+    job_dir: str,
+    node_id: str,
+    submission_intent_id: str,
+    *,
+    kind: str,
+    array_task_id: Optional[int] = None,
+) -> tuple[Optional[dict], Optional[str]]:
+    """Atomically reserve a DAG node before calling sbatch.
+
+    The reservation lives in ``node.json`` and is written under
+    ``node.lock`` so two concurrent submitters cannot both pass the
+    pre-submission check and reach ``sbatch`` for the same node.
+    """
+    node_dir = Path(job_dir).resolve() / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return create_validation_error(
+            "job_dir/node_id",
+            f"Cannot read DAG node before SLURM submission: {node_json}",
+            expected="existing writable node.json",
+            actual=f"job_dir={job_dir!r}, node_id={node_id!r}",
+            code="slurm_node_unavailable",
+        ), None
+
+    try:
+        with file_lock(node_dir / "node.lock"):
+            data = json.loads(node_json.read_text())
+            prior_status = str(data.get("status") or "pending")
+            metadata = data.setdefault("metadata", {})
+            existing = metadata.get("slurm_job_id")
+            if existing:
+                return create_validation_error(
+                    "node_id",
+                    f"Node {node_id!r} already has slurm_job_id={existing!r}.",
+                    expected="node without existing SLURM submission metadata",
+                    actual=f"slurm_job_id={existing!r}",
+                    hints=[
+                        "Create a new node for a new submission or clear stale metadata explicitly."
+                    ],
+                    code="slurm_node_already_submitted",
+                ), None
+            intent = metadata.get("slurm_submission_intent_id")
+            if intent:
+                return create_validation_error(
+                    "node_id",
+                    f"Node {node_id!r} already has an in-flight SLURM submission.",
+                    expected="node without existing SLURM submission metadata",
+                    actual=f"slurm_submission_intent_id={intent!r}",
+                    hints=[
+                        "Wait for the active submitter to finish, or clear stale metadata explicitly."
+                    ],
+                    code="slurm_node_submission_in_progress",
+                ), None
+            metadata.update({
+                "slurm_submission_intent_id": submission_intent_id,
+                "slurm_submission_kind": kind,
+                "slurm_submission_intent_at": datetime.now(timezone.utc).isoformat(),
+                "slurm_submission_prior_status": prior_status,
+            })
+            if array_task_id is not None:
+                metadata["slurm_array_task_id"] = array_task_id
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_json(node_json, data)
+    except Exception as exc:  # noqa: BLE001
+        return create_validation_error(
+            "job_dir/node_id",
+            f"Cannot reserve DAG node for SLURM submission: {exc}",
+            expected="writable node.json protected by node.lock",
+            actual=f"job_dir={job_dir!r}, node_id={node_id!r}",
+            code="slurm_node_unavailable",
+        ), None
+    return None, prior_status
+
+
+def _clear_slurm_submission_intent(
+    job_dir: str,
+    node_id: str,
+    submission_intent_id: str,
+) -> None:
+    """Remove a pending submission reservation if it still belongs to us."""
+    node_dir = Path(job_dir).resolve() / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        metadata = data.setdefault("metadata", {})
+        if metadata.get("slurm_submission_intent_id") != submission_intent_id:
+            return
+        for key in _SLURM_SUBMISSION_INTENT_KEYS:
+            metadata.pop(key, None)
+        # Array submissions store the task id during reservation so a
+        # failed submit must clear it along with the in-flight intent.
+        metadata.pop("slurm_array_task_id", None)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
 
 # ---------------------------------------------------------------------------
 # Job tracking (JSONL)
@@ -202,6 +393,7 @@ def _stamp_slurm_on_node(
     array_task_id: Optional[int] = None,
     parent_job_id: Optional[str] = None,
     set_queued: bool = True,
+    submission_intent_id: Optional[str] = None,
 ) -> Optional[str]:
     """Stamp SLURM-submission metadata onto a node's ``node.json``.
 
@@ -234,12 +426,90 @@ def _stamp_slurm_on_node(
         meta["slurm_parent_job_id"] = parent_job_id
 
     try:
-        update_node(str(job_dir), node_id, {"metadata": meta})
+        with file_lock(node_dir / "node.lock"):
+            node_json = node_dir / "node.json"
+            data = json.loads(node_json.read_text())
+            metadata = data.setdefault("metadata", {})
+            if submission_intent_id is not None:
+                actual = metadata.get("slurm_submission_intent_id")
+                if actual != submission_intent_id:
+                    return (
+                        f"could not stamp node {node_id}: submission intent "
+                        f"mismatch (expected {submission_intent_id!r}, got {actual!r})"
+                    )
+            existing = metadata.get("slurm_job_id")
+            if existing and existing != slurm_job_id:
+                return (
+                    f"could not stamp node {node_id}: existing "
+                    f"slurm_job_id={existing!r}"
+                )
+            metadata.update(meta)
+            for key in _SLURM_SUBMISSION_INTENT_KEYS:
+                metadata.pop(key, None)
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_json(node_json, data)
         if set_queued:
-            update_node_status(str(job_dir), node_id, "queued")
+            status_result = update_node_status(str(job_dir), node_id, "queued")
+            if not status_result.get("success", False):
+                return (
+                    f"could not mark node {node_id} queued: "
+                    f"{status_result.get('message') or status_result.get('error')}"
+                )
         return None
     except Exception as e:
         return f"could not stamp node {node_id}: {e}"
+
+
+def _try_scancel_submitted_job(job_id: str, timeout: int) -> Optional[str]:
+    """Best-effort rollback for a job submitted before local stamping failed."""
+    try:
+        if not check_external_tool("scancel"):
+            return f"scancel unavailable; submitted SLURM job {job_id} may need manual cleanup"
+        run_command(["scancel", str(job_id)], timeout=timeout)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"could not scancel submitted SLURM job {job_id}: {exc}"
+
+
+def _rollback_slurm_stamp_on_node(
+    job_dir: str,
+    node_id: str,
+    slurm_job_id: str,
+    prior_status: str,
+) -> Optional[str]:
+    """Remove SLURM metadata from a node after an array submit rollback."""
+    node_dir = Path(job_dir).resolve() / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return f"node {node_id} not found under {job_dir} (rollback skipped)"
+
+    try:
+        with file_lock(node_dir / "node.lock"):
+            data = json.loads(node_json.read_text())
+            metadata = data.setdefault("metadata", {})
+            current_job_id = metadata.get("slurm_job_id")
+            if current_job_id not in (None, slurm_job_id):
+                return (
+                    f"could not rollback node {node_id}: current "
+                    f"slurm_job_id={current_job_id!r} does not match "
+                    f"{slurm_job_id!r}"
+                )
+            for key in _SLURM_SUBMISSION_METADATA_KEYS:
+                metadata.pop(key, None)
+            for key in _SLURM_SUBMISSION_INTENT_KEYS:
+                metadata.pop(key, None)
+            if data.get("status") == "queued":
+                data["status"] = (
+                    prior_status
+                    if prior_status and prior_status != "queued"
+                    else "pending"
+                )
+            data["updated_at"] = datetime.now(timezone.utc).isoformat()
+            _atomic_write_json(node_json, data)
+        _sync_progress_node_entry(str(Path(job_dir).resolve()), node_id, data)
+    except Exception as exc:  # noqa: BLE001
+        return f"could not rollback node {node_id}: {exc}"
+    return None
 
 
 def _sync_slurm_state_to_node(
@@ -1073,6 +1343,10 @@ def submit_job(
                 hints=["Pass --job-dir together with --node-id."],
             ),
         }
+    if job_dir and node_id:
+        node_error = _validate_node_ready_for_slurm_submit(job_dir, node_id)
+        if node_error:
+            return {**result, **node_error}
 
     if not check_external_tool("sbatch"):
         return {**result, **create_tool_not_available_error(
@@ -1159,6 +1433,22 @@ def submit_job(
     result["stdout_log"] = stdout_log
     result["stderr_log"] = stderr_log
 
+    directive_error = _validate_sbatch_directive_values({
+        "job_name": job_name,
+        "partition": partition,
+        "gres": gres,
+        "time_limit": time_limit,
+        "memory": memory,
+        "nodelist": nodelist,
+        "dependency": dependency,
+        "stdout_log": stdout_log,
+        "stderr_log": stderr_log,
+        "account": account,
+        "qos": qos,
+    })
+    if directive_error:
+        return {**result, **directive_error}
+
     # Determine script content
     script_path = Path(script)
     if script_path.is_file():
@@ -1208,12 +1498,24 @@ def submit_job(
     script_file.chmod(0o755)
     result["script_file"] = str(script_file)
 
+    submission_intent_id: Optional[str] = None
+    if job_dir and node_id:
+        submission_intent_id = uuid.uuid4().hex
+        reserve_error, _prior_status = _reserve_slurm_submission_on_node(
+            str(Path(job_dir).resolve()),
+            node_id,
+            submission_intent_id,
+            kind="single",
+        )
+        if reserve_error:
+            return {**result, **reserve_error}
+
     # Submit
     timeout = get_timeout("slurm")
     try:
         proc = run_command(["sbatch", str(script_file)], timeout=timeout)
         # Parse "Submitted batch job 12345"
-        m = re.search(r"Submitted batch job (\d+)", proc.stdout)
+        m = _SUBMITTED_BATCH_JOB_RE.match(proc.stdout)
         if m:
             slurm_job_id = m.group(1)
             result["slurm_job_id"] = slurm_job_id
@@ -1240,6 +1542,36 @@ def submit_job(
             except OSError as e:
                 result["warnings"].append(f"Could not save metadata: {e}")
 
+            # Stamp the DAG node (optional; best-effort).
+            # For a single submit_job, parent = child = slurm_job_id, so a
+            # downstream caller can still read a stable `slurm_parent_job_id`
+            # off the node and build an `afterok:<id>` dependency against it.
+            if job_dir and node_id:
+                stamp_err = _stamp_slurm_on_node(
+                    str(Path(job_dir).resolve()),
+                    node_id,
+                    slurm_job_id,
+                    script_file=str(script_file),
+                    stdout_log=result["stdout_log"],
+                    stderr_log=result["stderr_log"],
+                    parent_job_id=slurm_job_id,
+                    submission_intent_id=submission_intent_id,
+                )
+                if stamp_err:
+                    result["errors"].append(stamp_err)
+                    rollback_warning = _try_scancel_submitted_job(
+                        slurm_job_id, timeout
+                    )
+                    if rollback_warning:
+                        result["warnings"].append(rollback_warning)
+                    if submission_intent_id:
+                        _clear_slurm_submission_intent(
+                            str(Path(job_dir).resolve()),
+                            node_id,
+                            submission_intent_id,
+                        )
+                    return result
+
             # Track in JSONL (includes node linkage when provided)
             tracker_record = {
                 "job_id": slurm_job_id,
@@ -1261,23 +1593,6 @@ def submit_job(
                 tracker_record["node_id"] = node_id
             _append_job_record(tracker_record)
 
-            # Stamp the DAG node (optional; best-effort).
-            # For a single submit_job, parent = child = slurm_job_id, so a
-            # downstream caller can still read a stable `slurm_parent_job_id`
-            # off the node and build an `afterok:<id>` dependency against it.
-            if job_dir and node_id:
-                stamp_err = _stamp_slurm_on_node(
-                    str(Path(job_dir).resolve()),
-                    node_id,
-                    slurm_job_id,
-                    script_file=str(script_file),
-                    stdout_log=result["stdout_log"],
-                    stderr_log=result["stderr_log"],
-                    parent_job_id=slurm_job_id,
-                )
-                if stamp_err:
-                    result["warnings"].append(stamp_err)
-
             result["success"] = True
         else:
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
@@ -1286,6 +1601,13 @@ def submit_job(
         result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
     except subprocess.TimeoutExpired:
         result["errors"].append(f"sbatch timed out after {timeout}s")
+    finally:
+        if job_dir and node_id and submission_intent_id and not result["success"]:
+            _clear_slurm_submission_intent(
+                str(Path(job_dir).resolve()),
+                node_id,
+                submission_intent_id,
+            )
 
     return result
 
@@ -1391,9 +1713,12 @@ def _generate_array_sbatch_script(
             cmd = _build_singularity_command(
                 cmd, container, output_dir=task["job_dir"],
             )
-        # Quote-safe single-line echo + exec; use printf for the banner so
-        # literal $-signs in the command don't re-expand in the case body.
-        banner = f"echo [array_task=${{SLURM_ARRAY_TASK_ID}}] job_dir={task['job_dir']} node_id={task['node_id']}"
+        banner = (
+            "printf '%s %s %s\\n' "
+            '"[array_task=${SLURM_ARRAY_TASK_ID}]" '
+            f"{shlex.quote('job_dir=' + str(task['job_dir']))} "
+            f"{shlex.quote('node_id=' + str(task['node_id']))}"
+        )
         lines.append(f"  {idx})")
         lines.append(f"    {banner}")
         lines.append(f"    {cmd}")
@@ -1525,10 +1850,10 @@ def submit_array_job(
     for idx, task in enumerate(tasks):
         jd = Path(task["job_dir"]).resolve()
         nid = task["node_id"]
-        if not (jd / "nodes" / nid / "node.json").exists():
-            result["warnings"].append(
-                f"tasks[{idx}]: node {nid} not found under {jd}; stamp will be skipped"
-            )
+        node_error = _validate_node_ready_for_slurm_submit(str(jd), nid)
+        if node_error:
+            node_error["message"] = f"tasks[{idx}]: {node_error.get('message', '')}"
+            return {**result, **node_error}
         normalized_tasks.append({
             "job_dir": str(jd),
             "node_id": nid,
@@ -1603,6 +1928,21 @@ def submit_array_job(
     stdout_log = str(out_dir / f"{job_name}_%A_%a.out")
     stderr_log = str(out_dir / f"{job_name}_%A_%a.err")
 
+    directive_error = _validate_sbatch_directive_values({
+        "job_name": job_name,
+        "partition": partition,
+        "gres": gres,
+        "time_limit": time_limit,
+        "memory": memory,
+        "dependency": dependency,
+        "stdout_log": stdout_log,
+        "stderr_log": stderr_log,
+        "account": account,
+        "qos": qos,
+    })
+    if directive_error:
+        return {**result, **directive_error}
+
     container = _get_container_config(config)
 
     sbatch_content = _generate_array_sbatch_script(
@@ -1637,10 +1977,32 @@ def submit_array_job(
         array_spec = f"{array_spec}%{max_concurrent}"
     result["array_spec"] = array_spec
 
+    submission_intents: list[tuple[str, str, str, str]] = []
+    array_intent_group = uuid.uuid4().hex
+    for idx, task in enumerate(normalized_tasks):
+        intent_id = f"{array_intent_group}:{idx}"
+        reserve_error, prior_status = _reserve_slurm_submission_on_node(
+            task["job_dir"],
+            task["node_id"],
+            intent_id,
+            kind="array",
+            array_task_id=idx,
+        )
+        if reserve_error:
+            for jd, nid, prior_intent, _prior_status in submission_intents:
+                _clear_slurm_submission_intent(jd, nid, prior_intent)
+            return {**result, **reserve_error}
+        submission_intents.append((
+            task["job_dir"],
+            task["node_id"],
+            intent_id,
+            prior_status or "pending",
+        ))
+
     timeout = get_timeout("slurm")
     try:
         proc = run_command(["sbatch", str(script_file)], timeout=timeout)
-        m = re.search(r"Submitted batch job (\d+)", proc.stdout)
+        m = _SUBMITTED_BATCH_JOB_RE.match(proc.stdout)
         if not m:
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
             return result
@@ -1648,12 +2010,14 @@ def submit_array_job(
         result["parent_job_id"] = parent_id
 
         # Per-task bookkeeping
+        tracker_records: list[dict[str, Any]] = []
+        stamped_nodes: list[tuple[str, str, str, str]] = []
         for idx, task in enumerate(normalized_tasks):
             child_job_id = f"{parent_id}_{idx}"
             task_stdout = stdout_log.replace("%A", parent_id).replace("%a", str(idx))
             task_stderr = stderr_log.replace("%A", parent_id).replace("%a", str(idx))
 
-            _append_job_record({
+            tracker_records.append({
                 "job_id": child_job_id,
                 "job_name": job_name,
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
@@ -1669,6 +2033,7 @@ def submit_array_job(
                 "node_id": task["node_id"],
             })
 
+            _jd, _nid, intent_id, prior_status = submission_intents[idx]
             stamp_err = _stamp_slurm_on_node(
                 task["job_dir"],
                 task["node_id"],
@@ -1678,9 +2043,34 @@ def submit_array_job(
                 stderr_log=task_stderr,
                 array_task_id=idx,
                 parent_job_id=parent_id,
+                submission_intent_id=intent_id,
             )
             if stamp_err:
-                result["warnings"].append(stamp_err)
+                result["errors"].append(stamp_err)
+                rollback_warning = _try_scancel_submitted_job(parent_id, timeout)
+                if rollback_warning:
+                    result["warnings"].append(rollback_warning)
+                for (
+                    stamped_jd,
+                    stamped_nid,
+                    stamped_job_id,
+                    stamped_prior_status,
+                ) in reversed(stamped_nodes):
+                    node_rollback_warning = _rollback_slurm_stamp_on_node(
+                        stamped_jd,
+                        stamped_nid,
+                        stamped_job_id,
+                        stamped_prior_status,
+                    )
+                    if node_rollback_warning:
+                        result["warnings"].append(node_rollback_warning)
+                return result
+            stamped_nodes.append((
+                task["job_dir"],
+                task["node_id"],
+                child_job_id,
+                prior_status,
+            ))
 
             result["tasks"].append({
                 "array_task_id": idx,
@@ -1690,6 +2080,9 @@ def submit_array_job(
                 "stdout_log": task_stdout,
                 "stderr_log": task_stderr,
             })
+
+        for tracker_record in tracker_records:
+            _append_job_record(tracker_record)
 
         # Save parent metadata (useful for check_job_log fallbacks)
         meta_path = out_dir / "job_metadata.json"
@@ -1712,6 +2105,10 @@ def submit_array_job(
         result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
     except subprocess.TimeoutExpired:
         result["errors"].append(f"sbatch timed out after {timeout}s")
+    finally:
+        if not result["success"]:
+            for jd, nid, intent_id, _prior_status in submission_intents:
+                _clear_slurm_submission_intent(jd, nid, intent_id)
 
     return result
 
@@ -1756,6 +2153,9 @@ def check_job(
         "errors": [],
         "warnings": [],
     }
+    job_id_error = _validate_slurm_job_id(str(job_id))
+    if job_id_error:
+        return {**result, **job_id_error}
 
     if not check_external_tool("squeue"):
         return {**result, **create_tool_not_available_error("squeue", "SLURM is not installed.")}
@@ -2063,6 +2463,9 @@ def cancel_job(job_id: str) -> dict:
         "message": None,
         "errors": [],
     }
+    job_id_error = _validate_slurm_job_id(str(job_id))
+    if job_id_error:
+        return {**result, **job_id_error}
 
     if not check_external_tool("scancel"):
         return {**result, **create_tool_not_available_error("scancel", "SLURM is not installed.")}
@@ -2115,6 +2518,9 @@ def check_job_log(
         "total_lines": 0,
         "errors": [],
     }
+    job_id_error = _validate_slurm_job_id(str(job_id))
+    if job_id_error:
+        return {**result, **job_id_error}
 
     log_path = None
     key = "stderr_log" if log_type == "stderr" else "stdout_log"

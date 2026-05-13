@@ -12,7 +12,9 @@ from mdclaw._common import (
 from mdclaw.amber_server import (
     _canonical_water_model_name as amber_canonical_water_model_name,
     _evaluate_forcefield_water_guardrails,
+    _normalize_pdb_chain_id,
     _resolve_build_amber_node_inputs,
+    _rewrite_pablo_ion_pdb_line,
     build_amber_system,
 )
 from mdclaw._node import complete_node, create_node, read_node, update_job_params
@@ -141,6 +143,97 @@ def test_build_amber_system_phospho_forcefield_unsupported_has_code(tmp_path):
     assert result["success"] is False
     assert result["error_type"] == "ValidationError"
     assert result["code"] == "phospho_forcefield_unsupported"
+
+
+def test_build_amber_system_blocks_unreadable_ligand_params_json(tmp_path):
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+    (tmp_path / "ligand_params.json").write_text("{not json")
+
+    result = build_amber_system(
+        pdb_file=str(pdb_file),
+        forcefield="ff19SB",
+        water_model="opc",
+    )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert result["code"] == "ligand_params_load_failed"
+
+
+def test_build_amber_system_requires_gemmi_for_phospho_detection(tmp_path):
+    pdb_file = tmp_path / "phospho.pdb"
+    pdb_file.write_text(
+        "ATOM      1  N   SEP A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+        "END\n"
+    )
+
+    with patch("mdclaw.amber_server._gemmi_available", return_value=False):
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            forcefield="ff19SB",
+            water_model="opc",
+        )
+
+    assert result["success"] is False
+    assert result["error_type"] == "ValidationError"
+    assert result["code"] == "phospho_detection_requires_gemmi"
+
+
+def test_build_amber_system_helper_failure_gets_default_code(tmp_path):
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        return_value={"success": False, "errors": ["boom"], "warnings": []},
+    ):
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            forcefield="ff19SB",
+            water_model="opc",
+        )
+
+    assert result["success"] is False
+    assert result["code"] == "openmmforcefields_build_failed"
+
+
+def test_build_amber_system_timeout_exception_gets_structured_code(tmp_path):
+    pdb_file = tmp_path / "input.pdb"
+    _write_minimal_pdb(pdb_file)
+
+    with patch(
+        "mdclaw.amber_server._run_openmmforcefields_build",
+        side_effect=TimeoutError("stage timed out"),
+    ):
+        result = build_amber_system(
+            pdb_file=str(pdb_file),
+            forcefield="ff19SB",
+            water_model="opc",
+        )
+
+    assert result["success"] is False
+    assert result["code"] == "openmmforcefields_build_timeout"
+    assert any("timed out" in err for err in result["errors"])
+
+
+def test_pablo_ion_rewrite_covers_multivalent_ions():
+    line = (
+        "HETATM    1  MG2 MG2 A   1      10.000  10.000  10.000  1.00 20.00          Mg\n"
+    )
+
+    rewritten, changed = _rewrite_pablo_ion_pdb_line(line)
+
+    assert changed is True
+    assert rewritten[12:16].strip() == "MG"
+    assert rewritten[17:20].strip() == "MG"
+    assert rewritten[76:78].strip() == "Mg"
+
+
+def test_blank_his_chain_ids_normalize_to_same_key():
+    assert _normalize_pdb_chain_id(" ") == ""
+    assert _normalize_pdb_chain_id("") == ""
+    assert _normalize_pdb_chain_id(None) == ""
 
 
 def test_forcefield_guardrail_warning_for_ff19sb_opc3():
