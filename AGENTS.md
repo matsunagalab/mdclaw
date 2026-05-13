@@ -28,7 +28,7 @@ ForceField XML.
 
 - `mdclaw/`: Python package and CLI tool implementations.
 - `skills/`: platform-agnostic workflow guidance.
-- `.claude/commands/`: local development slash-command wrappers.
+- `.agents/skills/`, `.claude/skills/`: skill discovery mirrors of `skills/`.
 - `.claude-plugin/`, `bin/`, `hooks/`: plugin distribution and runtime wrapper.
 - `tests/`: unit, smoke, and pipeline tests.
 - `docs/developer/`: long-form developer references.
@@ -73,7 +73,7 @@ from `docs/developer/testing.md`.
 User-facing sequence:
 
 ```text
-/md-prepare -> /md-equilibration -> /md-production -> /md-analyze
+md-prepare -> md-equilibration -> md-production -> md-analyze
 ```
 
 Core schema v3 rules:

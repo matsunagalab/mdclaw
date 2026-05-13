@@ -16,7 +16,7 @@ software stack.
 |---|---|---|
 | `skills/<name>/SKILL.md` | Source-of-truth runbooks. All harnesses should ultimately read these. | Tracked |
 | `.agents/skills/<name>` | Generic Agent Skills discovery entries, symlinked to `skills/<name>`. | Tracked symlinks; can be regenerated |
-| `.claude/commands/*.md` | Repo-local Claude Code slash-command wrappers such as `/md-prepare`. | Tracked dev shortcuts |
+| `.claude/skills/<name>` | Repo-local Claude Code skill discovery entries, symlinked to `skills/<name>`. | Tracked symlinks; can be regenerated |
 | `.claude-plugin/` | Claude plugin marketplace metadata. | Tracked distribution metadata |
 | `hooks/hooks.json` | Claude plugin lifecycle hooks. SessionStart runs container setup. | Tracked plugin hook |
 | `bin/mdclaw` | Runtime wrapper. Chooses conda, Singularity/Apptainer, Docker, or local CLI. | Tracked executable |
@@ -24,18 +24,17 @@ software stack.
 
 These directories are intentionally not all the same thing. For example,
 `.claude-plugin/` does not contain the skills; it tells Claude how to install
-the plugin. `.agents/skills/` is not another source of truth; it is a discovery
-surface for agents that look there. `.claude/commands/` is a local development
-convenience, not the portable skill layer.
+the plugin. `.agents/skills/` and `.claude/skills/` are not additional sources
+of truth; they are discovery surfaces that mirror `skills/`.
 
 ## Deployment Matrix
 
 | User / Harness | Skill Discovery | Runtime Path | Commands |
 |---|---|---|---|
 | Claude Code plugin user | Plugin exposes `skills/` and `/mdclaw:*` commands | `bin/mdclaw` plus SessionStart container setup | `/plugin install mdclaw@mdclaw` |
-| Repo-local Claude Code developer | `.claude/commands/` wrappers read `skills/` | Usually conda env `mdclaw`; `bin/mdclaw` also works | Open repo, use `/md-prepare` |
+| Repo-local Claude Code developer | `.claude/skills/` mirrors `skills/` | Usually conda env `mdclaw`; `bin/mdclaw` also works | Open repo, use discovered skills |
 | Pi | `package.json` points Pi at `./skills` | Conda, SIF, Docker, or local CLI | `pi install git:github.com/matsunagalab/mdclaw@main` |
-| Codex / OpenCode / generic skill harness | `.agents/skills/` symlinks or copies | Conda, SIF, Docker, or local CLI | `scripts/install-agent-skills.sh` |
+| Codex / OpenCode / generic skill harness | `.agents/skills/` mirrors `skills/` | Conda, SIF, Docker, or local CLI | `scripts/install-agent-skills.sh` |
 | Direct CLI user | No skills required | `mdclaw` command in conda/local/container | `mdclaw --list` |
 
 ## Claude Code Plugin
@@ -72,18 +71,10 @@ The plugin command namespace is prefixed:
 ## Repo-Local Claude Code
 
 When working inside this repository without installing the plugin,
-`.claude/commands/` provides local slash commands:
-
-```text
-/md-prepare
-/md-equilibration
-/md-production
-/md-analyze
-/hpc-run
-```
-
-Those command files are thin wrappers. They should not contain long workflow
-logic. The workflow source of truth remains `skills/<name>/SKILL.md`.
+`.claude/skills/` mirrors the canonical `skills/` directory for local skill
+discovery. The repo does not track short slash-command wrappers such as
+`/md-prepare`; use the discovered skills directly. Install the Claude plugin
+when you want the plugin command namespace such as `/mdclaw:md-prepare`.
 
 ## Pi
 
@@ -108,7 +99,8 @@ runtime with one of the methods below.
 
 ## Codex, OpenCode, and Generic Agents
 
-For harnesses that discover skills under `.agents/skills`, use:
+For harnesses that discover skills under `.agents/skills` or `.claude/skills`,
+use:
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw
@@ -121,6 +113,7 @@ Default mode creates relative symlinks:
 
 ```text
 .agents/skills/md-prepare -> ../../skills/md-prepare
+.claude/skills/md-prepare -> ../../skills/md-prepare
 ```
 
 If symlinks are not supported:
@@ -201,16 +194,17 @@ It checks:
 - OpenMM test installation.
 - AmberTools executables: `pdb4amber`, `antechamber`, `parmchk2`, `cpptraj`.
 - container command availability.
-- `.agents/skills` discovery.
+- `.agents/skills` and `.claude/skills` discovery.
 
 ## Common Pitfalls
 
 - **Skills installed but `mdclaw` fails**: skill discovery worked, but the MD
   runtime is missing. Run `scripts/mdclaw-doctor.sh`.
-- **Plugin commands and repo-local commands differ**: plugin commands are
-  `/mdclaw:<skill>`, repo-local Claude commands are `/md-prepare` style.
-- **`.agents/skills` looks duplicated**: it is a discovery surface, usually
-  symlinks to `skills/`.
+- **Plugin slash commands are available but repo-local short commands are not**:
+  plugin commands use `/mdclaw:<skill>`. Repo-local Claude uses
+  `.claude/skills/` discovery instead.
+- **`.agents/skills` or `.claude/skills` looks duplicated**: these are
+  discovery surfaces, usually symlinks to `skills/`.
 - **macOS sandbox agents do not see GPU/OpenCL**: use the conda env from a
   normal terminal or run on HPC for long jobs.
 - **Long explicit-water MD on CPU is slow**: use `inspect_openmm_platforms`,

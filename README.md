@@ -6,12 +6,29 @@ and a durable job DAG so the agent can prepare systems, run equilibration and
 production MD, analyze trajectories, and report evidence without hand-editing
 state files.
 
+## What MDClaw Can Do
+
+- Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
+  structure files.
+- Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
+  residues before committing to a setup.
+- Clean structures, preserve selected ligands when safe, solvate systems, and
+  assign Amber/OpenMM force fields.
+- Build OpenMM-ready topology artifacts, then run equilibration and production
+  MD with restartable state files.
+- Branch workflows for mutations, PTMs, ligand choices, solvent models,
+  temperatures, seeds, and protocols.
+- Run locally, through containers, or on SLURM/HPC systems.
+- Analyze trajectories and package reproducible evidence, provenance, figures,
+  and Methods-style reports.
+- Evaluate MD agents with the included MDAgentBench dataset and scorer.
+
 MDClaw is split into two things that are deployed together but should be
 understood separately:
 
 | Layer | What It Is | Main Files |
 |---|---|---|
-| Agent guidance | Skills/runbooks that tell an agent what to do | `skills/`, `.agents/skills/`, `.claude/commands/` |
+| Agent guidance | Skills/runbooks that tell an agent what to do | `skills/`, `.agents/skills/`, `.claude/skills/` |
 | MD runtime | The scientific software stack and CLI that perform the work | `bin/mdclaw`, `mdclaw/`, `container/`, `hooks/` |
 
 The skills are text and are portable across agent harnesses. The runtime is
@@ -56,9 +73,9 @@ pi install git:github.com/matsunagalab/mdclaw@main
 the `mdclaw` conda env, a SIF through `MDCLAW_SIF`, Docker through
 `MDCLAW_DOCKER_IMAGE`, or the plugin/container wrapper.
 
-### Codex, OpenCode, and Generic Agents
+### Claude Code, Codex, OpenCode, and Generic Agents
 
-Use this path when an agent discovers skills from `.agents/skills`.
+Use this path when an agent discovers skills from repo-local skill mirrors.
 
 ```bash
 git clone https://github.com/matsunagalab/mdclaw
@@ -67,25 +84,15 @@ scripts/install-agent-skills.sh
 scripts/mdclaw-doctor.sh
 ```
 
-`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` symlinks to
-`skills/<name>`. Use `scripts/install-agent-skills.sh --copy` if your agent or
-filesystem does not follow symlinks.
+`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` and
+`.claude/skills/<name>` symlinks to `skills/<name>`. Use
+`scripts/install-agent-skills.sh --copy` if your agent or filesystem does not
+follow symlinks.
 
-### Repo-Local Claude Code Development
-
-When working directly in this repository, `.claude/commands/` exposes local
-development slash commands:
-
-```text
-/md-prepare
-/md-equilibration
-/md-production
-/md-analyze
-/hpc-run
-```
-
-These are thin wrappers around `skills/*/SKILL.md`. The plugin-installed form
-uses `/mdclaw:md-prepare`, `/mdclaw:md-equilibration`, and so on.
+Repo-local Claude Code uses `.claude/skills/` for skill discovery. The older
+repo-local short commands such as `/md-prepare` are intentionally not tracked;
+use the discovered skills directly, or install the Claude plugin when you want
+the plugin command namespace such as `/mdclaw:md-prepare`.
 
 ### Local Runtime
 
@@ -109,163 +116,45 @@ mdclaw --list
 See `docs/agents/deployment.md` for the full deployment matrix and
 `docs/developer/container.md` for container details.
 
-## Basic Workflow
+## Ask In Plain Language
 
-The normal user-facing sequence is:
-
-```text
-md-prepare -> md-equilibration -> md-production -> md-analyze
-```
-
-Example prompts for a skill-aware agent:
+Users do not need to remember command names. Ask a skill-aware agent for the
+scientific workflow you want, and include the choices that affect reproducible
+MD:
 
 ```text
-/mdclaw:md-prepare 1AKE chain A, no ligands, explicit water, defaults
-/mdclaw:md-equilibration job_a1b2c3d4
-/mdclaw:md-production job_a1b2c3d4, 10 ns
-/mdclaw:md-analyze RMSD and RMSF for job_a1b2c3d4
-```
-
-The equivalent repo-local Claude Code commands omit the `mdclaw:` prefix.
-
-You can also call the CLI directly. DAG workflow tools need an explicit
-`--job-dir` and `--node-id`; skills usually create and pass those for you.
-
-```bash
-mdclaw --list
-mdclaw fetch_structure --help
-mdclaw inspect_molecules --structure-file structure.pdb
-```
-
-## Prompt Examples
-
-These examples are written as prompts to a skill-aware agent. The goal is not
-just to run commands, but to leave a clean DAG, explicit assumptions, and
-reviewable evidence.
-
-### Minimal Protein Workflow
-
-```text
-/mdclaw:md-prepare 1AKE chain A, protein only, explicit water, default force field and water model. Create a new job and report the job_dir.
-
-/mdclaw:md-equilibration <job_dir> with the default staged protocol. Stop after equilibration and summarize the completed nodes.
-
-/mdclaw:md-production <job_dir>, 10 ns, default HMR settings. Use the equilibrated state from the DAG.
-
-/mdclaw:md-analyze <job_dir>. Report RMSD, RMSF, energy stability, and the exact production node used.
-```
-
-### Ligand-Bound Complex
-
-```text
-/mdclaw:md-prepare PDB 1AKE. Inspect molecules first, keep chain A and ligand AP5 if present, preserve ligand coordinates, use explicit water, and stop if ligand parameterization is blocked.
-```
-
-For ligand systems, name the ligand policy explicitly: keep the bound ligand,
-remove all ligands, or keep only specific ligand IDs from inspection.
-
-### Nucleic Acids, PTMs, and Variants
-
-```text
-/mdclaw:md-prepare <structure> with protein chains A/B and DNA or RNA chains C/D. Use the standard nucleic-acid path when possible and report any unsupported modified residues before topology build.
+Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
+default force field and water model. Create a clean workflow record and report
+the job directory.
 ```
 
 ```text
-/mdclaw:md-prepare <job_dir> branch from prep_001, apply mutation V148A, then solvate and build a separate topology branch. Keep the original branch intact.
+Continue that job through the default equilibration protocol, then run 10 ns of
+production MD from the equilibrated state and analyze RMSD, RMSF, and energy
+stability.
 ```
 
 ```text
-/mdclaw:md-prepare <job_dir> branch from prep_001, restore detected phosphorylation sites if valid, and stop with structured diagnostics if any target residue cannot be located.
-```
-
-### HPC and Long Runs
-
-```text
-/mdclaw:hpc-run inspect the cluster, then submit production for <job_dir> from prod-ready node eq_001: 100 ns, GPU partition, one job per production branch. Record the SLURM job IDs in the DAG.
+Prepare the 1AKE complex while preserving the bound AP5 ligand if inspection
+finds it. Keep the ligand coordinates, use explicit water, and stop with a
+structured blocked result if ligand parameterization is unsafe.
 ```
 
 ```text
-/mdclaw:hpc-run check SLURM job <job_id>, sync the node status, and report whether the DAG has a completed production state, checkpoint, trajectory, and energy log.
-```
-
-### Restart, Extension, and Evidence
-
-```text
-/mdclaw:md-production <job_dir>, extend the latest completed production node by 50 ns. Use the nearest production state from the DAG and create a new child production node.
+Branch from the prepared structure, apply mutation V148A, keep the original
+branch intact, and build a separate solvated topology branch for comparison.
 ```
 
 ```text
-/mdclaw:md-analyze <job_dir>, then generate an evidence summary and a methods-style report from the selected source -> prep -> solv -> topo -> eq -> prod lineage.
+Submit a 100 ns production run for the equilibrated job to the GPU partition,
+then sync the scheduler status back into the workflow record and report the
+completed trajectory, state, checkpoint, and energy artifacts.
 ```
 
-### Benchmark Prompts
-
-```text
-Run MDAgentBench task T01_engine_smoke as an evaluated agent. Read only the task prompt as the agent instruction, write the required submission artifacts, then run the validator and scorer commands.
-```
-
-```text
-Run the full MDAgentBench suite and report which tasks had real MD execution, which tasks were blocked, which tasks were partial, and why. Do not describe the result as a full MD benchmark unless the long MD tasks were actually attempted.
-```
-
-### Prompt Quality Checklist
-
-Good MDClaw prompts usually specify:
-
-- Structure source: PDB ID, AlphaFold/UniProt ID, local file, or existing
-  `job_dir`.
-- Molecular selection: chains, ligands, waters, ions, glycans, DNA/RNA, PTMs.
-- Simulation model: explicit or implicit solvent, water model, salt, force
-  field, membrane if needed.
-- Runtime target: local smoke test, real local run, HPC submission, or scoring
-  only.
-- Duration and ensemble: equilibration protocol, production length, NVT/NPT,
-  seeds when comparing branches.
-- Stopping policy: continue autonomously, ask at ambiguous decisions, or stop
-  on structured blocked states.
-- Reporting target: node IDs, artifacts, validation output, evidence report,
-  methods report, or benchmark score.
-
-Weak prompts hide important choices:
-
-```text
-Run MD for this protein.
-```
-
-Better prompts make the scientific and operational contract explicit:
-
-```text
-/mdclaw:md-prepare PDB 1AKE chain A, remove all ligands, explicit OPC water with 15 A buffer and 0.15 M salt. Use defaults otherwise, create a clean DAG, and stop if topology build is unsupported.
-```
-
-## Job DAG In One Picture
-
-Every job is a DAG of workflow nodes. Tools mutate node state; skills only
-decide what to run next.
-
-```mermaid
-flowchart LR
-  source[source_001<br/>fetch] --> prep[prep_001<br/>prepare]
-  prep --> solv[solv_001<br/>solvate]
-  solv --> topo[topo_001<br/>OpenMM XML triple]
-  topo --> eq1[eq_001<br/>equilibrate]
-  eq1 --> prod1[prod_001<br/>production]
-  eq1 --> eq2[eq_002<br/>branch / staged eq]
-  eq2 --> prod2[prod_002<br/>production branch]
-```
-
-Key rules:
-
-- One `job_dir` is one physical system with one `source` root.
-- Variants branch after `prep`, `solv`, `topo`, `eq`, or `prod`.
-- `topo` writes the modern OpenMM triple: `system.system.xml`,
-  `system.topology.pdb`, and `system.state.xml`.
-- `eq` and `prod` auto-resolve their inputs from ancestor nodes.
-- `progress.json` is only an index; each node owns its own `node.json`,
-  lock, and `artifacts/`.
-
-Detailed DAG structure, study directories, and node invariants live in
-`docs/developer/architecture.md`.
+Good prompts usually specify the structure source, molecular selection,
+solvent model, force field, runtime target, duration, ensemble, stopping
+policy, and desired evidence. Vague prompts such as "run MD for this protein"
+hide too many scientific and operational choices.
 
 ## Repository Map
 
@@ -273,7 +162,7 @@ Detailed DAG structure, study directories, and node invariants live in
 |---|---|
 | `skills/` | Portable agent runbooks. This is the source of truth for skill behavior. |
 | `.agents/skills/` | Generic Agent Skills discovery entries, symlinked to `skills/`. |
-| `.claude/commands/` | Repo-local Claude Code slash-command wrappers for development. |
+| `.claude/skills/` | Repo-local Claude Code skill discovery entries, symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
 | `hooks/` | Plugin lifecycle hooks, including container setup. |
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
@@ -284,7 +173,29 @@ Detailed DAG structure, study directories, and node invariants live in
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, benchmark, and integration tests. |
 
-## What MDClaw Supports
+## Workflow DAG
+
+Internally, each MD job is represented as a workflow DAG. This is the technical
+contract that lets agents resume work, branch variants, and report exactly
+which artifacts were used.
+
+![MDClaw workflow DAG](docs/assets/mdclaw-dag.png)
+
+The main path is:
+
+```text
+structure source -> clean / prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
+```
+
+Each step writes a node with its own state, artifacts, and provenance. Branches
+can fork from preparation, solvation, topology, equilibration, or production
+when comparing variants such as mutants, ligands, protocols, temperatures, or
+random seeds.
+
+Detailed node layout, artifact names, study directories, and invariants live in
+`docs/developer/architecture.md`.
+
+## Technical Scope And Guardrails
 
 - Protein systems with Amber ff19SB / OpenMM.
 - Explicit solvent setup, defaulting to OPC, 15 A buffer, and 0.15 M salt.

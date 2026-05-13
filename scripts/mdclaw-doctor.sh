@@ -51,9 +51,17 @@ fi
 
 echo
 echo "Agent skills:"
-if [ -d "$REPO_ROOT/.agents/skills" ]; then
-    find -L "$REPO_ROOT/.agents/skills" -maxdepth 2 -name SKILL.md -print | sed "s#^$REPO_ROOT/#[ok] #"
-else
-    echo "[warn] .agents/skills not found"
-    echo "      Run: scripts/install-agent-skills.sh"
-fi
+for skills_root in "$REPO_ROOT/.agents/skills" "$REPO_ROOT/.claude/skills"; do
+    label="${skills_root#$REPO_ROOT/}"
+    if [ -d "$skills_root" ]; then
+        found="$(find -L "$skills_root" -maxdepth 2 -name SKILL.md -print)"
+        if [ -n "$found" ]; then
+            printf '%s\n' "$found" | sed "s#^$REPO_ROOT/#[ok] #"
+        else
+            echo "[warn] $label contains no SKILL.md files"
+        fi
+    else
+        echo "[warn] $label not found"
+        echo "      Run: scripts/install-agent-skills.sh"
+    fi
+done

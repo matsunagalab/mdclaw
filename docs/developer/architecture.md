@@ -8,7 +8,7 @@ do the work. The node DAG records what actually happened.
 
 | Layer | Responsibility | Main Files |
 |---|---|---|
-| Agent guidance | Short runbooks that an agent reads before choosing tools | `skills/`, `.agents/skills/`, `.claude/commands/` |
+| Agent guidance | Short runbooks that an agent reads before choosing tools | `skills/`, `.agents/skills/`, `.claude/skills/` |
 | CLI and dispatch | Parse command-line calls, discover tools, inject node context | `bin/mdclaw`, `mdclaw/_cli.py`, `mdclaw/_registry.py` |
 | Tool execution | Fetch structures, prepare systems, build OpenMM XML, run MD, analyze output | `mdclaw/*_server.py` |
 | State and evidence | Record node status, artifacts, events, and reports | `mdclaw/_node.py`, `mdclaw/_event.py`, `mdclaw/evidence_server.py` |
@@ -56,7 +56,7 @@ Important boundaries:
 |---|---|
 | `skills/` | Source-of-truth skill runbooks. |
 | `.agents/skills/` | Generic Agent Skills discovery surface, normally symlinked to `skills/`. |
-| `.claude/commands/` | Repo-local Claude Code slash-command wrappers for development. |
+| `.claude/skills/` | Repo-local Claude Code skill discovery surface, normally symlinked to `skills/`. |
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
 | `hooks/` | Plugin lifecycle hooks, including container setup. |
 | `bin/mdclaw` | Runtime wrapper that selects conda, SIF, Docker, or local CLI. |
