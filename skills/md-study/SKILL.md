@@ -68,6 +68,22 @@ confirmation. The mode is propagated to each registered job's
   `equilibration -> production`, `production -> analyze`) and remains in
   effect there.
 
+  Auto-chain semantics — read carefully:
+
+  - The chain runs through every `md-prepare` substep (source -> prep ->
+    solv -> topo) without pausing for user OK between them. The plan write
+    (`record_study_plan`) is the user-visible artifact from this skill; the
+    next user-visible stop is when `md-prepare` finishes `topo_001` and
+    prints its handoff line for equilibration.
+  - Verbs in the user's request like "plan", "design", "scope out",
+    "define jobs", or "lay out observables" describe scientific framing.
+    They are **not** stop signals and must not override the autonomous
+    auto-chain rule.
+  - After `md-prepare` completes on the first job, immediately invoke
+    `md-prepare` on the next planned job in the same conversation turn.
+    Only after every planned job has a completed `topo_001` do you stop
+    and hand off to the user with the `/md-equilibration` line.
+
 - **`human_in_the_loop`**: Pause at every major checkpoint:
   1. Restated scientific question and MD goal.
   2. Proposed job list.
@@ -227,8 +243,16 @@ skipped.
 
       Pass the `job_dir`, the variant / system summary from the plan, and any
       job-specific instructions (e.g. mutation, chain selection) to the
-      invoked skill. After it returns, continue with the next planned job in
-      the same conversation turn.
+      invoked skill. After it returns (i.e., the invoked skill prints its
+      own handoff line), continue with the next planned job in the same
+      conversation turn — without asking the user for permission to proceed.
+
+      Stop and ask the user only when:
+        * A structured tool failure has no safe automated next action.
+        * A required parameter is genuinely ambiguous and has no safe
+          default.
+        * Every planned job's structural setup is complete; then hand off
+          with the `/md-equilibration` shortcut on the first job.
 
     - **`human_in_the_loop`**: Report the plan summary, the next-stage skill
       path, and a copy-pasteable command, then stop:
