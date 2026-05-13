@@ -121,6 +121,50 @@ precise replicate counts, production lengths, protonation states, or controls
 unless the user requested them or they are clearly part of the study design.
 Use `unknown` or `to_be_decided` instead of filling uncertain details.
 
+## Literature And Database Lookup
+
+Study planning must be grounded in current databases and literature, not in
+the agent's training-data memory. The agent's knowledge of "good PDB IDs"
+and "typical comparisons" is often stale or imprecise (wrong chain,
+unexpected ligand, superseded by a higher-resolution entry). MDClaw exposes
+the relevant tools natively; use them before designing the plan.
+
+Minimum contract for multi-system or comparative studies:
+
+1. **Structure candidates** — run `search_structures` (use `--rank-for-md`
+   for MD-suitability ordering by resolution, experimental method, and
+   chain composition) and/or `get_structure_info --pdb-id <id>` for any
+   candidate the user named. Note resolution, experimental method, chain
+   composition, ligands, and bound cofactors that matter to the
+   hypothesis (Ca2+, peptide, NADP, lipid, etc.).
+2. **Sequence / functional context** — when the user names a protein but
+   not a structure, run `search_proteins` and `get_protein_info` against
+   UniProt to confirm the canonical sequence, isoforms, and PTM sites.
+3. **Prior MD or structural work** — run `pubmed_search` on the system and
+   hypothesis (for example `"calmodulin MLCK molecular dynamics"`) and
+   `pubmed_fetch --pmids ...` on the most relevant 1-3 PMIDs to read
+   abstracts. This surfaces typical observables, force-field choices,
+   timescales, and known pitfalls already in the literature.
+
+Record what you consulted under `notes.references` in the plan so later
+agents and reviewers can see the evidence base:
+
+```json
+"notes": {
+  "references": {
+    "pdb_ids": ["1CDL", "1CLL", "1CFD"],
+    "pmids": ["12345678", "23456789"],
+    "summary": "1CDL chosen as master start (X-ray 2.0 A, single CaM chain + 19-residue MLCK peptide, 4 Ca2+). 1CLL and 1CFD cited as references for the holo_nopep and apo_nopep cells."
+  }
+}
+```
+
+When the user has specified a concrete PDB ID and asked for a direct run
+(the single-system fast path described in `## When To Use This Skill`),
+this section is optional — a single `get_structure_info` to confirm
+resolution and chain composition is enough, and `pubmed_search` can be
+skipped.
+
 ## Workflow
 
 1. Parse the user's request. Set `execution_mode` per Step 0; default
@@ -128,27 +172,34 @@ Use `unknown` or `to_be_decided` instead of filling uncertain details.
 2. Decide whether this is a study-planning request or a direct-run fast path.
    If it is a direct run, hand off immediately to
    `skills/md-prepare/SKILL.md`.
-3. Restate the scientific question in one clear sentence.
-4. Translate it into an MD goal: what structural, dynamical, or interaction
+3. **Ground the design in literature and databases.** Do not pick starting
+   structures, comparison cells, or analysis observables from training-data
+   memory. Run the lookups described in `## Literature And Database Lookup`
+   (`search_structures` / `get_structure_info`, optionally `search_proteins`
+   / `get_protein_info`, and `pubmed_search` / `pubmed_fetch`) and record
+   what you consulted under `notes.references` in the plan JSON. Skip only
+   on the single-system fast path (step 2).
+4. Restate the scientific question in one clear sentence.
+5. Translate it into an MD goal: what structural, dynamical, or interaction
    behavior MD can measure.
-5. Propose the smallest job set that can answer the question. Prefer one
+6. Propose the smallest job set that can answer the question. Prefer one
    baseline/control and one test variant when possible.
-6. Propose a short analysis list tied to the question. Avoid long generic
+7. Propose a short analysis list tied to the question. Avoid long generic
    metric catalogs.
-7. State decision criteria for support, against, and inconclusive outcomes.
-8. **HIL only**: confirm the restated question, jobs, analysis, and decision
+8. State decision criteria for support, against, and inconclusive outcomes.
+9. **HIL only**: confirm the restated question, jobs, analysis, and decision
    criteria with the user before writing them. In autonomous mode, skip this
    confirmation unless a required value is missing or genuinely ambiguous.
-9. Create or reuse a `study_dir` and record the plan:
+10. Create or reuse a `study_dir` and record the plan:
 
-   ```bash
-   mdclaw init_study --study-dir <study_dir> --title "<short title>" \
-     --objective "<one sentence objective>"   # only if the study does not exist
+    ```bash
+    mdclaw init_study --study-dir <study_dir> --title "<short title>" \
+      --objective "<one sentence objective>"   # only if the study does not exist
 
-   mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
-   ```
+    mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
+    ```
 
-10. Register planned jobs and propagate `execution_mode` so downstream skills
+11. Register planned jobs and propagate `execution_mode` so downstream skills
     inherit it:
 
     ```bash
@@ -165,7 +216,7 @@ Use `unknown` or `to_be_decided` instead of filling uncertain details.
     Register jobs only when the job IDs are clear. Otherwise leave job
     creation to the downstream prepare step.
 
-11. Handoff:
+12. Handoff:
 
     - **`autonomous`**: Invoke the next-stage skill on the first registered
       structural-setup job. Choose by current job state:
@@ -190,6 +241,10 @@ Use `unknown` or `to_be_decided` instead of filling uncertain details.
 
 ## Guardrails
 
+- Do not select starting structures, comparison cells, or analysis
+  observables purely from training-data memory. Use the lookups described
+  in `## Literature And Database Lookup` and record the consulted PDB IDs
+  and PMIDs in the plan under `notes.references`.
 - Do not treat visual QA or simple RMSD plots as scientific validation by
   themselves.
 - Do not make the plan so detailed that later agents must satisfy fragile
