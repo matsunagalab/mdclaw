@@ -58,6 +58,7 @@ output/
 outputs/
 .mdclaw_cache/
 ref/
+slide/
 *.pdb
 *.mol2
 *.prmtop
