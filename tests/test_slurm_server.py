@@ -1359,6 +1359,54 @@ class TestSubmitJobNodeIntegration:
         assert records[0]["node_id"] == "prod_001"
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.update_node_status")
+    @patch("mdclaw.slurm_server.run_command")
+    def test_stamp_status_failure_rolls_back_metadata(
+        self, mock_run, mock_update_status, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_stamp_status_fail", ["prod_001"])
+        commands = []
+
+        def command_side_effect(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[0] == "sbatch":
+                return _mock_run_command(stdout="Submitted batch job 77777\n")
+            if cmd[0] == "scancel":
+                return _mock_run_command(stdout="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        mock_run.side_effect = command_side_effect
+        mock_update_status.return_value = {
+            "success": False,
+            "error": "progress lock failed",
+        }
+
+        result = submit_job(
+            script="echo test",
+            job_dir=str(jd),
+            node_id="prod_001",
+            output_dir=str(tmp_path),
+        )
+
+        assert result["success"] is False
+        assert result["slurm_job_id"] == "77777"
+        assert result["errors"] == [
+            "could not mark node prod_001 queued: progress lock failed"
+        ]
+        assert ["scancel", "77777"] in commands
+        assert _read_job_records() == []
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        for key in (
+            "slurm_job_id",
+            "slurm_parent_job_id",
+            "slurm_array_task_id",
+            "slurm_submission_intent_id",
+        ):
+            assert key not in node["metadata"]
+        assert node["status"] == "pending"
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     def test_node_id_without_job_dir_is_rejected(self, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = submit_job(
@@ -1461,6 +1509,49 @@ class TestSubmitJobNodeIntegration:
         assert result["success"] is False
         assert result["slurm_job_id"] is None
         assert "Could not parse sbatch output" in result["errors"][0]
+
+    def test_stamp_rolls_back_metadata_when_queue_status_update_fails(
+        self, tmp_path
+    ):
+        from mdclaw import slurm_server as slurm_mod
+
+        jd = _make_job_with_nodes(tmp_path, "job_stamp_status_fail", ["prod_001"])
+        intent_id = "intent-1"
+        error, _prior_status = slurm_mod._reserve_slurm_submission_on_node(
+            str(jd),
+            "prod_001",
+            intent_id,
+            kind="array",
+            array_task_id=0,
+        )
+        assert error is None
+
+        with patch(
+            "mdclaw.slurm_server.update_node_status",
+            return_value={"success": False, "message": "status update failed"},
+        ):
+            stamp_err = slurm_mod._stamp_slurm_on_node(
+                str(jd),
+                "prod_001",
+                "99999_0",
+                script_file=str(tmp_path / "job.sbatch"),
+                stdout_log=str(tmp_path / "job.out"),
+                stderr_log=str(tmp_path / "job.err"),
+                array_task_id=0,
+                parent_job_id="99999",
+                submission_intent_id=intent_id,
+            )
+
+        assert "could not mark node prod_001 queued" in stamp_err
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        for key in (
+            "slurm_job_id",
+            "slurm_parent_job_id",
+            "slurm_array_task_id",
+            "slurm_submission_intent_id",
+        ):
+            assert key not in node["metadata"]
+        assert node["status"] == "pending"
 
 
 class TestCheckJobNodeSync:

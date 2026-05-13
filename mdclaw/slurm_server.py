@@ -443,6 +443,11 @@ def _stamp_slurm_on_node(
                     f"could not stamp node {node_id}: existing "
                     f"slurm_job_id={existing!r}"
                 )
+            prior_status = str(
+                metadata.get("slurm_submission_prior_status")
+                or data.get("status")
+                or "pending"
+            )
             metadata.update(meta)
             for key in _SLURM_SUBMISSION_INTENT_KEYS:
                 metadata.pop(key, None)
@@ -451,6 +456,12 @@ def _stamp_slurm_on_node(
         if set_queued:
             status_result = update_node_status(str(job_dir), node_id, "queued")
             if not status_result.get("success", False):
+                _rollback_slurm_stamp_on_node(
+                    str(job_dir),
+                    node_id,
+                    slurm_job_id,
+                    prior_status,
+                )
                 return (
                     f"could not mark node {node_id} queued: "
                     f"{status_result.get('message') or status_result.get('error')}"
