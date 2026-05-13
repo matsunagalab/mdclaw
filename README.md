@@ -137,6 +137,107 @@ mdclaw fetch_structure --help
 mdclaw inspect_molecules --structure-file structure.pdb
 ```
 
+## Prompt Examples
+
+These examples are written as prompts to a skill-aware agent. The goal is not
+just to run commands, but to leave a clean DAG, explicit assumptions, and
+reviewable evidence.
+
+### Minimal Protein Workflow
+
+```text
+/mdclaw:md-prepare 1AKE chain A, protein only, explicit water, default force field and water model. Create a new job and report the job_dir.
+
+/mdclaw:md-equilibration <job_dir> with the default staged protocol. Stop after equilibration and summarize the completed nodes.
+
+/mdclaw:md-production <job_dir>, 10 ns, default HMR settings. Use the equilibrated state from the DAG.
+
+/mdclaw:md-analyze <job_dir>. Report RMSD, RMSF, energy stability, and the exact production node used.
+```
+
+### Ligand-Bound Complex
+
+```text
+/mdclaw:md-prepare PDB 1AKE. Inspect molecules first, keep chain A and ligand AP5 if present, preserve ligand coordinates, use explicit water, and stop if ligand parameterization is blocked.
+```
+
+For ligand systems, name the ligand policy explicitly: keep the bound ligand,
+remove all ligands, or keep only specific ligand IDs from inspection.
+
+### Nucleic Acids, PTMs, and Variants
+
+```text
+/mdclaw:md-prepare <structure> with protein chains A/B and DNA or RNA chains C/D. Use the standard nucleic-acid path when possible and report any unsupported modified residues before topology build.
+```
+
+```text
+/mdclaw:md-prepare <job_dir> branch from prep_001, apply mutation V148A, then solvate and build a separate topology branch. Keep the original branch intact.
+```
+
+```text
+/mdclaw:md-prepare <job_dir> branch from prep_001, restore detected phosphorylation sites if valid, and stop with structured diagnostics if any target residue cannot be located.
+```
+
+### HPC and Long Runs
+
+```text
+/mdclaw:hpc-run inspect the cluster, then submit production for <job_dir> from prod-ready node eq_001: 100 ns, GPU partition, one job per production branch. Record the SLURM job IDs in the DAG.
+```
+
+```text
+/mdclaw:hpc-run check SLURM job <job_id>, sync the node status, and report whether the DAG has a completed production state, checkpoint, trajectory, and energy log.
+```
+
+### Restart, Extension, and Evidence
+
+```text
+/mdclaw:md-production <job_dir>, extend the latest completed production node by 50 ns. Use the nearest production state from the DAG and create a new child production node.
+```
+
+```text
+/mdclaw:md-analyze <job_dir>, then generate an evidence summary and a methods-style report from the selected source -> prep -> solv -> topo -> eq -> prod lineage.
+```
+
+### Benchmark Prompts
+
+```text
+Run MDAgentBench task T01_engine_smoke as an evaluated agent. Read only the task prompt as the agent instruction, write the required submission artifacts, then run the validator and scorer commands.
+```
+
+```text
+Run the full MDAgentBench suite and report which tasks had real MD execution, which tasks were blocked, which tasks were partial, and why. Do not describe the result as a full MD benchmark unless the long MD tasks were actually attempted.
+```
+
+### Prompt Quality Checklist
+
+Good MDClaw prompts usually specify:
+
+- Structure source: PDB ID, AlphaFold/UniProt ID, local file, or existing
+  `job_dir`.
+- Molecular selection: chains, ligands, waters, ions, glycans, DNA/RNA, PTMs.
+- Simulation model: explicit or implicit solvent, water model, salt, force
+  field, membrane if needed.
+- Runtime target: local smoke test, real local run, HPC submission, or scoring
+  only.
+- Duration and ensemble: equilibration protocol, production length, NVT/NPT,
+  seeds when comparing branches.
+- Stopping policy: continue autonomously, ask at ambiguous decisions, or stop
+  on structured blocked states.
+- Reporting target: node IDs, artifacts, validation output, evidence report,
+  methods report, or benchmark score.
+
+Weak prompts hide important choices:
+
+```text
+Run MD for this protein.
+```
+
+Better prompts make the scientific and operational contract explicit:
+
+```text
+/mdclaw:md-prepare PDB 1AKE chain A, remove all ligands, explicit OPC water with 15 A buffer and 0.15 M salt. Use defaults otherwise, create a clean DAG, and stop if topology build is unsupported.
+```
+
 ## Job DAG In One Picture
 
 Every job is a DAG of workflow nodes. Tools mutate node state; skills only
