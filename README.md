@@ -135,22 +135,26 @@ For a broader scientific question, ask the agent to plan the study first. The
 goal, planned jobs, analysis observables, and decision criteria:
 
 ```text
-Plan an MD study to test whether V148A destabilizes the ligand-bound active
-conformation. Define the WT and mutant jobs to run, what observables to analyze,
-and what outcomes would support, argue against, or leave the question
-inconclusive.
+Plan an MD study for the PSD-95 PDZ3 domain bound to the CRIPT peptide
+(PDB 1BE9). Test whether the H372A mutation weakens dynamic coupling between
+the distal alpha-3 helix and the peptide-binding groove. Define the WT and
+mutant jobs, peptide-contact and groove-dynamics observables, and decision
+criteria.
 ```
 
 ```text
-Plan an apo-vs-holo MD study for adenylate kinase. I want to know whether ligand
-binding stabilizes the closed conformation. Propose the minimal job set,
-analysis metrics, and decision criteria before preparing structures.
+Plan an apo-vs-holo MD study for the T4 lysozyme L99A benzene-binding cavity
+(benzene-bound structure PDB 4W53). I want to know whether benzene occupancy
+stabilizes the engineered hydrophobic cavity or changes its hydration dynamics.
+Propose the minimal job set, ligand/cavity observables, and decision criteria.
 ```
 
 ```text
-Plan a ligand-retention study for the 1AKE AP5 complex. First inspect whether
-AP5 can be safely preserved, then define what job should be prepared and what
-evidence would make the setup usable for production MD.
+Plan an MD study for calmodulin bound to a target peptide (for example PDB
+1CLL or another suitable Ca2+-loaded calmodulin complex). Test whether Ca2+
+coordination stabilizes the open peptide-binding arrangement. Define which
+apo/Ca2+-bound or peptide-bound jobs are scientifically meaningful and what
+structural observables would make the result interpretable.
 ```
 
 For a clear one-system run, ask directly and MDClaw can take the fast path
