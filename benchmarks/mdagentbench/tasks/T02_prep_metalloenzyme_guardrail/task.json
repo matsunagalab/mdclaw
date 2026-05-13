@@ -20,11 +20,6 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "inputs": {
-    "structures": [
-      "input/2CBA.pdb"
-    ]
-  },
   "required_outputs": [
     "manifest.json",
     "metrics.json",

@@ -205,11 +205,11 @@ def _task_ids_from_dataset(dataset_dir: Path, task_ids: Optional[list[str]]) -> 
 def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str]:
     """Stage the public task surface under ``run_task_dir``.
 
-    The agent-facing inputs documented in the benchmark contract are
-    ``prompt.md``, ``task.json``, and the optional ``input/`` directory.
-    Files are overwritten in place; ``input/`` is merged with
-    ``dirs_exist_ok=True`` so re-runs of the same task don't fail when
-    leftover files happen to share names.
+    The agent-facing benchmark contract is prompt-only: the runner exposes
+    ``prompt.md`` as the problem statement and stages ``task.json`` alongside
+    it for submission/scoring metadata. Source structures, protocols, and
+    literature identifiers should be named in the prompt so retrieval itself is
+    part of the evaluated agent behavior.
     """
     copied: dict[str, str] = {}
     for name in ("prompt.md", "task.json"):
@@ -219,12 +219,6 @@ def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str
             ensure_directory(dst.parent)
             shutil.copy2(src, dst)
             copied[name] = str(dst)
-    input_src = task_dir / "input"
-    if input_src.is_dir():
-        input_dst = run_task_dir / "input"
-        ensure_directory(input_dst.parent)
-        shutil.copytree(input_src, input_dst, dirs_exist_ok=True)
-        copied["input"] = str(input_dst)
     return copied
 
 
@@ -402,14 +396,15 @@ def run_benchmark_suite(
     """Run a benchmark suite through a backend adapter, then score it.
 
     This is the harness layer analogous to SWE-bench/HELM runners: it gives the
-    agent only the public task surface (``prompt.md`` + ``task.json`` +
-    ``input/``), collects ``submission/`` artifacts, and delegates scoring to
-    the existing deterministic scorer.
+    agent a staged prompt-only task directory (``prompt.md`` plus ``task.json``
+    for submission/scoring metadata), collects ``submission/`` artifacts, and
+    delegates scoring to the existing deterministic scorer.
 
     Backends:
     - ``command``: run ``agent_command`` once per task. The command can use
-      ``{task_dir}``, ``{run_task_dir}``, ``{prompt_file}``, ``{task_file}``,
-      ``{submission_dir}``, ``{task_id}``, and ``{run_id}`` placeholders.
+      ``{task_dir}`` / ``{run_task_dir}`` for the staged public task directory,
+      ``{prompt_file}``, ``{task_file}``, ``{submission_dir}``, ``{task_id}``,
+      and ``{run_id}`` placeholders.
     - ``submission_only``: do not run an agent; validate/score existing
       ``benchmark_runs/<run_id>/tasks/<task_id>/submission`` directories.
     """
@@ -467,7 +462,8 @@ def run_benchmark_suite(
 
         result: dict[str, Any] = {
             "task_id": task_id,
-            "task_dir": str(task_dir),
+            "task_dir": str(run_task_dir),
+            "canonical_task_dir": str(task_dir),
             "run_task_dir": str(run_task_dir),
             "submission_dir": str(submission_dir),
             "public_files": copied_public_files,
@@ -491,7 +487,7 @@ def run_benchmark_suite(
                 agent_command,
                 task_id=task_id,
                 run_id=run_id,
-                task_dir=task_dir,
+                task_dir=run_task_dir,
                 run_task_dir=run_task_dir,
                 submission_dir=submission_dir,
             )

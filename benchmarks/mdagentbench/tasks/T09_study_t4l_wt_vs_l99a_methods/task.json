@@ -12,15 +12,6 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "inputs": {
-    "structures": [
-      "input/2LZM.pdb"
-    ],
-    "config_files": [
-      "input/mutation_request.json",
-      "input/study_brief.md"
-    ]
-  },
   "required_outputs": [
     "manifest.json",
     "evidence_report.json",

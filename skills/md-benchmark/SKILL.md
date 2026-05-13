@@ -15,11 +15,18 @@ MDClaw's internal timeout handling instead.
 
 ## Rule
 
-Give the agent only:
+Give the agent the task prompt and a submission directory. The prompt is the
+problem statement; it names public sources such as PDB IDs, UniProt accessions,
+DOIs, URLs, protocols, and required outputs. Retrieval and provenance are part
+of the evaluated behavior.
+
+Agent-facing files:
 
 - `<task_dir>/prompt.md`
+
+Harness/scorer metadata:
+
 - `<task_dir>/task.json`
-- `<task_dir>/input/`
 
 Never expose:
 
@@ -27,9 +34,9 @@ Never expose:
 - `<task_dir>/scorer/`
 
 No fake trajectories, fake metrics, fake citations, or guessed conclusions.
-Treat `<task_dir>/task.json` as the execution contract. In particular, read
-`failure_policy`, `time_limit_minutes`, `task_intent`, and the scoring checks
-before deciding whether a task can be blocked.
+Treat `<task_dir>/task.json` as runner/scorer metadata, not a solution recipe.
+Harness code may read `failure_policy`, `time_limit_minutes`, required outputs,
+and scoring checks before deciding whether a task can be blocked.
 
 ## Minimum Attempt Policy
 
@@ -42,11 +49,12 @@ Attempt the required stages until one of these happens:
 - the task reaches the task time limit
 - a concrete MDClaw/tool/runtime failure stops progress
 
-For execution tasks, attempt the MD stages requested by the task intent. For a
-standard explicit-water MD task this means source/prep, solvation, topology,
-equilibration, and production. For restart tasks, run the requested chunks and
-attempt the concatenation/continuity checks. For comparative answer tasks, run
-the requested systems before reporting an effect direction.
+For execution tasks, attempt the MD work requested by the prompt. For a
+standard explicit-water MD task this often means retrieving the public
+structure, preparation, solvation, topology, equilibration, and production. For
+restart tasks, run the requested chunks and attempt the
+concatenation/continuity checks. For comparative answer tasks, run the
+requested systems before reporting an effect direction.
 
 Before writing `manifest.status="blocked"`, record enough evidence to prove
 that the task was actually attempted:
@@ -70,39 +78,43 @@ For MDClaw, launch one sub-agent per task and give it this prompt:
 ```text
 You are the MDClaw benchmark agent for <task_id>.
 
-Read only <task_dir>/prompt.md, <task_dir>/task.json, and <task_dir>/input/.
+Read <task_dir>/prompt.md as the task. Retrieve public sources named in the
+prompt as needed.
 Do not read truth/ or scorer/.
 
 Use MDClaw CLI tools and MDClaw skills to run real MD when the task asks for it.
 Write the required benchmark submission files to <submission_dir>/.
 
-Before deciding blocked, read failure_policy and time_limit_minutes from
-task.json. If blocked outcomes are not allowed, do not stop because the task is
-long; run until success, timeout, or a concrete tool/runtime failure.
+Before deciding blocked, the harness may inspect failure_policy and
+time_limit_minutes from task.json. If blocked outcomes are not allowed, do not
+stop because the task is long; run until success, timeout, or a concrete
+tool/runtime failure.
 
-For execution tasks, attempt the requested MDClaw stages. For explicit-water MD,
-that normally means source/prep, solvation, topology, equilibration, and
-production. For restart tasks, run the requested chunks and attempt trajectory
-concatenation/continuity checks. For comparative answer tasks, run the requested
-systems before reporting an effect direction.
+For execution tasks, attempt the MD workflow requested by the prompt. For
+explicit-water MD, that normally means source retrieval, preparation,
+solvation, topology, equilibration, and production. For restart tasks, run the
+requested chunks and attempt trajectory concatenation/continuity checks. For
+comparative answer tasks, run the requested systems before reporting an effect
+direction.
 
 Do not fabricate. If blocked after real attempts, write
 manifest.status="blocked" and explain the real blocker in evidence_report.json
-and provenance/decision logs. Include commands, deepest stage reached, exit
-codes or timeout status, log paths, walltime, and the next command that would
-have been run.
+and provenance/decision logs. Include public sources retrieved, commands or
+sub-agent actions attempted, deepest stage reached, exit codes or timeout
+status, log paths, walltime, and the next command that would have been run.
 ```
 
 ## MDCrow Agent
 
-Placeholder: run MDCrow from the same public task inputs, then export the
-standard `submission/` contract. Keep the scorer unchanged.
+Placeholder: run MDCrow from the task prompt, then export the standard
+`submission/` contract. Keep the scorer unchanged.
 
 ## Generic Agent
 
-Placeholder: any agent is valid if it reads only public inputs and writes the
-standard `submission/` directory. Process-based agents can be wrapped with
-`run_benchmark_suite backend="command"`.
+Placeholder: any agent is valid if it solves the prompt, retrieves public
+sources as needed, and writes the standard `submission/` directory.
+Process-based agents can be wrapped with `run_benchmark_suite
+backend="command"`.
 
 ## Scorer
 

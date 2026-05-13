@@ -24,14 +24,6 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "inputs": {
-    "structures": [
-      "input/5AWL.pdb"
-    ],
-    "config_files": [
-      "input/restart_protocol.json"
-    ]
-  },
   "required_outputs": [
     "manifest.json",
     "metrics.json",
@@ -96,7 +88,7 @@
   "task_intent": "Restart-continuation test: split chignolin NVT MD into two chunks and prove that restarting from saved state preserves the simulation timeline. Save state.xml after chunk 1, load it on a fresh Simulation for chunk 2, concatenate both trajectories with mdtraj, and verify contiguous step counters plus matching concat frame counts.",
   "references": [
     {
-      "note": "Honda et al. 2008 — chignolin CLN025.",
+      "note": "Honda et al. 2008 \u2014 chignolin CLN025.",
       "source": "PDB 5AWL"
     }
   ]

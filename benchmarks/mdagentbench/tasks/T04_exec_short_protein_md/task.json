@@ -25,15 +25,6 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "inputs": {
-    "structures": [
-      "input/2LZM.pdb"
-    ],
-    "config_files": [
-      "input/prep_request.json",
-      "input/md_protocol.json"
-    ]
-  },
   "required_outputs": [
     "manifest.json",
     "metrics.json",

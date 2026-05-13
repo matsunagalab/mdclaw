@@ -42,8 +42,8 @@ v1.0 contract and the rationale for each design decision.
   `<task>/truth/experimental_truth.json` directly; `task.json` carries no
   `expected_direction` or other ground-truth fields.
 - **System selection is curator-fixed.** Agents do not pick their own PDB or
-  mutation case. Every task ships a `task.json + input/*` bundle that fully
-  specifies the system to be processed.
+  mutation case. Every task prompt names the public PDB IDs, mutations,
+  protocols, and outputs that define the system to be processed.
 - **Self-containment is a hard architectural rule.** A run executes either
   entirely inside the `mdclaw:latest` container, or entirely inside a
   `mdclaw` conda env. The wrapper `bin/mdclaw` decides at invocation time
@@ -55,9 +55,9 @@ MDAgentBench follows the same structural pattern as established agent
 benchmarks while specializing the environment and artifacts for molecular
 dynamics:
 
-- **SWE-bench style separation**: public task inputs are separate from hidden
-  evaluator material. Here, agents read `task.json` and `input/`, while the
-  scorer reads `truth/` and re-runs deterministic checks on submitted artifacts.
+- **SWE-bench style separation**: public prompts are separate from hidden
+  evaluator material. Here, agents solve `prompt.md`, while the scorer reads
+  `truth/` and re-runs deterministic checks on submitted artifacts.
 - **GAIA style capability layering**: tasks are simple to state but require
   multiple agent capabilities. MDAgentBench labels task modes as `plan_only`,
   `dry_run`, or `lite`, and v1.0.1 adds optional capability metadata so readers
@@ -133,15 +133,16 @@ Why these systems, not 8 unrelated proteins:
 
 ## Task suite v1.0 (9 tasks)
 
-Each task fully specifies its inputs in `input/`, holds back its truth in
-`truth/`, and runs scoring in two layers: deterministic checks (file presence,
+Each task fully specifies its public sources and requirements in `prompt.md`,
+holds back its truth in `truth/`, and runs scoring in two layers:
+deterministic checks (file presence,
 JSON paths, re-computed values) and optional LLM-judge rubrics (deferred to a
 later v1.x release; deterministic-only mode treats secondary axes as `null`).
 
 ### T01 — engine_smoke (chignolin)
 - **Primary axis**: `execution`
 - **Secondary axes**: none
-- **Inputs**: `5AWL.pdb`, `solvent_spec.json` (TIP3P, 0.15 M NaCl)
+- **Prompt sources**: PDB 5AWL plus protocol text (TIP3P, 0.15 M NaCl)
 - **Task intent**: 10 ps Langevin NVT on chignolin in explicit TIP3P water.
   Agent reports finite energy and no NaN.
 - **Truth**: none (procedural).
@@ -157,7 +158,7 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
 ### T02 — prep_metalloenzyme_guardrail (2CBA)
 - **Primary axis**: `preparation`
 - **Secondary axes**: none
-- **Inputs**: `2CBA.pdb`
+- **Prompt sources**: PDB 2CBA
 - **Task intent**: Agent is asked to prepare an MD-ready system. Correct
   behavior is to **refuse** with a structured guardrail code rather than
   silently parameterize Zn under GAFF.
@@ -173,29 +174,28 @@ later v1.x release; deterministic-only mode treats secondary axes as `null`).
 ### T03 — prep_ligand_pose_t4l_benzene (181L)
 - **Primary axis**: `preparation`
 - **Secondary axes**: `evidence_communication`
-- **Inputs**: `181L.pdb`, `ligand_reference.pdb` (crystal-coordinates-only
-  benzene, extracted from 181L), `prep_request.json` (force field choice,
-  solvation specification, ion concentration).
+- **Prompt sources**: PDB 181L plus force-field, solvation, and ligand-pose
+  preservation requirements in the prompt.
 - **Task intent**: Build an MD-ready system from 181L (T4L L99A + benzene),
   then report `ligand_heavy_atom_rmsd_angstrom` between the prepared (post
   build/min/equil) ligand and the reference crystal pose.
-- **Truth**: none (the reference pose is in `input/` because it must be
-  visible to the agent for the comparison to be defined).
+- **Truth**: none for scientific direction; scorer-side benzene reference
+  coordinates are held under `truth/` for RMSD recomputation.
 - **Deterministic checks**:
   1. `submission/prepared_structure.pdb` exists.
   2. `submission/manifest.json` records backend-equivalent topology/system
      artifacts, such as MDClaw's OpenMM XML triple or another reloadable
      topology representation.
   3. `metrics.preparation.ligand_heavy_atom_rmsd_angstrom <= 0.5` AND scorer
-     re-computes the same RMSD using `mdtraj` against
-     `input/ligand_reference.pdb` and confirms the agent's value matches
+     re-computes the same RMSD using `mdtraj` against scorer-side reference
+     coordinates and confirms the agent's value matches
      within ±0.05 Å.
 
 ### T04 — exec_short_protein_md (T4L WT)
 - **Primary axis**: `execution`
 - **Secondary axes**: `evidence_communication`
-- **Inputs**: `2LZM.pdb`, `prep_request.json` (similar to T03), MD parameters
-  (`md_protocol.json`: equilibration schedule, production length 100 ps NVT).
+- **Prompt sources**: PDB 2LZM plus MD parameters in the prompt
+  (equilibration schedule, production length 100 ps NVT).
 - **Task intent**: End-to-end short explicit-water MD of T4L WT. Equilibrate
   then run at least 100 ps NVT production. A 1 ns version is intentionally
   deferred to v1.1+.

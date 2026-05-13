@@ -8,8 +8,7 @@
     "public": [
       "dataset.json",
       "tasks/<task_id>/prompt.md",
-      "tasks/<task_id>/task.json",
-      "tasks/<task_id>/input/"
+      "tasks/<task_id>/task.json"
     ],
     "private_to_scorer": [
       "tasks/<task_id>/truth/",
@@ -70,7 +69,7 @@
   },
   "notes": [
     "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
-    "Curator-fixed PDBs; ground truth held in <task>/truth/ (scorer-only).",
-    "Scored through the repository's benchmark CLI; agents may use any MD backend that emits the submission contract."
+    "Prompt-only tasks name public sources; ground truth is held in <task>/truth/ (scorer-only).",
+    "Scored through the repository benchmark CLI; agents may use any MD backend that emits the submission contract."
   ]
 }

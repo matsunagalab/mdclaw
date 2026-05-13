@@ -109,18 +109,11 @@ def test_public_agent_prompts_exist_and_define_access_boundary():
         prompt = prompt_file.read_text()
 
         assert task_id in prompt
-        assert "Use only" in prompt
-        assert "Do not read" in prompt
+        assert "Use this prompt as the task statement" in prompt
+        assert "do not read" in prompt.lower()
         assert "truth/" in prompt
         assert "scorer/" in prompt
-        assert "task.json" in prompt
-        for rel_path in (
-            list(task.inputs.structures)
-            + list(task.inputs.ligands)
-            + list(task.inputs.trajectories)
-            + list(task.inputs.config_files)
-        ):
-            assert rel_path in prompt, f"{task_id} prompt omits input {rel_path}"
+        assert "input/" not in prompt
         for rel_path in task.required_outputs:
             assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
 
@@ -141,22 +134,16 @@ def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():
             assert truth_path.is_file(), f"missing truth file for {task_id}: {check.truth_file}"
 
 
-def test_task_input_files_exist():
+def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 
     for task_id in dataset["task_ids"]:
-        task = Task.model_validate_json(
-            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
-        )
-        task_dir = DATASET_DIR / "tasks" / task_id
-        declared_inputs = (
-            list(task.inputs.structures)
-            + list(task.inputs.ligands)
-            + list(task.inputs.trajectories)
-            + list(task.inputs.config_files)
-        )
-        for rel_path in declared_inputs:
-            assert (task_dir / rel_path).is_file(), f"missing input for {task_id}: {rel_path}"
+        task_file = DATASET_DIR / "tasks" / task_id / "task.json"
+        payload = json.loads(task_file.read_text())
+        assert "inputs" not in payload
+
+        prompt = (DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
+        assert "input/" not in prompt
 
 
 def test_execution_tasks_require_explicit_water_topology_rescan():

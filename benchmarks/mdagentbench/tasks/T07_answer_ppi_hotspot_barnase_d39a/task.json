@@ -12,15 +12,6 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "inputs": {
-    "structures": [
-      "input/1BRS.pdb"
-    ],
-    "config_files": [
-      "input/mutation_request.json",
-      "input/references.json"
-    ]
-  },
   "required_outputs": [
     "manifest.json",
     "provenance.json",
@@ -110,7 +101,7 @@
       {
         "check_id": "citations_in_allowed_pool",
         "check_type": "citation_pool",
-        "allowed_pool_file": "input/references.json",
+        "allowed_pool_file": "truth/reference_pool.json",
         "citation_field": "evidence.citations"
       }
     ],

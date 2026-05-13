@@ -568,41 +568,6 @@
       "title": "IntegrityCheck",
       "type": "object"
     },
-    "TaskInputs": {
-      "description": "Curator-supplied inputs. Empty lists mean the task does not require\nthat kind of artifact (NOT 'agent picks one'). v1.0 every task ships\na fully-specified set.",
-      "properties": {
-        "config_files": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Config Files",
-          "type": "array"
-        },
-        "ligands": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Ligands",
-          "type": "array"
-        },
-        "structures": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Structures",
-          "type": "array"
-        },
-        "trajectories": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Trajectories",
-          "type": "array"
-        }
-      },
-      "title": "TaskInputs",
-      "type": "object"
-    },
     "TaskReference": {
       "properties": {
         "doi": {
@@ -756,9 +721,6 @@
     },
     "failure_policy": {
       "$ref": "#/$defs/FailurePolicy"
-    },
-    "inputs": {
-      "$ref": "#/$defs/TaskInputs"
     },
     "not_scored_here": {
       "items": {

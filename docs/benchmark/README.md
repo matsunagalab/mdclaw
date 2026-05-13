@@ -2,8 +2,8 @@
 
 MDAgentBench is an artifact-based benchmark dataset for molecular dynamics
 agents. It follows the same broad pattern as SWE-bench and GAIA: public task
-files and inputs are separated from scorer-only truth, agents write
-standardized submissions, and an independent scorer evaluates the artifacts.
+prompts are separated from scorer-only truth, agents write standardized
+submissions, and an independent scorer evaluates the artifacts.
 MDClaw is the repository that currently ships the dataset and scorer, but it
 is not part of the task contract. Any agent, model, or MD backend can be
 compared by writing the same `submission/` files and running the same scorer.
@@ -11,7 +11,8 @@ compared by writing the same `submission/` files and running the same scorer.
 The v1.0 release replaces the v0.1 pilot with:
 
 - 9 tasks centered on chignolin, T4 lysozyme (WT + L99A), barnase-barstar,
-  and carbonic anhydrase — all curator-fixed, no agent-chosen inputs.
+  and carbonic anhydrase. Each task is defined by one prompt that names the
+  public sources, protocols, and outputs the agent must handle.
 - Held-back ground truth in `<task>/truth/` (scorer-only). The agent's
   `task.json` contains no `expected_*` fields.
 - A pydantic-v2 framework that re-validates submissions (md5, trajectory
@@ -31,8 +32,9 @@ comparisons, keep the model and backend fixed. For backend comparisons, keep
 the agent and model fixed.
 
 New to the benchmark? External agents and programs should start with
-[`external-agents.md`](external-agents.md). It explains which files are public,
-which files are scorer-only, what to submit, and what the scorer compares.
+[`external-agents.md`](external-agents.md). It explains the prompt-to-submission
+contract, which files are scorer-only, what to submit, and what the scorer
+compares.
 
 ## Benchmark Families
 
@@ -83,8 +85,7 @@ benchmarks/mdagentbench/
     score.schema.json
   tasks/<task_id>/
     prompt.md          # plain-language prompt for the agent under test
-    task.json
-    input/             # agent-readable inputs (PDB, configs, references)
+    task.json          # runner/scorer metadata; not a solution script
     truth/             # scorer-only ground truth — DO NOT READ FROM AGENT
     scorer/            # LLM judge prompt template (v1.x automation)
 ```
@@ -122,9 +123,11 @@ submission/
   prepared_structure.pdb # required by T03
 ```
 
-Only the artifacts are scored. The scorer never reads chat transcripts,
-tool calls, or private runner logs. Provenance md5 references are recomputed
-on the scorer side.
+Only the submitted artifacts are scored. The scorer never reads chat
+transcripts, tool calls, or private runner logs. Public structures, protocols,
+and literature identifiers are named in `prompt.md`; downloading them and
+recording the sources is part of the agent behavior. Provenance md5 references
+are recomputed on the scorer side when possible.
 
 Execution tasks may submit trajectory and topology artifacts either at the
 legacy task-specified `../work/...` paths or through `manifest.outputs`:
@@ -210,7 +213,8 @@ scorer strictness are visible in review without requiring real MD compute.
 ## Per-task Workflow
 
 ```bash
-# 1. The agent under test reads prompt.md + task.json + input/ and builds submission/.
+# 1. The agent under test reads prompt.md, retrieves any public sources named
+#    there, and builds submission/. task.json is runner/scorer metadata.
 # 2. Validate:
 mdclaw validate_benchmark_submission \
   --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json \
@@ -238,9 +242,9 @@ instead of stacking duplicates.
 ## Suite Runner
 
 For agent-to-agent comparisons, use `run_benchmark_suite`. This is the
-benchmark harness layer: it gives each backend only the public task surface,
-captures execution logs, validates the resulting submission, scores it, and
-summarizes the suite.
+benchmark harness layer: it stages a prompt-only task directory for each
+backend, captures execution logs, validates the resulting submission, scores
+it, and summarizes the suite.
 
 ```bash
 conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
@@ -248,7 +252,7 @@ conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
   "output_dir": "benchmark_runs",
   "run_id": "my_agent_run",
   "backend": "command",
-  "agent_command": "python run_agent.py --task-dir {task_dir} --submission-dir {submission_dir}",
+  "agent_command": "python run_agent.py --prompt-file {prompt_file} --submission-dir {submission_dir}",
   "timeout_seconds_per_task": 3600,
   "backend_name": "gromacs",
   "harness_name": "my-agent-harness",
@@ -259,9 +263,9 @@ conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
 The `command` backend accepts these placeholders:
 
 - `{task_id}` and `{run_id}`
-- `{task_dir}` for the canonical public task directory
-- `{run_task_dir}` for the per-run task directory
-- `{prompt_file}` and `{task_file}`
+- `{task_dir}` and `{run_task_dir}` for the staged public task directory
+- `{prompt_file}` for the task prompt
+- `{task_file}` for the staged task metadata used by runners/scorers
 - `{submission_dir}` for the directory the agent must populate
 
 Each task run writes:

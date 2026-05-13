@@ -2,16 +2,9 @@
 
 You are evaluating an MD agent on `T03_prep_ligand_pose_t4l_benzene`.
 
-Use only these public files:
+Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-- `task.json`
-- `input/181L.pdb`
-- `input/ligand_reference.pdb`
-- `input/prep_request.json`
-
-Do not read `truth/` or `scorer/` if those directories exist.
-
-Task: build an MD-ready prepared structure from PDB 181L while preserving the benzene pose in the T4 lysozyme L99A cavity. Clean and parameterize the system using a chemically reasonable workflow, then write the final prepared structure.
+Task: retrieve PDB entry 181L and build an MD-ready prepared structure for T4 lysozyme L99A bound to benzene. Preserve the crystallographic benzene pose in the cavity while cleaning and parameterizing the system. Use a chemically reasonable workflow with ff14SB for the protein, GAFF2 or an equivalent small-molecule treatment for benzene, TIP3P explicit solvent context when needed, 0.15 M NaCl, and a roughly 12 Å solvent buffer if you build a solvated system. Minimize gently enough that the ligand pose is not displaced.
 
 Your submission directory must contain:
 
@@ -21,5 +14,5 @@ Your submission directory must contain:
 - `evidence_report.json`
 - `prepared_structure.pdb`
 
-Report the final benzene heavy-atom RMSD against `input/ligand_reference.pdb` in `metrics.preparation.ligand_heavy_atom_rmsd_angstrom`. The scorer will recompute this RMSD independently, so the metric and the submitted structure must agree. The evidence report should explain how the ligand pose was preserved and list relevant limitations.
+Report the final benzene heavy-atom RMSD against the crystal pose from PDB 181L in `metrics.preparation.ligand_heavy_atom_rmsd_angstrom`. The scorer will recompute this RMSD independently from scorer-side reference coordinates, so the metric and the submitted structure must agree. The evidence report should explain how the ligand pose was preserved, list public sources retrieved, and state relevant limitations.
 

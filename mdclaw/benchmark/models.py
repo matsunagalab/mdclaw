@@ -91,17 +91,6 @@ class FailurePolicy(BaseModel):
     insufficient_information_allowed: bool = False
 
 
-class TaskInputs(BaseModel):
-    """Curator-supplied inputs. Empty lists mean the task does not require
-    that kind of artifact (NOT 'agent picks one'). v1.0 every task ships
-    a fully-specified set."""
-
-    structures: list[str] = Field(default_factory=list)
-    ligands: list[str] = Field(default_factory=list)
-    trajectories: list[str] = Field(default_factory=list)
-    config_files: list[str] = Field(default_factory=list)
-
-
 class DeterministicCheck(BaseModel):
     """One deterministic, re-runnable check.
 
@@ -148,7 +137,7 @@ class DeterministicCheck(BaseModel):
     min_water_residues: Optional[int] = None
 
     # rmsd_recompute
-    reference_pdb: Optional[str] = None  # relative to task input dir
+    reference_pdb: Optional[str] = None  # relative to task dir; scorer-only is OK
     selection: Optional[str] = None  # mdtraj selection string
     align_selection: Optional[str] = None  # superpose target
     tolerance_angstrom: float = 0.05
@@ -258,7 +247,6 @@ class Task(BaseModel):
     execution_mode: ExecutionMode
     time_limit_minutes: int = Field(gt=0, default=180)
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
-    inputs: TaskInputs = Field(default_factory=TaskInputs)
     required_outputs: list[str] = Field(default_factory=list)
     not_scored_here: list[ScoreAxis] = Field(default_factory=list)
     capability_tags: list[str] = Field(default_factory=list)

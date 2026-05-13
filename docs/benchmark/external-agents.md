@@ -7,17 +7,19 @@ workflow manager, or a custom LLM runner. The scorer only compares files under
 
 ## What To Read
 
-Read these files before running your agent:
+Give the agent the prompt as the task. The prompt names the public structures,
+identifiers, protocols, and outputs it must handle; retrieving those public
+sources is part of the evaluated behavior.
+
+Read these files before running or wrapping your agent:
 
 - `benchmarks/mdagentbench/dataset.json`: task list, benchmark version, and
   family metadata.
 - `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`: plain-language public
   prompt suitable for handing directly to an MD agent.
-- `benchmarks/mdagentbench/tasks/<task_id>/task.json`: public task contract,
-  scoring axes, required outputs, public inputs, and deterministic checks.
-- `benchmarks/mdagentbench/tasks/<task_id>/input/`: public task inputs such as
-  PDB files, mutation requests, MD protocols, ligand references, and study
-  briefs.
+- `benchmarks/mdagentbench/tasks/<task_id>/task.json`: runner/scorer contract,
+  scoring axes, required outputs, time limits, and deterministic checks. It is
+  not a solution script and should not contain task-specific execution commands.
 
 Do not let the agent under test read:
 
@@ -82,8 +84,8 @@ the manifest at the relevant exported files.
 ## What The Scorer Compares
 
 The scorer does not read chat transcripts, tool-call logs, or private runner
-state. It reads `task.json`, scorer-only `truth/` when needed, and your
-`submission/` files.
+state. It reads `task.json`, scorer-only `truth/` when needed, scorer helper
+files, and your `submission/` files.
 
 - Execution tasks compare `metrics.json` flags with reloadable trajectories:
   finite energy, no NaNs, minimum frame counts, simulated time, and restart
@@ -102,6 +104,13 @@ the scorer may verify file existence, byte floors, reloadability, and derived
 metrics. Synthetic submissions under `tests/fixtures/benchmark/` are for scorer
 CI only and should not be interpreted as agent performance.
 
+External sources are allowed when the prompt names or implies public retrieval
+(for example PDB IDs, UniProt accessions, DOIs, and public URLs). Record what
+was retrieved in `provenance.json` and explain how it was used in
+`evidence_report.json`. For artifact-backed tasks, a literature or PDB-page
+claim without matching submitted artifacts should not receive leaderboard
+credit.
+
 ## MDCrow-Style File Registries
 
 MDCrow stores generated files in a checkpoint directory and tracks them through
@@ -113,7 +122,7 @@ A generic MDCrow-style workflow is:
 
 1. Start the benchmark run with `harness_name="mdcrow"` and
    `backend_name="mdcrow-openmm"` or the backend actually used.
-2. Give the agent only `prompt.md`, `task.json`, and `input/`; do not expose
+2. Give the agent the task prompt and a submission directory; do not expose
    `truth/` or `scorer/`.
 3. Let MDCrow run normally and produce its checkpoint files.
 4. Export or copy the relevant files under `submission/`, for example
@@ -138,16 +147,18 @@ conda run -n mdclaw mdclaw run_benchmark_suite --json-input '{
   "output_dir": "benchmark_runs",
   "run_id": "20260510_external_gromacs",
   "backend": "command",
-  "agent_command": "python run_agent.py --task-dir {task_dir} --submission-dir {submission_dir}",
+  "agent_command": "python run_agent.py --prompt-file {prompt_file} --submission-dir {submission_dir}",
   "backend_name": "gromacs",
   "harness_name": "external-python-script",
   "model_name": "my-agent"
 }'
 ```
 
-Your command receives paths through placeholders; it should read only
-`{prompt_file}`, `{task_file}`, and files under `{task_dir}/input/`, then write
-the required files under `{submission_dir}`.
+Your command receives paths through placeholders. The evaluated agent should
+treat `{prompt_file}` as the task statement, retrieve public sources named in
+that prompt, and write the required files under `{submission_dir}`.
+`{task_file}` is available to harness code for time limits and required-output
+metadata, but it is not a per-task execution recipe.
 
 The lower-level per-task commands remain useful for debugging:
 
@@ -177,11 +188,12 @@ mdclaw create_benchmark_submission_template \
   --harness-name external-python-script
 ```
 
-Run your agent or external program. It should read only `prompt.md`,
-`task.json`, and `input/`, then replace the template values with real metrics,
-evidence, and artifacts. When the submission is genuinely complete, update
-`manifest.status` from the template default `partial` to `completed`; otherwise
-leave it `partial` or use `blocked` / intentional `failed` as appropriate.
+Run your agent or external program. It should solve the prompt, retrieve public
+sources as needed, then replace the template values with real metrics,
+evidence, provenance, and artifacts. When the submission is genuinely complete,
+update `manifest.status` from the template default `partial` to `completed`;
+otherwise leave it `partial` or use `blocked` / intentional `failed` as
+appropriate.
 
 Validate and score:
 

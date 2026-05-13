@@ -3,17 +3,14 @@
   "task_id": "T03_prep_ligand_pose_t4l_benzene",
   "category": "system_preparation",
   "primary_score": "preparation",
-  "secondary_scores": ["evidence_communication"],
+  "secondary_scores": [
+    "evidence_communication"
+  ],
   "execution_mode": "lite",
   "time_limit_minutes": 60,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
-  },
-  "inputs": {
-    "structures": ["input/181L.pdb"],
-    "ligands": ["input/ligand_reference.pdb"],
-    "config_files": ["input/prep_request.json"]
   },
   "required_outputs": [
     "manifest.json",
@@ -29,7 +26,7 @@
         "check_type": "rmsd_recompute",
         "json_file": "metrics.json",
         "json_path": "preparation.ligand_heavy_atom_rmsd_angstrom",
-        "reference_pdb": "input/ligand_reference.pdb",
+        "reference_pdb": "truth/ligand_reference.pdb",
         "selection": "resname BNZ and not element H",
         "align_selection": "name CA",
         "max_value": 0.5,
@@ -38,7 +35,10 @@
       }
     ],
     "ground_truth_checks": [],
-    "llm_judge_rubrics": ["overclaim_detection", "limitations"],
+    "llm_judge_rubrics": [
+      "overclaim_detection",
+      "limitations"
+    ],
     "integrity_checks": [
       {
         "check_id": "evidence_report_real_bytes",
@@ -68,9 +68,15 @@
     ],
     "integrity_policy": "warn"
   },
-  "task_intent": "Ligand-preparation test: build an MD-ready system from PDB 181L while preserving the benzene crystal pose in the T4 lysozyme L99A cavity. After clean / parameterize / build / minimize, write the final benzene heavy-atom RMSD against input/ligand_reference.pdb into metrics.preparation.ligand_heavy_atom_rmsd_angstrom; the scorer recomputes the same RMSD with mdtraj and checks agreement within 0.05 Å.",
+  "task_intent": "Ligand-preparation test: build an MD-ready system from PDB 181L while preserving the benzene crystal pose in the T4 lysozyme L99A cavity. After clean / parameterize / build / minimize, write the final benzene heavy-atom RMSD against the scorer-side crystal benzene reference pose from PDB 181L into metrics.preparation.ligand_heavy_atom_rmsd_angstrom; the scorer recomputes the same RMSD with mdtraj and checks agreement within 0.05 \u00c5.",
   "references": [
-    {"note": "Morton et al. 1995 — internal cavity benzene binding to T4L L99A.", "source": "PDB 181L"},
-    {"note": "Eriksson et al. 1992 — L99A cavity-creating mutation context.", "source": "doi:10.1126/science.1553543"}
+    {
+      "note": "Morton et al. 1995 \u2014 internal cavity benzene binding to T4L L99A.",
+      "source": "PDB 181L"
+    },
+    {
+      "note": "Eriksson et al. 1992 \u2014 L99A cavity-creating mutation context.",
+      "source": "doi:10.1126/science.1553543"
+    }
   ]
 }

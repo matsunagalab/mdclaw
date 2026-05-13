@@ -4,8 +4,8 @@ These cover regression cases for the runner-side hardening:
 
 * ``_coerce_capture`` / ``_run_agent_command`` timeout path tolerates
   ``bytes`` stdout/stderr from ``subprocess.TimeoutExpired``.
-* ``_copy_public_task_files`` stages ``task_dir/input/`` recursively into
-  ``run_task_dir/input/`` and reports the destination in the return dict.
+* ``_copy_public_task_files`` stages only prompt/metadata files for the
+  prompt-to-submission public task surface.
 """
 
 from __future__ import annotations
@@ -117,11 +117,11 @@ class TestCopyPublicTaskFiles:
         assert (run_task_dir / "task.json").read_text() == "{}\n"
         assert copied["prompt.md"] == str(run_task_dir / "prompt.md")
         assert copied["task.json"] == str(run_task_dir / "task.json")
-        # No input/ in source -> no input/ key in result.
+        # input/ is not part of the prompt-to-submission public surface.
         assert "input" not in copied
         assert not (run_task_dir / "input").exists()
 
-    def test_copies_input_directory_recursively(self, tmp_path: Path):
+    def test_ignores_input_directory(self, tmp_path: Path):
         task_dir = tmp_path / "tasks" / "T_demo"
         (task_dir / "input" / "nested").mkdir(parents=True)
         (task_dir / "prompt.md").write_text("p\n")
@@ -132,28 +132,10 @@ class TestCopyPublicTaskFiles:
         run_task_dir = tmp_path / "run" / "T_demo"
         copied = cli._copy_public_task_files(task_dir, run_task_dir)
 
-        # input/ files preserved exactly under run_task_dir/input/.
-        assert (run_task_dir / "input" / "data.csv").read_text() == "col\n1\n"
-        assert (run_task_dir / "input" / "nested" / "ref.pdb").read_text() == "ATOM\n"
-        assert copied["input"] == str(run_task_dir / "input")
-
-    def test_input_copy_merges_into_existing_run_dir(self, tmp_path: Path):
-        """Re-running the same task must not crash when run_task_dir/input/
-        already exists from a prior run."""
-        task_dir = tmp_path / "tasks" / "T_demo"
-        (task_dir / "input").mkdir(parents=True)
-        (task_dir / "input" / "fresh.txt").write_text("new\n")
-
-        run_task_dir = tmp_path / "run" / "T_demo"
-        (run_task_dir / "input").mkdir(parents=True)
-        (run_task_dir / "input" / "leftover.txt").write_text("stale\n")
-
-        copied = cli._copy_public_task_files(task_dir, run_task_dir)
-
-        # Existing leftover file is preserved (merge), new file lands on top.
-        assert (run_task_dir / "input" / "fresh.txt").read_text() == "new\n"
-        assert (run_task_dir / "input" / "leftover.txt").read_text() == "stale\n"
-        assert copied["input"] == str(run_task_dir / "input")
+        assert (run_task_dir / "prompt.md").read_text() == "p\n"
+        assert (run_task_dir / "task.json").read_text() == "{}\n"
+        assert "input" not in copied
+        assert not (run_task_dir / "input").exists()
 
     def test_input_file_not_dir_is_ignored(self, tmp_path: Path):
         """If task_dir/input happens to be a *file*, don't try to copytree
