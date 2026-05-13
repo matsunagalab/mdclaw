@@ -9,7 +9,17 @@ mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
   --include-types protein nucleic glycan ligand
 ```
 
-In node mode, `structure_file` resolves from the source ancestor.
+In node mode, `structure_file` resolves from the source ancestor's normalized
+candidate files. If `source_bundle.json` lists more than one candidate, pass an
+explicit selector:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --source-structure-id candidate_002
+```
+
+For NMR-style model numbering, `--source-model-index 2` selects the second
+model-derived candidate.
 
 `--select-chains` is a chain gate for all included molecular types. If the
 selected protein chain has ligands on separate ligand chains, include those

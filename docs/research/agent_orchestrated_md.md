@@ -113,11 +113,13 @@ elif node_type == "prod":
 
 ## 4. DAG 緩和の 5 Levels — 次の研究の足場
 
-補足（2026-05）: 複数 source / 複数 physical system を 1 つの `job_dir` に
-入れる方向ではなく、`job_dir` は single-source execution unit として維持し、
-optional な `study_dir` が複数 `job_dir` を束ねる方針に寄せる。これにより
-普通のMD研究での単純さを保ちながら、agentic campaign や AI for Science
-連携を上位レイヤで扱える。
+補足（2026-05）: 複数 source root / 複数 physical system を 1 つの
+`job_dir` に入れる方向ではなく、`job_dir` は source-bundle execution
+unit として維持し、`study_dir` が複数 `job_dir` を束ねる方針に寄せる。
+source bundle の中には NMR model や生成構造 ensemble のような複数候補を
+入れられ、`prep` が 1 つを選んで physical system にする。これにより普通の
+MD研究での単純さを保ちながら、agentic campaign や AI for Science 連携を
+上位レイヤで扱える。
 
 > **問い**: アーティファクト系譜 DAG の最小限の拡張で、FEP / REMD / アンサンブル解析 /
 > 適応的サンプリングをカバーできるか？ 制御フロー DAG に退化せずに。

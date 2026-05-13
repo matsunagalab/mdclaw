@@ -14,6 +14,8 @@ package evidence with provenance.
 
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
+- Start from a study-level scientific question, then organize one or more
+  job DAGs under that study.
 - Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
   residues before committing to a setup.
 - Clean structures, preserve selected ligands when safe, solvate systems, and
@@ -130,8 +132,8 @@ MD:
 
 ```text
 Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
-default force field and water model. Create a clean workflow record and report
-the job directory.
+default force field and water model. Create a study record with one main job,
+then report the study and job directories.
 ```
 
 ```text
@@ -190,8 +192,19 @@ which artifacts were used.
 The main path is:
 
 ```text
-structure source -> clean / prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
+study question -> source bundle -> select + prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
 ```
+
+A study is the outer record for the scientific question. It may contain one
+job, such as `jobs/main`, or many jobs for WT versus mutant, apo versus holo,
+or protocol comparisons. Inside each job, the `source` node records a source
+bundle. A bundle can contain one structure or multiple candidate structures,
+such as NMR models, PDB assembly choices, or generated prediction ensembles.
+Internally, MDClaw normalizes these into `candidates/candidate_*` files and
+records the index/provenance in `source_bundle.json`. Generated ensembles such
+as Boltz-2 predictions can also attach per-candidate rank and confidence
+metrics. The `prep` node selects one concrete candidate before making an
+MD-ready physical system.
 
 Each step writes a node with its own state, artifacts, and provenance. Branches
 can fork from preparation, solvation, topology, equilibration, or production

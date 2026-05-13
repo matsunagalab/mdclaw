@@ -1,7 +1,10 @@
 # Study Campaigns On HPC
 
-Use an optional `study_dir` for multi-system campaigns. Do not create multiple
-`source` roots in one job.
+Use the `study_dir` as the campaign entry point. A single-system campaign can
+still have one job, while multi-system campaigns register multiple jobs. Do
+not create multiple `source` nodes in one job; put source alternatives in that
+job's source bundle or split scientifically distinct systems into separate
+study jobs.
 
 Loop:
 

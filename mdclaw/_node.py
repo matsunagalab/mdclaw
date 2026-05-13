@@ -62,6 +62,8 @@ def _normalize_node_status(status: str) -> Optional[str]:
     return normalized if normalized in NODE_STATUSES else None
 
 _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
+    "path",
+    "raw_file",
     "mol2",
     "mol2_file",
     "frcmod",
@@ -111,6 +113,8 @@ _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "model",
     "clusters",
     "projection",
+    "source_bundle",
+    "source_selection",
 })
 
 
@@ -452,9 +456,9 @@ def create_node(
     deps = dependency_node_ids or []
 
     # Invariant: ``source`` is the DAG root for structure acquisition. It
-    # records the original source (PDB/AlphaFold/local file/prediction) and must not
-    # depend on any other node. A job_dir is also limited to a single source
-    # root so one DAG always describes one physical system.
+    # records a structural source bundle (PDB/AlphaFold/local file/prediction)
+    # and must not depend on any other node. A job_dir is limited to one source
+    # bundle root so prep can select a concrete structure unambiguously.
     if node_type == "source":
         if parents:
             return {
@@ -508,8 +512,9 @@ def create_node(
                 "success": False,
                 "error": (
                     "job_dir already has a source root "
-                    f"({existing_source_nodes[0]}). Use prep/solv/topo/eq/prod "
-                    "branches for variants instead of adding another source node."
+                    f"({existing_source_nodes[0]}). Add multiple structures to "
+                    "that source bundle, or use another study job for a distinct "
+                    "source."
                 ),
             }
 
@@ -587,7 +592,8 @@ def create_node(
                     "success": False,
                     "error": (
                         "prep nodes must descend from at most one source root; "
-                        f"got multiple source ancestors {sorted(source_lineages)}"
+                        f"got multiple source ancestors {sorted(source_lineages)}. "
+                        "Use one source bundle per job."
                     ),
                 }
 
@@ -2189,8 +2195,8 @@ def resolve_node_inputs(
 
     Mappings:
 
-    - ``prep``: ``structure_file`` from the job's single ``source`` root,
-                when one exists.
+    - ``prep``: selected structure from the job's source bundle, falling back
+                to legacy ``structure_file`` artifacts when needed.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_params`` / ``metal_params`` from
@@ -2220,14 +2226,50 @@ def resolve_node_inputs(
                 if nodes_index.get(nid, {}).get("type") == "source"
             ]
             if len(source_ancestors) == 1:
-                v, source_id, error = _nearest_ancestor_artifact_or_error(
-                    job_dir, node_id, "source", "structure_file"
+                source_id = _find_ancestor_node_id(job_dir, node_id, "source")
+                bundle_file = (
+                    _read_artifact_from_node(job_dir, source_id, "source_bundle")
+                    if source_id is not None
+                    else None
                 )
-                if error:
-                    _record_input_resolution_error(result, error)
-                if v:
-                    result["structure_file"] = v
-                    result["structure_resolved_from_node_id"] = source_id
+                if bundle_file:
+                    try:
+                        from mdclaw.source_bundle import (
+                            load_source_bundle,
+                            source_record_path,
+                        )
+
+                        bundle = load_source_bundle(bundle_file)
+                        structures = [
+                            s for s in bundle.get("structures", [])
+                            if isinstance(s, dict)
+                        ]
+                        source_node_dir = Path(job_dir) / "nodes" / str(source_id)
+                        result.update({
+                            "source_bundle_file": bundle_file,
+                            "source_bundle_resolved_from_node_id": source_id,
+                            "source_structure_count": len(structures),
+                        })
+                        if len(structures) == 1:
+                            record = structures[0]
+                            structure_file = source_record_path(record, source_node_dir)
+                            result.update({
+                                "structure_file": str(structure_file),
+                                "structure_resolved_from_node_id": source_id,
+                                "source_structure_id": record.get("structure_id"),
+                                "source_structure": record,
+                            })
+                    except Exception as exc:
+                        _record_input_resolution_error(result, str(exc))
+                else:
+                    v, source_id, error = _nearest_ancestor_artifact_or_error(
+                        job_dir, node_id, "source", "structure_file"
+                    )
+                    if error:
+                        _record_input_resolution_error(result, error)
+                    if v:
+                        result["structure_file"] = v
+                        result["structure_resolved_from_node_id"] = source_id
 
     elif node_type == "solv":
         v, prep_id, error = _nearest_ancestor_artifact_or_error(

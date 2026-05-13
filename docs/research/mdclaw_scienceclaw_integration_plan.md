@@ -237,7 +237,7 @@ generate_md_evidence_report(job_dir, report_type="stability")
 
 - 普通のMD研究（WT vs mutant, apo vs holo, forcefield comparison）にも使える
 - AlphaGenome/Evo2/トランスクリプトーム等の連携を optional annotation にできる
-- `job_dir` の single-source invariant を壊さない
+- `job_dir` を 1 source-bundle execution unit として保つ
 
 ### Step 4: ScienceClaw / 細胞エージェント向け request schema を追加する
 

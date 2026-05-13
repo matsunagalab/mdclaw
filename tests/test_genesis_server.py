@@ -30,7 +30,13 @@ def job_with_source_node(tmp_path):
     return str(jd), r["node_id"]
 
 
-def _stub_boltz(monkeypatch, out_dir_name_pattern: str = "boltz_results_"):
+def _stub_boltz(
+    monkeypatch,
+    out_dir_name_pattern: str = "boltz_results_",
+    models: int = 1,
+    confidence: bool = False,
+    multi_model_file: bool = False,
+):
     """Patch boltz2 module so it writes a fake predicted PDB instead of running."""
     from mdclaw import genesis_server
 
@@ -44,8 +50,30 @@ def _stub_boltz(monkeypatch, out_dir_name_pattern: str = "boltz_results_"):
         ts = Path(yaml_name).stem
         results_dir = Path(cwd) / f"boltz_results_{ts}" / "predictions" / ts
         results_dir.mkdir(parents=True, exist_ok=True)
-        pdb = results_dir / f"{ts}_model_0.pdb"
-        pdb.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")
+        if multi_model_file:
+            pdb = results_dir / f"{ts}_ensemble.pdb"
+            lines = []
+            for idx in range(models):
+                lines.extend([
+                    f"MODEL     {idx + 1:4d}\n",
+                    "ATOM      1  N   ALA A   1       "
+                    f"{idx:4.1f}   0.0   0.0  1.00  0.00           N\n",
+                    "TER\n",
+                    "ENDMDL\n",
+                ])
+            lines.append("END\n")
+            pdb.write_text("".join(lines))
+        else:
+            for idx in range(models):
+                pdb = results_dir / f"{ts}_model_{idx}.pdb"
+                pdb.write_text(
+                    "ATOM      1  N   ALA A   1       "
+                    f"{idx:4.1f}   0.0   0.0  1.00  0.00           N\nEND\n"
+                )
+        if confidence:
+            for idx in range(models):
+                conf = results_dir / f"confidence_{ts}_model_{idx}.json"
+                conf.write_text(json.dumps({"confidence_score": 0.9 - idx * 0.1}))
 
         class _Completed:
             returncode = 0
@@ -94,6 +122,72 @@ class TestBoltz2SourceNodeIntegration:
 
         # Artifact registered under structure_file
         assert node["artifacts"]["structure_file"].startswith("artifacts/")
+
+    def test_node_mode_records_boltz_candidates_with_rank_metadata(
+        self, job_with_source_node, monkeypatch
+    ):
+        job_dir, node_id = job_with_source_node
+        genesis_server = _stub_boltz(monkeypatch, models=3, confidence=True)
+
+        result = genesis_server.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            smiles_list=[],
+            num_models=3,
+            job_dir=job_dir,
+            node_id=node_id,
+        )
+
+        assert result["success"], result["errors"]
+        node = read_node(job_dir, node_id)
+        bundle_file = Path(job_dir) / "nodes" / node_id / node["artifacts"]["source_bundle"]
+        bundle = json.loads(bundle_file.read_text())
+        assert [s["structure_id"] for s in bundle["structures"]] == [
+            "candidate_001",
+            "candidate_002",
+            "candidate_003",
+        ]
+        second = bundle["structures"][1]
+        assert second["label"] == "Boltz-2 candidate 2"
+        assert second["origin"]["boltz_rank"] == 2
+        assert second["origin"]["boltz_model_index"] == 1
+        assert second["origin"]["confidence_file"].endswith("_model_1.json")
+        assert second["origin"]["boltz_output_file"].endswith("_model_1.pdb")
+        assert second["metrics"]["confidence_score"] == pytest.approx(0.8)
+        assert second["metrics"]["confidence"]["confidence_score"] == pytest.approx(0.8)
+
+    def test_node_mode_splits_multi_model_boltz_output_with_per_model_metadata(
+        self, job_with_source_node, monkeypatch
+    ):
+        pytest.importorskip("gemmi")
+        job_dir, node_id = job_with_source_node
+        genesis_server = _stub_boltz(
+            monkeypatch,
+            models=2,
+            confidence=True,
+            multi_model_file=True,
+        )
+
+        result = genesis_server.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            smiles_list=[],
+            num_models=2,
+            job_dir=job_dir,
+            node_id=node_id,
+        )
+
+        assert result["success"], result["errors"]
+        node = read_node(job_dir, node_id)
+        bundle_file = Path(job_dir) / "nodes" / node_id / node["artifacts"]["source_bundle"]
+        bundle = json.loads(bundle_file.read_text())
+        assert [s["structure_id"] for s in bundle["structures"]] == [
+            "candidate_001",
+            "candidate_002",
+        ]
+        second = bundle["structures"][1]
+        assert second["origin"]["boltz_rank"] == 2
+        assert second["origin"]["boltz_model_index"] == 1
+        assert second["origin"]["confidence_file"].endswith("_model_1.json")
+        assert second["metrics"]["confidence_score"] == pytest.approx(0.8)
 
     def test_invalid_node_type_rejected_before_run(
         self, job_with_source_node, monkeypatch
@@ -373,7 +467,8 @@ class TestModellerSourceNodeIntegration:
 
         node = read_node(job_dir, node_id)
         assert node["status"] == "completed"
-        assert node["artifacts"]["structure_file"] == "artifacts/modeller_prediction_target.pdb"
+        assert node["artifacts"]["structure_file"] == "artifacts/candidates/candidate_001.pdb"
+        assert node["artifacts"]["source_bundle"] == "artifacts/source_bundle.json"
         meta = node["metadata"]
         assert meta["source_type"] == "modeller"
         assert meta["template_code"] == "template"

@@ -7,22 +7,27 @@ skill examples.
 ## `research_server.py`
 
 - `fetch_structure(...)`: preferred structure acquisition entry point for PDB,
-  AlphaFold, and local files.
+  AlphaFold, and local files. In node mode it records `source_bundle.json`.
 - `download_structure(...)`: RCSB PDB compatibility wrapper.
 - `get_structure_info(...)`: PDB entry metadata.
 - `get_alphafold_structure(...)`: AlphaFold DB compatibility wrapper.
 - `register_local_structure(...)`: copy or symlink a local source structure.
+- `list_source_candidates(...)`: list normalized source-bundle candidates,
+  including IDs, ranks, files, origin metadata, and candidate metrics.
 - `inspect_molecules(...)`: chain, nucleic acid, glycan, ligand, ion, and PTM
-  inspection. In node mode writes `inspection.json` and emits an event without
-  changing node status.
+  inspection. In node mode, defaults to the primary source candidate and accepts
+  the same source candidate selectors as prep. Writes `inspection.json` and
+  emits an event without changing node status.
 - `detect_ptm_sites(...)`: scan PDB/CIF for SEP/TPO/PTR sites.
 - `search_structures(...)`, `search_proteins(...)`, `get_protein_info(...)`,
   `analyze_structure_details(...)`: external database helpers.
 
 ## `structure_server.py`
 
-- `prepare_complex(...)`: full structure preparation pipeline. In node mode the
-  source structure resolves from the `source` ancestor.
+- `prepare_complex(...)`: full structure preparation pipeline. In node mode it
+  resolves the source bundle from the `source` ancestor, selects one normalized
+  candidate via `source_structure_id` / `source_candidate_id` /
+  `source_model_index` when needed, and records `source_selection.json`.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback paths.
 - `clean_ligand(...)`: ligand cleaning and parameterization.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
@@ -40,7 +45,10 @@ skill examples.
 
 ## `genesis_server.py`
 
-- `boltz2_protein_from_seq(...)`: Boltz-2 structure prediction.
+- `boltz2_protein_from_seq(...)`: Boltz-2 structure prediction. In node mode,
+  all predicted structures are registered in the source bundle; per-candidate
+  metadata records Boltz rank/model index, original output file, confidence
+  JSON path, and `confidence_score` when Boltz writes confidence output.
 - `rdkit_validate_smiles(...)`: SMILES validation and canonicalization.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.

@@ -2660,6 +2660,115 @@ class TestSourceNode:
         assert "structure_file" in inputs
         assert inputs["structure_file"].endswith("source_001/artifacts/1AKE.pdb")
 
+    def test_prep_resolves_single_structure_source_bundle(self, job_dir):
+        from mdclaw.source_bundle import build_source_bundle, write_source_bundle
+
+        jd = str(job_dir)
+        create_node(jd, "source")
+        source_node_dir = job_dir / "nodes" / "source_001"
+        source_file = source_node_dir / "artifacts" / "1AKE.pdb"
+        source_file.write_text("HEADER\n")
+        bundle = build_source_bundle(
+            source_type="pdb",
+            source_id="1AKE",
+            structure_paths=[source_file],
+            source_node_dir=source_node_dir,
+        )
+        rel_bundle = write_source_bundle(source_node_dir, bundle)
+        complete_node(
+            jd,
+            "source_001",
+            artifacts={
+                "structure_file": bundle["structures"][0]["candidate_file"],
+                "source_bundle": rel_bundle,
+            },
+        )
+        create_node(jd, "prep", parent_node_ids=["source_001"])
+
+        inputs = resolve_node_inputs(jd, "prep_001", "prep")
+
+        assert inputs["structure_file"].endswith(
+            "source_001/artifacts/candidates/candidate_001.pdb"
+        )
+        assert inputs["source_bundle_file"].endswith("source_001/artifacts/source_bundle.json")
+        assert inputs["source_structure_id"] == "candidate_001"
+
+    def test_prep_source_bundle_surfaces_multiple_candidates(self, job_dir):
+        from mdclaw.source_bundle import build_source_bundle, write_source_bundle
+
+        jd = str(job_dir)
+        create_node(jd, "source")
+        source_node_dir = job_dir / "nodes" / "source_001"
+        first = source_node_dir / "artifacts" / "candidate_a.pdb"
+        second = source_node_dir / "artifacts" / "candidate_b.pdb"
+        first.write_text("HEADER A\n")
+        second.write_text("HEADER B\n")
+        bundle = build_source_bundle(
+            source_type="generated",
+            source_id="ensemble",
+            structure_paths=[first, second],
+            source_node_dir=source_node_dir,
+        )
+        rel_bundle = write_source_bundle(source_node_dir, bundle)
+        complete_node(
+            jd,
+            "source_001",
+            artifacts={
+                "structure_file": bundle["structures"][0]["candidate_file"],
+                "source_bundle": rel_bundle,
+            },
+        )
+        create_node(jd, "prep", parent_node_ids=["source_001"])
+
+        inputs = resolve_node_inputs(jd, "prep_001", "prep")
+
+        assert "structure_file" not in inputs
+        assert "input_resolution_error" not in inputs
+        assert inputs["source_structure_count"] == 2
+        assert inputs["source_bundle_file"].endswith("source_bundle.json")
+
+    def test_prepare_resolver_selects_explicit_source_candidate(self, job_dir):
+        from mdclaw.source_bundle import build_source_bundle, write_source_bundle
+        from mdclaw.structure_server import _resolve_prepare_node_structure_file
+
+        jd = str(job_dir)
+        create_node(jd, "source")
+        source_node_dir = job_dir / "nodes" / "source_001"
+        first = source_node_dir / "artifacts" / "candidate_a.pdb"
+        second = source_node_dir / "artifacts" / "candidate_b.pdb"
+        first.write_text("HEADER A\n")
+        second.write_text("HEADER B\n")
+        bundle = build_source_bundle(
+            source_type="generated",
+            source_id="ensemble",
+            structure_paths=[first, second],
+            source_node_dir=source_node_dir,
+        )
+        rel_bundle = write_source_bundle(source_node_dir, bundle)
+        complete_node(
+            jd,
+            "source_001",
+            artifacts={
+                "structure_file": bundle["structures"][0]["candidate_file"],
+                "source_bundle": rel_bundle,
+            },
+        )
+        create_node(jd, "prep", parent_node_ids=["source_001"])
+
+        inputs = _resolve_prepare_node_structure_file(
+            jd,
+            "prep_001",
+            None,
+            {"structure_id": "candidate_002"},
+        )
+
+        assert inputs["structure_file"].endswith(
+            "source_001/artifacts/candidates/candidate_002.pdb"
+        )
+        assert inputs["source_structure_id"] == "candidate_002"
+        assert inputs["source_selection"] == {"structure_id": "candidate_002"}
+        assert Path(inputs["source_selection_file"]).is_file()
+
     def test_prep_omits_structure_file_when_no_source_ancestor(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "prep")

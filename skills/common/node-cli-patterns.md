@@ -20,7 +20,13 @@ Rules:
 - Let workflow tools auto-resolve ancestor artifacts whenever possible.
 - Do not manually wire topology, restart state, or trajectory paths in normal
   DAG flows.
-- One `job_dir` has one physical system and one `source` root.
+- Start new scientific work from a `study_dir`; a simple run can use one job
+  such as `jobs/main`.
+- One job DAG has one `source` node, but that node may contain a source bundle
+  with multiple candidate structures normalized under `artifacts/candidates/`.
+  Use `list_source_candidates` before asking the user to choose.
+  When the bundle has more than one candidate, pass an explicit
+  `prepare_complex` selector such as `--source-structure-id candidate_002`.
 - Treat workflow node artifacts as immutable evidence for one attempted
   parameter set. If the chain/ligand/solvent choice was wrong, create a new
   node or new branch instead of rerunning the same node with changed inputs.

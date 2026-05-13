@@ -179,11 +179,49 @@ class TestResearchServer:
             node_id=node["node_id"],
         )
         assert result["success"], result.get("errors")
-        assert Path(result["source_file"]).name == "small_protein.pdb"
+        assert Path(result["source_file"]).name == "candidate_001.pdb"
+        assert result["source_structure_id"] == "candidate_001"
         inspection_json = (
             job_dir / "nodes" / node["node_id"] / "artifacts" / "inspection.json"
         )
         assert inspection_json.exists()
+
+    def test_inspect_molecules_selects_source_candidate(self, small_pdb, tmp_path):
+        """Node-mode inspection can inspect a specific source-bundle candidate."""
+        from mdclaw._node import create_node
+        from research_server import _complete_source_node, inspect_molecules
+
+        job_dir = tmp_path / "job_inspect_candidate"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "source")
+        assert node["success"]
+
+        source_a = tmp_path / "source_a.pdb"
+        source_b = tmp_path / "source_b.pdb"
+        source_a.write_text(Path(small_pdb).read_text())
+        source_b.write_text(Path(small_pdb).read_text())
+        _complete_source_node(
+            str(job_dir),
+            node["node_id"],
+            source_a,
+            source_type="local",
+            source_id="two_sources",
+            file_format="pdb",
+            source_structures=[source_a, source_b],
+            source_candidate_metadata=[
+                {"label": "candidate A"},
+                {"label": "candidate B"},
+            ],
+        )
+
+        result = inspect_molecules(
+            job_dir=str(job_dir),
+            node_id=node["node_id"],
+            source_structure_id="candidate_002",
+        )
+        assert result["success"], result.get("errors")
+        assert Path(result["source_file"]).name == "candidate_002.pdb"
+        assert result["source_structure_id"] == "candidate_002"
 
     @pytest.mark.asyncio
     async def test_source_structure_local_node_mode(self, small_pdb, tmp_path):
@@ -191,7 +229,7 @@ class TestResearchServer:
         import json
 
         from mdclaw._node import create_node, read_node
-        from research_server import fetch_structure
+        from research_server import fetch_structure, list_source_candidates
 
         job_dir = tmp_path / "job_fetch_local"
         job_dir.mkdir()
@@ -212,10 +250,17 @@ class TestResearchServer:
 
         node_data = read_node(str(job_dir), node["node_id"])
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["structure_file"] == f"artifacts/{copied.name}"
+        assert node_data["artifacts"]["structure_file"] == "artifacts/candidates/candidate_001.pdb"
+        assert node_data["artifacts"]["source_bundle"] == "artifacts/source_bundle.json"
+        assert (job_dir / "nodes" / node["node_id"] / "artifacts" / "candidates" / "candidate_001.pdb").is_file()
         assert node_data["metadata"]["source_type"] == "local"
         assert node_data["metadata"]["source_id"] == copied.name
         assert node_data["metadata"]["sha256"]
+        listed = list_source_candidates(str(job_dir), node["node_id"])
+        assert listed["success"], listed.get("errors")
+        assert listed["default_candidate_id"] == "candidate_001"
+        assert listed["candidates"][0]["structure_id"] == "candidate_001"
+        assert listed["candidates"][0]["exists"] is True
         progress = json.loads((job_dir / "progress.json").read_text())
         assert progress["nodes"][node["node_id"]]["status"] == "completed"
 
@@ -244,7 +289,9 @@ class TestResearchServer:
 
         node_data = read_node(str(job_dir), node["node_id"])
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["structure_file"] == f"artifacts/{copied.name}"
+        assert node_data["artifacts"]["structure_file"] == "artifacts/candidates/candidate_001.pdb"
+        assert node_data["artifacts"]["source_bundle"] == "artifacts/source_bundle.json"
+        assert (job_dir / "nodes" / node["node_id"] / "artifacts" / "candidates" / "candidate_001.pdb").is_file()
         assert node_data["metadata"]["source_type"] == "local"
         assert node_data["metadata"]["source_id"] == copied.name
         assert node_data["metadata"]["sha256"]
@@ -293,7 +340,9 @@ class TestResearchServer:
 
         node_data = read_node(str(job_dir), node["node_id"])
         assert node_data["status"] == "completed"
-        assert node_data["artifacts"]["structure_file"] == "artifacts/1AKE.pdb"
+        assert node_data["artifacts"]["structure_file"] == "artifacts/candidates/candidate_001.pdb"
+        assert node_data["artifacts"]["source_bundle"] == "artifacts/source_bundle.json"
+        assert (job_dir / "nodes" / node["node_id"] / "artifacts" / "candidates" / "candidate_001.pdb").is_file()
         assert node_data["metadata"]["source_type"] == "pdb"
         assert node_data["metadata"]["source_id"] == "1AKE"
         assert node_data["metadata"]["source_url"].endswith(".pdb")

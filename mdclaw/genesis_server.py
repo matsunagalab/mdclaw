@@ -21,6 +21,7 @@ logger = setup_logger(__name__)
 import datetime  # noqa: E402
 import hashlib  # noqa: E402
 import json  # noqa: E402
+import re  # noqa: E402
 import shutil  # noqa: E402
 import string  # noqa: E402
 import subprocess  # noqa: E402
@@ -40,6 +41,31 @@ ensure_directory(WORKING_DIR)
 # Initialize Boltz-2 wrapper
 CORRECT_CONDA_ENV = "mdclaw"
 boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV, warn_missing=False)
+
+_BOLTZ_MODEL_RE = re.compile(r"(?:^|_)model_(\d+)(?:$|[_.-])")
+
+
+def _boltz_model_index(path: str | Path) -> int | None:
+    match = _BOLTZ_MODEL_RE.search(Path(path).stem)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def _boltz_output_sort_key(path: Path) -> tuple[int, int, str]:
+    model_index = _boltz_model_index(path)
+    if model_index is None:
+        return (1, 0, str(path))
+    return (0, model_index, str(path))
+
+
+def _structure_format_from_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".cif":
+        return "cif"
+    if suffix in {".pdb", ".ent"}:
+        return "pdb"
+    return suffix.lstrip(".") or "unknown"
 
 
 # =============================================================================
@@ -85,11 +111,11 @@ def boltz2_protein_from_seq(
                   used instead.
         job_dir: Job directory for node-based tracking (schema v3).
         node_id: Source node ID. When both ``job_dir`` and ``node_id`` are provided,
-                 the top-ranked predicted PDB is copied into
+                 the top-ranked predicted PDB/mmCIF is copied into
                  ``<job_dir>/nodes/<node_id>/artifacts/`` and the source node is
                  marked completed with ``source_type="boltz2"`` plus sequence
-                 and SMILES metadata. Additional prediction models remain under
-                 the boltz output directory for inspection.
+                 and SMILES metadata. All prediction models are normalized into
+                 the source bundle as selectable candidates.
 
     Returns:
         Dict with:
@@ -97,9 +123,12 @@ def boltz2_protein_from_seq(
             - job_id: str - Unique identifier for this prediction job
             - output_dir: str - Path to boltz output directory (all models)
             - input_yaml_path: str - Path to Boltz-2 input YAML file
-            - predicted_pdb_files: list[str] - Paths to predicted PDB structure files
-            - file_path: str | None - Path to the primary PDB copied under the
+            - predicted_pdb_files: list[str] - Paths to predicted PDB/mmCIF structure files
+              (legacy key name retained for compatibility)
+            - file_path: str | None - Path to the primary structure copied under the
               source node artifacts (node mode only)
+            - confidence_scores: dict - First confidence JSON payload when present
+            - confidence_records: list[dict] - Confidence JSON records with model indices
             - affinity_scores: dict | None - Binding affinity predictions if requested
               Contains:
               - affinity_probability_binary: Higher = more confident binding
@@ -140,6 +169,7 @@ def boltz2_protein_from_seq(
                 "input_yaml_path": None,
                 "predicted_pdb_files": [],
                 "file_path": None,
+                "confidence_scores": {},
                 "affinity_scores": None,
                 "errors": [_node_err],
                 "warnings": [],
@@ -159,6 +189,7 @@ def boltz2_protein_from_seq(
         "input_yaml_path": None,
         "predicted_pdb_files": [],
         "file_path": None,
+        "confidence_scores": {},
         "affinity_scores": None,
         "errors": [],
         "warnings": []
@@ -306,10 +337,12 @@ def boltz2_protein_from_seq(
     parsed_results = _parse_boltz_results(result_dir)
 
     result["predicted_pdb_files"] = parsed_results["structures"]
+    result["confidence_scores"] = parsed_results.get("confidence", {})
+    result["confidence_records"] = parsed_results.get("confidence_records", [])
     result["output_dir"] = str(result_dir)
 
     if not result["predicted_pdb_files"]:
-        result["warnings"].append("No PDB files found in output directory")
+        result["warnings"].append("No PDB/mmCIF structure files found in output directory")
 
     # Load affinity scores if requested
     if affinity:
@@ -332,7 +365,7 @@ def boltz2_protein_from_seq(
     if _node_mode:
         if not result["predicted_pdb_files"]:
             result["errors"].append(
-                "Boltz-2 produced no PDB files; cannot complete source node"
+                "Boltz-2 produced no PDB/mmCIF files; cannot complete source node"
             )
             fail_node(job_dir, node_id, errors=result["errors"])
             return result
@@ -341,7 +374,14 @@ def boltz2_protein_from_seq(
                 _complete_source_node,
                 _resolve_source_artifacts_dir,
             )
-            primary_src = Path(result["predicted_pdb_files"][0])
+            predicted_paths = [Path(p) for p in result["predicted_pdb_files"]]
+            confidence_records = parsed_results.get("confidence_records", [])
+            confidence_by_model = {
+                rec["model_index"]: rec
+                for rec in confidence_records
+                if rec.get("model_index") is not None
+            }
+            primary_src = predicted_paths[0]
             artifacts_dir = _resolve_source_artifacts_dir(job_dir, node_id)
             primary_dst = artifacts_dir / f"boltz2_prediction_{primary_src.name}"
             shutil.copy2(primary_src, primary_dst)
@@ -361,14 +401,73 @@ def boltz2_protein_from_seq(
             }
             if result.get("affinity_scores"):
                 extra["affinity_scores"] = result["affinity_scores"]
+            candidate_metadata = []
+            def _candidate_annotation(
+                *,
+                path: Path,
+                idx: int,
+                model_index: int | None = None,
+                confidence: dict | None = None,
+            ) -> dict:
+                metrics = {}
+                origin = {
+                    "boltz_rank": idx + 1,
+                    "boltz_output_file": str(path),
+                }
+                if model_index is not None:
+                    origin["boltz_model_index"] = model_index
+                if confidence:
+                    origin["confidence_file"] = confidence.get("file")
+                    if isinstance(confidence.get("data"), dict):
+                        confidence_data = confidence["data"]
+                        metrics["confidence"] = confidence_data
+                        if "confidence_score" in confidence_data:
+                            metrics["confidence_score"] = confidence_data["confidence_score"]
+                return {
+                    "label": f"Boltz-2 candidate {idx + 1}",
+                    "metrics": metrics,
+                    "origin": origin,
+                }
+
+            if len(predicted_paths) == 1 and len(confidence_records) > 1:
+                path = predicted_paths[0]
+                per_model_annotations = []
+                for idx, conf in enumerate(confidence_records):
+                    model_index = conf.get("model_index")
+                    per_model_annotations.append(_candidate_annotation(
+                        path=path,
+                        idx=idx,
+                        model_index=model_index if model_index is not None else idx,
+                        confidence=conf,
+                    ))
+                candidate_metadata.append({
+                    "origin": {"boltz_output_file": str(path)},
+                    "models": per_model_annotations,
+                })
+            else:
+                for idx, path in enumerate(predicted_paths):
+                    model_index = _boltz_model_index(path)
+                    conf = None
+                    if model_index is not None:
+                        conf = confidence_by_model.get(model_index)
+                    if conf is None and len(confidence_records) == len(predicted_paths):
+                        conf = confidence_records[idx]
+                    candidate_metadata.append(_candidate_annotation(
+                        path=path,
+                        idx=idx,
+                        model_index=model_index,
+                        confidence=conf,
+                    ))
             _complete_source_node(
                 job_dir,
                 node_id,
                 primary_dst,
                 source_type="boltz2",
                 source_id=f"boltz2_{yaml_digest}",
-                file_format="pdb",
+                file_format=_structure_format_from_path(primary_dst),
                 extra_metadata=extra,
+                source_structures=[primary_dst, *predicted_paths[1:]],
+                source_candidate_metadata=candidate_metadata,
             )
             result["file_path"] = str(primary_dst)
         except Exception as e:
@@ -379,7 +478,9 @@ def boltz2_protein_from_seq(
             return result
 
     result["success"] = True
-    logger.info(f"Job {job_id} finished. Found {len(result['predicted_pdb_files'])} PDB files.")
+    logger.info(
+        f"Job {job_id} finished. Found {len(result['predicted_pdb_files'])} structure files."
+    )
 
     return result
 
@@ -395,33 +496,47 @@ def _parse_boltz_results(output_dir: Path) -> Dict[str, Any]:
 
     Returns:
         Dict with:
-            - structures: List of paths to PDB files
+            - structures: List of paths to PDB/mmCIF files
             - confidence: Confidence scores dict (if available)
     """
     results = {
         "structures": [],
-        "confidence": {}
+        "confidence": {},
+        "confidence_records": [],
     }
 
     if not output_dir.exists():
         logger.warning(f"Output directory does not exist: {output_dir}")
         return results
 
-    pdb_files = sorted(output_dir.glob("**/*.pdb"))
-    results["structures"] = [str(f) for f in pdb_files]
+    structure_files = sorted(
+        [*output_dir.glob("**/*.pdb"), *output_dir.glob("**/*.cif")],
+        key=_boltz_output_sort_key,
+    )
+    results["structures"] = [str(f) for f in structure_files]
 
     if not results["structures"]:
-        logger.warning(f"No PDB structures found in {output_dir}")
+        logger.warning(f"No PDB/mmCIF structures found in {output_dir}")
 
-    confidence_files = list(output_dir.glob("**/confidence_*.json"))
+    confidence_files = sorted(
+        output_dir.glob("**/confidence_*.json"),
+        key=_boltz_output_sort_key,
+    )
     if confidence_files:
-        confidence_json = confidence_files[0]
-        try:
-            with open(confidence_json, 'r') as f:
-                results["confidence"] = json.load(f)
+        for confidence_json in confidence_files:
+            try:
+                with open(confidence_json, 'r') as f:
+                    data = json.load(f)
+                results["confidence_records"].append({
+                    "file": str(confidence_json),
+                    "model_index": _boltz_model_index(confidence_json),
+                    "data": data,
+                })
+            except Exception as e:
+                logger.warning(f"Failed to parse confidence JSON {confidence_json}: {e}")
+        if results["confidence_records"]:
+            results["confidence"] = results["confidence_records"][0]["data"]
             logger.info("Loaded confidence scores")
-        except Exception as e:
-            logger.warning(f"Failed to parse confidence.json: {e}")
     else:
         logger.warning("No confidence JSON file found")
 

@@ -26,5 +26,7 @@ Then read by task:
 - `[if:implicit]` Implicit solvent: `skills/md-prepare/implicit-water.md`
 - `[if:resume]` Resume/re-entry: `skills/md-prepare/session-resume.md`
 
-The workflow still prepares one physical system per `job_dir`. Branch only after
-`prep` for variants of that same system.
+Start new work from a `study_dir`, even when the study has only one job. Each
+job has one `source` node whose source bundle may contain multiple structures;
+declare a `prep` source selection when needed, then branch after `prep` for
+variants of that prepared system.

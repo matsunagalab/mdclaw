@@ -4640,6 +4640,7 @@ def _resolve_prepare_node_structure_file(
     job_dir: Optional[str],
     node_id: Optional[str],
     structure_file: Optional[str],
+    source_selection: Optional[dict] = None,
 ) -> dict:
     """Resolve prep input structure from the DAG when not provided explicitly."""
     if not (job_dir and node_id) or structure_file:
@@ -4647,10 +4648,43 @@ def _resolve_prepare_node_structure_file(
     from mdclaw._node import resolve_node_inputs
 
     inputs = resolve_node_inputs(job_dir, node_id, "prep")
+    if inputs.get("source_bundle_file"):
+        try:
+            from mdclaw.source_bundle import materialize_source_selection
+
+            selected = materialize_source_selection(
+                bundle_file=inputs["source_bundle_file"],
+                selection=source_selection,
+                prep_artifacts_dir=Path(job_dir) / "nodes" / node_id / "artifacts",
+            )
+            return {
+                "structure_file": selected.get("structure_file"),
+                "input_resolution_error": inputs.get("input_resolution_error"),
+                "input_resolution_errors": inputs.get("input_resolution_errors", []),
+                "source_bundle_file": selected.get("source_bundle_file"),
+                "source_selection_file": selected.get("source_selection_file"),
+                "source_selection": selected.get("source_selection"),
+                "source_structure_id": selected.get("selected_structure", {}).get("structure_id"),
+                "source_structure": selected.get("selected_structure"),
+                "source_selection_materialized": selected.get("materialized"),
+            }
+        except Exception as exc:
+            return {
+                "structure_file": None,
+                "input_resolution_error": str(exc),
+                "input_resolution_errors": inputs.get("input_resolution_errors", []) + [str(exc)],
+                "source_bundle_file": inputs.get("source_bundle_file"),
+                "source_selection": source_selection,
+                "source_structure_id": inputs.get("source_structure_id"),
+            }
     return {
         "structure_file": inputs.get("structure_file", structure_file),
         "input_resolution_error": inputs.get("input_resolution_error"),
         "input_resolution_errors": inputs.get("input_resolution_errors", []),
+        "source_bundle_file": inputs.get("source_bundle_file"),
+        "source_selection": source_selection,
+        "source_structure_id": inputs.get("source_structure_id"),
+        "source_structure": inputs.get("source_structure"),
     }
 
 
@@ -4670,6 +4704,10 @@ def _validate_prepare_node_context(
     charge_method: str,
     atom_type: str,
     keep_crystal_waters: bool,
+    source_structure_id: Optional[str] = None,
+    source_candidate_id: Optional[str] = None,
+    source_model_index: Optional[int] = None,
+    source_model_id: Optional[str] = None,
 ) -> dict:
     """Validate declared prep-node conditions against runtime parameters."""
     from mdclaw._node import validate_node_execution_context
@@ -4691,6 +4729,10 @@ def _validate_prepare_node_context(
             "charge_method": charge_method,
             "atom_type": atom_type,
             "keep_crystal_waters": keep_crystal_waters,
+            "source_structure_id": source_structure_id,
+            "source_candidate_id": source_candidate_id,
+            "source_model_index": source_model_index,
+            "source_model_id": source_model_id,
         },
     )
 
@@ -4701,6 +4743,10 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
         "job_id": job_id,
         "output_dir": None,
         "source_file": str(structure_file) if structure_file else None,
+        "source_bundle_file": None,
+        "source_selection_file": None,
+        "source_selection": None,
+        "source_structure_id": None,
         "inspection": None,
         "split": None,
         "proteins": [],
@@ -4732,6 +4778,10 @@ def prepare_complex(
     disulfide_pairs: Optional[List[Dict[str, Any]]] = None,
     histidine_states: Optional[Dict[str, str]] = None,
     keep_crystal_waters: bool = False,
+    source_structure_id: Optional[str] = None,
+    source_candidate_id: Optional[str] = None,
+    source_model_index: Optional[int] = None,
+    source_model_id: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -4777,6 +4827,14 @@ def prepare_complex(
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
+        source_structure_id: Candidate ID from the source bundle to prepare,
+                             e.g. ``candidate_002``. Used only in node mode
+                             when the source bundle contains multiple candidates.
+        source_candidate_id: Alias for ``source_structure_id``.
+        source_model_index: Model index/rank selector for NMR-style inputs.
+                            Accepts the user-facing one-based model rank.
+        source_model_id: Model identifier selector when present in the source
+                         bundle provenance.
         include_ligand_ids: List of ligand unique IDs to include (format:
                            "author_chain:resname:resnum", e.g.,
                            ["A:ACP:501"]). If specified, only these ligands
@@ -4858,8 +4916,16 @@ def prepare_complex(
         >>> for lig in result['ligands']:
         ...     print(f"  {lig['ligand_id']}: {lig['mol2_file']}")
     """
+    from mdclaw.source_bundle import source_selection_from_values
+
+    _source_selection = source_selection_from_values(
+        source_structure_id=source_structure_id,
+        source_candidate_id=source_candidate_id,
+        source_model_index=source_model_index,
+        source_model_id=source_model_id,
+    )
     _resolved_structure = _resolve_prepare_node_structure_file(
-        job_dir, node_id, structure_file
+        job_dir, node_id, structure_file, _source_selection
     )
     structure_file = _resolved_structure["structure_file"]
 
@@ -4868,6 +4934,10 @@ def prepare_complex(
     # Initialize result structure
     job_id = generate_job_id()
     result = _prepare_complex_initial_result(job_id, structure_file)
+    result["source_bundle_file"] = _resolved_structure.get("source_bundle_file")
+    result["source_selection_file"] = _resolved_structure.get("source_selection_file")
+    result["source_selection"] = _resolved_structure.get("source_selection")
+    result["source_structure_id"] = _resolved_structure.get("source_structure_id")
 
     if _resolved_structure.get("input_resolution_error"):
         return {
@@ -4900,6 +4970,10 @@ def prepare_complex(
             charge_method=charge_method,
             atom_type=atom_type,
             keep_crystal_waters=keep_crystal_waters,
+            source_structure_id=_resolved_structure.get("source_structure_id"),
+            source_candidate_id=source_candidate_id,
+            source_model_index=source_model_index,
+            source_model_id=source_model_id,
         )
         if not _ctx["success"]:
             return {"success": False, "error_type": "ValidationError", **_ctx}
@@ -5688,6 +5762,9 @@ def prepare_complex(
         # Aggregate provenance from all proteins into top-level summary
         # so LLM can read it directly without digging into proteins[]
         preparation_summary = {}
+        if result.get("source_structure_id"):
+            preparation_summary["source_structure_id"] = result["source_structure_id"]
+            preparation_summary["source_selection"] = result.get("source_selection") or {}
         for p in result.get("proteins", []):
             prov = p.get("provenance", {})
             if prov:
@@ -5880,6 +5957,8 @@ def prepare_complex(
                 artifacts["glycan_metadata"] = "artifacts/glycan_metadata.json"
             if (base_dir / "glycan_linkages.json").exists():
                 artifacts["glycan_linkages"] = "artifacts/glycan_linkages.json"
+            if result.get("source_selection_file"):
+                artifacts["source_selection"] = result["source_selection_file"]
             complete_node(job_dir, node_id,
                 artifacts=artifacts,
                 metadata=result.get("preparation_summary", {}),

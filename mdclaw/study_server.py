@@ -1,9 +1,9 @@
-"""Study-level helpers for optional multi-job MD campaigns.
+"""Study-level helpers for MDClaw scientific investigations.
 
-A ``job_dir`` remains the durable execution unit for one physical MD system.
-The study layer is a thin wrapper above one or more job directories: it keeps
-human/agent-readable intent, cross-job roles, and append-only decision logs
-without changing the node DAG contract.
+A ``study_dir`` is the outer record for a scientific question. It can contain
+one job for a simple MD run or many jobs for comparisons and campaigns. Each
+``job_dir`` remains the durable execution DAG for one source bundle and the
+prepared physical systems derived from it.
 """
 
 from __future__ import annotations
@@ -89,8 +89,8 @@ def init_study(
 ) -> dict:
     """Create a study directory for grouping one or more MDClaw job dirs.
 
-    The study layer is optional. It does not create or modify any workflow
-    nodes, and it does not relax the single-source-per-job invariant.
+    The study layer does not create or modify any workflow nodes. It indexes
+    jobs and records cross-job intent, roles, decisions, and evidence.
     """
     result: dict[str, Any] = {
         "success": False,

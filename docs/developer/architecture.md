@@ -83,13 +83,25 @@ Important boundaries:
 
 ## Job DAG
 
-One `job_dir` represents one physical MD system and has exactly one `source`
-root. Scientific variants branch inside that job after preparation,
-solvation, topology building, equilibration, or production.
+The study layer is the normal outer record for a scientific question. A simple
+one-system request can still be represented as a study with one job, usually
+`jobs/main`; broader investigations register multiple job DAGs under the same
+study.
+
+Inside a job, the `source` node records a structural source bundle. The
+required execution contract is `source_bundle.json` plus normalized
+`artifacts/candidates/candidate_*.pdb|cif` files. Raw input files may also be
+kept for provenance, but `prep` always selects one candidate file before
+producing an MD-ready physical system. Candidate files can come from ordinary
+single structures, NMR models split out of a multi-model PDB/mmCIF, PDB
+assembly/chain choices, or generated prediction ensemble members from
+Boltz/BioEm-like tools. Generator-specific rank and confidence data live on
+the relevant candidate records and are surfaced through `list_source_candidates`.
+Variants then branch from `prep`, `solv`, `topo`, `eq`, or `prod`.
 
 ```mermaid
 flowchart LR
-  source[source_001<br/>structure source] --> prep[prep_001<br/>clean / merge / params]
+  source[source_001<br/>source bundle] --> prep[prep_001<br/>select / clean / merge / params]
   prep --> solv[solv_001<br/>water / membrane]
   solv --> topo[topo_001<br/>OpenMM XML triple]
   topo --> eq1[eq_001<br/>equilibration]
@@ -105,8 +117,8 @@ Node artifacts are intentionally local to each node:
 
 | Node Type | Typical Artifacts |
 |---|---|
-| `source` | Downloaded or copied structure, source metadata, optional `inspection.json`. |
-| `prep` | Cleaned/merged PDB, `ligand_params.json`, `residue_mapping.json`, branch-specific prepared structures. |
+| `source` | `source_bundle.json`, normalized `candidates/candidate_*` files, optional raw downloaded/copied/generated structures, source metadata, optional `inspection.json`. |
+| `prep` | `source_selection.json`, cleaned/merged PDB, `ligand_params.json`, `residue_mapping.json`, branch-specific prepared structures. |
 | `solv` | `solvated.pdb`, `box_dimensions.json`, membrane metadata when applicable. |
 | `topo` | `system.system.xml`, `system.topology.pdb`, `system.state.xml`, force-field provenance. |
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |
@@ -123,10 +135,16 @@ job_XXXXXXXX/
       node.json
       node.lock
       artifacts/
+        source_bundle.json
+        1AKE.cif
+        candidates/
+          candidate_001.cif
+          candidate_002.cif
     prep_001/
       node.json
       node.lock
       artifacts/
+        source_selection.json
     solv_001/
       node.json
       node.lock
@@ -220,9 +238,10 @@ both builders through the same contract.
 
 ## Study Directories
 
-Use a `study_dir` when one scientific question spans multiple physical systems,
-such as WT versus mutant or apo versus holo. A study is a thin campaign index
-above multiple independent `job_dir`s.
+Use a `study_dir` for every new scientific question. For a single ordinary MD
+run, register one job such as `jobs/main`. When the question spans multiple
+systems, such as WT versus mutant or apo versus holo, register multiple
+independent `job_dir`s under the same study.
 
 ```mermaid
 flowchart TB
@@ -249,8 +268,9 @@ study_XXXXXXXX/
       nodes/source_001/...
 ```
 
-`study_server.py` manages the study index only. It does not execute OpenMM,
-mutate node DAG semantics, or relax the single-source `job_dir` invariant.
+`study_server.py` manages the study index only. It does not execute OpenMM or
+mutate node DAG semantics. Each registered job owns its node DAG and source
+bundle; the study records cross-job intent, roles, decisions, and evidence.
 
 ## Adding Tools
 

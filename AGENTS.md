@@ -81,8 +81,21 @@ Core schema v3 rules:
 
 - `skill = scientific intent and procedure`; skills do not mutate state.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
-- One `job_dir` represents one physical system with exactly one `source` root.
-- Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod`.
+- New scientific work should start with a `study_dir`; a simple one-system MD
+  run is a study with one job, usually `jobs/main`.
+- A study may index many `job_dir`s. Each job DAG has one `source` node, and
+  that source node records a structural source bundle.
+- A source bundle may contain multiple structures, such as NMR models,
+  assembly candidates, or generated prediction ensemble members.
+- The source node normalizes those inputs into
+  `artifacts/candidates/candidate_*` files plus `source_bundle.json`; optional
+  raw inputs are provenance only.
+- Use `list_source_candidates` to expose candidate IDs, ranks, generator
+  metadata, and confidence metrics to the agent/user.
+- `prep` selects one concrete candidate from the source bundle before creating
+  an MD-ready physical system.
+- Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod` after that
+  concrete structure has been prepared.
 - `eq` accepts both `topo` and prior `eq` parents (multi-stage equilibration
   chains, e.g. NPT compress -> NVT thermalize -> NPT relax).
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.

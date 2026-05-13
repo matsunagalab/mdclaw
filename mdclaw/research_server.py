@@ -228,6 +228,8 @@ def _complete_source_node(
     source_id: str,
     file_format: str,
     extra_metadata: Optional[dict] = None,
+    source_structures: Optional[list[Path]] = None,
+    source_candidate_metadata: Optional[list[dict]] = None,
 ) -> dict:
     """Record a source artifact + metadata and mark the node completed.
 
@@ -236,6 +238,7 @@ def _complete_source_node(
     from datetime import datetime, timezone
 
     from mdclaw._node import complete_node
+    from mdclaw.source_bundle import build_source_bundle, write_source_bundle
 
     rel_artifact = f"artifacts/{file_path.name}"
     metadata = {
@@ -249,13 +252,33 @@ def _complete_source_node(
     if extra_metadata:
         metadata.update(extra_metadata)
 
+    source_node_dir = (Path(job_dir) / "nodes" / node_id).resolve()
+    bundle = build_source_bundle(
+        source_type=source_type,
+        source_id=source_id,
+        structure_paths=source_structures or [file_path],
+        source_node_dir=source_node_dir,
+        metadata=metadata,
+        candidate_metadata=source_candidate_metadata,
+    )
+    rel_bundle = write_source_bundle(source_node_dir, bundle)
+    primary_candidate = bundle["structures"][0]["candidate_file"]
+
     complete_node(
         job_dir,
         node_id,
-        artifacts={"structure_file": rel_artifact},
+        artifacts={
+            "structure_file": primary_candidate,
+            "source_bundle": rel_bundle,
+        },
         metadata=metadata,
     )
-    return {"artifact": rel_artifact, "metadata": metadata}
+    return {
+        "artifact": rel_artifact,
+        "primary_candidate": primary_candidate,
+        "source_bundle": rel_bundle,
+        "metadata": metadata,
+    }
 
 
 # =============================================================================
@@ -2539,6 +2562,7 @@ def _resolve_inspection_structure_file(
     job_dir: Optional[str],
     node_id: Optional[str],
     structure_file: Optional[str],
+    source_selection: Optional[dict] = None,
 ) -> dict:
     """Resolve an inspection input from the current source node or ancestor."""
     if structure_file:
@@ -2553,6 +2577,11 @@ def _resolve_inspection_structure_file(
         }
 
     from mdclaw._node import get_ancestors, read_node, resolve_artifact
+    from mdclaw.source_bundle import (
+        load_source_bundle,
+        select_source_structure,
+        source_record_path,
+    )
 
     errors: list[str] = []
     for anc_id in get_ancestors(job_dir, node_id):
@@ -2563,6 +2592,35 @@ def _resolve_inspection_structure_file(
             continue
         if node.get("node_type") != "source":
             continue
+        rel_bundle = (node.get("artifacts") or {}).get("source_bundle")
+        if rel_bundle:
+            try:
+                bundle_file = resolve_artifact(job_dir, anc_id, rel_bundle)
+                bundle = load_source_bundle(bundle_file)
+                if source_selection:
+                    record = select_source_structure(bundle, source_selection)
+                else:
+                    structures = [
+                        s for s in bundle.get("structures", [])
+                        if isinstance(s, dict)
+                    ]
+                    record = next(
+                        (s for s in structures if s.get("is_primary")),
+                        structures[0],
+                    )
+                source_node_dir = Path(job_dir) / "nodes" / anc_id
+                return {
+                    "structure_file": str(source_record_path(record, source_node_dir)),
+                    "structure_resolved_from_node_id": anc_id,
+                    "source_bundle_file": str(bundle_file),
+                    "source_structure_id": record.get("structure_id"),
+                    "source_selection": source_selection or {
+                        "structure_id": record.get("structure_id")
+                    },
+                }
+            except Exception as exc:
+                errors.append(f"Could not resolve source bundle for '{anc_id}': {exc}")
+                continue
         rel_path = (node.get("artifacts") or {}).get("structure_file")
         if not rel_path:
             errors.append(f"Source node '{anc_id}' has no structure_file artifact")
@@ -2582,10 +2640,97 @@ def _resolve_inspection_structure_file(
     }
 
 
+def _resolve_source_bundle_file(job_dir: str, node_id: str) -> dict:
+    """Resolve a source_bundle artifact from a source node or descendant."""
+    from mdclaw._node import get_ancestors, read_node, resolve_artifact
+
+    errors: list[str] = []
+    for anc_id in get_ancestors(job_dir, node_id):
+        try:
+            node = read_node(job_dir, anc_id)
+        except (json.JSONDecodeError, OSError) as exc:
+            errors.append(f"Could not read node '{anc_id}': {exc}")
+            continue
+        if node.get("node_type") != "source":
+            continue
+        rel_bundle = (node.get("artifacts") or {}).get("source_bundle")
+        if not rel_bundle:
+            errors.append(f"Source node '{anc_id}' has no source_bundle artifact")
+            continue
+        return {
+            "source_node_id": anc_id,
+            "source_bundle_file": str(resolve_artifact(job_dir, anc_id, rel_bundle)),
+        }
+    if not errors:
+        errors.append(f"No source node found for node '{node_id}'")
+    return {"input_resolution_error": errors[0], "input_resolution_errors": errors}
+
+
+def list_source_candidates(job_dir: str, node_id: str) -> dict:
+    """List normalized source candidates for a source node or descendant."""
+    result = {
+        "success": False,
+        "job_dir": job_dir,
+        "node_id": node_id,
+        "source_node_id": None,
+        "source_bundle_file": None,
+        "default_candidate_id": None,
+        "candidates": [],
+        "errors": [],
+        "warnings": [],
+    }
+    resolved = _resolve_source_bundle_file(job_dir, node_id)
+    if resolved.get("input_resolution_error"):
+        result["errors"].append(resolved["input_resolution_error"])
+        return result
+
+    from mdclaw.source_bundle import load_source_bundle, source_record_path
+
+    source_node_id = resolved["source_node_id"]
+    bundle_file = Path(resolved["source_bundle_file"])
+    bundle = load_source_bundle(bundle_file)
+    source_node_dir = Path(job_dir) / "nodes" / source_node_id
+    candidates = []
+    for record in bundle.get("structures", []):
+        if not isinstance(record, dict):
+            continue
+        path = source_record_path(record, source_node_dir)
+        row = {
+            "structure_id": record.get("structure_id"),
+            "candidate_id": record.get("candidate_id"),
+            "rank": record.get("rank"),
+            "is_primary": bool(record.get("is_primary")),
+            "label": record.get("label"),
+            "file": str(path),
+            "artifact": record.get("candidate_file") or record.get("file"),
+            "format": record.get("format"),
+            "origin": record.get("origin", {}),
+            "metrics": record.get("metrics", {}),
+            "exists": path.is_file(),
+        }
+        if row["is_primary"]:
+            result["default_candidate_id"] = row["structure_id"]
+        candidates.append(row)
+
+    if result["default_candidate_id"] is None and candidates:
+        result["default_candidate_id"] = candidates[0]["structure_id"]
+    result.update({
+        "success": True,
+        "source_node_id": source_node_id,
+        "source_bundle_file": str(bundle_file),
+        "candidates": candidates,
+    })
+    return result
+
+
 def inspect_molecules(
     structure_file: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    source_structure_id: Optional[str] = None,
+    source_candidate_id: Optional[str] = None,
+    source_model_index: Optional[int] = None,
+    source_model_id: Optional[str] = None,
 ) -> dict:
     """Inspect an mmCIF or PDB structure file and return detailed molecular information.
 
@@ -2624,6 +2769,11 @@ def inspect_molecules(
         structure_file: Path to the mmCIF (.cif) or PDB (.pdb/.ent) file to inspect.
             In node mode, this is optional and auto-resolves from the current
             source node or a source ancestor's ``structure_file`` artifact.
+        source_structure_id: Candidate ID from ``source_bundle.json`` to inspect,
+            e.g. ``candidate_002``. Used only in node mode.
+        source_candidate_id: Alias for ``source_structure_id``.
+        source_model_index: Model index/rank selector for NMR-style source bundles.
+        source_model_id: Model identifier selector when present in source provenance.
         job_dir: Optional job directory (schema v3). When provided together
             with ``node_id``, the inspection summary is written as
             ``inspection.json`` into that node's artifacts directory and an
@@ -2652,8 +2802,16 @@ def inspect_molecules(
             - errors: list[str]
             - warnings: list[str]
     """
+    from mdclaw.source_bundle import source_selection_from_values
+
+    _source_selection = source_selection_from_values(
+        source_structure_id=source_structure_id,
+        source_candidate_id=source_candidate_id,
+        source_model_index=source_model_index,
+        source_model_id=source_model_id,
+    )
     _resolved_structure = _resolve_inspection_structure_file(
-        job_dir, node_id, structure_file
+        job_dir, node_id, structure_file, _source_selection
     )
     structure_file = _resolved_structure["structure_file"]
 
@@ -2662,6 +2820,9 @@ def inspect_molecules(
     result = {
         "success": False,
         "source_file": str(structure_file) if structure_file else None,
+        "source_bundle_file": _resolved_structure.get("source_bundle_file"),
+        "source_structure_id": _resolved_structure.get("source_structure_id"),
+        "source_selection": _resolved_structure.get("source_selection"),
         "file_format": None,
         "header": {},
         "entities": [],
@@ -3769,6 +3930,7 @@ TOOLS = {
     "register_local_structure": register_local_structure,
     "search_proteins": search_proteins,
     "get_protein_info": get_protein_info,
+    "list_source_candidates": list_source_candidates,
     "inspect_molecules": inspect_molecules,
     "analyze_structure_details": analyze_structure_details,
 }

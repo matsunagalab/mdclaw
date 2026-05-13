@@ -162,29 +162,57 @@ The tool returns:
 - `success`: bool — True if prediction completed
 - `job_id`: str — Unique identifier
 - `output_dir`: str — Path to results directory
-- `predicted_pdb_files`: list — Paths to predicted PDB structures
+- `predicted_pdb_files`: list — Paths to predicted PDB/mmCIF structures
   - Collected from the Boltz output directory
-  - Do not assume they are already ranked by confidence
+  - Sorted by Boltz model index when filenames contain `_model_N`
   - Multiple files returned if `--num-models > 1`
+- `confidence_scores`: dict — Confidence JSON content when Boltz writes it
 - `affinity_scores`: dict (if `--affinity`) — Contains:
   - `affinity_probability_binary`: Higher = more confident binding
   - `affinity_pred_value`: Lower = stronger predicted binding; reported as `log10(IC50)` with IC50 in `uM`
 - `warnings`: list — Non-critical warnings
 
+### Source-node metadata
+
+When `job_dir` and `node_id` point to a `source` node, the Boltz output is
+normalized into the standard source bundle:
+
+```text
+nodes/source_001/artifacts/source_bundle.json
+nodes/source_001/artifacts/candidates/candidate_001.pdb
+nodes/source_001/artifacts/candidates/candidate_002.pdb
+```
+
+Per-candidate Boltz information belongs in `source_bundle.json`, not only in
+the source node's run-level metadata:
+- `origin.boltz_rank`: one-based candidate rank in the returned Boltz order
+- `origin.boltz_model_index`: zero-based `_model_N` value when present
+- `origin.boltz_output_file`: original Boltz prediction file
+- `origin.confidence_file`: matching Boltz confidence JSON when present
+- `metrics.confidence_score`: copied from the confidence JSON for quick ranking
+- `metrics.confidence`: full confidence JSON content for provenance
+
+Run-level details such as `num_models_requested`, `boltz_output_dir`,
+`input_yaml`, `sequences`, `smiles_list`, and optional affinity scores remain
+in the source node metadata.
+
+List candidates through the tool instead of asking the user to open JSON:
+
+```bash
+mdclaw list_source_candidates --job-dir <job_dir> --node-id source_001
+```
+
 ### Next Steps
 
-Present the predicted PDB file(s) to the user. 
-
-**If multiple models were generated**, show all filenames and suggest:
-- Rank them by confidence score if confidence JSON is available
-- Use the top model for standard MD simulation
-- Alternatively, run MD on multiple models for ensemble analysis
+Present the candidate IDs and confidence scores to the user. Use the default
+candidate for a simple first MD setup, or prepare multiple jobs/candidates when
+the scientific question needs ensemble comparison.
 
 If they want to continue to MD simulation:
 
 > **"To set up MD simulation with the predicted structure:**
 > ```bash
-> mdclaw prepare_complex --structure-file /path/to/predicted_model.pdb
+> mdclaw prepare_complex --job-dir <job_dir> --node-id prep_001 --source-structure-id candidate_001
 > ```
 > **If your harness provides slash commands, `/md-prepare` is the
 > interactive shortcut for the same preparation skill."**

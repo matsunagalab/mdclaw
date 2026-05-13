@@ -60,10 +60,13 @@ frcmod+mol2 and modXNA frcmod+lib, removing the `code:
 metal_openmm_xml_required` and `code: modxna_openmm_xml_required` fail-fast
 escape into `build_openmm_system` at `amber_server.py:3400-3422`.
 
-## Single-source DAG Principle
+## Source-Bundle DAG Principle
 
-Each `job_dir` should contain one physical system with exactly one `source`
-root. Variant exploration happens by branching from `prep`, `solv`, `topo`,
+Each `job_dir` should contain one structural source bundle with one `source`
+node. That bundle may contain multiple candidate structures normalized under
+`artifacts/candidates/`; optional raw inputs are provenance only. A `prep` node
+selects one concrete candidate before creating an MD-ready physical system, and
+variant exploration then happens by branching from `prep`, `solv`, `topo`,
 `eq`, or `prod` nodes inside the same DAG.
 
 Supporting multiple independent source roots in one job remains out of scope
