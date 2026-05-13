@@ -218,14 +218,12 @@ the scorer reads `task.json`, scorer-only truth files, and submitted artifacts.
 
 The v1.0 task set covers nine tasks in four families:
 
-- System preparation and guardrails: MD-ready artifacts, ligand pose
-  preservation, and structured refusal for unsafe parameterization.
-- Execution and engine reliability: short explicit-water MD, finite energies,
-  reloadable trajectories, and restart continuation.
-- Scientific answer versus experimental truth: mutation stability and
-  protein-protein binding effect questions with held-back truth.
-- Evidence and Methods communication: figures, metrics, captions, provenance,
-  limitations, and Methods-style reporting.
+| Family | What It Tests | Example Tasks |
+|---|---|---|
+| System preparation and guardrails | MD-ready artifacts, ligand-pose preservation, and structured refusal for unsafe parameterization. | Metal guardrail refusal; T4L L99A + benzene pose preservation |
+| Execution and engine reliability | Short explicit-water MD, finite energies, reloadable trajectories, and restart continuation. | Engine smoke MD; short protein MD; restart continuation |
+| Scientific answer versus experimental truth | Mutation stability and protein-protein binding-effect questions with held-back truth. | T4L L99A stability direction; barnase D39A binding hotspot |
+| Evidence and Methods communication | Figures, metrics, captions, provenance, limitations, and Methods-style reporting. | Dynamics figure package; WT-vs-L99A Methods package |
 
 See `docs/benchmark/README.md` for the task table, submission contract,
 scorer runtime, and detailed validation commands.
