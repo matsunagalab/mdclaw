@@ -14,8 +14,8 @@ package evidence with provenance.
 
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
-- Start from a study-level scientific question, then organize one or more
-  job DAGs under that study.
+- Start from a study-level scientific question, translate it into a small MD
+  plan, then organize one or more job DAGs under that study.
 - Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
   residues before committing to a setup.
 - Clean structures, preserve selected ligands when safe, solvate systems, and
@@ -130,6 +130,32 @@ Users do not need to remember command names. Ask a skill-aware agent for the
 scientific workflow you want, and include the choices that affect reproducible
 MD:
 
+For a broader scientific question, ask the agent to plan the study first. The
+`md-study` skill records a lightweight `study_plan.json` with the question, MD
+goal, planned jobs, analysis observables, and decision criteria:
+
+```text
+Plan an MD study to test whether V148A destabilizes the ligand-bound active
+conformation. Define the WT and mutant jobs to run, what observables to analyze,
+and what outcomes would support, argue against, or leave the question
+inconclusive.
+```
+
+```text
+Plan an apo-vs-holo MD study for adenylate kinase. I want to know whether ligand
+binding stabilizes the closed conformation. Propose the minimal job set,
+analysis metrics, and decision criteria before preparing structures.
+```
+
+```text
+Plan a ligand-retention study for the 1AKE AP5 complex. First inspect whether
+AP5 can be safely preserved, then define what job should be prepared and what
+evidence would make the setup usable for production MD.
+```
+
+For a clear one-system run, ask directly and MDClaw can take the fast path
+through preparation, equilibration, production, and analysis:
+
 ```text
 Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
 default force field and water model. Create a study record with one main job,
@@ -137,32 +163,15 @@ then report the study and job directories.
 ```
 
 ```text
-Continue that job through the default equilibration protocol, then run 10 ns of
-production MD from the equilibrated state and analyze RMSD, RMSF, and energy
-stability.
+Continue the main job through default equilibration, then run 10 ns of
+production MD and analyze RMSD, RMSF, and energy stability.
 ```
 
-```text
-Prepare the 1AKE complex while preserving the bound AP5 ligand if inspection
-finds it. Keep the ligand coordinates, use explicit water, and stop with a
-structured blocked result if ligand parameterization is unsafe.
-```
-
-```text
-Branch from the prepared structure, apply mutation V148A, keep the original
-branch intact, and build a separate solvated topology branch for comparison.
-```
-
-```text
-Submit a 100 ns production run for the equilibrated job to the GPU partition,
-then sync the scheduler status back into the workflow record and report the
-completed trajectory, state, checkpoint, and energy artifacts.
-```
-
-Good prompts usually specify the structure source, molecular selection,
-solvent model, force field, runtime target, duration, ensemble, stopping
-policy, and desired evidence. Vague prompts such as "run MD for this protein"
-hide too many scientific and operational choices.
+Good prompts for direct runs usually specify the structure source, molecular
+selection, solvent model, force field, runtime target, duration, ensemble,
+stopping policy, and desired evidence. Good prompts for study planning should
+state the scientific question, comparison groups, and what kind of evidence
+would answer the question.
 
 ## Repository Map
 
@@ -192,7 +201,7 @@ which artifacts were used.
 The main path is:
 
 ```text
-study question -> source bundle -> select + prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
+study question -> MD study plan -> source bundle -> select + prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
 ```
 
 A study is the outer record for the scientific question. It may contain one
@@ -205,6 +214,11 @@ records the index/provenance in `source_bundle.json`. Generated ensembles such
 as Boltz-2 predictions can also attach per-candidate rank and confidence
 metrics. The `prep` node selects one concrete candidate before making an
 MD-ready physical system.
+
+For clear single-system requests, the study plan is optional: a thin study with
+one `jobs/main` job is enough. For scientific comparisons or campaigns,
+`study_plan.json` keeps the question, MD goal, planned jobs, intended analyses,
+and decision criteria connected to the evidence report.
 
 Each step writes a node with its own state, artifacts, and provenance. Branches
 can fork from preparation, solvation, topology, equilibration, or production

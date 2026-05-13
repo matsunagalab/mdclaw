@@ -1034,6 +1034,23 @@ class TestStudyAndEvidenceCLIParameters:
         assert args.inputs == ["study.json", "progress.json"]
         assert args.outputs == ["plan.json"]
 
+    def test_record_study_plan_accepts_plan_json(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "record_study_plan",
+            "--study-dir", "/tmp/study",
+            "--plan", (
+                '{"question":"q","md_goal":"g","jobs":[],'
+                '"analysis":[],"decision":{}}'
+            ),
+        ])
+        assert args.study_dir == "/tmp/study"
+        assert '"md_goal":"g"' in args.plan
+
     def test_generate_md_evidence_report_parses_target_json(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
@@ -1082,6 +1099,31 @@ class TestStudyAndEvidenceCLIParameters:
             ])
         assert exc_info.value.code == 0
         assert (study_dir / "jobs" / "wt").is_dir()
+
+    def test_record_study_plan_end_to_end(self, tmp_path):
+        from mdclaw._cli import main
+
+        study_dir = tmp_path / "study"
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "init_study",
+                "--study-dir", str(study_dir),
+                "--title", "screen",
+            ])
+        assert exc_info.value.code == 0
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "record_study_plan",
+                "--study-dir", str(study_dir),
+                "--plan", (
+                    '{"question":"q","md_goal":"g","jobs":[],'
+                    '"analysis":[],"decision":{}}'
+                ),
+            ])
+        assert exc_info.value.code == 0
+        plan = json.loads((study_dir / "study_plan.json").read_text())
+        assert plan["plan"]["question"] == "q"
 
 
 if __name__ == "__main__":

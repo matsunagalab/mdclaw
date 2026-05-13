@@ -37,6 +37,16 @@ def _study_json_path(study_dir: str | Path) -> Path:
     return Path(study_dir).expanduser().resolve() / "study.json"
 
 
+def _study_plan_path(study_dir: str | Path, plan_id: str | None = None) -> Path:
+    sd = Path(study_dir).expanduser().resolve()
+    if not plan_id or plan_id == "active":
+        return sd / "study_plan.json"
+    safe_id = "".join(c if c.isalnum() or c in {"-", "_"} else "_" for c in plan_id)
+    if not safe_id:
+        raise ValueError("plan_id must contain at least one safe character")
+    return sd / "plans" / f"{safe_id}.json"
+
+
 def _load_study(study_dir: str | Path) -> dict:
     path = _study_json_path(study_dir)
     if not path.exists():
@@ -77,6 +87,23 @@ def _append_jsonl(path: Path, record: dict) -> None:
     with file_lock(lock_path):
         with path.open("a") as fh:
             fh.write(line + "\n")
+
+
+def _validate_study_plan(plan: Any) -> list[str]:
+    if not isinstance(plan, dict):
+        return ["plan must be a JSON object"]
+    errors = [
+        f"plan missing required field: {key}"
+        for key in ("question", "md_goal", "jobs", "analysis", "decision")
+        if key not in plan
+    ]
+    if "jobs" in plan and not isinstance(plan["jobs"], list):
+        errors.append("plan.jobs must be a list")
+    if "analysis" in plan and not isinstance(plan["analysis"], list):
+        errors.append("plan.analysis must be a list")
+    if "decision" in plan and not isinstance(plan["decision"], dict):
+        errors.append("plan.decision must be an object")
+    return errors
 
 
 def init_study(
@@ -335,6 +362,151 @@ def record_token_usage(
     )
 
 
+def record_study_plan(
+    study_dir: str,
+    plan: dict,
+    plan_id: Optional[str] = None,
+    status: str = "active",
+    rationale: Optional[str] = None,
+    metadata: Optional[dict] = None,
+) -> dict:
+    """Persist a small study-level MD research plan.
+
+    The plan records scientific intent and design. It does not create workflow
+    nodes or replace per-job DAG state.
+    """
+    result: dict[str, Any] = {
+        "success": False,
+        "study_dir": None,
+        "plan_file": None,
+        "plan": None,
+        "errors": [],
+        "warnings": [],
+    }
+    errors = _validate_study_plan(plan)
+    if errors:
+        result["errors"].extend(errors)
+        return result
+    try:
+        sd = Path(study_dir).expanduser().resolve()
+        plan_key = plan_id or "active"
+        plan_file = _study_plan_path(sd, plan_key)
+        now = _now_iso()
+        with file_lock(sd / "study.lock"):
+            study = _load_study(sd)
+            plan_payload = {
+                "plan_schema_version": plan.get("plan_schema_version", 1),
+                **plan,
+            }
+            record = {
+                "record_type": "study_plan",
+                "plan_id": plan_key,
+                "status": status,
+                "created_at": now,
+                "updated_at": now,
+                "rationale": rationale,
+                "metadata": metadata or {},
+                "plan": plan_payload,
+            }
+            _atomic_write_json(plan_file, record)
+            study["updated_at"] = now
+            _atomic_write_json(sd / "study.json", study)
+
+        result.update({
+            "success": True,
+            "study_dir": str(sd),
+            "plan_file": str(plan_file),
+            "plan": record,
+            "warnings": result["warnings"],
+        })
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"record_study_plan failed: {exc}")
+        result["errors"].append(f"record_study_plan failed: {type(exc).__name__}: {exc}")
+        return result
+
+
+def get_study_plan(study_dir: str, plan_id: Optional[str] = None) -> dict:
+    """Read a persisted study plan without inspecting job DAG state."""
+    result: dict[str, Any] = {
+        "success": False,
+        "study_dir": None,
+        "plan_file": None,
+        "plan": None,
+        "errors": [],
+        "warnings": [],
+    }
+    try:
+        sd = Path(study_dir).expanduser().resolve()
+        _load_study(sd)
+        plan_file = _study_plan_path(sd, plan_id or "active")
+        if not plan_file.exists():
+            result["errors"].append(f"study plan not found at {plan_file}")
+            return result
+        data = json.loads(plan_file.read_text())
+        result.update({
+            "success": True,
+            "study_dir": str(sd),
+            "plan_file": str(plan_file),
+            "plan": data,
+        })
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"get_study_plan failed: {exc}")
+        result["errors"].append(f"get_study_plan failed: {type(exc).__name__}: {exc}")
+        return result
+
+
+def list_study_plans(study_dir: str) -> dict:
+    """List persisted study plans for a study directory."""
+    result: dict[str, Any] = {
+        "success": False,
+        "study_dir": None,
+        "plans": [],
+        "errors": [],
+        "warnings": [],
+    }
+    try:
+        sd = Path(study_dir).expanduser().resolve()
+        _load_study(sd)
+        plan_files: list[Path] = []
+        active = sd / "study_plan.json"
+        if active.exists():
+            plan_files.append(active)
+        plans_dir = sd / "plans"
+        if plans_dir.is_dir():
+            plan_files.extend(sorted(plans_dir.glob("*.json")))
+
+        plans: list[dict] = []
+        for plan_file in plan_files:
+            try:
+                data = json.loads(plan_file.read_text())
+            except (json.JSONDecodeError, OSError) as exc:
+                result["warnings"].append(f"could not read {plan_file}: {exc}")
+                continue
+            plan = data.get("plan") if isinstance(data.get("plan"), dict) else {}
+            plans.append({
+                "plan_id": data.get("plan_id"),
+                "status": data.get("status"),
+                "plan_file": str(plan_file),
+                "question": plan.get("question"),
+                "md_goal": plan.get("md_goal"),
+                "updated_at": data.get("updated_at"),
+            })
+
+        result.update({
+            "success": True,
+            "study_dir": str(sd),
+            "plans": plans,
+            "warnings": result["warnings"],
+        })
+        return result
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"list_study_plans failed: {exc}")
+        result["errors"].append(f"list_study_plans failed: {type(exc).__name__}: {exc}")
+        return result
+
+
 def _record_study_log(study_dir: str, filename: str, payload: dict) -> dict:
     result: dict[str, Any] = {
         "success": False,
@@ -400,6 +572,9 @@ TOOLS = {
     "list_study_jobs": list_study_jobs,
     "record_study_decision": record_study_decision,
     "record_study_question": record_study_question,
+    "record_study_plan": record_study_plan,
+    "get_study_plan": get_study_plan,
+    "list_study_plans": list_study_plans,
     "record_token_usage": record_token_usage,
     "summarize_study": summarize_study,
 }

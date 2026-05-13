@@ -12,6 +12,11 @@ Analysis is always user-initiated. Production does not chain into analysis;
 the user or harness invokes this skill when ready. In harnesses with slash
 commands, `/md-analyze` is the shortcut.
 
+If the job belongs to a study with `study_plan.json`, use the plan's `analysis`
+list as the starting point for metric selection. Treat it as scientific intent,
+not as a brittle execution contract: missing or incomplete plan fields should
+not block normal analysis.
+
 ## Route To The Right Guidance
 
 - Combine a production lineage into an analysis trajectory:

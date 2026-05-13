@@ -178,6 +178,9 @@ skill examples.
 - `init_study(...)`: create an optional campaign directory.
 - `add_study_job(...)`: register existing or planned jobs.
 - `list_study_jobs(...)`, `summarize_study(...)`: inspect study state.
+- `record_study_plan(...)`, `get_study_plan(...)`, `list_study_plans(...)`:
+  persist and inspect a lightweight scientific-question-to-MD-plan record. The
+  plan is study-level intent only; job DAGs remain the execution source of truth.
 - `record_study_decision(...)`, `record_study_question(...)`,
   `record_token_usage(...)`: append study-level JSONL logs.
 
@@ -189,6 +192,8 @@ skill examples.
 - `generate_md_methods_report(...)`: Methods Markdown for one job lineage.
 - `generate_study_methods_report(...)`: Methods report across registered jobs.
 - `generate_study_evidence_report(...)`: JSON evidence summary across a study.
+  When `study_plan.json` exists, its question, MD goal, analysis list, and
+  decision criteria are included in the study-level evidence report.
 
 ## `benchmark/`
 

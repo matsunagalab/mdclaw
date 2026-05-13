@@ -41,6 +41,9 @@ are available).
   production length, adopt `simulation_time_ns=0.1` as the default sanity
   check run length and proceed without asking. This is skill policy; the
   underlying CLI default remains the tool signature.
+- If the job belongs to a study with `study_plan.json`, treat its plan as the
+  scientific intent. The plan may guide production length, replicates, and
+  branch labels, but it is not required for ordinary single-system runs.
 - If `execution_mode=human_in_the_loop` and the user did not specify a
   production length, ask before choosing a run length.
 - If the user explicitly asks for a longer campaign, HPC submission, or a

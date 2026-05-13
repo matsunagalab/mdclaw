@@ -20,6 +20,8 @@ The key design split is:
 - **Skills translate scientific intent into tool choices.**
 - **Tools run it and record state.**
 - **The DAG is the source of truth for workflow progress.**
+- **Study planning records the scientific question, MD goal, planned jobs,
+  analysis intent, and decision criteria without replacing per-job DAG state.**
 
 Deployment details live in `docs/agents/deployment.md`.
 
@@ -254,6 +256,7 @@ flowchart TB
 ```text
 study_XXXXXXXX/
   study.json
+  study_plan.json
   decisions.jsonl
   question_history.jsonl
   token_ledger.jsonl
@@ -268,9 +271,31 @@ study_XXXXXXXX/
       nodes/source_001/...
 ```
 
-`study_server.py` manages the study index only. It does not execute OpenMM or
-mutate node DAG semantics. Each registered job owns its node DAG and source
-bundle; the study records cross-job intent, roles, decisions, and evidence.
+`study_server.py` manages the study index and lightweight study plans. It does
+not execute OpenMM or mutate node DAG semantics. Each registered job owns its
+node DAG and source bundle; the study records cross-job intent, roles,
+decisions, planned analyses, and evidence.
+
+`study_plan.json`, when present, is intentionally small and weak-agent friendly.
+It records the minimum needed to reconnect results to intent:
+
+```json
+{
+  "question": "scientific question",
+  "md_goal": "what MD should test",
+  "jobs": [{"job_id": "main", "purpose": "why this job exists"}],
+  "analysis": ["observables to inspect"],
+  "decision": {
+    "support": "what would support the question",
+    "against": "what would argue against it",
+    "inconclusive": "what would leave it unresolved"
+  }
+}
+```
+
+For clear one-system requests such as "simulate 1AKE chain A", the direct path
+through `md-prepare` remains valid. Such runs may still use a study with
+`jobs/main`, but they do not require `study_plan.json`.
 
 ## Adding Tools
 

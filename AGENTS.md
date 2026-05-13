@@ -80,6 +80,10 @@ md-prepare -> md-equilibration -> md-production -> md-analyze
 Core schema v3 rules:
 
 - `skill = scientific intent and procedure`; skills do not mutate state.
+- `md-study` is the study-planning skill: it translates scientific questions
+  into a small MD goal, planned jobs, analysis intent, and decision criteria.
+  Clear single-system requests such as "simulate 1AKE chain A" still flow
+  directly through `md-prepare` with a simple `jobs/main` study.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
 - New scientific work should start with a `study_dir`; a simple one-system MD
   run is a study with one job, usually `jobs/main`.

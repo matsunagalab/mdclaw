@@ -1175,6 +1175,14 @@ def _load_study(study_dir: Path) -> dict:
     return data
 
 
+def _load_study_plan(study_dir: Path) -> tuple[dict | None, Path | None]:
+    plan_file = study_dir / "study_plan.json"
+    data = _read_json(plan_file)
+    if data is None:
+        return None, None
+    return data, plan_file
+
+
 def _resolve_study_job_dir(study_dir: Path, job_dir: str) -> Path:
     path = Path(job_dir).expanduser()
     if path.is_absolute():
@@ -1503,6 +1511,13 @@ def generate_study_evidence_report(
     try:
         sd = Path(study_dir).expanduser().resolve()
         study = _load_study(sd)
+        study_plan_record, study_plan_file = _load_study_plan(sd)
+        study_plan = (
+            study_plan_record.get("plan", {})
+            if isinstance(study_plan_record, dict)
+            and isinstance(study_plan_record.get("plan"), dict)
+            else {}
+        )
         jobs = [j for j in study.get("jobs", []) if isinstance(j, dict)]
         job_reports: list[dict] = []
         aggregate_status_counts: dict[str, int] = {}
@@ -1545,24 +1560,34 @@ def generate_study_evidence_report(
         report = base_evidence_report(
             evidence_type=evidence_type,
             status="complete" if jobs else "incomplete",
-            question=question or study.get("objective"),
+            question=question or study_plan.get("question") or study.get("objective"),
             summary=report_summary,
             metrics={
                 "num_jobs": len(jobs),
                 "jobs": job_reports,
                 "aggregate_node_status_counts": aggregate_status_counts,
                 "aggregate_node_type_counts": aggregate_type_counts,
+                "study_plan": {
+                    "question": study_plan.get("question"),
+                    "md_goal": study_plan.get("md_goal"),
+                    "analysis": study_plan.get("analysis", []),
+                    "decision": study_plan.get("decision", {}),
+                } if study_plan else {},
             },
             limitations=limitations,
             provenance={
                 "generated_at": _now_iso(),
                 "study_dir": str(sd),
                 "study_file": str(sd / "study.json"),
+                "study_plan_file": str(study_plan_file) if study_plan_file else None,
                 "job_dirs": [j["job_dir"] for j in job_reports],
             },
             metadata={
                 "study_title": study.get("title"),
                 "study_objective": study.get("objective"),
+                "study_plan_id": study_plan_record.get("plan_id")
+                if isinstance(study_plan_record, dict)
+                else None,
             },
         )
         out_dir = sd / "evidence"

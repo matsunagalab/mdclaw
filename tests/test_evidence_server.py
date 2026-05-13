@@ -451,10 +451,20 @@ def test_generate_md_methods_report_includes_modxna_and_nucleic_citations(tmp_pa
 
 def test_generate_study_evidence_report(tmp_path):
     from mdclaw._node import complete_node, create_node
-    from mdclaw.study_server import add_study_job, init_study
+    from mdclaw.study_server import add_study_job, init_study, record_study_plan
 
     study_dir = tmp_path / "study"
     init_study(str(study_dir), title="screen", objective="compare branches")
+    record_study_plan(
+        str(study_dir),
+        {
+            "question": "Does the baseline branch remain stable?",
+            "md_goal": "Summarize completed production nodes.",
+            "jobs": [{"job_id": "wt", "purpose": "baseline"}],
+            "analysis": ["production completion"],
+            "decision": {"support": "prod completed", "against": "prod failed"},
+        },
+    )
     job_dir = study_dir / "jobs" / "wt"
     create_node(str(job_dir), "prod")
     _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
@@ -471,9 +481,11 @@ def test_generate_study_evidence_report(tmp_path):
     report_file = study_dir / "evidence" / "study_evidence_report.json"
     assert report_file.is_file()
     report = json.loads(report_file.read_text())
-    assert report["question"] == "compare branches"
+    assert report["question"] == "Does the baseline branch remain stable?"
     assert report["metrics"]["num_jobs"] == 1
     assert report["metrics"]["jobs"][0]["job_id"] == "wt"
+    assert report["metrics"]["study_plan"]["md_goal"] == "Summarize completed production nodes."
+    assert report["provenance"]["study_plan_file"].endswith("study_plan.json")
     assert report["metrics"]["aggregate_node_type_counts"]["prod"] == 1
 
 
