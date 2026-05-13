@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/mdclaw-logo.png" alt="MDClaw logo" width="720">
+</p>
+
 # MDClaw
 
 MDClaw provides skills and CLIs for vibe-MD simulations and autonomous
