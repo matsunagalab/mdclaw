@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from mdclaw.benchmark import scoring
+from mdclaw.benchmark import scoring, validation
 from mdclaw.benchmark.models import (
     DeterministicCheck,
     GroundTruthCheck,
@@ -138,6 +138,30 @@ def test_status_blocked_zeros_weighted_total(tmp_path: Path):
                       metrics={"execution": {"completed": True}})
     score = scoring.score_submission(task, tmp_path)
     assert score.weighted_total == 0.0
+    assert score.status == "failed"
+    assert any("does not allow blocked" in warning
+               for warning in score.integrity_warnings)
+
+
+def test_validate_submission_rejects_disallowed_blocked_status(tmp_path: Path):
+    task = _make_task(
+        primary="execution",
+        det_checks=[DeterministicCheck(check_id="ok", check_type="json_equals",
+                                        json_path="execution.completed",
+                                        equals=True, weight=1.0)],
+    )
+    task_file = tmp_path / "task.json"
+    task_file.write_text(task.model_dump_json())
+    submission_dir = tmp_path / "submission"
+    _write_submission(
+        submission_dir,
+        manifest={"task_id": "t", "status": "blocked"},
+        metrics={"execution": {"completed": False}},
+    )
+
+    result = validation.validate_submission(task_file, submission_dir)
+    assert result["success"] is False
+    assert any("does not allow blocked" in err for err in result["errors"])
 
 
 def test_status_failed_keeps_score_when_guardrail_passes(tmp_path: Path):

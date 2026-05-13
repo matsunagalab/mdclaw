@@ -7,7 +7,9 @@
   "public_private_split": {
     "public": [
       "dataset.json",
-      "tasks/<task_id>/prompt.md",
+      "tasks/<task_id>/prompt.md"
+    ],
+    "private_to_harness_scorer": [
       "tasks/<task_id>/task.json"
     ],
     "private_to_scorer": [

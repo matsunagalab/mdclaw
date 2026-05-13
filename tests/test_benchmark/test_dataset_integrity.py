@@ -37,6 +37,18 @@ def test_dataset_json_matches_task_directories():
     assert sorted(task_ids) == task_dirs
 
 
+def test_dataset_public_split_is_prompt_only_for_agents():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+    split = dataset["public_private_split"]
+
+    assert "tasks/<task_id>/prompt.md" in split["public"]
+    assert "tasks/<task_id>/task.json" not in split["public"]
+    assert (
+        "tasks/<task_id>/task.json"
+        in split.get("private_to_harness_scorer", [])
+    )
+
+
 def test_dataset_families_cover_each_task_once():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
     task_ids = set(dataset["task_ids"])

@@ -4,8 +4,8 @@ These cover regression cases for the runner-side hardening:
 
 * ``_coerce_capture`` / ``_run_agent_command`` timeout path tolerates
   ``bytes`` stdout/stderr from ``subprocess.TimeoutExpired``.
-* ``_copy_public_task_files`` stages only prompt/metadata files for the
-  prompt-to-submission public task surface.
+* ``_copy_public_task_files`` stages only prompt.md for the public
+  prompt-to-submission task surface.
 """
 
 from __future__ import annotations
@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from mdclaw.benchmark import cli
 
@@ -104,19 +106,19 @@ class TestRunAgentCommandTimeout:
 
 
 class TestCopyPublicTaskFiles:
-    def test_copies_prompt_and_task_json(self, tmp_path: Path):
+    def test_copies_prompt_only(self, tmp_path: Path):
         task_dir = tmp_path / "tasks" / "T_demo"
         task_dir.mkdir(parents=True)
         (task_dir / "prompt.md").write_text("hello\n")
-        (task_dir / "task.json").write_text("{}\n")
+        (task_dir / "task.json").write_text('{"private": true}\n')
 
         run_task_dir = tmp_path / "run" / "T_demo"
         copied = cli._copy_public_task_files(task_dir, run_task_dir)
 
         assert (run_task_dir / "prompt.md").read_text() == "hello\n"
-        assert (run_task_dir / "task.json").read_text() == "{}\n"
         assert copied["prompt.md"] == str(run_task_dir / "prompt.md")
-        assert copied["task.json"] == str(run_task_dir / "task.json")
+        assert "task.json" not in copied
+        assert not (run_task_dir / "task.json").exists()
         # input/ is not part of the prompt-to-submission public surface.
         assert "input" not in copied
         assert not (run_task_dir / "input").exists()
@@ -133,7 +135,7 @@ class TestCopyPublicTaskFiles:
         copied = cli._copy_public_task_files(task_dir, run_task_dir)
 
         assert (run_task_dir / "prompt.md").read_text() == "p\n"
-        assert (run_task_dir / "task.json").read_text() == "{}\n"
+        assert not (run_task_dir / "task.json").exists()
         assert "input" not in copied
         assert not (run_task_dir / "input").exists()
 
@@ -149,3 +151,29 @@ class TestCopyPublicTaskFiles:
 
         assert "input" not in copied
         assert not (run_task_dir / "input").exists()
+
+
+class TestFormatAgentCommand:
+    def test_task_file_placeholder_is_private(self, tmp_path: Path):
+        with pytest.raises(ValueError, match="task_file"):
+            cli._format_agent_command(
+                "agent --task-file {task_file}",
+                task_id="T_demo",
+                run_id="run",
+                task_dir=tmp_path / "task",
+                run_task_dir=tmp_path / "task",
+                submission_dir=tmp_path / "submission",
+            )
+
+    def test_prompt_file_placeholder_is_public(self, tmp_path: Path):
+        command = cli._format_agent_command(
+            "agent --prompt {prompt_file} --out {submission_dir} --task {task_id}",
+            task_id="T_demo",
+            run_id="run",
+            task_dir=tmp_path / "task",
+            run_task_dir=tmp_path / "task",
+            submission_dir=tmp_path / "submission",
+        )
+        assert "--prompt" in command
+        assert "prompt.md" in command
+        assert "task.json" not in command

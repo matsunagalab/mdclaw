@@ -100,7 +100,7 @@ def validate_submission(task_file: str | Path,
             if (manifest.status == "blocked"
                     and not task.failure_policy.blocked_by_missing_input_allowed
                     and not task.failure_policy.insufficient_information_allowed):
-                out["warnings"].append(
+                out["errors"].append(
                     "manifest.status='blocked' but task failure_policy "
                     "does not allow blocked outcomes")
 

@@ -77,6 +77,17 @@ def score_submission(
     )
     integrity_warnings.extend(artifact_warnings)
 
+    manifest_status = manifest.get("status", "completed")
+    if (
+        manifest_status == "blocked"
+        and not task.failure_policy.blocked_by_missing_input_allowed
+        and not task.failure_policy.insufficient_information_allowed
+    ):
+        integrity_warnings.append(
+            "manifest.status='blocked' but task failure_policy does not allow "
+            "blocked outcomes"
+        )
+
     # 3. deterministic checks
     for check in task.scoring.deterministic_checks:
         result = _run_deterministic(
@@ -98,10 +109,9 @@ def score_submission(
     )
 
     # 6. apply manifest.status semantics
-    status = manifest.get("status", "completed")
     weighted_total = _weighted_total(task, axis_scores)
     weighted_total = _apply_status_modifier(
-        status, weighted_total, axis_scores, ground_truth_results,
+        manifest_status, weighted_total, axis_scores, ground_truth_results,
     )
 
     # 7a. reject-phase clamp — if the task opts in to integrity_policy="reject"
@@ -126,6 +136,8 @@ def score_submission(
 
     score_status = _score_status(weighted_total, deterministic_results,
                                  ground_truth_results)
+    if manifest_status == "blocked":
+        score_status = "failed"
     if integrity_rejected:
         # Reject overrides the "any check passed → partial" rule: if the
         # artifact layer rejected the submission, the run did not produce

@@ -238,13 +238,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--task-dir", required=True)
 parser.add_argument("--submission-dir", required=True)
 parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
 args = parser.parse_args()
 
 task_dir = Path(args.task_dir)
 submission_dir = Path(args.submission_dir)
 submission_dir.mkdir(parents=True, exist_ok=True)
-task = json.loads((task_dir / "task.json").read_text())
-task_id = task["task_id"]
+assert (task_dir / "prompt.md").is_file()
+assert not (task_dir / "task.json").exists()
+task_id = args.task_id
 
 (submission_dir / "manifest.json").write_text(json.dumps({
     "schema_version": "1.0",
@@ -284,7 +286,8 @@ print(f"wrote submission for {task_id}")
         backend="command",
         agent_command=(
             f"{sys.executable} {agent_script} "
-            "--task-dir {task_dir} --submission-dir {submission_dir} --run-id {run_id}"
+            "--task-dir {task_dir} --submission-dir {submission_dir} "
+            "--run-id {run_id} --task-id {task_id}"
         ),
         task_ids=[task_id],
         backend_name="fixture-md",
@@ -301,12 +304,68 @@ print(f"wrote submission for {task_id}")
 
     run_task_dir = tmp_path / "benchmark_runs" / "suite_command_t02" / "tasks" / task_id
     assert (run_task_dir / "prompt.md").is_file()
-    assert (run_task_dir / "task.json").is_file()
+    assert not (run_task_dir / "task.json").exists()
     execution = json.loads((run_task_dir / "execution.json").read_text())
     assert execution["returncode"] == 0
     assert "wrote submission" in (run_task_dir / "agent_stdout.log").read_text()
     summary = json.loads((tmp_path / "benchmark_runs" / "suite_command_t02" / "summary.json").read_text())
     assert summary["overall_score"] == 1.0
+
+
+def test_run_benchmark_suite_command_failure_records_invalid_blocked(tmp_path: Path):
+    """Runner-level failures may be summarized, but a blocked submission for a
+    task that disallows blocked outcomes must not be treated as a successful
+    benchmark task."""
+    task_id = "T01_engine_smoke"
+    task_file = DATASET_DIR / "tasks" / task_id / "task.json"
+    if not task_file.exists():
+        pytest.skip("v1.0 dataset not present")
+
+    agent_script = tmp_path / "failing_agent.py"
+    agent_script.write_text(
+        """
+import sys
+print("starting public-prompt-only agent")
+print("intentional runner fixture failure", file=sys.stderr)
+sys.exit(7)
+""".lstrip()
+    )
+
+    result = cli.run_benchmark_suite(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(tmp_path / "benchmark_runs"),
+        run_id="suite_command_t01_failed",
+        backend="command",
+        agent_command=f"{sys.executable} {agent_script}",
+        task_ids=[task_id],
+        timeout_seconds_per_task=30,
+    )
+
+    assert result["success"] is False
+    task_result = result["tasks"][0]
+    assert task_result["execution"]["returncode"] == 7
+    assert task_result["validation"]["success"] is False
+    assert any("does not allow blocked" in err
+               for err in task_result["validation"]["errors"])
+    assert task_result["score"]["status"] == "failed"
+    assert task_result["score"]["weighted_total"] == 0.0
+
+    run_task_dir = (
+        tmp_path / "benchmark_runs" / "suite_command_t01_failed" / "tasks" / task_id
+    )
+    assert (run_task_dir / "prompt.md").is_file()
+    assert not (run_task_dir / "task.json").exists()
+    provenance = json.loads(
+        (run_task_dir / "submission" / "provenance.json").read_text()
+    )
+    assert provenance["runner_status"] == "blocked"
+    assert provenance["attempt"]["deepest_stage"] == "runner"
+    assert provenance["attempt"]["attempted_actions"][0]["returncode"] == 7
+    summary = json.loads(
+        (tmp_path / "benchmark_runs" / "suite_command_t01_failed" / "summary.json")
+        .read_text()
+    )
+    assert summary["overall_score"] == 0.0
 
 
 def test_summary_dedup_on_re_run(tmp_path: Path):

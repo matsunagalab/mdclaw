@@ -24,19 +24,21 @@ Agent-facing files:
 
 - `<task_dir>/prompt.md`
 
-Harness/scorer metadata:
+Canonical harness/scorer metadata:
 
-- `<task_dir>/task.json`
+- `benchmarks/mdagentbench/tasks/<task_id>/task.json`
 
 Never expose:
 
+- canonical `task.json` to the benchmark agent
 - `<task_dir>/truth/`
 - `<task_dir>/scorer/`
 
 No fake trajectories, fake metrics, fake citations, or guessed conclusions.
-Treat `<task_dir>/task.json` as runner/scorer metadata, not a solution recipe.
+Treat canonical `task.json` as runner/scorer metadata, not a solution recipe.
 Harness code may read `failure_policy`, `time_limit_minutes`, required outputs,
-and scoring checks before deciding whether a task can be blocked.
+and scoring checks before deciding whether a task can be blocked; agents should
+not read it.
 
 ## Minimum Attempt Policy
 
@@ -85,10 +87,8 @@ Do not read truth/ or scorer/.
 Use MDClaw CLI tools and MDClaw skills to run real MD when the task asks for it.
 Write the required benchmark submission files to <submission_dir>/.
 
-Before deciding blocked, the harness may inspect failure_policy and
-time_limit_minutes from task.json. If blocked outcomes are not allowed, do not
-stop because the task is long; run until success, timeout, or a concrete
-tool/runtime failure.
+If blocked outcomes are not allowed, do not stop because the task is long; run
+until success, timeout, or a concrete tool/runtime failure.
 
 For execution tasks, attempt the MD workflow requested by the prompt. For
 explicit-water MD, that normally means source retrieval, preparation,
@@ -121,7 +121,7 @@ backend="command"`.
 After the agent writes `submission/`, score only with scripts:
 
 ```bash
-mdclaw validate_benchmark_submission --task-file <task_dir>/task.json --submission-dir <submission_dir>
-mdclaw score_benchmark_submission --task-file <task_dir>/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file <run_task_dir>/score.json
+mdclaw validate_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir>
+mdclaw score_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file <run_task_dir>/score.json
 mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
 ```

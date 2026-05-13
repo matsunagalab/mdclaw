@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import string
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -206,13 +207,13 @@ def _copy_public_task_files(task_dir: Path, run_task_dir: Path) -> dict[str, str
     """Stage the public task surface under ``run_task_dir``.
 
     The agent-facing benchmark contract is prompt-only: the runner exposes
-    ``prompt.md`` as the problem statement and stages ``task.json`` alongside
-    it for submission/scoring metadata. Source structures, protocols, and
-    literature identifiers should be named in the prompt so retrieval itself is
-    part of the evaluated agent behavior.
+    ``prompt.md`` as the problem statement. ``task.json`` remains private
+    harness/scorer metadata in the canonical dataset and is not staged for the
+    agent. Source structures, protocols, and literature identifiers should be
+    named in the prompt so retrieval itself is part of the evaluated behavior.
     """
     copied: dict[str, str] = {}
-    for name in ("prompt.md", "task.json"):
+    for name in ("prompt.md",):
         src = task_dir / name
         if src.is_file():
             dst = run_task_dir / name
@@ -231,13 +232,24 @@ def _format_agent_command(
     run_task_dir: Path,
     submission_dir: Path,
 ) -> str:
+    private_fields = {"task_file", "canonical_task_file"}
+    requested_fields = {
+        (field_name or "").split(".", 1)[0].split("[", 1)[0]
+        for _, field_name, _, _ in string.Formatter().parse(agent_command)
+        if field_name
+    }
+    blocked_fields = sorted(requested_fields & private_fields)
+    if blocked_fields:
+        raise ValueError(
+            "agent_command may not use private task metadata placeholder(s): "
+            + ", ".join(f"{{{field}}}" for field in blocked_fields)
+        )
     return agent_command.format(
         task_id=task_id,
         run_id=run_id,
         task_dir=str(task_dir),
         run_task_dir=str(run_task_dir),
         prompt_file=str(task_dir / "prompt.md"),
-        task_file=str(task_dir / "task.json"),
         submission_dir=str(submission_dir),
     )
 
@@ -248,9 +260,31 @@ def _write_runner_blocked_submission(
     submission_dir: Path,
     run_id: str,
     message: str,
+    execution_record: Optional[dict[str, Any]] = None,
 ) -> None:
     ensure_directory(submission_dir)
     required_outputs = [_normalize_submission_relpath(path) for path in task.required_outputs]
+    execution_record = execution_record or {}
+    attempt_record = {
+        "deepest_stage": "runner",
+        "attempted_actions": [
+            {
+                "type": "agent_command",
+                "command": execution_record.get("command", ""),
+                "returncode": execution_record.get("returncode"),
+                "timed_out": bool(execution_record.get("timed_out", False)),
+                "stdout_file": execution_record.get("stdout_file", ""),
+                "stderr_file": execution_record.get("stderr_file", ""),
+            }
+        ],
+        "walltime": {
+            "started_at": execution_record.get("started_at", ""),
+            "finished_at": execution_record.get("finished_at", ""),
+            "timeout_seconds": execution_record.get("timeout_seconds"),
+        },
+        "blocker": message,
+        "next_command": "",
+    }
     manifest = {
         "schema_version": "1.0",
         "run_id": run_id,
@@ -280,6 +314,7 @@ def _write_runner_blocked_submission(
             "task_id": task.task_id,
             "source": "run_benchmark_suite",
             "runner_status": "blocked",
+            "attempt": attempt_record,
         }, indent=2, sort_keys=True) + "\n"
     )
     evidence = {
@@ -287,6 +322,7 @@ def _write_runner_blocked_submission(
         "run_id": run_id,
         "task_id": task.task_id,
         "summary": message,
+        "attempt": attempt_record,
         "limitations": [message],
     }
     (submission_dir / "evidence_report.json").write_text(
@@ -396,15 +432,17 @@ def run_benchmark_suite(
     """Run a benchmark suite through a backend adapter, then score it.
 
     This is the harness layer analogous to SWE-bench/HELM runners: it gives the
-    agent a staged prompt-only task directory (``prompt.md`` plus ``task.json``
-    for submission/scoring metadata), collects ``submission/`` artifacts, and
-    delegates scoring to the existing deterministic scorer.
+    agent a staged prompt-only task directory (``prompt.md``), collects
+    ``submission/`` artifacts, and delegates scoring to the existing
+    deterministic scorer. The canonical ``task.json`` stays private to the
+    runner/scorer and is never copied into the agent-facing run task directory.
 
     Backends:
     - ``command``: run ``agent_command`` once per task. The command can use
       ``{task_dir}`` / ``{run_task_dir}`` for the staged public task directory,
-      ``{prompt_file}``, ``{task_file}``, ``{submission_dir}``, ``{task_id}``,
-      and ``{run_id}`` placeholders.
+      ``{prompt_file}``, ``{submission_dir}``, ``{task_id}``, and ``{run_id}``
+      placeholders. ``{task_file}`` is intentionally unavailable because
+      task.json is private harness/scorer metadata.
     - ``submission_only``: do not run an agent; validate/score existing
       ``benchmark_runs/<run_id>/tasks/<task_id>/submission`` directories.
     """
@@ -483,22 +521,46 @@ def run_benchmark_suite(
             "submission_dir": str(submission_dir),
         }
         if backend == "command":
-            command = _format_agent_command(
-                agent_command,
-                task_id=task_id,
-                run_id=run_id,
-                task_dir=run_task_dir,
-                run_task_dir=run_task_dir,
-                submission_dir=submission_dir,
-            )
-            execution_record.update(_run_agent_command(
-                command=command,
-                cwd=Path.cwd(),
-                timeout_seconds=timeout_seconds_per_task,
-                stdout_file=run_task_dir / "agent_stdout.log",
-                stderr_file=run_task_dir / "agent_stderr.log",
-            ))
-            if execution_record.get("timed_out") or execution_record.get("returncode") != 0:
+            blocked_written = False
+            try:
+                command = _format_agent_command(
+                    agent_command,
+                    task_id=task_id,
+                    run_id=run_id,
+                    task_dir=run_task_dir,
+                    run_task_dir=run_task_dir,
+                    submission_dir=submission_dir,
+                )
+            except (KeyError, ValueError) as exc:
+                execution_record.update({
+                    "finished_at": _utc_now(),
+                    "timed_out": False,
+                    "returncode": None,
+                    "format_error": str(exc),
+                })
+                _write_runner_blocked_submission(
+                    task=task,
+                    submission_dir=submission_dir,
+                    run_id=run_id,
+                    message=f"Agent command could not be formatted: {exc}",
+                    execution_record=execution_record,
+                )
+                blocked_written = True
+            else:
+                execution_record.update(_run_agent_command(
+                    command=command,
+                    cwd=Path.cwd(),
+                    timeout_seconds=timeout_seconds_per_task,
+                    stdout_file=run_task_dir / "agent_stdout.log",
+                    stderr_file=run_task_dir / "agent_stderr.log",
+                ))
+            if (
+                not blocked_written
+                and (
+                    execution_record.get("timed_out")
+                    or execution_record.get("returncode") != 0
+                )
+            ):
                 _write_runner_blocked_submission(
                     task=task,
                     submission_dir=submission_dir,
@@ -507,6 +569,7 @@ def run_benchmark_suite(
                         "Agent command failed or timed out; runner wrote a blocked "
                         "submission so the suite can still be summarized."
                     ),
+                    execution_record=execution_record,
                 )
         else:
             execution_record["note"] = "submission_only backend: no agent command executed"
@@ -524,7 +587,10 @@ def run_benchmark_suite(
             output_file=str(run_task_dir / "score.json"),
         )
         result.update({
-            "success": bool(score_result.get("success")),
+            "success": (
+                bool(validation_result.get("success"))
+                and bool(score_result.get("success"))
+            ),
             "execution": execution_record,
             "validation": validation_result,
             "score": score_result.get("score"),
@@ -662,8 +728,8 @@ def create_benchmark_submission_template(
     """Create a generic submission skeleton for any agent or MD backend.
 
     This tool is intentionally independent of MDClaw job directories. It reads
-    the public task contract, creates the required submission files, and leaves
-    task-specific metrics/evidence for the external agent to fill in.
+    the canonical private task contract, creates the required submission files,
+    and leaves task-specific metrics/evidence for the external agent to fill in.
     """
     task_path = Path(task_file) if task_file else Path(dataset_dir) / "tasks" / task_id / "task.json"
     try:
