@@ -305,16 +305,19 @@ MDClaw includes MDAgentBench under `benchmarks/mdagentbench/`. The benchmark is
 agent-agnostic: evaluated agents read `prompt.md` and write `submission/`;
 the scorer reads `task.json`, scorer-only truth files, and submitted artifacts.
 
-Useful scorer commands:
+The v1.0 task set covers nine tasks in four families:
 
-```bash
-mdclaw init_benchmark_run --output-dir benchmark_runs --run-id <run_id>
-mdclaw validate_benchmark_submission --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json --submission-dir <submission_dir>
-mdclaw score_benchmark_submission --task-file benchmarks/mdagentbench/tasks/T01_engine_smoke/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file benchmark_runs/<run_id>/tasks/T01_engine_smoke/score.json
-mdclaw summarize_benchmark_run --run-dir benchmark_runs/<run_id>
-```
+- System preparation and guardrails: MD-ready artifacts, ligand pose
+  preservation, and structured refusal for unsafe parameterization.
+- Execution and engine reliability: short explicit-water MD, finite energies,
+  reloadable trajectories, and restart continuation.
+- Scientific answer versus experimental truth: mutation stability and
+  protein-protein binding effect questions with held-back truth.
+- Evidence and Methods communication: figures, metrics, captions, provenance,
+  limitations, and Methods-style reporting.
 
-See `docs/benchmark/README.md` for the benchmark contract.
+See `docs/benchmark/README.md` for the task table, submission contract,
+scorer runtime, and detailed validation commands.
 
 ## Developer Quickstart
 
