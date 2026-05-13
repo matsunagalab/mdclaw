@@ -146,6 +146,27 @@ def test_task_contracts_do_not_expose_input_directory():
         assert "input/" not in prompt
 
 
+def test_task_required_outputs_cover_scored_submission_files():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+
+    for task_id in dataset["task_ids"]:
+        task = Task.model_validate_json(
+            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+        )
+        required = set(task.required_outputs)
+
+        for check in task.scoring.deterministic_checks:
+            if check.json_file:
+                assert check.json_file in required, (
+                    f"{task_id} scores {check.json_file} but does not require it"
+                )
+        for check in task.scoring.ground_truth_checks:
+            if check.submission_file:
+                assert check.submission_file in required, (
+                    f"{task_id} scores {check.submission_file} but does not require it"
+                )
+
+
 def test_execution_tasks_require_explicit_water_topology_rescan():
     for task_id, min_water in {
         "T01_engine_smoke": 100,

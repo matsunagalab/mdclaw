@@ -14,6 +14,7 @@
   },
   "required_outputs": [
     "manifest.json",
+    "metrics.json",
     "provenance.json",
     "evidence_report.json"
   ],
