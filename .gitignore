@@ -89,4 +89,5 @@ benchmark_runs/
 *.tmp
 *.bak
 job_*/
+batch_*/
 .mdclaw_session
