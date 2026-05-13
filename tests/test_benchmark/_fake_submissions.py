@@ -11,7 +11,7 @@ requiring real MD compute. Two modes:
                     (the framework must score these low)
 
 Usage:
-    python tests/fixtures/benchmark/fake_submissions.py \\
+    python tests/test_benchmark/_fake_submissions.py \\
         --run-dir benchmark_runs/v10_dryrun_container \\
         --mode honest
 """
@@ -24,7 +24,7 @@ import shutil
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
 
 

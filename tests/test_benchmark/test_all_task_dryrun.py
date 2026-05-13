@@ -7,25 +7,16 @@ artifacts so scorer strictness is locked down alongside the happy paths.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 from mdclaw.benchmark import cli
+from tests.test_benchmark import _fake_submissions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
-FAKE_SUBMISSIONS = REPO_ROOT / "tests" / "fixtures" / "benchmark" / "fake_submissions.py"
-
-
-def _load_fake_submissions():
-    spec = importlib.util.spec_from_file_location("fake_submissions", FAKE_SUBMISSIONS)
-    assert spec and spec.loader
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:
@@ -43,9 +34,8 @@ def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:
     assert init["success"], init
 
     run_dir = tmp_path / run_id
-    fake = _load_fake_submissions()
     task_results: dict[str, dict] = {}
-    for task_id, make_submission in fake.GENERATORS.items():
+    for task_id, make_submission in _fake_submissions.GENERATORS.items():
         sub_dir = run_dir / "tasks" / task_id / "submission"
         make_submission(sub_dir, run_id=run_id, mode=mode)
 

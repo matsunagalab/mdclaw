@@ -39,12 +39,12 @@ following hold in the v1.0.x telemetry:
 
 1. **No false positives across two consecutive releases.** The integrity
    warnings recorded for that task on the dataset's reference honest
-   submission (e.g. `tests/fixtures/benchmark/fake_submissions.py` honest mode
+   submission (e.g. `tests/test_benchmark/_fake_submissions.py` honest mode
    for the curator side, and at least one external runner for the
    ecosystem side) must be zero.
-2. **At least one observed real-world fabrication detected.** Either a
-   `tests/fixtures/benchmark/*` regression fixture, a logged Haiku-class
-   run, or a self-test scenario must demonstrate that a fabricated
+2. **At least one observed real-world fabrication detected.** Either an
+   inline regression fixture, a logged Haiku-class run, or a self-test
+   scenario must demonstrate that a fabricated
    submission for the same task triggers >= 2 integrity warnings (i.e.
    the artifact layer is actually catching the failure mode, not just
    noisy on edge cases).
@@ -138,7 +138,7 @@ scaffold emits. Until that list converges, hold T09 in warn.
 ## Promotion history
 
 - **v1.1 (2026-05-11): T02 + T08 promoted to reject.** Honest
-  `tests/fixtures/benchmark/fake_submissions.py` fixtures and the Haiku v3/v4 telemetry showed
+  `_fake_submissions.py` fixtures and the Haiku v3/v4 telemetry showed
   zero false positives on these tasks; the regression tests
   `test_reject_policy_zeros_silent_refusal_t02_submission` and
   `test_reject_policy_zeros_text_disguised_as_png_t08` pin the new
