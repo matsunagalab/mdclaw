@@ -23,6 +23,9 @@ of the evaluated behavior.
 Agent-facing files:
 
 - `<task_dir>/prompt.md`
+- For external agents, prefer an exported public package from
+  `mdclaw export_benchmark_public_package`; give the agent only
+  `prompt.md` and `submission_contract.json`.
 
 Canonical harness/scorer metadata:
 

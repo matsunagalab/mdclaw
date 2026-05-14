@@ -11,10 +11,25 @@ Give the agent the prompt as the task. The prompt names the public structures,
 identifiers, protocols, and outputs it must handle; retrieving those public
 sources is part of the evaluated behavior.
 
-The evaluated agent should read only:
+For external agents, first export the public package:
 
-- `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`: plain-language public
-  prompt suitable for handing directly to an MD agent.
+```bash
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdagentbench \
+  --output-dir benchmark_public/mdagentbench
+```
+
+The evaluated agent should read only files from that public package:
+
+- `benchmark_public/mdagentbench/tasks/<task_id>/prompt.md`: plain-language
+  public prompt suitable for handing directly to an MD agent.
+- `benchmark_public/mdagentbench/tasks/<task_id>/submission_contract.json`:
+  public output contract containing required outputs, time limit, execution
+  mode, and failure policy. It contains no scoring checks or held-back truth.
+
+Repository-local development may read the canonical prompt at
+`benchmarks/mdagentbench/tasks/<task_id>/prompt.md`, but do not hand the
+whole canonical task directory to the evaluated agent.
 
 Harness or evaluator code may also read:
 
@@ -31,6 +46,8 @@ Do not let the agent under test read:
   scientific-answer tasks, this contains the held-back experimental direction.
 - `benchmarks/mdagentbench/tasks/<task_id>/scorer/`: judge prompts and
   evaluator material.
+- `benchmarks/mdagentbench/tasks/<task_id>/task.json`: scorer contract with
+  deterministic checks and scorer-only reference paths.
 
 ## What To Submit
 
@@ -154,7 +171,8 @@ target submission directory, for example:
 
 ```bash
 python run_agent.py \
-  --prompt-file benchmarks/mdagentbench/tasks/T06_answer_stability_t4l_l99a/prompt.md \
+  --prompt-file benchmark_public/mdagentbench/tasks/T06_answer_stability_t4l_l99a/prompt.md \
+  --submission-contract benchmark_public/mdagentbench/tasks/T06_answer_stability_t4l_l99a/submission_contract.json \
   --submission-dir benchmark_runs/20260510_external_gromacs_t06/tasks/T06_answer_stability_t4l_l99a/submission
 ```
 

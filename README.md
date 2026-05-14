@@ -348,6 +348,16 @@ of silently building a dubious system.
 MDClaw includes MDAgentBench under `benchmarks/mdagentbench/`. The benchmark is
 agent-agnostic: evaluated agents read `prompt.md` and write `submission/`;
 the scorer reads `task.json`, scorer-only truth files, and submitted artifacts.
+For external agents, export the agent-visible package first:
+
+```bash
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdagentbench \
+  --output-dir benchmark_public/mdagentbench
+```
+
+The exported package contains prompts, submission contracts, and
+submission-facing schemas only; it omits `task.json`, `truth/`, and `scorer/`.
 
 The v1.0 task set covers nine tasks in four families:
 

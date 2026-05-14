@@ -76,6 +76,9 @@ where that axis is in scope, returning `null` when no task scores the axis.
 
 ## Dataset Layout
 
+The repository checkout is the canonical evaluator tree. It keeps public
+prompts next to scorer-only metadata so the dataset is easy to maintain:
+
 ```text
 benchmarks/mdagentbench/
   dataset.json
@@ -89,6 +92,34 @@ benchmarks/mdagentbench/
     truth/             # scorer-only ground truth — DO NOT READ FROM AGENT
     scorer/            # LLM judge prompt template (v1.x automation)
 ```
+
+Do not hand this canonical tree directly to an evaluated agent. Export the
+agent-visible package instead:
+
+```bash
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdagentbench \
+  --output-dir benchmark_public/mdagentbench
+```
+
+The exported package contains only:
+
+```text
+benchmark_public/mdagentbench/
+  README.md
+  dataset.json
+  schemas/
+    submission_manifest.schema.json
+    score.schema.json
+  tasks/<task_id>/
+    prompt.md
+    submission_contract.json
+```
+
+It deliberately omits `task.json`, `truth/`, `scorer/`, and
+`task.schema.json`. This mirrors common agent-benchmark practice: the agent
+receives the public task and output contract; the evaluator keeps hidden truth,
+tests, or grader metadata.
 
 Pilot tasks (v1.0):
 
@@ -200,6 +231,11 @@ Use the `mdclaw` conda environment for benchmark framework checks:
 ```bash
 # Unit, schema, scorer, and all-task dry-run coverage
 conda run -n mdclaw pytest tests/test_benchmark -v
+
+# External-agent package export sanity
+conda run -n mdclaw mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdagentbench \
+  --output-dir /tmp/mdagentbench_public
 
 # Benchmark CLI discovery should be clean and not warn about unrelated tools
 conda run -n mdclaw mdclaw list_benchmark_tasks
