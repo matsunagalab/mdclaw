@@ -20,7 +20,7 @@ class TestServerRegistry:
     def test_registry_has_all_servers(self):
         from mdclaw._registry import SERVER_REGISTRY
 
-        assert len(SERVER_REGISTRY) == 16
+        assert len(SERVER_REGISTRY) == 17
 
     def test_registry_keys(self):
         from mdclaw._registry import SERVER_REGISTRY
@@ -42,6 +42,7 @@ class TestServerRegistry:
             "study",
             "evidence",
             "benchmark",
+            "throughput",
         }
         assert set(SERVER_REGISTRY.keys()) == expected
 

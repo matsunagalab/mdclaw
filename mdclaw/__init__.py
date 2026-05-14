@@ -19,4 +19,5 @@ __all__ = [
     "study_server",
     "evidence_server",
     "benchmark",
+    "throughput_server",
 ]

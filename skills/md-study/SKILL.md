@@ -46,6 +46,7 @@ Extract parameters from the user's request and present a summary.
 | Study directory | (path, e.g. `studies/<study_id>`) |
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
 | Variants / planned jobs | (WT vs mutant, apo vs holo, etc., if the user named them) |
+| Compute budget | (free text the user gave, e.g. "1x A100 for 7 days"; or "not specified") |
 | Other | (only parameters the user explicitly named) |
 
 The execution-mode default matches the other MDClaw skills. Pick
@@ -98,7 +99,7 @@ required fields are:
 
 ```json
 {
-  "plan_schema_version": 1,
+  "plan_schema_version": 2,
   "question": "...",
   "md_goal": "...",
   "jobs": [
@@ -115,6 +116,12 @@ required fields are:
   }
 }
 ```
+
+An optional top-level `budget` block records the user's compute budget
+and the derived (replicates × length) plan. Include it only when the
+user actually mentioned compute; omit the key entirely otherwise. See
+the "Compute Budget" section below for the schema and the derivation
+contract.
 
 Optional detail belongs under `notes` or extra per-job fields. Do not invent
 precise replicate counts, production lengths, protonation states, or controls
@@ -165,6 +172,89 @@ this section is optional — a single `get_structure_info` to confirm
 resolution and chain composition is enough, and `pubmed_search` can be
 skipped.
 
+## Compute Budget
+
+Budget awareness is **opt-in by the user**. If the user did not mention
+GPUs, wall time, queues, or an ns budget, **omit the `budget` block
+entirely** from the recorded plan; do not insert a `to_be_decided`
+placeholder, and do not auto-detect compute via `inspect_openmm_platforms`
+or `inspect_cluster` (those tools stay out of `md-study`).
+
+When the user did mention compute, do this before recording the plan:
+
+1. **Parse from the user's request** into a working budget object:
+   - `compute_target`: one of `local`, `hpc`, `none`.
+   - `gpu_type`: free-text GPU label (`"A100"`, `"RTX 4090"`, `"H100 PCIe"`,
+     `"M2 Max"`, etc.). May be `null` if the user said CPU only.
+   - `gpu_count`: positive integer; default `1` when the user said
+     "an A100" without naming a count.
+   - `wall_time_hours`: total wall-clock budget the user authorized.
+   - `notes`: free-text echo of what the user said (e.g. "RIKEN GPU
+     partition, 7-day max").
+2. **Estimate throughput** with the dedicated tool. Use a coarse
+   pre-prepare atom-count estimate from the planned system:
+   `atoms ≈ protein_residues * 130` for explicit-water OPC, or a tighter
+   number if the user provided one. Then:
+
+   ```bash
+   mdclaw estimate_md_throughput \
+     --atom-count <est_atoms> \
+     --gpu-type "<gpu_type>"
+   ```
+
+   Capture `ns_per_day`, `source`, and `confidence` from the JSON. Carry
+   `confidence` through — do not upgrade it.
+
+3. **Derive a feasible (replicates × length) plan** that fits the budget
+   with 15 % headroom:
+
+   - `usable_gpu_hours = wall_time_hours * gpu_count * 0.85`
+   - `total_simulation_ns = ns_per_day * usable_gpu_hours / 24`
+   - Split `total_simulation_ns` across the planned jobs, choosing
+     `target_replicates_per_job` and `target_ns_per_replicate` that match
+     the scientific design (typically ≥ 2 replicates per job; trim
+     replicates before trimming length).
+   - `expected_wallclock_hours = (total_simulation_ns / ns_per_day) * 24
+     / gpu_count`
+   - `headroom_hours = wall_time_hours - expected_wallclock_hours`
+
+4. **Guardrail**. If `total_simulation_ns < 50 * len(jobs)` — i.e. you
+   cannot fit even 1 replicate × 50 ns per planned job — prefix
+   `budget.notes` with `"INSUFFICIENT_BUDGET: "` and explain in one
+   sentence. Do **not** silently shrink targets below 50 ns per
+   replicate; surface the gap to the user so they can either raise the
+   budget or drop a job.
+
+5. **Record** the budget block on `study_plan.json`:
+
+   ```json
+   "budget": {
+     "compute_target": "hpc",
+     "gpu_type": "A100",
+     "gpu_count": 1,
+     "wall_time_hours": 168.0,
+     "notes": "RIKEN GPU partition, 7-day max",
+     "throughput": {
+       "ns_per_day_per_gpu": 870.0,
+       "source": "estimate_md_throughput",
+       "confidence": "medium"
+     },
+     "derived": {
+       "target_ns_per_replicate": 500,
+       "target_replicates_per_job": 3,
+       "total_simulation_ns": 3000,
+       "expected_wallclock_hours": 82.8,
+       "headroom_hours": 85.2
+     }
+   }
+   ```
+
+The `budget` block is intent + derivation. Downstream skills
+(`md-prepare`, `md-equilibration`, `md-production`, `hpc-run`) do
+**not** read it as a contract today — they continue to take their own
+parameters. The block exists so that the planner's reasoning stays
+attached to the study and is auditable when results come back.
+
 ## Workflow
 
 1. Parse the user's request. Set `execution_mode` per Step 0; default
@@ -187,6 +277,12 @@ skipped.
 7. Propose a short analysis list tied to the question. Avoid long generic
    metric catalogs.
 8. State decision criteria for support, against, and inconclusive outcomes.
+8.5. **Compute budget (only if the user mentioned compute).** Follow the
+   "Compute Budget" section above: parse the user-stated budget, call
+   `estimate_md_throughput`, derive `(replicates × length)` with 15 %
+   headroom, run the INSUFFICIENT_BUDGET guardrail, and stage the
+   `budget` block for inclusion in the plan JSON. If the user did not
+   mention compute, skip this step and omit the `budget` block.
 9. **HIL only**: confirm the restated question, jobs, analysis, and decision
    criteria with the user before writing them. In autonomous mode, skip this
    confirmation unless a required value is missing or genuinely ambiguous.
