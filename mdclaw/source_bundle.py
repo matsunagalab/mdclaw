@@ -331,6 +331,76 @@ def write_source_bundle(source_node_dir: Path, bundle: dict[str, Any]) -> str:
     return _node_relative(out, source_node_dir)
 
 
+def _select_frame_indices(
+    n_frames: int,
+    *,
+    max_candidates: int | None = None,
+    subsample_strategy: str = "uniform",
+) -> list[int]:
+    if n_frames <= 0:
+        raise ValueError("trajectory contains no frames")
+    if max_candidates is None or max_candidates <= 0 or max_candidates >= n_frames:
+        return list(range(n_frames))
+
+    if subsample_strategy == "first_n":
+        return list(range(max_candidates))
+    if subsample_strategy == "stride":
+        stride = max(1, n_frames // max_candidates)
+        return list(range(0, n_frames, stride))[:max_candidates]
+    if subsample_strategy == "uniform":
+        if max_candidates == 1:
+            return [0]
+        return [
+            round(i * (n_frames - 1) / (max_candidates - 1))
+            for i in range(max_candidates)
+        ]
+    raise ValueError(
+        "subsample_strategy must be one of: uniform, stride, first_n"
+    )
+
+
+def candidate_paths_from_trajectory(
+    topology_path: str | Path,
+    trajectory_path: str | Path,
+    candidates_dir: str | Path,
+    *,
+    max_candidates: int | None = None,
+    subsample_strategy: str = "uniform",
+    output_format: str = "pdb",
+) -> tuple[list[Path], list[int]]:
+    """Split an MDTraj-readable trajectory into per-frame candidate files."""
+    if output_format != "pdb":
+        raise ValueError("candidate trajectory export currently supports only output_format='pdb'")
+
+    try:
+        import mdtraj as md
+    except ImportError as exc:
+        raise ValueError("mdtraj library not installed; cannot split trajectory candidates") from exc
+
+    topology_path = Path(topology_path).expanduser().resolve()
+    trajectory_path = Path(trajectory_path).expanduser().resolve()
+    candidates_dir = Path(candidates_dir).expanduser().resolve()
+    if not topology_path.is_file():
+        raise ValueError(f"topology file does not exist: {topology_path}")
+    if not trajectory_path.is_file():
+        raise ValueError(f"trajectory file does not exist: {trajectory_path}")
+
+    traj = md.load(str(trajectory_path), top=str(topology_path))
+    frame_indices = _select_frame_indices(
+        traj.n_frames,
+        max_candidates=max_candidates,
+        subsample_strategy=subsample_strategy,
+    )
+
+    candidates_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for out_idx, frame_idx in enumerate(frame_indices, start=1):
+        out_path = candidates_dir / f"candidate_{out_idx:03d}.pdb"
+        traj[frame_idx].save_pdb(str(out_path))
+        paths.append(out_path)
+    return paths, frame_indices
+
+
 def load_source_bundle(bundle_file: str | Path) -> dict[str, Any]:
     bundle = json.loads(Path(bundle_file).read_text())
     version = bundle.get("schema_version")

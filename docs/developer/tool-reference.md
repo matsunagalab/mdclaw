@@ -53,6 +53,18 @@ skill examples.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.
 
+## `surrogate_server.py`
+
+- `setup_surrogate_backend(...)`: create or update an isolated venv for a
+  surrogate backend. BioEmu is installed here, never in the conda `mdclaw`
+  environment.
+- `check_surrogate_backend(...)`: import/version check for a surrogate backend
+  venv without running sampling.
+- `generate_surrogate_candidates(...)`: generate monomer source candidates with
+  a surrogate backend such as BioEmu. In node mode it writes
+  `source_bundle.json` with `source_type="surrogate"` and
+  `origin.kind="bioemu"` for BioEmu candidates.
+
 ## `solvation_server.py`
 
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB

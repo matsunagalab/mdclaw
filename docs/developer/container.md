@@ -1,8 +1,9 @@
 # Container Runtime Build And Distribution
 
 The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
-CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2, and PyMOL
-(`pymol-open-source`, for headless structure previews).
+CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2, PyMOL
+(`pymol-open-source`, for headless structure previews), and an isolated BioEmu
+surrogate backend venv.
 
 It is not a separate skill distribution. Agent-facing skill text stays in
 `skills/`; Docker and Singularity/Apptainer only provide the execution
@@ -12,6 +13,7 @@ environment behind `mdclaw <tool>`.
 
 ```bash
 docker build -f container/Dockerfile -t mdclaw:latest .
+docker build -f container/Dockerfile --build-arg BIOEMU_DEVICE=cuda -t mdclaw:latest .
 docker run --rm mdclaw:latest bash container/scripts/test-container.sh
 docker run --rm --gpus all mdclaw:latest bash container/scripts/test-container.sh
 ```
@@ -48,3 +50,7 @@ singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
   (uses `openmm.app.topology.MergedResidue`, added in 8.5).
 - NVRTC and nvrtc-builtins are copied into `/opt/mdclaw/lib/` so the slim
   runtime image can JIT without using a devel base image.
+- BioEmu is installed into `/opt/mdclaw/surrogates/bioemu/venv`, not into the
+  conda-packed `/opt/mdclaw` environment. Use `BIOEMU_DEVICE=cuda` at build time
+  to install `bioemu[cuda]`; the default installs CPU BioEmu for import and
+  metadata checks.

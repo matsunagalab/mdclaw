@@ -16,6 +16,8 @@ package evidence with provenance.
   decision criteria, then run the planned MD jobs end-to-end.
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
+- Generate monomer conformational source ensembles from MD surrogate models
+  such as BioEmu, then hand selected candidates to the standard MD workflow.
 - Start from a study-level scientific question, translate it into a small MD
   plan, then organize one or more job DAGs under that study.
 - Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
@@ -125,6 +127,28 @@ mdclaw --list
 
 See `docs/agents/deployment.md` for the full deployment matrix and
 `docs/developer/container.md` for container details.
+
+### MD Surrogate Sources
+
+BioEmu can be used as a surrogate source generator for monomer conformational
+ensembles. BioEmu is installed in an isolated venv, not in the conda `mdclaw`
+environment:
+
+```bash
+mdclaw setup_surrogate_backend --model bioemu --device cuda
+mdclaw check_surrogate_backend --model bioemu
+mdclaw generate_surrogate_candidates \
+  --model bioemu \
+  --amino-acid-sequence YYDPETGTWY \
+  --num-samples 100 \
+  --max-candidates 20 \
+  --job-dir <job_dir> \
+  --node-id source_001
+```
+
+The generated candidates are recorded in the source node's `source_bundle.json`
+with `source_type="surrogate"` and can be consumed by
+`prepare_complex --source-candidate-id candidate_NNN`.
 
 ## Ask In Plain Language
 

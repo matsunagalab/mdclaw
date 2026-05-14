@@ -30,6 +30,7 @@ echo ""
 echo "[CLI]"
 check "mdclaw --version" mdclaw --version
 check "mdclaw --list" mdclaw --list
+check "BioEmu surrogate backend" mdclaw check_surrogate_backend --model bioemu
 
 # --- Python imports ---
 echo ""

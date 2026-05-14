@@ -8,6 +8,7 @@ SERVER_REGISTRY = {
     "openmm_system": "mdclaw.openmm_system_server",
     "md_simulation": "mdclaw.md_simulation_server",
     "genesis": "mdclaw.genesis_server",
+    "surrogate": "mdclaw.surrogate_server",
     "literature": "mdclaw.literature_server",
     "metal": "mdclaw.metal_server",
     "slurm": "mdclaw.slurm_server",

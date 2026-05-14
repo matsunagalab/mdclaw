@@ -29,6 +29,7 @@ export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"
 export MDCLAW_MODXNA_DIR="/path/to/modXNA"
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"
+export MDCLAW_SURROGATE_DIR="$HOME/.cache/mdclaw/surrogates"
 ```
 
 Notes:
@@ -39,6 +40,40 @@ Notes:
 - `MDCLAW_GEOSTD_DIR` points to the curated ligand parameter database.
 - `MDCLAW_MODXNA_DIR` must contain `modxna.sh` and `dat/frcmod.modxna`.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.
+- `MDCLAW_SURROGATE_DIR` controls where isolated surrogate backend venvs are
+  stored. BioEmu is never installed into the conda `mdclaw` environment.
+
+## Surrogate Backend Runtime
+
+MD surrogate backends run outside the main conda `mdclaw` environment. The first
+backend is BioEmu:
+
+```bash
+mdclaw setup_surrogate_backend --model bioemu --device cuda
+mdclaw check_surrogate_backend --model bioemu
+```
+
+Local installs use an isolated venv under
+`$MDCLAW_SURROGATE_DIR/bioemu/venv` (default:
+`~/.cache/mdclaw/surrogates/bioemu/venv`). Container images include the same
+kind of isolated venv inside the image. This keeps BioEmu's JAX/Torch stack out
+of the main Amber/OpenMM runtime.
+
+Candidate generation uses the backend venv through subprocess:
+
+```bash
+mdclaw generate_surrogate_candidates \
+  --model bioemu \
+  --amino-acid-sequence YYDPETGTWY \
+  --num-samples 100 \
+  --max-candidates 20 \
+  --job-dir <job_dir> \
+  --node-id source_001
+```
+
+The tool writes a `source_bundle.json` with `source_type="surrogate"` and
+`origin.kind="bioemu"`. BioEmu currently supports monomer sequences only; use
+Boltz-2 for multimers, ligands, and PTMs.
 
 ## Generic Harness Runtime
 

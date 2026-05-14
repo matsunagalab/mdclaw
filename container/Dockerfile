@@ -138,6 +138,8 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 # =============================================================================
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
+ARG BIOEMU_DEVICE=cpu
+
 LABEL org.opencontainers.image.title="MDClaw" \
       org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs: vibe-MD simulations, autonomous scientific investigation, and reproducible atomistic evidence." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
@@ -168,6 +170,17 @@ ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
+ENV MDCLAW_SURROGATE_DIR="/opt/mdclaw/surrogates"
+
+# Install BioEmu into an isolated venv, never into the conda-packed mdclaw env.
+# Use --build-arg BIOEMU_DEVICE=cuda to install bioemu[cuda] in GPU images.
+RUN /opt/mdclaw/bin/python -m venv /opt/mdclaw/surrogates/bioemu/venv && \
+    /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir --upgrade pip && \
+    if [ "$BIOEMU_DEVICE" = "cuda" ]; then \
+        /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir "bioemu[cuda]"; \
+    else \
+        /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir bioemu; \
+    fi
 
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh

@@ -96,6 +96,10 @@ class TestToolDiscovery:
 
         tools = _discover_tools()
 
+        assert "generate_surrogate_candidates" in tools
+        assert "setup_surrogate_backend" in tools
+        assert "check_surrogate_backend" in tools
+
         if _dependency_available("httpx"):
             assert "fetch_structure" in tools
             assert "download_structure" in tools
@@ -103,6 +107,16 @@ class TestToolDiscovery:
             assert "split_molecules" in tools
             assert "inspect_molecules" in tools
             assert "prepare_modified_nucleic" in tools
+
+    def test_surrogate_tools_present(self):
+        from mdclaw._cli import _discover_tools
+
+        tools = _discover_tools()
+
+        assert "generate_surrogate_candidates" in tools
+        assert "setup_surrogate_backend" in tools
+        assert "check_surrogate_backend" in tools
+        assert tools["generate_surrogate_candidates"]["server"] == "surrogate"
 
     def test_all_servers_represented(self):
         from mdclaw._cli import _discover_tools

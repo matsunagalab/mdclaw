@@ -9,6 +9,7 @@ __version__ = "0.5.2"
 __all__ = [
     "structure_server",
     "genesis_server",
+    "surrogate_server",
     "solvation_server",
     "amber_server",
     "openmm_system_server",
