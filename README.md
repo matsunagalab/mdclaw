@@ -4,7 +4,7 @@
 
 # MDClaw
 
-MDClaw provides skills and CLIs for vibe-MD simulations and autonomous
+MDClaw provides skills and CLIs for vibe-MD (Molecular Dynamics) simulations and autonomous
 scientific investigation in the Amber/OpenMM ecosystem. It helps an AI agent
 turn scientific intent into reproducible atomistic work: prepare systems, run
 equilibration and production MD, analyze trajectories, branch hypotheses, and
