@@ -406,7 +406,13 @@ def generate_surrogate_candidates(
     timeout: int | None = None,
     reconstruct_sidechains: bool = True,
 ) -> dict:
-    """Generate source candidates from an MD surrogate backend."""
+    """Generate source candidates from an MD surrogate backend.
+
+    ``num_samples`` is the BioEmu request; the realized candidate count can be
+    lower because ``filter_samples=True`` drops unphysical frames. Compare
+    ``metadata.num_samples_requested`` vs ``metadata.num_candidates``, or pair
+    ``num_samples`` with ``max_candidates`` to oversample-then-cap.
+    """
     job_id = generate_job_id()
     result = {
         "success": False,

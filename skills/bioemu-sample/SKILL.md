@@ -62,6 +62,12 @@ mdclaw generate_surrogate_candidates \
 This creates a `source_bundle.json` with `source_type="surrogate"` and
 `origin.kind="bioemu"`.
 
+`--num-samples` is a *request*: BioEmu's physicality filter (CA-CA, C-N, clash
+checks) drops unphysical frames, so the realized candidate count can be lower.
+Compare `metadata.num_samples_requested` vs `metadata.num_candidates` in the
+source bundle, or oversample with `--num-samples N --max-candidates K` to
+guarantee K outputs.
+
 ## Step 3: Inspect Candidates
 
 ```bash
