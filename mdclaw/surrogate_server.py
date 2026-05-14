@@ -303,6 +303,35 @@ def _complete_surrogate_source_node(
     }
 
 
+def _repack_sidechains_with_faspr(
+    candidate_paths: list[Path],
+    backbone_archive_dir: Path,
+) -> tuple[list[Path], list[str]]:
+    """Repack side-chains on each candidate PDB in place via FASPR.
+
+    The original backbone-only PDB is archived under ``backbone_archive_dir``
+    so the raw BioEmu output remains available for provenance.
+    """
+    from py_FASPR import faspr
+
+    backbone_archive_dir.mkdir(parents=True, exist_ok=True)
+    repacked: list[Path] = []
+    warnings: list[str] = []
+    for path in candidate_paths:
+        archived = backbone_archive_dir / path.name
+        shutil.copy2(path, archived)
+        try:
+            faspr(input_pdb=str(path), output_pdb=str(path))
+        except Exception as exc:
+            warnings.append(
+                f"FASPR repack failed for {path.name}: {type(exc).__name__}: {exc}; "
+                "keeping backbone-only frame"
+            )
+            shutil.copy2(archived, path)
+        repacked.append(path)
+    return repacked, warnings
+
+
 def _find_bioemu_outputs(output_dir: Path) -> tuple[Path | None, Path | None, list[Path]]:
     xtc_files = sorted(output_dir.rglob("*.xtc"))
     pdb_files = sorted(output_dir.rglob("*.pdb"))
@@ -375,6 +404,7 @@ def generate_surrogate_candidates(
     batch_size_100: int | None = None,
     denoiser_config: str | None = None,
     timeout: int | None = None,
+    reconstruct_sidechains: bool = True,
 ) -> dict:
     """Generate source candidates from an MD surrogate backend."""
     job_id = generate_job_id()
@@ -386,6 +416,7 @@ def generate_surrogate_candidates(
         "topology_file": None,
         "trajectory_file": None,
         "candidate_files": [],
+        "sidechain_method": "none",
         "source_bundle": None,
         "file_path": None,
         "errors": [],
@@ -456,11 +487,14 @@ def generate_surrogate_candidates(
     result["topology_file"] = str(topology) if topology else None
     result["trajectory_file"] = str(trajectory) if trajectory else None
 
+    candidates_parent = base_dir if _node_mode else run_dir
+    candidates_dir = candidates_parent / "candidates"
+    backbone_archive_dir = candidates_parent / "candidates_backbone"
+
     try:
         if trajectory and topology:
             from mdclaw.source_bundle import candidate_paths_from_trajectory
 
-            candidates_dir = base_dir / "candidates" if _node_mode else run_dir / "candidates"
             candidate_paths, frame_indices = candidate_paths_from_trajectory(
                 topology,
                 trajectory,
@@ -484,7 +518,29 @@ def generate_surrogate_candidates(
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
 
+    sidechain_method = "none"
+    if reconstruct_sidechains and candidate_paths:
+        try:
+            repacked_paths, repack_warnings = _repack_sidechains_with_faspr(
+                candidate_paths, backbone_archive_dir
+            )
+            result["warnings"].extend(repack_warnings)
+            candidate_paths = repacked_paths
+            sidechain_method = "faspr"
+        except ImportError as exc:
+            result["warnings"].append(
+                f"Side-chain reconstruction skipped: py_FASPR is not installed ({exc}). "
+                "Candidates remain backbone-only."
+            )
+        except Exception as exc:
+            result["warnings"].append(
+                f"Side-chain reconstruction failed: {type(exc).__name__}: {exc}. "
+                "Candidates remain backbone-only."
+            )
+
+    candidate_tag = "faspr_repacked" if sidechain_method == "faspr" else "backbone_only"
     result["candidate_files"] = [str(p) for p in candidate_paths]
+    result["sidechain_method"] = sidechain_method
 
     if _node_mode:
         try:
@@ -502,6 +558,7 @@ def generate_surrogate_candidates(
                 "topology_file": str(topology) if topology else None,
                 "trajectory_file": str(trajectory) if trajectory else None,
                 "filter_samples": filter_samples,
+                "sidechain_method": sidechain_method,
             }
             if msa_path:
                 metadata["msa_path"] = str(Path(msa_path).expanduser().resolve())
@@ -522,7 +579,7 @@ def generate_surrogate_candidates(
                         "bioemu_filter_samples": filter_samples,
                     },
                     "metrics": {},
-                    "tags": ["backbone_only"],
+                    "tags": [candidate_tag],
                 })
 
             completed = _complete_surrogate_source_node(

@@ -70,9 +70,13 @@ mdclaw list_source_candidates \
   --node-id source_001
 ```
 
-Explain that BioEmu candidates are initially backbone-only. For now, choose a
-single candidate for `prepare_complex`; multi-candidate selection and fan-out
-belong to later workflow phases.
+Candidates are written with side-chains already reconstructed (FASPR runs
+inline after BioEmu sampling) and tagged ``faspr_repacked``. The raw
+backbone-only frames are archived under
+``artifacts/candidates_backbone/`` for provenance. Pass
+``--reconstruct-sidechains false`` if you only want the backbone-only
+ensemble. For now choose a single candidate for ``prepare_complex``;
+multi-candidate selection and fan-out belong to later workflow phases.
 
 ## Step 4: Handoff To Prepare
 
@@ -84,7 +88,3 @@ mdclaw prepare_complex \
   --node-id prep_001 \
   --source-candidate-id candidate_001
 ```
-
-If preparation fails because the BioEmu candidate is backbone-only or lacks
-atoms required by the preparation path, stop and report that side-chain
-reconstruction is needed before continuing.
