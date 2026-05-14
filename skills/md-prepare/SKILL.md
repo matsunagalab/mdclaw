@@ -112,7 +112,7 @@ node; see `skills/md-prepare/branches.md`).
    the shortcut. This skill does not auto-chain into equilibration — each
    stage is user-initiated.
 
-## Step 0: Parse and Echo (target traceability)
+## Step 0: Parse and Confirm
 
 Run this **after** Workflow steps 2–3 (the guidance pages have been read).
 
@@ -122,9 +122,9 @@ default to this table — those values come from the guidance pages and are
 applied silently by the tools unless the user explicitly named one.
 
 The target identifier is the most important parameter — copy it
-exactly from the user's message (or, if this skill was auto-invoked by
-`md-study` or another upstream skill, from the handoff payload).
-Earlier parts of the conversation may mention different systems.
+exactly from the user's message without relying on conversation
+history; earlier parts of the conversation may mention different
+systems.
 
 | Parameter | Value |
 |-----------|-------|
@@ -137,16 +137,8 @@ Earlier parts of the conversation may mention different systems.
 | Production length | (if specified) |
 | Other | (only parameters the user explicitly named — do not pre-fill defaults here) |
 
-This step exists for traceability and applies to all interaction modes
-including autonomous. Misidentifying the target cannot be recovered later,
-so the table is **mandatory**; the pause is **not**.
-
-- In `autonomous` mode (including when auto-invoked by `md-study`): print
-  the table once and **continue immediately** into source / prep / solv /
-  topo execution. Do not wait for user OK between this step and the first
-  tool call.
-- In `human_in_the_loop` mode: print the table and wait for user
-  confirmation before the first tool call.
+This confirmation step applies to all interaction modes including
+autonomous. Misidentifying the target cannot be recovered later.
 
 **Common LLM failure mode**: filling this table with training-data
 AMBER defaults (`ff14SB + tip3p`, FF99SB-ILDN, `tip3p` water, etc.).
@@ -165,13 +157,6 @@ plus the ligand `unique_id` in `--include-ligand-ids`.
   without pausing. Ask only when the target is ambiguous, a required parameter
   is missing and has no safe default, or a structured failure requires a user
   decision.
-
-  If this skill was auto-invoked by `md-study` (or any other upstream
-  skill), treat the handoff payload as the user's request. Do **not** stop
-  to ask whether to proceed, do not summarize the plan back to the user
-  before acting, and do not interpret the absence of a fresh user message
-  as a stop signal. Run the full source -> prep -> solv -> topo sequence,
-  then print the equilibration handoff line.
 - **`human_in_the_loop`**: Pause at every decision checkpoint and confirm the
   next action with the user. The full checkpoint list and the confirmation
   loop is summarized in `skills/md-prepare/checkpoints.md`.
