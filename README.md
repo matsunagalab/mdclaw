@@ -12,6 +12,8 @@ package evidence with provenance.
 
 ## What MDClaw Can Do
 
+- Turn a scientific question into a study plan with observables and
+  decision criteria, then run the planned MD jobs end-to-end.
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
 - Start from a study-level scientific question, translate it into a small MD
@@ -126,13 +128,12 @@ See `docs/agents/deployment.md` for the full deployment matrix and
 
 ## Ask In Plain Language
 
-Users do not need to remember command names. Ask a skill-aware agent for the
-scientific workflow you want, and include the choices that affect reproducible
-MD:
+Users do not need to remember command names. The framing of your request
+decides how far MDClaw goes — three patterns:
 
-For a broader scientific question, ask the agent to plan the study first. The
-`md-study` skill records a lightweight `study_plan.json` with the question, MD
-goal, planned jobs, analysis observables, and decision criteria:
+**Plan only.** Ask the agent to plan a study. It records a lightweight
+`study_plan.json` (question, MD goal, planned jobs, observables, decision
+criteria) and stops so you can review before any system is built.
 
 ```text
 Plan an MD study for the PSD-95 PDZ3 domain bound to the CRIPT peptide
@@ -142,40 +143,35 @@ mutant jobs, peptide-contact and groove-dynamics observables, and decision
 criteria.
 ```
 
-```text
-Plan an apo-vs-holo MD study for the T4 lysozyme L99A benzene-binding cavity
-(benzene-bound structure PDB 4W53). I want to know whether benzene occupancy
-stabilizes the engineered hydrophobic cavity or changes its hydration dynamics.
-Propose the minimal job set, ligand/cavity observables, and decision criteria.
-```
+**End-to-end.** Ask the agent to take the scientific question all the way to
+MD. It plans the study, then runs the planned jobs through preparation,
+equilibration, production, and analysis.
 
 ```text
-Plan an MD study for calmodulin bound to a target peptide (for example PDB
-1CLL or another suitable Ca2+-loaded calmodulin complex). Test whether Ca2+
-coordination stabilizes the open peptide-binding arrangement. Define which
-apo/Ca2+-bound or peptide-bound jobs are scientifically meaningful and what
-structural observables would make the result interpretable.
+Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A
+benzene-binding cavity (benzene-bound PDB 4W53). Test whether benzene
+occupancy stabilizes the engineered hydrophobic cavity. Plan the minimal
+job set, then prepare, equilibrate, run 50 ns of production per job, and
+analyze cavity hydration and ligand-pose observables.
 ```
 
-For a clear one-system run, ask directly and MDClaw can take the fast path
-through preparation, equilibration, production, and analysis:
+**Direct one-system run.** Skip the scientific framing and ask for a single
+MD run. MDClaw takes the fast path with a thin study record (one
+`jobs/main`).
 
 ```text
 Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
-default force field and water model. Create a study record with one main job,
-then report the study and job directories.
+default force field and water model. Continue through default equilibration,
+run 10 ns of production MD, and analyze RMSD, RMSF, and energy stability.
 ```
 
-```text
-Continue the main job through default equilibration, then run 10 ns of
-production MD and analyze RMSD, RMSF, and energy stability.
-```
-
-Good prompts for direct runs usually specify the structure source, molecular
-selection, solvent model, force field, runtime target, duration, ensemble,
-stopping policy, and desired evidence. Good prompts for study planning should
-state the scientific question, comparison groups, and what kind of evidence
-would answer the question.
+Good prompts for **planning** state the scientific question, comparison
+groups, and what evidence would answer the question. Good prompts for
+**end-to-end runs** add a production length, replicate count, and the
+observables that decide the outcome. Good prompts for **direct runs**
+specify the structure source, molecular selection, solvent model, force
+field, runtime target, duration, ensemble, stopping policy, and desired
+evidence.
 
 ## Repository Map
 
