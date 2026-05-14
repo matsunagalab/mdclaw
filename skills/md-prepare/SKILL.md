@@ -44,7 +44,13 @@ as "simulate 1AKE chain A" or "run this PDB in explicit water", continue with
 this prepare workflow directly. Do not force the request through
 `skills/md-study/SKILL.md`. You may still create a thin `study_dir` with one
 `jobs/main` job, but `study_plan.json` is optional for these straightforward
-runs.
+runs. The minimum two-command bootstrap is:
+
+```bash
+mdclaw init_study --study-dir <study_dir> --title "<short title>"
+mdclaw add_study_job --study-dir <study_dir> \
+  --job-id main --job-dir <study_dir>/jobs/main --create-job-dir
+```
 
 Study-planning handoff: if the user is asking a scientific comparison or
 campaign-level question (mutant vs WT, apo vs holo, controls, replicates,
