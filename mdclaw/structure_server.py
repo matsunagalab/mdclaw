@@ -1525,6 +1525,307 @@ def _apply_histidine_states(pdb_file: Path, histidine_states: dict) -> None:
         logger.warning(f"Could not apply histidine states: {e}")
 
 
+_PROTONATION_STATE_ALIASES = {
+    "HSD": "HID",
+    "HSE": "HIE",
+    "HSP": "HIP",
+}
+
+_PROTONATION_STATE_SPECS: Dict[str, Dict[str, Any]] = {
+    "ASP": {
+        "base": "ASP",
+        "modeller_variant": "ASP",
+        "input_names": {"ASP", "ASH"},
+        "present": set(),
+        "absent": {"HD2"},
+    },
+    "ASH": {
+        "base": "ASP",
+        "modeller_variant": "ASH",
+        "input_names": {"ASP", "ASH"},
+        "present": {"HD2"},
+        "absent": set(),
+    },
+    "GLU": {
+        "base": "GLU",
+        "modeller_variant": "GLU",
+        "input_names": {"GLU", "GLH"},
+        "present": set(),
+        "absent": {"HE2"},
+    },
+    "GLH": {
+        "base": "GLU",
+        "modeller_variant": "GLH",
+        "input_names": {"GLU", "GLH"},
+        "present": {"HE2"},
+        "absent": set(),
+    },
+    "HID": {
+        "base": "HIS",
+        "modeller_variant": "HID",
+        "input_names": {"HIS", "HID", "HIE", "HIP", "HSD", "HSE", "HSP"},
+        "present": {"HD1"},
+        "absent": {"HE2"},
+    },
+    "HIE": {
+        "base": "HIS",
+        "modeller_variant": "HIE",
+        "input_names": {"HIS", "HID", "HIE", "HIP", "HSD", "HSE", "HSP"},
+        "present": {"HE2"},
+        "absent": {"HD1"},
+    },
+    "HIP": {
+        "base": "HIS",
+        "modeller_variant": "HIP",
+        "input_names": {"HIS", "HID", "HIE", "HIP", "HSD", "HSE", "HSP"},
+        "present": {"HD1", "HE2"},
+        "absent": set(),
+    },
+    "LYS": {
+        "base": "LYS",
+        "modeller_variant": "LYS",
+        "input_names": {"LYS", "LYN"},
+        "present": {"HZ3"},
+        "absent": set(),
+    },
+    "LYN": {
+        "base": "LYS",
+        "modeller_variant": "LYN",
+        "input_names": {"LYS", "LYN"},
+        "present": set(),
+        "absent": {"HZ3"},
+    },
+    "CYS": {
+        "base": "CYS",
+        "modeller_variant": "CYS",
+        "input_names": {"CYS", "CYM", "CYX"},
+        "present": {"HG"},
+        "absent": set(),
+    },
+    "CYX": {
+        "base": "CYS",
+        "modeller_variant": "CYX",
+        "input_names": {"CYS", "CYM", "CYX"},
+        "present": set(),
+        "absent": {"HG"},
+    },
+    # OpenMM's hydrogen-definition variant for a deprotonated cysteine and
+    # disulfide cysteine is the same no-HG pattern (CYX). Amber's force-field
+    # template distinguishes the thiolate as CYM, so we stamp CYM after H
+    # rebuilding while asking Modeller for the CYX hydrogen pattern.
+    "CYM": {
+        "base": "CYS",
+        "modeller_variant": "CYX",
+        "input_names": {"CYS", "CYM", "CYX"},
+        "present": set(),
+        "absent": {"HG"},
+    },
+}
+
+
+def _parse_protonation_site_key(key: str) -> tuple[str, str, str]:
+    parts = [p.strip() for p in str(key).split(":")]
+    if len(parts) not in (2, 3) or not parts[0] or not parts[1]:
+        raise ValueError(
+            "Protonation site keys must be '<chain>:<resnum>' or "
+            "'<chain>:<resnum>:<icode>'"
+        )
+    return parts[0], parts[1], parts[2] if len(parts) == 3 else ""
+
+
+def _canonical_protonation_state(state: Any) -> str:
+    canonical = _PROTONATION_STATE_ALIASES.get(str(state).strip().upper(), str(state).strip().upper())
+    if canonical not in _PROTONATION_STATE_SPECS:
+        supported = ", ".join(sorted(_PROTONATION_STATE_SPECS))
+        raise ValueError(f"Unsupported protonation state {state!r}. Supported states: {supported}")
+    return canonical
+
+
+def _normalize_protonation_state_overrides(
+    protonation_states: Optional[Dict[str, Any]] = None,
+    histidine_states: Optional[dict[str, str]] = None,
+) -> list[dict[str, str]]:
+    """Normalize user-specified site protonation overrides.
+
+    Supported inputs:
+    - [{"chain": "A", "resnum": 57, "state": "HIP"}, ...]
+    - {"A:57": "HIP", "A:25": "ASH"}
+    - legacy histidine_states={"A:57": "HIP"}
+    """
+    records: list[dict[str, str]] = []
+
+    def add_record(chain: Any, resnum: Any, state: Any, icode: Any = "") -> None:
+        if chain is None or str(chain).strip() == "":
+            raise ValueError("Protonation state records require a non-empty 'chain'")
+        if resnum is None or str(resnum).strip() == "":
+            raise ValueError("Protonation state records require a non-empty 'resnum'")
+        records.append({
+            "chain": str(chain).strip(),
+            "resnum": str(resnum).strip(),
+            "icode": str(icode or "").strip(),
+            "state": _canonical_protonation_state(state),
+        })
+
+    if isinstance(protonation_states, dict):
+        for key, state in protonation_states.items():
+            chain, resnum, icode = _parse_protonation_site_key(str(key))
+            add_record(chain, resnum, state, icode)
+    elif isinstance(protonation_states, list):
+        for entry in protonation_states:
+            if not isinstance(entry, dict):
+                raise ValueError("Each protonation state entry must be a dict")
+            add_record(
+                entry.get("chain"),
+                entry.get("resnum", entry.get("residue_number")),
+                entry.get("state", entry.get("protonation_state")),
+                entry.get("icode", entry.get("insertion_code", "")),
+            )
+    elif protonation_states is not None:
+        raise ValueError("protonation_states must be a dict, list of dicts, or None")
+
+    if histidine_states:
+        for key, state in histidine_states.items():
+            chain, resnum, icode = _parse_protonation_site_key(str(key))
+            add_record(chain, resnum, state, icode)
+
+    deduped: dict[tuple[str, str, str], dict[str, str]] = {}
+    for record in records:
+        key = (record["chain"], record["resnum"], record["icode"])
+        prior = deduped.get(key)
+        if prior and prior["state"] != record["state"]:
+            raise ValueError(
+                f"Conflicting protonation states for {record['chain']}:{record['resnum']}"
+                f"{(':' + record['icode']) if record['icode'] else ''}: "
+                f"{prior['state']} vs {record['state']}"
+            )
+        deduped[key] = record
+    return list(deduped.values())
+
+
+def _apply_protonation_states_with_modeller(
+    pdb_file: Path,
+    protonation_states: list[dict[str, str]],
+    ph: float = 7.4,
+) -> dict:
+    """Rebuild user-specified residue protonation states with OpenMM Modeller.
+
+    The input PDB is modified in place.  Residue names are canonicalized only
+    transiently so ``Modeller.addHydrogens(variants=...)`` can apply the
+    desired hydrogen pattern, then stamped back to the Amber variant name.
+    """
+    result: dict[str, Any] = {
+        "success": False,
+        "applied_states": [],
+        "histidine_states": {},
+        "errors": [],
+        "warnings": [],
+    }
+    if not protonation_states:
+        result["success"] = True
+        return result
+
+    try:
+        from openmm.app import Modeller
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(f"OpenMM Modeller is required for protonation states: {exc}")
+        return result
+
+    try:
+        pdb = PDBFile(str(pdb_file))
+        modeller = Modeller(pdb.topology, pdb.positions)
+        residues = list(modeller.topology.residues())
+
+        residue_by_site: dict[tuple[str, str, str], Any] = {}
+        for residue in residues:
+            site = (
+                str(residue.chain.id).strip(),
+                str(residue.id).strip(),
+                str(getattr(residue, "insertionCode", "") or "").strip(),
+            )
+            residue_by_site[site] = residue
+
+        variants: list[Optional[str]] = [None] * len(residues)
+        matched: dict[int, dict[str, str]] = {}
+
+        for record in protonation_states:
+            site = (record["chain"], record["resnum"], record.get("icode", ""))
+            residue = residue_by_site.get(site)
+            if residue is None:
+                result["errors"].append(
+                    f"Protonation target not found: {record['chain']}:{record['resnum']}"
+                    f"{(':' + record.get('icode', '')) if record.get('icode') else ''}"
+                )
+                continue
+            state = record["state"]
+            spec = _PROTONATION_STATE_SPECS[state]
+            current_name = str(residue.name).strip().upper()
+            if current_name not in spec["input_names"]:
+                result["errors"].append(
+                    f"State {state} is incompatible with residue {current_name} at "
+                    f"{record['chain']}:{record['resnum']}; expected one of "
+                    f"{sorted(spec['input_names'])}"
+                )
+                continue
+
+            residue.name = spec["base"]
+            variants[residue.index] = spec["modeller_variant"]
+            matched[residue.index] = record
+
+        if result["errors"]:
+            return result
+
+        actual_variants = modeller.addHydrogens(pH=ph, variants=variants)
+        rebuilt_residues = list(modeller.topology.residues())
+
+        for residue_index, record in matched.items():
+            state = record["state"]
+            residue = rebuilt_residues[residue_index]
+            residue.name = state
+            atoms = {atom.name for atom in residue.atoms()}
+            spec = _PROTONATION_STATE_SPECS[state]
+            missing = sorted(spec["present"] - atoms)
+            forbidden = sorted(spec["absent"] & atoms)
+            if missing or forbidden:
+                result["errors"].append(
+                    f"Protonation validation failed for {record['chain']}:{record['resnum']} "
+                    f"as {state}: missing={missing}, forbidden_present={forbidden}"
+                )
+                continue
+            applied = {
+                "chain": record["chain"],
+                "resnum": record["resnum"],
+                "icode": record.get("icode", ""),
+                "state": state,
+                "modeller_variant": str(actual_variants[residue_index] or ""),
+            }
+            result["applied_states"].append(applied)
+            if state in {"HID", "HIE", "HIP"}:
+                key = f"{record['chain']}:{record['resnum']}"
+                if record.get("icode"):
+                    key += f":{record['icode']}"
+                result["histidine_states"][key] = state
+
+        if result["errors"]:
+            return result
+
+        tmp_file = pdb_file.with_suffix(pdb_file.suffix + ".protonation.tmp")
+        with tmp_file.open("w") as fh:
+            PDBFile.writeFile(modeller.topology, modeller.positions, fh, keepIds=True)
+        variant_names = set(_PROTONATION_STATE_SPECS)
+        normalized_lines = []
+        for line in tmp_file.read_text().splitlines(keepends=True):
+            if line.startswith("HETATM") and line[17:20].strip().upper() in variant_names:
+                line = "ATOM  " + line[6:]
+            normalized_lines.append(line)
+        tmp_file.write_text("".join(normalized_lines))
+        tmp_file.replace(pdb_file)
+        result["success"] = True
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["errors"].append(f"OpenMM Modeller protonation rebuild failed: {type(exc).__name__}: {exc}")
+        return result
+
+
 # Define standard amino acids and water (module-level constants for reuse)
 AMINO_ACIDS = {
     'ALA', 'ARG', 'ASN', 'ASP', 'CYS', 'GLN', 'GLU', 'GLY', 'HIS', 
@@ -2543,6 +2844,7 @@ def clean_protein(
     ph: float = 7.4,
     disulfide_pairs: list[dict] | None = None,
     histidine_states: dict[str, str] | None = None,
+    protonation_states: Optional[Dict[str, Any]] = None,
 ) -> dict:
     """Clean a monomer protein PDB/mmCIF file for MD simulation using PDBFixer.
 
@@ -2572,6 +2874,11 @@ def clean_protein(
         histidine_states: Pre-defined histidine protonation states from Phase 1 analysis.
                          Dict mapping "chain:resnum" to state ("HID", "HIE", "HIP").
                          If provided, skips propka and applies these states directly.
+        protonation_states: User-specified residue protonation states. Accepts
+                         either a dict mapping "chain:resnum" to Amber variant
+                         names, or a list of dicts with chain, resnum, state,
+                         and optional icode. Supports ASP/ASH, GLU/GLH,
+                         HID/HIE/HIP, LYS/LYN, and CYS/CYX/CYM.
 
     Returns:
         Dict with:
@@ -2602,6 +2909,16 @@ def clean_protein(
         "statistics": {},
         "disulfide_bonds": []
     }
+
+    try:
+        requested_protonation_states = _normalize_protonation_state_overrides(
+            protonation_states=protonation_states,
+            histidine_states=histidine_states,
+        )
+    except ValueError as exc:
+        result["errors"].append(str(exc))
+        result["code"] = "invalid_protonation_state"
+        return result
     
     # Validate input file
     input_path = Path(pdb_file)
@@ -2972,13 +3289,13 @@ def clean_protein(
         # Step 9: pH-dependent protonation + Amber naming conversion
         # Primary: pdb2pqr + propka (pH-aware, proper Amber naming)
         # Fallback: pdb4amber --reduce (pH ignored, geometry-based)
-        # If histidine_states provided: skip propka and apply user-specified states
+        # If site-specific protonation states are provided, pdb2pqr/pdb4amber
+        # first creates an Amber-compatible protein PDB, then OpenMM Modeller
+        # applies the requested residue variants and validates the H pattern.
         logger.info(f"Applying pH-dependent protonation (pH {ph})")
         amber_output_file = input_path.parent / f"{stem}.amber.pdb"
         pdb2pqr_success = False
-
-        # Check if we have user-specified histidine states
-        use_predefined_his = histidine_states is not None and len(histidine_states) > 0
+        user_protonation_applied: list[dict[str, str]] = []
 
         try:
             # Primary method: pdb2pqr + propka (pH-aware protonation with Amber naming).
@@ -3010,19 +3327,33 @@ def clean_protein(
                     pdb2pqr_wrapper.run(pdb2pqr_args)
 
                     if amber_output_file.exists():
-                        # Apply user-specified histidine states if provided
-                        if use_predefined_his:
-                            _apply_histidine_states(amber_output_file, histidine_states)
-                            his_states = histidine_states.copy()
+                        if requested_protonation_states:
+                            protonation_result = _apply_protonation_states_with_modeller(
+                                amber_output_file,
+                                requested_protonation_states,
+                                ph=ph,
+                            )
+                            if not protonation_result["success"]:
+                                result["errors"].extend(protonation_result["errors"])
+                                result["warnings"].extend(protonation_result["warnings"])
+                                result["code"] = "protonation_state_override_failed"
+                                return result
+                            user_protonation_applied = protonation_result["applied_states"]
+                            his_states = _extract_histidine_states(amber_output_file)
                             result["operations"].append({
                                 "step": "protonation",
                                 "status": "success",
-                                "method": "pdb2pqr+user_specified",
+                                "method": "pdb2pqr+openmm_modeller_user_states",
                                 "ph": ph,
                                 "histidine_states": his_states,
+                                "protonation_states": user_protonation_applied,
                             })
-                            result["protonation_method"] = "pdb2pqr+user_specified"
-                            logger.info(f"Applied {len(his_states)} user-specified histidine states")
+                            result["protonation_method"] = "pdb2pqr+openmm_modeller_user_states"
+                            result["protonation_states"] = user_protonation_applied
+                            logger.info(
+                                f"Applied {len(user_protonation_applied)} user-specified "
+                                "residue protonation state(s)"
+                            )
                         else:
                             his_states = _extract_histidine_states(amber_output_file)
                             result["operations"].append({
@@ -3070,15 +3401,39 @@ def clean_protein(
                 ])
 
                 if amber_output_file.exists():
-                    result["operations"].append({
+                    op = {
                         "step": "protonation",
                         "status": "success",
                         "method": "pdb4amber+reduce",
-                        "details": "Geometry-based hydrogen assignment (pH ignored)"
-                    })
+                        "details": "Geometry-based hydrogen assignment (pH ignored)",
+                    }
+                    if requested_protonation_states:
+                        protonation_result = _apply_protonation_states_with_modeller(
+                            amber_output_file,
+                            requested_protonation_states,
+                            ph=ph,
+                        )
+                        if not protonation_result["success"]:
+                            result["errors"].extend(protonation_result["errors"])
+                            result["warnings"].extend(protonation_result["warnings"])
+                            result["code"] = "protonation_state_override_failed"
+                            return result
+                        user_protonation_applied = protonation_result["applied_states"]
+                        his_states = _extract_histidine_states(amber_output_file)
+                        op.update({
+                            "method": "pdb4amber+openmm_modeller_user_states",
+                            "ph": ph,
+                            "histidine_states": his_states,
+                            "protonation_states": user_protonation_applied,
+                        })
+                        result["protonation_method"] = "pdb4amber+openmm_modeller_user_states"
+                        result["protonation_states"] = user_protonation_applied
+                        result["histidine_states"] = his_states
+                    result["operations"].append(op)
                     result["output_file"] = str(amber_output_file)
                     result["pdbfixer_output"] = str(output_file)
-                    result["protonation_method"] = "pdb4amber+reduce"
+                    if not requested_protonation_states:
+                        result["protonation_method"] = "pdb4amber+reduce"
                     logger.info(f"pdb4amber conversion successful: {amber_output_file}")
                 else:
                     raise RuntimeError("pdb4amber did not create output file")
@@ -3111,6 +3466,8 @@ def clean_protein(
                 provenance["protonation_ph"] = op.get("ph")
                 if op.get("histidine_states"):
                     provenance["histidine_states"] = op["histidine_states"]
+                if op.get("protonation_states"):
+                    provenance["protonation_states"] = op["protonation_states"]
             elif step == "disulfide_bonds":
                 if op.get("status") in ("success", "modified"):
                     provenance["disulfide_bonds_applied"] = True
@@ -4777,6 +5134,7 @@ def prepare_complex(
     structure_analysis: Optional[dict] = None,
     disulfide_pairs: Optional[List[Dict[str, Any]]] = None,
     histidine_states: Optional[Dict[str, str]] = None,
+    protonation_states: Optional[Dict[str, Any]] = None,
     keep_crystal_waters: bool = False,
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
@@ -4862,6 +5220,12 @@ def prepare_complex(
                          / ``"HIP"``. Only the keys present are overridden; the
                          rest keep their propka-derived state. Wins over
                          ``structure_analysis`` when both are provided.
+        protonation_states: Explicit residue protonation state overrides. Accepts
+                         either ``{"A:57": "HIP", "A:25": "ASH"}`` or a list of
+                         ``{"chain": "A", "resnum": 57, "state": "HIP"}``
+                         records. Supports ASP/ASH, GLU/GLH, HID/HIE/HIP,
+                         LYS/LYN, and CYS/CYX/CYM. Wins over
+                         ``structure_analysis`` when provided.
 
     Returns:
         Dict with:
@@ -5187,6 +5551,7 @@ def prepare_complex(
             # direct CLI args > structure_analysis > auto-detect.
             sa_disulfide_pairs = None
             sa_histidine_states = None
+            sa_protonation_states = None
 
             if disulfide_pairs is not None:
                 # Convert user's nested cys1/cys2 schema into the flat shape
@@ -5208,6 +5573,23 @@ def prepare_complex(
                 sa_histidine_states = dict(histidine_states)
                 logger.info(f"User override: {len(sa_histidine_states)} histidine state(s)")
 
+            if protonation_states:
+                try:
+                    sa_protonation_states = _normalize_protonation_state_overrides(
+                        protonation_states=protonation_states,
+                        histidine_states=sa_histidine_states,
+                    )
+                    # The generic protonation list subsumes legacy HIS overrides.
+                    sa_histidine_states = None
+                except ValueError as exc:
+                    result["errors"].append(str(exc))
+                    result["code"] = "invalid_protonation_state"
+                    result["overall_status"] = "failed"
+                    return result
+                logger.info(
+                    f"User override: {len(sa_protonation_states)} residue protonation state(s)"
+                )
+
             if structure_analysis:
                 # Extract disulfide bonds only if no direct override
                 if sa_disulfide_pairs is None:
@@ -5227,8 +5609,27 @@ def prepare_complex(
                         ]
                         logger.info(f"Using {len(sa_disulfide_pairs)} pre-defined disulfide pair(s)")
 
-                # Extract histidine states only if no direct override
-                if sa_histidine_states is None:
+                # Extract generic protonation states if no direct override.
+                if (
+                    sa_protonation_states is None
+                    and sa_histidine_states is None
+                    and structure_analysis.get("protonation_states")
+                ):
+                    try:
+                        sa_protonation_states = _normalize_protonation_state_overrides(
+                            protonation_states=structure_analysis.get("protonation_states"),
+                        )
+                    except ValueError as exc:
+                        result["errors"].append(str(exc))
+                        result["code"] = "invalid_protonation_state"
+                        result["overall_status"] = "failed"
+                        return result
+                    logger.info(
+                        f"Using {len(sa_protonation_states)} pre-defined residue protonation state(s)"
+                    )
+
+                # Extract histidine states only if no generic/direct override
+                if sa_histidine_states is None and sa_protonation_states is None:
                     sa_histidine_list = structure_analysis.get("histidine_states", [])
                     if sa_histidine_list:
                         sa_histidine_states = {}
@@ -5265,6 +5666,7 @@ def prepare_complex(
                         ignore_terminal_missing_residues=not cap_termini,
                         disulfide_pairs=sa_disulfide_pairs,
                         histidine_states=sa_histidine_states,
+                        protonation_states=sa_protonation_states,
                     )
 
                     if clean_result["success"]:
@@ -5804,6 +6206,8 @@ def prepare_complex(
                 for key, val in prov.items():
                     if key == "histidine_states" and isinstance(val, dict):
                         preparation_summary.setdefault("histidine_states", {}).update(val)
+                    elif key == "protonation_states" and isinstance(val, list):
+                        preparation_summary.setdefault("protonation_states", []).extend(val)
                     elif key == "missing_residues_modeled" and val:
                         preparation_summary.setdefault("missing_residues_modeled", []).extend(val)
                     elif key == "missing_residues_count" and val:
@@ -5858,31 +6262,41 @@ def prepare_complex(
         result["preparation_summary"] = preparation_summary
 
         # -- confirmation_needed: structured block for HITL review --------
-        # Surface disulfide bonds and histidine protonation states in one
+        # Surface disulfide bonds and residue protonation states in one
         # place so the skill can show them to the user before proceeding
         # to solvation. Each block carries a `source` field so the skill
         # can tell "auto_detected" from "user_override" and avoid prompting
         # again when the caller already supplied an explicit value.
         applied_his = preparation_summary.get("histidine_states", {}) or {}
-        his_source = "user_override" if histidine_states else "auto_detected"
+        applied_protonation = preparation_summary.get("protonation_states", []) or []
+        protonation_source = (
+            "user_override"
+            if (histidine_states or protonation_states)
+            else "auto_detected"
+        )
         confirmation_items = {
             "disulfide_bonds": {
                 "source": result.get("disulfide_source", "auto_detected"),
                 "pairs": result.get("disulfide_bonds", []),
             },
             "histidine_states": {
-                "source": his_source,
+                "source": protonation_source,
                 "states": applied_his,
             },
+            "protonation_states": {
+                "source": protonation_source,
+                "states": applied_protonation,
+            },
         }
-        if confirmation_items["disulfide_bonds"]["pairs"] or applied_his:
+        if confirmation_items["disulfide_bonds"]["pairs"] or applied_his or applied_protonation:
             confirmation_items["policy"] = (
                 "In human_in_the_loop mode, present these values to the user "
                 "and confirm before invoking solvate_structure. In autonomous "
                 "mode, log and continue. When `source == user_override` the "
                 "skill may skip the prompt — the caller already made the "
                 "decision. To change auto-detected values, re-run "
-                "prepare_complex with --disulfide-pairs or --histidine-states."
+                "prepare_complex with --disulfide-pairs, --histidine-states, "
+                "or --protonation-states."
             )
             result["confirmation_needed"] = confirmation_items
 

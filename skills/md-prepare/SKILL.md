@@ -91,7 +91,9 @@ node; see `skills/md-prepare/branches.md`).
    surfaced from the guidance pages read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
 5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
-   solvation guidance. Create nodes first, then run workflow tools with
+   solvation guidance. If the user specifies site-specific residue
+   protonation, pass it explicitly through `protonation_states`; do not leave
+   it as a free-text note. Create nodes first, then run workflow tools with
    both `--job-dir` and `--node-id`.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is

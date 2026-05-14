@@ -28,7 +28,9 @@ skill examples.
   resolves the source bundle from the `source` ancestor, selects one normalized
   candidate via `source_structure_id` / `source_candidate_id` /
   `source_model_index` when needed, and records `source_selection.json`.
-- `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback paths.
+- `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
+  paths and optional site-specific residue protonation overrides rebuilt via
+  OpenMM `Modeller.addHydrogens(variants=...)`.
 - `clean_ligand(...)`: ligand cleaning and parameterization.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
   water components.

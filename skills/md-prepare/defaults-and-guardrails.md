@@ -5,6 +5,10 @@ Read `skills/common/defaults.md` first.
 Preparation-specific defaults:
 
 - pH-aware protein protonation through `clean_protein`.
+- User-specified residue protonation states use `protonation_states`, e.g.
+  `{"A:57": "HIP", "A:25": "ASH"}` or a list of `{chain, resnum, state}`
+  records. Supported Amber variants include ASP/ASH, GLU/GLH, HID/HIE/HIP,
+  LYS/LYN, and CYS/CYX/CYM.
 - Standard DNA/RNA are preserved as nucleic polymers, not treated as ligands.
 - Glycan residues are preserved and passed to GLYCAM-aware topology generation.
 - Ligands use curated amber_geostd parameters when available, then GAFF2

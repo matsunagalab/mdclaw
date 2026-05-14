@@ -3438,16 +3438,22 @@ def _run_openmmforcefields_build(
     # ``openmm.app.PDBFile``, which then leaves ligand residues like BEN
     # without internal bonds — ``SystemGenerator.create_system`` then
     # fails with the cryptic "No template found for residue 223 (BEN)".
-    # Round-trip Amber's HID/HIE/HIP histidine variants through HIS for
-    # Pablo (CCD only knows HIS), then restore Amber names from each
-    # residue's HD1/HE2 atoms after load so ``protein.ff*.xml``'s
-    # protonation-specific templates apply.
+    # Round-trip Amber's protonation variants through CCD-canonical residue
+    # names for Pablo, then restore Amber names after load so
+    # ``protein.ff*.xml``'s protonation-specific templates apply.
     # Map non-CCD ion names → CCD canonical (residue + atom). PDBFixer
     # often re-aligns these fields, so match on stripped value rather than
     # exact bytes and re-emit with PDB-format padding.
     _HIS_AMBER_VARIANTS = ("HID", "HIE", "HIP", "HSD", "HSE", "HSP")
+    _PABLO_AMBER_VARIANT_BASES = {
+        "ASH": "ASP",
+        "GLH": "GLU",
+        "LYN": "LYS",
+        "CYM": "CYS",
+    }
 
     his_amber_resids: set[tuple[str, str]] = set()
+    amber_variant_resids: dict[tuple[str, str], str] = {}
     sanitized_input = pablo_input
     needs_sanitize = False
     try:
@@ -3456,7 +3462,8 @@ def _run_openmmforcefields_build(
                 if line.startswith(("ATOM  ", "HETATM")):
                     rn = line[17:20].strip()
                     if (_canonical_pablo_ion_resname(rn) is not None
-                            or rn in _HIS_AMBER_VARIANTS):
+                            or rn in _HIS_AMBER_VARIANTS
+                            or rn in _PABLO_AMBER_VARIANT_BASES):
                         needs_sanitize = True
                         break
     except OSError:
@@ -3477,6 +3484,12 @@ def _run_openmmforcefields_build(
                         resseq = line[22:26]
                         his_amber_resids.add((chain_id, resseq.strip()))
                         line = line[:17] + "HIS" + line[20:]
+                    elif rn_strip in _PABLO_AMBER_VARIANT_BASES:
+                        chain_id = _normalize_pdb_chain_id(line[21:22])
+                        resseq = line[22:26]
+                        amber_variant_resids[(chain_id, resseq.strip())] = rn_strip
+                        base_name = _PABLO_AMBER_VARIANT_BASES[rn_strip]
+                        line = line[:17] + f"{base_name:>3}" + line[20:]
                 fh_out.write(line)
 
     _stage("pablo_load")
@@ -3508,6 +3521,13 @@ def _run_openmmforcefields_build(
                 residue.name = "HIE"
             else:
                 residue.name = "HID"
+
+    if amber_variant_resids:
+        for residue in omm_topology.residues():
+            chain_id = _normalize_pdb_chain_id(residue.chain.id)
+            variant = amber_variant_resids.get((chain_id, str(residue.id)))
+            if variant:
+                residue.name = variant
 
     # Strip the HOP2 / HOP3 protons that ``phosphorylate_residues`` added
     # only so Pablo's CCD-shipped (protonated) PHOSPHOSERINE /

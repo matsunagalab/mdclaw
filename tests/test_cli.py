@@ -395,6 +395,12 @@ class TestArgparseConstruction:
         assert params["water_model"]["default"] == "opc"
         assert params["salt"]["cli_action"] == "boolean_optional"
 
+        prepare = next(tool for tool in payload["tools"]
+                       if tool["name"] == "prepare_complex")
+        prepare_params = {param["name"]: param for param in prepare["parameters"]}
+        assert prepare_params["protonation_states"]["cli_flag"] == "--protonation-states"
+        assert prepare_params["protonation_states"]["expects_json"] is True
+
     def test_pep604_optional_params_are_typed_in_parser_and_list_json(self):
         from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
 
