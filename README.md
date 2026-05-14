@@ -296,9 +296,3 @@ Users update the plugin with:
 ## License
 
 MIT
-
-## Citations
-
-- Boltz-2: S. Passaro et al., bioRxiv (2025). doi:10.1101/2025.06.14.659707
-- AmberTools: D. A. Case et al., J. Chem. Inf. Model. 63, 6183 (2023).
-- OpenMM: P. Eastman et al., J. Phys. Chem. B 128, 109 (2024).
