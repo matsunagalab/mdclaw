@@ -173,6 +173,82 @@ specify the structure source, molecular selection, solvent model, force
 field, runtime target, duration, ensemble, stopping policy, and desired
 evidence.
 
+## Example Scientific Use Cases
+
+Three reference studies chosen to exercise distinct parts of MDClaw —
+ligand and cofactor handling, the PTM workflow, and membrane setup — while
+answering a concrete scientific question. The KRAS study is the recommended
+starting point; the others extend into deeper feature areas.
+
+### 1. KRAS switch dynamics: wild type versus oncogenic mutants
+
+**Question.** Does the G12C mutation reshape the switch II pocket and
+destabilize switch I/II relative to wild type in the GTP/Mg²⁺-bound state?
+
+**Why MD.** Static crystal and AI-predicted structures do not capture the
+switch loop ensemble or the transient cryptic pocket targeted by clinical
+KRAS-G12C inhibitors (sotorasib, adagrasib).
+
+**MDClaw features exercised.** Ligand and cofactor parametrization
+(GTP analog, Mg²⁺), branched preparation for WT / G12C / G12D from one
+source bundle, modest system size (~170 residues, explicit water,
+500 ns – 1 µs per branch).
+
+```text
+Set up and run a branched MD study of KRAS in the GTP-Mg²⁺ bound state.
+Compare wild type, G12C, and G12D starting from a wild-type GTP-analog
+KRAS structure (e.g., PDB 5VQ8, or use Boltz-2 to generate the active
+state). Run 500 ns per branch and report switch I and switch II RMSF,
+switch II pocket volume, and Mg²⁺ coordination stability.
+```
+
+### 2. ERK2 activation loop phosphorylation
+
+**Question.** How does mono- (pT185) and dual (pT185 + pY187) phosphorylation
+of the ERK2 activation loop reorganize the salt-bridge network around the
+DFG motif and αC helix?
+
+**Why MD.** AI structure prediction does not place phosphate-mediated
+electrostatic networks reliably, and the activation-loop ensemble around the
+phosphosites is intrinsically dynamic.
+
+**MDClaw features exercised.** End-to-end PTM workflow (SEP/TPO detection
+during structure preparation, branched re-application via
+`phosphorylate_residues`, phosaa auto-load in `build_amber_system`),
+branched preparation for apo / mono-phospho / di-phospho from one source,
+~360 residues, 500 ns sufficient for local rearrangement.
+
+```text
+Set up and run an MD study comparing apo, mono-phosphorylated (pT185), and
+dual-phosphorylated (pT185 + pY187) ERK2 starting from PDB 2ERK. Run 500 ns
+per branch and report activation-loop salt-bridge occupancies, αC-helix
+displacement, and DFG dihedral distributions.
+```
+
+### 3. β2AR ligand-class comparison in a POPC bilayer
+
+**Question.** How do agonist, inverse agonist, and antagonist binding shape
+the conformational ensemble of the β2-adrenergic receptor — TM6 outward
+motion, ionic-lock state, and intracellular cavity opening?
+
+**Why MD.** GPCR allostery is the textbook MD problem; ligand-class effects
+on receptor dynamics cannot be inferred from holo structures alone.
+
+**MDClaw features exercised.** Membrane setup via packmol-memgen (lipid21
+POPC bilayer), small-molecule GAFF parametrization for multiple ligands,
+Boltz-2 holo-complex prediction validated by MD, branched preparation across
+ligand classes. Largest of the three studies (~80–100 k atoms) and exercises
+HMR + µs production.
+
+```text
+Set up and run an MD study of β2-adrenergic receptor embedded in a POPC
+bilayer. Compare apo, isoproterenol-bound (agonist), carazolol-bound
+(inverse agonist), and ICI-118,551-bound (antagonist), starting from
+PDB 2RH1 and using Boltz-2 to generate ligand-bound poses where needed.
+Run 1 µs per branch with HMR and report TM6 outward displacement,
+ionic-lock occupancy, and intracellular cavity volume.
+```
+
 ## Repository Map
 
 | Path | Role |
