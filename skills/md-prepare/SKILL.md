@@ -93,7 +93,10 @@ node; see `skills/md-prepare/branches.md`).
 5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
    solvation guidance. If the user specifies site-specific residue
    protonation, pass it explicitly through `protonation_states`; do not leave
-   it as a free-text note. Create nodes first, then run workflow tools with
+   it as a free-text note. If the user specifies a biological assembly, request
+   it during `fetch_structure` with `--assembly-ids <id...>` or
+   `--assembly-mode preferred|all`, then select the intended source candidate
+   during `prepare_complex`. Create nodes first, then run workflow tools with
    both `--job-dir` and `--node-id`. For biological assemblies or systems with
    many chains, do not treat the one-character PDB chain ID in `merged_pdb` as
    a canonical identity. Read `chain_identity_map.json` and use `component_id`,

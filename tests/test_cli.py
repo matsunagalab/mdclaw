@@ -1016,6 +1016,26 @@ class TestNodeCLIParameters:
             ])
         assert exc_info.value.code == 0
 
+    def test_fetch_structure_accepts_assembly_ids_list(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        if not _dependency_available("httpx"):
+            pytest.skip("fetch_structure unavailable because research server dependencies are missing")
+
+        parser = _build_parser(_discover_tools())
+        args = parser.parse_args([
+            "--job-dir", "/tmp/job",
+            "--node-id", "source_001",
+            "fetch_structure",
+            "--source", "pdb",
+            "--pdb-id", "1AKE",
+            "--assembly-ids", "1", "2",
+            "--assembly-chain-naming", "short",
+        ])
+
+        assert args.assembly_ids == ["1", "2"]
+        assert args.assembly_chain_naming == "short"
+
 
 class TestStudyAndEvidenceCLIParameters:
     """Argparse-level guards for optional study/evidence tools."""

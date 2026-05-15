@@ -27,6 +27,13 @@ _SELECTION_ID_KEYS = (
     "source_candidate_id",
 )
 _MODEL_ANNOTATION_KEYS = ("models", "model_metadata", "per_model")
+_ASSEMBLY_MODES = {"none", "preferred", "all", "ids"}
+_ASSEMBLY_NAMING_POLICIES = {
+    "short": "Short",
+    "add_number": "AddNumber",
+    "addnumber": "AddNumber",
+    "dup": "Dup",
+}
 
 
 def _safe_id(value: Any, fallback: str) -> str:
@@ -92,6 +99,228 @@ def _read_structure(path: Path):
         doc = gemmi.cif.read(str(path))
         return gemmi.make_structure_from_block(doc[0]), gemmi
     return gemmi.read_pdb(str(path)), gemmi
+
+
+def biological_assembly_request_enabled(
+    assembly_mode: str | None = "none",
+    assembly_ids: list[str] | None = None,
+) -> bool:
+    """Return True when a caller requested biological assembly generation."""
+    ids = [str(value).strip() for value in (assembly_ids or []) if str(value).strip()]
+    mode = str(assembly_mode or "none").strip().lower()
+    return bool(ids) or mode not in {"", "none"}
+
+
+def _normalize_assembly_request(
+    assembly_mode: str | None,
+    assembly_ids: list[str] | None,
+) -> tuple[str, list[str]]:
+    ids = [str(value).strip() for value in (assembly_ids or []) if str(value).strip()]
+    mode = str(assembly_mode or "none").strip().lower()
+    if not mode:
+        mode = "none"
+    if ids and mode in {"none", "preferred"}:
+        mode = "ids"
+    if mode not in _ASSEMBLY_MODES:
+        raise ValueError(
+            "assembly_mode must be one of: none, preferred, all, ids"
+        )
+    if mode == "ids" and not ids:
+        raise ValueError("assembly_ids is required when assembly_mode='ids'")
+    if ids and mode != "ids":
+        raise ValueError("assembly_ids can only be combined with assembly_mode='ids'")
+    return mode, ids
+
+
+def _gemmi_assembly_naming_policy(gemmi, policy: str | None):
+    normalized = str(policy or "short").strip().lower().replace("-", "_")
+    attr = _ASSEMBLY_NAMING_POLICIES.get(normalized)
+    if not attr:
+        valid = ", ".join(sorted({"short", "add_number", "dup"}))
+        raise ValueError(f"assembly_chain_naming must be one of: {valid}")
+    return getattr(gemmi.HowToNameCopiedChain, attr), normalized
+
+
+def _model_counts(model) -> dict[str, int]:
+    chain_count = 0
+    residue_count = 0
+    atom_count = 0
+    for chain in model:
+        chain_count += 1
+        for residue in chain:
+            residue_count += 1
+            atom_count += sum(1 for _atom in residue)
+    return {
+        "chain_count": chain_count,
+        "residue_count": residue_count,
+        "atom_count": atom_count,
+    }
+
+
+def _assembly_generator_metadata(assembly) -> list[dict[str, Any]]:
+    generators = []
+    for index, generator in enumerate(getattr(assembly, "generators", []), start=1):
+        operators = []
+        for operator in getattr(generator, "operators", []):
+            op_name = str(getattr(operator, "name", "") or "").strip()
+            operators.append(op_name or str(len(operators) + 1))
+        generators.append({
+            "index": index,
+            "source_chains": list(getattr(generator, "chains", []) or []),
+            "source_subchains": list(getattr(generator, "subchains", []) or []),
+            "operator_ids": operators,
+        })
+    return generators
+
+
+def _write_structure(structure, out_file: Path) -> None:
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    if out_file.suffix.lower() == ".cif":
+        structure.make_mmcif_document().write_file(str(out_file))
+    else:
+        structure.write_pdb(str(out_file))
+
+
+def generate_biological_assembly_candidates(
+    *,
+    structure_path: str | Path,
+    output_dir: str | Path,
+    assembly_mode: str | None = "none",
+    assembly_ids: list[str] | None = None,
+    output_format: str = "cif",
+    chain_naming: str = "short",
+    max_assembly_atoms: int | None = None,
+) -> dict[str, Any]:
+    """Generate biological assembly candidate files with Gemmi.
+
+    The input mmCIF/PDB keeps the asymmetric unit as provenance. Returned
+    candidates are generated files plus metadata that can be passed to
+    ``build_source_bundle(candidate_metadata=...)``.
+    """
+    mode, requested_ids = _normalize_assembly_request(assembly_mode, assembly_ids)
+    if mode == "none":
+        return {
+            "mode": mode,
+            "requested_assembly_ids": requested_ids,
+            "available_assembly_ids": [],
+            "generated_count": 0,
+            "candidates": [],
+            "warnings": [],
+        }
+
+    structure_path = Path(structure_path).expanduser().resolve()
+    output_dir = Path(output_dir).expanduser().resolve()
+    output_format = str(output_format or "cif").strip().lower()
+    if output_format not in {"cif", "pdb"}:
+        raise ValueError("assembly_output_format must be 'cif' or 'pdb'")
+
+    structure, gemmi = _read_structure(structure_path)
+    if len(structure) == 0:
+        raise ValueError(f"source structure has no models: {structure_path}")
+    try:
+        structure.setup_entities()
+    except Exception:
+        pass
+
+    naming_policy, normalized_naming = _gemmi_assembly_naming_policy(
+        gemmi,
+        chain_naming,
+    )
+    assemblies = list(getattr(structure, "assemblies", []) or [])
+    available_ids = [str(getattr(assembly, "name", "") or idx + 1)
+                     for idx, assembly in enumerate(assemblies)]
+    if not assemblies:
+        raise ValueError(
+            f"source structure contains no biological assembly records: {structure_path}"
+        )
+
+    if mode == "preferred":
+        selected = [(available_ids[0], assemblies[0])]
+    elif mode == "all":
+        selected = list(zip(available_ids, assemblies))
+    else:
+        by_id = dict(zip(available_ids, assemblies))
+        missing = [assembly_id for assembly_id in requested_ids if assembly_id not in by_id]
+        if missing:
+            raise ValueError(
+                "requested assembly_id(s) not found: "
+                f"{missing}; available: {available_ids}"
+            )
+        selected = [(assembly_id, by_id[assembly_id]) for assembly_id in requested_ids]
+
+    candidates = []
+    warnings: list[str] = []
+    output_dir.mkdir(parents=True, exist_ok=True)
+    model = structure[0]
+    for selected_index, (assembly_id, assembly) in enumerate(selected, start=1):
+        assembled_model = gemmi.make_assembly(assembly, model, naming_policy)
+        counts = _model_counts(assembled_model)
+        if counts["atom_count"] == 0:
+            raise ValueError(f"assembly_id {assembly_id!r} generated zero atoms")
+        if max_assembly_atoms is not None and max_assembly_atoms > 0:
+            if counts["atom_count"] > max_assembly_atoms:
+                raise ValueError(
+                    f"assembly_id {assembly_id!r} generated {counts['atom_count']} atoms, "
+                    f"which exceeds max_assembly_atoms={max_assembly_atoms}"
+                )
+
+        out_structure = gemmi.Structure()
+        out_structure.name = structure.name
+        out_structure.cell = structure.cell
+        out_structure.spacegroup_hm = structure.spacegroup_hm
+        out_structure.add_model(assembled_model)
+        try:
+            out_structure.setup_entities()
+        except Exception as exc:
+            warnings.append(
+                f"setup_entities failed for assembly_id {assembly_id}: {exc}"
+            )
+
+        safe_id = _safe_id(assembly_id, f"assembly_{selected_index}")
+        out_file = output_dir / f"{structure_path.stem}_assembly_{safe_id}.{output_format}"
+        _write_structure(out_structure, out_file)
+
+        output_chain_names = [chain.name for chain in assembled_model]
+        generators = _assembly_generator_metadata(assembly)
+        metadata = {
+            "label": f"biological assembly {assembly_id}",
+            "description": (
+                f"Gemmi-generated biological assembly {assembly_id} "
+                f"from {structure_path.name}"
+            ),
+            "origin": {
+                "kind": "pdb_biological_assembly",
+                "assembly_id": assembly_id,
+                "source_file": str(structure_path),
+                "generator": "gemmi.make_assembly",
+                "naming_policy": normalized_naming,
+                "output_chain_names": output_chain_names,
+                "assembly_generators": generators,
+                "oligomeric_details": getattr(assembly, "oligomeric_details", ""),
+                "author_determined": bool(getattr(assembly, "author_determined", False)),
+                "software_determined": bool(getattr(assembly, "software_determined", False)),
+                "special_kind": str(getattr(assembly, "special_kind", "")),
+            },
+            "metrics": counts,
+            "tags": ["biological_assembly", f"assembly_id:{assembly_id}"],
+        }
+        candidates.append({
+            "assembly_id": assembly_id,
+            "file_path": str(out_file),
+            "metadata": metadata,
+        })
+
+    return {
+        "mode": mode,
+        "requested_assembly_ids": requested_ids,
+        "available_assembly_ids": available_ids,
+        "generated_count": len(candidates),
+        "source_file": str(structure_path),
+        "output_format": output_format,
+        "naming_policy": normalized_naming,
+        "candidates": candidates,
+        "warnings": warnings,
+    }
 
 
 def _write_single_model(path: Path, model_index: int, out_file: Path) -> None:

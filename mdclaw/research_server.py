@@ -281,6 +281,51 @@ def _complete_source_node(
     }
 
 
+def _source_bundle_inputs_with_assemblies(
+    *,
+    source_file: Path,
+    source_label: str,
+    artifacts_dir: Path,
+    assembly_mode: str | None = "none",
+    assembly_ids: Optional[list[str]] = None,
+    assembly_output_format: str = "cif",
+    assembly_chain_naming: str = "short",
+    max_assembly_atoms: Optional[int] = None,
+) -> tuple[Optional[list[Path]], Optional[list[dict]], Optional[dict]]:
+    """Build source-bundle inputs when biological assemblies were requested."""
+    from mdclaw.source_bundle import (
+        biological_assembly_request_enabled,
+        generate_biological_assembly_candidates,
+    )
+
+    if not biological_assembly_request_enabled(assembly_mode, assembly_ids):
+        return None, None, None
+
+    generated = generate_biological_assembly_candidates(
+        structure_path=source_file,
+        output_dir=artifacts_dir / "assemblies",
+        assembly_mode=assembly_mode,
+        assembly_ids=assembly_ids,
+        output_format=assembly_output_format,
+        chain_naming=assembly_chain_naming,
+        max_assembly_atoms=max_assembly_atoms,
+    )
+    source_structures = [source_file]
+    candidate_metadata = [{
+        "label": "asymmetric unit",
+        "description": f"{source_label} asymmetric unit before assembly generation",
+        "origin": {
+            "kind": "asymmetric_unit",
+            "source_file": str(source_file),
+        },
+        "tags": ["asymmetric_unit"],
+    }]
+    for candidate in generated.get("candidates", []):
+        source_structures.append(Path(candidate["file_path"]))
+        candidate_metadata.append(candidate["metadata"])
+    return source_structures, candidate_metadata, generated
+
+
 # =============================================================================
 # Constants for structure inspection
 # =============================================================================
@@ -396,6 +441,11 @@ async def _fetch_pdb_structure(
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    assembly_mode: str = "none",
+    assembly_ids: Optional[list[str]] = None,
+    assembly_output_format: str = "cif",
+    assembly_chain_naming: str = "short",
+    max_assembly_atoms: Optional[int] = None,
 ) -> dict:
     """Download structure coordinates from RCSB PDB.
 
@@ -410,6 +460,15 @@ async def _fetch_pdb_structure(
         node_id: Fetch node ID. When both job_dir and node_id are provided,
             the file is written under ``<job_dir>/nodes/<node_id>/artifacts/``
             and the node is marked completed with source metadata.
+        assembly_mode: Optional Gemmi biological assembly generation mode:
+            ``none`` (default), ``preferred``, ``all``, or ``ids``.
+        assembly_ids: Specific biological assembly IDs to generate. Supplying
+            this switches ``assembly_mode`` to ``ids`` when mode is omitted.
+        assembly_output_format: Format for generated assembly candidates
+            (``cif`` default, or ``pdb``).
+        assembly_chain_naming: Gemmi copied-chain naming policy: ``short``,
+            ``add_number``, or ``dup``.
+        max_assembly_atoms: Optional safety ceiling for generated assemblies.
 
     Returns:
         Dict with:
@@ -436,9 +495,12 @@ async def _fetch_pdb_structure(
         "cache_hit": False,
         "cache_path": None,
         "sha256": None,
+        "assembly_generation": None,
     }
 
     pdb_id = pdb_id.upper()
+    source_structures = None
+    source_candidate_metadata = None
 
     _node_mode = bool(job_dir and node_id)
     if _node_mode:
@@ -636,6 +698,28 @@ async def _fetch_pdb_structure(
         except Exception as e:
             result["warnings"].append(f"Could not parse structure statistics: {str(e)}")
 
+        try:
+            source_structures, source_candidate_metadata, assembly_generation = (
+                _source_bundle_inputs_with_assemblies(
+                    source_file=Path(result["file_path"]),
+                    source_label=f"PDB {pdb_id}",
+                    artifacts_dir=save_dir,
+                    assembly_mode=assembly_mode,
+                    assembly_ids=assembly_ids,
+                    assembly_output_format=assembly_output_format,
+                    assembly_chain_naming=assembly_chain_naming,
+                    max_assembly_atoms=max_assembly_atoms,
+                )
+            )
+        except ValueError as e:
+            result["errors"].append(f"Assembly generation failed: {e}")
+            if _node_mode:
+                fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+        if assembly_generation:
+            result["assembly_generation"] = assembly_generation
+            result["warnings"].extend(assembly_generation.get("warnings", []))
+
         result["output_dir"] = str(save_dir)
         result["success"] = True
         logger.info(f"Successfully downloaded {pdb_id}: {result['num_atoms']} atoms, chains: {result['chains']}")
@@ -658,6 +742,8 @@ async def _fetch_pdb_structure(
                 "num_atoms": result["num_atoms"],
                 "chains": result["chains"],
             }
+            if result.get("assembly_generation"):
+                extras["assembly_generation"] = result["assembly_generation"]
             if last_modified:
                 extras["last_modified"] = last_modified
             _complete_source_node(
@@ -668,6 +754,8 @@ async def _fetch_pdb_structure(
                 source_id=pdb_id,
                 file_format=result["file_format"],
                 extra_metadata=extras,
+                source_structures=source_structures,
+                source_candidate_metadata=source_candidate_metadata,
             )
         else:
             fail_node(job_dir, node_id, errors=result["errors"])
@@ -2040,6 +2128,11 @@ def _fetch_local_structure(
     job_dir: str,
     node_id: str,
     copy: bool = True,
+    assembly_mode: str = "none",
+    assembly_ids: Optional[list[str]] = None,
+    assembly_output_format: str = "cif",
+    assembly_chain_naming: str = "short",
+    max_assembly_atoms: Optional[int] = None,
 ) -> dict:
     """Register a user-supplied local structure file as a source node artifact.
 
@@ -2053,6 +2146,12 @@ def _fetch_local_structure(
         copy: When True (default), copy the file into the node's artifacts
             directory. When False, create a symlink instead — fragile if the
             source moves, so use only for read-only datasets.
+        assembly_mode: Optional Gemmi biological assembly generation mode:
+            ``none`` (default), ``preferred``, ``all``, or ``ids``.
+        assembly_ids: Specific biological assembly IDs to generate.
+        assembly_output_format: Format for generated assembly candidates.
+        assembly_chain_naming: Gemmi copied-chain naming policy.
+        max_assembly_atoms: Optional safety ceiling for generated assemblies.
 
     Returns:
         Dict with success/file_path/sha256/errors/warnings.
@@ -2064,6 +2163,7 @@ def _fetch_local_structure(
         "file_path": None,
         "source_id": None,
         "sha256": None,
+        "assembly_generation": None,
         "errors": [],
         "warnings": [],
     }
@@ -2102,6 +2202,33 @@ def _fetch_local_structure(
                 dst.unlink()
             os.symlink(src, dst)
 
+        try:
+            source_structures, source_candidate_metadata, assembly_generation = (
+                _source_bundle_inputs_with_assemblies(
+                    source_file=dst,
+                    source_label=f"local source {src.name}",
+                    artifacts_dir=artifacts_dir,
+                    assembly_mode=assembly_mode,
+                    assembly_ids=assembly_ids,
+                    assembly_output_format=assembly_output_format,
+                    assembly_chain_naming=assembly_chain_naming,
+                    max_assembly_atoms=max_assembly_atoms,
+                )
+            )
+        except ValueError as e:
+            result["errors"].append(f"Assembly generation failed: {e}")
+            fail_node(job_dir, node_id, errors=result["errors"])
+            return result
+        if assembly_generation:
+            result["assembly_generation"] = assembly_generation
+            result["warnings"].extend(assembly_generation.get("warnings", []))
+
+        extra_metadata = {
+            "original_path": str(src),
+            "copy_mode": "copy" if copy else "symlink",
+        }
+        if result.get("assembly_generation"):
+            extra_metadata["assembly_generation"] = result["assembly_generation"]
         info = _complete_source_node(
             job_dir,
             node_id,
@@ -2109,10 +2236,9 @@ def _fetch_local_structure(
             source_type="local",
             source_id=src.name,
             file_format=file_format,
-            extra_metadata={
-                "original_path": str(src),
-                "copy_mode": "copy" if copy else "symlink",
-            },
+            extra_metadata=extra_metadata,
+            source_structures=source_structures,
+            source_candidate_metadata=source_candidate_metadata,
         )
         result["success"] = True
         result["file_path"] = str(dst)
@@ -2138,6 +2264,11 @@ async def fetch_structure(
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    assembly_mode: str = "none",
+    assembly_ids: Optional[list[str]] = None,
+    assembly_output_format: str = "cif",
+    assembly_chain_naming: str = "short",
+    max_assembly_atoms: Optional[int] = None,
 ) -> dict:
     """Fetch a structure into a source node from PDB, AlphaFold, or a local file.
 
@@ -2158,6 +2289,17 @@ async def fetch_structure(
             node mode. Local fetches require ``job_dir`` and ``node_id``.
         job_dir: Job directory for node-based tracking (schema v3).
         node_id: Existing source node ID.
+        assembly_mode: Optional Gemmi biological assembly generation mode:
+            ``none`` (default), ``preferred``, ``all``, or ``ids``. Supported
+            for PDB and local PDB/mmCIF sources.
+        assembly_ids: Specific biological assembly IDs to generate. For most
+            PDB entries ``"1"`` is the preferred assembly, but additional IDs
+            may exist and are taken from the PDB/mmCIF assembly records.
+        assembly_output_format: Format for generated assembly candidates
+            (``cif`` default, or ``pdb``).
+        assembly_chain_naming: Gemmi copied-chain naming policy: ``short``,
+            ``add_number``, or ``dup``.
+        max_assembly_atoms: Optional safety ceiling for generated assemblies.
 
     Returns:
         Source-specific result dict with ``success`` / ``errors`` /
@@ -2173,6 +2315,23 @@ async def fetch_structure(
             code="invalid_source",
         )
         err["source"] = source
+        return err
+
+    from mdclaw.source_bundle import biological_assembly_request_enabled
+
+    assembly_requested = biological_assembly_request_enabled(
+        assembly_mode,
+        assembly_ids,
+    )
+    if assembly_requested and normalized_source == "alphafold":
+        err = create_validation_error(
+            "assembly_mode",
+            "biological assembly generation is only supported for PDB/local PDB or mmCIF sources",
+            expected="source='pdb' or source='local'",
+            actual=source,
+            code="unsupported_assembly_source",
+        )
+        err["source"] = normalized_source
         return err
 
     if normalized_source == "pdb":
@@ -2192,6 +2351,11 @@ async def fetch_structure(
             output_dir=output_dir,
             job_dir=job_dir,
             node_id=node_id,
+            assembly_mode=assembly_mode,
+            assembly_ids=assembly_ids,
+            assembly_output_format=assembly_output_format,
+            assembly_chain_naming=assembly_chain_naming,
+            max_assembly_atoms=max_assembly_atoms,
         )
         result["source"] = "pdb"
         return result
@@ -2242,6 +2406,11 @@ async def fetch_structure(
         job_dir=job_dir,
         node_id=node_id,
         copy=copy,
+        assembly_mode=assembly_mode,
+        assembly_ids=assembly_ids,
+        assembly_output_format=assembly_output_format,
+        assembly_chain_naming=assembly_chain_naming,
+        max_assembly_atoms=max_assembly_atoms,
     )
     result["source"] = "local"
     return result

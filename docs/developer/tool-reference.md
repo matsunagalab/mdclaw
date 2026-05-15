@@ -8,6 +8,8 @@ skill examples.
 
 - `fetch_structure(...)`: preferred structure acquisition entry point for PDB,
   AlphaFold, and local files. In node mode it records `source_bundle.json`.
+  For PDB/local PDB or mmCIF sources, explicit `assembly_ids` or
+  `assembly_mode` requests generate Gemmi biological assembly candidates.
 - `download_structure(...)`: RCSB PDB compatibility wrapper.
 - `get_structure_info(...)`: PDB entry metadata.
 - `get_alphafold_structure(...)`: AlphaFold DB compatibility wrapper.

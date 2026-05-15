@@ -10,6 +10,7 @@ because the validation short-circuits before any HTTP call.
 """
 
 import asyncio
+import textwrap
 
 import pytest
 
@@ -21,8 +22,26 @@ from mdclaw.research_server import (
     download_structure,
     fetch_structure,
     get_alphafold_structure,
+    list_source_candidates,
     register_local_structure,
 )
+
+
+BIOMT_PDB = textwrap.dedent("""\
+HEADER    TEST BIOLOGICAL ASSEMBLY
+REMARK 350 BIOMOLECULE: 1
+REMARK 350 APPLY THE FOLLOWING TO CHAINS: A
+REMARK 350   BIOMT1   1  1.000000 0.000000 0.000000        0.00000
+REMARK 350   BIOMT2   1  0.000000 1.000000 0.000000        0.00000
+REMARK 350   BIOMT3   1  0.000000 0.000000 1.000000        0.00000
+REMARK 350   BIOMT1   2  1.000000 0.000000 0.000000       10.00000
+REMARK 350   BIOMT2   2  0.000000 1.000000 0.000000        0.00000
+REMARK 350   BIOMT3   2  0.000000 0.000000 1.000000        0.00000
+ATOM      1  N   GLY A   1       1.000   1.000   1.000  1.00 10.00           N
+ATOM      2  CA  GLY A   1       2.000   1.000   1.000  1.00 10.00           C
+TER
+END
+""")
 
 
 @pytest.fixture
@@ -67,6 +86,37 @@ class TestSourceStructureValidation:
         prep_data = read_node(str(job_dir), prep_node)
         assert prep_data["status"] == "pending"
         assert prep_data["artifacts"] == {}
+
+    def test_local_fetch_generates_requested_assembly_candidate(self, job_dir, tmp_path):
+        pytest.importorskip("gemmi")
+
+        source_file = tmp_path / "biomt.pdb"
+        source_file.write_text(BIOMT_PDB)
+        source_node = create_node(str(job_dir), "source")["node_id"]
+
+        result = asyncio.run(fetch_structure(
+            source="local",
+            file_path=str(source_file),
+            job_dir=str(job_dir),
+            node_id=source_node,
+            assembly_ids=["1"],
+        ))
+
+        assert result["success"] is True
+        assert result["assembly_generation"]["generated_count"] == 1
+
+        candidates = list_source_candidates(str(job_dir), source_node)
+        assert candidates["success"] is True
+        assert [c["structure_id"] for c in candidates["candidates"]] == [
+            "candidate_001",
+            "candidate_002",
+        ]
+        assembly = candidates["candidates"][1]
+        assert assembly["label"] == "biological assembly 1"
+        assert assembly["origin"]["kind"] == "pdb_biological_assembly"
+        assert assembly["origin"]["assembly_id"] == "1"
+        assert assembly["metrics"]["chain_count"] == 2
+        assert assembly["exists"] is True
 
 
 # ── compatibility wrappers ─────────────────────────────────────────────────

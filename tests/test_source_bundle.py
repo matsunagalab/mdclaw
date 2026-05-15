@@ -8,6 +8,7 @@ import pytest
 
 from mdclaw.source_bundle import (
     build_source_bundle,
+    generate_biological_assembly_candidates,
     materialize_source_selection,
     select_source_structure,
     write_source_bundle,
@@ -25,6 +26,22 @@ ATOM      1  N   GLY A   1      11.000   1.000   1.000  1.00 10.00           N
 ATOM      2  CA  GLY A   1      12.000   1.000   1.000  1.00 10.00           C
 TER
 ENDMDL
+END
+""")
+
+BIOMT_PDB = textwrap.dedent("""\
+HEADER    TEST BIOLOGICAL ASSEMBLY
+REMARK 350 BIOMOLECULE: 1
+REMARK 350 APPLY THE FOLLOWING TO CHAINS: A
+REMARK 350   BIOMT1   1  1.000000 0.000000 0.000000        0.00000
+REMARK 350   BIOMT2   1  0.000000 1.000000 0.000000        0.00000
+REMARK 350   BIOMT3   1  0.000000 0.000000 1.000000        0.00000
+REMARK 350   BIOMT1   2  1.000000 0.000000 0.000000       10.00000
+REMARK 350   BIOMT2   2  0.000000 1.000000 0.000000        0.00000
+REMARK 350   BIOMT3   2  0.000000 0.000000 1.000000        0.00000
+ATOM      1  N   GLY A   1       1.000   1.000   1.000  1.00 10.00           N
+ATOM      2  CA  GLY A   1       2.000   1.000   1.000  1.00 10.00           C
+TER
 END
 """)
 
@@ -109,6 +126,32 @@ def test_source_bundle_applies_per_model_candidate_metadata(tmp_path):
     assert second["origin"]["boltz_model_index"] == 1
     assert second["origin"]["confidence_file"] == "confidence_model_1.json"
     assert second["metrics"]["confidence_score"] == pytest.approx(0.81)
+
+
+def test_generate_biological_assembly_candidates_from_biomt_pdb(tmp_path):
+    pytest.importorskip("gemmi")
+
+    source_file = tmp_path / "biomt.pdb"
+    source_file.write_text(BIOMT_PDB)
+
+    generated = generate_biological_assembly_candidates(
+        structure_path=source_file,
+        output_dir=tmp_path / "assemblies",
+        assembly_ids=["1"],
+    )
+
+    assert generated["mode"] == "ids"
+    assert generated["available_assembly_ids"] == ["1"]
+    assert generated["generated_count"] == 1
+    candidate = generated["candidates"][0]
+    assert candidate["assembly_id"] == "1"
+    assert candidate["metadata"]["origin"]["kind"] == "pdb_biological_assembly"
+    assert candidate["metadata"]["origin"]["assembly_id"] == "1"
+    assert candidate["metadata"]["origin"]["naming_policy"] == "short"
+    assert candidate["metadata"]["origin"]["output_chain_names"] == ["A", "B"]
+    assert candidate["metadata"]["metrics"]["chain_count"] == 2
+    assert candidate["metadata"]["metrics"]["atom_count"] == 4
+    assert (tmp_path / "assemblies" / "biomt_assembly_1.cif").is_file()
 
 
 def test_multi_file_bundle_requires_explicit_structure_selection(tmp_path):
