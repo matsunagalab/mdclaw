@@ -1,78 +1,89 @@
 {
-  "benchmark_version": "MDAgentBench-v1.0",
-  "schema_version": "1.0",
-  "benchmark_type": "artifact_based_agent_benchmark",
-  "evaluation_unit": "submission_artifacts",
   "agent_independent": true,
+  "benchmark_type": "artifact_based_agent_benchmark",
+  "benchmark_version": "MDAgentBench-prep-v0.1",
+  "evaluation_unit": "submission_artifacts",
+  "families": {
+    "preparation_workflow_battery": {
+      "display_name": "Preparation Workflow Battery",
+      "intent": "Evaluate whether an agent can turn structurally messy public inputs into MD-ready preparation artifacts with backend-neutral provenance.",
+      "score_axis": "preparation",
+      "task_ids": [
+        "P01_prep_simple_monomer_t4l",
+        "P02_prep_1ake_chain_ap5",
+        "P03_prep_ligand_pose_t4l_benzene",
+        "P04_prep_multi_ligand_filter_3pwb",
+        "P05_prep_dap_dehydrogenase_nadp",
+        "P06_prep_calmodulin_ca_ions",
+        "P07_prep_rna_crystallographic_ions",
+        "P08_prep_t4l_l99a_branch",
+        "P09_prep_t4l_double_mutant",
+        "P10_prep_bpti_disulfides",
+        "P11_prep_site_protonation_t4l_glu11",
+        "P12_prep_restore_deposited_sep",
+        "P13_prep_user_requested_sep",
+        "P14_prep_glycoprotein_glycan",
+        "P15_prep_standard_dna",
+        "P16_prep_standard_rna",
+        "P17_prep_modified_nucleic_5mc",
+        "P18_prep_membrane_mixed_lipids",
+        "P19_prep_nmr_model_selection",
+        "P20_prep_homology_model_before_prep",
+        "P21_prep_cleanup_altloc_mse_numbering",
+        "P22_prep_forcefield_water_fidelity",
+        "P23_prep_implicit_solvent_chignolin",
+        "P24_prep_biological_assembly",
+        "P25_prep_kcl_ion_concentration"
+      ]
+    }
+  },
+  "notes": [
+    "Prep-only replacement for the former MDAgentBench v1.0 task set.",
+    "No public task requires an MDClaw-specific guardrail code.",
+    "Scientific MD reasoning tasks are intentionally deferred to a later suite."
+  ],
   "public_private_split": {
-    "public": [
-      "dataset.json",
-      "tasks/<task_id>/prompt.md",
-      "tasks/<task_id>/submission_contract.json"
-    ],
     "private_to_harness_scorer": [
       "tasks/<task_id>/task.json"
     ],
     "private_to_scorer": [
       "tasks/<task_id>/truth/",
       "tasks/<task_id>/scorer/"
+    ],
+    "public": [
+      "dataset.json",
+      "tasks/<task_id>/prompt.md",
+      "tasks/<task_id>/submission_contract.json"
     ]
   },
-  "released": "2026-05-06",
-  "task_count": 9,
+  "released": "2026-05-16",
+  "schema_version": "1.0",
+  "task_count": 25,
   "task_ids": [
-    "T01_engine_smoke",
-    "T02_prep_metalloenzyme_guardrail",
-    "T03_prep_ligand_pose_t4l_benzene",
-    "T04_exec_short_protein_md",
-    "T05_exec_restart_continue",
-    "T06_answer_stability_t4l_l99a",
-    "T07_answer_ppi_hotspot_barnase_d39a",
-    "T08_communicate_t4l_dynamics",
-    "T09_study_t4l_wt_vs_l99a_methods"
-  ],
-  "families": {
-    "system_preparation": {
-      "display_name": "System Preparation & Guardrails",
-      "score_axis": "preparation",
-      "intent": "Build MD-ready system artifacts when the chemistry is supported, and refuse unsafe parameterization with structured guardrails when it is not.",
-      "task_ids": [
-        "T02_prep_metalloenzyme_guardrail",
-        "T03_prep_ligand_pose_t4l_benzene"
-      ]
-    },
-    "engine_reliability": {
-      "display_name": "Execution / Engine Reliability",
-      "score_axis": "execution",
-      "intent": "Run, save, reload, and continue short MD simulations while preserving finite energies and trajectory integrity.",
-      "task_ids": [
-        "T01_engine_smoke",
-        "T04_exec_short_protein_md",
-        "T05_exec_restart_continue"
-      ]
-    },
-    "scientific_answer": {
-      "display_name": "Scientific Answer vs Experimental Truth",
-      "score_axis": "scientific_answer",
-      "intent": "Answer mutation or binding-effect questions against held-back experimental direction with calibrated confidence and limitations.",
-      "task_ids": [
-        "T06_answer_stability_t4l_l99a",
-        "T07_answer_ppi_hotspot_barnase_d39a"
-      ]
-    },
-    "evidence_communication": {
-      "display_name": "Evidence & Methods Communication",
-      "score_axis": "evidence_communication",
-      "intent": "Package figures, metrics, captions, Methods text, provenance, and limitations so the result is auditable.",
-      "task_ids": [
-        "T08_communicate_t4l_dynamics",
-        "T09_study_t4l_wt_vs_l99a_methods"
-      ]
-    }
-  },
-  "notes": [
-    "v1.0 ground-up rebuild of MDAgentBench. Replaces v0.1 pilot.",
-    "Prompt-only tasks name public sources; ground truth is held in <task>/truth/ (scorer-only).",
-    "Validated and scored through the repository benchmark CLI; agents may use any MD backend that emits the submission contract."
+    "P01_prep_simple_monomer_t4l",
+    "P02_prep_1ake_chain_ap5",
+    "P03_prep_ligand_pose_t4l_benzene",
+    "P04_prep_multi_ligand_filter_3pwb",
+    "P05_prep_dap_dehydrogenase_nadp",
+    "P06_prep_calmodulin_ca_ions",
+    "P07_prep_rna_crystallographic_ions",
+    "P08_prep_t4l_l99a_branch",
+    "P09_prep_t4l_double_mutant",
+    "P10_prep_bpti_disulfides",
+    "P11_prep_site_protonation_t4l_glu11",
+    "P12_prep_restore_deposited_sep",
+    "P13_prep_user_requested_sep",
+    "P14_prep_glycoprotein_glycan",
+    "P15_prep_standard_dna",
+    "P16_prep_standard_rna",
+    "P17_prep_modified_nucleic_5mc",
+    "P18_prep_membrane_mixed_lipids",
+    "P19_prep_nmr_model_selection",
+    "P20_prep_homology_model_before_prep",
+    "P21_prep_cleanup_altloc_mse_numbering",
+    "P22_prep_forcefield_water_fidelity",
+    "P23_prep_implicit_solvent_chignolin",
+    "P24_prep_biological_assembly",
+    "P25_prep_kcl_ion_concentration"
   ]
 }

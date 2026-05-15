@@ -1,4 +1,0 @@
-{
-  "allowed_source_pools": ["FireProtDB", "S669", "Ssym", "VariBench"],
-  "note": "Predict effect.direction from MD-derived metrics. Run short comparative MD of WT and the L99A mutant and report quantitative differences (core SASA, cavity volume, packing density, Cα RMSF in the mutated region, hydrophobic contact count, etc.) in metrics.md_analysis and evidence_report.evidence.md_metrics. Cite a record from the pools above (e.g. FireProtDB record_id + DOI/PMID of the underlying study) only for confidence calibration — the direction itself must be supported by your MD numbers, not by recalling the literature."
-}

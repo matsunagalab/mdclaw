@@ -44,6 +44,8 @@
             "json_allowed_values",
             "trajectory_rescan",
             "topology_solvent_rescan",
+            "structure_component_rescan",
+            "pdb_residue_state",
             "rmsd_recompute",
             "metrics_caption_consistency"
           ],
@@ -53,6 +55,36 @@
         "equals": {
           "default": null,
           "title": "Equals"
+        },
+        "exact_residue_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exact Residue Counts"
+        },
+        "forbidden_atom_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Forbidden Atom Names"
         },
         "forbidden_outputs": {
           "anyOf": [
@@ -68,6 +100,11 @@
           ],
           "default": null,
           "title": "Forbidden Outputs"
+        },
+        "insertion_code": {
+          "default": "",
+          "title": "Insertion Code",
+          "type": "string"
         },
         "json_file": {
           "anyOf": [
@@ -93,6 +130,21 @@
           "default": null,
           "title": "Json Path"
         },
+        "max_residue_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Residue Counts"
+        },
         "max_value": {
           "anyOf": [
             {
@@ -116,6 +168,21 @@
           ],
           "default": null,
           "title": "Min Length"
+        },
+        "min_residue_counts": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Residue Counts"
         },
         "min_value": {
           "anyOf": [
@@ -170,6 +237,21 @@
           "default": null,
           "title": "Require Min Frames"
         },
+        "required_atom_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Atom Names"
+        },
         "required_outputs": {
           "anyOf": [
             {
@@ -185,6 +267,18 @@
           "default": null,
           "title": "Required Outputs"
         },
+        "required_residue_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Residue Name"
+        },
         "required_solvent_type": {
           "anyOf": [
             {
@@ -197,6 +291,30 @@
           "default": null,
           "title": "Required Solvent Type"
         },
+        "residue_chain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Residue Chain"
+        },
+        "residue_number": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Residue Number"
+        },
         "selection": {
           "anyOf": [
             {
@@ -208,6 +326,30 @@
           ],
           "default": null,
           "title": "Selection"
+        },
+        "structure_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Structure Manifest Path"
+        },
+        "structure_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Structure Path"
         },
         "tolerance_angstrom": {
           "default": 0.05,
@@ -667,7 +809,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "v1.0 task contract.\n\nNote the deliberate absence of any ``truth.expected_*`` fields here:\nground truth lives in ``<task_dir>/truth/`` and is scorer-only.",
+  "description": "Task contract.\n\nNote the deliberate absence of any ``truth.expected_*`` fields here:\nground truth lives in ``<task_dir>/truth/`` and is scorer-only.",
   "properties": {
     "capability_tags": {
       "items": {
@@ -735,6 +877,18 @@
       "title": "Not Scored Here",
       "type": "array"
     },
+    "prep_battery_priority": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Prep Battery Priority"
+    },
     "primary_score": {
       "enum": [
         "preparation",
@@ -744,6 +898,18 @@
       ],
       "title": "Primary Score",
       "type": "string"
+    },
+    "public_source": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Public Source"
     },
     "references": {
       "items": {

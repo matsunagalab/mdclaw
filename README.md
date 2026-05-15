@@ -359,14 +359,16 @@ mdclaw export_benchmark_public_package \
 The exported package contains prompts, submission contracts, and
 submission-facing schemas only; it omits `task.json`, `truth/`, and `scorer/`.
 
-The v1.0 task set covers nine tasks in four families:
+The current task set is `MDAgentBench-prep-v0.1`, a 25-task preparation
+workflow battery:
 
 | Family | What It Tests | Example Tasks |
 |---|---|---|
-| System preparation and guardrails | MD-ready artifacts, ligand-pose preservation, and structured refusal for unsafe parameterization. | Metal guardrail refusal; T4L L99A + benzene pose preservation |
-| Execution and engine reliability | Short explicit-water MD, finite energies, reloadable trajectories, and restart continuation. | Engine smoke MD; short protein MD; restart continuation |
-| Scientific answer versus experimental truth | Mutation stability and protein-protein binding-effect questions with held-back truth. | T4L L99A stability direction; barnase D39A binding hotspot |
-| Evidence and Methods communication | Figures, metrics, captions, provenance, limitations, and Methods-style reporting. | Dynamics figure package; WT-vs-L99A Methods package |
+| Preparation Workflow Battery | MD-ready preparation artifacts, ligand/chain selection, residue protonation, PTMs, glycans, nucleic acids, membranes, assemblies, ion concentration, and backend-neutral provenance. | 1AKE + AP5 selection; T4L Glu11 GLH protonation; mixed-lipid membrane prep |
+
+Public benchmark tasks do not require MDClaw-specific guardrail codes; those
+remain ordinary MDClaw regression tests. Scientific MD reasoning tasks are
+planned as a later suite.
 
 See `docs/benchmark/README.md` for the task table, submission contract,
 scorer runtime, and detailed validation commands.

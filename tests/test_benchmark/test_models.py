@@ -1,4 +1,4 @@
-"""Schema round-trip tests for v1.0 pydantic models."""
+"""Schema round-trip tests for benchmark pydantic models."""
 
 from __future__ import annotations
 
@@ -97,6 +97,28 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     })
     assert solvent.required_solvent_type == "explicit_water"
     assert solvent.min_water_residues == 10
+
+    components = DeterministicCheck.model_validate({
+        "check_id": "ap5_present",
+        "check_type": "structure_component_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "min_residue_counts": {"AP5": 1},
+        "max_residue_counts": {"SO4": 0},
+    })
+    assert components.min_residue_counts == {"AP5": 1}
+    assert components.max_residue_counts == {"SO4": 0}
+
+    residue_state = DeterministicCheck.model_validate({
+        "check_id": "glu11_glh",
+        "check_type": "pdb_residue_state",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "residue_chain": "A",
+        "residue_number": "11",
+        "required_residue_name": "GLH",
+        "required_atom_names": ["HE2"],
+    })
+    assert residue_state.required_residue_name == "GLH"
+    assert residue_state.required_atom_names == ["HE2"]
 
 
 def test_integrity_check_supports_manifest_artifact_floor():

@@ -1,4 +1,4 @@
-"""Dataset-level integrity checks for MDAgentBench v1.0."""
+"""Dataset-level integrity checks for the prep-only MDAgentBench dataset."""
 
 from __future__ import annotations
 
@@ -56,12 +56,7 @@ def test_dataset_families_cover_each_task_once():
     covered: list[str] = []
 
     families = dataset.get("families") or {}
-    assert set(families) == {
-        "system_preparation",
-        "engine_reliability",
-        "scientific_answer",
-        "evidence_communication",
-    }
+    assert set(families) == {"preparation_workflow_battery"}
 
     for family_key, family in families.items():
         assert family["display_name"], family_key
@@ -85,7 +80,7 @@ def test_list_benchmark_tasks_surfaces_family_and_intent_summary():
 
     assert result["success"], result
     assert result["families"]
-    assert result["task_count"] == 9
+    assert result["task_count"] == 25
 
     for task in result["tasks"]:
         assert task["family"]
@@ -179,20 +174,13 @@ def test_task_required_outputs_cover_scored_submission_files():
                 )
 
 
-def test_execution_tasks_require_explicit_water_topology_rescan():
-    for task_id, min_water in {
-        "T01_engine_smoke": 100,
-        "T04_exec_short_protein_md": 1000,
-    }.items():
-        task = Task.model_validate_json(
-            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
-        )
-        checks = {
-            check.check_id: check
-            for check in task.scoring.deterministic_checks
-        }
-        check = checks["explicit_water_topology"]
-        assert check.check_type == "topology_solvent_rescan"
-        assert check.required_solvent_type == "explicit_water"
-        assert check.topology_manifest_path == "outputs.topology.0"
-        assert check.min_water_residues == min_water
+def test_prep_dataset_has_no_public_guardrail_code_tasks():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+
+    for task_id in dataset["task_ids"]:
+        task_file = DATASET_DIR / "tasks" / task_id / "task.json"
+        payload = json.loads(task_file.read_text())
+        serialized = json.dumps(payload).lower()
+        assert "guardrail_code" not in serialized
+        assert "metal_containing_ligand_blocked" not in serialized
+        assert payload["primary_score"] == "preparation"

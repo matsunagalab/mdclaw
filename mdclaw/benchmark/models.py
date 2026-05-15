@@ -51,6 +51,8 @@ DeterministicCheckType = Literal[
     "json_allowed_values",
     "trajectory_rescan",
     "topology_solvent_rescan",
+    "structure_component_rescan",
+    "pdb_residue_state",
     "rmsd_recompute",
     "metrics_caption_consistency",
 ]
@@ -135,6 +137,21 @@ class DeterministicCheck(BaseModel):
     required_solvent_type: Optional[str] = None
     water_residue_names: Optional[list[str]] = None
     min_water_residues: Optional[int] = None
+
+    # structure_component_rescan
+    min_residue_counts: Optional[dict[str, int]] = None
+    max_residue_counts: Optional[dict[str, int]] = None
+    exact_residue_counts: Optional[dict[str, int]] = None
+
+    # pdb_residue_state
+    structure_path: Optional[str] = None
+    structure_manifest_path: Optional[str] = None
+    residue_chain: Optional[str] = None
+    residue_number: Optional[str] = None
+    insertion_code: str = ""
+    required_residue_name: Optional[str] = None
+    required_atom_names: Optional[list[str]] = None
+    forbidden_atom_names: Optional[list[str]] = None
 
     # rmsd_recompute
     reference_pdb: Optional[str] = None  # relative to task dir; scorer-only is OK
@@ -231,7 +248,7 @@ class TaskReference(BaseModel):
 
 
 class Task(BaseModel):
-    """v1.0 task contract.
+    """Task contract.
 
     Note the deliberate absence of any ``truth.expected_*`` fields here:
     ground truth lives in ``<task_dir>/truth/`` and is scorer-only.
@@ -253,6 +270,8 @@ class Task(BaseModel):
     environment_type: Optional[str] = None
     requires_tools: list[str] = Field(default_factory=list)
     evaluation_target: Optional[str] = None
+    prep_battery_priority: Optional[int] = None
+    public_source: Optional[str] = None
     scoring: TaskScoring = Field(default_factory=TaskScoring)
     task_intent: str
     references: list[TaskReference] = Field(default_factory=list)
@@ -384,7 +403,7 @@ class BudgetSpec(BaseModel):
 
 class RunConfig(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDAgentBench-v1.0"
+    benchmark_version: str = "MDAgentBench-prep-v0.1"
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"
@@ -398,7 +417,7 @@ class RunConfig(BaseModel):
 
 class RunSummary(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDAgentBench-v1.0"
+    benchmark_version: str = "MDAgentBench-prep-v0.1"
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"
@@ -412,4 +431,3 @@ class RunSummary(BaseModel):
     scores: dict[str, Optional[float]] = Field(default_factory=dict)
     task_scores: list[dict] = Field(default_factory=list)
     runtime: dict = Field(default_factory=dict)
-

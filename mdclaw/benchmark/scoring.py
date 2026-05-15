@@ -361,6 +361,159 @@ def _check_topology_solvent_rescan(check: DeterministicCheck,
     )
 
 
+def _residue_counts_from_pdb(path: Path) -> dict[str, int]:
+    """Count unique residues by residue name in a PDB-like coordinate file."""
+    residues: set[tuple[str, str, str, str]] = set()
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:21].strip().upper()
+            parts = line.split()
+            if len(parts) >= 4 and len(parts[3].strip()) > len(resname):
+                resname = parts[3].strip().upper()
+            if not resname and len(parts) >= 4:
+                resname = parts[3].strip().upper()
+            if not resname:
+                continue
+            chain_id = line[21:22].strip()
+            resseq = line[22:26].strip()
+            icode = line[26:27].strip()
+            residues.add((chain_id, resseq, icode, resname))
+    counts: dict[str, int] = {}
+    for *_site, resname in residues:
+        counts[resname] = counts.get(resname, 0) + 1
+    return counts
+
+
+def _check_structure_component_rescan(check: DeterministicCheck,
+                                      submission_dir: Path,
+                                      manifest: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest, check.structure_manifest_path, "outputs.prepared_structure",
+    ) or check.structure_path or "prepared_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+
+    try:
+        counts = _residue_counts_from_pdb(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+
+    issues: list[str] = []
+    for resname, minimum in (check.min_residue_counts or {}).items():
+        observed = counts.get(str(resname).upper(), 0)
+        if observed < int(minimum):
+            issues.append(f"{resname}: observed {observed} < min {minimum}")
+    for resname, maximum in (check.max_residue_counts or {}).items():
+        observed = counts.get(str(resname).upper(), 0)
+        if observed > int(maximum):
+            issues.append(f"{resname}: observed {observed} > max {maximum}")
+    for resname, expected in (check.exact_residue_counts or {}).items():
+        observed = counts.get(str(resname).upper(), 0)
+        if observed != int(expected):
+            issues.append(f"{resname}: observed {observed} != expected {expected}")
+
+    if issues:
+        return False, 0.0, "; ".join(issues)
+    requested = {
+        "min": check.min_residue_counts or {},
+        "max": check.max_residue_counts or {},
+        "exact": check.exact_residue_counts or {},
+    }
+    return True, 1.0, f"component counts satisfied: {requested}"
+
+
+def _check_pdb_residue_state(check: DeterministicCheck,
+                             submission_dir: Path,
+                             manifest: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest, check.structure_manifest_path, "outputs.prepared_structure",
+    ) or check.structure_path or "prepared_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+    if not check.residue_number or not check.required_residue_name:
+        return False, 0.0, "residue_number and required_residue_name are required"
+
+    expected_chain = (check.residue_chain or "").strip()
+    expected_number = str(check.residue_number).strip()
+    expected_icode = (check.insertion_code or "").strip()
+    expected_resname = check.required_residue_name.strip().upper()
+    required_atoms = {
+        atom.strip().upper()
+        for atom in (check.required_atom_names or [])
+        if atom.strip()
+    }
+    forbidden_atoms = {
+        atom.strip().upper()
+        for atom in (check.forbidden_atom_names or [])
+        if atom.strip()
+    }
+
+    residue_names: set[str] = set()
+    atom_names: set[str] = set()
+    try:
+        with structure_path.open() as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                chain_id = line[21].strip()
+                resseq = line[22:26].strip()
+                icode = line[26].strip()
+                resname = line[17:20].strip().upper()
+                atom_name = line[12:16].strip().upper()
+                parts = line.split()
+                if len(parts) >= 6 and not resseq:
+                    chain_id = parts[4].strip()
+                    resseq = parts[5].strip()
+                    icode = ""
+                if len(parts) >= 6 and resseq != expected_number:
+                    # Fallback for permissive PDB-like fixtures where wider
+                    # residue names shift fixed columns.
+                    chain_id = parts[4].strip()
+                    resseq = parts[5].strip()
+                    icode = ""
+                    resname = parts[3].strip().upper()
+                    atom_name = parts[2].strip().upper()
+                if chain_id != expected_chain:
+                    continue
+                if resseq != expected_number or icode != expected_icode:
+                    continue
+                residue_names.add(resname)
+                atom_names.add(atom_name)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+
+    residue_label = f"{expected_chain}:{expected_number}{expected_icode}"
+    if not residue_names:
+        return False, 0.0, f"residue {residue_label} not found"
+    if expected_resname not in residue_names:
+        return (
+            False,
+            0.0,
+            f"residue {residue_label} names {sorted(residue_names)} "
+            f"do not include {expected_resname}",
+        )
+
+    missing = sorted(required_atoms - atom_names)
+    if missing:
+        return False, 0.0, f"residue {residue_label} missing atoms {missing}"
+    forbidden_present = sorted(forbidden_atoms & atom_names)
+    if forbidden_present:
+        return (
+            False,
+            0.0,
+            f"residue {residue_label} contains forbidden atoms {forbidden_present}",
+        )
+    return (
+        True,
+        1.0,
+        f"residue {residue_label} is {expected_resname} with required atoms present",
+    )
+
+
 def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
                           metrics: dict, task_dir: Optional[Path], **_):
     if task_dir is None:
@@ -424,6 +577,8 @@ _DETERMINISTIC_DISPATCH = {
     "json_allowed_values": _check_json_allowed_values,
     "trajectory_rescan": _check_trajectory_rescan,
     "topology_solvent_rescan": _check_topology_solvent_rescan,
+    "structure_component_rescan": _check_structure_component_rescan,
+    "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
 }

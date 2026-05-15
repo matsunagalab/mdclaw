@@ -164,27 +164,28 @@ def test_validate_submission_rejects_disallowed_blocked_status(tmp_path: Path):
     assert any("does not allow blocked" in err for err in result["errors"])
 
 
-def test_status_failed_keeps_score_when_guardrail_passes(tmp_path: Path):
-    """T02-style intentional refusal: status='failed' but a guardrail-equivalent
-    ground_truth check passes → keep the score."""
+def test_status_failed_keeps_score_when_allowed_truth_passes(tmp_path: Path):
+    """A task may define a scorer-side truth check for an intentional failed
+    outcome; if that hidden check passes, failed status can still receive
+    credit. Public prep tasks should avoid using this for MDClaw guardrails."""
     truth_dir = tmp_path / "task" / "truth"
     truth_dir.mkdir(parents=True)
-    (truth_dir / "expected_guardrail.json").write_text(
-        json.dumps({"expected_guardrail_code": "metal_containing_ligand_blocked"})
+    (truth_dir / "expected_failure.json").write_text(
+        json.dumps({"expected_failure_code": "curator_allowed_failure"})
     )
     task = _make_task(
         primary="preparation",
         gt_checks=[GroundTruthCheck(
-            check_id="g", truth_file="truth/expected_guardrail.json",
-            truth_path="expected_guardrail_code",
+            check_id="g", truth_file="truth/expected_failure.json",
+            truth_path="expected_failure_code",
             submission_file="metrics.json",
-            submission_path="preparation.guardrail_code",
+            submission_path="preparation.failure_code",
         )],
     )
     sub_dir = tmp_path / "submission"
     _write_submission(
         sub_dir, manifest={"task_id": "t", "status": "failed"},
-        metrics={"preparation": {"guardrail_code": "metal_containing_ligand_blocked"}},
+        metrics={"preparation": {"failure_code": "curator_allowed_failure"}},
     )
     score = scoring.score_submission(task, sub_dir, task_dir=tmp_path / "task")
     assert score.weighted_total == 1.0
@@ -384,6 +385,87 @@ def test_topology_solvent_rescan_fails_for_implicit_topology(tmp_path: Path):
     score = scoring.score_submission(task, tmp_path)
     assert score.deterministic_checks[0].passed is False
     assert "require >= 1" in score.deterministic_checks[0].message
+
+
+def test_pdb_residue_state_check_requires_variant_and_hydrogen(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="glu11_glh",
+            check_type="pdb_residue_state",
+            structure_manifest_path="outputs.prepared_structure",
+            residue_chain="A",
+            residue_number="11",
+            required_residue_name="GLH",
+            required_atom_names=["HE2"],
+            weight=1.0,
+        )],
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   GLH A  11       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  GLH A  11       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  HE2 GLH A  11       2.000   0.000   0.000  1.00  0.00           H\n"
+        "END\n"
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   GLU A  11       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  GLU A  11       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    failed_score = scoring.score_submission(task, tmp_path)
+    failed = failed_score.deterministic_checks[0]
+    assert failed.passed is False
+    assert "do not include GLH" in failed.message
+
+
+def test_structure_component_rescan_counts_required_and_forbidden_residues(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="components",
+            check_type="structure_component_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            min_residue_counts={"AP5": 1},
+            max_residue_counts={"SO4": 0},
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1  AP5 B   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  S   SO4 B   2       1.000   0.000   0.000  1.00  0.00           S\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "AP5" in failed.message
+    assert "SO4" in failed.message
 
 
 def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):

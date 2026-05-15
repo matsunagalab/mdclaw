@@ -28,7 +28,7 @@ from mdclaw.benchmark.models import (
 )
 
 
-_BENCHMARK_VERSION = "MDAgentBench-v1.0"
+_BENCHMARK_VERSION = "MDAgentBench-prep-v0.1"
 
 
 def _now_utc() -> str:

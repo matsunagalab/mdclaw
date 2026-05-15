@@ -1,4 +1,4 @@
-"""LLM-judge plumbing for MDAgentBench v1.0.
+"""LLM-judge plumbing for MDAgentBench.
 
 The framework defines the *interface* for qualitative scoring, but does not
 itself call an LLM. An external evaluator is expected to:
@@ -9,7 +9,7 @@ itself call an LLM. An external evaluator is expected to:
 4. Pass the response file via ``--llm-judge-file`` to
    ``score_benchmark_submission``.
 
-A future v1.x release will ship ``mdclaw run_llm_judge`` to automate steps 2-3.
+A future release will ship ``mdclaw run_llm_judge`` to automate steps 2-3.
 For now this module just validates and normalizes the supplied judge file.
 """
 
@@ -53,7 +53,7 @@ def make_judge_prompt(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
         "task_id": task.get("task_id"),
-        "judge_role": "MDAgentBench v1.0 qualitative judge",
+        "judge_role": "MDAgentBench qualitative judge",
         "instructions": (
             "Read the agent's submission and produce a JSON object whose "
             "`scores` keys are the rubric names listed in `rubrics` and whose "

@@ -118,7 +118,7 @@ def list_benchmark_tasks(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, A
 
     return {
         "success": True,
-        "benchmark_version": dataset.get("benchmark_version", "MDAgentBench-v1.0"),
+        "benchmark_version": dataset.get("benchmark_version", "MDAgentBench-prep-v0.1"),
         "schema_version": dataset.get("schema_version", "1.0"),
         "task_count": len(tasks_meta),
         "families": dataset.get("families", {}),
@@ -306,7 +306,7 @@ def export_benchmark_public_package(
             contract = {
                 "schema_version": "1.0",
                 "benchmark_version": dataset.get(
-                    "benchmark_version", "MDAgentBench-v1.0"
+                    "benchmark_version", "MDAgentBench-prep-v0.1"
                 ),
                 "task_id": task.task_id,
                 "category": task.category,
@@ -350,7 +350,7 @@ def export_benchmark_public_package(
                     "kind": _PUBLIC_EXPORT_KIND,
                     "dataset_dir": str(source),
                     "benchmark_version": dataset.get(
-                        "benchmark_version", "MDAgentBench-v1.0"
+                        "benchmark_version", "MDAgentBench-prep-v0.1"
                     ),
                 },
                 indent=2,

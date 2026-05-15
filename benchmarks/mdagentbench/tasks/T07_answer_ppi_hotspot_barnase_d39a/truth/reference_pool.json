@@ -1,4 +1,0 @@
-{
-  "allowed_source_pools": ["SKEMPI", "ASEdb"],
-  "note": "Predict effect.direction from MD-derived metrics. Run short comparative MD of the WT complex and the D39A mutant complex against barstar and report quantitative differences across the interface (Δinterface SASA, Δ inter-chain contact count, Δ hydrogen-bond count, Δ salt-bridge count, Δ binding-pocket water occupancy, etc.) in metrics.md_analysis and evidence_report.evidence.md_metrics. Cite a record from the pools above (SKEMPI entry + PMID/DOI, ASEdb record) only for confidence calibration — the direction itself must be supported by your MD numbers, not by recalling the literature."
-}

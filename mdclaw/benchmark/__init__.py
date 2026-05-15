@@ -1,4 +1,4 @@
-"""MDAgentBench v1.0 framework.
+"""MDAgentBench framework.
 
 The package owns the dataset models, validators, deterministic scorer, and
 durable run summaries. It deliberately does not launch benchmark agents; agents

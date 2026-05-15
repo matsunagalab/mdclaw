@@ -1,8 +1,8 @@
-"""All-task MDAgentBench dry-run coverage.
+"""All-task prep-benchmark dry-run coverage.
 
-This exercises the full v1.0 scorer lifecycle across every shipped task without
-running real MD. The fake submissions intentionally include partial / failing
-artifacts so scorer strictness is locked down alongside the happy paths.
+This exercises the scorer lifecycle across every shipped prep task without
+running real MD. The fake submissions intentionally include passing and failing
+artifacts so scorer strictness is locked down alongside the happy path.
 """
 
 from __future__ import annotations
@@ -66,38 +66,21 @@ def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:
 
 
 def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
-    """The honest fixture is not a perfect run: it should expose the synthetic
-    artifact gaps while still passing the deterministic answer/guardrail tasks."""
+    """The honest fixture should satisfy the deterministic prep checks."""
 
     summary, tasks = _score_fake_run(tmp_path, "honest")
 
-    assert summary["n_tasks"] == 9
-    # Synthetic fixtures are scorer/CI fixtures, not leaderboard evidence.
-    # T06/T07 now require real trajectory artifacts and therefore reject the
-    # JSON-only fixture despite correct answer strings.
-    assert summary["overall_score"] == pytest.approx(0.3367)
+    assert summary["n_tasks"] == 25
+    assert summary["overall_score"] >= 0.8
     assert summary["scores"] == {
-        "preparation": pytest.approx(0.5),
-        "execution": pytest.approx(0.5167),
-        "scientific_answer": pytest.approx(0.0),
-        "evidence_communication": pytest.approx(1.0),
+        "preparation": pytest.approx(summary["overall_score"]),
+        "execution": None,
+        "scientific_answer": None,
+        "evidence_communication": None,
     }
 
-    expected_statuses = {
-        "T01_engine_smoke": "partial",
-        "T02_prep_metalloenzyme_guardrail": "passed",
-        "T03_prep_ligand_pose_t4l_benzene": "failed",
-        "T04_exec_short_protein_md": "partial",
-        "T05_exec_restart_continue": "partial",
-        "T06_answer_stability_t4l_l99a": "failed",
-        "T07_answer_ppi_hotspot_barnase_d39a": "failed",
-        "T08_communicate_t4l_dynamics": "partial",
-        "T09_study_t4l_wt_vs_l99a_methods": "partial",
-    }
-    assert {task_id: payload["status"] for task_id, payload in tasks.items()} == expected_statuses
-    assert tasks["T03_prep_ligand_pose_t4l_benzene"]["summary_record"]["failed_check_ids"] == [
-        "ligand_pose_preserved"
-    ]
+    assert set(tasks) == set(_fake_submissions.GENERATORS)
+    assert all(payload["status"] == "passed" for payload in tasks.values())
 
 
 def test_all_task_wrong_fake_submission_scores_are_stable(tmp_path: Path):
@@ -106,21 +89,8 @@ def test_all_task_wrong_fake_submission_scores_are_stable(tmp_path: Path):
 
     summary, tasks = _score_fake_run(tmp_path, "wrong")
 
-    assert summary["n_tasks"] == 9
-    # 0.0711 → 0.0656 after the new T03/T04/T05 integrity_checks fire on
-    # the wrong fixture's thin evidence_report; axes themselves unchanged.
-    assert summary["overall_score"] == pytest.approx(0.0656)
-    assert summary["scores"] == {
-        "preparation": pytest.approx(0.25),
-        "execution": pytest.approx(0.0333),
-        "scientific_answer": pytest.approx(0.0),
-        "evidence_communication": pytest.approx(0.45),
-    }
-
-    assert tasks["T01_engine_smoke"]["status"] == "failed"
-    assert tasks["T02_prep_metalloenzyme_guardrail"]["weighted_total"] == 0.0
-    assert tasks["T06_answer_stability_t4l_l99a"]["weighted_total"] == 0.0
-    assert tasks["T07_answer_ppi_hotspot_barnase_d39a"]["weighted_total"] == 0.0
-    assert tasks["T08_communicate_t4l_dynamics"]["summary_record"]["failed_check_ids"] == [
-        "metrics_caption_consistency"
-    ]
+    assert summary["n_tasks"] == 25
+    assert summary["overall_score"] < 0.25
+    assert summary["scores"]["preparation"] == pytest.approx(summary["overall_score"])
+    assert any(payload["weighted_total"] == 0.0 for payload in tasks.values())
+    assert all(payload["status"] in {"failed", "partial"} for payload in tasks.values())
