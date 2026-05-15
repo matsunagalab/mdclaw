@@ -34,7 +34,9 @@ skill examples.
 - `clean_ligand(...)`: ligand cleaning and parameterization.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
   water components.
-- `merge_structures(...)`: merge prepared PDB fragments.
+- `merge_structures(...)`: merge prepared PDB fragments and emit
+  `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
+  compatibility labels and may repeat in large assemblies.
 - `run_antechamber_robust(...)`: metal pre-check, amber_geostd, and GAFF2
   fallback ligand parameterization.
 - `download_amber_geostd(...)`: fetch the curated ligand parameter database.

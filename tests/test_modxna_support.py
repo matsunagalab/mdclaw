@@ -182,6 +182,9 @@ def test_prepare_complex_writes_nucleic_residue_mapping(tmp_path):
     mapping_path = Path(result["residue_mapping_file"])
     assert mapping_path.exists()
     assert {m["source_resname"] for m in result["residue_mapping"]} >= {"DA", "DC", "A", "U"}
+    chain_identity_path = Path(result["chain_identity_map_file"])
+    assert chain_identity_path.exists()
+    assert result["preparation_summary"]["chain_identity_map"]["component_count"] >= 2
 
 
 def test_prepare_modified_nucleic_fake_modxna_source_frame(tmp_path):

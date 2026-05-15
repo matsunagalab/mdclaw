@@ -120,7 +120,7 @@ Node artifacts are intentionally local to each node:
 | Node Type | Typical Artifacts |
 |---|---|
 | `source` | `source_bundle.json`, normalized `candidates/candidate_*` files, optional raw downloaded/copied/generated structures, source metadata, optional `inspection.json`. |
-| `prep` | `source_selection.json`, cleaned/merged PDB, `ligand_params.json`, `residue_mapping.json`, branch-specific prepared structures. |
+| `prep` | `source_selection.json`, cleaned/merged PDB, `chain_identity_map.json`, `ligand_params.json`, `residue_mapping.json`, branch-specific prepared structures. |
 | `solv` | `solvated.pdb`, `box_dimensions.json`, membrane metadata when applicable. |
 | `topo` | `system.system.xml`, `system.topology.pdb`, `system.state.xml`, force-field provenance. |
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |

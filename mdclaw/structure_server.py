@@ -44,6 +44,11 @@ from mdclaw.research_server import classify_nucleic_residues  # noqa: E402
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
+PDB_CHAIN_ID_POOL = (
+    list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    + list("abcdefghijklmnopqrstuvwxyz")
+    + list("0123456789")
+)
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -51,6 +56,29 @@ pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 antechamber_wrapper = BaseToolWrapper("antechamber")
 parmchk2_wrapper = BaseToolWrapper("parmchk2")
 obabel_wrapper = BaseToolWrapper("obabel", warn_missing=False)
+
+
+def _pdb_chain_id_for_index(index: int) -> str:
+    """Return a PDB-compatible one-character chain label.
+
+    The label is intentionally not a canonical identity.  PDB only has one
+    chain-ID column, so large assemblies must reuse labels and rely on the
+    chain identity map for unambiguous component tracking.
+    """
+    return PDB_CHAIN_ID_POOL[index % len(PDB_CHAIN_ID_POOL)]
+
+
+def _path_lookup_keys(path: str | Path | None) -> set[str]:
+    """Return stable path spellings for joins across preparation steps."""
+    if path is None:
+        return set()
+    p = Path(path)
+    keys = {str(path), str(p)}
+    try:
+        keys.add(str(p.resolve()))
+    except OSError:
+        pass
+    return keys
 
 
 def _read_pdb_heavy_atoms_for_validation(pdb_file: str) -> List[Dict[str, Any]]:
@@ -4588,10 +4616,16 @@ def merge_structures(
     This tool combines multiple protein and ligand PDB files into one unified
     structure suitable for solvation or membrane embedding with packmol-memgen.
     
-    Chain IDs are automatically renamed to avoid conflicts:
+    PDB chain IDs are automatically assigned as short compatibility labels:
     - First 26 chains: A-Z
     - Next 26 chains: a-z
-    - Additional chains: 0-9
+    - Next 10 chains: 0-9
+    - Additional chains reuse the same pool.
+
+    The one-character PDB chain ID is not a canonical identity.  For systems
+    with many chains, use the returned ``chain_identity_map`` entries
+    (component_id + topology_chain_index + atom/residue index ranges) to track
+    source components unambiguously.
     
     Atom names are preserved exactly as they appear in the input files,
     which is critical for subsequent openmmforcefields builds where the
@@ -4613,6 +4647,9 @@ def merge_structures(
             - output_dir: str - Output directory path
             - input_files: list[str] - List of input file paths
             - chain_mapping: dict - Mapping of {input_file: {original_chain: new_chain}}
+            - chain_identity_map: dict - Component-level source-to-merged chain
+              identity map; required when PDB chain IDs are reused
+            - chain_identity_map_file: str - JSON file storing chain_identity_map
             - statistics: dict - Summary statistics (total_atoms, total_residues, etc.)
             - errors: list[str] - Error messages (empty if success=True)
             - warnings: list[str] - Non-critical issues encountered
@@ -4636,10 +4673,25 @@ def merge_structures(
         "output_dir": None,
         "input_files": pdb_files,
         "chain_mapping": {},
+        "chain_mapping_entries": [],
+        "chain_identity_map": {
+            "schema_version": "mdclaw.chain_identity_map.v1",
+            "identity_contract": (
+                "PDB chain IDs are MD compatibility labels and may be reused; "
+                "component_id plus topology_chain_index and atom/residue ranges "
+                "are the canonical identities."
+            ),
+            "pdb_chain_id_policy": "cycle_A-Z_a-z_0-9",
+            "pdb_chain_id_pool_size": len(PDB_CHAIN_ID_POOL),
+            "pdb_chain_ids_may_repeat": True,
+            "components": [],
+        },
+        "chain_identity_map_file": None,
         "statistics": {
             "total_atoms": 0,
             "total_residues": 0,
             "total_chains": 0,
+            "unique_pdb_chain_ids": 0,
             "input_file_count": len(pdb_files)
         },
         "errors": [],
@@ -4677,12 +4729,6 @@ def merge_structures(
     out_dir = create_unique_subdir(base_dir, "merge")
     result["output_dir"] = str(out_dir)
 
-    # Chain ID pool for renaming
-    chain_id_pool = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ") + \
-                    list("abcdefghijklmnopqrstuvwxyz") + \
-                    list("0123456789")
-    chain_id_index = 0
-    
     try:
         # Create new structure to hold merged result
         merged_structure = gemmi.Structure()
@@ -4691,6 +4737,8 @@ def merge_structures(
         
         total_atoms = 0
         total_residues = 0
+        topology_chain_index = 0
+        assigned_chain_ids: list[str] = []
         
         for pdb_file in pdb_files:
             pdb_path = Path(pdb_file)
@@ -4710,23 +4758,31 @@ def merge_structures(
             
             input_model = input_structure[0]
             file_chain_mapping = {}
+            source_chain_index = 0
             
             for chain in input_model:
                 original_chain_id = chain.name
-                
-                # Assign new chain ID
-                if chain_id_index >= len(chain_id_pool):
-                    result["errors"].append(f"Too many chains (>{len(chain_id_pool)})")
-                    logger.error("Exceeded maximum chain count")
-                    return result
-                
-                new_chain_id = chain_id_pool[chain_id_index]
-                chain_id_index += 1
+
+                # Assign a short PDB-compatible label.  It may repeat after
+                # the finite PDB chain-ID pool is exhausted; the identity map
+                # below is the authoritative source component key.
+                new_chain_id = _pdb_chain_id_for_index(topology_chain_index)
                 
                 file_chain_mapping[original_chain_id] = new_chain_id
+                result["chain_mapping_entries"].append({
+                    "source_file": str(pdb_path),
+                    "source_chain_id": original_chain_id,
+                    "source_chain_index": source_chain_index,
+                    "topology_chain_index": topology_chain_index,
+                    "md_chain_id": new_chain_id,
+                })
                 
                 # Create new chain with new ID
                 new_chain = gemmi.Chain(new_chain_id)
+                atom_start = total_atoms
+                residue_start = total_residues
+                component_atom_count = 0
+                component_residue_count = 0
                 
                 # Copy residues and atoms (preserving atom names exactly)
                 for residue in chain:
@@ -4744,14 +4800,38 @@ def merge_structures(
                         new_atom.element = atom.element
                         new_residue.add_atom(new_atom)
                         total_atoms += 1
+                        component_atom_count += 1
                     
                     if len(list(new_residue)) > 0:
                         new_chain.add_residue(new_residue)
                         total_residues += 1
+                        component_residue_count += 1
                 
                 if len(list(new_chain)) > 0:
                     merged_model.add_chain(new_chain)
-                    logger.info(f"  Chain {original_chain_id} -> {new_chain_id}")
+                    assigned_chain_ids.append(new_chain_id)
+                    component_id = f"component_{topology_chain_index + 1:06d}"
+                    result["chain_identity_map"]["components"].append({
+                        "component_id": component_id,
+                        "source_file": str(pdb_path),
+                        "source_chain_id": original_chain_id,
+                        "source_chain_index": source_chain_index,
+                        "topology_chain_index": topology_chain_index,
+                        "md_chain_id": new_chain_id,
+                        "pdb_chain_id": new_chain_id,
+                        "atom_index_start": atom_start,
+                        "atom_index_end_exclusive": total_atoms,
+                        "atom_count": component_atom_count,
+                        "residue_index_start": residue_start,
+                        "residue_index_end_exclusive": total_residues,
+                        "residue_count": component_residue_count,
+                    })
+                    logger.info(
+                        f"  Chain {original_chain_id} -> {new_chain_id} "
+                        f"({component_id})"
+                    )
+                    topology_chain_index += 1
+                source_chain_index += 1
             
             result["chain_mapping"][str(pdb_path)] = file_chain_mapping
         
@@ -4766,14 +4846,26 @@ def merge_structures(
         # gemmi doesn't recognize Amber naming conventions (HIE, NALA, etc.)
         _fix_amino_acid_hetatm_records(output_file)
 
+        chain_identity_map_file = out_dir / f"{output_name}.chain_identity_map.json"
+        with open(chain_identity_map_file, "w") as f:
+            json.dump(result["chain_identity_map"], f, indent=2)
+
         result["output_file"] = str(output_file)
+        result["chain_identity_map_file"] = str(chain_identity_map_file)
         result["statistics"]["total_atoms"] = total_atoms
         result["statistics"]["total_residues"] = total_residues
-        result["statistics"]["total_chains"] = chain_id_index
+        result["statistics"]["total_chains"] = topology_chain_index
+        result["statistics"]["unique_pdb_chain_ids"] = len(set(assigned_chain_ids))
+        result["statistics"]["pdb_chain_id_reuse_count"] = (
+            topology_chain_index - len(set(assigned_chain_ids))
+        )
         result["success"] = True
         
         logger.info(f"Successfully merged {len(pdb_files)} files into {output_file}")
-        logger.info(f"  Total: {total_atoms} atoms, {total_residues} residues, {chain_id_index} chains")
+        logger.info(
+            f"  Total: {total_atoms} atoms, {total_residues} residues, "
+            f"{topology_chain_index} chains"
+        )
         
     except Exception as e:
         error_msg = f"Error during structure merging: {type(e).__name__}: {str(e)}"
@@ -4882,6 +4974,123 @@ def _build_residue_mapping_for_type(
                 "chain_file": chain_file,
             })
     return mapping
+
+
+def _index_prepared_component_sources(
+    *,
+    chain_info_map: dict,
+    proteins: list[dict],
+    nucleics: list[dict],
+    glycans: list[dict],
+    ligands: list[dict],
+    ion_files: list[str],
+) -> dict[str, dict]:
+    """Build a path-keyed lookup from prepared fragments to source identity."""
+    index: dict[str, dict] = {}
+
+    def add(path: str | Path | None, metadata: dict) -> None:
+        for key in _path_lookup_keys(path):
+            index[key] = metadata
+
+    def source_metadata(chain_id: str | None, chain_type: str) -> dict:
+        info = chain_info_map.get(chain_id, {}) if chain_id is not None else {}
+        return {
+            "source_label_asym_id": chain_id,
+            "source_auth_asym_id": info.get("author_chain", chain_id),
+            "source_chain_type": chain_type,
+            "source_unique_id": info.get("unique_id"),
+            "source_resnum": info.get("resnum"),
+            "source_nucleic_subtype": info.get("nucleic_subtype"),
+        }
+
+    for protein in proteins or []:
+        if protein.get("success") and protein.get("output_file"):
+            add(
+                protein.get("output_file"),
+                {
+                    **source_metadata(protein.get("chain_id"), "protein"),
+                    "prepared_fragment_role": "protein",
+                    "prepared_input_file": protein.get("input_file"),
+                },
+            )
+
+    for nucleic in nucleics or []:
+        if nucleic.get("success") and nucleic.get("output_file"):
+            add(
+                nucleic.get("output_file"),
+                {
+                    **source_metadata(nucleic.get("chain_id"), "nucleic"),
+                    "prepared_fragment_role": "nucleic",
+                    "prepared_input_file": nucleic.get("input_file"),
+                },
+            )
+
+    for glycan in glycans or []:
+        if glycan.get("success") and glycan.get("output_file"):
+            add(
+                glycan.get("output_file"),
+                {
+                    **source_metadata(glycan.get("chain_id"), "glycan"),
+                    "prepared_fragment_role": "glycan",
+                    "prepared_input_file": glycan.get("input_file"),
+                    "source_residue_names": glycan.get("residue_names", []),
+                },
+            )
+
+    for ligand in ligands or []:
+        if ligand.get("success"):
+            ligand_path = ligand.get("pdb_file") or ligand.get("input_file")
+            if ligand_path:
+                add(
+                    ligand_path,
+                    {
+                        **source_metadata(ligand.get("chain_id"), "ligand"),
+                        "prepared_fragment_role": "ligand",
+                        "prepared_input_file": ligand.get("input_file"),
+                        "ligand_instance_id": ligand.get("ligand_instance_id"),
+                        "ligand_id": ligand.get("ligand_id"),
+                        "source_residue_name": ligand.get("residue_name"),
+                    },
+                )
+
+    for ion_file in ion_files or []:
+        ion_info = None
+        for info in chain_info_map.values():
+            if info.get("file") == ion_file:
+                ion_info = info
+                break
+        chain_id = ion_info.get("chain_id") if ion_info else None
+        add(
+            ion_file,
+            {
+                **source_metadata(chain_id, "ion"),
+                "prepared_fragment_role": "ion",
+                "prepared_input_file": ion_file,
+            },
+        )
+
+    return index
+
+
+def _enrich_chain_identity_map(
+    chain_identity_map: dict,
+    prepared_source_index: dict[str, dict],
+) -> dict:
+    """Attach source label/auth identifiers to merge-level component records."""
+    enriched = dict(chain_identity_map or {})
+    components = []
+    for component in (chain_identity_map or {}).get("components", []):
+        enriched_component = dict(component)
+        metadata = None
+        for key in _path_lookup_keys(component.get("source_file")):
+            metadata = prepared_source_index.get(key)
+            if metadata:
+                break
+        if metadata:
+            enriched_component.update(metadata)
+        components.append(enriched_component)
+    enriched["components"] = components
+    return enriched
 
 
 def _parse_pdb_glycan_link_records(structure_path: Path) -> list[dict]:
@@ -6024,8 +6233,31 @@ def prepare_complex(
                         "output_file": merge_result["output_file"],
                         "statistics": merge_result.get("statistics", {}),
                         "chain_mapping": merge_result.get("chain_mapping", {}),
+                        "chain_mapping_entries": merge_result.get("chain_mapping_entries", []),
+                        "chain_identity_map_file": merge_result.get("chain_identity_map_file"),
                     }
+                    prepared_source_index = _index_prepared_component_sources(
+                        chain_info_map=chain_info_map,
+                        proteins=result.get("proteins", []),
+                        nucleics=result.get("nucleics", []),
+                        glycans=result.get("glycans", []),
+                        ligands=result.get("ligands", []),
+                        ion_files=split_result.get("ion_files", []),
+                    )
+                    chain_identity_map = _enrich_chain_identity_map(
+                        merge_result.get("chain_identity_map", {}),
+                        prepared_source_index,
+                    )
+                    result["chain_identity_map"] = chain_identity_map
+                    chain_identity_map_json = base_dir / "chain_identity_map.json"
+                    with open(chain_identity_map_json, "w") as f:
+                        json.dump(chain_identity_map, f, indent=2)
+                    result["chain_identity_map_file"] = str(chain_identity_map_json)
                     logger.info(f"  ✓ Merged: {merge_result['output_file']}")
+                    logger.info(
+                        "  ↳ Wrote chain_identity_map.json "
+                        f"({len(chain_identity_map.get('components', []))} components)"
+                    )
 
                     residue_mapping = _build_nucleic_residue_mapping(
                         split_result=split_result,
@@ -6259,6 +6491,15 @@ def prepare_complex(
             preparation_summary["glycan_linkage_count"] = len(result.get("glycan_linkages", []))
         if detected_ptm_residues:
             preparation_summary["detected_ptm_residues"] = detected_ptm_residues
+        if result.get("chain_identity_map"):
+            chain_identity_components = result["chain_identity_map"].get("components", [])
+            preparation_summary["chain_identity_map"] = {
+                "component_count": len(chain_identity_components),
+                "pdb_chain_ids_may_repeat": result["chain_identity_map"].get(
+                    "pdb_chain_ids_may_repeat", True
+                ),
+                "artifact": "chain_identity_map.json",
+            }
         result["preparation_summary"] = preparation_summary
 
         # -- confirmation_needed: structured block for HITL review --------
@@ -6400,6 +6641,8 @@ def prepare_complex(
                 artifacts["disulfide_bonds"] = "artifacts/disulfide_bonds.json"
             if (base_dir / "residue_mapping.json").exists():
                 artifacts["residue_mapping"] = "artifacts/residue_mapping.json"
+            if (base_dir / "chain_identity_map.json").exists():
+                artifacts["chain_identity_map"] = "artifacts/chain_identity_map.json"
             if (base_dir / "glycan_metadata.json").exists():
                 artifacts["glycan_metadata"] = "artifacts/glycan_metadata.json"
             if (base_dir / "glycan_linkages.json").exists():

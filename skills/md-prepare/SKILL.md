@@ -94,7 +94,11 @@ node; see `skills/md-prepare/branches.md`).
    solvation guidance. If the user specifies site-specific residue
    protonation, pass it explicitly through `protonation_states`; do not leave
    it as a free-text note. Create nodes first, then run workflow tools with
-   both `--job-dir` and `--node-id`.
+   both `--job-dir` and `--node-id`. For biological assemblies or systems with
+   many chains, do not treat the one-character PDB chain ID in `merged_pdb` as
+   a canonical identity. Read `chain_identity_map.json` and use `component_id`,
+   source label/auth IDs, topology chain index, and atom/residue ranges to
+   identify components.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
    available:
