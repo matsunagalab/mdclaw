@@ -20,6 +20,11 @@ combination commonly seen in AMBER tutorials and training data. The
 pairing is enforced by guardrails — `ff19SB + tip3p` is rejected as a
 structured error (code `forcefield_water_blocked`).
 
+Default solvation mode is **explicit solvent**. Unless the user explicitly
+requests implicit solvent, no-solvent/vacuum topology, or a membrane workflow,
+run `prepare_complex` → `solvate_structure` → `build_amber_system`; do not build
+topology directly from the prep node.
+
 Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
 guardrails are authoritative; the skill guidance provides quick references:
 
@@ -101,7 +106,13 @@ node; see `skills/md-prepare/branches.md`).
    many chains, do not treat the one-character PDB chain ID in `merged_pdb` as
    a canonical identity. Read `chain_identity_map.json` and use `component_id`,
    source label/auth IDs, topology chain index, and atom/residue ranges to
-   identify components.
+   identify components. Keep supported crystallographic ions by default on the
+   explicit-solvent path. If the user requests implicit solvent, exclude
+   explicit ion residues before topology or stop and ask whether to switch back
+   to explicit solvent. A deliberate vacuum/no-solvent topology may keep
+   explicit ions, but it is not the default MD workflow. `build_amber_system`
+   will reject implicit builds that still contain explicit ions with
+   `code="explicit_ions_in_implicit_solvent"`.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
    available:

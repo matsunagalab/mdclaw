@@ -12,6 +12,7 @@ human-readable messages.
 | `missing_xml_topology_inputs` | Run or repair the topo node that should emit the XML triple. |
 | `forcefield_water_blocked` | Use a supported forcefield/water pair, usually `ff19SB + opc`. |
 | `explicit_solvent_box_dimensions_missing` | Build topology from a completed explicit-solvent `solv` node. |
+| `explicit_ions_in_implicit_solvent` | Remove explicit ions before an implicit build, or choose explicit solvent / deliberate vacuum. |
 | `implicit_solvent_topology_mismatch` | Match the run-time implicit solvent to the topology build. |
 | `modern_system_hmr_mismatch` | Use the HMR setting baked into `system.xml`. |
 | `parent_not_completed` | Complete or repair the parent node before running this node. |

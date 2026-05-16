@@ -12,7 +12,10 @@ Use the resulting JSON to decide:
 - Standard DNA/RNA chains to keep as nucleic acids.
 - Glycans to keep with the protein.
 - Ligands to include, exclude, or parameterize.
-- Metal ions that need explicit parameterization.
+- Source ions / metal ions. Keep supported ions only for explicit-solvent
+  systems by default; implicit solvent must drop explicit ion particles or
+  switch back to explicit solvent. A deliberate vacuum/no-solvent topology may
+  keep explicit ions.
 - PTM sites that should be restored later with `phosphorylate_residues`.
 - Modified DNA/RNA residues. If
   `summary.modified_nucleic_support_status == "unsupported"`, report the

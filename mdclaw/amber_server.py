@@ -195,6 +195,22 @@ def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
     rewritten = f"{rewritten[:76]:<76}{element:>2}{rewritten[78:] if len(rewritten) > 78 else ''}"
     return rewritten, rewritten != line
 
+
+def _scan_pdb_ion_residue_names(path: Path) -> list[str]:
+    """Return canonical ion residue names present in a PDB file."""
+    ions: set[str] = set()
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines:
+        if not line.startswith("HETATM"):
+            continue
+        canonical = _canonical_pablo_ion_resname(line[17:20])
+        if canonical:
+            ions.add(canonical)
+    return sorted(ions)
+
 WATER_FORCEFIELDS = {
     "tip3p": "leaprc.water.tip3p",
     "opc": "leaprc.water.opc",
@@ -1814,9 +1830,9 @@ def build_amber_system(
         )
 
     Args:
-        pdb_file: Input PDB. For implicit solvent use ``merged.pdb`` from
-                  ``merge_structures``; for explicit solvent use
-                  ``solvated.pdb`` from ``solvate_structure``.
+        pdb_file: Input PDB. For implicit solvent use an ion-free
+                  ``merged.pdb`` from ``merge_structures``; for explicit
+                  solvent use ``solvated.pdb`` from ``solvate_structure``.
         ligand_chemistry: List of ligand chemistry dicts from
                        ``prepare_complex``; each should carry ``sdf`` or
                        ``smiles`` plus ``residue_name``. Topology resolves
@@ -1881,7 +1897,8 @@ def build_amber_system(
               paths to the modern artifact triple.
             - ``minimization_report``: absolute path to the topology-time
               minimization evidence JSON.
-            - ``solvent_type``: ``"implicit"`` or ``"explicit"``.
+            - ``solvent_type``: ``"explicit"``, ``"implicit"``, or
+              ``"vacuum"``.
             - ``parameters``: copy of the input parameter selection.
             - ``forcefield_provenance``: dict capturing the resolved
               OpenMM XML bundle, topology-time ligand template sources,
@@ -1978,12 +1995,12 @@ def build_amber_system(
         return blocked
 
     logger.info(f"Building Amber system from: {pdb_file}")
+    pdb_path = Path(pdb_file)
 
     # Auto-detect ligand_chemistry.json if not provided. This is the standard
     # prepare_complex -> build_amber_system handoff: prep records chemistry,
     # topology resolves geostd or GAFF.
     if ligand_chemistry is None:
-        pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             lig_json = search_dir / "ligand_chemistry.json"
             if lig_json.exists():
@@ -2016,7 +2033,6 @@ def build_amber_system(
     # Auto-detect disulfide_bonds.json if not provided (written by prepare_complex
     # as a prep-node artifact; same parent-directory search as ligand chemistry).
     if disulfide_bonds is None:
-        pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             ss_json = search_dir / "disulfide_bonds.json"
             if ss_json.exists():
@@ -2031,7 +2047,6 @@ def build_amber_system(
 
     # Auto-detect glycan prep artifacts if not provided.
     if glycan_metadata is None:
-        pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             gly_json = search_dir / "glycan_metadata.json"
             if gly_json.exists():
@@ -2042,7 +2057,6 @@ def build_amber_system(
                     logger.warning(f"Found {gly_json} but could not read: {e}")
                 break
     if glycan_linkages is None:
-        pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             gly_link_json = search_dir / "glycan_linkages.json"
             if gly_link_json.exists():
@@ -2057,7 +2071,6 @@ def build_amber_system(
 
     # Auto-detect box_dimensions.json if not provided
     if box_dimensions is None:
-        pdb_path = Path(pdb_file)
         box_json = pdb_path.parent / "box_dimensions.json"
         if box_json.exists():
             try:
@@ -2080,15 +2093,15 @@ def build_amber_system(
             explicit_requested = False
     if box_dimensions is not None:
         if not isinstance(box_dimensions, dict) or not box_dimensions:
-            box_dim_warning = f"CRITICAL: box_dimensions was invalid (empty or not dict): {original_box_dim}. Building IMPLICIT solvent system. If you wanted explicit solvent, ensure solvate step returned box_dimensions and it was passed correctly."
+            box_dim_warning = f"CRITICAL: box_dimensions was invalid (empty or not dict): {original_box_dim}. Building non-periodic system. If you wanted explicit solvent, ensure solvate step returned box_dimensions and it was passed correctly."
             logger.warning(box_dim_warning)
             box_dimensions = None
         elif not all(key in box_dimensions for key in ["box_a", "box_b", "box_c"]):
-            box_dim_warning = f"CRITICAL: box_dimensions missing required keys (box_a/b/c): {original_box_dim}. Building IMPLICIT solvent system."
+            box_dim_warning = f"CRITICAL: box_dimensions missing required keys (box_a/b/c): {original_box_dim}. Building non-periodic system."
             logger.warning(box_dim_warning)
             box_dimensions = None
         elif not all(box_dimensions.get(key, 0) > 0 for key in ["box_a", "box_b", "box_c"]):
-            box_dim_warning = f"CRITICAL: box_dimensions has zero or negative values: {original_box_dim}. Building IMPLICIT solvent system."
+            box_dim_warning = f"CRITICAL: box_dimensions has zero or negative values: {original_box_dim}. Building non-periodic system."
             logger.warning(box_dim_warning)
             box_dimensions = None
     if explicit_requested and box_dimensions is None:
@@ -2170,7 +2183,11 @@ def build_amber_system(
     # only topology contract; downstream code (DAG resolver, eq/prod)
     # never reads anything else.
     job_id = generate_job_id()
-    solvent_type = "implicit" if box_dimensions is None else "explicit"
+    solvent_type = (
+        "explicit"
+        if box_dimensions is not None
+        else ("implicit" if canonical_implicit_solvent else "vacuum")
+    )
     result = {
         "success": False,
         "job_id": job_id,
@@ -2184,7 +2201,7 @@ def build_amber_system(
             "water_model_status": (
                 "used_for_explicit_solvent"
                 if solvent_type == "explicit"
-                else "not_used_for_implicit_solvent"
+                else f"not_used_for_{solvent_type}_solvent"
             ),
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
@@ -2260,6 +2277,38 @@ def build_amber_system(
     )
     if solvent_type == "implicit":
         result["parameters"]["validated_water_model"] = water_model
+
+    retained_ion_residue_names = _scan_pdb_ion_residue_names(pdb_path)
+    if retained_ion_residue_names:
+        result["parameters"]["retained_ion_residue_names"] = retained_ion_residue_names
+        if solvent_type == "vacuum":
+            result["parameters"]["ion_parameter_water_model"] = water_model
+            result["parameters"]["water_model_status"] = (
+                "used_for_vacuum_ion_templates"
+            )
+    if retained_ion_residue_names and solvent_type == "implicit":
+        blocked = {
+            **result,
+            "code": "explicit_ions_in_implicit_solvent",
+            "error_type": "ValidationError",
+            "message": (
+                "The input PDB contains explicit ion residue(s) "
+                f"{retained_ion_residue_names}, but solvent_type={solvent_type!r} "
+                "uses a continuum solvent model. Exclude explicit ion particles "
+                "before building an implicit topology, or use explicit solvent "
+                "or a deliberately vacuum/no-solvent topology instead."
+            ),
+        }
+        blocked["errors"].append(blocked["message"])
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="build_amber_system explicit ions in implicit solvent",
+            )
+        return blocked
 
     if solvation_water_model and solvation_water_model != water_model:
         blocked = {
@@ -2457,6 +2506,11 @@ def build_amber_system(
             result["parameters"]["requested_water_model"] = water_model
     else:
         result["parameters"]["water_model"] = None
+        if solvent_type == "vacuum" and retained_ion_residue_names:
+            result["parameters"]["ion_parameter_water_model"] = actual_water_model
+            result["parameters"]["water_model_status"] = (
+                "used_for_vacuum_ion_templates"
+            )
 
     nucleic_mode = (nucleic_forcefield or "auto").lower()
     nucleic_libraries = []
@@ -2873,6 +2927,12 @@ def build_amber_system(
                 )
         result["parameters"]["effective_forcefield"] = effective_forcefield
 
+        topology_water_model = (
+            actual_water_model
+            if box_dimensions
+            or (solvent_type == "vacuum" and retained_ion_residue_names)
+            else None
+        )
         om_result = _run_openmmforcefields_build(
             pdb_path=pdb_path,
             output_name=output_name,
@@ -2882,7 +2942,7 @@ def build_amber_system(
             state_xml_file=state_xml_file,
             minimization_report_file=minimization_report_file,
             forcefield=effective_forcefield,
-            water_model=actual_water_model if box_dimensions else None,
+            water_model=topology_water_model,
             phosaa_library=phosaa_library,
             nucleic_libraries=nucleic_libraries,
             glycan_library=glycan_library,
@@ -2985,6 +3045,9 @@ def build_amber_system(
                     "forcefield": result["parameters"].get("forcefield"),
                     "effective_forcefield": effective_forcefield,
                     "water_model": water_model if solvent_type == "explicit" else None,
+                    "ion_parameter_water_model": result["parameters"].get(
+                        "ion_parameter_water_model"
+                    ),
                     "solvent_type": solvent_type,
                     "implicit_solvent": canonical_implicit_solvent,
                     "hmr": bool(hmr),
@@ -3008,6 +3071,9 @@ def build_amber_system(
                 "glycan_library": glycan_library,
                 "solvation_type": solvent_type,
                 "water_model": water_model if solvent_type == "explicit" else None,
+                "ion_parameter_water_model": result["parameters"].get(
+                    "ion_parameter_water_model"
+                ),
             }
             update_job_summaries(job_dir, params=summary_params)
         else:
@@ -3170,6 +3236,7 @@ def _run_openmmforcefields_build(
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
+    allow_geostd_ligands: bool = True,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -3228,7 +3295,7 @@ def _run_openmmforcefields_build(
 
     geostd_ligand_xml: list[dict[str, Any]] = []
     geostd_residue_names: set[str] = set()
-    if valid_ligands:
+    if valid_ligands and allow_geostd_ligands:
         from mdclaw._geostd import build_geostd_ligand_xml
 
         geostd_xml_dir = out_dir / "ligand_xml"
@@ -3260,10 +3327,11 @@ def _run_openmmforcefields_build(
                     f"falling back to GAFFTemplateGenerator: "
                     f"{geostd_result.get('errors', [])}"
                 )
-        for rec in valid_ligands:
-            residue_name = str(rec.get("residue_name") or "").upper()
-            if residue_name and residue_name not in geostd_residue_names:
-                rec["topology_parameter_source"] = "topology_gaff_template_generator"
+    for rec in valid_ligands or []:
+        residue_name = str(rec.get("residue_name") or "").upper()
+        if residue_name and residue_name not in geostd_residue_names:
+            rec["topology_parameter_source"] = "topology_gaff_template_generator"
+            rec.pop("topology_geostd_xml", None)
 
     geostd_xml_paths = [
         str(entry["xml_path"])
@@ -4005,6 +4073,58 @@ def _run_openmmforcefields_build(
             modeller.topology, molecules=ligand_molecules_for_gaff or None
         )
     except Exception as exc:  # noqa: BLE001
+        if allow_geostd_ligands and geostd_ligand_xml and ligand_molecules:
+            fallback_reason = (
+                f"SystemGenerator.create_system failed with geostd ligand XML "
+                f"({type(exc).__name__}: {exc}); retrying topology build with "
+                f"GAFFTemplateGenerator for ligand residues "
+                f"{sorted(geostd_residue_names)}."
+            )
+            fallback_ligands = [dict(lig) for lig in (valid_ligands or [])]
+            for rec in fallback_ligands:
+                if str(rec.get("residue_name") or "").upper() in geostd_residue_names:
+                    rec["topology_parameter_source"] = (
+                        "topology_gaff_template_generator"
+                    )
+                    rec["topology_geostd_fallback_reason"] = str(exc)
+                    rec.pop("topology_geostd_xml", None)
+            fallback = _run_openmmforcefields_build(
+                pdb_path=pdb_path,
+                output_name=output_name,
+                out_dir=out_dir,
+                system_xml_file=system_xml_file,
+                topology_pdb_file=topology_pdb_file,
+                state_xml_file=state_xml_file,
+                minimization_report_file=minimization_report_file,
+                forcefield=forcefield,
+                water_model=water_model,
+                phosaa_library=phosaa_library,
+                nucleic_libraries=nucleic_libraries,
+                glycan_library=glycan_library,
+                is_membrane=is_membrane,
+                box_dimensions=box_dimensions,
+                valid_ligands=fallback_ligands,
+                valid_metal_params=valid_metal_params,
+                valid_modxna_params=valid_modxna_params,
+                disulfide_bonds=disulfide_bonds,
+                hmr=hmr,
+                implicit_solvent=implicit_solvent,
+                extra_xml=extra_xml,
+                extra_smiles=extra_smiles,
+                stage_callback=stage_callback,
+                allow_geostd_ligands=False,
+            )
+            fallback["warnings"] = (
+                result.get("warnings", [])
+                + [fallback_reason]
+                + fallback.get("warnings", [])
+            )
+            if fallback.get("success"):
+                return fallback
+            result["warnings"].extend(
+                [fallback_reason, "GAFFTemplateGenerator fallback also failed."]
+            )
+            result["errors"].extend(fallback.get("errors", []))
         result["errors"].append(
             f"SystemGenerator.create_system failed: {type(exc).__name__}: {exc}"
         )

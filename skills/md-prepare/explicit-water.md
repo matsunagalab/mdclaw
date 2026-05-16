@@ -21,6 +21,13 @@ Prepare-time details (source acquisition, inspection, chain/ligand
 selection, metals, PTMs, mutations, and confirmation policy) live in
 `setup.md` and apply identically for explicit and implicit solvent.
 
+Supported crystallographic ions are part of the explicit-solvent default: keep
+ions requested by the user or detected as supported source ions during
+`prepare_complex`, then solvate with the requested/default salt concentration.
+Do not relabel an ion-containing non-periodic topology as implicit; explicit
+ions require either the explicit-solvent path or a deliberate vacuum/no-solvent
+topology.
+
 ---
 
 ## Preparation Prerequisite
@@ -29,6 +36,10 @@ Complete `setup.md` through `prepare_complex` first. Continue here only after
 a completed `prep` node exists. If inspection found multivalent metals or
 PTMs, finish the corresponding branched prep steps in `setup.md` before
 solvation.
+
+Before solvation, verify that any source ions intentionally kept by the request
+are present in the prep `merged_pdb`. If the user requested implicit solvent,
+use `implicit-water.md` instead and do not retain explicit ions.
 
 ---
 

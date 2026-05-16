@@ -2,6 +2,8 @@
 
 Modern explicit-water default:
 
+- Solvation mode: explicit solvent unless the user explicitly asks for
+  implicit/vacuum/no-solvent or for a membrane workflow.
 - Protein forcefield: `ff19SB`
 - Water model: `opc`
 - Buffer: `15 Å`
@@ -21,6 +23,10 @@ Guardrail examples:
 
 - `forcefield_water_blocked`: incompatible explicit-solvent forcefield/water
   pairing.
+- `explicit_ions_in_implicit_solvent`: the prepared structure still has
+  explicit ion residues but the topology request is implicit solvent. Remove
+  explicit ions, use explicit solvent, or make an explicit vacuum/no-solvent
+  choice instead.
 - `openmm_fallback_unsupported_water_model`: OpenMM fallback cannot produce the
   requested water model safely.
 - `metal_unsupported_water_model`: ion parameter set does not support the water

@@ -279,7 +279,7 @@ def test_implicit_solvent_pressure_signature_uses_zero_bar():
     ) == []
 
 
-def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_path):
+def test_build_amber_system_marks_water_model_unused_for_vacuum_topology(tmp_path):
     pdb_file = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb_file)
     job_dir = tmp_path / "job_implicit"
@@ -322,16 +322,15 @@ def test_build_amber_system_marks_water_model_unused_for_implicit_topology(tmp_p
         )
 
     assert result["success"] is True
-    assert result["solvent_type"] == "implicit"
+    assert result["solvent_type"] == "vacuum"
     assert result["parameters"]["water_model"] is None
-    assert result["parameters"]["validated_water_model"] == "opc"
-    assert result["parameters"]["water_model_status"] == "not_used_for_implicit_solvent"
+    assert result["parameters"]["water_model_status"] == "not_used_for_vacuum_solvent"
 
     node_data = read_node(str(job_dir), node["node_id"])
     assert node_data["metadata"]["water_model"] is None
     progress = json.loads((job_dir / "progress.json").read_text())
     assert progress["params"]["water_model"] is None
-    assert progress["params"]["solvation_type"] == "implicit"
+    assert progress["params"]["solvation_type"] == "vacuum"
 
 
 def test_build_amber_system_explicit_false_overrides_membrane_dag_metadata():

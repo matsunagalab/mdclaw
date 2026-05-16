@@ -54,9 +54,12 @@ Attempt the required stages until one of these happens:
 - the task reaches the task time limit
 - a concrete MDClaw/tool/runtime failure stops progress
 
-For prep tasks, attempt source retrieval, preparation, any required solvation
-or membrane handling, topology build, and a short minimization / finite-energy
-check. Full equilibration and production are not part of the prep battery. For
+For prep tasks, attempt source retrieval, preparation, explicit solvation by
+default, topology build, and a short minimization / finite-energy check. Use an
+implicit topology only when the prompt explicitly asks for implicit/no-solvent
+handling; in that case, do not retain crystallographic or bulk ions as explicit
+particles for implicit solvent. Vacuum/no-solvent is a separate explicit prompt
+choice and may keep explicit ions. Full equilibration and production are not part of the prep battery. For
 execution tasks outside the prep battery, attempt the MD work requested by the
 prompt. For restart tasks, run the requested chunks and attempt the
 concatenation/continuity checks. For comparative answer tasks, run the requested
@@ -102,8 +105,12 @@ Write the required benchmark submission files to <submission_dir>/.
 If blocked outcomes are not allowed, do not stop because the task is long; run
 until success, timeout, or a concrete tool/runtime failure.
 
-For prep tasks, attempt source retrieval, preparation, required solvation or
-membrane embedding, topology build, and minimization evidence. For OpenMM /
+For prep tasks, attempt source retrieval, preparation, explicit solvation unless
+the prompt explicitly requests implicit/no-solvent or membrane handling,
+topology build, and minimization evidence. For implicit prep tasks, exclude
+explicit ions before topology; if those ions are scientifically required, report
+the mode conflict instead of silently building an implicit ion system. A prompt
+that explicitly asks for vacuum/no-solvent may retain explicit ions. For OpenMM /
 MDClaw submissions, put system.xml, topology.pdb, and state.xml under
 manifest.outputs.topology, write manifest.outputs.minimized_structure, and write
 minimization_report.json. Do not run full equilibration or production for prep

@@ -1963,6 +1963,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         def _fake(**kwargs):
             captured["hmr"] = kwargs.get("hmr")
             captured["implicit_solvent"] = kwargs.get("implicit_solvent")
+            captured["water_model"] = kwargs.get("water_model")
             kwargs["system_xml_file"].write_text("<System/>")
             kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
             kwargs["state_xml_file"].write_text("<State/>")
@@ -2086,6 +2087,90 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         )
         prov = result.get("forcefield_provenance") or {}
         assert (prov.get("method") or {}).get("hmr") is True
+
+    def test_implicit_crystallographic_ions_are_rejected(self, tmp_path):
+        """Explicit ion residues should not sneak into implicit builds."""
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "ion_input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+            "HETATM    2 CA    CA A 101      12.000  13.000  12.000  1.00 20.00          CA\n"
+            "END\n"
+        )
+
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            forcefield="ff14SBonlysc",
+            implicit_solvent="GBn2",
+            output_dir=str(tmp_path / "topo"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "explicit_ions_in_implicit_solvent"
+        assert result["parameters"]["retained_ion_residue_names"] == ["CA"]
+
+    def test_vacuum_crystallographic_ions_are_allowed(self, tmp_path):
+        """Vacuum/no-solvent topology is distinct from implicit solvent and may
+        intentionally contain explicit ion particles."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "ion_input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+            "HETATM    2 CA    CA A 101      12.000  13.000  12.000  1.00 20.00          CA\n"
+            "END\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff14SB",
+                water_model="opc",
+                output_dir=str(tmp_path / "topo"),
+            )
+
+        assert result["success"] is True
+        assert result["solvent_type"] == "vacuum"
+        assert captured["water_model"] == "opc"
+        assert result["parameters"]["retained_ion_residue_names"] == ["CA"]
+        assert result["parameters"]["ion_parameter_water_model"] == "opc"
+        assert result["parameters"]["water_model_status"] == "used_for_vacuum_ion_templates"
+
+    def test_explicit_crystallographic_ions_keep_water_ion_xml(self, tmp_path):
+        """Explicit-solvent builds keep supported crystallographic ions and
+        load the selected water/ion XML."""
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "ion_input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+            "HETATM    2 CA    CA A 101      12.000  13.000  12.000  1.00 20.00          CA\n"
+            "END\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                box_dimensions={"box_a": 40.0, "box_b": 40.0, "box_c": 40.0},
+                output_dir=str(tmp_path / "topo"),
+            )
+
+        assert result["success"] is True
+        assert captured["water_model"] == "opc"
+        assert result["parameters"]["retained_ion_residue_names"] == ["CA"]
 
     def test_build_amber_system_provenance_records_hmr(self, tmp_path):
         """When ``hmr=True`` builds successfully via openmmforcefields, the

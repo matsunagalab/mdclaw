@@ -11,7 +11,7 @@ Quick reference only; Python tool signatures and guardrails are authoritative.
 | Parameter | Default | User Cues |
 |---|---|---|
 | GB model | GBn2 (igb=8) | "obc", "obc2", "hct" |
-| Salt concentration | 0.15 M | "0.3M", "no salt" |
+| Salt concentration | continuum model only | "explicit ions" means use explicit solvent instead |
 | Force field | ff14SB | "ff19SB" (note: ff19SB is OPC-tuned and warns under GB) |
 
 **Force field choice**: the implicit-solvent default is `ff14SB`. When
@@ -32,17 +32,22 @@ If production fails with `Radii must be between 1 and 2 Angstroms for
 neck lookup`, branch a new `eq`/`prod` path from the same topology using
 `--implicit-solvent OBC2`.
 
-Prepare-time checkpoints (chain selection, ligand inclusion, metal
-handling, confirmation loop) live in `setup.md` and apply identically
-for both explicit- and implicit-solvent paths. The Metal ion handling
-section in `setup.md` is relevant here too — `parameterize_metal_ion`
-runs on the prep node regardless of solvent type.
+Prepare-time checkpoints (chain selection, ligand inclusion, confirmation
+loop) live in `setup.md`. Ion handling is different from explicit solvent:
+implicit solvent must not retain crystallographic or bulk ions as explicit
+particles. If the scientific request requires those ions, switch to the
+explicit-solvent path or make a deliberate vacuum/no-solvent choice. Otherwise
+exclude ion residues during preparation.
 
 ---
 
-## Step 4: Skip Solvation
+## Step 4: Skip Solvation And Explicit Ions
 
 No solvation step is needed for implicit solvent. Proceed directly to topology.
+Before topology, verify the prep `merged_pdb` contains no explicit ion residues
+such as CA, K, NA, CL, MG, or ZN. If ions remain, create a new prep branch
+without `ion` in `--include-types`; do not parameterize them or pass them into
+an implicit topology.
 
 ---
 
@@ -66,6 +71,8 @@ Calling contract:
 - No `--box-dimensions`, no `--water-model`. Combining `--implicit-solvent`
   with `--box-dimensions` returns
   `code="implicit_solvent_explicit_box_conflict"`.
+- The input PDB must not contain explicit ions. If it does,
+  `build_amber_system` returns `code="explicit_ions_in_implicit_solvent"`.
 - Ligand parameters auto-resolve from the `prep` ancestor's artifacts.
 - Highly charged ligands and close contacts are recorded as topology
   diagnostics and do not stop the workflow or select a special
