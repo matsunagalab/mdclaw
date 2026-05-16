@@ -431,7 +431,6 @@ def validate_ligand_chemistry(ligand_chemistry: List[Dict[str, Any]]) -> tuple:
 
         valid_record["smiles"] = smiles
         valid_record["residue_name"] = residue_name
-        valid_record["parameterization_stage"] = "topology"
         valid_records.append(valid_record)
 
     return valid_records, errors
@@ -2186,9 +2185,6 @@ def build_amber_system(
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
             "ligand_count": len(ligand_chemistry) if ligand_chemistry else 0,
-            "ligand_parameterization_stage": (
-                "topology" if ligand_chemistry else None
-            ),
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
             "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
@@ -4076,7 +4072,6 @@ def _run_openmmforcefields_build(
                 else None,
                 "smiles_source": lig.get("smiles_source"),
                 "topology_parameter_source": lig.get("topology_parameter_source"),
-                "parameterization_stage": lig.get("parameterization_stage"),
                 "residue_name": lig.get("residue_name"),
             }
             for lig in (valid_ligands or [])

@@ -393,7 +393,8 @@ class TestPrepareComplexWorkflowStatus:
 
         assert result["overall_status"] == "success"
         chemistry = result.get("ligand_chemistry")
-        assert chemistry and chemistry[0]["parameterization_stage"] == "topology"
+        assert chemistry and chemistry[0]["residue_name"] == "LIG"
+        assert "parameterization_stage" not in chemistry[0]
         assert Path(chemistry[0]["sdf"]).exists()
         assert (out_dir / "ligand_chemistry.json").exists()
         assert not (out_dir / "ligand_params.json").exists()

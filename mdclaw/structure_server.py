@@ -4622,7 +4622,6 @@ def prepare_complex(
                     "net_charge": None,
                     "charge_source": None,
                     "mol_formal_charge": None,
-                    "parameterization_stage": "topology",
                     "roundtrip_validation": None,
                     "success": False,
                     "errors": []
@@ -5102,7 +5101,6 @@ def prepare_complex(
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
                     "target_ph": ph,
-                    "parameterization_stage": "topology",
                 }
                 for lig in result["ligands"]
                 if lig.get("success") and lig.get("sdf_file")
@@ -5176,7 +5174,6 @@ def prepare_complex(
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
                     "target_ph": ph,
-                    "parameterization_stage": "topology",
                 }
                 for lig in ligands if lig.get("success") and lig.get("sdf_file")
             ]

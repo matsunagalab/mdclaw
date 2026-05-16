@@ -183,7 +183,6 @@ Use structured JSON fields from tool output to decide next steps. **Never parse 
 Key fields to check:
 - `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
 - `ligand_chemistry` — standard prep artifact for ligand SDF/SMILES/charge/provenance; consumed by `build_amber_system`
-- `parameterization_stage` — ligand prep should be `topology`
 - `workflow_recommendation` — contains `options` (list of valid next actions)
 - `recommended_next_action` — per-ligand: `provide_smiles_or_exclude_ligand`, `hard_fail`
 - `failure_class` — what went wrong. Common classes include `input_error`,

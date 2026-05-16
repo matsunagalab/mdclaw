@@ -2554,7 +2554,6 @@ class TestStructuredArtifactPropagation:
             {
                 "sdf": str(sdf_path),
                 "residue_name": "AP5",
-                "parameterization_stage": "topology",
             }
         ]
 
