@@ -54,6 +54,7 @@ DeterministicCheckType = Literal[
     "structure_component_rescan",
     "pdb_residue_state",
     "rmsd_recompute",
+    "assembly_identity_check",
     "metrics_caption_consistency",
 ]
 
@@ -159,6 +160,21 @@ class DeterministicCheck(BaseModel):
     selection: Optional[str] = None  # mdtraj selection string
     align_selection: Optional[str] = None  # superpose target
     tolerance_angstrom: float = 0.05
+
+    # assembly_identity_check
+    assembly_id_json_file: Optional[str] = None
+    assembly_id_json_path: Optional[str] = None
+    required_assembly_id: Optional[str] = None
+    chain_identity_json_file: Optional[str] = None
+    chain_identity_json_path: Optional[str] = None
+    min_chain_count: Optional[int] = None
+    exact_chain_count: Optional[int] = None
+    min_mapping_entries: Optional[int] = None
+    min_distinct_output_chains: Optional[int] = None
+    required_mapping_fields: Optional[list[str]] = None
+    required_operator_ids: Optional[list[str]] = None
+    require_output_chains_in_structure: bool = False
+    require_unique_output_chains: bool = False
 
     # metrics_caption_consistency: numeric tolerance (relative)
     relative_tolerance: float = 0.01

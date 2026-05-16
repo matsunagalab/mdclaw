@@ -39,28 +39,42 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "assembly_id_recorded",
+        "check_id": "source_pdb_reported",
         "check_type": "json_equals",
-        "equals": "1",
+        "equals": "1STP",
         "json_file": "metrics.json",
-        "json_path": "preparation.assembly_id",
-        "weight": 0.25
+        "json_path": "preparation.source_pdb_id",
+        "weight": 0.15
       },
       {
-        "check_id": "assembly_provenance_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.assembly_provenance_recorded",
-        "weight": 0.35
-      },
-      {
-        "check_id": "chain_identity_map_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.chain_identity_map_recorded",
-        "weight": 0.25
+        "check_id": "assembly_generated_and_mapped",
+        "check_type": "assembly_identity_check",
+        "assembly_id_json_file": "metrics.json",
+        "assembly_id_json_path": "preparation.assembly_id",
+        "chain_identity_json_file": "metrics.json",
+        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
+        "exact_chain_count": 4,
+        "required_assembly_id": "1",
+        "required_operator_ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "min_distinct_output_chains": 4,
+        "min_mapping_entries": 4,
+        "require_output_chains_in_structure": true,
+        "required_mapping_fields": [
+          "source_pdb_id",
+          "assembly_id",
+          "source_auth_asym_id",
+          "source_label_asym_id|source_subchain_id",
+          "operator_id",
+          "output_chain_id",
+          "naming_policy"
+        ],
+        "structure_manifest_path": "outputs.prepared_structure",
+        "weight": 0.75
       },
       {
         "check_id": "many_chain_policy_recorded",
@@ -68,7 +82,7 @@
         "equals": true,
         "json_file": "metrics.json",
         "json_path": "preparation.many_chain_policy_recorded",
-        "weight": 0.15
+        "weight": 0.1
       }
     ],
     "ground_truth_checks": [],

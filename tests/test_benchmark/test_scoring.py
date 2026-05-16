@@ -503,6 +503,77 @@ def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
     assert score.deterministic_checks[0].passed is True
 
 
+def test_assembly_identity_check_matches_structure_and_chain_map(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="assembly",
+            check_type="assembly_identity_check",
+            structure_manifest_path="outputs.prepared_structure",
+            assembly_id_json_path="preparation.assembly_id",
+            required_assembly_id="1",
+            chain_identity_json_path="preparation.assembly_chain_identity_map",
+            exact_chain_count=4,
+            min_mapping_entries=4,
+            min_distinct_output_chains=4,
+            required_mapping_fields=[
+                "source_pdb_id",
+                "assembly_id",
+                "source_auth_asym_id",
+                "source_label_asym_id|source_subchain_id",
+                "operator_id",
+                "output_chain_id",
+                "naming_policy",
+            ],
+            required_operator_ids=["1", "2", "3", "4"],
+            require_output_chains_in_structure=True,
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+        metrics={
+            "preparation": {
+                "assembly_id": "1",
+                "assembly_chain_identity_map": [
+                    {
+                        "source_pdb_id": "1STP",
+                        "assembly_id": "1",
+                        "source_auth_asym_id": "A",
+                        "source_label_asym_id": "A",
+                        "operator_id": str(index),
+                        "output_chain_id": chain_id,
+                        "naming_policy": "short",
+                    }
+                    for index, chain_id in enumerate(["A", "B", "C", "D"], start=1)
+                ],
+            },
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  CA  GLY B   1       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  CA  GLY C   1       2.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      4  CA  GLY D   1       3.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  GLY A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "chain count 1 != expected 4" in failed.message
+
+
 def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):
     truth_dir = tmp_path / "task" / "truth"
     truth_dir.mkdir(parents=True)

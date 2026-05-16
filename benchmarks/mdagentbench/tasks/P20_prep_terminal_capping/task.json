@@ -1,8 +1,8 @@
 {
   "capability_tags": [
     "preparation_workflow",
-    "homology_modeling",
-    "candidate_selection"
+    "terminal_capping",
+    "protein_termini"
   ],
   "category": "system_preparation",
   "environment_type": "artifact_only",
@@ -12,13 +12,13 @@
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
-  "prep_battery_priority": 2,
+  "prep_battery_priority": 1,
   "primary_score": "preparation",
-  "public_source": "PDB 2LZM plus prompt sequence/alignment",
+  "public_source": "PDB 5AWL",
   "references": [
     {
-      "source": "PDB 2LZM",
-      "url": "https://www.rcsb.org/structure/2LZM"
+      "source": "PDB 5AWL",
+      "url": "https://www.rcsb.org/structure/5AWL"
     }
   ],
   "required_outputs": [
@@ -35,28 +35,47 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "model_bundle_recorded",
+        "check_id": "source_pdb_reported",
+        "check_type": "json_equals",
+        "equals": "5AWL",
+        "json_file": "metrics.json",
+        "json_path": "preparation.source_pdb_id",
+        "weight": 0.15
+      },
+      {
+        "check_id": "terminal_caps_present",
+        "check_type": "structure_component_rescan",
+        "exact_residue_counts": {
+          "ACE": 1,
+          "NME": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.45
+      },
+      {
+        "check_id": "n_terminal_cap_recorded",
+        "check_type": "json_equals",
+        "equals": "ACE",
+        "json_file": "metrics.json",
+        "json_path": "preparation.n_terminal_cap",
+        "weight": 0.15
+      },
+      {
+        "check_id": "c_terminal_cap_recorded",
+        "check_type": "json_equals",
+        "equals": "NME",
+        "json_file": "metrics.json",
+        "json_path": "preparation.c_terminal_cap",
+        "weight": 0.15
+      },
+      {
+        "check_id": "terminal_capping_recorded",
         "check_type": "json_equals",
         "equals": true,
         "json_file": "metrics.json",
-        "json_path": "preparation.model_bundle_recorded",
-        "weight": 0.35
-      },
-      {
-        "check_id": "template_reported",
-        "check_type": "json_equals",
-        "equals": "2LZM",
-        "json_file": "metrics.json",
-        "json_path": "preparation.template_pdb_id",
-        "weight": 0.25
-      },
-      {
-        "check_id": "alignment_recorded",
-        "check_type": "json_min_length",
-        "json_file": "metrics.json",
-        "json_path": "preparation.template_target_alignment",
-        "min_length": 1,
-        "weight": 0.4
+        "json_path": "preparation.terminal_capping_recorded",
+        "weight": 0.1
       }
     ],
     "ground_truth_checks": [],
@@ -96,7 +115,7 @@
   "secondary_scores": [
     "evidence_communication"
   ],
-  "task_id": "P20_prep_homology_model_before_prep",
-  "task_intent": "Homology modeling before prep: generate a model from the template/alignment and then prepare the selected model, rather than only applying a post-prep mutation.",
+  "task_id": "P20_prep_terminal_capping",
+  "task_intent": "Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices.",
   "time_limit_minutes": 60
 }

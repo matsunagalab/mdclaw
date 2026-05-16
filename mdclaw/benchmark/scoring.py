@@ -386,6 +386,23 @@ def _residue_counts_from_pdb(path: Path) -> dict[str, int]:
     return counts
 
 
+def _chain_ids_from_pdb(path: Path) -> set[str]:
+    """Collect non-empty chain IDs from ATOM/HETATM records."""
+    chain_ids: set[str] = set()
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            chain_id = line[21:22].strip()
+            if not chain_id:
+                parts = line.split()
+                if len(parts) >= 5:
+                    chain_id = parts[4].strip()
+            if chain_id:
+                chain_ids.add(chain_id)
+    return chain_ids
+
+
 def _check_structure_component_rescan(check: DeterministicCheck,
                                       submission_dir: Path,
                                       manifest: dict, **_):
@@ -523,6 +540,134 @@ def _check_pdb_residue_state(check: DeterministicCheck,
     )
 
 
+def _check_assembly_identity(check: DeterministicCheck,
+                             submission_dir: Path,
+                             manifest: dict,
+                             metrics: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest, check.structure_manifest_path, "outputs.prepared_structure",
+    ) or check.structure_path or "prepared_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+
+    issues: list[str] = []
+    try:
+        chain_ids = _chain_ids_from_pdb(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+
+    chain_count = len(chain_ids)
+    if check.exact_chain_count is not None:
+        expected = int(check.exact_chain_count)
+        if chain_count != expected:
+            issues.append(f"chain count {chain_count} != expected {expected}")
+    if check.min_chain_count is not None:
+        minimum = int(check.min_chain_count)
+        if chain_count < minimum:
+            issues.append(f"chain count {chain_count} < min {minimum}")
+
+    if check.required_assembly_id is not None:
+        assembly_id = _read_submission_json_path(
+            submission_dir,
+            check.assembly_id_json_file or check.json_file or "metrics.json",
+            check.assembly_id_json_path or check.json_path,
+            metrics_default=metrics,
+            manifest=manifest,
+        )
+        required_id = str(check.required_assembly_id)
+        if assembly_id is None:
+            issues.append("assembly_id path not found")
+        elif str(assembly_id) != required_id:
+            issues.append(f"assembly_id {assembly_id!r} != required {required_id!r}")
+
+    mapping_path = check.chain_identity_json_path
+    if mapping_path:
+        mapping = _read_submission_json_path(
+            submission_dir,
+            check.chain_identity_json_file or "metrics.json",
+            mapping_path,
+            metrics_default=metrics,
+            manifest=manifest,
+        )
+    else:
+        mapping = None
+
+    if mapping_path and not isinstance(mapping, list):
+        issues.append(f"chain identity map at {mapping_path!r} is not a list")
+        mapping_entries: list[dict[str, Any]] = []
+    else:
+        mapping_entries = [entry for entry in (mapping or []) if isinstance(entry, dict)]
+        if mapping is not None and len(mapping_entries) != len(mapping):
+            issues.append("chain identity map contains non-object entries")
+
+    min_entries = int(check.min_mapping_entries or 0)
+    if min_entries and len(mapping_entries) < min_entries:
+        issues.append(
+            f"chain identity map has {len(mapping_entries)} entries < min {min_entries}"
+        )
+
+    required_fields = check.required_mapping_fields or []
+    for index, entry in enumerate(mapping_entries):
+        missing: list[str] = []
+        for field_spec in required_fields:
+            alternatives = [part.strip() for part in str(field_spec).split("|")
+                            if part.strip()]
+            if not alternatives:
+                continue
+            if not any(str(entry.get(field, "")).strip() for field in alternatives):
+                missing.append(field_spec)
+        if missing:
+            issues.append(f"mapping entry {index} missing fields {missing}")
+
+    output_chain_ids = [
+        str(entry.get("output_chain_id", "")).strip()
+        for entry in mapping_entries
+        if str(entry.get("output_chain_id", "")).strip()
+    ]
+    if check.min_distinct_output_chains is not None:
+        distinct_count = len(set(output_chain_ids))
+        minimum = int(check.min_distinct_output_chains)
+        if distinct_count < minimum:
+            issues.append(
+                f"chain identity map covers {distinct_count} distinct output "
+                f"chains < min {minimum}"
+            )
+    if check.require_unique_output_chains:
+        duplicate_ids = sorted({
+            chain_id for chain_id in output_chain_ids
+            if output_chain_ids.count(chain_id) > 1
+        })
+        if duplicate_ids:
+            issues.append(f"duplicate output_chain_id values {duplicate_ids}")
+
+    if check.require_output_chains_in_structure:
+        missing_chains = sorted(set(output_chain_ids) - chain_ids)
+        if missing_chains:
+            issues.append(
+                f"mapped output chains absent from structure: {missing_chains}"
+            )
+
+    if check.required_operator_ids:
+        observed_ops = {
+            str(entry.get("operator_id", "")).strip()
+            for entry in mapping_entries
+            if str(entry.get("operator_id", "")).strip()
+        }
+        missing_ops = sorted(set(map(str, check.required_operator_ids)) - observed_ops)
+        if missing_ops:
+            issues.append(f"operator_id values missing from map: {missing_ops}")
+
+    if issues:
+        return False, 0.0, "; ".join(issues)
+    return (
+        True,
+        1.0,
+        f"assembly identity satisfied: chains={sorted(chain_ids)}, "
+        f"mapping_entries={len(mapping_entries)}",
+    )
+
+
 def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
                           metrics: dict, task_dir: Optional[Path], **_):
     if task_dir is None:
@@ -589,6 +734,7 @@ _DETERMINISTIC_DISPATCH = {
     "structure_component_rescan": _check_structure_component_rescan,
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
+    "assembly_identity_check": _check_assembly_identity,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
 }
 
@@ -878,7 +1024,21 @@ def _read_json_path(submission_dir: Path, check: DeterministicCheck,
     """
     if not check.json_path:
         return None
-    target_file = check.json_file or "metrics.json"
+    return _read_submission_json_path(
+        submission_dir,
+        check.json_file or "metrics.json",
+        check.json_path,
+        metrics_default=metrics_default,
+        manifest=manifest,
+    )
+
+
+def _read_submission_json_path(submission_dir: Path, json_file: str | None,
+                               json_path: str | None, metrics_default: dict,
+                               manifest: Optional[dict] = None) -> Any:
+    if not json_path:
+        return None
+    target_file = json_file or "metrics.json"
     if target_file == "manifest.json" and manifest is not None:
         payload = manifest
     elif target_file == "metrics.json":
@@ -891,7 +1051,7 @@ def _read_json_path(submission_dir: Path, check: DeterministicCheck,
         if rel.startswith("submission/"):
             rel = rel.split("/", 1)[1]
         payload = integrity.read_json_safe(submission_dir / rel)
-    return integrity._safe_path(payload, check.json_path)
+    return integrity._safe_path(payload, json_path)
 
 
 __all__ = [

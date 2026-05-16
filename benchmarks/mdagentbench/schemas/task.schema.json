@@ -29,6 +29,54 @@
           "default": null,
           "title": "Allowed Values"
         },
+        "assembly_id_json_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assembly Id Json File"
+        },
+        "assembly_id_json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Assembly Id Json Path"
+        },
+        "chain_identity_json_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chain Identity Json File"
+        },
+        "chain_identity_json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chain Identity Json Path"
+        },
         "check_id": {
           "title": "Check Id",
           "type": "string"
@@ -47,6 +95,7 @@
             "structure_component_rescan",
             "pdb_residue_state",
             "rmsd_recompute",
+            "assembly_identity_check",
             "metrics_caption_consistency"
           ],
           "title": "Check Type",
@@ -55,6 +104,18 @@
         "equals": {
           "default": null,
           "title": "Equals"
+        },
+        "exact_chain_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exact Chain Count"
         },
         "exact_residue_counts": {
           "anyOf": [
@@ -157,6 +218,30 @@
           "default": null,
           "title": "Max Value"
         },
+        "min_chain_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Chain Count"
+        },
+        "min_distinct_output_chains": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Distinct Output Chains"
+        },
         "min_length": {
           "anyOf": [
             {
@@ -168,6 +253,18 @@
           ],
           "default": null,
           "title": "Min Length"
+        },
+        "min_mapping_entries": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Mapping Entries"
         },
         "min_residue_counts": {
           "anyOf": [
@@ -237,6 +334,28 @@
           "default": null,
           "title": "Require Min Frames"
         },
+        "require_output_chains_in_structure": {
+          "default": false,
+          "title": "Require Output Chains In Structure",
+          "type": "boolean"
+        },
+        "require_unique_output_chains": {
+          "default": false,
+          "title": "Require Unique Output Chains",
+          "type": "boolean"
+        },
+        "required_assembly_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Assembly Id"
+        },
         "required_atom_names": {
           "anyOf": [
             {
@@ -251,6 +370,36 @@
           ],
           "default": null,
           "title": "Required Atom Names"
+        },
+        "required_mapping_fields": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Mapping Fields"
+        },
+        "required_operator_ids": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Operator Ids"
         },
         "required_outputs": {
           "anyOf": [

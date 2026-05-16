@@ -122,6 +122,24 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     assert residue_state.required_residue_name == "GLH"
     assert residue_state.required_atom_names == ["HE2"]
 
+    assembly = DeterministicCheck.model_validate({
+        "check_id": "assembly",
+        "check_type": "assembly_identity_check",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "assembly_id_json_path": "preparation.assembly_id",
+        "required_assembly_id": "1",
+        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
+        "exact_chain_count": 4,
+        "min_mapping_entries": 4,
+        "min_distinct_output_chains": 4,
+        "required_mapping_fields": ["source_label_asym_id|source_subchain_id"],
+        "required_operator_ids": ["1", "2", "3", "4"],
+        "require_output_chains_in_structure": True,
+    })
+    assert assembly.check_type == "assembly_identity_check"
+    assert assembly.required_assembly_id == "1"
+    assert assembly.min_distinct_output_chains == 4
+
 
 def test_integrity_check_supports_manifest_artifact_floor():
     check = IntegrityCheck.model_validate({

@@ -79,11 +79,11 @@ and per-task `prompt.md` plus `submission_contract.json`. It omits `task.json`,
 | P17_prep_dna_duplex_neutralization | DNA duplex | PDB 1BNA | Preserve both DNA chains and record neutralization. |
 | P18_prep_membrane_mixed_lipids | Membrane | PDB 2LOP | Honor POPC:POPE:CHL1 = 2:1:1. |
 | P19_prep_nmr_model_selection | Candidate selection | PDB 2K39 | Select a specified NMR model before prep. |
-| P20_prep_homology_model_before_prep | Homology model | PDB 2LZM | Model from template/alignment before prep. |
+| P20_prep_terminal_capping | Terminal capping | PDB 5AWL | Honor requested N-terminal ACE and C-terminal NME caps. |
 | P21_prep_cleanup_altloc_mse_numbering | PDB cleanup | PDB 4Q5T | Handle MSE, altloc, numbering, and missing residues. |
 | P22_prep_forcefield_water_fidelity | FF/water fidelity | PDB 2LZM | Honor supported ff19SB + OPC request. |
 | P23_prep_implicit_solvent_chignolin | Implicit solvent | PDB 5AWL | Avoid explicit water when implicit solvent is requested. |
-| P24_prep_biological_assembly | Biological assembly | PDB 1STP / 2MS2 | Record assembly_id and chain identity provenance. |
+| P24_prep_biological_assembly | Biological assembly | PDB 1STP / 2MS2 | Generate assembly 1 and map output chains to source auth/label/operator provenance. |
 | P25_prep_kcl_ion_concentration | Ion concentration | PDB 5AWL | Honor 0.30 M KCl and neutrality. |
 
 ## Submission Contract

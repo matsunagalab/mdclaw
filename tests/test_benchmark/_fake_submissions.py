@@ -93,6 +93,35 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
         _set_path(metrics, check["json_path"], value)
     elif check_type == "rmsd_recompute" and check.get("json_path"):
         _set_path(metrics, check["json_path"], 0.0 if mode == "honest" else 9.9)
+    elif check_type == "assembly_identity_check":
+        assembly_id = check.get("required_assembly_id")
+        assembly_path = check.get("assembly_id_json_path")
+        if assembly_path:
+            _set_path(metrics, assembly_path,
+                      assembly_id if mode == "honest" else _wrong_value(assembly_id))
+        mapping_path = check.get("chain_identity_json_path")
+        if mapping_path:
+            count = int(check.get("min_mapping_entries") or 1)
+            operator_ids = check.get("required_operator_ids") or []
+            chain_ids = ["A", "B", "C", "D", "E", "F", "G", "H"]
+            mapping = []
+            if mode == "honest":
+                for index in range(count):
+                    operator_id = (
+                        str(operator_ids[index])
+                        if index < len(operator_ids)
+                        else str(index + 1)
+                    )
+                    mapping.append({
+                        "source_pdb_id": "1STP",
+                        "assembly_id": assembly_id,
+                        "source_auth_asym_id": "A",
+                        "source_label_asym_id": "A",
+                        "operator_id": operator_id,
+                        "output_chain_id": chain_ids[index % len(chain_ids)],
+                        "naming_policy": "short",
+                    })
+            _set_path(metrics, mapping_path, mapping)
 
 
 def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
@@ -132,6 +161,18 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
                 resname = "GLY"
                 atoms = ["N", "CA", "C", "O"]
             serial = _add_residue(lines, serial, resname, chain, number, atoms)
+        elif check_type == "assembly_identity_check" and mode == "honest":
+            chain_ids = ["B", "C", "D", "E", "F", "G", "H", "I"]
+            count = int(check.get("exact_chain_count")
+                        or check.get("min_chain_count")
+                        or check.get("min_distinct_output_chains")
+                        or 1)
+            for index in range(max(count - 1, 0)):
+                serial = _add_residue(
+                    lines, serial, "GLY", chain_ids[index % len(chain_ids)],
+                    residue_index, ["CA"],
+                )
+                residue_index += 1
 
     lines.append("END\n")
     return "".join(lines)

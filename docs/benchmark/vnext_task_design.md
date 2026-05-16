@@ -1,7 +1,6 @@
 # MDAgentBench vNext Task Design
 
 This design has been promoted into the current prep benchmark implementation:
-the former mixed v1.0 task set has been replaced by
 `MDAgentBench-prep-v0.1`. Scientific MD reasoning tasks are intentionally
 deferred. The long-term goal is still to organize MDAgentBench around two main
 suites:
@@ -28,20 +27,6 @@ force-field limits, and observability. The better target is:
 This keeps experimental truth as the anchor while avoiding a brittle
 "same-result-or-zero" benchmark.
 
-## Reclassifying The Former v1.0 Tasks
-
-| Current task | vNext suite | Keep? | Notes |
-|---|---|---:|---|
-| T01 engine smoke | Engine gate | Yes | Keep as a cheap participant sanity check. Do not over-weight in leaderboard. |
-| T02 metalloenzyme guardrail | General MDClaw regression, outside public benchmark | No | Useful MDClaw guardrail test, but unfair as a public agent benchmark because it scores an MDClaw-specific refusal policy/code. Keep the behavior in ordinary tests. |
-| T03 T4L benzene ligand pose | Preparation Workflow Battery | Yes | Good ligand pose-preservation task; keep, but score via artifact rescans more than text. |
-| T04 short T4L protein MD | Engine support | Maybe | Useful end-to-end integration check, but not central if prep battery grows. |
-| T05 restart continuation | Engine support | Yes | Good backend artifact/restart check; should remain a support task. |
-| T06 T4L L99A stability | Scientific MD Reasoning | Yes | Keep as one scientific reasoning anchor, but grade plan/evidence/calibration separately from truth direction. |
-| T07 barnase-barstar D39A | Scientific MD Reasoning | Yes | Keep as PPI mutation anchor, same scoring philosophy as T06. |
-| T08 T4L dynamics communication | Scientific MD Reasoning support | Merge/reshape | Fold into scientific evidence/reporting rubric or keep as reporting-only subtask. |
-| T09 WT vs L99A methods package | Scientific MD Reasoning support | Merge/reshape | Fold into plan/methods rubric or keep as plan-only calibration task. |
-
 ## Suite A: Preparation Workflow Battery
 
 Target size: **15-25 tasks**. Start with about 20-25. Each task should expose only
@@ -62,33 +47,33 @@ properties.
 
 ### Proposed Prep Tasks
 
-| ID | Theme | Candidate public input | What the agent must do | Main scorer checks | Priority |
+| ID | Theme | Candidate public input | Prompt | Main scorer checks | Priority |
 |---|---|---|---|---|---:|
-| P01 | Simple monomer prep | T4 lysozyme WT, PDB 2LZM | Fetch/select one protein chain, clean, solvate, build topology. | protein atoms retained; no unintended ligands; explicit solvent; topology artifacts reload. | 1 |
-| P02 | Chain + ligand selection | Adenylate kinase AP5, PDB 1AKE | Include protein chain A and the AP5 ligand even though the ligand has a separate label chain. | AP5 present; ligand chain included; ligand params/artifacts recorded; no stale ligand omission. | 1 |
-| P03 | Ligand pose preservation | T4L L99A + benzene, PDB 181L | Prepare the protein-ligand complex without dropping chain A or moving the crystallographic ligand pose. | ligand heavy-atom RMSD to real 181L protein+BNZ hidden reference; A:99 L99A protein residue retained; topology artifacts; provenance. | 1 |
-| P04 | Multi-ligand inclusion/exclusion | Current integration seed PDB 3PWB | Include requested BEN/GOL-like ligands while excluding buffer ions/irrelevant heterogens. | requested ligands present; excluded heterogens absent; ligand params per ligand. | 1 |
-| P05 | Charged/cofactor-like ligand stress | DAP dehydrogenase + deposited NDP, PDB 1DAP | Handle the NDP/NADPH-like dinucleotide cofactor in chains C/F without hanging or silently changing charge. AP5 is already covered by P02, so this task uses a different charged cofactor family. | cofactor present; ligand charge/provenance recorded; topology completes within budget or fails with a structured ligand-parameter reason; no long-running parameterization hang pattern. | 2 |
-| P06 | Supported metal ion retention | Calmodulin + Ca2+, PDB 1CLL | Prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands. | four Ca2+ ions detected/retained; ion parameter source recorded; topology artifacts reload. | 1 |
-| P07 | Crystallographic ion triage | 32 bp oligo(U) RNA, PDB 4RBQ | Prepare an RNA structure while preserving prompt-designated crystallographic K+ ions and excluding irrelevant solvent/buffer components. | RNA residue mapping; requested K+ ions retained; excluded waters/buffers absent; ion/provenance metadata recorded. | 2 |
-| P08 | Point mutation branch | T4L WT 2LZM -> L99A | Prepare WT, branch mutant prep, preserve source/provenance. | mutation present; WT and mutant artifacts separated; residue numbering correct. | 1 |
-| P09 | Multi-mutant branch | T4 lysozyme WT, PDB 2LZM -> L99A/M102Q | Apply two mutations from one prompt on a branched prep node. | both mutations present; no off-by-one chain/residue errors; WT and mutant artifacts separated; branch metadata. | 2 |
-| P10 | Disulfide auto/override | BPTI, PDB 5PTI | Detect the canonical BPTI disulfides, or respect an explicit user override that enables/disables named pairs. | expected S-S bonds recorded; CYX/CYS consistency; topology artifacts; override provenance if supplied. | 2 |
-| P11 | Specific residue protonation | Seed task: T4L Glu11 -> GLH; later add an enzyme active-site case | Set user-specified protonation states for named residues using supported Amber variants such as ASH/GLH/HID/HIE/HIP/LYN/CYM. | requested residue protonation states in output/provenance; residue identifiers match prompt; submitted structure preserves the requested residue name and required H atom; no silent default drift; unsupported residue classes fail with structured reason. | 1 |
-| P12 | Phosphorylated residue restore | Ser20 phosphoubiquitin, PDB 5K9P | Detect SEP, clean standard protein, restore phosphorylation, build topology. | SEP restored at residue 20; phosaa library/provenance; topology artifacts. | 1 |
-| P13 | User-requested phosphorylation | Ubiquitin WT, PDB 1UBQ, Ser20 -> SEP | Apply phosphorylation to an unmodified SER target. This pairs naturally with P12, which restores a deposited SEP at the same conceptual site. | target residue changed to SEP; phosaa provenance recorded; failed targets are fatal unless explicitly allowed. | 2 |
-| P14 | Glycoprotein/glycan pass-through | TSWV glycoprotein, PDB 6YA2 | Keep N-linked glycans as glycans, not generic ligands. | glycan metadata/linkages; GLYCAM provenance; NAG-containing glycan retained. | 1 |
-| P15 | Standard DNA topology | DNA dodecamer, PDB 5MVQ | Prepare nucleic acid without protein/ligand assumptions. | DNA library selected; nucleic residue mapping; topology artifacts. | 2 |
-| P16 | Standard RNA topology | 32 bp oligo(U) RNA, PDB 4RBQ | Prepare RNA and choose RNA force-field library. | RNA library selected; residue mapping; potassium/water handling recorded; topology artifacts. | 2 |
-| P17 | DNA duplex chain retention and neutralization | Standard B-DNA duplex, PDB 1BNA | Prepare both chains of a standard DNA duplex, choose a DNA-compatible force-field library, and record counterion neutralization. This replaces the earlier modified-nucleic-acid idea because modified DNA/RNA is outside the current supported MD-ready prep scope. | both DNA chains represented; standard DA/DC/DG/DT residues retained; DNA library and neutralization metadata recorded. | 2 |
-| P18 | Membrane embedding + lipid composition | TMEM14A, PDB 2LOP, POPC:POPE:CHL1 = 2:1:1 | Prepare a small membrane protein in a specified mixed-lipid membrane rather than a default single-lipid box. | membrane flag; expected lipid species present; lipid species ratio within tolerance; water/box metadata; topology marked as membrane. | 1 |
-| P19 | Candidate/model selection | Ubiquitin NMR ensemble, PDB 2K39 | Pick a specified NMR model/candidate before prep rather than silently using the first or averaged model. | selected model/candidate ID recorded; rank/selection reason; one concrete structure used; no ensemble collapse. | 2 |
-| P20 | Homology modeling before prep | Template PDB 2LZM + prompt-provided T4L L99A target sequence/alignment | Generate a model from template/alignment, then prep the selected model. This must be a modeling workflow, not only a post-prep mutation branch. | model bundle; template/target alignment provenance; selected model metadata; prepared topology or structured block. | 2 |
-| P21 | PDB cleanup, missing residues, and numbering | MSE/altloc cleanup case PDB 4Q5T; optional altloc/author-numbering stress PDB 1TRZ | Resolve common PDB cleanup hazards: alternate-location choice, author residue numbering with insertion codes, MSE-to-MET or structured nonstandard-residue handling, missing loops, termini/caps, and whether to model or block. | cleanup decisions recorded; selected altlocs/protonatable residues consistent; insertion-code/author numbering preserved in provenance; no silent residue renumbering; missing-residue decision recorded; topology if safe. | 2 |
-| P22 | Force-field/water model fidelity | T4 lysozyme WT, PDB 2LZM, with supported ff19SB + OPC or ff14SB + TIP3P request | Honor the user-specified supported force-field/water pair rather than silently falling back to defaults. | requested force-field/water pair recorded; explicit solvent model matches prompt; topology artifacts reload; no backend-specific refusal code required. | 1 |
-| P23 | Implicit vs explicit solvent | Chignolin CLN025, PDB 5AWL | Respect an explicit implicit-solvent request and avoid creating an explicit water box. | implicit model metadata; no explicit water/ion box artifacts; no mixed-mode topology. | 2 |
-| P24 | Assembly/biological unit choice | Normal: streptavidin tetramer PDB 1STP, assembly 1; stress: bacteriophage MS2 capsid PDB 2MS2, assembly 1 | Generate/select the requested biological assembly by `assembly_id` rather than relying on the asymmetric unit by accident. Include normal oligomers and one many-chain stress case. | expected chains/components present; extra chains absent; `assembly_id`, source auth/label/subchain/operator provenance, output chain names, and chain identity mapping recorded; many-chain cases remain identifiable even if one-character PDB chain IDs are reused. | 1 |
-| P25 | Specified ion concentration | Chignolin CLN025, PDB 5AWL, 0.30 M KCl explicit solvent | Build an explicit-solvent system that honors the user-specified salt species and ion concentration while preserving system neutrality. | K+/Cl- ion counts; net charge neutralized; requested concentration reproduced within tolerance from final box volume; metadata matches counted ions. | 1 |
+| P01 | Simple monomer prep | T4 lysozyme WT, PDB 2LZM | Task: Simple monomer preparation: retrieve T4 lysozyme chain A, clean it, prepare an explicit-water-compatible topology, and report that no unintended ligands were retained. | protein atoms retained; no unintended ligands; explicit solvent; topology artifacts reload. | 1 |
+| P02 | Chain + ligand selection | Adenylate kinase AP5, PDB 1AKE | Task: Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain. | AP5 present; ligand chain included; ligand params/artifacts recorded; no stale ligand omission. | 1 |
+| P03 | Ligand pose preservation | T4L L99A + benzene, PDB 181L | Task: Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included. | ligand heavy-atom RMSD to real 181L protein+BNZ hidden reference; A:99 L99A protein residue retained; topology artifacts; provenance. | 1 |
+| P04 | Multi-ligand inclusion/exclusion | Current integration seed PDB 3PWB | Task: Multi-ligand inclusion and exclusion: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens. | requested ligands present; excluded heterogens absent; ligand params per ligand. | 1 |
+| P05 | Charged/cofactor-like ligand stress | DAP dehydrogenase + deposited NDP, PDB 1DAP | Task: Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors, NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate, without silently dropping either cofactor or changing its charge without provenance. In PDB 1DAP, the deposited NDP ligand instances are chains C and F, corresponding to auth chains A and B respectively on the RCSB entry. | cofactor present; ligand charge/provenance recorded; topology completes within budget or fails with a structured ligand-parameter reason; no long-running parameterization hang pattern. | 2 |
+| P06 | Supported metal ion retention | Calmodulin + Ca2+, PDB 1CLL | Task: Supported metal ion retention: prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands. | four Ca2+ ions detected/retained; ion parameter source recorded; topology artifacts reload. | 1 |
+| P07 | Crystallographic ion triage | 32 bp oligo(U) RNA, PDB 4RBQ | Task: Crystallographic ion triage: prepare oligo(U) RNA while preserving prompt-designated crystallographic K+ ions and excluding irrelevant solvent or buffer components. | RNA residue mapping; requested K+ ions retained; excluded waters/buffers absent; ion/provenance metadata recorded. | 2 |
+| P08 | Point mutation branch | T4L WT 2LZM -> L99A | Task: Point mutation branch: prepare WT T4 lysozyme and a branched L99A mutant without overwriting the WT artifacts or shifting residue numbering. | mutation present; WT and mutant artifacts separated; residue numbering correct. | 1 |
+| P09 | Multi-mutant branch | T4 lysozyme WT, PDB 2LZM -> L99A/M102Q | Task: Multi-mutant branch: apply L99A and M102Q from one prompt on a branched prep node. | both mutations present; no off-by-one chain/residue errors; WT and mutant artifacts separated; branch metadata. | 2 |
+| P10 | Disulfide auto/override | BPTI, PDB 5PTI | Task: Disulfide auto/override: detect the canonical BPTI disulfides, or respect an explicit user override for named pairs. | expected S-S bonds recorded; CYX/CYS consistency; topology artifacts; override provenance if supplied. | 2 |
+| P11 | Specific residue protonation | Seed task: T4L Glu11 -> GLH; later add an enzyme active-site case | Task: Specific residue protonation: override the default pH assignment for chain A residue 11 so Glu11 is protonated as GLH. | requested residue protonation states in output/provenance; residue identifiers match prompt; submitted structure preserves the requested residue name and required H atom; no silent default drift; unsupported residue classes fail with structured reason. | 1 |
+| P12 | Phosphorylated residue restore | Ser20 phosphoubiquitin, PDB 5K9P | Task: Phosphorylated residue restore: detect deposited SEP, clean the standard protein, restore phosphorylation, and build a topology-ready structure. | SEP restored at residue 20; phosaa library/provenance; topology artifacts. | 1 |
+| P13 | User-requested phosphorylation | Ubiquitin WT, PDB 1UBQ, Ser20 -> SEP | Task: User-requested phosphorylation: apply phosphorylation to unmodified ubiquitin Ser20 and prepare the resulting SEP-containing system. | target residue changed to SEP; phosaa provenance recorded; failed targets are fatal unless explicitly allowed. | 2 |
+| P14 | Glycoprotein/glycan pass-through | TSWV glycoprotein, PDB 6YA2 | Task: Glycoprotein/glycan pass-through: keep N-linked glycans as glycans rather than treating them as ordinary small-molecule ligands. | glycan metadata/linkages; GLYCAM provenance; NAG-containing glycan retained. | 1 |
+| P15 | Standard DNA topology | DNA dodecamer, PDB 5MVQ | Task: Standard DNA topology: prepare a DNA dodecamer without assuming protein or ligand defaults. | DNA library selected; nucleic residue mapping; topology artifacts. | 2 |
+| P16 | Standard RNA topology | 32 bp oligo(U) RNA, PDB 4RBQ | Task: Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library. | RNA library selected; residue mapping; potassium/water handling recorded; topology artifacts. | 2 |
+| P17 | DNA duplex chain retention and neutralization | Standard B-DNA duplex, PDB 1BNA | Task: DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex from PDB `1BNA`, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain. | both DNA chains represented; standard DA/DC/DG/DT residues retained; DNA library and neutralization metadata recorded. | 2 |
+| P18 | Membrane embedding + lipid composition | TMEM14A, PDB 2LOP, POPC:POPE:CHL1 = 2:1:1 | Task: Membrane embedding and lipid composition: prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. | membrane flag; expected lipid species present; lipid species ratio within tolerance; water/box metadata; topology marked as membrane. | 1 |
+| P19 | Candidate/model selection | Ubiquitin NMR ensemble, PDB 2K39 | Task: Candidate/model selection: select a specified NMR model/candidate before preparation rather than silently using model 1 or averaging the ensemble. | selected model/candidate ID recorded; rank/selection reason; one concrete structure used; no ensemble collapse. | 2 |
+| P20 | N- and C-terminal capping | CLN025/chignolin, PDB 5AWL, requested ACE/NME termini | Task: Terminal capping: retrieve CLN025/chignolin from PDB `5AWL`, prepare the peptide for MD with an acetylated N terminus (`ACE`) and an N-methylamide C terminus (`NME`), and record the terminal-capping choices. Do not leave the requested termini as uncapped free termini. | ACE and NME cap residues present; requested cap choices recorded; source and capping provenance documented. | 1 |
+| P21 | PDB cleanup, missing residues, and numbering | MSE/altloc cleanup case PDB 4Q5T; optional altloc/author-numbering stress PDB 1TRZ | Task: PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block. | cleanup decisions recorded; selected altlocs/protonatable residues consistent; insertion-code/author numbering preserved in provenance; no silent residue renumbering; missing-residue decision recorded; topology if safe. | 2 |
+| P22 | Force-field/water model fidelity | T4 lysozyme WT, PDB 2LZM, with supported ff19SB + OPC or ff14SB + TIP3P request | Task: Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults. | requested force-field/water pair recorded; explicit solvent model matches prompt; topology artifacts reload; no backend-specific refusal code required. | 1 |
+| P23 | Implicit vs explicit solvent | Chignolin CLN025, PDB 5AWL | Task: Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box. | implicit model metadata; no explicit water/ion box artifacts; no mixed-mode topology. | 2 |
+| P24 | Assembly/biological unit choice | Normal: streptavidin tetramer PDB 1STP, assembly 1; stress: bacteriophage MS2 capsid PDB 2MS2, assembly 1 | Task: Assembly/biological unit choice. Use PDB `1STP` and generate or select biological assembly `assembly_id=1` before preparing the structure for MD. Do not submit the asymmetric unit alone. Preserve source auth/label/operator provenance and stable chain identity. | expected chains/components present; extra chains absent; `assembly_id`, source auth/label/subchain/operator provenance, output chain names, and chain identity mapping recorded; many-chain cases remain identifiable even if one-character PDB chain IDs are reused. | 1 |
+| P25 | Specified ion concentration | Chignolin CLN025, PDB 5AWL, 0.30 M KCl explicit solvent | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | K+/Cl- ion counts; net charge neutralized; requested concentration reproduced within tolerance from final box volume; metadata matches counted ions. | 1 |
 
 Priority 1 tasks are the first implementation wave. Priority 2 tasks are useful
 coverage but may require schema/scorer extensions or more curation.
@@ -98,8 +83,7 @@ coverage but may require schema/scorer extensions or more curation.
 The P01-P25 list is broad enough for the first prep battery, but three details
 should be treated as explicit coverage requirements rather than left implicit:
 
-- **Assembly coverage is now first-wave material.** P24 should no longer be
-  provisional: the prompt can specify `assembly_id` (for example assembly 1),
+- **Assembly coverage is first-wave material.** P24 specifies `assembly_id`
   and the submission should expose enough provenance for the scorer to verify
   the generated biological unit. Use a normal dimer/tetramer case first, then
   add a many-chain stress case under the same P24 family or as a follow-up
@@ -114,31 +98,24 @@ should be treated as explicit coverage requirements rather than left implicit:
   common nonstandard cleanup such as MSE, chain breaks, termini/capping, and
   explicit decisions to model or block.
 
-### Guardrails Belong Outside The Public Benchmark
+### Backend Neutrality
 
-MDClaw-specific guardrail refusal tests should move to ordinary repo tests and
-MDClaw regression coverage, not the agent-agnostic benchmark. They are valuable
-for MDClaw, but unfair for other agents because the target is a local policy
-and a stable MDClaw code, not a generally reproducible MD-prep artifact.
-
-The old metal refusal case, PDB 2CBA, should be retained under
-`tests/test_guardrails.py`, ligand/metal-pathway tests, or MDClaw-specific
-benchmark smoke tests. The intentionally inconsistent ff19SB + TIP3P case
-belongs with force-field catalog / guardrail unit tests. Public prep tasks may
-still score honest blocked outcomes when a backend truly lacks an external
-tool, but they should not require MDClaw guardrail names or make refusal itself
-the primary success criterion.
+The public prep benchmark should score reproducible MD-prep artifacts, not
+MDClaw-specific policy names, internal node IDs, or local refusal codes. If a
+backend truly cannot complete a public task, the submission can still explain
+the concrete blocked stage through the standard manifest, provenance, and
+evidence files when that task explicitly allows blocked outcomes.
 
 ### Prep Battery Scorer Extensions
 
-The current v1.0 scorer already covers file presence, JSON checks, trajectory
-rescan, solvent rescan, RMSD recompute, and caption/metrics consistency. Prep
-battery expansion will likely need these deterministic check types:
+The scorer already covers file presence, JSON checks, trajectory rescan,
+solvent rescan, RMSD recompute, and caption/metrics consistency. Prep battery
+expansion will likely need these deterministic check types:
 
 - `structure_component_rescan`: count required protein/nucleic/glycan/ligand/
   lipid/ion components in submitted structures.
-- `residue_presence`: confirm mutation/PTM/modified-nucleic residue identity at
-  a chain/residue site.
+- `residue_presence`: confirm mutation or PTM residue identity at a
+  chain/residue site.
 - `residue_absence`: confirm excluded ligands, waters, or heterogens are absent.
 - `topology_metadata_rescan`: verify force-field, water model, membrane flag,
   ligand params, glycan library, phosaa library, or nucleic library metadata.
@@ -159,10 +136,9 @@ battery expansion will likely need these deterministic check types:
 - `candidate_selection_check`: verify a selected source-bundle candidate ID and
   selection reason.
 
-Do not add a public prep-benchmark scorer primitive that requires MDClaw
-guardrail codes. Backend-neutral blocked evidence can be validated through the
-standard manifest/provenance contract when a task explicitly allows blocked
-submissions.
+Do not add a public prep-benchmark scorer primitive that requires MDClaw-local
+codes. Backend-neutral blocked evidence can be validated through the standard
+manifest/provenance contract when a task explicitly allows blocked submissions.
 
 These should remain deterministic. LLM judge should only evaluate whether the
 brief rationale explains a non-obvious choice, not whether the chemistry is
@@ -197,8 +173,8 @@ This intentionally makes truth direction important but not the sole gate.
 
 | ID | Question class | Candidate source | What is hidden | Scoring note | Priority |
 |---|---|---|---|---|---:|
-| S01 | Monomer stability mutation | T4L WT vs L99A | Experimental stability direction / ddG source | Keep current T06, but split plan/evidence/truth/calibration. | 1 |
-| S02 | PPI hotspot mutation | Barnase-barstar D39A | Experimental binding direction / ddG source | Keep current T07, but require interface observables. | 1 |
+| S01 | Monomer stability mutation | T4L WT vs L99A | Experimental stability direction / ddG source | Split plan, evidence, truth direction, and calibration. | 1 |
+| S02 | PPI hotspot mutation | Barnase-barstar D39A | Experimental binding direction / ddG source | Require interface observables and uncertainty calibration. | 1 |
 | S03 | Stabilizing vs destabilizing mutation pair | ProTherm / ThermoMutDB curated pair | Direction and approximate magnitude bins | Ask agent to compare two mutations and rank direction. | 1 |
 | S04 | Protein-ligand affinity trend | PDBbind-related congeneric pair TBD | Higher/lower affinity direction | Focus on interaction/water/contact evidence, not absolute affinity. | 2 |
 | S05 | Apo vs holo dynamics | T4L L99A apo vs benzene-bound, or similar | Known ligand-bound structural/dynamic expectation | Grade plan and analysis consistency more than final direction. | 2 |
@@ -232,30 +208,20 @@ agent tasks.
 
 ## Implementation Roadmap
 
-1. Replace the former mixed v1.0 task set with the prep-only dataset:
-   - Keep the submission schema compatible where possible.
-   - Set dataset `benchmark_version` to `MDAgentBench-prep-v0.1`.
-   - Keep the public submission contract prompt-only and backend-neutral.
-2. Implement scorer extensions for prep deterministic checks.
-3. Build the first prep wave in three small implementation slices:
-   - **Slice A, reuse current task machinery**: P03, P11, P22. These extend
-     existing ligand-pose, protonation, and force-field/water metadata checks.
-   - **Slice B, add component and metadata rescans**: P02, P06, P08, P12, P14,
-     P25. These need residue/component presence checks, branch provenance,
-     supported-ion retention, phosaa/glycan metadata, and ion-concentration
-     counting.
-   - **Slice C, add richer structural accounting**: P18 and P24-normal. These
-     need lipid-composition counting and assembly-identity provenance checks.
-   - Add P24-many-chain after P24-normal passes with at least one MDClaw and
-     one non-MDClaw-style submission.
-4. Then expand the second prep wave: P01, P04, P05, P07, P09, P10, P13, P15,
-   P16, P17, P19, P20, P21, P23.
-5. Run MDClaw as the reference baseline and save expected artifact patterns.
-6. Export the public package and run at least one non-MDClaw baseline:
+1. Keep the public package prompt-only and backend-neutral: expose
+   `prompt.md` plus `submission_contract.json`; keep `task.json`, truth files,
+   and scorer details private to the harness.
+2. Strengthen deterministic prep checks where metadata-only scoring remains
+   weak, especially force-field/water fidelity, disulfides, nucleic-acid
+   library selection, NMR candidate selection, terminal capping, and biological
+   assembly identity.
+3. Run MDClaw as the reference baseline on each prep task and save expected
+   artifact patterns for debugging scorer failures.
+4. Export the public package and run at least one non-MDClaw baseline:
    - simple script baseline,
    - LLM-only/no-run baseline,
    - one external MD tool/harness when available.
-7. Only after scorer stability, expand to scientific tasks S01-S03/S10.
+5. Only after prep scorer stability, expand to scientific tasks S01-S03/S10.
 
 ### Concrete Prep Implementation Plan
 
@@ -271,17 +237,13 @@ agent tasks.
    JSON under `truth/` with expected components, residue IDs, ligand IDs,
    assembly IDs, tolerated count ratios, and backend-neutral blocked reason
    categories only when a task explicitly allows blocked submissions. Do not
-   put tool-specific MDClaw node IDs or guardrail codes in public benchmark
+   put tool-specific MDClaw node IDs or internal policy codes in public benchmark
    truth unless the check is explicitly marked MDClaw-internal.
-4. **Task creation order**: create or migrate tasks as
-   P03 -> P11 -> P22 -> P25 -> P24-normal -> P02 -> P06 -> P08 -> P12 ->
-   P14 -> P18. This gives quick scorer feedback before adding membrane and
-   assembly complexity.
-5. **Baseline runs**: run MDClaw on every first-wave task, then run at least a
+4. **Baseline runs**: run MDClaw on every first-wave task, then run at least a
    minimal generic baseline that writes valid-but-incomplete submissions so the
    scorer proves it distinguishes success, honest failure, blocked, and
    fabricated artifacts.
-6. **Promotion gate**: mark a prep task as accepted only after
+5. **Promotion gate**: mark a prep task as accepted only after
    `validate_benchmark_submission`, `score_benchmark_submission`, dry-run
    coverage, fake-submission tests, and one MDClaw reference run all agree.
 
