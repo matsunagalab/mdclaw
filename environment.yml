@@ -21,11 +21,15 @@ dependencies:
   # pyxdg for XDG_CACHE_HOME resolution of the CCD download cache).
   - rustworkx>=0.14
   - pyxdg>=0.28
+  # HPacker uses torch at import time. Keep this on conda-forge to avoid
+  # mixing pkgs/main PyTorch with conda-forge protobuf on macOS.
+  - pytorch>=2.7,<2.8
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip
   - pip:
     - -e .
-    - git+https://github.com/matsunagalab/FASPR
+    - e3nn==0.5.0
+    - hpacker @ git+https://github.com/gvisani/hpacker.git
     # openff-pablo is pre-1.0 and not yet on conda-forge / PyPI; install
     # the 0.2.2 git tag and pin to <0.3 to absorb expected API churn
     # before the openff-pablo team cuts a stable release.

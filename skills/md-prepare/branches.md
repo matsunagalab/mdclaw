@@ -4,12 +4,16 @@ Use branched `prep` nodes for variants after the initial cleaned complex.
 
 ## Mutation
 
+Mutation branches use HPacker side-chain packing.
+
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids prep_001
-mdclaw --job-dir <job_dir> --node-id prep_002 create_mutated_structure --sequence <faspr_sequence>
+mdclaw --job-dir <job_dir> --node-id prep_002 create_mutated_structure --mutations L99A
 ```
 
-The mutated PDB becomes the downstream `merged_pdb`.
+Use `L99A` for an unambiguous single-chain protein, or `A:L99A` when residue
+numbering is shared across chains. The mutated PDB becomes the downstream
+`merged_pdb`.
 
 ## PTM Restoration
 

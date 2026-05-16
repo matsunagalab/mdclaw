@@ -4,7 +4,7 @@
 
 BioEmu 統合は、最初から「surrogate ensemble → sidechain 復元 → 自動選択 → k 並列 MD → 集約解析」まで一気通貫に作ると複雑になりすぎる。MVP は **MD surrogate 由来の複数構造を mdclaw の `source_bundle` として、side-chain 込みの all-atom PDB として作れること**に絞る。
 
-> **更新 (2026-05-14)**: Phase 1 の sidechain 復元は FASPR の repack のみを `generate_surrogate_candidates` に同梱した。OpenMM minimize / energy ranking は引き続き後フェーズ。詳細は §改善後の Phase 設計を参照。
+> **更新 (2026-05-16)**: Phase 1 の sidechain 復元 backend は HPacker に置き換えた。OpenMM minimize / energy ranking は引き続き後フェーズ。詳細は §改善後の Phase 設計を参照。
 
 ただし、将来的に BioEmu 以外の MD surrogate モデルも使う前提にする。公開 CLI は BioEmu 固有名ではなく、surrogate 共通 CLI に `--model bioemu` を渡す形にする。BioEmu は最初の backend として実装する。
 
@@ -121,23 +121,23 @@ Docker/Singularity を使う場合の注意:
 
 これは失敗点が多い。BioEmu は backend 専用 runtime、backbone-only 出力、model weight cache、GPU/Linux 要件を持つので、MVP では BioEmu 固有の不確実性だけを閉じ込めるべき。
 
-改善後の Phase 1 は **共通候補生成 CLI 一発 + source_bundle 化 + FASPR repack** にする。OpenMM minimize / energy scoring / 候補選択 / 多分岐 MD は Phase 2 以降。FASPR は 1 構造あたり数 ms なので 100〜1000 候補でも体感影響無く、ユーザが期待する「1 CLI で side-chain 込みアンサンブル」を満たせる。
+改善後の Phase 1 は **共通候補生成 CLI 一発 + source_bundle 化 + HPacker repack** にする。OpenMM minimize / energy scoring / 候補選択 / 多分岐 MD は Phase 2 以降。HPacker は mutation workflow と同じ side-chain backend なので、ユーザが期待する「1 CLI で side-chain 込みアンサンブル」を満たせる。
 
-### 2. 全 candidate の sidechain 復元は FASPR repack に限定する
+### 2. 全 candidate の sidechain 復元は HPacker repack に限定する
 
 BioEmu の出力は backbone-only で、そのままでは `prepare_complex` の前提を満たさない。当初はこれを Phase 3 に先送りしていたが、
 
-- FASPR repack は 1 構造あたり数〜数十 ms と軽く、100〜1000 候補でも体感無視できる
-- `py_FASPR` は既に `environment.yml` 経由でコンテナに同梱済み
+- HPacker repack は mutation workflow と同じ backend で扱える
+- HPacker は `environment.yml` 経由でコンテナに同梱する
 - ユーザが「1 CLI で side-chain 込みアンサンブル」を期待する
 
-ので Phase 1 に取り込み、`generate_surrogate_candidates` の中で各 frame に対し FASPR を呼ぶ。OpenMM minimize / energy ranking / clustering は引き続き Phase 2 以降。
+ので Phase 1 に取り込み、`generate_surrogate_candidates` の中で各 frame に対し HPacker を呼ぶ。OpenMM minimize / energy ranking / clustering は引き続き Phase 2 以降。
 
 実装上は次の通り。
 
-1. `generate_surrogate_candidates --model bioemu` が backbone candidates を抽出した後、`py_FASPR.faspr` で in-place repack する。
+1. `generate_surrogate_candidates --model bioemu` が backbone candidates を抽出した後、HPacker で in-place repack する。
 2. backbone-only PDB は `<artifacts>/candidates_backbone/` に provenance として保管する。
-3. candidate の `tags` は `faspr_repacked`（または disable 時 `backbone_only`）。
+3. candidate の `tags` は `hpacker_repacked`（または disable 時 `backbone_only`）。
 4. opt-out したい場合は `--reconstruct-sidechains false`。
 
 ### 3. `selection.<tag>` は既存 API では見えにくい
@@ -223,7 +223,7 @@ Phase 1 で既存改修するファイル:
 Phase 1 でやること:
 
 - BioEmu sampling と source_bundle 化
-- FASPR による side-chain repack（in-process、`--reconstruct-sidechains false` で無効化可）
+- HPacker による side-chain repack（in-process、`--reconstruct-sidechains false` で無効化可）
 - backbone-only PDB の provenance 保管
 
 Phase 1 でやらないこと:
@@ -258,13 +258,13 @@ mdclaw select_source_candidates \
 
 ### Phase 3: 選ばれた候補の補正と relax
 
-FASPR repack は Phase 1 で済ませてあるので、ここでは relax / minimize 系の補正を加える。
+HPacker repack は Phase 1 で済ませてあるので、ここでは relax / minimize 系の補正を加える。
 
 候補:
 
 1. 選択済み k 個に対する OpenMM local minimize（clash 解消）。
 2. `bioemu.sidechain_relax` 相当の制約付き短時間 MD equilibration（任意）。
-3. FASPR helper を `create_mutated_structure` と共有する形に揃える（現在は両所で `from py_FASPR import faspr` を行っている）。
+3. HPacker helper を `create_mutated_structure` と共有する。
 
 この Phase のゴールは「選択済み k 個を安定して prep に渡す」ことであり、全 BioEmu sample を minimize することではない。
 
@@ -398,14 +398,14 @@ mdclaw prepare_complex \
   --source-candidate-id candidate_001
 ```
 
-候補は FASPR repack 済みなので、prepare 側で side-chain が無いことに起因する破綻は出ない前提。それでも prepare が壊れる場合は Phase 3 で minimize/relax を加える設計に進む。
+候補は HPacker repack 済みなので、prepare 側で side-chain が無いことに起因する破綻は出ない前提。それでも prepare が壊れる場合は Phase 3 で minimize/relax を加える設計に進む。
 
 ## 採用する実装順
 
 1. `generate_surrogate_candidates --model bioemu` を作る。
 2. `setup_surrogate_backend` / `check_surrogate_backend` で BioEmu deploy を mdclaw から確認できるようにする。
 3. backbone candidate を抽出して source bundle 化する。
-4. 抽出後に FASPR で in-place repack し、`candidates_backbone/` に raw を保管する。
+4. 抽出後に HPacker で in-place repack し、`candidates_backbone/` に raw を保管する。
 5. `list_source_candidates` で候補が見えることを確認する。
 6. 1 candidate を `prepare_complex` に渡して、どこで壊れるか観測する。
 7. 壊れた事実に基づき Phase 3 で minimize / relax を最小実装する。

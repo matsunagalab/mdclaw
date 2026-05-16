@@ -128,7 +128,7 @@ def test_generate_surrogate_candidates_completes_source_node(
     assert record["tags"] == ["backbone_only"]
 
 
-def test_generate_surrogate_candidates_repacks_sidechains_with_faspr(
+def test_generate_surrogate_candidates_repacks_sidechains_with_hpacker(
     job_with_source_node,
     stubbed_bioemu_backend,
     monkeypatch,
@@ -144,11 +144,11 @@ def test_generate_surrogate_candidates_repacks_sidechains_with_faspr(
         for path in candidate_paths:
             import shutil
             shutil.copy2(path, backbone_archive_dir / path.name)
-            path.write_text(path.read_text() + "REMARK FASPR\n")
+            path.write_text(path.read_text() + "REMARK HPACKER\n")
             repack_calls.append(path)
-        return list(candidate_paths), warnings
+        return list(candidate_paths), warnings, True
 
-    monkeypatch.setattr(surrogate_server, "_repack_sidechains_with_faspr", fake_repack)
+    monkeypatch.setattr(surrogate_server, "_repack_sidechains_with_hpacker", fake_repack)
 
     result = surrogate_server.generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
@@ -159,16 +159,16 @@ def test_generate_surrogate_candidates_repacks_sidechains_with_faspr(
     )
 
     assert result["success"], result["errors"]
-    assert result["sidechain_method"] == "faspr"
-    assert repack_calls, "FASPR repack helper was not invoked"
+    assert result["sidechain_method"] == "hpacker"
+    assert repack_calls, "HPacker repack helper was not invoked"
 
     node = read_node(job_dir, node_id)
-    assert node["metadata"]["sidechain_method"] == "faspr"
+    assert node["metadata"]["sidechain_method"] == "hpacker"
 
     bundle_file = Path(job_dir) / "nodes" / node_id / node["artifacts"]["source_bundle"]
     bundle = json.loads(bundle_file.read_text())
     record = bundle["structures"][0]
-    assert record["tags"] == ["faspr_repacked"]
+    assert record["tags"] == ["hpacker_repacked"]
     backbone_archive = Path(job_dir) / "nodes" / node_id / "artifacts" / "candidates_backbone"
     assert backbone_archive.is_dir() and any(backbone_archive.iterdir())
 

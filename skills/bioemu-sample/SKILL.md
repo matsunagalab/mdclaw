@@ -76,8 +76,8 @@ mdclaw list_source_candidates \
   --node-id source_001
 ```
 
-Candidates are written with side-chains already reconstructed (FASPR runs
-inline after BioEmu sampling) and tagged ``faspr_repacked``. The raw
+Candidates are written with side-chains already reconstructed (HPacker runs
+inline after BioEmu sampling) and tagged ``hpacker_repacked``. The raw
 backbone-only frames are archived under
 ``artifacts/candidates_backbone/`` for provenance. Pass
 ``--reconstruct-sidechains false`` if you only want the backbone-only

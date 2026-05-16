@@ -20,7 +20,7 @@ Primary repository sources checked:
 - Always cite the MD engine and topology/parameterization toolchain actually used by the lineage.
 - Cite force fields and water models explicitly when they appear in `topo` metadata, `progress.json` params, or relevant `node.json` artifacts.
 - Cite data resources only when the lineage used them: for example, RCSB PDB for `source=pdb`, AlphaFold DB for `source=alphafold`, and UniProt only when its API contributed input data.
-- Cite optional scientific tools only when their node/artifact appears: Boltz-2, MODELLER, PLIP, FASPR, modXNA, GLYCAM, OL15/OL3, phosaa, PACKMOL-Memgen, etc.
+- Cite optional scientific tools only when their node/artifact appears: Boltz-2, MODELLER, PLIP, HPacker, modXNA, GLYCAM, OL15/OL3, phosaa, PACKMOL-Memgen, etc.
 - Do not cite diagnostics, warnings, failed attempts, or unused fallback paths in a Methods draft unless they affected the final protocol.
 
 ## Citation Targets by MDClaw Component
@@ -61,7 +61,8 @@ Primary repository sources checked:
 - Gemmi: cite for mmCIF/PDB parsing and structural biology file handling.
 - Dimorphite-DL: cite when small-molecule ionization state enumeration is used.
 - PubChemPy: normally do not cite in MD Methods; record only in software provenance if needed.
-- FASPR: cite when `create_mutated_structure` uses side-chain packing.
+- HPacker: cite when `create_mutated_structure` or surrogate candidate
+  reconstruction uses HPacker side-chain packing.
 - modXNA: cite when modified nucleic acid parameters are generated.
 - PLIP: cite when protein-ligand interaction profiling is used. Use PLIP 2021 if nucleic-acid interactions are part of the analysis.
 
@@ -399,15 +400,16 @@ Primary repository sources checked:
   doi = {10.1186/s13321-019-0336-9}
 }
 
-@article{Huang2020FASPR,
-  author = {Huang, Xiaoqiang and Pearce, Robin and Zhang, Yang},
-  title = {{FASPR}: An Open-Source Tool for Fast and Accurate Protein Side-Chain Packing},
-  journal = {Bioinformatics},
-  year = {2020},
-  volume = {36},
-  number = {12},
-  pages = {3758--3765},
-  doi = {10.1093/bioinformatics/btaa234}
+@inproceedings{Visani2024HPacker,
+  author = {Visani, Gian Marco and Galvin, William and Pun, Michael and Nourmohammad, Armita},
+  title = {{H-Packer}: Holographic Rotationally Equivariant Convolutional Neural Network for Protein Side-Chain Packing},
+  booktitle = {Proceedings of the 18th Machine Learning in Computational Biology meeting},
+  series = {Proceedings of Machine Learning Research},
+  volume = {240},
+  pages = {230--249},
+  year = {2024},
+  publisher = {PMLR},
+  url = {https://proceedings.mlr.press/v240/visani24a.html}
 }
 
 @article{Love2024modXNA,

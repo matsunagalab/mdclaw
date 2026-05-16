@@ -71,7 +71,7 @@ _CITATION_KEY_BY_TOKEN = {
     "rdkit": "RDKitZenodo",
     "gemmi": "Wojdyr2022Gemmi",
     "dimorphite": "Ropp2019DimorphiteDL",
-    "faspr": "Huang2020FASPR",
+    "hpacker": "Visani2024HPacker",
     "modxna": "Love2024modXNA",
     "plip": "Salentin2015PLIP",
     "plip2021": "Adasme2021PLIP",
@@ -814,8 +814,8 @@ def _collect_citation_tokens(lineage: list[tuple[str, dict]], facts: dict) -> li
             add("gemmi")
         if "dimorphite" in haystack:
             add("dimorphite")
-        if "faspr" in haystack:
-            add("faspr")
+        if "hpacker" in haystack or "h-packer" in haystack:
+            add("hpacker")
         if "modxna" in haystack:
             add("modxna")
         if "plip" in haystack:

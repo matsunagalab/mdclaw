@@ -44,7 +44,7 @@ FROM --platform=linux/amd64 condaforge/mambaforge:latest AS conda-base
 
 WORKDIR /build
 
-# C++ toolchain for source-built pip dependencies (e.g. py_FASPR).
+# C++ toolchain for source-built pip dependencies.
 # Stays in stage 1 only — conda-pack copies just /opt/mdclaw to later stages.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends build-essential && \

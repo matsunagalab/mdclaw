@@ -40,8 +40,8 @@ skill examples.
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
   compatibility labels and may repeat in large assemblies.
-- `create_mutated_structure(...)`: FASPR side-chain mutation on a branched prep
-  node.
+- `create_mutated_structure(...)`: HPacker side-chain mutation and nearby
+  repacking on a branched prep node.
 - `prepare_modified_nucleic(...)`: legacy/experimental modXNA file generation.
   The standard MD-ready topology path does not support modified DNA/RNA
   residues; `inspect_molecules` reports them as unsupported and

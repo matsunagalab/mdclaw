@@ -6,7 +6,7 @@ Provides tools for:
 - Chain separation and classification using gemmi
 - Structure cleaning, missing residue modeling, water/heterogen removal, and protonation using PDBFixer
 - Automatic detection of disulfide bonds and CYS->CYX renaming
-- Mutation modeling with FASPR
+- Mutation modeling with HPacker
 - Ligand chemistry preparation with SMILES/SDF template matching
 - LLM-friendly structure validation and error reporting at each step
 """
@@ -5336,22 +5336,22 @@ def prepare_complex(
 
 def create_mutated_structure(
     pdb_file: Optional[str] = None,
+    mutations: Optional[List[str]] = None,
     sequence: Optional[str] = None,
     seq_file: Optional[str] = None,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
+    repack_radius_angstrom: float = 8.0,
+    refinement_iterations: int = 5,
 ) -> dict:
-    """Apply a sequence-level mutation to a *cleaned* structure via FASPR.
+    """Apply point/multi-mutations to a *cleaned* structure via HPacker.
 
     Mutation is a post-prep transformation: it expects a structure that has
     already been cleaned by ``prepare_complex`` (PDBFixer + pdb4amber +
-    protonation + merge). FASPR repacks side chains for residues whose
-    target one-letter code differs from the original.
-
-    FASPR sequence convention: lowercase = keep, uppercase = mutate to that
-    residue type. Length must match the input structure's residue count.
+    protonation + merge). HPacker changes the requested mutation residues and
+    repacks nearby side chains.
 
     DAG placement::
 
@@ -5368,16 +5368,21 @@ def create_mutated_structure(
     Args:
         pdb_file: Cleaned PDB. Required unless running in node mode with a
                   resolvable prep ancestor.
-        sequence: One-letter sequence string in FASPR convention. Mutually
-                  exclusive with ``seq_file``.
-        seq_file: Path to a FASPR sequence text file. Mutually exclusive
-                  with ``sequence``.
+        mutations: Preferred mutation specs in ``L99A`` or ``A:L99A`` notation.
+        sequence: Legacy mixed-case one-letter sequence input. Lowercase means
+                  keep; uppercase means mutate to that residue. Mutually
+                  exclusive with ``mutations`` and ``seq_file``.
+        seq_file: Path to a legacy mixed-case sequence text file. Mutually
+                  exclusive with ``mutations`` and ``sequence``.
         name: Optional name prefix for output files (e.g. "k27a").
         output_dir: Output directory (ignored in node mode — artifacts go
                     to the node directory).
         job_dir: DAG job directory (node mode).
         node_id: Node ID inside ``job_dir``; expected ``node_type=prep``
                  with a prep ancestor as parent.
+        repack_radius_angstrom: Nearby side chains within this HPacker
+                                proximity cutoff are repacked.
+        refinement_iterations: HPacker refinement iterations.
 
     Returns:
         Dict with:
@@ -5391,6 +5396,14 @@ def create_mutated_structure(
         "success": False,
         "output_dir": None,
         "output_path": None,
+        "mutation_specs": [],
+        "mutation_count": 0,
+        "mutation_backend": "hpacker",
+        "sidechain_method": "hpacker",
+        "repack_radius_angstrom": repack_radius_angstrom,
+        "refinement_iterations": refinement_iterations,
+        "hpacker_version": None,
+        "code": None,
         "errors": [],
         "warnings": [],
     }
@@ -5401,7 +5414,14 @@ def create_mutated_structure(
             job_dir,
             node_id,
             "prep",
-            actual_conditions={"sequence": sequence, "seq_file": seq_file, "name": name},
+            actual_conditions={
+                "mutations": mutations,
+                "sequence": sequence,
+                "seq_file": seq_file,
+                "name": name,
+                "repack_radius_angstrom": repack_radius_angstrom,
+                "refinement_iterations": refinement_iterations,
+            },
         )
         if not _ctx["success"]:
             blocked = {"success": False, "error_type": "ValidationError", **_ctx}
@@ -5421,11 +5441,16 @@ def create_mutated_structure(
         if v:
             pdb_file = v
 
-    # XOR validation on sequence vs. seq_file
-    if (sequence is None) == (seq_file is None):
+    mutation_inputs = sum([
+        bool(mutations),
+        sequence is not None,
+        seq_file is not None,
+    ])
+    if mutation_inputs != 1:
         result["errors"].append(
-            "Provide exactly one of `sequence` or `seq_file`."
+            "Provide exactly one of `mutations`, `sequence`, or `seq_file`."
         )
+        result["code"] = "mutation_input_invalid"
         if job_dir and node_id:
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(
@@ -5474,19 +5499,20 @@ def create_mutated_structure(
     elif output_dir:
         base_dir = Path(output_dir)
     else:
-        base_dir = create_unique_subdir(WORKING_DIR, "faspr")
+        base_dir = create_unique_subdir(WORKING_DIR, "hpacker")
     ensure_directory(base_dir)
 
     pref = f"{name}_" if name else ""
 
-    # Materialize seq_file in base_dir if a string was given
+    seq_path = None
     if sequence is not None:
-        seq_path = (base_dir / f"{pref}sequence.txt").resolve()
+        seq_path = (base_dir / f"{pref}legacy_sequence.txt").resolve()
         seq_path.write_text(sequence)
-    else:
+    elif seq_file is not None:
         seq_path = Path(seq_file).resolve()
         if not seq_path.is_file():
             result["errors"].append(f"sequence file not found: {seq_file}")
+            result["code"] = "mutation_input_invalid"
             if _node_mode:
                 from mdclaw._node import fail_node
                 fail_node(job_dir, node_id, errors=result["errors"])
@@ -5494,39 +5520,33 @@ def create_mutated_structure(
 
     output_path = (base_dir / f"{pref}mutated.pdb").resolve()
 
-    # Lazy import: keeps structure_server.py importable on machines that
-    # don't have py_FASPR yet (the rest of this module is core MD prep).
-    try:
-        from py_FASPR import faspr as _faspr
-    except ImportError as e:
-        result["errors"].append(
-            f"py_FASPR is not installed: {e}. "
-            "Install via the project environment.yml "
-            "(`pip install git+https://github.com/matsunagalab/FASPR`)."
-        )
-        if _node_mode:
-            from mdclaw._node import fail_node
-            fail_node(job_dir, node_id, errors=result["errors"])
-        return result
+    from mdclaw.sidechain_packer import run_hpacker_mutation
 
-    logger.info(f"Running FASPR: {pdb_path} -> {output_path}")
-    try:
-        _faspr(
-            input_pdb=str(pdb_path),
-            output_pdb=str(output_path),
-            seq_file=str(seq_path),
-        )
-    except Exception as e:
-        result["errors"].append(f"FASPR failed: {type(e).__name__}: {e}")
-        logger.error(f"FASPR execution failed: {e}")
+    logger.info("Running HPacker mutation: %s -> %s", pdb_path, output_path)
+    hpacker_result = run_hpacker_mutation(
+        pdb_path,
+        output_path,
+        mutations=mutations,
+        sequence=sequence,
+        seq_file=seq_path if seq_file is not None else None,
+        repack_radius_angstrom=repack_radius_angstrom,
+        refinement_iterations=refinement_iterations,
+    )
+    result["warnings"].extend(hpacker_result.warnings)
+    result["errors"].extend(hpacker_result.errors)
+    result["code"] = hpacker_result.code
+    result["mutation_specs"] = hpacker_result.mutation_specs
+    result["mutation_count"] = len(hpacker_result.mutation_specs)
+    result["hpacker_version"] = hpacker_result.hpacker_version
 
-    if output_path.is_file():
+    if hpacker_result.success and output_path.is_file():
         result["success"] = True
         result["output_dir"] = str(base_dir)
         result["output_path"] = str(output_path)
-        logger.info("FASPR successfully generated mutant structure")
+        logger.info("HPacker successfully generated mutant structure")
     elif not result["errors"]:
-        result["errors"].append("FASPR produced no PDB output")
+        result["errors"].append("HPacker produced no PDB output")
+        result["code"] = "hpacker_no_output"
 
     if _node_mode:
         from mdclaw._node import complete_node, fail_node
@@ -5541,7 +5561,14 @@ def create_mutated_structure(
                 metadata={
                     "name": name,
                     "mutation_source_pdb": str(pdb_path),
-                    "sequence_file": str(seq_path),
+                    "mutation_backend": "hpacker",
+                    "sidechain_method": "hpacker",
+                    "mutation_specs": hpacker_result.mutation_specs,
+                    "mutation_count": len(hpacker_result.mutation_specs),
+                    "sequence_file": str(seq_path) if seq_path else None,
+                    "repack_radius_angstrom": repack_radius_angstrom,
+                    "refinement_iterations": refinement_iterations,
+                    "hpacker_version": hpacker_result.hpacker_version,
                 },
                 warnings=result.get("warnings", []),
             )

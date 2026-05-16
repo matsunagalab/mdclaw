@@ -14,6 +14,8 @@ scientific investigation in the Amber/OpenMM ecosystem. It combines:
   actions.
 - Boltz-2 for AI structure prediction.
 - AmberTools (`pdb4amber`, `cpptraj`) for structure preparation support.
+- HPacker for mutation-side-chain reconstruction and surrogate side-chain
+  packing.
 - `openmmforcefields` (`SystemGenerator` + `GAFFTemplateGenerator`) plus
   topology-time Amber geostd XML conversion for force-field application.
 - OpenFF Pablo for chemistry-aware PDB → topology loading (CCD-based).

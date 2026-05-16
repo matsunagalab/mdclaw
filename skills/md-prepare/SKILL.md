@@ -68,9 +68,9 @@ as `jobs/main`; for broader investigations, register multiple jobs under the
 same study. Within each job, use one `source` node that records a source bundle.
 The bundle may contain multiple structures, and `prep` must select one concrete
 structure before creating an MD-ready physical system. Use DAG branching after
-`prep` to explore variants of that prepared system — the most common variant is
-**point/multi-mutants** (run `create_mutated_structure` as a post-prep prep
-node; see `skills/md-prepare/branches.md`).
+`prep` to explore variants of that prepared system. For point/multi-mutants,
+use the HPacker-based `create_mutated_structure` branch in
+`skills/md-prepare/branches.md`.
 
 1. Decide `execution_mode` from the user's request:
    - `execution_mode=autonomous` unless the user explicitly asks for

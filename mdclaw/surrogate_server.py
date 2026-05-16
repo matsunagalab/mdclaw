@@ -303,33 +303,36 @@ def _complete_surrogate_source_node(
     }
 
 
-def _repack_sidechains_with_faspr(
+def _repack_sidechains_with_hpacker(
     candidate_paths: list[Path],
     backbone_archive_dir: Path,
-) -> tuple[list[Path], list[str]]:
-    """Repack side-chains on each candidate PDB in place via FASPR.
+) -> tuple[list[Path], list[str], bool]:
+    """Repack side-chains on each candidate PDB in place via HPacker.
 
     The original backbone-only PDB is archived under ``backbone_archive_dir``
     so the raw BioEmu output remains available for provenance.
     """
-    from py_FASPR import faspr
+    from mdclaw.sidechain_packer import run_hpacker_full_repack
 
     backbone_archive_dir.mkdir(parents=True, exist_ok=True)
     repacked: list[Path] = []
     warnings: list[str] = []
+    any_success = False
     for path in candidate_paths:
         archived = backbone_archive_dir / path.name
         shutil.copy2(path, archived)
-        try:
-            faspr(input_pdb=str(path), output_pdb=str(path))
-        except Exception as exc:
+        hpacker_result = run_hpacker_full_repack(path, path)
+        if not hpacker_result.success:
             warnings.append(
-                f"FASPR repack failed for {path.name}: {type(exc).__name__}: {exc}; "
+                f"HPacker repack failed for {path.name}: "
+                f"{'; '.join(hpacker_result.errors) or hpacker_result.code}; "
                 "keeping backbone-only frame"
             )
             shutil.copy2(archived, path)
+        else:
+            any_success = True
         repacked.append(path)
-    return repacked, warnings
+    return repacked, warnings, any_success
 
 
 def _find_bioemu_outputs(output_dir: Path) -> tuple[Path | None, Path | None, list[Path]]:
@@ -527,24 +530,20 @@ def generate_surrogate_candidates(
     sidechain_method = "none"
     if reconstruct_sidechains and candidate_paths:
         try:
-            repacked_paths, repack_warnings = _repack_sidechains_with_faspr(
+            repacked_paths, repack_warnings, repack_success = _repack_sidechains_with_hpacker(
                 candidate_paths, backbone_archive_dir
             )
             result["warnings"].extend(repack_warnings)
             candidate_paths = repacked_paths
-            sidechain_method = "faspr"
-        except ImportError as exc:
-            result["warnings"].append(
-                f"Side-chain reconstruction skipped: py_FASPR is not installed ({exc}). "
-                "Candidates remain backbone-only."
-            )
+            if repack_success:
+                sidechain_method = "hpacker"
         except Exception as exc:
             result["warnings"].append(
                 f"Side-chain reconstruction failed: {type(exc).__name__}: {exc}. "
                 "Candidates remain backbone-only."
             )
 
-    candidate_tag = "faspr_repacked" if sidechain_method == "faspr" else "backbone_only"
+    candidate_tag = "hpacker_repacked" if sidechain_method == "hpacker" else "backbone_only"
     result["candidate_files"] = [str(p) for p in candidate_paths]
     result["sidechain_method"] = sidechain_method
 
