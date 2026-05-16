@@ -96,6 +96,11 @@
             "pdb_residue_state",
             "rmsd_recompute",
             "assembly_identity_check",
+            "topology_artifact_bundle",
+            "openmm_system_load",
+            "openmm_energy_rescan",
+            "minimization_report_check",
+            "minimized_structure_component_rescan",
             "metrics_caption_consistency"
           ],
           "title": "Check Type",
@@ -191,6 +196,18 @@
           "default": null,
           "title": "Json Path"
         },
+        "max_rescan_minimization_steps": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Rescan Minimization Steps"
+        },
         "max_residue_counts": {
           "anyOf": [
             {
@@ -281,6 +298,18 @@
           "default": null,
           "title": "Min Residue Counts"
         },
+        "min_topology_artifact_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Topology Artifact Count"
+        },
         "min_value": {
           "anyOf": [
             {
@@ -304,6 +333,42 @@
           ],
           "default": null,
           "title": "Min Water Residues"
+        },
+        "minimization_report_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimization Report Manifest Path"
+        },
+        "minimization_report_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimization Report Path"
+        },
+        "minimized_structure_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimized Structure Manifest Path"
         },
         "reference_pdb": {
           "anyOf": [
@@ -440,6 +505,33 @@
           "default": null,
           "title": "Required Solvent Type"
         },
+        "required_topology_artifacts": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Topology Artifacts"
+        },
+        "required_topology_backend": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Topology Backend"
+        },
         "residue_aliases": {
           "anyOf": [
             {
@@ -494,6 +586,18 @@
           "default": null,
           "title": "Selection"
         },
+        "state_xml_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "State Xml Manifest Path"
+        },
         "structure_manifest_path": {
           "anyOf": [
             {
@@ -518,10 +622,46 @@
           "default": null,
           "title": "Structure Path"
         },
+        "system_xml_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "System Xml Manifest Path"
+        },
         "tolerance_angstrom": {
           "default": 0.05,
           "title": "Tolerance Angstrom",
           "type": "number"
+        },
+        "topology_backend_json_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topology Backend Json File"
+        },
+        "topology_backend_json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topology Backend Json Path"
         },
         "topology_manifest_path": {
           "anyOf": [
@@ -546,6 +686,18 @@
           ],
           "default": null,
           "title": "Topology Path"
+        },
+        "topology_pdb_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Topology Pdb Manifest Path"
         },
         "trajectory_manifest_path": {
           "anyOf": [

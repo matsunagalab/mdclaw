@@ -140,6 +140,31 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     assert assembly.required_assembly_id == "1"
     assert assembly.min_distinct_output_chains == 4
 
+    topology = DeterministicCheck.model_validate({
+        "check_id": "topology_bundle",
+        "check_type": "topology_artifact_bundle",
+        "topology_manifest_path": "outputs.topology",
+        "required_topology_artifacts": [
+            "system_xml",
+            "topology_pdb",
+            "state_xml",
+        ],
+        "min_topology_artifact_count": 3,
+    })
+    assert topology.check_type == "topology_artifact_bundle"
+    assert topology.required_topology_artifacts == [
+        "system_xml",
+        "topology_pdb",
+        "state_xml",
+    ]
+
+    minimization = DeterministicCheck.model_validate({
+        "check_id": "minimization",
+        "check_type": "minimization_report_check",
+        "minimization_report_manifest_path": "outputs.minimization_report",
+    })
+    assert minimization.minimization_report_manifest_path == "outputs.minimization_report"
+
 
 def test_integrity_check_supports_manifest_artifact_floor():
     check = IntegrityCheck.model_validate({
@@ -164,8 +189,14 @@ def test_submission_manifest_status_enum():
         "schema_version": "1.0",
         "task_id": "x",
         "status": "partial",
+        "outputs": {
+            "minimized_structure": "minimized_structure.pdb",
+            "minimization_report": "minimization_report.json",
+        },
     })
     assert manifest.status == "partial"
+    assert manifest.outputs.minimized_structure == "minimized_structure.pdb"
+    assert manifest.outputs.minimization_report == "minimization_report.json"
     with pytest.raises(ValidationError):
         SubmissionManifest.model_validate({
             "schema_version": "1.0",

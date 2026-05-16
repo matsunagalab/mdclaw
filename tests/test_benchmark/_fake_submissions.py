@@ -124,6 +124,88 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
             _set_path(metrics, mapping_path, mapping)
 
 
+def _set_standard_topology_minimization_metrics(metrics: dict[str, Any],
+                                                mode: str) -> None:
+    honest = mode == "honest"
+    metrics["topology"] = {
+        "backend": "openmm",
+        "build_success": honest,
+        "forcefield": "synthetic-fixture",
+        "water_model": "none",
+        "solvent_model": "vacuum",
+    }
+    metrics["minimization"] = {
+        "attempted": True,
+        "completed": honest,
+        "energy_initial_kj_mol": 0.0 if honest else float("nan"),
+        "energy_final_kj_mol": 0.0 if honest else float("nan"),
+        "energy_is_finite": honest,
+        "positions_are_finite": honest,
+        "atom_count_preserved": honest,
+        "backend": "openmm",
+    }
+
+
+def _write_openmm_fixture_bundle(sub_dir: Path, mode: str) -> list[str]:
+    topo_dir = sub_dir / "topology"
+    topo_dir.mkdir(parents=True, exist_ok=True)
+    system_xml = topo_dir / "system.xml"
+    topology_pdb = topo_dir / "topology.pdb"
+    state_xml = topo_dir / "state.xml"
+
+    if mode != "honest":
+        system_xml.write_text("<not-a-system/>\n")
+        topology_pdb.write_text("END\n")
+        state_xml.write_text("<not-a-state/>\n")
+        return [
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ]
+
+    try:
+        from openmm import (
+            Context,
+            Platform,
+            System,
+            Vec3,
+            VerletIntegrator,
+            XmlSerializer,
+            unit,
+        )
+        from openmm.app import Element, PDBFile, Topology
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"OpenMM is required for honest benchmark fixtures: {exc}") from exc
+
+    topology = Topology()
+    chain = topology.addChain("A")
+    residue = topology.addResidue("ALA", chain, "1")
+    topology.addAtom("CA", Element.getBySymbol("C"), residue)
+    positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
+
+    system = System()
+    system.addParticle(12.0)
+    integrator = VerletIntegrator(1.0 * unit.femtoseconds)
+    context = Context(
+        system,
+        integrator,
+        Platform.getPlatformByName("Reference"),
+    )
+    context.setPositions(positions)
+    state = context.getState(getPositions=True, getEnergy=True)
+
+    system_xml.write_text(XmlSerializer.serialize(system))
+    state_xml.write_text(XmlSerializer.serialize(state))
+    with topology_pdb.open("w") as handle:
+        PDBFile.writeFile(topology, positions, handle, keepIds=True)
+
+    return [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
+
+
 def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
     if task["task_id"] == "P03_prep_ligand_pose_t4l_benzene" and mode == "honest":
         return (task_dir / "truth" / "ligand_reference.pdb").read_text()
@@ -134,6 +216,8 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
 
     residue_index = 10
     for check in task["scoring"]["deterministic_checks"]:
+        if str(check.get("check_id", "")).startswith("minimized_"):
+            continue
         check_type = check.get("check_type")
         if check_type == "structure_component_rescan":
             if mode == "honest":
@@ -184,6 +268,11 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     metrics: dict[str, Any] = {"schema_version": "1.0", "task_id": task_id}
     for check in task["scoring"]["deterministic_checks"]:
         _apply_check_to_metrics(metrics, check, mode)
+    _set_standard_topology_minimization_metrics(metrics, mode)
+
+    prepared_structure = _prepared_structure(task_dir, task, mode)
+    topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode)
+    minimized_structure = prepared_structure if mode == "honest" else "END\n"
 
     status = "completed"
     _write(sub_dir / "manifest.json", {
@@ -196,10 +285,19 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
             "provenance": "provenance.json",
             "evidence_report": "evidence_report.json",
             "prepared_structure": "prepared_structure.pdb",
+            "topology": topology_outputs,
+            "minimized_structure": "minimized_structure.pdb",
+            "minimization_report": "minimization_report.json",
         },
         "limitations": ["synthetic CI fixture; no real MD preparation was run"],
     })
     _write(sub_dir / "metrics.json", metrics)
+    _write(sub_dir / "minimization_report.json", {
+        "schema_version": "1.0",
+        "task_id": task_id,
+        "backend": "openmm",
+        "minimization": metrics["minimization"],
+    })
     _write(sub_dir / "provenance.json", _common_provenance(run_id, task_id, mode))
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
@@ -218,7 +316,8 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
             "No real structure retrieval, topology build, or MD run was performed.",
         ],
     })
-    _write(sub_dir / "prepared_structure.pdb", _prepared_structure(task_dir, task, mode))
+    _write(sub_dir / "prepared_structure.pdb", prepared_structure)
+    _write(sub_dir / "minimized_structure.pdb", minimized_structure)
 
 
 def _load_task_ids() -> list[str]:

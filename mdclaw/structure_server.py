@@ -3238,6 +3238,40 @@ def _fix_amino_acid_hetatm_records(pdb_file: Path) -> None:
         logger.info(f"Removed {removed_het_count} HET header records for amino acid residues")
 
 
+def _iter_unique_conect_bonds(conect_map: dict) -> list[tuple[int, int, int]]:
+    """Return unique PDB CONECT bonds as ``(serial1, serial2, order)``.
+
+    Gemmi stores CONECT as a low-level serial-number map.  Some writers emit
+    both directions, and bond order is represented by repeating the partner
+    serial.  Collapse those records into one unordered bond while preserving
+    the maximum directional repeat count as the order.
+    """
+    directional_counts: Dict[Tuple[int, int], int] = {}
+    for serial1, partners in (conect_map or {}).items():
+        try:
+            s1 = int(serial1)
+        except (TypeError, ValueError):
+            continue
+        for partner in partners or []:
+            try:
+                s2 = int(partner)
+            except (TypeError, ValueError):
+                continue
+            if s1 <= 0 or s2 <= 0 or s1 == s2:
+                continue
+            directional_counts[(s1, s2)] = directional_counts.get((s1, s2), 0) + 1
+
+    pair_orders: Dict[Tuple[int, int], int] = {}
+    for (s1, s2), count in directional_counts.items():
+        key = (s1, s2) if s1 < s2 else (s2, s1)
+        pair_orders[key] = max(pair_orders.get(key, 0), count)
+
+    return [
+        (s1, s2, order)
+        for (s1, s2), order in sorted(pair_orders.items())
+    ]
+
+
 def merge_structures(
     pdb_files: List[str],
     output_dir: Optional[str] = None,
@@ -3323,7 +3357,9 @@ def merge_structures(
             "total_residues": 0,
             "total_chains": 0,
             "unique_pdb_chain_ids": 0,
-            "input_file_count": len(pdb_files)
+            "input_file_count": len(pdb_files),
+            "conect_bond_count": 0,
+            "conect_skipped_bond_count": 0,
         },
         "errors": [],
         "warnings": []
@@ -3370,6 +3406,7 @@ def merge_structures(
         total_residues = 0
         topology_chain_index = 0
         assigned_chain_ids: list[str] = []
+        pending_conect_sources: list[dict[str, Any]] = []
         
         for pdb_file in pdb_files:
             pdb_path = Path(pdb_file)
@@ -3388,6 +3425,8 @@ def merge_structures(
                 continue
             
             input_model = input_structure[0]
+            source_conect_bonds = _iter_unique_conect_bonds(input_structure.conect_map)
+            source_serial_to_merged_atom_index: dict[int, int] = {}
             file_chain_mapping = {}
             source_chain_index = 0
             
@@ -3430,6 +3469,8 @@ def merge_structures(
                         new_atom.b_iso = atom.b_iso
                         new_atom.element = atom.element
                         new_residue.add_atom(new_atom)
+                        if atom.serial > 0:
+                            source_serial_to_merged_atom_index[int(atom.serial)] = total_atoms
                         total_atoms += 1
                         component_atom_count += 1
                     
@@ -3465,13 +3506,68 @@ def merge_structures(
                 source_chain_index += 1
             
             result["chain_mapping"][str(pdb_path)] = file_chain_mapping
+            if source_conect_bonds:
+                pending_conect_sources.append({
+                    "source_file": str(pdb_path),
+                    "bonds": source_conect_bonds,
+                    "serial_to_atom_index": source_serial_to_merged_atom_index,
+                })
         
         # Add model to structure
         merged_structure.add_model(merged_model)
+
+        # Rebuild input CONECT records against final merged atom serials.
+        # Gemmi's CONECT map is serial-number based and does not track atom
+        # edits, so original records cannot be copied directly after chain
+        # relabeling / merging.  Assign final serials first, then add mapped
+        # bonds and write with conect_records=True below.
+        merged_structure.assign_serial_numbers(numbered_ter=True)
+        merged_structure.clear_conect()
+        merged_atoms = [
+            atom
+            for model in merged_structure
+            for chain in model
+            for residue in chain
+            for atom in residue
+        ]
+        conect_bond_count = 0
+        conect_skipped_bond_count = 0
+        for source in pending_conect_sources:
+            serial_to_atom_index = source["serial_to_atom_index"]
+            for serial1, serial2, order in source["bonds"]:
+                atom_index1 = serial_to_atom_index.get(serial1)
+                atom_index2 = serial_to_atom_index.get(serial2)
+                if atom_index1 is None or atom_index2 is None:
+                    conect_skipped_bond_count += 1
+                    continue
+                try:
+                    merged_serial1 = int(merged_atoms[atom_index1].serial)
+                    merged_serial2 = int(merged_atoms[atom_index2].serial)
+                except (IndexError, TypeError, ValueError):
+                    conect_skipped_bond_count += 1
+                    continue
+                if merged_serial1 <= 0 or merged_serial2 <= 0:
+                    conect_skipped_bond_count += 1
+                    continue
+                merged_structure.add_conect(
+                    merged_serial1,
+                    merged_serial2,
+                    max(1, int(order)),
+                )
+                conect_bond_count += 1
+        if conect_skipped_bond_count:
+            result["warnings"].append(
+                f"Skipped {conect_skipped_bond_count} CONECT bond(s) whose "
+                f"source atom serials could not be mapped after merge."
+            )
         
         # Write output
         output_file = out_dir / f"{output_name}.pdb"
-        merged_structure.write_pdb(str(output_file))
+        write_options = gemmi.PdbWriteOptions(
+            preserve_serial=True,
+            conect_records=True,
+        )
+        merged_structure.write_pdb(str(output_file), write_options)
 
         # Fix HETATM records for amino acid residues
         # gemmi doesn't recognize Amber naming conventions (HIE, NALA, etc.)
@@ -3490,6 +3586,8 @@ def merge_structures(
         result["statistics"]["pdb_chain_id_reuse_count"] = (
             topology_chain_index - len(set(assigned_chain_ids))
         )
+        result["statistics"]["conect_bond_count"] = conect_bond_count
+        result["statistics"]["conect_skipped_bond_count"] = conect_skipped_bond_count
         result["success"] = True
         
         logger.info(f"Successfully merged {len(pdb_files)} files into {output_file}")

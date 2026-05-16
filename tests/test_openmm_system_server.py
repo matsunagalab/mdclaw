@@ -1,5 +1,6 @@
 """Tests for mdclaw.openmm_system_server.build_openmm_system."""
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -65,6 +66,15 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     assert Path(result["system_xml"]).is_file()
     assert Path(result["topology_pdb"]).is_file()
     assert Path(result["state_xml"]).is_file()
+    assert Path(result["minimization_report"]).is_file()
+    report = json.loads(Path(result["minimization_report"]).read_text())
+    minimization = report["minimization"]
+    assert minimization["attempted"] is True
+    assert minimization["completed"] is True
+    assert minimization["energy_is_finite"] is True
+    assert minimization["positions_are_finite"] is True
+    assert minimization["atom_count_preserved"] is True
+    assert result["minimization"] == minimization
     assert result["num_atoms"] == 23
     provenance = result["forcefield_provenance"]
     assert provenance["kind"] == "openmm_xml"
@@ -275,7 +285,7 @@ class TestBuildOpenmmSystemNodeMode:
         assert result["success"] is True, result.get("errors")
         # Outputs under the node's own artifacts dir, not WORKING_DIR/openmm_system_*
         node_artifacts = job_dir / "nodes" / topo_id / "artifacts"
-        for key in ("system_xml", "topology_pdb", "state_xml"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report"):
             recorded = Path(result[key])
             assert recorded.is_file(), f"{key} not written: {recorded}"
             assert node_artifacts in recorded.parents, (
@@ -285,9 +295,10 @@ class TestBuildOpenmmSystemNodeMode:
         # Node transitioned to completed and the relative artifact paths exist.
         topo_node = read_node(str(job_dir), topo_id)
         assert topo_node["status"] == "completed"
-        for key in ("system_xml", "topology_pdb", "state_xml"):
+        for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report"):
             rel = topo_node["artifacts"].get(key)
             assert rel and (node_artifacts / Path(rel).name).is_file()
+        assert topo_node["metadata"]["minimization"]["completed"] is True
 
     def test_node_mode_auto_resolves_pdb_from_prep(self, tmp_path):
         """When pdb_file is omitted, build_openmm_system must look up

@@ -7,7 +7,7 @@ Provides tools for:
   ligand templates (geostd XML when available, otherwise
   ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_equilibration`` /
-  ``run_production``.
+  ``run_production``, plus a minimization report for benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
@@ -31,6 +31,7 @@ logger = setup_logger(__name__)
 
 import io  # noqa: E402
 import json  # noqa: E402
+import math  # noqa: E402
 import re  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
@@ -1862,7 +1863,8 @@ def build_amber_system(
         output_name: Stem for the artifact filenames; emits
                      ``{output_name}.system.xml``,
                      ``{output_name}.topology.pdb``,
-                     ``{output_name}.state.xml``.
+                     ``{output_name}.state.xml``, and
+                     ``{output_name}.minimization_report.json``.
         output_dir / job_dir / node_id: Standard mdclaw I/O knobs. In
                      node mode, the topo node's metadata is stamped with
                      ``system_artifact_kind="openmm_system_xml"`` and a
@@ -1877,6 +1879,8 @@ def build_amber_system(
             - ``job_id``, ``output_dir``: bookkeeping.
             - ``system_xml``, ``topology_pdb``, ``state_xml``: absolute
               paths to the modern artifact triple.
+            - ``minimization_report``: absolute path to the topology-time
+              minimization evidence JSON.
             - ``solvent_type``: ``"implicit"`` or ``"explicit"``.
             - ``parameters``: copy of the input parameter selection.
             - ``forcefield_provenance``: dict capturing the resolved
@@ -2598,6 +2602,7 @@ def build_amber_system(
     system_xml_file = out_dir / f"{output_name}.system.xml"
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"
+    minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
     
     # Copy and fix PDB file (fix UNL residue names if needed)
     working_pdb = out_dir / f"{output_name}.prepared.pdb"
@@ -2875,6 +2880,7 @@ def build_amber_system(
             system_xml_file=system_xml_file,
             topology_pdb_file=topology_pdb_file,
             state_xml_file=state_xml_file,
+            minimization_report_file=minimization_report_file,
             forcefield=effective_forcefield,
             water_model=actual_water_model if box_dimensions else None,
             phosaa_library=phosaa_library,
@@ -2899,6 +2905,10 @@ def build_amber_system(
             result["system_xml"] = om_result["system_xml"]
             result["topology_pdb"] = om_result["topology_pdb"]
             result["state_xml"] = om_result["state_xml"]
+            if om_result.get("minimization_report"):
+                result["minimization_report"] = om_result["minimization_report"]
+            if om_result.get("minimization"):
+                result["minimization"] = om_result["minimization"]
             result["statistics"] = {
                 "num_atoms": om_result["num_atoms"],
                 "num_residues": om_result["num_residues"],
@@ -2957,6 +2967,10 @@ def build_amber_system(
                 "topology_pdb": f"artifacts/{output_name}.topology.pdb",
                 "state_xml": f"artifacts/{output_name}.state.xml",
             }
+            if result.get("minimization_report"):
+                artifacts["minimization_report"] = (
+                    f"artifacts/{output_name}.minimization_report.json"
+                )
             if glycam_prepare:
                 artifacts.update({
                     "glycam_prepared_pdb": f"artifacts/{output_name}.glycam.pdb",
@@ -2977,6 +2991,7 @@ def build_amber_system(
                     "is_membrane": is_membrane,
                     "system_artifact_kind": "openmm_system_xml",
                     "forcefield_provenance": result.get("forcefield_provenance"),
+                    "minimization": result.get("minimization"),
                     "nucleic_libraries": nucleic_libraries or None,
                     "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
                     "glycan_library": glycan_library,
@@ -3069,6 +3084,38 @@ def _hash_file(path: Path) -> Optional[str]:
         return None
 
 
+def _positions_are_finite_for_report(positions: Any, unit_module: Any) -> bool:
+    try:
+        values = positions.value_in_unit(unit_module.nanometer)
+    except AttributeError:
+        values = positions
+
+    def _walk(value: Any) -> bool:
+        if isinstance(value, (str, bytes)):
+            return False
+        try:
+            return math.isfinite(float(value))
+        except (TypeError, ValueError):
+            pass
+        try:
+            return all(_walk(item) for item in value)
+        except TypeError:
+            return False
+
+    return _walk(values)
+
+
+def _position_count_for_report(positions: Any, unit_module: Any) -> Optional[int]:
+    try:
+        values = positions.value_in_unit(unit_module.nanometer)
+    except AttributeError:
+        values = positions
+    try:
+        return len(values)
+    except TypeError:
+        return None
+
+
 def _record_topology_build_stage(
     job_dir: Optional[str],
     node_id: Optional[str],
@@ -3122,6 +3169,7 @@ def _run_openmmforcefields_build(
     extra_xml: Optional[list[str]] = None,
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
     stage_callback: Optional[Callable[[str], None]] = None,
+    minimization_report_file: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -3136,6 +3184,8 @@ def _run_openmmforcefields_build(
     - ``forcefield_provenance`` (dict) on success
     """
     result: Dict[str, Any] = {"success": False, "errors": [], "warnings": []}
+    if minimization_report_file is None:
+        minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
     extra_xml = list(extra_xml or [])
     extra_smiles = list(extra_smiles or [])
 
@@ -3989,15 +4039,52 @@ def _run_openmmforcefields_build(
         )
         simulation = Simulation(modeller.topology, system, integrator)
         simulation.context.setPositions(modeller.positions)
+        initial_state = simulation.context.getState(
+            getEnergy=True,
+            getPositions=True,
+            enforcePeriodicBox=bool(box_dimensions),
+        )
+        energy_initial_kj_mol = float(
+            initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        )
         simulation.minimizeEnergy(maxIterations=200)
         state = simulation.context.getState(
-            getPositions=True, getVelocities=True, enforcePeriodicBox=bool(box_dimensions)
+            getEnergy=True,
+            getPositions=True,
+            getVelocities=True,
+            enforcePeriodicBox=bool(box_dimensions),
+        )
+        energy_final_kj_mol = float(
+            state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
             f"Energy minimization failed: {type(exc).__name__}: {exc}"
         )
         return result
+
+    final_positions = state.getPositions(asNumpy=True)
+    position_count = _position_count_for_report(final_positions, unit)
+    minimization_report = {
+        "schema_version": "1.0",
+        "minimization": {
+            "attempted": True,
+            "completed": True,
+            "backend": "openmm",
+            "max_iterations": 200,
+            "energy_initial_kj_mol": energy_initial_kj_mol,
+            "energy_final_kj_mol": energy_final_kj_mol,
+            "energy_is_finite": (
+                math.isfinite(energy_initial_kj_mol)
+                and math.isfinite(energy_final_kj_mol)
+            ),
+            "positions_are_finite": _positions_are_finite_for_report(final_positions, unit),
+            "atom_count_preserved": (
+                position_count == modeller.topology.getNumAtoms()
+                and position_count == system.getNumParticles()
+            ),
+        },
+    }
 
     # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
     # doesn't choke on `len(int_id)`.
@@ -4018,6 +4105,7 @@ def _run_openmmforcefields_build(
             (system_xml_file, XmlSerializer.serialize(system)),
             (state_xml_file, XmlSerializer.serialize(state)),
             (topology_pdb_file, topology_buffer.getvalue()),
+            (minimization_report_file, json.dumps(minimization_report, indent=2)),
         ])
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
@@ -4118,6 +4206,8 @@ def _run_openmmforcefields_build(
         "system_xml": str(system_xml_file),
         "topology_pdb": str(topology_pdb_file),
         "state_xml": str(state_xml_file),
+        "minimization_report": str(minimization_report_file),
+        "minimization": minimization_report["minimization"],
         "num_atoms": num_atoms,
         "num_residues": num_residues,
         "forcefield_provenance": provenance,

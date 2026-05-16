@@ -55,6 +55,11 @@ DeterministicCheckType = Literal[
     "pdb_residue_state",
     "rmsd_recompute",
     "assembly_identity_check",
+    "topology_artifact_bundle",
+    "openmm_system_load",
+    "openmm_energy_rescan",
+    "minimization_report_check",
+    "minimized_structure_component_rescan",
     "metrics_caption_consistency",
 ]
 
@@ -133,6 +138,20 @@ class DeterministicCheck(BaseModel):
     trajectory_manifest_path: Optional[str] = None
     topology_manifest_path: Optional[str] = None
     require_min_frames: Optional[int] = None
+
+    # topology / minimization prep checks
+    required_topology_backend: Optional[str] = None
+    topology_backend_json_file: Optional[str] = None
+    topology_backend_json_path: Optional[str] = None
+    required_topology_artifacts: Optional[list[str]] = None
+    min_topology_artifact_count: Optional[int] = None
+    system_xml_manifest_path: Optional[str] = None
+    topology_pdb_manifest_path: Optional[str] = None
+    state_xml_manifest_path: Optional[str] = None
+    minimization_report_path: Optional[str] = None
+    minimization_report_manifest_path: Optional[str] = None
+    minimized_structure_manifest_path: Optional[str] = None
+    max_rescan_minimization_steps: Optional[int] = None
 
     # topology_solvent_rescan
     required_solvent_type: Optional[str] = None
@@ -309,6 +328,8 @@ class SubmissionOutputs(BaseModel):
     trajectories: list[str] = Field(default_factory=list)
     checkpoints: list[str] = Field(default_factory=list)
     prepared_structure: Optional[str] = None
+    minimized_structure: Optional[str] = None
+    minimization_report: Optional[str] = None
 
 
 class SubmissionError(BaseModel):

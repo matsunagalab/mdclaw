@@ -54,12 +54,13 @@ Attempt the required stages until one of these happens:
 - the task reaches the task time limit
 - a concrete MDClaw/tool/runtime failure stops progress
 
-For execution tasks, attempt the MD work requested by the prompt. For a
-standard explicit-water MD task this often means retrieving the public
-structure, preparation, solvation, topology, equilibration, and production. For
-restart tasks, run the requested chunks and attempt the
-concatenation/continuity checks. For comparative answer tasks, run the
-requested systems before reporting an effect direction.
+For prep tasks, attempt source retrieval, preparation, any required solvation
+or membrane handling, topology build, and a short minimization / finite-energy
+check. Full equilibration and production are not part of the prep battery. For
+execution tasks outside the prep battery, attempt the MD work requested by the
+prompt. For restart tasks, run the requested chunks and attempt the
+concatenation/continuity checks. For comparative answer tasks, run the requested
+systems before reporting an effect direction.
 
 Before writing `manifest.status="blocked"`, record enough evidence to prove
 that the task was actually attempted:
@@ -94,15 +95,19 @@ Read <task_dir>/prompt.md as the task. Retrieve public sources named in the
 prompt as needed.
 Do not read truth/ or scorer/.
 
-Use MDClaw CLI tools and MDClaw skills to run real MD when the task asks for it.
+Use MDClaw CLI tools and MDClaw skills to run real prep/minimization work when
+the task asks for it.
 Write the required benchmark submission files to <submission_dir>/.
 
 If blocked outcomes are not allowed, do not stop because the task is long; run
 until success, timeout, or a concrete tool/runtime failure.
 
-For execution tasks, attempt the MD workflow requested by the prompt. For
-explicit-water MD, that normally means source retrieval, preparation,
-solvation, topology, equilibration, and production. For restart tasks, run the
+For prep tasks, attempt source retrieval, preparation, required solvation or
+membrane embedding, topology build, and minimization evidence. For OpenMM /
+MDClaw submissions, put system.xml, topology.pdb, and state.xml under
+manifest.outputs.topology, write manifest.outputs.minimized_structure, and write
+minimization_report.json. Do not run full equilibration or production for prep
+tasks unless the prompt explicitly asks for it. For restart tasks, run the
 requested chunks and attempt trajectory concatenation/continuity checks. For
 comparative answer tasks, run the requested systems before reporting an effect
 direction.

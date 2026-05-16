@@ -26,7 +26,8 @@
     "metrics.json",
     "provenance.json",
     "evidence_report.json",
-    "prepared_structure.pdb"
+    "prepared_structure.pdb",
+    "minimization_report.json"
   ],
   "requires_tools": [
     "structure_preparation"
@@ -67,6 +68,42 @@
         "json_file": "metrics.json",
         "json_path": "preparation.selected_auth_chain",
         "weight": 0.15
+      },
+      {
+        "check_id": "topology_artifact_bundle_present",
+        "check_type": "topology_artifact_bundle",
+        "min_topology_artifact_count": 1,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 1.0
+      },
+      {
+        "check_id": "openmm_system_loads_when_applicable",
+        "check_type": "openmm_system_load",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 1.0
+      },
+      {
+        "check_id": "openmm_energy_rescan_when_applicable",
+        "check_type": "openmm_energy_rescan",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 1.0
+      },
+      {
+        "check_id": "minimization_report_confirms_completion",
+        "check_type": "minimization_report_check",
+        "minimization_report_manifest_path": "outputs.minimization_report",
+        "weight": 1.0
+      },
+      {
+        "check_id": "minimized_ap5_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "AP5": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.45
       }
     ],
     "ground_truth_checks": [],
@@ -93,6 +130,7 @@
         "check_id": "prepared_structure_real_bytes",
         "check_type": "status_artifact_floor",
         "status_floor": {
+          "minimization_report.json": 100,
           "prepared_structure.pdb": 250
         }
       }

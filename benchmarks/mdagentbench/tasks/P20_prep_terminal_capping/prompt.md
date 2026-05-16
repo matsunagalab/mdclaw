@@ -1,10 +1,10 @@
-# P20_prep_terminal_capping: N- and C-terminal capping
+# P20_prep_terminal_capping: Terminal capping
 
 You are evaluating an MD agent on `P20_prep_terminal_capping`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Terminal capping: retrieve CLN025/chignolin from PDB `5AWL`, prepare the peptide for MD with an acetylated N terminus (`ACE`) and an N-methylamide C terminus (`NME`), and record the terminal-capping choices. Do not leave the requested termini as uncapped free termini.
+Task: Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices.
 
 Public source anchors: PDB 5AWL.
 
@@ -15,7 +15,10 @@ Your submission directory must contain:
 - `provenance.json`
 - `evidence_report.json`
 - `prepared_structure.pdb`
+- `minimization_report.json`
 
-For machine-readable scoring, record `preparation.source_pdb_id = "5AWL"`, `preparation.n_terminal_cap = "ACE"`, `preparation.c_terminal_cap = "NME"`, and `preparation.terminal_capping_recorded = true` in `metrics.json`.
+Your `manifest.json` must also point `outputs.topology` to the backend-specific topology artifacts and `outputs.minimized_structure` to a structure after minimization. For OpenMM or MDClaw submissions, `outputs.topology` should include the `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short minimization or equivalent backend-native energy check and record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+
+
 
 The submission must be backend-neutral. You may use MDClaw, OpenMM scripts, Amber, GROMACS, MDCrow, or another MD-preparation workflow, but the final files must satisfy the artifact contract above. Record sources retrieved, commands or tool actions, preparation decisions, limitations, and any non-default choices in `provenance.json` and `evidence_report.json`.

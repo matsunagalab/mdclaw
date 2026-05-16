@@ -8,7 +8,7 @@ user supplies a list of OpenMM ``ForceField`` XML files (e.g.
 ``GB99dms.xml`` from the Greener group) together with optional ligand
 molecules, and the tool emits the same ``system.xml + topology.pdb +
 state.xml`` artifact triple so eq/prod can consume the result through the
-same DAG resolver.
+same DAG resolver, plus a minimization report for benchmark evidence.
 
 The tool is intentionally permissive — there is no FF×water guardrail
 matrix here, because by definition the user is bringing their own XML
@@ -22,6 +22,8 @@ of scope for this PR.
 from __future__ import annotations
 
 import io
+import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -58,6 +60,38 @@ def _hash_file(path: Path) -> Optional[str]:
         with path.open("rb") as fh:
             return hashlib.sha256(fh.read()).hexdigest()
     except (OSError, IOError):
+        return None
+
+
+def _positions_are_finite_for_report(positions: Any, unit_module: Any) -> bool:
+    try:
+        values = positions.value_in_unit(unit_module.nanometer)
+    except AttributeError:
+        values = positions
+
+    def _walk(value: Any) -> bool:
+        if isinstance(value, (str, bytes)):
+            return False
+        try:
+            return math.isfinite(float(value))
+        except (TypeError, ValueError):
+            pass
+        try:
+            return all(_walk(item) for item in value)
+        except TypeError:
+            return False
+
+    return _walk(values)
+
+
+def _position_count_for_report(positions: Any, unit_module: Any) -> Optional[int]:
+    try:
+        values = positions.value_in_unit(unit_module.nanometer)
+    except AttributeError:
+        values = positions
+    try:
+        return len(values)
+    except TypeError:
         return None
 
 
@@ -210,7 +244,8 @@ def build_openmm_system(
 
     Returns: dict with ``success``, ``errors``, ``warnings``, plus on
     success ``system_xml``, ``topology_pdb``, ``state_xml``,
-    ``num_atoms``, ``num_residues``, ``forcefield_provenance``.
+    ``minimization_report``, ``num_atoms``, ``num_residues``,
+    ``forcefield_provenance``.
     """
     result: Dict[str, Any] = {
         "success": False,
@@ -410,6 +445,7 @@ def build_openmm_system(
     system_xml_file = out_dir / f"{output_name}.system.xml"
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"
+    minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
 
     try:
         from openmm import app, unit, XmlSerializer, LangevinIntegrator
@@ -542,17 +578,53 @@ def build_openmm_system(
         )
         simulation = Simulation(modeller.topology, system, integrator)
         simulation.context.setPositions(modeller.positions)
+        initial_state = simulation.context.getState(
+            getEnergy=True,
+            getPositions=True,
+            enforcePeriodicBox=(nonbonded_method == "PME"),
+        )
+        energy_initial_kj_mol = float(
+            initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+        )
         if minimize:
             simulation.minimizeEnergy(maxIterations=200)
         state = simulation.context.getState(
-            getPositions=True, getVelocities=True,
+            getEnergy=True,
+            getPositions=True,
+            getVelocities=True,
             enforcePeriodicBox=(nonbonded_method == "PME"),
+        )
+        energy_final_kj_mol = float(
+            state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
-            f"Energy minimization failed: {type(exc).__name__}: {exc}"
+            f"Energy minimization/state capture failed: {type(exc).__name__}: {exc}"
         )
         return _emit_failure(result)
+
+    final_positions = state.getPositions(asNumpy=True)
+    position_count = _position_count_for_report(final_positions, unit)
+    minimization_report = {
+        "schema_version": "1.0",
+        "minimization": {
+            "attempted": bool(minimize),
+            "completed": bool(minimize),
+            "backend": "openmm",
+            "max_iterations": 200 if minimize else 0,
+            "energy_initial_kj_mol": energy_initial_kj_mol,
+            "energy_final_kj_mol": energy_final_kj_mol,
+            "energy_is_finite": (
+                math.isfinite(energy_initial_kj_mol)
+                and math.isfinite(energy_final_kj_mol)
+            ),
+            "positions_are_finite": _positions_are_finite_for_report(final_positions, unit),
+            "atom_count_preserved": (
+                position_count == modeller.topology.getNumAtoms()
+                and position_count == system.getNumParticles()
+            ),
+        },
+    }
 
     # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
     # doesn't choke on `len(int_id)`.
@@ -572,6 +644,7 @@ def build_openmm_system(
             (system_xml_file, XmlSerializer.serialize(system)),
             (state_xml_file, XmlSerializer.serialize(state)),
             (topology_pdb_file, topology_buffer.getvalue()),
+            (minimization_report_file, json.dumps(minimization_report, indent=2)),
         ])
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
@@ -636,6 +709,8 @@ def build_openmm_system(
         "system_xml": str(system_xml_file),
         "topology_pdb": str(topology_pdb_file),
         "state_xml": str(state_xml_file),
+        "minimization_report": str(minimization_report_file),
+        "minimization": minimization_report["minimization"],
         "num_atoms": num_atoms,
         "num_residues": num_residues,
         "forcefield_provenance": provenance,
@@ -648,6 +723,7 @@ def build_openmm_system(
             "system_xml": f"artifacts/{output_name}.system.xml",
             "topology_pdb": f"artifacts/{output_name}.topology.pdb",
             "state_xml": f"artifacts/{output_name}.state.xml",
+            "minimization_report": f"artifacts/{output_name}.minimization_report.json",
         }
         # The eq/prod resolver reads ``metadata.implicit_solvent``,
         # ``metadata.solvent_type``, and ``metadata.hmr`` so the run-side
@@ -664,6 +740,7 @@ def build_openmm_system(
                 "implicit_solvent": canonical_implicit,
                 "solvent_type": solvent_type,
                 "hmr": bool(hmr),
+                "minimization": result.get("minimization"),
             },
         )
 

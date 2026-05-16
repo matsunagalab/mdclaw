@@ -13,8 +13,8 @@ it does not inspect chat transcripts or MDClaw-internal state.
 
 The current task set replaces the former v1.0 mixed benchmark. Scientific MD
 reasoning tasks are intentionally deferred to a later suite. This battery asks
-whether an agent can convert messy public structural inputs into MD-ready prep
-artifacts with clear provenance.
+whether an agent can convert messy public structural inputs into minimizable
+MD-ready systems with clear provenance.
 
 Public benchmark tasks do **not** require MDClaw-specific guardrail codes.
 MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
@@ -23,7 +23,7 @@ MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
 
 | Family | What It Tests | Scored By | Tasks |
 |---|---|---|---|
-| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, and provenance. | File presence, JSON metadata checks, PDB residue/component rescans, ligand-pose RMSD recomputation, and artifact integrity checks. | P01-P25 |
+| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, topology build, minimization, and provenance. | File presence, JSON metadata checks, PDB residue/component rescans, ligand-pose RMSD recomputation, topology/minimization rescans, and artifact integrity checks. | P01-P25 |
 
 The machine-readable scoring axis is still `preparation`. Secondary qualitative
 axes can be added later via LLM judge payloads, but deterministic artifact
@@ -96,10 +96,19 @@ metrics.json
 provenance.json
 evidence_report.json
 prepared_structure.pdb
+minimization_report.json
 ```
 
+Every completed prep submission must also point `manifest.outputs.topology` to
+backend-specific topology artifacts and `manifest.outputs.minimized_structure`
+to the post-minimization structure. OpenMM/MDClaw submissions should include the
+`system.xml`, `topology.pdb`, and `state.xml` artifact triple under
+`outputs.topology`. Amber and GROMACS submissions may use their native topology
+artifacts, with minimization evidence recorded in `minimization_report.json`.
+
 Individual tasks may inspect specific paths inside `metrics.json`, component
-counts in `prepared_structure.pdb`, or scorer-side references under `truth/`.
+counts in `prepared_structure.pdb` or the minimized structure, or scorer-side
+references under `truth/`.
 For example, P11 checks both
 `metrics.preparation.requested_protonation_state == "GLH"` and the submitted
 PDB residue state for chain A residue 11.
@@ -114,7 +123,16 @@ Scoring is deterministic by default:
   (with task-defined residue-name aliases for backend-specific ion/lipid names)
 - `pdb_residue_state`
 - `rmsd_recompute`
+- `topology_artifact_bundle`
+- `openmm_system_load` and `openmm_energy_rescan`
+- `minimization_report_check`
+- `minimized_structure_component_rescan`
 - artifact integrity checks such as byte floors and template-marker rejection
+
+OpenMM topology artifacts are strongly rescanned by the scorer. Non-OpenMM
+backends are initially checked through artifact presence and minimization
+reports; backend-specific reload adapters can be added later without changing
+the public submission contract.
 
 Modified DNA/RNA is intentionally outside the core prep battery because the
 current standard topology path does not support MD-ready parameterization of

@@ -52,6 +52,101 @@ def _write_submission(tmp: Path, manifest: dict, metrics: dict | None = None,
         (tmp / "evidence_report.json").write_text(json.dumps(evidence))
 
 
+def _write_openmm_bundle(tmp: Path, *, broken: str | None = None) -> None:
+    topo_dir = tmp / "topology"
+    topo_dir.mkdir(parents=True, exist_ok=True)
+    system_xml = topo_dir / "system.xml"
+    topology_pdb = topo_dir / "topology.pdb"
+    state_xml = topo_dir / "state.xml"
+    if broken == "system":
+        system_xml.write_text("<not-a-system/>\n")
+        topology_pdb.write_text("END\n")
+        state_xml.write_text("<State/>\n")
+        return
+    if broken == "state":
+        system_xml.write_text("<System/>\n")
+        topology_pdb.write_text("END\n")
+        state_xml.write_text("<not-a-state/>\n")
+        return
+
+    from openmm import (
+        Context,
+        Platform,
+        System,
+        Vec3,
+        VerletIntegrator,
+        XmlSerializer,
+        unit,
+    )
+    from openmm.app import Element, PDBFile, Topology
+
+    topology = Topology()
+    chain = topology.addChain("A")
+    residue = topology.addResidue("ALA", chain, "1")
+    topology.addAtom("CA", Element.getBySymbol("C"), residue)
+    position_value = float("nan") if broken == "nan_positions" else 0.0
+    positions = [Vec3(position_value, 0.0, 0.0)] * unit.nanometer
+    pdb_positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
+    system = System()
+    system.addParticle(12.0)
+    integrator = VerletIntegrator(1.0 * unit.femtoseconds)
+    context = Context(system, integrator, Platform.getPlatformByName("Reference"))
+    context.setPositions(positions)
+    state = context.getState(getPositions=True, getEnergy=True)
+
+    system_xml.write_text(XmlSerializer.serialize(system))
+    state_xml.write_text(XmlSerializer.serialize(state))
+    with topology_pdb.open("w") as handle:
+        PDBFile.writeFile(topology, pdb_positions, handle, keepIds=True)
+
+
+def _write_minimization_submission(tmp: Path, *, completed: bool = True,
+                                   finite_report_energy: bool = True,
+                                   broken: str | None = None,
+                                   minimized_structure: str | None = None):
+    _write_openmm_bundle(tmp, broken=broken)
+    report = {
+        "minimization": {
+            "attempted": True,
+            "completed": completed,
+            "energy_initial_kj_mol": 0.0 if finite_report_energy else float("nan"),
+            "energy_final_kj_mol": 0.0 if finite_report_energy else float("nan"),
+            "energy_is_finite": completed,
+            "positions_are_finite": completed,
+            "atom_count_preserved": completed,
+            "backend": "openmm",
+        }
+    }
+    (tmp / "minimization_report.json").write_text(json.dumps(report))
+    (tmp / "minimized_structure.pdb").write_text(
+        minimized_structure
+        or (
+            "HETATM    1  C1  AP5 A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+    )
+    _write_submission(
+        tmp,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+                "minimization_report": "minimization_report.json",
+                "minimized_structure": "minimized_structure.pdb",
+            },
+        },
+        metrics={
+            "topology": {"backend": "openmm", "build_success": completed},
+            "minimization": report["minimization"],
+        },
+    )
+
+
 def test_weighted_total_no_secondary_caps_at_one(tmp_path: Path):
     """A perfect task with no secondaries should hit weighted_total = 1.0,
     not v0.1's 0.8 ceiling."""
@@ -385,6 +480,181 @@ def test_topology_solvent_rescan_fails_for_implicit_topology(tmp_path: Path):
     score = scoring.score_submission(task, tmp_path)
     assert score.deterministic_checks[0].passed is False
     assert "require >= 1" in score.deterministic_checks[0].message
+
+
+def test_openmm_topology_and_minimization_checks_pass(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="bundle",
+                check_type="topology_artifact_bundle",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="load",
+                check_type="openmm_system_load",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="energy",
+                check_type="openmm_energy_rescan",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="min_report",
+                check_type="minimization_report_check",
+                minimization_report_manifest_path="outputs.minimization_report",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path)
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "passed"
+    assert all(result.passed for result in score.deterministic_checks)
+
+
+def test_broken_openmm_system_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="bundle",
+                check_type="topology_artifact_bundle",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="load",
+                check_type="openmm_system_load",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, broken="system")
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any(
+        result.check_id == "load" and not result.passed
+        for result in score.deterministic_checks
+    )
+
+
+def test_broken_openmm_state_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="load",
+                check_type="openmm_system_load",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, broken="state")
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_openmm_energy_rescan_rejects_nan_positions(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="energy",
+                check_type="openmm_energy_rescan",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, broken="nan_positions")
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_incomplete_minimization_report_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="min_report",
+                check_type="minimization_report_check",
+                minimization_report_manifest_path="outputs.minimization_report",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, completed=False)
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_nonfinite_minimization_report_energy_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="min_report",
+                check_type="minimization_report_check",
+                minimization_report_manifest_path="outputs.minimization_report",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, finite_report_energy=False)
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_minimized_structure_component_loss_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="min_ap5",
+                check_type="minimized_structure_component_rescan",
+                minimized_structure_manifest_path="outputs.minimized_structure",
+                min_residue_counts={"AP5": 1},
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(
+        tmp_path,
+        minimized_structure=(
+            "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        ),
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
 
 
 def test_pdb_residue_state_check_requires_variant_and_hydrogen(tmp_path: Path):

@@ -8,6 +8,7 @@ being curated.
 
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from pathlib import Path
@@ -24,6 +25,7 @@ COMMON_OUTPUTS = [
     "provenance.json",
     "evidence_report.json",
     "prepared_structure.pdb",
+    "minimization_report.json",
 ]
 
 TEMPLATE_MARKERS = [
@@ -108,6 +110,60 @@ def _residue_check(
     return out
 
 
+def _topology_minimization_checks() -> list[dict]:
+    return [
+        {
+            "check_id": "topology_artifact_bundle_present",
+            "check_type": "topology_artifact_bundle",
+            "topology_manifest_path": "outputs.topology",
+            "min_topology_artifact_count": 1,
+            "weight": 1.0,
+        },
+        {
+            "check_id": "openmm_system_loads_when_applicable",
+            "check_type": "openmm_system_load",
+            "topology_manifest_path": "outputs.topology",
+            "weight": 1.0,
+        },
+        {
+            "check_id": "openmm_energy_rescan_when_applicable",
+            "check_type": "openmm_energy_rescan",
+            "topology_manifest_path": "outputs.topology",
+            "weight": 1.0,
+        },
+        {
+            "check_id": "minimization_report_confirms_completion",
+            "check_type": "minimization_report_check",
+            "minimization_report_manifest_path": "outputs.minimization_report",
+            "weight": 1.0,
+        },
+    ]
+
+
+def _minimized_persistence_checks(checks: list[dict]) -> list[dict]:
+    out: list[dict] = []
+    for check in checks:
+        if check.get("check_type") == "structure_component_rescan":
+            copied = copy.deepcopy(check)
+            copied["check_id"] = f"minimized_{check['check_id']}"
+            copied["check_type"] = "minimized_structure_component_rescan"
+            copied["minimized_structure_manifest_path"] = "outputs.minimized_structure"
+            copied["structure_path"] = "minimized_structure.pdb"
+            out.append(copied)
+        elif check.get("check_type") == "pdb_residue_state":
+            copied = copy.deepcopy(check)
+            copied["check_id"] = f"minimized_{check['check_id']}"
+            copied["structure_manifest_path"] = "outputs.minimized_structure"
+            copied["structure_path"] = "minimized_structure.pdb"
+            out.append(copied)
+        elif check.get("check_type") == "assembly_identity_check":
+            copied = copy.deepcopy(check)
+            copied["check_id"] = f"minimized_{check['check_id']}"
+            copied["structure_manifest_path"] = "outputs.minimized_structure"
+            out.append(copied)
+    return out
+
+
 def _task(
     task_id: str,
     title: str,
@@ -121,11 +177,17 @@ def _task(
     time_limit: int = 60,
     extra_outputs: list[str] | None = None,
     llm_rubrics: list[str] | None = None,
+    prompt_extra: str = "",
 ) -> dict:
     required_outputs = list(COMMON_OUTPUTS)
     for rel in extra_outputs or []:
         if rel not in required_outputs:
             required_outputs.append(rel)
+    deterministic_checks = [
+        *checks,
+        *_topology_minimization_checks(),
+        *_minimized_persistence_checks(checks),
+    ]
     return {
         "schema_version": "1.0",
         "task_id": task_id,
@@ -144,7 +206,7 @@ def _task(
         },
         "required_outputs": required_outputs,
         "scoring": {
-            "deterministic_checks": checks,
+            "deterministic_checks": deterministic_checks,
             "ground_truth_checks": [],
             "llm_judge_rubrics": llm_rubrics or ["provenance_traceability", "limitations"],
             "integrity_checks": [
@@ -163,7 +225,10 @@ def _task(
                 {
                     "check_id": "prepared_structure_real_bytes",
                     "check_type": "status_artifact_floor",
-                    "status_floor": {"prepared_structure.pdb": 250},
+                    "status_floor": {
+                        "prepared_structure.pdb": 250,
+                        "minimization_report.json": 100,
+                    },
                 },
             ],
             "integrity_policy": "warn",
@@ -172,6 +237,7 @@ def _task(
         "references": references,
         "prep_battery_priority": priority,
         "public_source": pdb_source,
+        "public_prompt_extra": prompt_extra,
     }
 
 
@@ -462,18 +528,24 @@ TASK_DEFS: list[dict] = [
         references=[{"source": "PDB 2K39", "url": "https://www.rcsb.org/structure/2K39"}],
     ),
     _task(
-        "P20_prep_homology_model_before_prep",
-        "Homology modeling before prep",
-        "PDB 2LZM plus prompt sequence/alignment",
-        "generate a model from the template/alignment and then prepare the selected model, rather than only applying a post-prep mutation.",
+        "P20_prep_terminal_capping",
+        "Terminal capping",
+        "PDB 5AWL",
+        "prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices.",
         [
-            _json_check("model_bundle_recorded", "preparation.model_bundle_recorded", True, 0.35),
-            _json_check("template_reported", "preparation.template_pdb_id", "2LZM", 0.25),
-            _json_min_length("alignment_recorded", "preparation.template_target_alignment", 1, 0.4),
+            _json_check("source_pdb_reported", "preparation.source_pdb_id", "5AWL", 0.15),
+            _component_check(
+                "terminal_caps_present",
+                exact_counts={"ACE": 1, "NME": 1},
+                weight=0.45,
+            ),
+            _json_check("n_terminal_cap_recorded", "preparation.n_terminal_cap", "ACE", 0.15),
+            _json_check("c_terminal_cap_recorded", "preparation.c_terminal_cap", "NME", 0.15),
+            _json_check("terminal_capping_recorded", "preparation.terminal_capping_recorded", True, 0.1),
         ],
-        priority=2,
-        tags=["homology_modeling", "candidate_selection"],
-        references=[{"source": "PDB 2LZM", "url": "https://www.rcsb.org/structure/2LZM"}],
+        priority=1,
+        tags=["terminal_capping", "protein_termini"],
+        references=[{"source": "PDB 5AWL", "url": "https://www.rcsb.org/structure/5AWL"}],
     ),
     _task(
         "P21_prep_cleanup_altloc_mse_numbering",
@@ -524,10 +596,33 @@ TASK_DEFS: list[dict] = [
         "PDB 1STP assembly 1; stress variant PDB 2MS2 assembly 1",
         "generate or select the requested biological assembly by assembly_id while preserving source auth/label/operator provenance and stable chain identity.",
         [
-            _json_check("assembly_id_recorded", "preparation.assembly_id", "1", 0.25),
-            _json_check("assembly_provenance_recorded", "preparation.assembly_provenance_recorded", True, 0.35),
-            _json_check("chain_identity_map_recorded", "preparation.chain_identity_map_recorded", True, 0.25),
-            _json_check("many_chain_policy_recorded", "preparation.many_chain_policy_recorded", True, 0.15),
+            _json_check("source_pdb_reported", "preparation.source_pdb_id", "1STP", 0.15),
+            {
+                "check_id": "assembly_generated_and_mapped",
+                "check_type": "assembly_identity_check",
+                "assembly_id_json_file": "metrics.json",
+                "assembly_id_json_path": "preparation.assembly_id",
+                "chain_identity_json_file": "metrics.json",
+                "chain_identity_json_path": "preparation.assembly_chain_identity_map",
+                "exact_chain_count": 4,
+                "required_assembly_id": "1",
+                "required_operator_ids": ["1", "2", "3", "4"],
+                "min_distinct_output_chains": 4,
+                "min_mapping_entries": 4,
+                "require_output_chains_in_structure": True,
+                "required_mapping_fields": [
+                    "source_pdb_id",
+                    "assembly_id",
+                    "source_auth_asym_id",
+                    "source_label_asym_id|source_subchain_id",
+                    "operator_id",
+                    "output_chain_id",
+                    "naming_policy",
+                ],
+                "structure_manifest_path": "outputs.prepared_structure",
+                "weight": 0.75,
+            },
+            _json_check("many_chain_policy_recorded", "preparation.many_chain_policy_recorded", True, 0.1),
         ],
         priority=1,
         tags=["biological_assembly", "chain_identity"],
@@ -535,6 +630,16 @@ TASK_DEFS: list[dict] = [
             {"source": "PDB 1STP", "url": "https://www.rcsb.org/structure/1STP"},
             {"source": "PDB 2MS2", "url": "https://www.rcsb.org/structure/2MS2"},
         ],
+        prompt_extra=(
+            "For machine-readable scoring, record `preparation.source_pdb_id = "
+            "\"1STP\"`, `preparation.assembly_id = \"1\"`, and "
+            "`preparation.assembly_chain_identity_map` in `metrics.json`. The "
+            "identity map should cover generated output chains and include "
+            "`source_pdb_id`, `assembly_id`, `source_auth_asym_id`, "
+            "`source_label_asym_id` or `source_subchain_id`, `operator_id`, "
+            "`output_chain_id`, and `naming_policy`. The submitted structure "
+            "should represent assembly 1 rather than the asymmetric unit alone."
+        ),
     ),
     _task(
         "P25_prep_kcl_ion_concentration",
@@ -571,6 +676,15 @@ def _prompt(task: dict) -> str:
         f"Public source anchors: {references}.\n\n"
         "Your submission directory must contain:\n\n"
         f"{outputs}\n\n"
+        "Your `manifest.json` must also point `outputs.topology` to the "
+        "backend-specific topology artifacts and `outputs.minimized_structure` "
+        "to a structure after minimization. For OpenMM or MDClaw submissions, "
+        "`outputs.topology` should include the `system.xml`, `topology.pdb`, "
+        "and `state.xml` artifact triple. Run a short minimization or equivalent "
+        "backend-native energy check and record the result in "
+        "`minimization_report.json` and `metrics.json`. Full equilibration and "
+        "production MD are not required for this prep task.\n\n"
+        f"{task.get('public_prompt_extra', '')}\n\n"
         "The submission must be backend-neutral. You may use MDClaw, OpenMM scripts, "
         "Amber, GROMACS, MDCrow, or another MD-preparation workflow, but the final "
         "files must satisfy the artifact contract above. Record sources retrieved, "
@@ -593,7 +707,9 @@ def main() -> int:
         task_dir = TASKS / task["task_id"]
         task_dir.mkdir()
         (task_dir / "prompt.md").write_text(_prompt(task))
-        _write_json(task_dir / "task.json", task)
+        task_payload = dict(task)
+        task_payload.pop("public_prompt_extra", None)
+        _write_json(task_dir / "task.json", task_payload)
         if task["task_id"] == "P03_prep_ligand_pose_t4l_benzene":
             truth_dir = task_dir / "truth"
             truth_dir.mkdir()
@@ -633,6 +749,7 @@ def main() -> int:
         },
         "notes": [
             "Prep-only replacement for the former MDAgentBench v1.0 task set.",
+            "The current prep contract includes topology build and minimization evidence.",
             "No public task requires an MDClaw-specific guardrail code.",
             "Scientific MD reasoning tasks are intentionally deferred to a later suite.",
         ],

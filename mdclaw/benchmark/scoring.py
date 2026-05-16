@@ -11,6 +11,7 @@ Public entry points:
 
 from __future__ import annotations
 
+import math
 import statistics
 from pathlib import Path
 from typing import Any, Optional
@@ -26,6 +27,15 @@ from mdclaw.benchmark.models import (
     Score,
     Task,
 )
+
+
+_CRITICAL_PREP_CHECK_TYPES = {
+    "topology_artifact_bundle",
+    "openmm_system_load",
+    "openmm_energy_rescan",
+    "minimization_report_check",
+    "minimized_structure_component_rescan",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -96,6 +106,14 @@ def score_submission(
         )
         deterministic_results.append(result)
 
+    critical_failures = [
+        result for result in deterministic_results
+        if (
+            result.check_type in _CRITICAL_PREP_CHECK_TYPES
+            or result.check_id.startswith("minimized_")
+        ) and not result.passed
+    ]
+
     # 4. ground-truth checks
     if task_dir is not None:
         for gtc in task.scoring.ground_truth_checks:
@@ -134,9 +152,18 @@ def score_submission(
         penalty = min(0.05 * len(integrity_warnings), 0.2)
         weighted_total = max(0.0, weighted_total - penalty)
 
+    if manifest_status == "completed" and critical_failures:
+        weighted_total = 0.0
+        axis_scores = {
+            axis: (0.0 if value is not None else None)
+            for axis, value in axis_scores.items()
+        }
+
     score_status = _score_status(weighted_total, deterministic_results,
                                  ground_truth_results)
     if manifest_status == "blocked":
+        score_status = "failed"
+    if manifest_status == "completed" and critical_failures:
         score_status = "failed"
     if integrity_rejected:
         # Reject overrides the "any check passed → partial" rule: if the
@@ -361,6 +388,303 @@ def _check_topology_solvent_rescan(check: DeterministicCheck,
     )
 
 
+def _topology_backend(check: DeterministicCheck,
+                      submission_dir: Path,
+                      metrics: dict,
+                      manifest: Optional[dict] = None) -> str:
+    backend_file = check.topology_backend_json_file or "metrics.json"
+    backend_path = check.topology_backend_json_path or "topology.backend"
+    value = _read_submission_json_path(
+        submission_dir,
+        backend_file,
+        backend_path,
+        metrics_default=metrics,
+        manifest=manifest,
+    )
+    return str(value or "").strip().lower()
+
+
+def _check_topology_artifact_bundle(check: DeterministicCheck,
+                                    submission_dir: Path,
+                                    manifest: dict,
+                                    metrics: dict, **_):
+    backend = _topology_backend(check, submission_dir, metrics, manifest)
+    required_backend = (check.required_topology_backend or "").strip().lower()
+    if required_backend and backend != required_backend:
+        return (
+            False,
+            0.0,
+            f"topology.backend={backend!r} expected {required_backend!r}",
+        )
+
+    topology_rels = _manifest_artifact_paths(
+        manifest, check.topology_manifest_path, "outputs.topology",
+    )
+    min_count = int(check.min_topology_artifact_count or 1)
+    if len(topology_rels) < min_count:
+        return (
+            False,
+            0.0,
+            f"outputs.topology has {len(topology_rels)} artifact(s); require >= {min_count}",
+        )
+
+    missing_files = [
+        rel for rel in topology_rels
+        if not _resolve_relative(submission_dir, rel).is_file()
+    ]
+    if missing_files:
+        return False, 0.0, f"topology artifacts missing: {missing_files}"
+
+    if backend == "openmm":
+        artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+        if issues:
+            return False, 0.0, "; ".join(issues)
+        required = set(check.required_topology_artifacts or [
+            "system_xml", "topology_pdb", "state_xml",
+        ])
+        missing_roles = sorted(role for role in required if artifacts.get(role) is None)
+        if missing_roles:
+            return False, 0.0, f"OpenMM topology bundle missing roles: {missing_roles}"
+        return True, 1.0, "OpenMM topology bundle contains system/topology/state artifacts"
+
+    return (
+        True,
+        1.0,
+        f"{backend or 'unspecified'} topology bundle has {len(topology_rels)} artifact(s)",
+    )
+
+
+def _check_openmm_system_load(check: DeterministicCheck,
+                              submission_dir: Path,
+                              manifest: dict,
+                              metrics: dict, **_):
+    backend = _topology_backend(check, submission_dir, metrics, manifest)
+    if backend and backend != "openmm":
+        return True, 1.0, f"skipped OpenMM load for backend={backend!r}"
+
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return False, 0.0, loaded["message"]
+    return True, 1.0, loaded["message"]
+
+
+def _check_openmm_energy_rescan(check: DeterministicCheck,
+                                submission_dir: Path,
+                                manifest: dict,
+                                metrics: dict, **_):
+    backend = _topology_backend(check, submission_dir, metrics, manifest)
+    if backend and backend != "openmm":
+        return True, 1.0, f"skipped OpenMM energy rescan for backend={backend!r}"
+
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return False, 0.0, loaded["message"]
+
+    try:
+        from openmm import LangevinIntegrator, Platform, unit
+        from openmm.app import Simulation
+    except Exception as exc:  # noqa: BLE001
+        return False, 0.0, f"OpenMM import failed: {type(exc).__name__}: {exc}"
+
+    system = loaded["system"]
+    topology = loaded["topology"]
+    state = loaded["state"]
+    positions = loaded["positions"]
+
+    try:
+        integrator = LangevinIntegrator(
+            300 * unit.kelvin, 1.0 / unit.picosecond, 2.0 * unit.femtoseconds
+        )
+        try:
+            platform = Platform.getPlatformByName("CPU")
+            simulation = Simulation(topology, system, integrator, platform)
+        except Exception:  # noqa: BLE001
+            platform = Platform.getPlatformByName("Reference")
+            simulation = Simulation(topology, system, integrator, platform)
+
+        try:
+            box_vectors = state.getPeriodicBoxVectors()
+            if box_vectors is not None:
+                simulation.context.setPeriodicBoxVectors(*box_vectors)
+        except Exception:  # noqa: BLE001
+            pass
+        simulation.context.setPositions(positions)
+        rescanned = simulation.context.getState(getEnergy=True, getPositions=True)
+        energy = rescanned.getPotentialEnergy().value_in_unit(
+            unit.kilojoule_per_mole
+        )
+        if not math.isfinite(float(energy)):
+            return False, 0.0, f"potential energy is not finite: {energy!r}"
+        rescanned_positions = rescanned.getPositions(asNumpy=True).value_in_unit(
+            unit.nanometer
+        )
+        if not _positions_are_finite(rescanned_positions):
+            return False, 0.0, "rescanned positions contain NaN or Inf"
+    except Exception as exc:  # noqa: BLE001
+        return False, 0.0, f"OpenMM energy rescan failed: {type(exc).__name__}: {exc}"
+
+    return True, 1.0, f"OpenMM potential energy finite: {float(energy):.6g} kJ/mol"
+
+
+def _check_minimization_report(check: DeterministicCheck,
+                               submission_dir: Path,
+                               manifest: dict,
+                               metrics: dict, **_):
+    report_rel = _manifest_artifact_path(
+        manifest,
+        check.minimization_report_manifest_path,
+        "outputs.minimization_report",
+    ) or check.minimization_report_path or "minimization_report.json"
+    report_path = _resolve_relative(submission_dir, report_rel)
+    if not report_path.is_file():
+        return False, 0.0, f"minimization report not found: {report_path}"
+
+    report = integrity.read_json_safe(report_path)
+
+    def value(name: str) -> Any:
+        return (
+            integrity._safe_path(metrics, f"minimization.{name}")
+            if integrity._safe_path(metrics, f"minimization.{name}") is not None
+            else (
+                integrity._safe_path(report, f"minimization.{name}")
+                if integrity._safe_path(report, f"minimization.{name}") is not None
+                else integrity._safe_path(report, name)
+            )
+        )
+
+    required_true = [
+        "attempted",
+        "completed",
+        "energy_is_finite",
+        "positions_are_finite",
+        "atom_count_preserved",
+    ]
+    issues = [name for name in required_true if value(name) is not True]
+    for energy_field in ("energy_initial_kj_mol", "energy_final_kj_mol"):
+        raw = value(energy_field)
+        try:
+            numeric = float(raw)
+        except (TypeError, ValueError):
+            issues.append(energy_field)
+            continue
+        if not math.isfinite(numeric):
+            issues.append(energy_field)
+    if issues:
+        return False, 0.0, f"minimization report failed required fields: {issues}"
+    return True, 1.0, "minimization report confirms completed finite-energy minimization"
+
+
+def _resolve_openmm_artifacts(check: DeterministicCheck,
+                              submission_dir: Path,
+                              manifest: dict) -> tuple[dict[str, Optional[Path]], list[str]]:
+    roles: dict[str, Optional[Path]] = {
+        "system_xml": None,
+        "topology_pdb": None,
+        "state_xml": None,
+    }
+    explicit_paths = {
+        "system_xml": check.system_xml_manifest_path,
+        "topology_pdb": check.topology_pdb_manifest_path,
+        "state_xml": check.state_xml_manifest_path,
+    }
+    for role, manifest_path in explicit_paths.items():
+        rel = _manifest_artifact_path(manifest, manifest_path, "") if manifest_path else None
+        if rel:
+            roles[role] = _resolve_relative(submission_dir, rel)
+
+    topology_rels = _manifest_artifact_paths(
+        manifest, check.topology_manifest_path, "outputs.topology",
+    )
+    for rel in topology_rels:
+        path = _resolve_relative(submission_dir, rel)
+        lower = path.name.lower()
+        if roles["system_xml"] is None and (
+            lower == "system.xml" or lower.endswith(".system.xml")
+        ):
+            roles["system_xml"] = path
+        elif roles["state_xml"] is None and (
+            lower == "state.xml" or lower.endswith(".state.xml")
+        ):
+            roles["state_xml"] = path
+        elif roles["topology_pdb"] is None and (
+            lower == "topology.pdb" or lower.endswith(".topology.pdb")
+        ):
+            roles["topology_pdb"] = path
+        elif roles["topology_pdb"] is None and lower.endswith(".pdb"):
+            roles["topology_pdb"] = path
+
+    issues: list[str] = []
+    for role, path in roles.items():
+        if path is None:
+            issues.append(f"{role} not listed in outputs.topology")
+        elif not path.is_file():
+            issues.append(f"{role} file not found: {path}")
+    return roles, issues
+
+
+def _load_openmm_bundle(check: DeterministicCheck,
+                        submission_dir: Path,
+                        manifest: dict) -> dict[str, Any]:
+    artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    if issues:
+        return {"success": False, "message": "; ".join(issues)}
+
+    try:
+        from openmm import XmlSerializer
+        from openmm.app import PDBFile
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "success": False,
+            "message": f"OpenMM import failed: {type(exc).__name__}: {exc}",
+        }
+
+    try:
+        system = XmlSerializer.deserialize(artifacts["system_xml"].read_text())
+        pdb = PDBFile(str(artifacts["topology_pdb"]))
+        state = XmlSerializer.deserialize(artifacts["state_xml"].read_text())
+        positions = state.getPositions()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "success": False,
+            "message": f"OpenMM artifact load failed: {type(exc).__name__}: {exc}",
+        }
+
+    n_particles = system.getNumParticles()
+    n_atoms = pdb.topology.getNumAtoms()
+    try:
+        n_positions = len(positions)
+    except TypeError:
+        n_positions = -1
+    if n_particles != n_atoms or n_particles != n_positions:
+        return {
+            "success": False,
+            "message": (
+                "OpenMM artifact atom count mismatch: "
+                f"system={n_particles}, topology={n_atoms}, state_positions={n_positions}"
+            ),
+        }
+
+    return {
+        "success": True,
+        "message": f"OpenMM artifacts loaded with {n_particles} particles",
+        "system": system,
+        "topology": pdb.topology,
+        "state": state,
+        "positions": positions,
+    }
+
+
+def _positions_are_finite(array: Any) -> bool:
+    try:
+        for row in array:
+            for value in row:
+                if not math.isfinite(float(value)):
+                    return False
+    except TypeError:
+        return False
+    return True
+
+
 def _residue_counts_from_pdb(path: Path) -> dict[str, int]:
     """Count unique residues by residue name in a PDB-like coordinate file."""
     residues: set[tuple[str, str, str, str]] = set()
@@ -410,6 +734,23 @@ def _check_structure_component_rescan(check: DeterministicCheck,
         manifest, check.structure_manifest_path, "outputs.prepared_structure",
     ) or check.structure_path or "prepared_structure.pdb"
     structure_path = _resolve_relative(submission_dir, structure_rel)
+    return _check_component_counts_for_structure(check, structure_path)
+
+
+def _check_minimized_structure_component_rescan(check: DeterministicCheck,
+                                                submission_dir: Path,
+                                                manifest: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest,
+        check.minimized_structure_manifest_path or check.structure_manifest_path,
+        "outputs.minimized_structure",
+    ) or check.structure_path or "minimized_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    return _check_component_counts_for_structure(check, structure_path)
+
+
+def _check_component_counts_for_structure(check: DeterministicCheck,
+                                          structure_path: Path):
     if not structure_path.is_file():
         return False, 0.0, f"structure file not found: {structure_path}"
 
@@ -735,6 +1076,11 @@ _DETERMINISTIC_DISPATCH = {
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
     "assembly_identity_check": _check_assembly_identity,
+    "topology_artifact_bundle": _check_topology_artifact_bundle,
+    "openmm_system_load": _check_openmm_system_load,
+    "openmm_energy_rescan": _check_openmm_energy_rescan,
+    "minimization_report_check": _check_minimization_report,
+    "minimized_structure_component_rescan": _check_minimized_structure_component_rescan,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
 }
 
@@ -994,6 +1340,17 @@ def _manifest_artifact_path(
     if isinstance(value, str):
         return value
     return None
+
+
+def _manifest_artifact_paths(
+    manifest: dict, preferred_path: Optional[str], fallback_path: str,
+) -> list[str]:
+    value = _safe_path_with_index(manifest, preferred_path or fallback_path)
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, str)]
+    return []
 
 
 def _safe_path_with_index(obj: Any, dotted: str) -> Any:

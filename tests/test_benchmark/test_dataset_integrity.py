@@ -123,6 +123,28 @@ def test_public_agent_prompts_exist_and_define_access_boundary():
         assert "input/" not in prompt
         for rel_path in task.required_outputs:
             assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
+        assert "topology" in prompt.lower()
+        assert "minimization" in prompt.lower()
+
+
+def test_prep_tasks_require_topology_and_minimization_contract():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+    required_check_types = {
+        "topology_artifact_bundle",
+        "openmm_system_load",
+        "openmm_energy_rescan",
+        "minimization_report_check",
+    }
+
+    for task_id in dataset["task_ids"]:
+        task = Task.model_validate_json(
+            (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+        )
+        assert "minimization_report.json" in task.required_outputs
+        check_types = {
+            check.check_type for check in task.scoring.deterministic_checks
+        }
+        assert required_check_types.issubset(check_types), task_id
 
 
 def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():

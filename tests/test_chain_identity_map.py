@@ -20,6 +20,21 @@ def _write_tiny_pdb(path: Path, chain_id: str = "A") -> None:
     )
 
 
+def _write_tiny_ligand_with_conect(path: Path, chain_id: str = "L") -> None:
+    path.write_text(
+        f"HETATM   11  C1  LIG {chain_id}   7       0.000   0.000   0.000  "
+        "1.00  0.00           C  \n"
+        f"HETATM   12  O1  LIG {chain_id}   7       1.200   0.000   0.000  "
+        "1.00  0.00           O  \n"
+        f"HETATM   13  H1  LIG {chain_id}   7      -0.700   0.000   0.000  "
+        "1.00  0.00           H  \n"
+        "CONECT   11   12   12   13\n"
+        "CONECT   12   11   11\n"
+        "CONECT   13   11\n"
+        "END\n"
+    )
+
+
 def test_merge_structures_reuses_pdb_chain_ids_after_pool_exhaustion(tmp_path):
     pdb_files = []
     for index in range(65):
@@ -49,6 +64,38 @@ def test_merge_structures_reuses_pdb_chain_ids_after_pool_exhaustion(tmp_path):
 
     topology = PDBFile(result["output_file"]).topology
     assert topology.getNumChains() == 65
+
+
+def test_merge_structures_maps_ligand_conect_to_merged_serials(tmp_path):
+    protein = tmp_path / "protein.pdb"
+    ligand = tmp_path / "ligand.pdb"
+    _write_tiny_pdb(protein, chain_id="P")
+    _write_tiny_ligand_with_conect(ligand, chain_id="Z")
+
+    result = merge_structures(
+        pdb_files=[str(protein), str(ligand)],
+        output_dir=str(tmp_path / "out"),
+        output_name="complex",
+    )
+
+    assert result["success"] is True
+    assert result["statistics"]["conect_bond_count"] == 2
+    assert result["statistics"]["conect_skipped_bond_count"] == 0
+
+    output = Path(result["output_file"])
+    text = output.read_text()
+    assert " LIG B   7" in text
+    assert "CONECT" in text
+
+    merged = PDBFile(str(output))
+    ligand_residue = next(r for r in merged.topology.residues() if r.name == "LIG")
+    ligand_atom_indices = {atom.index for atom in ligand_residue.atoms()}
+    internal_bonds = [
+        bond for bond in merged.topology.bonds()
+        if bond.atom1.index in ligand_atom_indices
+        and bond.atom2.index in ligand_atom_indices
+    ]
+    assert len(internal_bonds) == 2
 
 
 def test_chain_identity_map_can_be_enriched_with_source_label_and_author(tmp_path):

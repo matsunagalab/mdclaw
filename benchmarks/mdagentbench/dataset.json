@@ -39,6 +39,7 @@
   },
   "notes": [
     "Prep-only replacement for the former MDAgentBench v1.0 task set.",
+    "The current prep contract includes topology build and minimization evidence.",
     "No public task requires an MDClaw-specific guardrail code.",
     "Scientific MD reasoning tasks are intentionally deferred to a later suite."
   ],

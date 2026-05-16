@@ -99,6 +99,30 @@
           "default": "metrics.json",
           "title": "Metrics"
         },
+        "minimization_report": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimization Report"
+        },
+        "minimized_structure": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimized Structure"
+        },
         "prepared_structure": {
           "anyOf": [
             {
