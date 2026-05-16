@@ -16,6 +16,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DATASET = ROOT / "benchmarks" / "mdagentbench"
 TASKS = DATASET / "tasks"
+PRIVATE_REFERENCES = DATASET / "private_references"
 
 COMMON_OUTPUTS = [
     "manifest.json",
@@ -62,6 +63,7 @@ def _component_check(
     min_counts: dict[str, int] | None = None,
     max_counts: dict[str, int] | None = None,
     exact_counts: dict[str, int] | None = None,
+    residue_aliases: dict[str, list[str]] | None = None,
     weight: float = 1.0,
 ) -> dict:
     out = {
@@ -77,6 +79,8 @@ def _component_check(
         out["max_residue_counts"] = max_counts
     if exact_counts:
         out["exact_residue_counts"] = exact_counts
+    if residue_aliases:
+        out["residue_aliases"] = residue_aliases
     return out
 
 
@@ -195,7 +199,7 @@ TASK_DEFS: list[dict] = [
         [
             _json_check("source_pdb_reported", "preparation.source_pdb_id", "1AKE", 0.2),
             _component_check("ap5_retained", min_counts={"AP5": 1}, weight=0.45),
-            _json_check("ligand_params_recorded", "preparation.ligand_params_recorded", True, 0.2),
+            _json_check("ligand_chemistry_recorded", "preparation.ligand_chemistry_recorded", True, 0.2),
             _json_check("auth_chain_reported", "preparation.selected_auth_chain", "A", 0.15),
         ],
         priority=1,
@@ -206,21 +210,27 @@ TASK_DEFS: list[dict] = [
         "P03_prep_ligand_pose_t4l_benzene",
         "Ligand pose preservation",
         "PDB 181L",
-        "prepare T4 lysozyme L99A bound to benzene while preserving the crystallographic benzene pose.",
+        "Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included.",
         [
             {
                 "check_id": "ligand_pose_preserved",
                 "check_type": "rmsd_recompute",
-                "json_file": "metrics.json",
-                "json_path": "preparation.ligand_heavy_atom_rmsd_angstrom",
                 "reference_pdb": "truth/ligand_reference.pdb",
                 "selection": "resname BNZ and not element H",
                 "align_selection": "name CA",
                 "max_value": 0.5,
                 "tolerance_angstrom": 0.05,
-                "weight": 0.7,
+                "weight": 0.5,
             },
-            _component_check("benzene_retained", min_counts={"BNZ": 1}, weight=0.3),
+            _residue_check(
+                "protein_l99a_chain_retained",
+                "A",
+                "99",
+                "ALA",
+                atoms=["N", "CA", "C", "O"],
+                weight=0.3,
+            ),
+            _component_check("benzene_retained", min_counts={"BNZ": 1}, weight=0.2),
         ],
         priority=1,
         tags=["ligand_pose", "small_molecule"],
@@ -243,11 +253,11 @@ TASK_DEFS: list[dict] = [
         "P05_prep_dap_dehydrogenase_nadp",
         "Charged cofactor-like ligand stress",
         "PDB 1DAP",
-        "prepare DAP dehydrogenase with its NADP-like dinucleotide cofactor without silently dropping the cofactor or changing its charge without provenance.",
+        "prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance.",
         [
-            _component_check("cofactor_retained", min_counts={"NAP": 1}, weight=0.45),
+            _component_check("cofactor_retained", min_counts={"NDP": 2}, weight=0.45),
             _json_check("cofactor_charge_recorded", "preparation.cofactor_charge_recorded", True, 0.25),
-            _json_check("ligand_params_recorded", "preparation.ligand_params_recorded", True, 0.3),
+            _json_check("ligand_chemistry_recorded", "preparation.ligand_chemistry_recorded", True, 0.3),
         ],
         priority=2,
         tags=["charged_ligand", "cofactor"],
@@ -400,17 +410,23 @@ TASK_DEFS: list[dict] = [
         references=[{"source": "PDB 4RBQ", "url": "https://www.rcsb.org/structure/4RBQ"}],
     ),
     _task(
-        "P17_prep_modified_nucleic_5mc",
-        "Modified nucleic acid",
-        "PDB 6JV5",
-        "detect 5-methylcytosine and route the structure through modified-nucleic preparation rather than silently mapping it to ordinary cytosine.",
+        "P17_prep_dna_duplex_neutralization",
+        "DNA duplex chain retention and neutralization",
+        "PDB 1BNA",
+        "prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain.",
         [
-            _component_check("five_methylcytosine_retained", min_counts={"5CM": 1}, weight=0.55),
-            _json_check("modified_nucleic_metadata_recorded", "preparation.modified_nucleic_metadata_recorded", True, 0.45),
+            _json_check("dna_library_reported", "preparation.nucleic_acid_type", "DNA", 0.25),
+            _json_check("duplex_chain_count_recorded", "preparation.nucleic_chain_count", 2, 0.25),
+            _component_check(
+                "standard_dna_residues_present",
+                min_counts={"DA": 1, "DC": 1, "DG": 1, "DT": 1},
+                weight=0.25,
+            ),
+            _json_check("counterion_neutralization_recorded", "preparation.net_charge_neutralized", True, 0.25),
         ],
         priority=2,
-        tags=["modified_nucleic_acid", "dna"],
-        references=[{"source": "PDB 6JV5", "url": "https://www.rcsb.org/structure/6JV5"}],
+        tags=["dna", "nucleic_acid", "chain_selection", "neutralization"],
+        references=[{"source": "PDB 1BNA", "url": "https://www.rcsb.org/structure/1BNA"}],
     ),
     _task(
         "P18_prep_membrane_mixed_lipids",
@@ -419,7 +435,12 @@ TASK_DEFS: list[dict] = [
         "prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio.",
         [
             _json_check("membrane_flag_recorded", "preparation.membrane", True, 0.2),
-            _component_check("lipid_species_present", min_counts={"POPC": 2, "POPE": 1, "CHL1": 1}, weight=0.5),
+            _component_check(
+                "lipid_species_present",
+                min_counts={"POPC": 2, "POPE": 1, "CHL1": 1},
+                residue_aliases={"POPC": ["PC"], "POPE": ["PE"], "CHL1": ["CHL"]},
+                weight=0.5,
+            ),
             _json_check("lipid_ratio_recorded", "preparation.lipid_ratio", "POPC:POPE:CHL1=2:1:1", 0.3),
         ],
         priority=1,
@@ -523,7 +544,12 @@ TASK_DEFS: list[dict] = [
         [
             _json_check("salt_species_reported", "preparation.salt_species", "KCl", 0.25),
             _json_check("salt_concentration_reported", "preparation.salt_concentration_molar", 0.3, 0.25),
-            _component_check("kcl_ions_present", min_counts={"K": 1, "CL": 1}, weight=0.3),
+            _component_check(
+                "kcl_ions_present",
+                min_counts={"K": 1, "CL": 1},
+                residue_aliases={"K": ["K+"], "CL": ["CL-", "Cl-"]},
+                weight=0.3,
+            ),
             _json_check("neutrality_recorded", "preparation.net_charge_neutralized", True, 0.2),
         ],
         priority=1,
@@ -571,15 +597,9 @@ def main() -> int:
         if task["task_id"] == "P03_prep_ligand_pose_t4l_benzene":
             truth_dir = task_dir / "truth"
             truth_dir.mkdir()
-            (truth_dir / "ligand_reference.pdb").write_text(
-                "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
-                "HETATM    2  C1  BNZ B   1       1.000   0.000   0.000  1.00  0.00           C\n"
-                "HETATM    3  C2  BNZ B   1       2.000   0.000   0.000  1.00  0.00           C\n"
-                "HETATM    4  C3  BNZ B   1       2.500   0.866   0.000  1.00  0.00           C\n"
-                "HETATM    5  C4  BNZ B   1       2.000   1.732   0.000  1.00  0.00           C\n"
-                "HETATM    6  C5  BNZ B   1       1.000   1.732   0.000  1.00  0.00           C\n"
-                "HETATM    7  C6  BNZ B   1       0.500   0.866   0.000  1.00  0.00           C\n"
-                "END\n"
+            shutil.copyfile(
+                PRIVATE_REFERENCES / "P03_181L_protein_bnz_reference.pdb",
+                truth_dir / "ligand_reference.pdb",
             )
 
     dataset = {

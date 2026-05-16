@@ -73,6 +73,9 @@ _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "raw_file",
     "mol2",
     "mol2_file",
+    "sdf",
+    "sdf_file",
+    "coordinate_file",
     "frcmod",
     "frcmod_file",
     "frcmods",
@@ -168,7 +171,7 @@ def normalize_artifact_paths(job_dir: str, node_id: str, artifacts: dict) -> dic
 
     The on-disk contract is portable: any file reference under ``job_dir`` is
     stored relative to ``nodes/<node_id>/``. This applies recursively to
-    structured artifacts such as ``ligand_params`` and ``branches``.
+    structured artifacts such as ``ligand_chemistry`` and ``branches``.
     """
     jd = Path(job_dir).resolve()
     node_dir = jd / "nodes" / node_id
@@ -1817,8 +1820,8 @@ def find_ancestor_artifact(
 
     Example (structured artifact)::
 
-        lp = find_ancestor_artifact(job_dir, "topo_001", "prep", "ligand_params")
-        # -> [{"mol2": "/abs/...", "frcmod": "/abs/...", "residue_name": "AP5"}]
+        lc = find_ancestor_artifact(job_dir, "topo_001", "prep", "ligand_chemistry")
+        # -> [{"sdf": "/abs/...", "residue_name": "AP5"}]
     """
     jd = Path(job_dir)
     pj = jd / "progress.json"
@@ -2057,7 +2060,7 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
             result["pdb_resolved_from_node_id"] = prep_id
 
     for result_key, artifact_key in (
-        ("ligand_params", "ligand_params"),
+        ("ligand_chemistry", "ligand_chemistry"),
         ("metal_params", "metal_params"),
     ):
         value = find_ancestor_artifact(job_dir, node_id, "prep", artifact_key)
@@ -2253,7 +2256,7 @@ def resolve_node_inputs(
                 to legacy ``structure_file`` artifacts when needed.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
-                ancestor, plus ``ligand_params`` / ``metal_params`` from
+                ancestor, plus ``ligand_chemistry`` / ``metal_params`` from
                 nearest ``prep`` ancestor
     - ``eq``:   ``system_xml`` + ``topology_pdb`` + ``state_xml`` from nearest
                 ``topo`` ancestor (XML triple is the only supported

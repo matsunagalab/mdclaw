@@ -104,9 +104,11 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
         "structure_manifest_path": "outputs.prepared_structure",
         "min_residue_counts": {"AP5": 1},
         "max_residue_counts": {"SO4": 0},
+        "residue_aliases": {"CL": ["Cl-", "CLA"]},
     })
     assert components.min_residue_counts == {"AP5": 1}
     assert components.max_residue_counts == {"SO4": 0}
+    assert components.residue_aliases == {"CL": ["Cl-", "CLA"]}
 
     residue_state = DeterministicCheck.model_validate({
         "check_id": "glu11_glh",

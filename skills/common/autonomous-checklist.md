@@ -23,7 +23,7 @@ retrying.
 4. Verify the completed prep output matches the user request before solvation:
    check the prepared `merged_pdb` path from JSON/node artifacts, and if the
    user requested no ligand, confirm no ligand artifact such as
-   `ligand_params` is registered on the prep node.
+   `ligand_chemistry` is registered on the prep node.
 5. Create and run a `solv` node with `solvate_structure`.
 6. Run `inspect_openmm_platforms --atom-count <total_atoms> --solvent-type explicit`
    after solvation before local topology/eq/prod.

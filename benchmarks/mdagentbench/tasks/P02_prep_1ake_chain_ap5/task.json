@@ -53,11 +53,11 @@
         "weight": 0.45
       },
       {
-        "check_id": "ligand_params_recorded",
+        "check_id": "ligand_chemistry_recorded",
         "check_type": "json_equals",
         "equals": true,
         "json_file": "metrics.json",
-        "json_path": "preparation.ligand_params_recorded",
+        "json_path": "preparation.ligand_chemistry_recorded",
         "weight": 0.2
       },
       {

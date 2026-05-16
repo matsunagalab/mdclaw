@@ -90,7 +90,7 @@ node; see `skills/md-prepare/branches.md`).
    forcefield, water model, box geometry, etc. are tool-level defaults
    surfaced from the guidance pages read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
-5. Execute prepare_complex / mutate / modified-nucleic prep / solv / topo per setup.md and the
+5. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
    solvation guidance. If the user specifies site-specific residue
    protonation, pass it explicitly through `protonation_states`; do not leave
    it as a free-text note. If the user specifies a biological assembly, request
@@ -182,22 +182,21 @@ Use structured JSON fields from tool output to decide next steps. **Never parse 
 
 Key fields to check:
 - `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
-- `parameter_source` — per-ligand: `amber_geostd` (curated) or `gaff2_antechamber` (auto-generated)
+- `ligand_chemistry` — standard prep artifact for ligand SDF/SMILES/charge/provenance; consumed by `build_amber_system`
+- `parameterization_stage` — ligand prep should be `topology`
 - `workflow_recommendation` — contains `options` (list of valid next actions)
-- `recommended_next_action` — per-ligand: `use_curated_params`, `provide_frcmod`, `hard_fail`
+- `recommended_next_action` — per-ligand: `provide_smiles_or_exclude_ligand`, `hard_fail`
 - `failure_class` — what went wrong. Common classes include `input_error`,
-  `metal_atoms`, `antechamber_failed`, `parmchk2_failed`,
-  `zero_bond_angle_params`, `zero_dihe_barriers`,
-  `ligand_roundtrip_validation_failed`, and `unexpected_error`.
+  `metal_atoms`, `ligand_chemistry_failed`, and `unexpected_error`.
 
 Rules:
-- If `recommended_next_action = use_curated_params`: do NOT retry, do NOT edit frcmod, do NOT change charge method. Present the options from `workflow_recommendation.options` to the user.
+- Prep records `ligand_chemistry`; topology generation consumes those records
+  by trying Amber geostd templates first and using `GAFFTemplateGenerator` for
+  ligands without a geostd match.
+- If `recommended_next_action = provide_smiles_or_exclude_ligand`: ask for a
+  chemistry source or exclude the ligand; do not continue with an untyped PDB
+  ligand.
 - If `recommended_next_action = hard_fail`: stop immediately. Do not attempt workarounds.
-- If `parameter_source = amber_geostd`, curated mol2/frcmod parameters take
-  priority over pH protonation charge guesses; MDClaw uses the curated mol2
-  charge sum for validation. Do not add `structure_analysis.ligands[].net_charge`
-  unless the user intentionally wants a different charge/protonation state and
-  has matching parameters.
 - Retrying the same command with identical parameters will produce the same error.
 - If stuck, report the structured error fields and ask the user for guidance.
 - The full HITL interaction loop (check `confirmation_needed`, respect

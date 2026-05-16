@@ -57,6 +57,15 @@
           "CL": 1,
           "K": 1
         },
+        "residue_aliases": {
+          "CL": [
+            "CL-",
+            "Cl-"
+          ],
+          "K": [
+            "K+"
+          ]
+        },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.3

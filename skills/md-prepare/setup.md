@@ -20,7 +20,7 @@ Then read by task:
 - `[if:chains_or_ligands]` Inspection and chain selection:
   `skills/md-prepare/inspection-and-chains.md`
 - `[if:prep]` Initial cleaning and merge: `skills/md-prepare/prepare-complex.md`
-- `[if:branch]` Mutation, PTMs, or modified nucleic acids:
+- `[if:branch]` Mutation or supported PTMs:
   `skills/md-prepare/branches.md`
 - `[if:explicit]` Explicit water: `skills/md-prepare/explicit-water.md`
 - `[if:implicit]` Implicit solvent: `skills/md-prepare/implicit-water.md`

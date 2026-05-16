@@ -1,12 +1,12 @@
-# P17_prep_modified_nucleic_5mc: Modified nucleic acid
+# P17_prep_dna_duplex_neutralization: DNA duplex chain retention and neutralization
 
-You are evaluating an MD agent on `P17_prep_modified_nucleic_5mc`.
+You are evaluating an MD agent on `P17_prep_dna_duplex_neutralization`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Modified nucleic acid: detect 5-methylcytosine and route the structure through modified-nucleic preparation rather than silently mapping it to ordinary cytosine.
+Task: DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex from PDB `1BNA`, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain.
 
-Public source anchors: PDB 6JV5.
+Public source anchors: PDB 1BNA.
 
 Your submission directory must contain:
 

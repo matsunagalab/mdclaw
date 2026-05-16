@@ -2,18 +2,16 @@
 
 Date: 2026-05-01
 
-> **Legacy note (2026-09 update)**: This audit was written before the
+> **Legacy note (2026-05 update)**: This audit was written before the
 > openmmforcefields-unification refactor. References to `tleap`, `parm7`,
-> `rst7`, `loadamberparams`, and `loadmol2` describe the *legacy* topology
-> path. `build_amber_system` now emits the modern artifact triple
+> `rst7`, `loadamberparams`, `loadmol2`, `antechamber`, `parmchk2`, `sqm`,
+> and `ligand_params.json` describe the *legacy* topology path.
+> `build_amber_system` now emits the modern artifact triple
 > `system.xml` + `topology.pdb` + `state.xml` via
-> `openmmforcefields.SystemGenerator` + `GAFFTemplateGenerator` (with
-> OpenFF Pablo for topology); ligands flow in as `openff.toolkit.Molecule`
-> objects. The structural concerns about `UNL` repair, `frcmod` validation,
-> and `ligand_params.json` provenance still hold — they apply to the
-> validators upstream of the System builder regardless of the post-stage
-> implementation. See `AGENTS.md` `### amber_server.py` and
-> `docs/developer/tool-reference.md` for the current contract.
+> `openmmforcefields.SystemGenerator`, topology-time Amber geostd XML
+> conversion, and `GAFFTemplateGenerator` fallback (with OpenFF Pablo for
+> topology). The prep-to-topology ligand contract is `ligand_chemistry`; see
+> `AGENTS.md` and `docs/developer/tool-reference.md` for the current contract.
 
 ## Scope
 

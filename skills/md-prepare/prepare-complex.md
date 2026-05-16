@@ -60,17 +60,22 @@ Important outputs:
 
 - `merged_pdb`: downstream structure for solvation or topology.
 - `split/`: extracted components.
-- `ligand_params`: curated or GAFF2 ligand parameters.
+- `ligand_chemistry`: ligand SDF/SMILES/charge/provenance records for
+  topology-time ligand force-field resolution.
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
-If ligand preparation returns a blocking structured result, do not retry the
-same command. Follow `workflow_recommendation.options`.
+`prepare_complex` records ligand chemistry. `build_amber_system` consumes
+`ligand_chemistry`, uses Amber geostd templates when available, and invokes
+`GAFFTemplateGenerator` for ligands without a geostd match.
+
+If ligand chemistry preparation returns a blocking structured result, do not
+retry the same command. Follow `workflow_recommendation.options`.
 
 After `prepare_complex` succeeds, verify the completed node before solvation:
 
 - If the user requested no ligand, confirm the prep node has no
-  `artifacts.ligand_params`.
+  `artifacts.ligand_chemistry`.
 - If the wrong ligand or chain choice was used, create a new prep node from
   the same source ancestor. Do not rerun the existing prep node with changed
   molecular contents.

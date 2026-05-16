@@ -80,7 +80,6 @@ Important boundaries:
 | `_node.py` | Schema v3 node DAG management, artifact registration, status transitions. |
 | `_event.py` | Append-only JSON event log. |
 | `_lock.py` | File-based locking with `fcntl.flock`. |
-| `_ligand_xml.py` | Converts prep-computed ligand `mol2 + frcmod` pairs into OpenMM ForceField XML. |
 | `*_server.py` | Public tool modules. Each exposes a `TOOLS` dict. |
 
 ## Job DAG
@@ -110,7 +109,7 @@ flowchart LR
   eq1 --> prod1[prod_001<br/>production]
   eq1 --> eq2[eq_002<br/>staged or branched eq]
   eq2 --> prod2[prod_002<br/>production branch]
-  prep --> prep2[prep_002<br/>mutation / PTM / modXNA]
+  prep --> prep2[prep_002<br/>mutation / PTM]
   prep2 --> solv2[solv_002<br/>variant solvation]
   solv2 --> topo2[topo_002<br/>variant topology]
 ```
@@ -120,7 +119,7 @@ Node artifacts are intentionally local to each node:
 | Node Type | Typical Artifacts |
 |---|---|
 | `source` | `source_bundle.json`, normalized `candidates/candidate_*` files, optional raw downloaded/copied/generated structures, source metadata, optional `inspection.json`. |
-| `prep` | `source_selection.json`, cleaned/merged PDB, `chain_identity_map.json`, `ligand_params.json`, `residue_mapping.json`, branch-specific prepared structures. |
+| `prep` | `source_selection.json`, cleaned/merged PDB, `chain_identity_map.json`, `ligand_chemistry.json`, `residue_mapping.json`, branch-specific prepared structures. |
 | `solv` | `solvated.pdb`, `box_dimensions.json`, membrane metadata when applicable. |
 | `topo` | `system.system.xml`, `system.topology.pdb`, `system.state.xml`, force-field provenance. |
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |
@@ -209,7 +208,7 @@ The high-level topology pipeline is:
 ```mermaid
 flowchart LR
   prepared[prepared PDB] --> resolve[resolve force-field XML]
-  resolve --> ligand[convert ligand XML when possible]
+  resolve --> ligand[load ligand chemistry]
   ligand --> pablo[Pablo topology load]
   pablo --> modeller[Modeller preparation]
   modeller --> system[SystemGenerator createSystem]
@@ -221,18 +220,16 @@ flowchart LR
 Stages recorded under `topo_NNN/metadata.topology_build_stage_history` include:
 
 ```text
-resolve_forcefield_xml -> convert_ligand_xml -> pdbfixer_hydrogenation ->
+resolve_forcefield_xml -> pdbfixer_hydrogenation ->
 load_ligand_molecules -> pablo_load -> system_generator_init ->
 modeller_prepare -> system_generator_create_system -> initial_minimization ->
 serialization -> collect_provenance -> completed
 ```
 
-`convert_ligand_xml` calls `_ligand_xml.convert_amber_ligand_to_openmm_xml`
-for ligands with `parameter_source` of `amber_geostd` or
-`gaff2_antechamber`. Successful conversions land under
-`artifacts/ligand_xml/<RES>.xml` and are appended to the OpenMM force-field
-bundle. Conversion failures fall back to the standard GAFF template path with
-a warning.
+Standard ligand records are loaded from `ligand_chemistry` into OpenFF
+Molecules. Topology resolves Amber geostd XMLs first and passes the remaining
+ligands to `SystemGenerator` / `GAFFTemplateGenerator`. The prep-to-topology
+ligand handoff is the `ligand_chemistry` artifact.
 
 `build_openmm_system` is the research escape hatch for explicit custom OpenMM
 XML. It emits the same XML triple, so downstream `eq` and `prod` nodes consume

@@ -428,7 +428,7 @@ def _preparation_description(prep_node: dict | None) -> tuple[str, str, str]:
     artifacts = _node_artifacts(prep_node)
     special: list[str] = []
     for label, keys in (
-        ("ligands", ("ligand_params", "ligands")),
+        ("ligands", ("ligand_chemistry", "ligands")),
         ("glycans", ("glycan_metadata", "glycan_linkages")),
         ("nucleic acids", ("residue_mapping", "modxna_params")),
         ("phosphorylated residues", ("phosphorylated_pdb",)),
@@ -502,8 +502,11 @@ def _topology_description(topo_node: dict | None) -> tuple[str, str, str, str]:
     if extra:
         additional = ", with " + ", ".join(extra)
     ligand = "not used"
-    if artifacts.get("ligand_params") or metadata.get("ligand_params"):
-        ligand = "AmberTools/antechamber using GAFF-family parameters"
+    if artifacts.get("ligand_chemistry") or metadata.get("ligand_chemistry"):
+        ligand = (
+            "OpenMM/openmmforcefields topology-time geostd or "
+            "GAFFTemplateGenerator from ligand chemistry records"
+        )
     return forcefield, water_model, additional, ligand
 
 

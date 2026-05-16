@@ -8,6 +8,22 @@ Task: Homology modeling before prep: generate a model from the template/alignmen
 
 Public source anchors: PDB 2LZM.
 
+Template: use PDB 2LZM chain A.
+
+Target sequence/alignment:
+
+- Target code: `T4L_L99A_M102Q_model`
+- The target is aligned one-to-one with PDB 2LZM chain A; there are no gaps.
+- Target sequence:
+
+```text
+MNIFEMLRIDEGLRLKIYKDTEGYYTIGIGHLLTKSPSLNAAKSELDKAIGRNCNGVITKDEAEKLFNQDVDAAVRGILRNAKLKPVYDSLDAVRRCAAINQVFQMGETGVAGFTNSLRMLQQKRWDEAAVNLAKSRWYNQTPNRAKRVITTFRTGTWDAYKNL
+```
+
+Generate a model bundle from this template/target definition before running
+the preparation workflow, and record the template, target sequence, and
+alignment/procedure in `metrics.json` and `provenance.json`.
+
 Your submission directory must contain:
 
 - `manifest.json`

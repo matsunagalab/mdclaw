@@ -142,6 +142,7 @@ class DeterministicCheck(BaseModel):
     min_residue_counts: Optional[dict[str, int]] = None
     max_residue_counts: Optional[dict[str, int]] = None
     exact_residue_counts: Optional[dict[str, int]] = None
+    residue_aliases: Optional[dict[str, list[str]]] = None
 
     # pdb_residue_state
     structure_path: Optional[str] = None

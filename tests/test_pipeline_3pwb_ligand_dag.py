@@ -128,19 +128,19 @@ class TestPipeline3PWBLigandDag:
 
         node_data = read_node(str(job_dir), self.prep_id)
         assert node_data["status"] == "completed"
-        ligand_params = node_data["artifacts"].get("ligand_params")
-        assert ligand_params and len(ligand_params) == 2
-        assert {lig["residue_name"] for lig in ligand_params} == {"BEN", "GOL"}
-        assert {lig["ligand_instance_id"] for lig in ligand_params} == {
+        ligand_chemistry = node_data["artifacts"].get("ligand_chemistry")
+        assert ligand_chemistry and len(ligand_chemistry) == 2
+        assert {lig["residue_name"] for lig in ligand_chemistry} == {"BEN", "GOL"}
+        assert {lig["ligand_instance_id"] for lig in ligand_chemistry} == {
             "A:BEN:481",
             "A:GOL:483",
         }
         prep_node_dir = job_dir / "nodes" / self.prep_id
-        for ligand in ligand_params:
-            assert not Path(ligand["mol2"]).is_absolute()
-            assert not Path(ligand["frcmod"]).is_absolute()
-            assert (prep_node_dir / ligand["mol2"]).exists()
-            assert (prep_node_dir / ligand["frcmod"]).exists()
+        for ligand in ligand_chemistry:
+            assert not Path(ligand["sdf"]).is_absolute()
+            assert not Path(ligand["coordinate_file"]).is_absolute()
+            assert (prep_node_dir / ligand["sdf"]).exists()
+            assert (prep_node_dir / ligand["coordinate_file"]).exists()
 
     # Step 4: solvate (auto-resolves merged_pdb from prep)
     def test_step4_solvate(self, job_dir):
@@ -193,13 +193,28 @@ class TestPipeline3PWBLigandDag:
         assert node_data["metadata"]["forcefield"] == "ff19SB"
         assert node_data["metadata"]["water_model"] == "opc"
 
-        # auto-converted ligand XML bypasses GAFFTemplateGenerator.
+        # Topology decides the actual ligand template path. Geostd is used
+        # when a matching template is available; otherwise GAFFTemplateGenerator
+        # handles the ligand from the prep chemistry record.
         provenance = result.get("forcefield_provenance", {})
-        auto = provenance.get("auto_converted_ligand_xml") or []
+        auto = provenance.get("geostd_ligand_xml") or []
         converted_names = {entry["residue_name"] for entry in auto}
-        assert "BEN" in converted_names, auto
-        assert "GOL" in converted_names, auto
-        assert provenance.get("gaff_base") == "gaff-2.2.20"
+        ligand_sources = {
+            entry["residue_name"]: entry.get("topology_parameter_source")
+            for entry in provenance.get("ligand_molecules", [])
+        }
+        assert {"BEN", "GOL"}.issubset(ligand_sources), ligand_sources
+        assert ligand_sources["BEN"] in {
+            "amber_geostd",
+            "topology_gaff_template_generator",
+        }
+        assert ligand_sources["GOL"] in {
+            "amber_geostd",
+            "topology_gaff_template_generator",
+        }
+        if converted_names:
+            assert converted_names.issubset({"BEN", "GOL"}), auto
+            assert provenance.get("gaff_base") == "gaff-2.2.20"
 
     # Step 6: equilibration (auto-resolves topology from topo)
     def test_step6_equilibration(self, job_dir):

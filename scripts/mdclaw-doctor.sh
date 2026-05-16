@@ -25,7 +25,7 @@ if command -v conda >/dev/null 2>&1 && conda env list 2>/dev/null | awk '{print 
     conda run -n mdclaw python -m openmm.testInstallation || true
     echo
     echo "AmberTools executables:"
-    for exe in pdb4amber antechamber parmchk2 cpptraj; do
+    for exe in pdb4amber cpptraj; do
         if conda run -n mdclaw bash -lc "command -v $exe" >/dev/null 2>&1; then
             echo "[ok] $exe"
         else

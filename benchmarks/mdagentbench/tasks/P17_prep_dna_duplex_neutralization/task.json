@@ -1,8 +1,10 @@
 {
   "capability_tags": [
     "preparation_workflow",
-    "modified_nucleic_acid",
-    "dna"
+    "dna",
+    "nucleic_acid",
+    "chain_selection",
+    "neutralization"
   ],
   "category": "system_preparation",
   "environment_type": "artifact_only",
@@ -14,11 +16,11 @@
   },
   "prep_battery_priority": 2,
   "primary_score": "preparation",
-  "public_source": "PDB 6JV5",
+  "public_source": "PDB 1BNA",
   "references": [
     {
-      "source": "PDB 6JV5",
-      "url": "https://www.rcsb.org/structure/6JV5"
+      "source": "PDB 1BNA",
+      "url": "https://www.rcsb.org/structure/1BNA"
     }
   ],
   "required_outputs": [
@@ -35,22 +37,41 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "five_methylcytosine_retained",
+        "check_id": "dna_library_reported",
+        "check_type": "json_equals",
+        "equals": "DNA",
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_acid_type",
+        "weight": 0.25
+      },
+      {
+        "check_id": "duplex_chain_count_recorded",
+        "check_type": "json_equals",
+        "equals": 2,
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_chain_count",
+        "weight": 0.25
+      },
+      {
+        "check_id": "standard_dna_residues_present",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
-          "5CM": 1
+          "DA": 1,
+          "DC": 1,
+          "DG": 1,
+          "DT": 1
         },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
-        "weight": 0.55
+        "weight": 0.25
       },
       {
-        "check_id": "modified_nucleic_metadata_recorded",
+        "check_id": "counterion_neutralization_recorded",
         "check_type": "json_equals",
         "equals": true,
         "json_file": "metrics.json",
-        "json_path": "preparation.modified_nucleic_metadata_recorded",
-        "weight": 0.45
+        "json_path": "preparation.net_charge_neutralized",
+        "weight": 0.25
       }
     ],
     "ground_truth_checks": [],
@@ -90,7 +111,7 @@
   "secondary_scores": [
     "evidence_communication"
   ],
-  "task_id": "P17_prep_modified_nucleic_5mc",
-  "task_intent": "Modified nucleic acid: detect 5-methylcytosine and route the structure through modified-nucleic preparation rather than silently mapping it to ordinary cytosine.",
+  "task_id": "P17_prep_dna_duplex_neutralization",
+  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain.",
   "time_limit_minutes": 60
 }

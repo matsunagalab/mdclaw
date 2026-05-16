@@ -407,7 +407,10 @@ def classify_nucleic_residues(
     standard_dna = names & STANDARD_DNA_RESNAMES
     standard_rna = names & STANDARD_RNA_RESNAMES
     polymer_is_nucleic = _polymer_type_suggests_nucleic(polymer_type)
-    residue_pattern_is_nucleic = bool(names) and names <= STANDARD_NUCLEIC_RESNAMES
+    residue_pattern_is_nucleic = bool(names) and (
+        names <= STANDARD_NUCLEIC_RESNAMES
+        or bool((standard_dna | standard_rna) and (names - STANDARD_NUCLEIC_RESNAMES))
+    )
     is_nucleic = polymer_is_nucleic or residue_pattern_is_nucleic
 
     if standard_dna and standard_rna:
@@ -427,6 +430,30 @@ def classify_nucleic_residues(
         "subtype": subtype,
         "standard_residue_names": sorted(names & STANDARD_NUCLEIC_RESNAMES),
         "modified_residue_names": modified,
+    }
+
+
+MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE = (
+    "Modified DNA/RNA residue(s) were detected. MDClaw's standard "
+    "MD-ready topology path supports standard DNA/RNA residues only; modified "
+    "nucleotides are currently unsupported unless the user provides a custom "
+    "OpenMM ForceField XML/system escape hatch."
+)
+
+
+def modified_nucleic_support_report(modified_residues: list[dict]) -> dict:
+    detected = bool(modified_residues)
+    return {
+        "detected": detected,
+        "status": "unsupported" if detected else "not_detected",
+        "code": "unsupported_modified_nucleic_residue" if detected else None,
+        "supported_for_md_ready_topology": False if detected else None,
+        "message": MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE if detected else None,
+        "next_action": (
+            "report_unsupported_and_stop_before_topology"
+            if detected else None
+        ),
+        "residues": modified_residues,
     }
 
 
@@ -3350,6 +3377,14 @@ def inspect_molecules(
             "modified_nucleic_residues": modified_nucleic_residues,
             "glycan_residues": glycan_residues,
         }
+        modified_support = modified_nucleic_support_report(modified_nucleic_residues)
+        result["summary"]["modified_nucleic_support_status"] = modified_support["status"]
+        result["summary"]["modified_nucleic_support"] = modified_support
+        result["summary"]["unsupported_modified_nucleic_residues"] = (
+            modified_nucleic_residues if modified_support["detected"] else []
+        )
+        if modified_support["detected"]:
+            result["warnings"].append(MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE)
 
         result["notes"] = {
             "metal_parameterization_required": bool(multivalent_metal_residues),
@@ -3375,6 +3410,10 @@ def inspect_molecules(
                 "`amber/phosaa14SB.xml` for ff14SB) to the SystemGenerator "
                 "ForceField bundle."
             ) if ptm_residues else None,
+            "modified_nucleic_handling": (
+                MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE
+                if modified_support["detected"] else None
+            ),
         }
 
         if not chains_info:
@@ -3909,13 +3948,11 @@ def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
                 # Build recommendation based on GAFF compatibility
                 recommendation = {
                     "include": is_gaff_compatible,  # Auto-exclude if not compatible
-                    "charge_method": "bcc",
-                    "atom_type": "gaff2",
                 }
                 if not is_gaff_compatible:
                     recommendation["warning"] = (
                         f"Contains unsupported elements: {sorted(unsupported_elements)}. "
-                        "Cannot parameterize with GAFF/antechamber."
+                        "Cannot build a GAFF ligand template from this chemistry."
                     )
 
                 ligands.append({

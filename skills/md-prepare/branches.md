@@ -23,10 +23,10 @@ Current PTM scope is SEP, TPO, and PTR. See
 
 ## Modified Nucleic Acids
 
-```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids prep_001
-mdclaw --job-dir <job_dir> --node-id prep_002 prepare_modified_nucleic --modifications '<json>'
-```
+Modified DNA/RNA is outside the standard MD-ready prep scope. If
+`inspect_molecules` reports `summary.modified_nucleic_support_status` as
+`unsupported`, stop before topology/MD and tell the user that standard MDClaw
+supports only standard DNA/RNA residues in the current OpenMM topology path.
 
-Requires `MDCLAW_MODXNA_DIR` unless the environment already provides
-`modxna.sh` and `dat/frcmod.modxna`.
+Treat modified DNA/RNA cases as unsupported in the standard MD-ready path unless
+the user explicitly asks for low-level research tooling.

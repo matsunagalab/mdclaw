@@ -1,11 +1,10 @@
 """Smoke test: 1AKE + AP5 build_amber_system completes without hanging.
 
 AP5 (bis(adenosine)-5'-pentaphosphate, 81 atoms, net charge -5) was the
-canary case for the GAFFTemplateGenerator AM1-BCC hang. With the
-mol2+frcmod → OpenMM ForceField XML auto-conversion path
-(:mod:`mdclaw._ligand_xml` wired into ``build_amber_system``), AM1-BCC is
-never invoked for this ligand and the topology build finishes in under a
-minute.
+canary case for the GAFFTemplateGenerator AM1-BCC hang. With topology-time
+Amber geostd XML generation (:mod:`mdclaw._geostd` wired into
+``build_amber_system``), AM1-BCC is never invoked for this ligand and the
+topology build finishes in under a minute.
 
 Requires: conda env (rdkit, openmm, ambertools, parmed,
 openmmforcefields), network access for PDB fetch.
@@ -37,6 +36,13 @@ class Test1akeAp5BuildTopology:
     @pytest.fixture(scope="class")
     def job_dir(self, tmp_path_factory):
         return tmp_path_factory.mktemp("job_1ake_ap5_smoke")
+
+    @pytest.fixture(scope="class", autouse=True)
+    def require_ap5_geostd(self):
+        from mdclaw._geostd import lookup_geostd_parameters
+
+        if lookup_geostd_parameters("AP5") is None:
+            pytest.skip("AP5 geostd entry is required for the no-hang smoke test")
 
     def test_step1_source(self, job_dir):
         from mdclaw._node import create_node, read_node
@@ -76,8 +82,8 @@ class Test1akeAp5BuildTopology:
         assert result["success"], result.get("errors")
 
         node_data = read_node(str(job_dir), self.prep_id)
-        ligand_params = node_data["artifacts"].get("ligand_params", [])
-        assert any(lig["residue_name"] == "AP5" for lig in ligand_params), ligand_params
+        ligand_chemistry = node_data["artifacts"].get("ligand_chemistry", [])
+        assert any(lig["residue_name"] == "AP5" for lig in ligand_chemistry), ligand_chemistry
 
     def test_step3_solvate(self, job_dir):
         from mdclaw._node import create_node, read_node
@@ -132,7 +138,7 @@ class Test1akeAp5BuildTopology:
         )
 
         provenance = result.get("forcefield_provenance", {})
-        auto = provenance.get("auto_converted_ligand_xml") or []
+        auto = provenance.get("geostd_ligand_xml") or []
         assert any(entry["residue_name"] == "AP5" for entry in auto), auto
         assert provenance.get("gaff_base") == "gaff-2.2.20"
 

@@ -14,6 +14,12 @@ Use the resulting JSON to decide:
 - Ligands to include, exclude, or parameterize.
 - Metal ions that need explicit parameterization.
 - PTM sites that should be restored later with `phosphorylate_residues`.
+- Modified DNA/RNA residues. If
+  `summary.modified_nucleic_support_status == "unsupported"`, report the
+  unsupported chemistry to the user and stop before topology/MD. The standard
+  MDClaw topology path supports standard DNA/RNA only; modified nucleotides are
+  not a supported MD-ready prep target unless the user provides a custom
+  OpenMM ForceField XML/system escape hatch.
 
 Chain ID rule:
 

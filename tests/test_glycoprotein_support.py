@@ -58,7 +58,7 @@ def test_split_molecules_emits_glycan_files(tmp_path):
     assert {i["chain_type"] for i in result["chain_file_info"]} == {"protein", "glycan"}
 
 
-def test_prepare_complex_passes_glycans_through_without_ligand_params(tmp_path):
+def test_prepare_complex_passes_glycans_through_without_ligand_chemistry(tmp_path):
     from mdclaw.structure_server import prepare_complex
 
     result = prepare_complex(
@@ -73,7 +73,7 @@ def test_prepare_complex_passes_glycans_through_without_ligand_params(tmp_path):
     assert len(result["glycans"]) == 1
     assert result["glycans"][0]["residue_names"] == ["NAG"]
     assert result["preparation_summary"]["has_glycan"] is True
-    assert "ligand_params" not in result
+    assert "ligand_chemistry" not in result
 
 
 def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path):

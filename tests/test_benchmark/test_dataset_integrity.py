@@ -141,6 +141,43 @@ def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():
             assert truth_path.is_file(), f"missing truth file for {task_id}: {check.truth_file}"
 
 
+def test_p03_ligand_pose_truth_is_real_181l_protein_ligand_reference():
+    task_dir = DATASET_DIR / "tasks" / "P03_prep_ligand_pose_t4l_benzene"
+    truth_path = task_dir / "truth" / "ligand_reference.pdb"
+    private_reference = (
+        DATASET_DIR / "private_references" / "P03_181L_protein_bnz_reference.pdb"
+    )
+
+    assert truth_path.read_text() == private_reference.read_text()
+
+    lines = truth_path.read_text().splitlines()
+    protein_atoms = [line for line in lines if line.startswith("ATOM  ")]
+    bnz_atoms = [
+        line for line in lines
+        if line.startswith("HETATM") and line[17:20].strip() == "BNZ"
+    ]
+    l99a_atoms = {
+        line[12:16].strip()
+        for line in protein_atoms
+        if (
+            line[17:20].strip() == "ALA"
+            and line[21:22].strip() == "A"
+            and line[22:26].strip() == "99"
+        )
+    }
+
+    assert len(protein_atoms) > 1000
+    assert len(bnz_atoms) == 6
+    assert {"N", "CA", "C", "O"}.issubset(l99a_atoms)
+
+    task = json.loads((task_dir / "task.json").read_text())
+    check_ids = {
+        check["check_id"]
+        for check in task["scoring"]["deterministic_checks"]
+    }
+    assert "protein_l99a_chain_retained" in check_ids
+
+
 def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

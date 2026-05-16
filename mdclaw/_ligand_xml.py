@@ -1,28 +1,16 @@
-"""Convert prep-computed Amber ligand parameters to OpenMM ForceField XML.
+"""Convert topology-time geostd ligand records to OpenMM ForceField XML.
 
-`prepare_complex` records each ligand's parameters as a Tripos mol2 (atom
-names, GAFF2 atom types, partial charges) plus an Amber frcmod (bond /
-angle / dihedral / vdW additions on top of the GAFF2 baseline). Historically
-``build_amber_system`` only used the mol2 to materialize an OpenFF
-``Molecule`` for ``openmmforcefields.SystemGenerator(molecules=...)``, which
-forced ``GAFFTemplateGenerator`` to re-derive AM1-BCC partial charges from
-scratch via antechamber + sqm. For highly charged ligands like AP5 (81
-atoms, −5e) the AM1 SCF step routinely hangs.
-
-This module re-uses the *already-computed* mol2 + frcmod by emitting a
-self-contained OpenMM ForceField XML — mirroring the patch-XML structure
-that ``GAFFTemplateGenerator.generate_residue_template`` builds internally
-(openmmforcefields/generators/template_generators.py:633-676) — so the
-ligand can be stacked into ``ForceField(*xml_bundle, ligand.xml)`` without
-ever invoking antechamber. Once the XML is loaded, the caller drops the
-ligand from ``SystemGenerator(molecules=...)`` and ``GAFFTemplateGenerator``
-is bypassed entirely.
+``build_amber_system`` may find a residue in Amber's geostd database while
+building a topology.  geostd stores a curated Tripos mol2 (atom names, GAFF2
+atom types, partial charges) plus an Amber frcmod (bond / angle / dihedral /
+vdW additions on top of the GAFF2 baseline).  This module converts that pair
+into a self-contained OpenMM ForceField XML, so the residue can be supplied by
+the force-field bundle while other ligands still use ``GAFFTemplateGenerator``.
 
 The output XML carries (a) frcmod-derived parameter additions and (b) a
 ``<Residue>`` template whose atom names/types/charges/bonds come directly
-from the mol2. Base GAFF2 atom types (``c3``, ``p5``, ``c5``, …) are
-expected to be provided by an accompanying ``gaff-2.2.20.xml`` from
-openmmforcefields' shipped data — see
+from the geostd mol2. Base GAFF2 atom types (``c3``, ``p5``, ``c5``, and so
+on) are provided by openmmforcefields' shipped ``gaff-2.2.20.xml`` through
 :func:`mdclaw.forcefield_catalog.resolve_xml_bundle`'s ``gaff_base`` slot.
 """
 
@@ -36,19 +24,19 @@ from typing import Any, Optional
 _GAFF_BASE_DEFAULT = "gaff-2.2.20"
 
 
-def convert_amber_ligand_to_openmm_xml(
+def convert_geostd_ligand_to_openmm_xml(
     mol2_path: Path,
     frcmod_path: Path,
     residue_name: str,
     out_path: Path,
 ) -> dict[str, Any]:
-    """Convert an Amber mol2 + frcmod pair to a self-contained OpenMM XML.
+    """Convert a geostd mol2 + frcmod pair to a self-contained OpenMM XML.
 
     Parameters
     ----------
     mol2_path
-        Tripos mol2 carrying the ligand residue (atom names, GAFF2 atom types,
-        partial charges) for exactly one residue.
+        Tripos mol2 carrying the geostd ligand residue (atom names, GAFF2 atom
+        types, partial charges) for exactly one residue.
     frcmod_path
         Amber frcmod with any bond/angle/dihedral/vdW additions that the
         GAFF2 baseline does not already cover. May be empty (no DIHE etc.).

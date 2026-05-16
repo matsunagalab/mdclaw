@@ -363,7 +363,7 @@ def run_command(
 
 
 class BaseToolWrapper:
-    """Wrapper for external CLI tools (antechamber, parmchk2, cpptraj, etc.)."""
+    """Wrapper for external CLI tools such as pdb4amber and cpptraj."""
 
     def __init__(
         self,

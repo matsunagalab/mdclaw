@@ -4,7 +4,7 @@ You are evaluating an MD agent on `P05_prep_dap_dehydrogenase_nadp`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Charged cofactor-like ligand stress: prepare DAP dehydrogenase with its NADP-like dinucleotide cofactor without silently dropping the cofactor or changing its charge without provenance.
+Task: Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors, NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate, without silently dropping either cofactor or changing its charge without provenance. In PDB 1DAP, the deposited NDP ligand instances are chains C and F, corresponding to auth chains A and B respectively on the RCSB entry.
 
 Public source anchors: PDB 1DAP.
 

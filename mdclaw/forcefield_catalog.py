@@ -657,8 +657,7 @@ def resolve_xml_bundle(
 
     ``gaff_base`` (e.g. ``"gaff-2.2.20"``) resolves an openmmforcefields-shipped
     GAFF base XML and inserts it directly before ``extra_xml``. It supplies
-    the atom-type registry that auto-converted ligand XMLs (see
-    :mod:`mdclaw._ligand_xml`) rely on.
+    the atom-type registry that topology-time geostd ligand XMLs rely on.
     """
     bundle: list[str] = []
 

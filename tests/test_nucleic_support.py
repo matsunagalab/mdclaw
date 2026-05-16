@@ -50,6 +50,51 @@ def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
     assert set(summary["nucleic_chain_ids"]) == {"A", "B"}
     assert set(summary["nucleic_subtypes"].values()) == {"dna", "rna"}
     assert not summary["ligand_chain_ids"]
+    assert summary["modified_nucleic_support_status"] == "not_detected"
+
+
+def test_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
+    from mdclaw.structure_server import _inspect_molecules_impl
+
+    modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
+
+    result = _inspect_molecules_impl(_write_pdb(tmp_path, modified))
+
+    assert result["success"], result.get("errors")
+    summary = result["summary"]
+    assert summary["modified_nucleic_support_status"] == "unsupported"
+    assert summary["modified_nucleic_support"]["code"] == (
+        "unsupported_modified_nucleic_residue"
+    )
+    assert summary["modified_nucleic_support"]["next_action"] == (
+        "report_unsupported_and_stop_before_topology"
+    )
+    unsupported = summary["unsupported_modified_nucleic_residues"]
+    assert len(unsupported) == 1
+    assert unsupported[0]["chain"] == "A"
+    assert unsupported[0]["author_chain"] == "A"
+    assert unsupported[0]["resnum"] == 1
+    assert unsupported[0]["resname"] == "5M"
+    assert unsupported[0]["source_resname"] == "5M"
+    assert unsupported[0]["coordinate_frame"] == "source"
+    assert any("Modified DNA/RNA" in warning for warning in result["warnings"])
+
+
+def test_cli_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
+    from mdclaw.research_server import inspect_molecules
+
+    modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
+
+    result = inspect_molecules(structure_file=_write_pdb(tmp_path, modified))
+
+    assert result["success"], result.get("errors")
+    summary = result["summary"]
+    assert summary["modified_nucleic_support_status"] == "unsupported"
+    assert summary["modified_nucleic_support"]["code"] == (
+        "unsupported_modified_nucleic_residue"
+    )
+    assert summary["modified_nucleic_support"]["supported_for_md_ready_topology"] is False
+    assert any("Modified DNA/RNA" in warning for warning in result["warnings"])
 
 
 def test_split_molecules_emits_nucleic_files(tmp_path):

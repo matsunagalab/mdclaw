@@ -13,9 +13,9 @@ scientific investigation in the Amber/OpenMM ecosystem. It combines:
 - `skills/*/SKILL.md` instructions for translating scientific intent into MD
   actions.
 - Boltz-2 for AI structure prediction.
-- AmberTools (`pdb4amber`, `antechamber`, `cpptraj`) for structure preparation.
-- `openmmforcefields` (`SystemGenerator` + `GAFFTemplateGenerator`) for force-field
-  application — replaces the legacy `tleap` script generation.
+- AmberTools (`pdb4amber`, `cpptraj`) for structure preparation support.
+- `openmmforcefields` (`SystemGenerator` + `GAFFTemplateGenerator`) plus
+  topology-time Amber geostd XML conversion for force-field application.
 - OpenFF Pablo for chemistry-aware PDB → topology loading (CCD-based).
 - OpenMM for equilibration and production MD.
 

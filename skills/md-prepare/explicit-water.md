@@ -46,7 +46,7 @@ mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
 To override, pass `--pdb-file` explicitly.
 
 Before topology, do a quick request-match check: for ligand-free systems,
-the prep node must not carry `ligand_params`, and the `solvated_pdb` must not
+the prep node must not carry `ligand_chemistry`, and the `solvated_pdb` must not
 contain source ligands. If either check fails, branch from the valid ancestor;
 do not rerun the same node with changed inputs. Prefer node artifacts and PDB
 contents over stale prose fields in logs or metadata.
@@ -111,12 +111,13 @@ has failed, completed, or the user explicitly abandons it.
 
 `build_amber_system` is the curated Amber → OpenMM system builder. It runs
 the prepared PDB through OpenFF Pablo, applies the resolved Amber XML
-bundle via `openmmforcefields.SystemGenerator` (+ `GAFFTemplateGenerator`
-for ligands), and emits the modern artifact triple `system.system.xml` +
+bundle via `openmmforcefields.SystemGenerator` (geostd XML for matching
+ligands, otherwise `GAFFTemplateGenerator`, using prep's `ligand_chemistry`
+artifact), and emits the modern artifact triple `system.system.xml` +
 `system.topology.pdb` + `system.state.xml` on the topo node, with
 `metadata.system_artifact_kind="openmm_system_xml"` and a
 `metadata.forcefield_provenance` dict (XML names, sha256, OpenMM /
-openmmforcefields versions, `method.hmr`, ligand Molecules). HMR defaults
+openmmforcefields versions, `method.hmr`, ligand template sources). HMR defaults
 to `--hmr` (4 amu hydrogens) so the run-side default 4 fs timestep is
 loadable; the run-time validator rejects mismatched HMR with
 `modern_system_hmr_mismatch`. The XML triple is the only topology

@@ -3,20 +3,21 @@ Amber Server — curated Amber → OpenMM System builder.
 
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
-  protein / nucleic / glycan / lipid / PTM force fields plus GAFF for ligands
-  via ``openmmforcefields.SystemGenerator`` (with ``GAFFTemplateGenerator`` for
-  small molecules), and emit a portable ``system.xml`` + ``topology.pdb`` +
-  ``state.xml`` triple consumed by ``run_equilibration`` / ``run_production``.
+  protein / nucleic / glycan / lipid / PTM force fields plus topology-time
+  ligand templates (geostd XML when available, otherwise
+  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ``topology.pdb`` + ``state.xml`` triple consumed by ``run_equilibration`` /
+  ``run_production``.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
-- Handling protein-ligand complexes with curated GAFF parameters and
-  ParmEd-bridged metal templates where applicable.
+- Handling protein-ligand complexes by consuming prep-stage
+  ``ligand_chemistry`` records; topology resolves geostd templates first and
+  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
 
 The XML triple is the only topology contract on the run side; tleap and
 parm7/rst7 are not produced or consumed anywhere. AmberTools
-(``pdb4amber``, ``antechamber``, ``parmchk2``, ``sqm``, ``cpptraj``)
-remain in use upstream for structure preparation and ligand
-parameterization.
+(``pdb4amber`` and ``cpptraj``) remain available for structure-preparation
+support; ligand parameterization is not a prep-stage mdclaw artifact.
 """
 
 # Configure logging early to suppress noisy third-party logs
@@ -397,51 +398,43 @@ def detect_glycan_content(pdb_path: Path) -> dict:
     }
 
 
-def validate_ligand_params(ligand_params: List[Dict[str, str]]) -> tuple:
-    """Validate ligand parameter files exist.
-    
-    Args:
-        ligand_params: List of ligand parameter dicts with mol2, frcmod, residue_name
-    
-    Returns:
-        Tuple of (valid_params, errors) where valid_params is list of validated
-        params with resolved paths, and errors is list of error messages.
+def validate_ligand_chemistry(ligand_chemistry: List[Dict[str, Any]]) -> tuple:
+    """Validate topology-time ligand chemistry records from prepare_complex.
+
+    These records intentionally do not contain GAFF mol2/frcmod files. They
+    carry the chemistry graph source (usually SDF plus SMILES provenance);
+    ``build_amber_system`` decides at topology time whether a ligand uses
+    geostd XML or ``GAFFTemplateGenerator``.
     """
-    valid_params = []
+    valid_records = []
     errors = []
-    
-    for i, params in enumerate(ligand_params):
-        mol2 = params.get("mol2")
-        frcmod = params.get("frcmod")
-        residue_name = params.get("residue_name", f"LIG{i+1}")
-        
-        if not mol2:
-            errors.append(f"Ligand {i+1}: mol2 path not specified")
+
+    for i, record in enumerate(ligand_chemistry):
+        residue_name = record.get("residue_name", f"LIG{i+1}")[:3].upper()
+        sdf = record.get("sdf") or record.get("sdf_file") or record.get("coordinate_file")
+        smiles = record.get("smiles") or record.get("smiles_used")
+
+        if not sdf and not smiles:
+            errors.append(
+                f"Ligand chemistry {i+1}: either sdf/sdf_file or smiles is required"
+            )
             continue
-        
-        mol2_path = Path(mol2).resolve()
-        if not mol2_path.exists():
-            errors.append(f"Ligand {i+1}: mol2 file not found: {mol2}")
-            continue
-        
-        if not frcmod:
-            errors.append(f"Ligand {i+1}: frcmod path not specified")
-            continue
-        
-        frcmod_path = Path(frcmod).resolve()
-        if not frcmod_path.exists():
-            errors.append(f"Ligand {i+1}: frcmod file not found: {frcmod}")
-            continue
-        
-        valid_param = dict(params)
-        valid_param.update({
-            "mol2": str(mol2_path),
-            "frcmod": str(frcmod_path),
-            "residue_name": residue_name[:3].upper()  # Ensure 3-letter uppercase
-        })
-        valid_params.append(valid_param)
-    
-    return valid_params, errors
+
+        valid_record = dict(record)
+        if sdf:
+            sdf_path = Path(sdf).resolve()
+            if not sdf_path.exists():
+                errors.append(f"Ligand chemistry {i+1}: SDF file not found: {sdf}")
+                continue
+            valid_record["sdf"] = str(sdf_path)
+            valid_record["sdf_file"] = str(sdf_path)
+
+        valid_record["smiles"] = smiles
+        valid_record["residue_name"] = residue_name
+        valid_record["parameterization_stage"] = "topology"
+        valid_records.append(valid_record)
+
+    return valid_records, errors
 
 
 def _is_builtin_amber_frcmod(value: str) -> bool:
@@ -814,11 +807,11 @@ def validate_initial_ligand_contacts(
     return result
 
 
-def implicit_ligand_diagnostics(ligand_params: List[Dict[str, Any]]) -> dict:
+def implicit_ligand_diagnostics(ligand_chemistry: List[Dict[str, Any]]) -> dict:
     """Record implicit-solvent ligand risk metadata without changing protocol."""
     summaries = []
     charge_risk = False
-    for lig in ligand_params or []:
+    for lig in ligand_chemistry or []:
         resname = lig.get("residue_name", lig.get("ligand_id", "LIG"))[:3].upper()
         charge = lig.get("total_charge")
         if charge is None:
@@ -1702,7 +1695,7 @@ def _resolve_build_amber_node_inputs(
     node_id: str,
     actual_conditions: dict,
     pdb_file: Optional[str],
-    ligand_params: Optional[List[Dict[str, str]]],
+    ligand_chemistry: Optional[List[Dict[str, Any]]],
     modxna_params: Optional[List[Dict[str, Any]]],
     metal_params: Optional[List[Dict[str, str]]],
     disulfide_bonds: Optional[List[Dict[str, Any]]],
@@ -1752,7 +1745,11 @@ def _resolve_build_amber_node_inputs(
     return {
         "success": True,
         "pdb_file": pdb_file or inputs.get("pdb_file"),
-        "ligand_params": ligand_params if ligand_params is not None else inputs.get("ligand_params"),
+        "ligand_chemistry": (
+            ligand_chemistry
+            if ligand_chemistry is not None
+            else inputs.get("ligand_chemistry")
+        ),
         "modxna_params": modxna_params if modxna_params is not None else inputs.get("modxna_params"),
         "metal_params": metal_params if metal_params is not None else inputs.get("metal_params"),
         "disulfide_bonds": disulfide_bonds if disulfide_bonds is not None else inputs.get("disulfide_bonds"),
@@ -1766,7 +1763,7 @@ def _resolve_build_amber_node_inputs(
 
 def build_amber_system(
     pdb_file: Optional[str] = None,
-    ligand_params: Optional[List[Dict[str, str]]] = None,
+    ligand_chemistry: Optional[List[Dict[str, Any]]] = None,
     modxna_params: Optional[List[Dict[str, Any]]] = None,
     metal_params: Optional[List[Dict[str, str]]] = None,
     disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
@@ -1787,10 +1784,10 @@ def build_amber_system(
 ) -> dict:
     """Build an OpenMM ``System`` for a prepared PDB via openmmforcefields.
 
-    Replaces the legacy tleap path. Internally runs ``openmmforcefields``'
-    ``SystemGenerator`` (with ``GAFFTemplateGenerator`` for ligands) over an
-    OpenFF Pablo-loaded topology, applies the resolved Amber XML bundle
-    from ``forcefield_catalog``, optionally bakes in HMR via
+    Internally runs ``openmmforcefields``' ``SystemGenerator`` over an OpenFF
+    Pablo-loaded topology, applies the Amber XML bundle resolved through
+    ``forcefield_catalog``, uses topology-time geostd XMLs or
+    ``GAFFTemplateGenerator`` for ligands, optionally bakes in HMR via
     ``hydrogenMass=4 amu``, and serializes the result as the modern
     artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
     (consumed by ``run_equilibration`` / ``run_production`` in node mode).
@@ -1820,10 +1817,12 @@ def build_amber_system(
         pdb_file: Input PDB. For implicit solvent use ``merged.pdb`` from
                   ``merge_structures``; for explicit solvent use
                   ``solvated.pdb`` from ``solvate_structure``.
-        ligand_params: List of ligand parameter dicts; each must carry
-                       ``mol2`` (GAFF-parameterized) and ``residue_name``.
-                       Loaded as OpenFF ``Molecule`` objects so
-                       ``GAFFTemplateGenerator`` can parameterize them.
+        ligand_chemistry: List of ligand chemistry dicts from
+                       ``prepare_complex``; each should carry ``sdf`` or
+                       ``smiles`` plus ``residue_name``. Topology resolves
+                       geostd XML first and uses OpenFF ``Molecule`` objects
+                       with ``GAFFTemplateGenerator`` for ligands without a
+                       geostd match.
         modxna_params / metal_params: Currently unsupported under the
                        openmmforcefields path; non-empty lists return
                        structured codes ``modxna_openmm_xml_required`` /
@@ -1882,8 +1881,9 @@ def build_amber_system(
             - ``solvent_type``: ``"implicit"`` or ``"explicit"``.
             - ``parameters``: copy of the input parameter selection.
             - ``forcefield_provenance``: dict capturing the resolved
-              OpenMM XML bundle, ligand Molecules, ``method.hmr``,
-              versions of OpenMM / openmmforcefields / openff-toolkit.
+              OpenMM XML bundle, topology-time ligand template sources,
+              ``method.hmr``, versions of OpenMM / openmmforcefields /
+              openff-toolkit.
             - ``statistics``: ``{"num_atoms", "num_residues"}``.
             - ``code``: structured failure code on failure (e.g.
               ``metal_openmm_xml_required``,
@@ -1896,9 +1896,8 @@ def build_amber_system(
         >>> solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
         >>> result = build_amber_system(
         ...     pdb_file=solvate_result["output_file"],
-        ...     ligand_params=[{
-        ...         "mol2": "output/job1/ligand.gaff.mol2",
-        ...         "frcmod": "output/job1/ligand.frcmod",
+        ...     ligand_chemistry=[{
+        ...         "sdf": "output/job1/ligand.sdf",
         ...         "residue_name": "LIG",
         ...     }],
         ...     box_dimensions=solvate_result["box_dimensions"],
@@ -1931,7 +1930,7 @@ def build_amber_system(
                 "output_name": output_name,
             },
             pdb_file=pdb_file,
-            ligand_params=ligand_params,
+            ligand_chemistry=ligand_chemistry,
             modxna_params=modxna_params,
             metal_params=metal_params,
             disulfide_bonds=disulfide_bonds,
@@ -1943,7 +1942,7 @@ def build_amber_system(
         if not _resolved["success"]:
             return _resolved
         pdb_file = _resolved["pdb_file"]
-        ligand_params = _resolved["ligand_params"]
+        ligand_chemistry = _resolved["ligand_chemistry"]
         modxna_params = _resolved["modxna_params"]
         metal_params = _resolved["metal_params"]
         disulfide_bonds = _resolved["disulfide_bonds"]
@@ -1977,26 +1976,28 @@ def build_amber_system(
 
     logger.info(f"Building Amber system from: {pdb_file}")
 
-    # Auto-detect ligand_params.json if not provided
-    # Written by prepare_complex() next to the merged PDB
-    if ligand_params is None:
+    # Auto-detect ligand_chemistry.json if not provided. This is the standard
+    # prepare_complex -> build_amber_system handoff: prep records chemistry,
+    # topology resolves geostd or GAFF.
+    if ligand_chemistry is None:
         pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
-            lig_json = search_dir / "ligand_params.json"
+            lig_json = search_dir / "ligand_chemistry.json"
             if lig_json.exists():
                 try:
-                    ligand_params = json.loads(lig_json.read_text())
-                    logger.info(f"Auto-loaded ligand_params ({len(ligand_params)} ligands) from {lig_json}")
+                    ligand_chemistry = json.loads(lig_json.read_text())
+                    logger.info(
+                        f"Auto-loaded ligand_chemistry "
+                        f"({len(ligand_chemistry)} ligands) from {lig_json}"
+                    )
                 except (json.JSONDecodeError, OSError) as e:
                     blocked = create_validation_error(
-                        "ligand_params",
+                        "ligand_chemistry",
                         f"Found {lig_json} but could not read it: {e}",
-                        expected="valid ligand_params.json from prepare_complex",
+                        expected="valid ligand_chemistry.json from prepare_complex",
                         actual=str(lig_json),
-                        hints=[
-                            "Re-run prepare_complex or parameterize_ligand to refresh ligand_params.json."
-                        ],
-                        code="ligand_params_load_failed",
+                        hints=["Re-run prepare_complex to refresh ligand chemistry artifacts."],
+                        code="ligand_chemistry_load_failed",
                     )
                     if job_dir and node_id:
                         from mdclaw._node import fail_node_from_result
@@ -2004,13 +2005,13 @@ def build_amber_system(
                             job_dir,
                             node_id,
                             blocked,
-                            default_error="build_amber_system ligand_params load failed",
+                            default_error="build_amber_system ligand_chemistry load failed",
                         )
                     return blocked
                 break
 
     # Auto-detect disulfide_bonds.json if not provided (written by prepare_complex
-    # as a prep-node artifact; same parent-directory search as ligand_params).
+    # as a prep-node artifact; same parent-directory search as ligand chemistry).
     if disulfide_bonds is None:
         pdb_path = Path(pdb_file)
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
@@ -2184,7 +2185,10 @@ def build_amber_system(
             ),
             "box_dimensions": box_dimensions,
             "is_membrane": is_membrane if box_dimensions else False,
-            "ligand_count": len(ligand_params) if ligand_params else 0,
+            "ligand_count": len(ligand_chemistry) if ligand_chemistry else 0,
+            "ligand_parameterization_stage": (
+                "topology" if ligand_chemistry else None
+            ),
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
             "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
@@ -2543,19 +2547,21 @@ def build_amber_system(
             return blocked
     result["parameters"]["glycan_library"] = glycan_library
 
-    # Validate ligand parameters
+    # Validate ligand chemistry. Ligand force-field resolution is intentionally
+    # topology-time only: prep records SDF/SMILES/charge provenance, and this
+    # build chooses geostd XML or GAFFTemplateGenerator.
     valid_ligands = []
-    if ligand_params:
-        valid_ligands, ligand_errors = validate_ligand_params(ligand_params)
+    if ligand_chemistry:
+        valid_ligands, ligand_errors = validate_ligand_chemistry(ligand_chemistry)
         if ligand_errors:
             result["errors"].extend(ligand_errors)
-            logger.error(f"Ligand validation failed: {ligand_errors}")
+            logger.error(f"Ligand chemistry validation failed: {ligand_errors}")
             blocked = {
                 **result,
                 "error_type": "ValidationError",
-                "code": "invalid_ligand_parameters",
+                "code": "invalid_ligand_chemistry",
                 "message": (
-                    "Invalid ligand parameter records; refusing to run "
+                    "Invalid ligand chemistry records; refusing to run "
                     "openmmforcefields build."
                 ),
             }
@@ -2565,7 +2571,7 @@ def build_amber_system(
                     job_dir,
                     node_id,
                     blocked,
-                    default_error="build_amber_system invalid ligand parameters",
+                    default_error="build_amber_system invalid ligand chemistry",
                 )
             return blocked
     
@@ -3174,59 +3180,53 @@ def _run_openmmforcefields_build(
         result["code"] = "implicit_solvent_model_unsupported"
         return result
 
-    # Bake prep-computed mol2+frcmod into OpenMM ForceField XML so the
-    # GAFFTemplateGenerator AM1-BCC path can be skipped entirely. Without
-    # this, `SystemGenerator(molecules=...)` re-derives AM1-BCC partial
-    # charges via antechamber+sqm at first `sg.forcefield` access, which
-    # hangs for highly charged ligands like AP5 (5 phosphates, -5e).
-    _stage("convert_ligand_xml")
-    from mdclaw._ligand_xml import convert_amber_ligand_to_openmm_xml
+    geostd_ligand_xml: list[dict[str, Any]] = []
+    geostd_residue_names: set[str] = set()
+    if valid_ligands:
+        from mdclaw._geostd import build_geostd_ligand_xml
 
-    auto_ligand_xml: list[str] = []
-    converted_residue_names: set[str] = set()
-    auto_converted_provenance: list[Dict[str, Any]] = []
-    for lig in valid_ligands or []:
-        source = (lig.get("parameter_source") or "").strip()
-        if source not in {"amber_geostd", "gaff2_antechamber"}:
-            continue
-        residue_name = lig.get("residue_name")
-        if not residue_name:
-            continue
-        if residue_name in converted_residue_names:
-            # One template covers every instance of the same residue.
-            continue
-        mol2 = lig.get("mol2")
-        frcmod = lig.get("frcmod")
-        if not mol2 or not frcmod:
-            continue
-        xml_out = out_dir / "ligand_xml" / f"{residue_name}.xml"
-        conv = convert_amber_ligand_to_openmm_xml(
-            Path(mol2), Path(frcmod), residue_name, xml_out
-        )
-        if conv["success"]:
-            auto_ligand_xml.append(conv["xml_path"])
-            converted_residue_names.add(residue_name)
-            auto_converted_provenance.append(
-                {
+        geostd_xml_dir = out_dir / "ligand_xml"
+        for ligand_record in valid_ligands:
+            residue_name = str(ligand_record.get("residue_name") or "").upper()
+            if not residue_name or residue_name in geostd_residue_names:
+                continue
+            geostd_result = build_geostd_ligand_xml(residue_name, geostd_xml_dir)
+            if geostd_result.get("success"):
+                geostd_residue_names.add(residue_name)
+                geostd_ligand_xml.append({
                     "residue_name": residue_name,
-                    "xml_path": conv["xml_path"],
-                    "atom_count": conv["atom_count"],
-                    "bond_count": conv["bond_count"],
-                    "parameter_source": source,
-                }
-            )
-            if conv.get("warnings"):
-                result["warnings"].extend(conv["warnings"])
-        else:
-            # Per-ligand fallback: leave this ligand on the GAFFTemplateGenerator
-            # path so an isolated conversion bug does not break the whole build.
-            result["warnings"].append(
-                f"Ligand {residue_name!r} XML auto-conversion failed "
-                f"({conv.get('code')}): {'; '.join(conv.get('errors', []))[:200]}. "
-                f"Falling back to GAFFTemplateGenerator for this ligand."
-            )
+                    "xml_path": geostd_result.get("xml_path"),
+                    "mol2": geostd_result.get("mol2"),
+                    "frcmod": geostd_result.get("frcmod"),
+                    "source": "amber_geostd",
+                    "atom_count": geostd_result.get("atom_count"),
+                    "bond_count": geostd_result.get("bond_count"),
+                    "warnings": geostd_result.get("warnings", []),
+                })
+                for rec in valid_ligands:
+                    if str(rec.get("residue_name") or "").upper() == residue_name:
+                        rec["topology_parameter_source"] = "amber_geostd"
+                        rec["topology_geostd_xml"] = geostd_result.get("xml_path")
+                result["warnings"].extend(geostd_result.get("warnings", []))
+            elif geostd_result.get("code") != "geostd_miss":
+                result["warnings"].append(
+                    f"geostd lookup found {residue_name} but XML conversion failed; "
+                    f"falling back to GAFFTemplateGenerator: "
+                    f"{geostd_result.get('errors', [])}"
+                )
+        for rec in valid_ligands:
+            residue_name = str(rec.get("residue_name") or "").upper()
+            if residue_name and residue_name not in geostd_residue_names:
+                rec["topology_parameter_source"] = "topology_gaff_template_generator"
 
-    gaff_base = "gaff-2.2.20" if auto_ligand_xml else None
+    geostd_xml_paths = [
+        str(entry["xml_path"])
+        for entry in geostd_ligand_xml
+        if entry.get("xml_path")
+    ]
+    extra_xml_with_geostd = list(extra_xml) + geostd_xml_paths
+    gaff_base = "gaff-2.2.20" if geostd_xml_paths else None
+
     xml_bundle = _ff_catalog.resolve_xml_bundle(
         protein=canon_protein,
         water=canon_water,
@@ -3237,7 +3237,7 @@ def _run_openmmforcefields_build(
         lipid=lipid_name,
         implicit_solvent=canon_implicit,
         gaff_base=gaff_base,
-        extra_xml=list(auto_ligand_xml) + list(extra_xml),
+        extra_xml=extra_xml_with_geostd,
     )
     if not xml_bundle:
         result["errors"].append(
@@ -3257,8 +3257,8 @@ def _run_openmmforcefields_build(
     # only knows standard amino acids and nucleotides; for ligands its
     # ``_downloadNonstandardDefinitions`` pulls a CCD template and adds the
     # CCD-listed H atoms on top of any existing H of the same name, giving
-    # duplicate H1/H2/HN1/HN21/etc. for residues like BEN that arrive
-    # already-hydrogenated from antechamber. The duplicates then create
+    # duplicate H1/H2/HN1/HN21/etc. for ligands that arrive already
+    # hydrogenated from prep. The duplicates then create
     # ghost residues during ``PDBFile`` parsing and SystemGenerator fails
     # with ``No template found for residue``.
     hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
@@ -3304,14 +3304,11 @@ def _run_openmmforcefields_build(
         )
         pablo_input = pdb_path
 
-    # Load ligand parameter mol2 files into OpenFF Molecules early so we can
-    # (a) feed Pablo SMILES so its CCD-based loader matches non-CCD ligands
-    # like BEN, and (b) hand the same molecules to ``SystemGenerator`` /
-    # ``GAFFTemplateGenerator`` below. ``Molecule.from_file`` cannot read
-    # GAFF-typed mol2 with the RDKit-only registry, so we go through ParmEd
-    # to preserve TRIPOS bond orders (single / double / aromatic 1.5) — a
-    # bare PDB round-trip would lose the aromatic ring + amidine C=N and
-    # the resulting molecule would no longer match the topology.
+    # Load ligand chemistry into OpenFF Molecules early so we can (a) feed
+    # Pablo SMILES for non-CCD ligands like BEN, and (b) hand the non-geostd
+    # molecules to ``SystemGenerator`` / ``GAFFTemplateGenerator`` below.
+    # Standard prep emits SDF chemistry records; SMILES is the fallback when
+    # no coordinate-bearing SDF is available.
     try:
         from openff.toolkit import Molecule as _Molecule  # local import
     except ImportError as exc:
@@ -3322,8 +3319,27 @@ def _run_openmmforcefields_build(
         return result
 
     def _load_ligand_molecule(ligand_entry: Dict[str, Any]) -> Any:
-        mol2_path = ligand_entry.get("mol2")
+        sdf_path = (
+            ligand_entry.get("sdf")
+            or ligand_entry.get("sdf_file")
+            or ligand_entry.get("coordinate_file")
+        )
         smiles = ligand_entry.get("smiles") or ligand_entry.get("smiles_used")
+        if sdf_path:
+            try:
+                return _Molecule.from_file(
+                    str(sdf_path),
+                    allow_undefined_stereo=True,
+                )
+            except TypeError:
+                return _Molecule.from_file(str(sdf_path))
+            except Exception as exc:  # noqa: BLE001
+                result["warnings"].append(
+                    f"Could not build OpenFF Molecule for ligand "
+                    f"{ligand_entry.get('residue_name', '?')!r} from stored "
+                    f"SDF {sdf_path!r}; trying SMILES fallback: "
+                    f"{type(exc).__name__}: {exc}"
+                )
         if smiles:
             try:
                 mol = _Molecule.from_smiles(
@@ -3337,76 +3353,36 @@ def _run_openmmforcefields_build(
             except Exception as exc:  # noqa: BLE001
                 result["warnings"].append(
                     f"Could not build OpenFF Molecule for ligand "
-                    f"{ligand_entry.get('residue_name', '?')!r} from stored "
-                    f"SMILES; falling back to mol2 graph load: "
+                    f"{ligand_entry.get('residue_name', '?')!r} from stored SMILES: "
                     f"{type(exc).__name__}: {exc}"
                 )
-        try:
-            return _Molecule.from_file(str(mol2_path))
-        except Exception:  # noqa: BLE001
-            pass
-        import parmed
-        from rdkit import Chem
-        struct = parmed.load_file(str(mol2_path), structure=True)
-        rwmol = Chem.RWMol()
-        atom_idx_map: dict[int, int] = {}
-        for atom in struct.atoms:
-            sym = atom.element_name
-            if not sym:
-                sym = atom.name.strip()[:1]
-            rdatom = Chem.Atom(sym)
-            fc = getattr(atom, "formal_charge", None)
-            rdatom.SetFormalCharge(int(fc) if fc is not None else 0)
-            rdatom.SetNoImplicit(True)
-            rdatom.SetProp("_atom_name", atom.name)
-            atom_idx_map[id(atom)] = rwmol.AddAtom(rdatom)
-        bond_type_map = {
-            1: Chem.BondType.SINGLE,
-            2: Chem.BondType.DOUBLE,
-            3: Chem.BondType.TRIPLE,
-            1.5: Chem.BondType.AROMATIC,
-        }
-        for bond in struct.bonds:
-            rwmol.AddBond(
-                atom_idx_map[id(bond.atom1)],
-                atom_idx_map[id(bond.atom2)],
-                bond_type_map.get(bond.order, Chem.BondType.SINGLE),
-            )
-        if struct.atoms and struct.atoms[0].xx is not None:
-            conf = Chem.Conformer(len(struct.atoms))
-            for i, atom in enumerate(struct.atoms):
-                conf.SetAtomPosition(
-                    atom_idx_map[id(atom)], (atom.xx, atom.xy, atom.xz)
-                )
-            rwmol.AddConformer(conf, assignId=True)
-        rdmol = rwmol.GetMol()
-        Chem.SanitizeMol(rdmol)
-        return _Molecule.from_rdkit(
-            rdmol, hydrogens_are_explicit=True, allow_undefined_stereo=True,
+        raise ValueError(
+            f"Ligand {ligand_entry.get('residue_name', '?')!r} has no usable "
+            "SDF/SMILES chemistry record"
         )
 
     _stage("load_ligand_molecules")
     ligand_molecules: list[Any] = []
     for lig in valid_ligands or []:
-        mol2 = lig.get("mol2")
-        if not mol2:
+        sdf = lig.get("sdf") or lig.get("sdf_file") or lig.get("coordinate_file")
+        smiles = lig.get("smiles") or lig.get("smiles_used")
+        if not (sdf or smiles):
             result["errors"].append(
-                f"Ligand entry {lig.get('residue_name', '?')!r} is missing the "
-                f"``mol2`` field — GAFFTemplateGenerator cannot register the "
-                f"residue without it. Re-run prepare_complex / "
-                f"parameterize_ligand to refresh ligand_params."
+                f"Ligand entry {lig.get('residue_name', '?')!r} is missing "
+                f"chemistry input — expected SDF/SMILES from ligand_chemistry."
             )
             return result
         try:
             ligand_molecules.append(_load_ligand_molecule(lig))
         except Exception as exc:  # noqa: BLE001
             result["errors"].append(
-                f"Failed to load ligand mol2 {mol2}: "
+                f"Failed to load ligand chemistry for "
+                f"{lig.get('residue_name', '?')!r}: "
                 f"{type(exc).__name__}: {exc}. The OpenFF GAFF generator "
                 f"needs every ligand as a Molecule; without it the topology "
                 f"build fails downstream with 'No template found'."
             )
-            result["code"] = "ligand_mol2_load_failed"
+            result["code"] = "ligand_molecule_load_failed"
             return result
 
     # Hand the loaded ligands to Pablo as ``(residue_name, smiles)`` pairs so
@@ -3550,59 +3526,6 @@ def _run_openmmforcefields_build(
         omm_topology = modeller.topology
         omm_positions = modeller.positions
 
-    # Pablo can still fall back to ``openmm.app.PDBFile`` for GAFF ligands
-    # whose CCD atom naming differs from the prepared Amber PDB. PDBFile
-    # carries the atoms but not the ligand's internal bonds, so copy the
-    # TRIPOS bond graph from mol2 onto every matching residue before
-    # GAFFTemplateGenerator attempts graph isomorphism.
-    ligand_bonds_added = 0
-    if valid_ligands:
-        try:
-            import parmed as _parmed_for_ligands
-
-            existing_bonds = {
-                tuple(sorted((bond.atom1.index, bond.atom2.index)))
-                for bond in omm_topology.bonds()
-            }
-            mol2_bonds_by_residue: dict[str, list[tuple[str, str]]] = {}
-            for lig in valid_ligands:
-                residue_name = str(lig.get("residue_name") or lig.get("ligand_id") or "").upper()
-                mol2 = lig.get("mol2")
-                if not residue_name or not mol2:
-                    continue
-                struct = _parmed_for_ligands.load_file(str(mol2), structure=True)
-                mol2_bonds_by_residue[residue_name] = [
-                    (bond.atom1.name.strip(), bond.atom2.name.strip())
-                    for bond in struct.bonds
-                ]
-            for residue in omm_topology.residues():
-                residue_name = (residue.name or "").upper()
-                mol2_bonds = mol2_bonds_by_residue.get(residue_name)
-                if not mol2_bonds:
-                    continue
-                atom_by_name = {atom.name.strip(): atom for atom in residue.atoms()}
-                for name1, name2 in mol2_bonds:
-                    atom1 = atom_by_name.get(name1)
-                    atom2 = atom_by_name.get(name2)
-                    if atom1 is None or atom2 is None:
-                        continue
-                    key = tuple(sorted((atom1.index, atom2.index)))
-                    if key in existing_bonds:
-                        continue
-                    omm_topology.addBond(atom1, atom2)
-                    existing_bonds.add(key)
-                    ligand_bonds_added += 1
-        except Exception as exc:  # noqa: BLE001
-            result["warnings"].append(
-                f"Could not patch ligand mol2 bonds onto topology: "
-                f"{type(exc).__name__}: {exc}"
-            )
-    if ligand_bonds_added:
-        result["warnings"].append(
-            f"Patched {ligand_bonds_added} ligand bond(s) from mol2 onto the "
-            f"OpenMM topology so GAFF templates can match prepared ligands."
-        )
-
     # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
     if disulfide_bonds:
         added = _topology_pablo.add_disulfide_bonds(omm_topology, disulfide_bonds)
@@ -3678,13 +3601,10 @@ def _run_openmmforcefields_build(
     }
     nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
 
-    # Auto-converted ligands have their parameters and residue template baked
-    # into the xml_bundle already, so excluding them from ``molecules=`` is
-    # what prevents GAFFTemplateGenerator from running antechamber+sqm on
-    # AM1-BCC at first ``sg.forcefield`` access (the AP5 hang).
     ligand_molecules_for_gaff = [
-        mol for lig, mol in zip(valid_ligands or [], ligand_molecules)
-        if (lig.get("residue_name") or "") not in converted_residue_names
+        mol
+        for lig, mol in zip(valid_ligands or [], ligand_molecules)
+        if str(lig.get("residue_name") or "").upper() not in geostd_residue_names
     ]
 
     _stage("system_generator_init")
@@ -4035,11 +3955,6 @@ def _run_openmmforcefields_build(
 
     _stage("system_generator_create_system")
     try:
-        # Use the same filtered list as SystemGenerator(...) init. Passing the
-        # full ``ligand_molecules`` would invite ``create_system`` to fall back
-        # to GAFFTemplateGenerator (and antechamber+sqm AM1-BCC) for any
-        # converted ligand whose XML template fails to match — defeating the
-        # whole point of the auto-conversion path.
         system = sg.create_system(
             modeller.topology, molecules=ligand_molecules_for_gaff or None
         )
@@ -4151,13 +4066,21 @@ def _run_openmmforcefields_build(
         "kind": "amber_via_openmmforcefields",
         "openmm_xml": list(xml_bundle),
         "extra_xml": list(extra_xml),
+        "geostd_ligand_xml": geostd_ligand_xml,
+        "gaff_base": gaff_base,
         "small_molecule_forcefield": "gaff-2.11",
         "ligand_molecules": [
-            {"mol2": str(lig.get("mol2")), "residue_name": lig.get("residue_name")}
+            {
+                "sdf": str(lig.get("sdf") or lig.get("sdf_file") or "")
+                if (lig.get("sdf") or lig.get("sdf_file"))
+                else None,
+                "smiles_source": lig.get("smiles_source"),
+                "topology_parameter_source": lig.get("topology_parameter_source"),
+                "parameterization_stage": lig.get("parameterization_stage"),
+                "residue_name": lig.get("residue_name"),
+            }
             for lig in (valid_ligands or [])
         ],
-        "auto_converted_ligand_xml": list(auto_converted_provenance),
-        "gaff_base": gaff_base,
         "sha256": sha256_table,
         "method": {
             "solvent_type": provenance_solvent_type,

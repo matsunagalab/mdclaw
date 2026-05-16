@@ -401,17 +401,26 @@ def _check_structure_component_rescan(check: DeterministicCheck,
     except OSError as exc:
         return False, 0.0, f"could not read structure file: {exc}"
 
+    def observed_count(resname: str) -> int:
+        canonical = str(resname).upper()
+        aliases = {
+            str(alias).upper()
+            for alias in (check.residue_aliases or {}).get(str(resname), [])
+        }
+        aliases.add(canonical)
+        return sum(counts.get(alias, 0) for alias in aliases)
+
     issues: list[str] = []
     for resname, minimum in (check.min_residue_counts or {}).items():
-        observed = counts.get(str(resname).upper(), 0)
+        observed = observed_count(resname)
         if observed < int(minimum):
             issues.append(f"{resname}: observed {observed} < min {minimum}")
     for resname, maximum in (check.max_residue_counts or {}).items():
-        observed = counts.get(str(resname).upper(), 0)
+        observed = observed_count(resname)
         if observed > int(maximum):
             issues.append(f"{resname}: observed {observed} > max {maximum}")
     for resname, expected in (check.exact_residue_counts or {}).items():
-        observed = counts.get(str(resname).upper(), 0)
+        observed = observed_count(resname)
         if observed != int(expected):
             issues.append(f"{resname}: observed {observed} != expected {expected}")
 

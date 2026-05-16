@@ -66,9 +66,9 @@ properties.
 |---|---|---|---|---|---:|
 | P01 | Simple monomer prep | T4 lysozyme WT, PDB 2LZM | Fetch/select one protein chain, clean, solvate, build topology. | protein atoms retained; no unintended ligands; explicit solvent; topology artifacts reload. | 1 |
 | P02 | Chain + ligand selection | Adenylate kinase AP5, PDB 1AKE | Include protein chain A and the AP5 ligand even though the ligand has a separate label chain. | AP5 present; ligand chain included; ligand params/artifacts recorded; no stale ligand omission. | 1 |
-| P03 | Ligand pose preservation | T4L L99A + benzene, PDB 181L | Prepare protein-ligand system without moving the crystallographic ligand pose. | ligand heavy-atom RMSD to hidden reference; topology artifacts; provenance. | 1 |
+| P03 | Ligand pose preservation | T4L L99A + benzene, PDB 181L | Prepare the protein-ligand complex without dropping chain A or moving the crystallographic ligand pose. | ligand heavy-atom RMSD to real 181L protein+BNZ hidden reference; A:99 L99A protein residue retained; topology artifacts; provenance. | 1 |
 | P04 | Multi-ligand inclusion/exclusion | Current integration seed PDB 3PWB | Include requested BEN/GOL-like ligands while excluding buffer ions/irrelevant heterogens. | requested ligands present; excluded heterogens absent; ligand params per ligand. | 1 |
-| P05 | Charged/cofactor-like ligand stress | DAP dehydrogenase + NADP+, PDB 1DAP | Handle the NADP+/NDP-like dinucleotide cofactor without hanging or silently changing charge. AP5 is already covered by P02, so this task uses a different charged cofactor family. | cofactor present; ligand charge/provenance recorded; topology completes within budget or fails with a structured ligand-parameter reason; no long-running parameterization hang pattern. | 2 |
+| P05 | Charged/cofactor-like ligand stress | DAP dehydrogenase + deposited NDP, PDB 1DAP | Handle the NDP/NADPH-like dinucleotide cofactor in chains C/F without hanging or silently changing charge. AP5 is already covered by P02, so this task uses a different charged cofactor family. | cofactor present; ligand charge/provenance recorded; topology completes within budget or fails with a structured ligand-parameter reason; no long-running parameterization hang pattern. | 2 |
 | P06 | Supported metal ion retention | Calmodulin + Ca2+, PDB 1CLL | Prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands. | four Ca2+ ions detected/retained; ion parameter source recorded; topology artifacts reload. | 1 |
 | P07 | Crystallographic ion triage | 32 bp oligo(U) RNA, PDB 4RBQ | Prepare an RNA structure while preserving prompt-designated crystallographic K+ ions and excluding irrelevant solvent/buffer components. | RNA residue mapping; requested K+ ions retained; excluded waters/buffers absent; ion/provenance metadata recorded. | 2 |
 | P08 | Point mutation branch | T4L WT 2LZM -> L99A | Prepare WT, branch mutant prep, preserve source/provenance. | mutation present; WT and mutant artifacts separated; residue numbering correct. | 1 |
@@ -80,7 +80,7 @@ properties.
 | P14 | Glycoprotein/glycan pass-through | TSWV glycoprotein, PDB 6YA2 | Keep N-linked glycans as glycans, not generic ligands. | glycan metadata/linkages; GLYCAM provenance; NAG-containing glycan retained. | 1 |
 | P15 | Standard DNA topology | DNA dodecamer, PDB 5MVQ | Prepare nucleic acid without protein/ligand assumptions. | DNA library selected; nucleic residue mapping; topology artifacts. | 2 |
 | P16 | Standard RNA topology | 32 bp oligo(U) RNA, PDB 4RBQ | Prepare RNA and choose RNA force-field library. | RNA library selected; residue mapping; potassium/water handling recorded; topology artifacts. | 2 |
-| P17 | Modified nucleic acid | 5-methylcytosine DNA, PDB 6JV5 | Detect 5CM and route through modified-nucleic preparation. | 5CM handled or structured missing-tool block; modXNA metadata if available. | 2 |
+| P17 | DNA duplex chain retention and neutralization | Standard B-DNA duplex, PDB 1BNA | Prepare both chains of a standard DNA duplex, choose a DNA-compatible force-field library, and record counterion neutralization. This replaces the earlier modified-nucleic-acid idea because modified DNA/RNA is outside the current supported MD-ready prep scope. | both DNA chains represented; standard DA/DC/DG/DT residues retained; DNA library and neutralization metadata recorded. | 2 |
 | P18 | Membrane embedding + lipid composition | TMEM14A, PDB 2LOP, POPC:POPE:CHL1 = 2:1:1 | Prepare a small membrane protein in a specified mixed-lipid membrane rather than a default single-lipid box. | membrane flag; expected lipid species present; lipid species ratio within tolerance; water/box metadata; topology marked as membrane. | 1 |
 | P19 | Candidate/model selection | Ubiquitin NMR ensemble, PDB 2K39 | Pick a specified NMR model/candidate before prep rather than silently using the first or averaged model. | selected model/candidate ID recorded; rank/selection reason; one concrete structure used; no ensemble collapse. | 2 |
 | P20 | Homology modeling before prep | Template PDB 2LZM + prompt-provided T4L L99A target sequence/alignment | Generate a model from template/alignment, then prep the selected model. This must be a modeling workflow, not only a post-prep mutation branch. | model bundle; template/target alignment provenance; selected model metadata; prepared topology or structured block. | 2 |
@@ -228,7 +228,7 @@ agent tasks.
   comparability issues. Prefer direction/rank tasks over absolute affinity.
 - Structure/prep anchors: RCSB PDB entries already covered by MDClaw tests are
   good starting points because they exercise real edge cases: 1AKE/AP5,
-  5K9P/SEP, 6YA2/NAG glycan, 6JV5/5CM DNA, 2LOP membrane protein.
+  5K9P/SEP, 6YA2/NAG glycan, 1BNA/DNA duplex, 2LOP membrane protein.
 
 ## Implementation Roadmap
 
@@ -309,12 +309,12 @@ agent tasks.
 - PDBbind methodology: experimental binding affinity data linked to
   protein-ligand complex structures:
   <https://pubs.acs.org/doi/abs/10.1021/jm048957q>
-- RCSB structure anchors: 1AKE/AP5, 1DAP/NADP+, 1CLL/Ca2+-calmodulin,
+- RCSB structure anchors: 1AKE/AP5, 1DAP/NDP, 1CLL/Ca2+-calmodulin,
   2LZM/T4 lysozyme, 181L/T4L L99A-benzene, 4RBQ/oligo(U) RNA,
   5MVQ/DNA dodecamer, 5PTI/BPTI disulfides, 1UBQ/ubiquitin,
   2K39/NMR ubiquitin ensemble, 4Q5T/MSE+altconf cleanup,
   1STP/streptavidin tetramer, 2MS2/many-chain capsid, 5AWL/chignolin,
-  5K9P/SEP, 6YA2/NAG glycan, 6JV5/5CM DNA, 2LOP/TMEM14A membrane protein:
+  5K9P/SEP, 6YA2/NAG glycan, 1BNA/DNA duplex, 2LOP/TMEM14A membrane protein:
   <https://www.rcsb.org/structure/1AKE>,
   <https://www.rcsb.org/structure/1DAP>,
   <https://www.rcsb.org/structure/1CLL>,
@@ -331,5 +331,5 @@ agent tasks.
   <https://www.rcsb.org/structure/5AWL>,
   <https://www.rcsb.org/structure/5K9P>,
   <https://www.rcsb.org/structure/6YA2>,
-  <https://www.rcsb.org/structure/6JV5>,
+  <https://www.rcsb.org/structure/1BNA>,
   <https://www.rcsb.org/structure/2LOP>.

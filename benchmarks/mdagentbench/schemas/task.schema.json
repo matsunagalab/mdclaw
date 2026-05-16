@@ -291,6 +291,24 @@
           "default": null,
           "title": "Required Solvent Type"
         },
+        "residue_aliases": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Residue Aliases"
+        },
         "residue_chain": {
           "anyOf": [
             {

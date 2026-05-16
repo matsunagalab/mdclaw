@@ -28,9 +28,9 @@ Primary repository sources checked:
 ### Core MD And Topology
 
 - OpenMM: cite for MD integration, platforms, reporters, barostats, HMR-enabled simulations, OpenMM fallback solvation, and System construction (the openmmforcefields path now drives topology builds).
-- openmmforcefields: cite for `SystemGenerator` + `GAFFTemplateGenerator`, which is the primary topology-build path under `build_amber_system` / `build_openmm_system` (replaces the legacy `tleap` script generation).
-- OpenFF Toolkit / OpenFF Pablo: cite for chemistry-aware PDB → Topology loading (Pablo) and `Molecule` round-tripping for ligand parameterization.
-- AmberTools: cite for `antechamber`, `parmchk2`, `pdb4amber`, `sqm`, `cpptraj` (`prepareforleap`), and per-residue Amber parameter datasets that openmmforcefields converts into XML. `tleap` itself is no longer invoked at topology-build time on the curated path.
+- openmmforcefields: cite for `SystemGenerator` + `GAFFTemplateGenerator`, which is the topology-build path for ligands that do not use a curated geostd XML template under `build_amber_system` / `build_openmm_system` (replaces the legacy `tleap` script generation).
+- OpenFF Toolkit / OpenFF Pablo: cite for chemistry-aware PDB → Topology loading (Pablo) and `Molecule` handling for topology-time ligand template generation.
+- AmberTools: cite for `pdb4amber`, `cpptraj` (`prepareforleap`), and per-residue Amber parameter datasets such as `amber_geostd` when those datasets are converted into OpenMM XML. `tleap`, `antechamber`, `parmchk2`, and `sqm` are no longer invoked on the curated ligand path.
 - PACKMOL: cite when explicit solvent or mixed systems are assembled through PACKMOL or PACKMOL-Memgen.
 - PACKMOL-Memgen: cite when `embed_in_membrane` or membrane-building workflows use it.
 - MEMEMBED: cite when membrane-protein orientation through `memembed` is used.
@@ -40,7 +40,7 @@ Primary repository sources checked:
 - ff19SB: cite when `forcefield=ff19SB`.
 - ff14SB: cite when `forcefield=ff14SB` or `ff14SBonlysc`.
 - GAFF/GAFF2: cite Wang et al. 2004 for GAFF-family ligand parameterization. A separate peer-reviewed GAFF2 DOI was not confirmed; cite AmberTools plus the original GAFF paper when GAFF2 is used through AmberTools.
-- AM1-BCC: cite when `antechamber`/`sqm` generated ligand charges with AM1-BCC.
+- AM1-BCC: cite only for externally supplied systems whose final protocol actually used AM1-BCC charges; the curated MDClaw ligand path does not invoke `antechamber`/`sqm`.
 - OPC: cite when `water_model=opc`.
 - OPC3: cite when `water_model=opc3`.
 - TIP3P: cite when `water_model=tip3p`.

@@ -50,6 +50,17 @@
           "POPC": 2,
           "POPE": 1
         },
+        "residue_aliases": {
+          "CHL1": [
+            "CHL"
+          ],
+          "POPC": [
+            "PC"
+          ],
+          "POPE": [
+            "PE"
+          ]
+        },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.5

@@ -948,11 +948,11 @@ class TestUpdateNode:
             "artifacts": {"merged_pdb": "artifacts/merged.pdb"}
         })
         update_node(str(job_dir), "prep_001", {
-            "artifacts": {"ligand_params": "artifacts/ligand_params.json"}
+            "artifacts": {"ligand_chemistry": "artifacts/ligand_chemistry.json"}
         })
         node = read_node(str(job_dir), "prep_001")
         assert node["artifacts"]["merged_pdb"] == "artifacts/merged.pdb"
-        assert node["artifacts"]["ligand_params"] == "artifacts/ligand_params.json"
+        assert node["artifacts"]["ligand_chemistry"] == "artifacts/ligand_chemistry.json"
 
     def test_append_warnings(self, job_dir):
         create_node(str(job_dir), "prep")
@@ -2540,23 +2540,21 @@ class TestDAGAutoResolve:
 
 
 class TestStructuredArtifactPropagation:
-    """Covers the DAG-based propagation of ``ligand_params`` / ``metal_params``
+    """Covers the DAG-based propagation of ``ligand_chemistry`` / ``metal_params``
     / ``box_dimensions`` from prep/solv ancestors to the topo node.
     """
 
     @pytest.fixture
     def dag_with_ligand(self, job_dir):
-        """prep (with ligand_params) -> solv (with box_dimensions.json) -> topo."""
+        """prep (with ligand_chemistry) -> solv (with box_dimensions.json) -> topo."""
         jd = str(job_dir)
         prep_artifacts = job_dir / "nodes" / "prep_001" / "artifacts"
-        mol2_path = prep_artifacts / "split" / "AP5.mol2"
-        frcmod_path = prep_artifacts / "split" / "AP5.frcmod"
-        ligand_params = [
+        sdf_path = prep_artifacts / "split" / "AP5.sdf"
+        ligand_chemistry = [
             {
-                "mol2": str(mol2_path),
-                "frcmod": str(frcmod_path),
+                "sdf": str(sdf_path),
                 "residue_name": "AP5",
-                "parameter_source": "amber_geostd",
+                "parameterization_stage": "topology",
             }
         ]
 
@@ -2566,7 +2564,7 @@ class TestStructuredArtifactPropagation:
             "prep_001",
             artifacts={
                 "merged_pdb": "artifacts/merge/merged.pdb",
-                "ligand_params": ligand_params,
+                "ligand_chemistry": ligand_chemistry,
             },
         )
 
@@ -2587,7 +2585,7 @@ class TestStructuredArtifactPropagation:
         )
 
         create_node(jd, "topo", parent_node_ids=["solv_001"])
-        return job_dir, ligand_params, box
+        return job_dir, ligand_chemistry, box
 
     def test_find_ancestor_returns_str_for_path_artifact(self, dag_with_ligand):
         """Contract: string-valued artifacts are resolved to abs paths."""
@@ -2601,11 +2599,10 @@ class TestStructuredArtifactPropagation:
                                                                 dag_with_ligand):
         """Structured artifacts are stored relative and resolved for execution."""
         job_dir, lp, _box = dag_with_ligand
-        stored = read_node(str(job_dir), "prep_001")["artifacts"]["ligand_params"]
-        assert stored[0]["mol2"] == "artifacts/split/AP5.mol2"
-        assert stored[0]["frcmod"] == "artifacts/split/AP5.frcmod"
+        stored = read_node(str(job_dir), "prep_001")["artifacts"]["ligand_chemistry"]
+        assert stored[0]["sdf"] == "artifacts/split/AP5.sdf"
         result = find_ancestor_artifact(str(job_dir), "topo_001", "prep",
-                                        "ligand_params")
+                                        "ligand_chemistry")
         assert isinstance(result, list)
         assert result == lp
 
@@ -2617,7 +2614,7 @@ class TestStructuredArtifactPropagation:
         assert result is None
 
     def test_resolve_topo_inputs_three_level_dag(self, dag_with_ligand):
-        """prep grandparent -> solv parent -> topo child: ligand_params
+        """prep grandparent -> solv parent -> topo child: ligand_chemistry
         must be propagated all the way to topo."""
         job_dir, lp, box = dag_with_ligand
         inputs = resolve_node_inputs(str(job_dir), "topo_001", "topo")
@@ -2626,9 +2623,9 @@ class TestStructuredArtifactPropagation:
         assert "pdb_file" in inputs
         assert inputs["pdb_file"].endswith("solvated.pdb")
 
-        # ligand_params from prep grandparent (stored relative, resolved absolute)
-        assert "ligand_params" in inputs
-        assert inputs["ligand_params"] == lp
+        # ligand_chemistry from prep grandparent (stored relative, resolved absolute)
+        assert "ligand_chemistry" in inputs
+        assert inputs["ligand_chemistry"] == lp
 
         # box_dimensions loaded inline from solv's JSON file
         assert "box_dimensions" in inputs
@@ -2651,7 +2648,7 @@ class TestStructuredArtifactPropagation:
 
         inputs = resolve_node_inputs(jd, "topo_001", "topo")
         assert "pdb_file" in inputs
-        assert "ligand_params" not in inputs
+        assert "ligand_chemistry" not in inputs
         assert "metal_params" not in inputs
         assert "box_dimensions" not in inputs
 

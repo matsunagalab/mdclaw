@@ -5,10 +5,11 @@
 **目的**: 別マシンで議論を継続するための文脈復元ドキュメント。
 冒頭の「Continuation prompt」をコピペすれば、別マシンの Claude が続きから議論できる。
 
-> **Legacy note (2026-09 update)**: 本メモが書かれた時点では `build_amber_system` が
+> **Legacy note (2026-05 update)**: 本メモが書かれた時点では `build_amber_system` が
 > `tleap` を使い `parm7` / `rst7` を出力していた。現在はその経路は
 > openmmforcefields-unification refactor で書き換えられ、
-> `openmmforcefields.SystemGenerator` + OpenFF Pablo を介して
+> `openmmforcefields.SystemGenerator`、topology-time Amber geostd XML
+> conversion / `GAFFTemplateGenerator`、OpenFF Pablo を介して
 > `system.xml` + `topology.pdb` + `state.xml` の modern artifact triple を
 > 出すようになっている。DAG / node 設計、ancestor-based artifact resolution、
 > failure-as-data といったメタな議論は現行設計に概ね引き継がれているが、
@@ -88,10 +89,10 @@ NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze
 ```python
 elif node_type == "topo":
     v = find_ancestor_artifact(job_dir, node_id, "solv", "solvated_pdb")
-    lp = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_params")
+    lc = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_chemistry")
     # ...
 elif node_type == "eq":
-    p7 = find_ancestor_artifact(job_dir, node_id, "topo", "parm7")
+    sx = find_ancestor_artifact(job_dir, node_id, "topo", "system_xml")
     # ...
 elif node_type == "prod":
     # prod は特別扱い: continued_from の厳密解決 + eq/prod 祖先の checkpoint fallback
@@ -142,7 +143,7 @@ MD研究での単純さを保ちながら、agentic campaign や AI for Science 
 ```python
 TOPO_SCHEMA = {
     "pdb_file":        from_ancestor("solv",  "solvated_pdb"),
-    "ligand_params":   from_ancestor("prep",  "ligand_params", optional=True),
+    "ligand_chemistry": from_ancestor("prep",  "ligand_chemistry", optional=True),
     "box_dimensions":  from_ancestor("solv",  "box_dimensions", loader=json),
 }
 ```

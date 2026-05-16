@@ -33,19 +33,19 @@ skill examples.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`.
-- `clean_ligand(...)`: ligand cleaning and parameterization.
+- `clean_ligand(...)`: ligand chemistry cleaning; emits SDF/PDB chemistry
+  artifacts for topology-time ligand force-field resolution.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
   water components.
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
   compatibility labels and may repeat in large assemblies.
-- `run_antechamber_robust(...)`: metal pre-check, amber_geostd, and GAFF2
-  fallback ligand parameterization.
-- `download_amber_geostd(...)`: fetch the curated ligand parameter database.
 - `create_mutated_structure(...)`: FASPR side-chain mutation on a branched prep
   node.
-- `prepare_modified_nucleic(...)`: modXNA parameter generation and residue
-  renaming on a branched prep node.
+- `prepare_modified_nucleic(...)`: legacy/experimental modXNA file generation.
+  The standard MD-ready topology path does not support modified DNA/RNA
+  residues; `inspect_molecules` reports them as unsupported and
+  `build_amber_system` stops with a structured code.
 - `phosphorylate_residues(...)`: restore or apply SEP/TPO/PTR sites for Amber
   phosaa topology generation.
 
@@ -81,23 +81,15 @@ skill examples.
 ## `amber_server.py`
 
 - `build_amber_system(...)`: openmmforcefields-based topology builder
-  (`SystemGenerator` + `GAFFTemplateGenerator`, with OpenFF Pablo for the
-  PDB → topology stage). Replaces the legacy tleap path. Handles ligand,
-  metal, modXNA, glycan, nucleic acid, water-model, and PTM guardrails via
+  (`SystemGenerator`, topology-time geostd XMLs, and `GAFFTemplateGenerator`,
+  with OpenFF Pablo for the PDB → topology stage). Handles ligand, metal,
+  modXNA, glycan, nucleic acid,
+  water-model, and PTM guardrails via
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
-  artifacts plus a `forcefield_provenance` dict on the `topo` node. Ligands
-  with `parameter_source ∈ {"amber_geostd", "gaff2_antechamber"}` are baked
-  into a self-contained OpenMM ForceField XML by `mdclaw._ligand_xml`
-  before the SystemGenerator is constructed, stacked under
-  `openmmforcefields`'s shipped `gaff-2.2.20.xml` base (the new
-  `forcefield_catalog.resolve_xml_bundle(gaff_base=...)` slot), and dropped
-  from `SystemGenerator(molecules=...)`. This skips
-  `GAFFTemplateGenerator`'s antechamber + AM1-BCC re-derivation, which
-  previously hung for highly charged ligands like AP5 (5 phosphates, -5e).
-  Per-ligand failures fall back to the legacy `molecules=` path with a
-  warning. The provenance dict carries `auto_converted_ligand_xml` and
-  `gaff_base` for the run-side hash check.
+  artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
+  prep emits `ligand_chemistry`; topology resolves Amber geostd templates first
+  and uses `GAFFTemplateGenerator` for ligands without a geostd match.
   Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
   "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
   matching `implicit/*.xml` is added to the SystemGenerator bundle so

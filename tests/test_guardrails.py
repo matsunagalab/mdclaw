@@ -145,7 +145,7 @@ def test_build_amber_system_phospho_forcefield_unsupported_has_code(tmp_path):
     assert result["code"] == "phospho_forcefield_unsupported"
 
 
-def test_build_amber_system_blocks_unreadable_ligand_params_json(tmp_path):
+def test_build_amber_system_ignores_unreadable_ligand_params_json(tmp_path):
     pdb_file = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb_file)
     (tmp_path / "ligand_params.json").write_text("{not json")
@@ -156,9 +156,8 @@ def test_build_amber_system_blocks_unreadable_ligand_params_json(tmp_path):
         water_model="opc",
     )
 
-    assert result["success"] is False
-    assert result["error_type"] == "ValidationError"
-    assert result["code"] == "ligand_params_load_failed"
+    assert result.get("code") != "ligand_params_load_failed"
+    assert result.get("code") != "invalid_ligand_parameters"
 
 
 def test_build_amber_system_requires_gemmi_for_phospho_detection(tmp_path):
@@ -348,7 +347,7 @@ def test_build_amber_system_explicit_false_overrides_membrane_dag_metadata():
             node_id="topo_001",
             actual_conditions={},
             pdb_file=None,
-            ligand_params=None,
+            ligand_chemistry=None,
             modxna_params=None,
             metal_params=None,
             disulfide_bonds=None,
@@ -375,7 +374,7 @@ def test_build_amber_system_unspecified_membrane_uses_dag_metadata():
             node_id="topo_001",
             actual_conditions={},
             pdb_file=None,
-            ligand_params=None,
+            ligand_chemistry=None,
             modxna_params=None,
             metal_params=None,
             disulfide_bonds=None,

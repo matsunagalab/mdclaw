@@ -62,9 +62,9 @@ and per-task `prompt.md` plus `submission_contract.json`. It omits `task.json`,
 |---|---|---|---|
 | P01_prep_simple_monomer_t4l | Simple monomer | PDB 2LZM | Clean one protein chain and report explicit-solvent-ready prep. |
 | P02_prep_1ake_chain_ap5 | Chain + ligand | PDB 1AKE | Include chain A and AP5 despite chain-label ambiguity. |
-| P03_prep_ligand_pose_t4l_benzene | Ligand pose | PDB 181L | Preserve the crystallographic benzene pose. |
+| P03_prep_ligand_pose_t4l_benzene | Ligand pose | PDB 181L | Preserve the protein+BNZ complex and crystallographic benzene pose. |
 | P04_prep_multi_ligand_filter_3pwb | Ligand filtering | PDB 3PWB | Include requested ligands and exclude irrelevant heterogens. |
-| P05_prep_dap_dehydrogenase_nadp | Charged cofactor | PDB 1DAP | Retain and document an NADP-like cofactor. |
+| P05_prep_dap_dehydrogenase_nadp | Charged cofactor | PDB 1DAP | Retain and document the deposited NDP/NADPH-like cofactor in chains C/F. |
 | P06_prep_calmodulin_ca_ions | Supported ions | PDB 1CLL | Retain four Ca2+ ions as supported ions. |
 | P07_prep_rna_crystallographic_ions | Ion triage | PDB 4RBQ | Prepare RNA while preserving designated K+ ions. |
 | P08_prep_t4l_l99a_branch | Point mutation | PDB 2LZM | Branch WT to L99A without renumbering drift. |
@@ -76,7 +76,7 @@ and per-task `prompt.md` plus `submission_contract.json`. It omits `task.json`,
 | P14_prep_glycoprotein_glycan | Glycan | PDB 6YA2 | Preserve N-linked glycans as glycans. |
 | P15_prep_standard_dna | DNA | PDB 5MVQ | Prepare DNA without protein defaults. |
 | P16_prep_standard_rna | RNA | PDB 4RBQ | Prepare RNA with RNA-compatible metadata. |
-| P17_prep_modified_nucleic_5mc | Modified DNA | PDB 6JV5 | Detect and document 5-methylcytosine handling. |
+| P17_prep_dna_duplex_neutralization | DNA duplex | PDB 1BNA | Preserve both DNA chains and record neutralization. |
 | P18_prep_membrane_mixed_lipids | Membrane | PDB 2LOP | Honor POPC:POPE:CHL1 = 2:1:1. |
 | P19_prep_nmr_model_selection | Candidate selection | PDB 2K39 | Select a specified NMR model before prep. |
 | P20_prep_homology_model_before_prep | Homology model | PDB 2LZM | Model from template/alignment before prep. |
@@ -111,9 +111,15 @@ Scoring is deterministic by default:
 - `required_files` / `forbidden_files`
 - `json_equals`, `json_min`, `json_min_length`, `json_allowed_values`
 - `structure_component_rescan`
+  (with task-defined residue-name aliases for backend-specific ion/lipid names)
 - `pdb_residue_state`
 - `rmsd_recompute`
 - artifact integrity checks such as byte floors and template-marker rejection
+
+Modified DNA/RNA is intentionally outside the core prep battery because the
+current standard topology path does not support MD-ready parameterization of
+modified nucleotides. Those cases belong in MDClaw regression or optional
+unsupported-chemistry handling tests, not in the backend-neutral core score.
 
 Run validation and scoring with:
 

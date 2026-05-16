@@ -468,6 +468,41 @@ def test_structure_component_rescan_counts_required_and_forbidden_residues(tmp_p
     assert "SO4" in failed.message
 
 
+def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="components",
+            check_type="structure_component_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            min_residue_counts={"POPC": 2, "K": 1, "CL": 1},
+            residue_aliases={
+                "POPC": ["PC"],
+                "K": ["K+"],
+                "CL": ["CL-", "Cl-"],
+            },
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "HETATM    1  C1   PC A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1   PC A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  K+  K+  B   3       2.000   0.000   0.000  1.00  0.00           K\n"
+        "HETATM    4 Cl-  Cl- B   4       3.000   0.000   0.000  1.00  0.00          Cl\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+
 def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):
     truth_dir = tmp_path / "task" / "truth"
     truth_dir.mkdir(parents=True)

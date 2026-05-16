@@ -334,14 +334,19 @@ Detailed node layout, artifact names, study directories, and invariants live in
 - Explicit solvent setup, defaulting to OPC, 15 A buffer, and 0.15 M salt.
 - HMR production runs with 4 fs timestep by default.
 - Standard DNA/RNA through OL15/OL3 XMLs.
-- Ligand preparation through curated Amber/OpenMM pathways where supported.
-- Branching workflows for mutations, PTMs, modified nucleic acids, membrane
-  embedding, alternate equilibration protocols, and production variants.
+- Ligand chemistry preparation with topology-time Amber geostd or
+  OpenMM/openmmforcefields GAFF handling where supported.
+- Branching workflows for mutations, supported PTMs, membrane embedding,
+  alternate equilibration protocols, and production variants.
 - SLURM submission and restart/extension workflows through `hpc-run`.
 
 Some chemistry remains deliberately guarded. If a force-field conversion or
 parameterization path is not safe, tools return structured error codes instead
 of silently building a dubious system.
+Modified DNA/RNA is one of those guarded cases: inspection reports it as
+unsupported for the standard MD-ready topology path, and topology generation
+stops with a structured code rather than silently mapping modified bases to
+ordinary nucleotides.
 
 ## Benchmarking
 

@@ -11,8 +11,9 @@ Preparation-specific defaults:
   LYS/LYN, and CYS/CYX/CYM.
 - Standard DNA/RNA are preserved as nucleic polymers, not treated as ligands.
 - Glycan residues are preserved and passed to GLYCAM-aware topology generation.
-- Ligands use curated amber_geostd parameters when available, then GAFF2
-  fallback when appropriate.
+- Ligands are cleaned into `ligand_chemistry` records during prep; topology
+  generation resolves Amber geostd first and uses `GAFFTemplateGenerator` for
+  remaining ligands.
 - Metal ions should be detected and parameterized explicitly when needed.
 
 Guardrail handling:

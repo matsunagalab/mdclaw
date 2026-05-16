@@ -201,7 +201,7 @@ It checks:
 - `bin/mdclaw` availability.
 - conda env `mdclaw`, if present.
 - OpenMM test installation.
-- AmberTools executables: `pdb4amber`, `antechamber`, `parmchk2`, `cpptraj`.
+- AmberTools executables: `pdb4amber`, `cpptraj`.
 - container command availability.
 - `.agents/skills` and `.claude/skills` discovery.
 

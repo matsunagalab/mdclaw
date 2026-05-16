@@ -8,7 +8,7 @@ missing, the target is ambiguous, or a structured failure requires a decision.
 1. Source acquisition.
 2. Chain and ligand selection after inspection.
 3. Initial `prepare_complex`.
-4. Optional branches: mutation, PTM restoration, modified nucleic acids.
+4. Optional branches: mutation and PTM restoration.
 5. Solvation mode and topology build.
 6. Handoff to `skills/md-equilibration/SKILL.md` (`/md-equilibration` if the
    harness provides slash commands).

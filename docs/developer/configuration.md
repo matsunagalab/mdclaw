@@ -24,9 +24,9 @@ export MDCLAW_AMBER_TIMEOUT=3600
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_VISUALIZATION_TIMEOUT=300
 export MDCLAW_LOG_LEVEL=WARNING
-export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"
-export MDCLAW_MODXNA_DIR="/path/to/modXNA"
+export MDCLAW_CACHE_DIR="$HOME/.cache/mdclaw"
+export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"
 export MDCLAW_MODULE_INIT="/etc/profile.d/modules.sh"
 export MDCLAW_SURROGATE_DIR="$HOME/.cache/mdclaw/surrogates"
@@ -37,8 +37,11 @@ Notes:
 - `MDCLAW_AMBER_TIMEOUT` controls the `build_amber_system` wall-time budget for
   the openmmforcefields `SystemGenerator` build + initial `LocalEnergyMinimizer`
   pass (no tleap is invoked); raise it for very large fusions and glycoproteins.
-- `MDCLAW_GEOSTD_DIR` points to the curated ligand parameter database.
-- `MDCLAW_MODXNA_DIR` must contain `modxna.sh` and `dat/frcmod.modxna`.
+- `MDCLAW_GEOSTD_DIR` optionally points to an Amber `amber_geostd` directory.
+  If unset, topology generation checks `$AMBERHOME/dat/amber_geostd`, then
+  `$MDCLAW_CACHE_DIR/amber_geostd`.
+- `MDCLAW_MODXNA_DIR` is a legacy/experimental modXNA hook only. Modified
+  DNA/RNA is not supported by the standard MD-ready topology path.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.
 - `MDCLAW_SURROGATE_DIR` controls where isolated surrogate backend venvs are
   stored. BioEmu is never installed into the conda `mdclaw` environment.

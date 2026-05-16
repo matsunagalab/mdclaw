@@ -39,26 +39,12 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 
 ## Resolved
 
-### Ligand AM1-BCC re-derivation (resolved 2026-05-12)
+### Ligand Chemistry Handoff
 
-Before this fix, `build_amber_system` passed prep-computed ligand mol2 files
-to `SystemGenerator(molecules=...)` only to have `GAFFTemplateGenerator`
-re-derive AM1-BCC partial charges via antechamber + sqm at first
-`sg.forcefield` access. For highly charged ligands like AP5 (5 phosphates,
-−5e, 81 atoms) the AM1 SCF could hang indefinitely.
-
-`mdclaw/_ligand_xml.py::convert_amber_ligand_to_openmm_xml` now bakes prep's
-mol2 + frcmod into a self-contained OpenMM ForceField XML
-(`<openmmforcefields>/ffxml/amber/gaff/ffxml/gaff-2.2.20.xml` is loaded as
-the GAFF2 base via the new `forcefield_catalog.resolve_xml_bundle(gaff_base=)`
-slot). Converted ligands are removed from `SystemGenerator(molecules=...)`
-so the GAFF generator never runs. 1AKE + AP5 now completes
-`build_amber_system` in ~15 s. See `tests/test_ap5_build_topology_smoke.py`.
-
-Follow-up: extend the same `_ligand_xml` ParmEd-bridge pattern to metal
-frcmod+mol2 and modXNA frcmod+lib, removing the `code:
-metal_openmm_xml_required` and `code: modxna_openmm_xml_required` fail-fast
-escape into `build_openmm_system` at `amber_server.py:3400-3422`.
+The public ligand contract is `ligand_chemistry`: prep records
+SDF/SMILES/charge/provenance, and `build_amber_system` resolves the actual
+topology-time path. Amber geostd templates are used when available; otherwise
+OpenFF Molecules are passed to `GAFFTemplateGenerator`.
 
 ## Source-Bundle DAG Principle
 
