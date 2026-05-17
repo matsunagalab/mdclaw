@@ -124,6 +124,19 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
             _set_path(metrics, mapping_path, mapping)
 
 
+def _provenance_text_for_checks(task: dict[str, Any], mode: str) -> str:
+    if mode != "honest":
+        return "Synthetic wrong fixture intentionally omits required provenance text."
+    chunks: list[str] = []
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "artifact_provenance_text":
+            continue
+        for group in check.get("required_text_groups") or []:
+            if group:
+                chunks.append(str(group[0]))
+    return " ".join(chunks)
+
+
 def _set_standard_topology_minimization_metrics(metrics: dict[str, Any],
                                                 mode: str) -> None:
     honest = mode == "honest"
@@ -298,7 +311,11 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
         "backend": "openmm",
         "minimization": metrics["minimization"],
     })
-    _write(sub_dir / "provenance.json", _common_provenance(run_id, task_id, mode))
+    provenance = _common_provenance(run_id, task_id, mode)
+    provenance["artifact_provenance_text_evidence"] = _provenance_text_for_checks(
+        task, mode,
+    )
+    _write(sub_dir / "provenance.json", provenance)
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
         "task_id": task_id,
@@ -309,7 +326,10 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
         ),
         "evidence": {
             "public_sources": [ref.get("source") for ref in task.get("references", [])],
-            "preparation_decisions": ["fixture-generated artifacts for scorer tests"],
+            "preparation_decisions": [
+                "fixture-generated artifacts for scorer tests",
+                _provenance_text_for_checks(task, mode),
+            ],
         },
         "limitations": [
             "This is a benchmark framework fixture, not a scientific result.",

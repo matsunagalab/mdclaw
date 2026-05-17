@@ -773,6 +773,46 @@ def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
     assert score.deterministic_checks[0].passed is True
 
 
+def test_artifact_provenance_text_checks_provenance_and_evidence(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="ion_triage_documented",
+            check_type="artifact_provenance_text",
+            required_text_groups=[
+                ["crystallographic"],
+                ["K+", "potassium"],
+                ["water", "HOH"],
+                ["excluded", "removed"],
+            ],
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        provenance={
+            "decisions": [
+                "Retained crystallographic K+ ions.",
+                "Excluded deposited water molecules during source triage.",
+            ],
+        },
+        evidence={"summary": "Prepared explicit solvent system after source triage."},
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        provenance={"decisions": ["Retained ions but did not describe source triage."]},
+        evidence={"summary": "No relevant details."},
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "required provenance/evidence text" in failed.message
+
+
 def test_assembly_identity_check_matches_structure_and_chain_map(tmp_path: Path):
     task = _make_task(
         primary="preparation",

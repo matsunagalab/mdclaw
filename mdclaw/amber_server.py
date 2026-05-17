@@ -453,6 +453,270 @@ def validate_ligand_chemistry(ligand_chemistry: List[Dict[str, Any]]) -> tuple:
     return valid_records, errors
 
 
+def _coerce_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _ligand_record_charge(record: Dict[str, Any]) -> float | None:
+    for key in ("net_charge", "mol_formal_charge", "formal_charge", "total_charge"):
+        charge = _coerce_float(record.get(key))
+        if charge is not None:
+            return charge
+    return None
+
+
+def _ligand_record_sdf_atom_count(record: Dict[str, Any]) -> int | None:
+    sdf = record.get("sdf") or record.get("sdf_file")
+    if not sdf:
+        return None
+    path = Path(sdf)
+    if path.suffix.lower() != ".sdf" or not path.exists():
+        return None
+    try:
+        lines = path.read_text(errors="ignore").splitlines()
+    except OSError:
+        return None
+    if len(lines) < 4:
+        return None
+    counts = lines[3]
+    try:
+        return int(counts[:3])
+    except ValueError:
+        parts = counts.split()
+        if not parts:
+            return None
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
+
+
+def _geostd_ligand_incompatibility_reason(
+    ligand_record: Dict[str, Any],
+    geostd_result: Dict[str, Any],
+) -> str | None:
+    residue_name = str(ligand_record.get("residue_name") or "?").upper()
+    expected_charge = _ligand_record_charge(ligand_record)
+    geostd_charge = _coerce_float(geostd_result.get("total_charge"))
+    if expected_charge is not None and geostd_charge is not None:
+        if abs(expected_charge - geostd_charge) > 0.5:
+            return (
+                f"{residue_name} ligand_chemistry charge {expected_charge:g} "
+                f"does not match amber_geostd XML charge {geostd_charge:.3f}"
+            )
+
+    expected_atoms = (
+        _coerce_float(ligand_record.get("atom_count"))
+        or _coerce_float(ligand_record.get("num_atoms"))
+        or _ligand_record_sdf_atom_count(ligand_record)
+    )
+    geostd_atoms = _coerce_float(geostd_result.get("atom_count"))
+    if expected_atoms is not None and geostd_atoms is not None:
+        if int(expected_atoms) != int(geostd_atoms):
+            return (
+                f"{residue_name} ligand_chemistry atom count {int(expected_atoms)} "
+                f"does not match amber_geostd XML atom count {int(geostd_atoms)}"
+            )
+    return None
+
+
+def _is_hydrogen_like_atom(atom: Any) -> bool:
+    element = getattr(atom, "element", None)
+    symbol = (getattr(element, "symbol", "") or "").upper()
+    return symbol == "H" or str(getattr(atom, "name", "")).strip().upper().startswith("H")
+
+
+def _patch_geostd_ligand_hydrogen_names(
+    omm_topology: Any,
+    omm_positions: Any,
+    forcefield: Any,
+    geostd_residue_names: set[str],
+    unit_module: Any,
+) -> tuple[int, list[str]]:
+    """Rename generic ligand H names to geostd template names by local geometry."""
+    if not geostd_residue_names:
+        return 0, []
+
+    try:
+        positions_nm = [p.value_in_unit(unit_module.nanometer) for p in omm_positions]
+    except Exception:  # noqa: BLE001
+        return 0, []
+
+    renamed = 0
+    summaries: list[str] = []
+    for residue in omm_topology.residues():
+        residue_name = str(residue.name or "").upper()
+        if residue_name not in geostd_residue_names:
+            continue
+        template = forcefield._templates.get(residue.name)
+        if template is None:
+            continue
+
+        template_atoms = list(template.atoms)
+        template_names = {atom.name for atom in template_atoms}
+        template_h_indices = {
+            idx for idx, atom in enumerate(template_atoms)
+            if str(getattr(atom, "name", "")).upper().startswith("H")
+        }
+        template_h_by_heavy: dict[str, list[str]] = {}
+        for idx1, idx2 in template.bonds:
+            h_idx = None
+            heavy_idx = None
+            if idx1 in template_h_indices and idx2 not in template_h_indices:
+                h_idx, heavy_idx = idx1, idx2
+            elif idx2 in template_h_indices and idx1 not in template_h_indices:
+                h_idx, heavy_idx = idx2, idx1
+            if h_idx is None or heavy_idx is None:
+                continue
+            heavy_name = template_atoms[heavy_idx].name
+            template_h_by_heavy.setdefault(heavy_name, []).append(
+                template_atoms[h_idx].name
+            )
+
+        actual_atoms = list(residue.atoms())
+        current_names = {atom.name for atom in actual_atoms}
+        unknown_h = [
+            atom for atom in actual_atoms
+            if _is_hydrogen_like_atom(atom) and atom.name not in template_names
+        ]
+        if not unknown_h:
+            continue
+
+        heavy_atoms = [
+            atom for atom in actual_atoms
+            if atom.name in template_names and not _is_hydrogen_like_atom(atom)
+        ]
+        if not heavy_atoms:
+            continue
+
+        actual_h_by_heavy: dict[str, list[tuple[float, Any]]] = {}
+        max_h_bond_nm = 0.14
+        for h_atom in unknown_h:
+            hx, hy, hz = positions_nm[h_atom.index]
+            best: tuple[float, Any] | None = None
+            for heavy in heavy_atoms:
+                x, y, z = positions_nm[heavy.index]
+                d2 = (hx - x) ** 2 + (hy - y) ** 2 + (hz - z) ** 2
+                if d2 > max_h_bond_nm * max_h_bond_nm:
+                    continue
+                if best is None or d2 < best[0]:
+                    best = (d2, heavy)
+            if best is None:
+                continue
+            actual_h_by_heavy.setdefault(best[1].name, []).append((best[0], h_atom))
+
+        residue_renamed = 0
+        assigned_names: set[str] = set()
+        for heavy_name, expected_names in template_h_by_heavy.items():
+            expected = [
+                name for name in expected_names
+                if name not in current_names and name not in assigned_names
+            ]
+            candidates = sorted(
+                actual_h_by_heavy.get(heavy_name, []),
+                key=lambda item: (item[0], item[1].index),
+            )
+            if len(candidates) != len(expected):
+                continue
+            for expected_name, (_dist2, atom) in zip(expected, candidates):
+                atom.name = expected_name
+                assigned_names.add(expected_name)
+                residue_renamed += 1
+
+        if residue_renamed:
+            renamed += residue_renamed
+            summaries.append(f"{residue.name}#{residue.id}:{residue_renamed}")
+    return renamed, summaries
+
+
+def _patch_template_internal_bonds(omm_topology: Any, forcefield: Any) -> int:
+    bonds_added = 0
+    existing_internal_bonds = {
+        tuple(sorted((bond.atom1.index, bond.atom2.index)))
+        for bond in omm_topology.bonds()
+        if bond.atom1.residue.index == bond.atom2.residue.index
+    }
+    for residue in list(omm_topology.residues()):
+        atom_by_name = {a.name: a for a in residue.atoms()}
+        if not atom_by_name:
+            continue
+        template = forcefield._templates.get(residue.name)
+        if template is None:
+            continue
+        for tb in template.bonds:
+            n1 = template.atoms[tb[0]].name
+            n2 = template.atoms[tb[1]].name
+            a1 = atom_by_name.get(n1)
+            a2 = atom_by_name.get(n2)
+            if a1 is None or a2 is None:
+                continue
+            key = tuple(sorted((a1.index, a2.index)))
+            if key in existing_internal_bonds:
+                continue
+            omm_topology.addBond(a1, a2)
+            existing_internal_bonds.add(key)
+            bonds_added += 1
+    return bonds_added
+
+
+def _patch_ligand_molecule_internal_bonds(
+    omm_topology: Any,
+    ligand_records: list[Dict[str, Any]],
+    ligand_molecules: list[Any],
+    geostd_residue_names: set[str],
+) -> int:
+    """Patch non-geostd ligand bonds from OpenFF Molecule atom order."""
+    bonds_added = 0
+    existing_internal_bonds = {
+        tuple(sorted((bond.atom1.index, bond.atom2.index)))
+        for bond in omm_topology.bonds()
+        if bond.atom1.residue.index == bond.atom2.residue.index
+    }
+    residues_by_name: dict[str, list[Any]] = {}
+    for residue in omm_topology.residues():
+        residues_by_name.setdefault(str(residue.name or "").upper(), []).append(residue)
+
+    used_residue_indices: set[int] = set()
+    for ligand_record, molecule in zip(ligand_records or [], ligand_molecules or []):
+        residue_name = str(ligand_record.get("residue_name") or "").upper()
+        if not residue_name or residue_name in geostd_residue_names:
+            continue
+        try:
+            molecule_atom_count = int(molecule.n_atoms)
+        except Exception:  # noqa: BLE001
+            continue
+        residue = next(
+            (
+                candidate for candidate in residues_by_name.get(residue_name, [])
+                if candidate.index not in used_residue_indices
+                and len(list(candidate.atoms())) == molecule_atom_count
+            ),
+            None,
+        )
+        if residue is None:
+            continue
+        used_residue_indices.add(residue.index)
+        residue_atoms = list(residue.atoms())
+        for bond in molecule.bonds:
+            try:
+                a1 = residue_atoms[int(bond.atom1_index)]
+                a2 = residue_atoms[int(bond.atom2_index)]
+            except (AttributeError, IndexError, TypeError, ValueError):
+                continue
+            key = tuple(sorted((a1.index, a2.index)))
+            if key in existing_internal_bonds:
+                continue
+            omm_topology.addBond(a1, a2)
+            existing_internal_bonds.add(key)
+            bonds_added += 1
+    return bonds_added
+
+
 def _is_builtin_amber_frcmod(value: str) -> bool:
     """Return True for AmberTools-shipped frcmod names (``frcmod.<...>``).
 
@@ -3305,6 +3569,32 @@ def _run_openmmforcefields_build(
                 continue
             geostd_result = build_geostd_ligand_xml(residue_name, geostd_xml_dir)
             if geostd_result.get("success"):
+                matching_records = [
+                    rec for rec in (valid_ligands or [])
+                    if str(rec.get("residue_name") or "").upper() == residue_name
+                ]
+                incompatibilities = [
+                    reason
+                    for rec in matching_records
+                    if (
+                        reason := _geostd_ligand_incompatibility_reason(
+                            rec, geostd_result
+                        )
+                    )
+                ]
+                if incompatibilities:
+                    reason = "; ".join(incompatibilities)
+                    result["warnings"].append(
+                        f"Skipping amber_geostd template for {residue_name}: "
+                        f"{reason}. Falling back to GAFFTemplateGenerator."
+                    )
+                    for rec in matching_records:
+                        rec["topology_parameter_source"] = (
+                            "topology_gaff_template_generator"
+                        )
+                        rec["topology_geostd_skip_reason"] = reason
+                        rec.pop("topology_geostd_xml", None)
+                    continue
                 geostd_residue_names.add(residue_name)
                 geostd_ligand_xml.append({
                     "residue_name": residue_name,
@@ -3314,6 +3604,7 @@ def _run_openmmforcefields_build(
                     "source": "amber_geostd",
                     "atom_count": geostd_result.get("atom_count"),
                     "bond_count": geostd_result.get("bond_count"),
+                    "total_charge": geostd_result.get("total_charge"),
                     "warnings": geostd_result.get("warnings", []),
                 })
                 for rec in valid_ligands:
@@ -3778,31 +4069,34 @@ def _run_openmmforcefields_build(
     # PDB round trip. Copy any missing template bond onto the topology so
     # ``SystemGenerator.create_system`` sees the same residue graph as the
     # loaded force field.
-    bonds_added = 0
-    existing_internal_bonds = {
-        tuple(sorted((bond.atom1.index, bond.atom2.index)))
-        for bond in omm_topology.bonds()
-        if bond.atom1.residue.index == bond.atom2.residue.index
-    }
-    for residue in list(omm_topology.residues()):
-        atom_by_name = {a.name: a for a in residue.atoms()}
-        if not atom_by_name:
-            continue
-        template = sg.forcefield._templates.get(residue.name)
-        if template is None:
-            continue
-        for tb in template.bonds:
-            n1 = template.atoms[tb[0]].name
-            n2 = template.atoms[tb[1]].name
-            a1 = atom_by_name.get(n1)
-            a2 = atom_by_name.get(n2)
-            if a1 is not None and a2 is not None:
-                key = tuple(sorted((a1.index, a2.index)))
-                if key in existing_internal_bonds:
-                    continue
-                omm_topology.addBond(a1, a2)
-                existing_internal_bonds.add(key)
-                bonds_added += 1
+    h_renamed, h_rename_summaries = _patch_geostd_ligand_hydrogen_names(
+        omm_topology,
+        omm_positions,
+        sg.forcefield,
+        geostd_residue_names,
+        unit,
+    )
+    if h_renamed:
+        result["warnings"].append(
+            f"Renamed {h_renamed} geostd ligand hydrogen atom(s) to template "
+            f"names before bond patching: {h_rename_summaries[:5]}"
+            f"{'...' if len(h_rename_summaries) > 5 else ''}"
+        )
+
+    ligand_molecule_bonds_added = _patch_ligand_molecule_internal_bonds(
+        omm_topology,
+        valid_ligands or [],
+        ligand_molecules,
+        geostd_residue_names,
+    )
+    if ligand_molecule_bonds_added:
+        result["warnings"].append(
+            f"Patched {ligand_molecule_bonds_added} non-geostd ligand bond(s) "
+            f"from ligand_chemistry OpenFF Molecule records so "
+            f"GAFFTemplateGenerator can match the residue graph."
+        )
+
+    bonds_added = _patch_template_internal_bonds(omm_topology, sg.forcefield)
     if bonds_added:
         result["warnings"].append(
             f"Patched {bonds_added} intra-residue bond(s) onto topology "

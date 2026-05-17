@@ -36,19 +36,18 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "rna_library_reported",
-        "check_type": "json_equals",
-        "equals": "RNA",
-        "json_file": "metrics.json",
-        "json_path": "preparation.nucleic_acid_type",
+        "check_id": "rna_residues_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "U": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
         "weight": 0.3
       },
       {
         "check_id": "potassium_retained",
         "check_type": "structure_component_rescan",
-        "max_residue_counts": {
-          "HOH": 0
-        },
         "min_residue_counts": {
           "K": 1
         },
@@ -57,11 +56,32 @@
         "weight": 0.45
       },
       {
-        "check_id": "ion_selection_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.crystallographic_ion_selection_recorded",
+        "check_id": "crystallographic_ion_triage_documented",
+        "check_type": "artifact_provenance_text",
+        "required_text_groups": [
+          [
+            "crystallographic"
+          ],
+          [
+            "K+",
+            "potassium"
+          ],
+          [
+            "water",
+            "waters",
+            "HOH"
+          ],
+          [
+            "exclude",
+            "excluded",
+            "removed",
+            "not retain"
+          ]
+        ],
+        "text_files": [
+          "provenance.json",
+          "evidence_report.json"
+        ],
         "weight": 0.25
       },
       {
@@ -90,11 +110,19 @@
         "weight": 1.0
       },
       {
+        "check_id": "minimized_rna_residues_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "U": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      },
+      {
         "check_id": "minimized_potassium_retained",
         "check_type": "minimized_structure_component_rescan",
-        "max_residue_counts": {
-          "HOH": 0
-        },
         "min_residue_counts": {
           "K": 1
         },
@@ -143,6 +171,6 @@
     "evidence_communication"
   ],
   "task_id": "P07_prep_rna_crystallographic_ions",
-  "task_intent": "Crystallographic ion triage: prepare oligo(U) RNA while preserving prompt-designated crystallographic K+ ions and excluding irrelevant solvent or buffer components.",
+  "task_intent": "Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system.",
   "time_limit_minutes": 60
 }

@@ -102,7 +102,7 @@ def score_submission(
     for check in task.scoring.deterministic_checks:
         result = _run_deterministic(
             check, submission_dir, manifest, metrics,
-            evidence=evidence, task_dir=task_dir,
+            provenance=provenance, evidence=evidence, task_dir=task_dir,
         )
         deterministic_results.append(result)
 
@@ -201,6 +201,7 @@ def _run_deterministic(
     submission_dir: Path,
     manifest: dict,
     metrics: dict,
+    provenance: dict,
     evidence: dict,
     task_dir: Optional[Path],
 ) -> CheckResult:
@@ -215,7 +216,7 @@ def _run_deterministic(
         passed, score, message = handler(
             check, submission_dir,
             manifest=manifest, metrics=metrics,
-            evidence=evidence, task_dir=task_dir,
+            provenance=provenance, evidence=evidence, task_dir=task_dir,
         )
     except Exception as exc:  # pragma: no cover -- handler exceptions become 0.0
         return CheckResult(
@@ -247,6 +248,48 @@ def _check_forbidden_files(check: DeterministicCheck, submission_dir: Path,
     if present:
         return False, 0.0, f"forbidden files present: {present}"
     return True, 1.0, f"all {len(paths)} forbidden outputs absent"
+
+
+def _check_artifact_provenance_text(check: DeterministicCheck,
+                                    submission_dir: Path,
+                                    provenance: dict,
+                                    evidence: dict, **_):
+    files = check.text_files or ["provenance.json", "evidence_report.json"]
+    chunks: list[str] = []
+    for rel in files:
+        if rel == "provenance.json":
+            chunks.extend(_recursive_text_fragments(provenance))
+            continue
+        if rel == "evidence_report.json":
+            chunks.extend(_recursive_text_fragments(evidence))
+            continue
+        path = _resolve_relative(submission_dir, rel)
+        if not path.is_file():
+            continue
+        try:
+            if path.suffix.lower() == ".json":
+                chunks.extend(_recursive_text_fragments(integrity.read_json_safe(path)))
+            else:
+                chunks.append(path.read_text(errors="replace"))
+        except OSError:
+            continue
+
+    haystack = "\n".join(chunks).casefold()
+    missing_groups: list[list[str]] = []
+    for group in check.required_text_groups or []:
+        if not any(str(term).casefold() in haystack for term in group):
+            missing_groups.append([str(term) for term in group])
+    if missing_groups:
+        return (
+            False,
+            0.0,
+            f"required provenance/evidence text not found: {missing_groups}",
+        )
+    return (
+        True,
+        1.0,
+        f"required provenance/evidence text groups found in {files}",
+    )
 
 
 def _check_json_equals(check: DeterministicCheck, submission_dir: Path,
@@ -1076,6 +1119,7 @@ _DETERMINISTIC_DISPATCH = {
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
     "assembly_identity_check": _check_assembly_identity,
+    "artifact_provenance_text": _check_artifact_provenance_text,
     "topology_artifact_bundle": _check_topology_artifact_bundle,
     "openmm_system_load": _check_openmm_system_load,
     "openmm_energy_rescan": _check_openmm_energy_rescan,
@@ -1326,6 +1370,20 @@ def _weighted_mean(deterministic: list[CheckResult],
 
 def _resolve_relative(submission_dir: Path, rel: str) -> Path:
     return (submission_dir / rel).resolve()
+
+
+def _recursive_text_fragments(value: Any) -> list[str]:
+    fragments: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            fragments.append(str(key))
+            fragments.extend(_recursive_text_fragments(item))
+    elif isinstance(value, list):
+        for item in value:
+            fragments.extend(_recursive_text_fragments(item))
+    elif value is not None:
+        fragments.append(str(value))
+    return fragments
 
 
 def manifest_value(submission_dir: Path, dotted: str) -> Optional[Any]:

@@ -88,8 +88,9 @@ skill examples.
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
   artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
-  prep emits `ligand_chemistry`; topology resolves Amber geostd templates first
-  and uses `GAFFTemplateGenerator` for ligands without a geostd match.
+  prep emits `ligand_chemistry`; topology resolves compatible Amber geostd
+  templates first and uses `GAFFTemplateGenerator` when geostd is missing or
+  incompatible with the recorded ligand charge/atom count.
   Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
   "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
   matching `implicit/*.xml` is added to the SystemGenerator bundle so

@@ -96,6 +96,7 @@
             "pdb_residue_state",
             "rmsd_recompute",
             "assembly_identity_check",
+            "artifact_provenance_text",
             "topology_artifact_bundle",
             "openmm_system_load",
             "openmm_energy_rescan",
@@ -505,6 +506,24 @@
           "default": null,
           "title": "Required Solvent Type"
         },
+        "required_text_groups": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Text Groups"
+        },
         "required_topology_artifacts": {
           "anyOf": [
             {
@@ -633,6 +652,21 @@
           ],
           "default": null,
           "title": "System Xml Manifest Path"
+        },
+        "text_files": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Text Files"
         },
         "tolerance_angstrom": {
           "default": 0.05,

@@ -43,8 +43,8 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 
 The public ligand contract is `ligand_chemistry`: prep records
 SDF/SMILES/charge/provenance, and `build_amber_system` resolves the actual
-topology-time path. Amber geostd templates are used when available; otherwise
-OpenFF Molecules are passed to `GAFFTemplateGenerator`.
+topology-time path. Compatible Amber geostd templates are used when available;
+otherwise OpenFF Molecules are passed to `GAFFTemplateGenerator`.
 
 ## Source-Bundle DAG Principle
 

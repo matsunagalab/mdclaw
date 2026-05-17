@@ -140,6 +140,21 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     assert assembly.required_assembly_id == "1"
     assert assembly.min_distinct_output_chains == 4
 
+    provenance_text = DeterministicCheck.model_validate({
+        "check_id": "ion_triage_documented",
+        "check_type": "artifact_provenance_text",
+        "text_files": ["provenance.json", "evidence_report.json"],
+        "required_text_groups": [
+            ["crystallographic"],
+            ["K+", "potassium"],
+        ],
+    })
+    assert provenance_text.check_type == "artifact_provenance_text"
+    assert provenance_text.required_text_groups == [
+        ["crystallographic"],
+        ["K+", "potassium"],
+    ]
+
     topology = DeterministicCheck.model_validate({
         "check_id": "topology_bundle",
         "check_type": "topology_artifact_bundle",

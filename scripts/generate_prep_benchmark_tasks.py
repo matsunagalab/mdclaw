@@ -59,6 +59,21 @@ def _json_min_length(check_id: str, path: str, minimum: int, weight: float = 1.0
     }
 
 
+def _provenance_text_check(
+    check_id: str,
+    required_text_groups: list[list[str]],
+    weight: float = 1.0,
+    text_files: list[str] | None = None,
+) -> dict:
+    return {
+        "check_id": check_id,
+        "check_type": "artifact_provenance_text",
+        "text_files": text_files or ["provenance.json", "evidence_report.json"],
+        "required_text_groups": required_text_groups,
+        "weight": weight,
+    }
+
+
 def _component_check(
     check_id: str,
     *,
@@ -346,15 +361,29 @@ TASK_DEFS: list[dict] = [
         "P07_prep_rna_crystallographic_ions",
         "Crystallographic ion triage",
         "PDB 4RBQ",
-        "prepare oligo(U) RNA while preserving prompt-designated crystallographic K+ ions and excluding irrelevant solvent or buffer components.",
+        "prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system.",
         [
-            _json_check("rna_library_reported", "preparation.nucleic_acid_type", "RNA", 0.3),
-            _component_check("potassium_retained", min_counts={"K": 1}, max_counts={"HOH": 0}, weight=0.45),
-            _json_check("ion_selection_recorded", "preparation.crystallographic_ion_selection_recorded", True, 0.25),
+            _component_check("rna_residues_retained", min_counts={"U": 1}, weight=0.3),
+            _component_check("potassium_retained", min_counts={"K": 1}, weight=0.45),
+            _provenance_text_check(
+                "crystallographic_ion_triage_documented",
+                [
+                    ["crystallographic"],
+                    ["K+", "potassium"],
+                    ["water", "waters", "HOH"],
+                    ["exclude", "excluded", "removed", "not retain"],
+                ],
+                0.25,
+            ),
         ],
         priority=2,
         tags=["rna", "ion_triage"],
         references=[{"source": "PDB 4RBQ", "url": "https://www.rcsb.org/structure/4RBQ"}],
+        prompt_extra=(
+            "Exclude deposited crystallographic waters or buffer molecules during source triage, "
+            "but do not treat the later explicit-solvent water box as an error; bulk water added "
+            "for topology and minimization is expected."
+        ),
     ),
     _task(
         "P08_prep_t4l_l99a_branch",

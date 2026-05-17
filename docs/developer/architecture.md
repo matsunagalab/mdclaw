@@ -227,9 +227,10 @@ serialization -> collect_provenance -> completed
 ```
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
-Molecules. Topology resolves Amber geostd XMLs first and passes the remaining
-ligands to `SystemGenerator` / `GAFFTemplateGenerator`. The prep-to-topology
-ligand handoff is the `ligand_chemistry` artifact.
+Molecules. Topology resolves compatible Amber geostd XMLs first and passes
+ligands with missing or incompatible geostd records to `SystemGenerator` /
+`GAFFTemplateGenerator`. The prep-to-topology ligand handoff is the
+`ligand_chemistry` artifact.
 
 `build_openmm_system` is the research escape hatch for explicit custom OpenMM
 XML. It emits the same XML triple, so downstream `eq` and `prod` nodes consume

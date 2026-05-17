@@ -55,6 +55,7 @@ DeterministicCheckType = Literal[
     "pdb_residue_state",
     "rmsd_recompute",
     "assembly_identity_check",
+    "artifact_provenance_text",
     "topology_artifact_bundle",
     "openmm_system_load",
     "openmm_energy_rescan",
@@ -194,6 +195,10 @@ class DeterministicCheck(BaseModel):
     required_operator_ids: Optional[list[str]] = None
     require_output_chains_in_structure: bool = False
     require_unique_output_chains: bool = False
+
+    # artifact_provenance_text
+    text_files: Optional[list[str]] = None
+    required_text_groups: Optional[list[list[str]]] = None
 
     # metrics_caption_consistency: numeric tolerance (relative)
     relative_tolerance: float = 0.01

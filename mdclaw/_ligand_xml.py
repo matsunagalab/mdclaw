@@ -69,6 +69,7 @@ def convert_geostd_ligand_to_openmm_xml(
         "residue_name": residue_name,
         "atom_count": None,
         "bond_count": None,
+        "total_charge": None,
         "warnings": [],
         "errors": [],
         "code": None,
@@ -176,6 +177,10 @@ def convert_geostd_ligand_to_openmm_xml(
     result["xml_path"] = str(out_path)
     result["atom_count"] = len(rt.atoms)
     result["bond_count"] = len(rt.bonds)
+    result["total_charge"] = sum(
+        float(getattr(atom, "charge", 0.0) or 0.0)
+        for atom in rt.atoms
+    )
     return result
 
 

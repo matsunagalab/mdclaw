@@ -51,6 +51,7 @@ class TestGeostdXmlConversion:
         assert result["xml_path"] == str(out)
         assert result["atom_count"] == 4
         assert result["bond_count"] == 3
+        assert result["total_charge"] == pytest.approx(-0.6759)
 
         base = get_gaff_base_xml_path("gaff-2.2.20")
         assert base, "openmmforcefields gaff-2.2.20.xml not found"
@@ -266,6 +267,154 @@ class TestLigandChemistryAutoDetect:
         assert captured["gaff_base"] == "gaff-2.2.20"
         assert captured["extra_xml"] == [str(geostd_xml)]
         assert result["code"] == "openmmforcefields_build_failed"
+
+    def test_geostd_charge_mismatch_skips_to_gaff(self, tmp_path, monkeypatch):
+        import mdclaw._geostd as geostd
+        import mdclaw.amber_server as amber_server
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\n"
+            "HETATM    2  C1  BEN B   1       5.0   5.0   5.0  1.00  0.00           C\n"
+            "END\n"
+        )
+        sdf = tmp_path / "ben.sdf"
+        sdf.write_text("stub sdf\n")
+        geostd_xml = tmp_path / "BEN.geostd.xml"
+        captured = {}
+
+        def fake_build_geostd_ligand_xml(residue_name, output_dir):
+            assert residue_name == "BEN"
+            return {
+                "success": True,
+                "xml_path": str(geostd_xml),
+                "mol2": str(tmp_path / "BEN.mol2"),
+                "frcmod": str(tmp_path / "BEN.frcmod"),
+                "atom_count": 17,
+                "bond_count": 17,
+                "total_charge": 0.0,
+                "warnings": [],
+            }
+
+        def fake_resolve_xml_bundle(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            geostd,
+            "build_geostd_ligand_xml",
+            fake_build_geostd_ligand_xml,
+        )
+        monkeypatch.setattr(
+            amber_server._ff_catalog,
+            "resolve_xml_bundle",
+            fake_resolve_xml_bundle,
+        )
+
+        result = amber_server.build_amber_system(
+            pdb_file=str(pdb),
+            ligand_chemistry=[
+                {
+                    "sdf": str(sdf),
+                    "residue_name": "BEN",
+                    "net_charge": 1,
+                }
+            ],
+            output_dir=str(tmp_path / "topo"),
+        )
+
+        assert result["success"] is False
+        assert captured["gaff_base"] is None
+        assert captured["extra_xml"] == []
+        assert result["code"] == "openmmforcefields_build_failed"
+        assert any(
+            "Skipping amber_geostd template for BEN" in warning
+            for warning in result["warnings"]
+        )
+
+    def test_geostd_hydrogen_rename_then_template_bond_patch(self):
+        pytest.importorskip("openmm")
+        from types import SimpleNamespace
+
+        from openmm import Vec3, unit
+        from openmm.app import Topology, element
+
+        from mdclaw.amber_server import (
+            _patch_geostd_ligand_hydrogen_names,
+            _patch_template_internal_bonds,
+        )
+
+        topology = Topology()
+        chain = topology.addChain("A")
+        residue = topology.addResidue("LIG", chain, id="1")
+        topology.addAtom("C1", element.carbon, residue)
+        topology.addAtom("H  2", element.hydrogen, residue)
+        topology.addAtom("H  3", element.hydrogen, residue)
+        positions = unit.Quantity(
+            [
+                Vec3(0.000, 0.000, 0.000),
+                Vec3(0.109, 0.000, 0.000),
+                Vec3(0.000, 0.109, 0.000),
+            ],
+            unit.nanometer,
+        )
+        template = SimpleNamespace(
+            atoms=[
+                SimpleNamespace(name="C1"),
+                SimpleNamespace(name="H1"),
+                SimpleNamespace(name="H2"),
+            ],
+            bonds=[(0, 1), (0, 2)],
+            externalBonds=[],
+        )
+        forcefield = SimpleNamespace(_templates={"LIG": template})
+
+        renamed, summaries = _patch_geostd_ligand_hydrogen_names(
+            topology, positions, forcefield, {"LIG"}, unit
+        )
+        assert renamed == 2
+        assert summaries == ["LIG#1:2"]
+        assert {atom.name for atom in residue.atoms()} == {"C1", "H1", "H2"}
+
+        assert _patch_template_internal_bonds(topology, forcefield) == 2
+        assert len(list(topology.bonds())) == 2
+
+    def test_non_geostd_ligand_molecule_bond_patch_uses_atom_order(self):
+        pytest.importorskip("openmm")
+        from types import SimpleNamespace
+
+        from openmm.app import Topology, element
+
+        from mdclaw.amber_server import _patch_ligand_molecule_internal_bonds
+
+        topology = Topology()
+        chain = topology.addChain("B")
+        residue = topology.addResidue("BEN", chain, id="221")
+        for name, elem in (
+            ("C1", element.carbon),
+            ("C2", element.carbon),
+            ("N1", element.nitrogen),
+            ("H  4", element.hydrogen),
+        ):
+            topology.addAtom(name, elem, residue)
+        molecule = SimpleNamespace(
+            n_atoms=4,
+            bonds=[
+                SimpleNamespace(atom1_index=0, atom2_index=1),
+                SimpleNamespace(atom1_index=1, atom2_index=2),
+                SimpleNamespace(atom1_index=2, atom2_index=3),
+            ],
+        )
+
+        added = _patch_ligand_molecule_internal_bonds(
+            topology,
+            [{"residue_name": "BEN"}],
+            [molecule],
+            set(),
+        )
+
+        assert added == 3
+        assert len(list(topology.bonds())) == 3
 
     def test_build_amber_system_auto_detects_ligand_chemistry_json(self, tmp_path):
         from mdclaw.amber_server import build_amber_system

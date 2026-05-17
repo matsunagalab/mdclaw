@@ -201,8 +201,9 @@ Key fields to check:
 
 Rules:
 - Prep records `ligand_chemistry`; topology generation consumes those records
-  by trying Amber geostd templates first and using `GAFFTemplateGenerator` for
-  ligands without a geostd match.
+  by trying compatible Amber geostd templates first and using
+  `GAFFTemplateGenerator` when geostd is missing or incompatible with the
+  recorded ligand charge/atom count.
 - If `recommended_next_action = provide_smiles_or_exclude_ligand`: ask for a
   chemistry source or exclude the ligand; do not continue with an untyped PDB
   ligand.
