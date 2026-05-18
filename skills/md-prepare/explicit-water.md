@@ -92,6 +92,10 @@ mdclaw --job-dir job_xxx --node-id solv_001 embed_in_membrane \
 Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
 On success, the solv node records `is_membrane=true` for downstream topology,
 equilibration, and production.
+If `embed_in_membrane` returns `code=membrane_salt_override_required`, stop and
+ask the user whether to rerun with `--salt-override`. Explain that
+packmol-memgen needs `--salt_override` because neutralization requires a higher
+ion concentration than the requested `--saltcon`; do not enable it silently.
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images

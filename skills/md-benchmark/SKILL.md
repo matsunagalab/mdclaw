@@ -116,7 +116,11 @@ PDB file directly to `build_amber_system` or `build_openmm_system`. For implicit
 prep tasks, exclude explicit ions before topology; if those ions are
 scientifically required, report the mode conflict instead of silently building
 an implicit ion system. A prompt that explicitly asks for vacuum/no-solvent may
-retain explicit ions. For OpenMM / MDClaw submissions, write
+retain explicit ions. If membrane embedding returns
+`code=membrane_salt_override_required`, do not rerun silently; record that
+packmol-memgen needs `--salt_override` / MDClaw `--salt-override` to exceed the
+requested salt concentration for neutralization and ask for human confirmation.
+For OpenMM / MDClaw submissions, write
 manifest.status="completed" only after the required artifacts and minimization
 evidence are complete. Put topology artifacts in
 manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:

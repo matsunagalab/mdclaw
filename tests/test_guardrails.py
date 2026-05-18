@@ -530,6 +530,47 @@ def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
     assert node_data["metadata"]["lipid_type"] == "POPC"
 
 
+def test_embed_in_membrane_stops_for_salt_override_human_decision(tmp_path):
+    input_pdb = tmp_path / "merged.pdb"
+    _write_minimal_pdb(input_pdb)
+    calls = []
+
+    def _fake_packmol_memgen(args, cwd=None, timeout=None):
+        calls.append(list(args))
+        Path(cwd, "packmol-memgen.log").write_text(
+            "WARNING:\n"
+            "The concentration of ions required to neutralize the system is higher "
+            "than the concentration specified.\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+               return_value=True), \
+         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+               side_effect=_fake_packmol_memgen):
+        result = embed_in_membrane(
+            pdb_file=str(input_pdb),
+            output_dir=str(tmp_path),
+            lipids="POPC:POPE:CHL1",
+            ratio="2:1:1",
+            salt=True,
+            saltcon=0.15,
+            salt_override=False,
+            water_model="opc",
+        )
+
+    assert result["success"] is False
+    assert result["code"] == "membrane_salt_override_required"
+    assert result["requires_user_decision"] is True
+    assert result["recommended_next_action"] == "ask_user_to_confirm_salt_override"
+    assert result["salt_override_option"] == "--salt-override"
+    assert result["packmol_memgen_option"] == "--salt_override"
+    assert any("--salt-override" in msg for msg in result["errors"])
+    assert Path(result["initial_packmol_memgen_log"]).exists()
+    assert len(calls) == 1
+    assert "--salt_override" not in calls[0]
+
+
 def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
     pdb_file = tmp_path / "metal.pdb"
     _write_minimal_metal_pdb(pdb_file)
