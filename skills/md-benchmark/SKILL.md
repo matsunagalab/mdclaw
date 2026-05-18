@@ -109,12 +109,16 @@ until success, timeout, or a concrete tool/runtime failure.
 
 For prep tasks, attempt source retrieval, preparation, explicit solvation unless
 the prompt explicitly requests implicit/no-solvent or membrane handling,
-topology build, and minimization evidence. For implicit prep tasks, exclude
-explicit ions before topology; if those ions are scientifically required, report
-the mode conflict instead of silently building an implicit ion system. A prompt
-that explicitly asks for vacuum/no-solvent may retain explicit ions. For OpenMM /
-MDClaw submissions, write manifest.status="completed" only after the required
-artifacts and minimization evidence are complete. Put topology artifacts in
+topology build, and minimization evidence. Run topology from completed MDClaw
+DAG artifacts only: explicit/membrane tasks use the completed `solv` parent,
+implicit/vacuum tasks use the completed `prep` parent. Do not pass a raw/manual
+PDB file directly to `build_amber_system` or `build_openmm_system`. For implicit
+prep tasks, exclude explicit ions before topology; if those ions are
+scientifically required, report the mode conflict instead of silently building
+an implicit ion system. A prompt that explicitly asks for vacuum/no-solvent may
+retain explicit ions. For OpenMM / MDClaw submissions, write
+manifest.status="completed" only after the required artifacts and minimization
+evidence are complete. Put topology artifacts in
 manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:
 ["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]. Also
 write manifest.outputs.minimized_structure and

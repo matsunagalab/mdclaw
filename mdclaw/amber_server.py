@@ -3690,63 +3690,13 @@ def _run_openmmforcefields_build(
         )
         return result
 
-    # --- 2. Hydrogenate via PDBFixer (defensive) + Pablo load ------------
-    # Pablo's CCD-based loader and SystemGenerator's amber XMLs require every
-    # hydrogen to be present. The mdclaw prep pipeline normally takes care of
-    # this upstream, but unit-test inputs and ad-hoc PDBs may arrive without
-    # explicit hydrogens — re-run PDBFixer here so the build is robust.
-    #
-    # Skip ``addMissingHydrogens`` when the input already carries hydrogens.
-    # PDBFixer's hydrogenation routes through ``Modeller.addHydrogens`` which
-    # only knows standard amino acids and nucleotides; for ligands its
-    # ``_downloadNonstandardDefinitions`` pulls a CCD template and adds the
-    # CCD-listed H atoms on top of any existing H of the same name, giving
-    # duplicate H1/H2/HN1/HN21/etc. for ligands that arrive already
-    # hydrogenated from prep. The duplicates then create
-    # ghost residues during ``PDBFile`` parsing and SystemGenerator fails
-    # with ``No template found for residue``.
-    hydrogenated_pdb = out_dir / f"{output_name}.hydrogenated.pdb"
-    _stage("pdbfixer_hydrogenation")
-    try:
-        from pdbfixer import PDBFixer
-        from openmm.app import PDBFile as _PDBFile
-
-        input_has_hydrogens = False
-        try:
-            with pdb_path.open() as fh:
-                for line in fh:
-                    if line.startswith(("ATOM  ", "HETATM")):
-                        element = line[76:78].strip()
-                        # Element column is canonical; fall back to atom-name
-                        # leading letter for legacy PDBs that omit columns 77-78.
-                        if not element:
-                            element = line[12:14].strip().lstrip("0123456789")[:1]
-                        if element.upper() == "H":
-                            input_has_hydrogens = True
-                            break
-        except OSError:
-            pass
-
-        fixer = PDBFixer(filename=str(pdb_path))
-        fixer.findMissingResidues()
-        fixer.findMissingAtoms()
-        fixer.addMissingAtoms()
-        if not input_has_hydrogens:
-            fixer.addMissingHydrogens(7.0)
-        else:
-            result["warnings"].append(
-                "Input PDB already contains hydrogens; skipping PDBFixer "
-                "addMissingHydrogens to avoid duplicating ligand H atoms."
-            )
-        with hydrogenated_pdb.open("w") as fh:
-            _PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
-        pablo_input = hydrogenated_pdb
-    except Exception as exc:  # noqa: BLE001
-        result["warnings"].append(
-            f"PDBFixer hydrogenation failed ({type(exc).__name__}: {exc}); "
-            f"using input PDB as-is."
-        )
-        pablo_input = pdb_path
+    # --- 2. Validate prepared input ownership + Pablo load -----------------
+    # Topology generation must not repair or rewrite the prepared structure.
+    # Missing atoms/hydrogens are a prep-stage problem; here they should surface
+    # as structured topology/template failures instead of being silently
+    # patched by PDBFixer. This preserves prep-owned residue names such as GLH.
+    _stage("topology_input_ready")
+    pablo_input = pdb_path
 
     # Load ligand chemistry into OpenFF Molecules early so we can (a) feed
     # Pablo SMILES for non-CCD ligands like BEN, and (b) hand the non-geostd
@@ -4366,32 +4316,10 @@ def _run_openmmforcefields_build(
 
     _stage("modeller_prepare")
     modeller = Modeller(omm_topology, omm_positions)
-    # Top up residues that the upstream PDBFixer pass left under-hydrogenated
-    # (NLN / GLYCAM linker residues fall through PDBFixer's standard
-    # template list because OpenMM's built-in ``hydrogens.xml`` only knows
-    # standard amino acids/nucleotides. OpenMM ships a separate
-    # ``glycam-hydrogens.xml`` covering NLN / 0YB / 4YA / 4YB / etc. — load
-    # it explicitly via ``Modeller.loadHydrogenDefinitions`` so
-    # ``addHydrogens`` knows which Hs to place where.
-    try:
-        import os as _os
-        import openmm.app as _omm_app_for_data
-        _omm_app_dir = _os.path.dirname(_omm_app_for_data.__file__)
-        _glycam_h_xml = _os.path.join(_omm_app_dir, "data", "glycam-hydrogens.xml")
-        if _os.path.exists(_glycam_h_xml):
-            Modeller.loadHydrogenDefinitions(_glycam_h_xml)
-    except Exception as exc:  # noqa: BLE001
-        result["warnings"].append(
-            f"loadHydrogenDefinitions(glycam-hydrogens.xml) failed: "
-            f"{type(exc).__name__}: {exc}"
-        )
-    try:
-        modeller.addHydrogens(forcefield=sg.forcefield)
-    except Exception as exc:  # noqa: BLE001
-        result["warnings"].append(
-            f"addHydrogens failed (continuing without auto-hydrogen pass): "
-            f"{type(exc).__name__}: {exc}"
-        )
+    # Do not call Modeller.addHydrogens here. Prep owns atom/H completeness and
+    # protonation-state labels; topology build only adds force-field-required
+    # extra particles (for example OPC virtual sites) and then validates by
+    # attempting SystemGenerator.create_system.
     try:
         modeller.addExtraParticles(sg.forcefield)
     except Exception as exc:  # noqa: BLE001

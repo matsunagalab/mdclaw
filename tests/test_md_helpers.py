@@ -1964,6 +1964,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             captured["hmr"] = kwargs.get("hmr")
             captured["implicit_solvent"] = kwargs.get("implicit_solvent")
             captured["water_model"] = kwargs.get("water_model")
+            captured["pdb_path"] = kwargs.get("pdb_path")
             kwargs["system_xml_file"].write_text("<System/>")
             kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
             kwargs["state_xml_file"].write_text("<State/>")
@@ -1987,6 +1988,39 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             }
 
         return captured, _fake
+
+    def test_build_amber_system_does_not_pdbfixer_rewrite_prepared_input(
+        self, tmp_path
+    ):
+        """Topology build must validate the prep artifact, not repair/rewrite it."""
+        from pathlib import Path
+        from unittest.mock import patch
+        from mdclaw.amber_server import build_amber_system
+
+        pdb = tmp_path / "glh_input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   GLH A  11      11.104  13.207  12.011  1.00 20.00           N\n"
+            "ATOM      2  CA  GLH A  11      12.104  13.207  12.011  1.00 20.00           C\n"
+            "ATOM      3  HE2 GLH A  11      13.104  13.207  12.011  1.00 20.00           H\n"
+            "END\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber_server._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                output_dir=str(tmp_path / "topo"),
+            )
+
+        assert result["success"] is True
+        assert " GLH A  11" in Path(captured["pdb_path"]).read_text()
+        assert not list(Path(result["output_dir"]).glob("*.hydrogenated.pdb"))
+        assert not any("PDBFixer" in w for w in result.get("warnings", []))
 
     def test_build_amber_system_passes_hmr_through_to_helper(self, tmp_path):
         """``build_amber_system(hmr=True)`` must reach the helper. The helper

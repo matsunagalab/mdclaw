@@ -22,8 +22,10 @@ structured error (code `forcefield_water_blocked`).
 
 Default solvation mode is **explicit solvent**. Unless the user explicitly
 requests implicit solvent, no-solvent/vacuum topology, or a membrane workflow,
-run `prepare_complex` → `solvate_structure` → `build_amber_system`; do not build
-topology directly from the prep node.
+run `prepare_complex` → `solvate_structure` → `build_amber_system`. Topology
+tools must consume the completed DAG parent artifact (`solvated_pdb` for
+explicit/membrane, `merged_pdb` for implicit/vacuum); never pass a raw/manual
+PDB file directly into topology generation.
 
 Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
 guardrails are authoritative; the skill guidance provides quick references:
@@ -118,6 +120,9 @@ use the HPacker-based `create_mutated_structure` branch in
    `component_disposition.json` rather than hand-writing it. If the user
    explicitly asks for isotope-preserving MD, treat that as unsupported for now
    and stop with a structured explanation instead of silently converting D to H.
+   When creating the `topo` node, use the correct completed parent node and let
+   `build_amber_system` auto-resolve its input; do not supply a free-standing
+   `--pdb-file` or re-enter the workflow from a raw PDB.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
    available:

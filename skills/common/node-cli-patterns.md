@@ -18,6 +18,10 @@ Rules:
   workflow tool with both `--job-dir` and `--node-id`; do not try a bare
   workflow command and then add node context after it fails.
 - Let workflow tools auto-resolve ancestor artifacts whenever possible.
+- For topology tools, this is mandatory in normal workflows: build from the
+  completed `solv` parent for explicit/membrane systems or the completed `prep`
+  parent for implicit/vacuum systems. Do not pass a raw/manual PDB into
+  topology generation.
 - Do not manually wire topology, restart state, or trajectory paths in normal
   DAG flows.
 - Start new scientific work from a `study_dir`; a simple run can use one job

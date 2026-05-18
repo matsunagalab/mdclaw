@@ -108,8 +108,8 @@ def load_topology(
     need to branch.
 
     The caller is responsible for ensuring ``pdb_path`` already has hydrogens
-    (Pablo requires complete chemistry). The mdclaw prep pipeline runs
-    PDBFixer upstream so this is normally satisfied.
+    and complete chemistry. Topology loading does not repair the structure;
+    MDClaw prep owns that responsibility.
     """
     from openmm.app import PDBFile  # local import keeps openmm optional
 

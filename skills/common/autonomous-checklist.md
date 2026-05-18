@@ -27,7 +27,8 @@ retrying.
 5. Create and run a `solv` node with `solvate_structure`.
 6. Run `inspect_openmm_platforms --atom-count <total_atoms> --solvent-type explicit`
    after solvation before local topology/eq/prod.
-7. Create and run a `topo` node with `build_amber_system`.
+7. Create and run a `topo` node with `build_amber_system`; let it auto-resolve
+   the completed `solv` parent's artifact, and do not pass a raw/manual PDB.
 8. Hand off to `skills/md-equilibration/SKILL.md`; use `/md-equilibration`
    only as a harness shortcut. Do not auto-chain stages.
 

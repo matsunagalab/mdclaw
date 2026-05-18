@@ -61,6 +61,10 @@ mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
   --no-is-membrane
 ```
 
+The input PDB is auto-resolved from the completed `prep` parent's `merged_pdb`.
+Do not pass a manual `--pdb-file`; if the prep artifact is wrong, branch a new
+`prep` node and build topology from that completed node.
+
 `build_amber_system` resolves the matching GB XML from
 `forcefield_catalog` (`implicit/gbn2.xml` for GBn2) and bakes the
 resulting `CustomGBForce` / `GBSAOBCForce` into the saved `system.xml`.

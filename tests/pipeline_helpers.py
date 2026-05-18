@@ -66,17 +66,15 @@ def complete_node_with_placeholders(job_dir, node_id, artifacts, **kwargs):
 def require_topology_builder_stack() -> None:
     """Skip the test unless the openmmforcefields topology build stack is importable.
 
-    The curated build path needs ``openmm``, ``openmmforcefields``,
-    ``openff.pablo``, and ``pdbfixer`` (used for defensive hydrogenation
-    inside ``_run_openmmforcefields_build``). Any one of these missing
-    means the integration test cannot exercise the real build path.
+    The curated build path needs ``openmm``, ``openmmforcefields``, and
+    ``openff.pablo``. Any one of these missing means the integration test
+    cannot exercise the real build path.
     """
     missing: list[str] = []
     for module_name, friendly in (
         ("openmm", "openmm"),
         ("openmmforcefields", "openmmforcefields"),
         ("openff.pablo", "openff-pablo"),
-        ("pdbfixer", "pdbfixer"),
     ):
         try:
             __import__(module_name)

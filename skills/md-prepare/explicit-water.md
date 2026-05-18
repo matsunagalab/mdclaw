@@ -112,6 +112,8 @@ mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
 For membrane systems created by `embed_in_membrane`, pass `--is-membrane`
 instead of `--no-is-membrane`.
 These are boolean optional CLI flags; do not pass `true` / `false` values.
+Do not pass a manual `--pdb-file`; if the wrong structure would be resolved,
+fix the upstream `prep`/`solv` branch and create a new `topo` node.
 
 If topology output is quiet, inspect `nodes/<topo_id>/node.json` and report
 `metadata.topology_build_stage`, `metadata.topology_build_stage_updated_at`,
@@ -120,8 +122,9 @@ such as `modeller_prepare`, `system_generator_create_system`, and
 `initial_minimization` can be slow on CPU; retry or branch only after the node
 has failed, completed, or the user explicitly abandons it.
 
-`build_amber_system` is the curated Amber → OpenMM system builder. It runs
-the prepared PDB through OpenFF Pablo, applies the resolved Amber XML
+`build_amber_system` is the curated Amber → OpenMM system builder for completed
+prep/solv DAG artifacts. It runs the resolved prepared/solvated PDB through
+OpenFF Pablo, applies the resolved Amber XML
 bundle via `openmmforcefields.SystemGenerator` (geostd XML for matching
 ligands, otherwise `GAFFTemplateGenerator`, using prep's `ligand_chemistry`
 artifact), and emits the modern artifact triple `system.system.xml` +

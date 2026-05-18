@@ -220,7 +220,7 @@ flowchart LR
 Stages recorded under `topo_NNN/metadata.topology_build_stage_history` include:
 
 ```text
-resolve_forcefield_xml -> pdbfixer_hydrogenation ->
+resolve_forcefield_xml -> topology_input_ready ->
 load_ligand_molecules -> pablo_load -> system_generator_init ->
 modeller_prepare -> system_generator_create_system -> initial_minimization ->
 serialization -> collect_provenance -> completed
