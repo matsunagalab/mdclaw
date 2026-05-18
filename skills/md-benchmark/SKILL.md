@@ -116,10 +116,18 @@ PDB file directly to `build_amber_system` or `build_openmm_system`. For implicit
 prep tasks, exclude explicit ions before topology; if those ions are
 scientifically required, report the mode conflict instead of silently building
 an implicit ion system. A prompt that explicitly asks for vacuum/no-solvent may
-retain explicit ions. If membrane embedding returns
-`code=membrane_salt_override_required`, do not rerun silently; record that
-packmol-memgen needs `--salt_override` / MDClaw `--salt-override` to exceed the
-requested salt concentration for neutralization and ask for human confirmation.
+retain explicit ions. Explicit solvation/membrane tools first try the requested
+salt concentration; if neutralization requires more ions, they may automatically
+rerun packmol-memgen with `--salt_override` while keeping explicit-solvent mode
+unchanged. Record the warning/metadata in provenance and metrics evidence.
+For nucleic-acid prep tasks such as P15/P16/P17, submit the
+hydrogen-complete standard DNA/RNA prep artifact written by `prepare_complex`;
+do not rely on topology-time hydrogen repair.
+For terminal-capping tasks, use `prepare_complex --n-terminal-cap ACE` and/or
+`--c-terminal-cap NME` according to the prompt. Use `--cap-termini` only when
+both caps are requested. If the prompt specifies a non-default protein force
+field, pass it through `--terminal-cap-forcefield` so prep-stage cap hydrogens
+are rebuilt with the same protein template family.
 For OpenMM / MDClaw submissions, write
 manifest.status="completed" only after the required artifacts and minimization
 evidence are complete. Put topology artifacts in

@@ -47,6 +47,14 @@ def _write_minimal_pdb(path: Path) -> None:
     )
 
 
+def _write_minimal_box_pdb(path: Path) -> None:
+    path.write_text(
+        "CRYST1   30.000   30.000   30.000  90.00  90.00  90.00 P 1           1\n"
+        "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+        "END\n"
+    )
+
+
 def _write_minimal_metal_pdb(path: Path) -> None:
     path.write_text(
         "HETATM    1 ZN   ZN  A   1      10.000  10.000  10.000  1.00 20.00          ZN\n"
@@ -530,18 +538,64 @@ def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
     assert node_data["metadata"]["lipid_type"] == "POPC"
 
 
-def test_embed_in_membrane_stops_for_salt_override_human_decision(tmp_path):
+def test_solvate_structure_applies_salt_override_fallback_with_warning(tmp_path):
     input_pdb = tmp_path / "merged.pdb"
     _write_minimal_pdb(input_pdb)
     calls = []
 
     def _fake_packmol_memgen(args, cwd=None, timeout=None):
         calls.append(list(args))
-        Path(cwd, "packmol-memgen.log").write_text(
-            "WARNING:\n"
-            "The concentration of ions required to neutralize the system is higher "
-            "than the concentration specified.\n"
+        if len(calls) == 1:
+            Path(cwd, "packmol-memgen.log").write_text(
+                "WARNING:\n"
+                "The concentration of ions required to neutralize the system is higher "
+                "than the concentration specified.\n"
+            )
+            return SimpleNamespace(stdout="", stderr="")
+        output_path = Path(args[args.index("-o") + 1])
+        _write_minimal_box_pdb(output_path)
+        return SimpleNamespace(stdout="", stderr="")
+
+    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+               return_value=True), \
+         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+               side_effect=_fake_packmol_memgen):
+        result = solvate_structure(
+            pdb_file=str(input_pdb),
+            output_dir=str(tmp_path),
+            salt=True,
+            saltcon=0.15,
+            water_model="opc",
         )
+
+    assert result["success"] is True
+    assert result["salt_override_required"] is True
+    assert result["salt_override_applied"] is True
+    assert result["packmol_memgen_option"] == "--salt_override"
+    assert result["parameters"]["salt_override_applied"] is True
+    assert any("--salt_override" in msg for msg in result["warnings"])
+    assert Path(result["initial_packmol_memgen_log"]).exists()
+    assert len(calls) == 2
+    assert "--salt_override" not in calls[0]
+    assert "--salt_override" in calls[1]
+
+
+def test_embed_in_membrane_applies_salt_override_fallback_with_warning(tmp_path):
+    input_pdb = tmp_path / "merged.pdb"
+    _write_minimal_pdb(input_pdb)
+    calls = []
+
+    def _fake_packmol_memgen(args, cwd=None, timeout=None):
+        calls.append(list(args))
+        if len(calls) == 1:
+            Path(cwd, "packmol-memgen.log").write_text(
+                "WARNING:\n"
+                "The concentration of ions required to neutralize the system is higher "
+                "than the concentration specified.\n"
+            )
+            return SimpleNamespace(stdout="", stderr="")
+        output_path = Path(args[args.index("-o") + 1])
+        _write_minimal_box_pdb(output_path)
         return SimpleNamespace(stdout="", stderr="")
 
     with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
@@ -559,16 +613,16 @@ def test_embed_in_membrane_stops_for_salt_override_human_decision(tmp_path):
             water_model="opc",
         )
 
-    assert result["success"] is False
-    assert result["code"] == "membrane_salt_override_required"
-    assert result["requires_user_decision"] is True
-    assert result["recommended_next_action"] == "ask_user_to_confirm_salt_override"
-    assert result["salt_override_option"] == "--salt-override"
+    assert result["success"] is True
+    assert result["salt_override_required"] is True
+    assert result["salt_override_applied"] is True
     assert result["packmol_memgen_option"] == "--salt_override"
-    assert any("--salt-override" in msg for msg in result["errors"])
+    assert result["parameters"]["salt_override_applied"] is True
+    assert any("--salt_override" in msg for msg in result["warnings"])
     assert Path(result["initial_packmol_memgen_log"]).exists()
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "--salt_override" not in calls[0]
+    assert "--salt_override" in calls[1]
 
 
 def test_parameterize_metal_ion_defaults_to_opc(tmp_path):

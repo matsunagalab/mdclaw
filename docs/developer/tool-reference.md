@@ -30,9 +30,17 @@ skill examples.
   resolves the source bundle from the `source` ancestor, selects one normalized
   candidate via `source_structure_id` / `source_candidate_id` /
   `source_model_index` when needed, and records `source_selection.json`.
+  Standard DNA/RNA chains are hydrogen-rebuilt with OpenMM Modeller using the
+  current DNA.OL15/RNA.OL3 XML libraries before topology. DNA.OL24 is deferred
+  until openmmforcefields ships a released `DNA.OL24.xml`. Terminal caps can be
+  requested independently with `n_terminal_cap="ACE"` and/or
+  `c_terminal_cap="NME"`; the legacy `cap_termini=True` shortcut means both.
+  ACE/NME cap hydrogens are completed in prep with OpenMM Modeller using the
+  requested `terminal_cap_forcefield` or the ff19SB default.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
-  OpenMM `Modeller.addHydrogens(variants=...)`.
+  OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,
+  cap-specific H completion runs here; topology builders do not repair them.
 - `clean_ligand(...)`: ligand chemistry cleaning; emits SDF/PDB chemistry
   artifacts for topology-time ligand force-field resolution.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
@@ -74,7 +82,9 @@ skill examples.
 ## `solvation_server.py`
 
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
-  resolves from the nearest prep ancestor.
+  resolves from the nearest prep ancestor. It first tries the requested salt
+  concentration and records a warning if it must rerun packmol-memgen with
+  `--salt_override` to satisfy neutralization.
 - `embed_in_membrane(...)`: membrane embedding and solvation.
 - `list_available_lipids(...)`: lipid inventory.
 

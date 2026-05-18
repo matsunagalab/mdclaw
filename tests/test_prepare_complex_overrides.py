@@ -186,6 +186,78 @@ class TestComponentDisposition:
         assert disposition["entries"] == []
 
 
+class TestTerminalCaps:
+
+    def test_resolve_terminal_cap_settings_supports_one_sided_caps(self):
+        from mdclaw import structure_server as ss
+
+        assert ss._resolve_terminal_cap_settings(
+            cap_termini=False,
+            n_terminal_cap="ACE",
+            c_terminal_cap=None,
+        ) == ("ACE", None)
+        assert ss._resolve_terminal_cap_settings(
+            cap_termini=False,
+            n_terminal_cap=None,
+            c_terminal_cap="NME",
+        ) == (None, "NME")
+        assert ss._resolve_terminal_cap_settings(
+            cap_termini=True,
+            n_terminal_cap=None,
+            c_terminal_cap=None,
+        ) == ("ACE", "NME")
+
+        with pytest.raises(ValueError):
+            ss._resolve_terminal_cap_settings(
+                cap_termini=False,
+                n_terminal_cap="NME",
+                c_terminal_cap=None,
+            )
+
+    def test_terminal_cap_hydrogen_completion_adds_cap_hydrogens(self, tmp_path):
+        pytest.importorskip("openmmforcefields")
+        from mdclaw import structure_server as ss
+
+        capped = tmp_path / "ace_ala_nme_missing_cap_h.pdb"
+        capped.write_text(textwrap.dedent("""\
+            ATOM      1  CH3 ACE A   1       2.000   1.000   0.000  1.00  0.00           C
+            ATOM      2  C   ACE A   1       0.517   0.768   0.000  1.00  0.00           C
+            ATOM      3  O   ACE A   1       0.018   0.768  -1.133  1.00  0.00           O
+            ATOM      4  N   ALA A   2      -0.150   0.540   1.114  1.00  0.00           N
+            ATOM      5  CA  ALA A   2      -1.600   0.308   1.114  1.00  0.00           C
+            ATOM      6  HA  ALA A   2      -1.949  -0.013   0.138  1.00  0.00           H
+            ATOM      7  CB  ALA A   2      -1.905  -0.770   2.152  1.00  0.00           C
+            ATOM      8  C   ALA A   2      -2.326   1.608   1.432  1.00  0.00           C
+            ATOM      9  O   ALA A   2      -1.738   2.399   2.170  1.00  0.00           O
+            ATOM     10  N   NME A   3      -3.537   1.817   0.909  1.00  0.00           N
+            ATOM     11  CH3 NME A   3      -4.300   3.029   1.180  1.00  0.00           C
+            TER
+            END
+            """))
+
+        result = ss._complete_terminal_cap_hydrogens_with_modeller(
+            capped,
+            expected_caps={"NME"},
+            forcefield_name="ff19SB",
+            ph=7.4,
+        )
+
+        assert result["success"] is True, result
+        assert Path(result["output_file"]).exists()
+        assert result["forcefield"] == "ff19SB"
+        assert result["forcefield_xml"] == "amber/protein.ff19SB.xml"
+        assert result["cap_hydrogens_added"] >= 4
+        assert result["cap_hydrogen_count_after"]["NME"] >= 4
+
+        output_text = Path(result["output_file"]).read_text()
+        assert " NME " in output_text
+        assert any(
+            line[17:20].strip() == "NME" and line[12:16].strip().startswith("H")
+            for line in output_text.splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        )
+
+
 class TestHistidineOverride:
 
     def test_histidine_states_override_flagged_in_confirmation(

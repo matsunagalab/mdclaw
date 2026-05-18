@@ -404,33 +404,34 @@ def _preserve_packmol_memgen_log(out_dir: Path, output_name: str) -> Optional[Pa
     return destination
 
 
-def _mark_membrane_salt_override_required(
+def _append_salt_override_arg(args: list[str]) -> None:
+    """Add packmol-memgen's salt override flag once."""
+    if "--salt_override" not in args:
+        args.append("--salt_override")
+
+
+def _record_salt_override_fallback(
     *,
     result: dict,
     out_dir: Path,
     output_name: str,
     saltcon: float,
+    mode: str,
 ) -> None:
-    """Stop for human confirmation when packmol-memgen needs salt override."""
+    """Record that packmol-memgen needed salt override for neutralization."""
     preserved_log = _preserve_packmol_memgen_log(out_dir, output_name)
     message = (
-        "packmol-memgen needs --salt_override to continue: the ion concentration "
-        f"required to neutralize this membrane system is higher than the requested "
-        f"saltcon={saltcon} M. Stop and ask the user whether to rerun "
-        "MDClaw embed_in_membrane with --salt-override."
+        "packmol-memgen required --salt_override: the ion concentration needed "
+        f"to neutralize this {mode} system is higher than the requested "
+        f"saltcon={saltcon} M. MDClaw automatically reran packmol-memgen with "
+        "--salt_override while keeping explicit-solvent mode unchanged."
     )
-    result["code"] = "membrane_salt_override_required"
-    result["requires_user_decision"] = True
-    result["recommended_next_action"] = "ask_user_to_confirm_salt_override"
     result["salt_override_required"] = True
-    result["salt_override_option"] = "--salt-override"
+    result["salt_override_applied"] = True
     result["packmol_memgen_option"] = "--salt_override"
     result["parameters"]["salt_override_required"] = True
-    result["errors"].append(message)
-    result["warnings"].append(
-        "Human-in-the-loop required before using --salt-override because it allows "
-        "packmol-memgen to exceed the requested salt concentration for neutralization."
-    )
+    result["parameters"]["salt_override_applied"] = True
+    result["warnings"].append(message)
     if preserved_log is not None:
         result["initial_packmol_memgen_log"] = str(preserved_log)
     logger.warning(message)
@@ -633,6 +634,7 @@ def solvate_structure(
     salt_c: str = "Na+",
     salt_a: str = "Cl-",
     saltcon: float = 0.15,
+    salt_override: bool = False,
     overwrite: bool = True,
     notprotonate: bool = True,
     preoriented: bool = True,
@@ -667,6 +669,11 @@ def solvate_structure(
         salt_c: Cation type (default: "Na+"). Options: Na+, K+, etc.
         salt_a: Anion type (default: "Cl-"). Options: Cl-, etc.
         saltcon: Salt concentration in Molar (default: 0.15)
+        salt_override: Continue if neutralization requires more ions than
+                      the requested salt concentration. If False, MDClaw first
+                      tries the requested saltcon and automatically reruns once
+                      with packmol-memgen's --salt_override when that is the
+                      only blocker.
         overwrite: Overwrite existing output files (default: True)
         notprotonate: Skip protonation by reduce (default: True, assumes pre-protonated)
         preoriented: (Ignored for --solvate mode, automatically set to True by packmol-memgen)
@@ -725,7 +732,8 @@ def solvate_structure(
             "salt": salt,
             "salt_c": salt_c,
             "salt_a": salt_a,
-            "saltcon": saltcon
+            "saltcon": saltcon,
+            "salt_override": salt_override,
         },
         "packmol_log": None,
         "statistics": {},
@@ -767,6 +775,7 @@ def solvate_structure(
                 "salt_c": salt_c,
                 "salt_a": salt_a,
                 "saltcon": saltcon,
+                "salt_override": salt_override,
             },
         )
         if not _ctx["success"]:
@@ -939,6 +948,8 @@ def solvate_structure(
                 '--salt_a', salt_a,
                 '--saltcon', str(saltcon)
             ])
+            if salt_override:
+                _append_salt_override_arg(args)
         
         if overwrite:
             args.append('--overwrite')
@@ -963,9 +974,55 @@ def solvate_structure(
 
         # Run packmol-memgen (no need for env_vars since we pass --packmol)
         solvation_timeout = get_timeout("solvation")
-        proc_result = packmol_memgen_wrapper.run(args, cwd=out_dir, timeout=solvation_timeout)
-
         packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
+        try:
+            proc_result = packmol_memgen_wrapper.run(
+                args, cwd=out_dir, timeout=solvation_timeout
+            )
+        except subprocess.CalledProcessError as exc:
+            diagnostics = _packmol_memgen_diagnostics(
+                out_dir=out_dir,
+                output_name=output_name,
+                exc=exc,
+            )
+            if salt and not salt_override and _diagnostics_require_salt_override(diagnostics):
+                _record_salt_override_fallback(
+                    result=result,
+                    out_dir=out_dir,
+                    output_name=output_name,
+                    saltcon=saltcon,
+                    mode="solvated",
+                )
+                _append_salt_override_arg(args)
+                proc_result = packmol_memgen_wrapper.run(
+                    args, cwd=out_dir, timeout=solvation_timeout
+                )
+            else:
+                raise
+        else:
+            diagnostics = _packmol_memgen_diagnostics(
+                out_dir=out_dir,
+                output_name=output_name,
+                proc_result=proc_result,
+            )
+            if (
+                salt
+                and not salt_override
+                and not output_file.exists()
+                and _diagnostics_require_salt_override(diagnostics)
+            ):
+                _record_salt_override_fallback(
+                    result=result,
+                    out_dir=out_dir,
+                    output_name=output_name,
+                    saltcon=saltcon,
+                    mode="solvated",
+                )
+                _append_salt_override_arg(args)
+                proc_result = packmol_memgen_wrapper.run(
+                    args, cwd=out_dir, timeout=solvation_timeout
+                )
+
         _run_packmol_if_needed(
             output_file=output_file,
             packmol_inp_file=packmol_inp_file,
@@ -1097,8 +1154,10 @@ def embed_in_membrane(
         salt_c: Cation type (default: "Na+")
         salt_a: Anion type (default: "Cl-")
         saltcon: Salt concentration in Molar (default: 0.15)
-        salt_override: Continue even if salt concentration is less than needed for
-                       neutralization (default: False). Useful for charged lipids.
+        salt_override: Start with packmol-memgen's --salt_override already
+                       enabled. If False, MDClaw first tries the requested
+                       saltcon and automatically reruns once with
+                       --salt_override when neutralization requires it.
         overwrite: Overwrite existing output files (default: True)
         notprotonate: Skip protonation (default: True, assumes pre-protonated)
         keepligs: Keep ligands in the structure (default: True). Important when
@@ -1319,7 +1378,7 @@ def embed_in_membrane(
                 '--saltcon', str(saltcon)
             ])
             if salt_override:
-                args.append('--salt_override')
+                _append_salt_override_arg(args)
 
         # WORKAROUND: packmol-memgen has a bug where --overwrite causes MEMEMBED to be
         # skipped when preoriented=False. The condition in memembed_align() is:
@@ -1366,25 +1425,20 @@ def embed_in_membrane(
                 exc=exc,
             )
             if salt and not salt_override and _diagnostics_require_salt_override(diagnostics):
-                _mark_membrane_salt_override_required(
+                _record_salt_override_fallback(
                     result=result,
                     out_dir=out_dir,
                     output_name=output_name,
                     saltcon=saltcon,
+                    mode="membrane",
                 )
-                proc_result = exc
+                _append_salt_override_arg(args)
+                proc_result = packmol_memgen_wrapper.run(
+                    args, cwd=out_dir, timeout=membrane_timeout
+                )
             else:
                 raise
         else:
-            _run_packmol_if_needed(
-                output_file=output_file,
-                packmol_inp_file=packmol_inp_file,
-                packmol_path=packmol_path,
-                out_dir=out_dir,
-                output_name=output_name,
-                timeout=membrane_timeout,
-                result=result,
-            )
             diagnostics = _packmol_memgen_diagnostics(
                 out_dir=out_dir,
                 output_name=output_name,
@@ -1396,27 +1450,36 @@ def embed_in_membrane(
                 and not output_file.exists()
                 and _diagnostics_require_salt_override(diagnostics)
             ):
-                _mark_membrane_salt_override_required(
+                _record_salt_override_fallback(
                     result=result,
                     out_dir=out_dir,
                     output_name=output_name,
                     saltcon=saltcon,
+                    mode="membrane",
+                )
+                _append_salt_override_arg(args)
+                proc_result = packmol_memgen_wrapper.run(
+                    args, cwd=out_dir, timeout=membrane_timeout
                 )
 
-        if result.get("code") == "membrane_salt_override_required":
-            # Stop here for human-in-the-loop confirmation instead of silently
-            # rerunning with packmol-memgen's --salt_override.
-            pass
-        else:
-            _record_packmol_memgen_output(
-                output_file=output_file,
-                packmol_inp_file=packmol_inp_file,
-                out_dir=out_dir,
-                output_name=output_name,
-                proc_result=proc_result,
-                result=result,
-                success_message="Successfully embedded structure in membrane",
-            )
+        _run_packmol_if_needed(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            packmol_path=packmol_path,
+            out_dir=out_dir,
+            output_name=output_name,
+            timeout=membrane_timeout,
+            result=result,
+        )
+        _record_packmol_memgen_output(
+            output_file=output_file,
+            packmol_inp_file=packmol_inp_file,
+            out_dir=out_dir,
+            output_name=output_name,
+            proc_result=proc_result,
+            result=result,
+            success_message="Successfully embedded structure in membrane",
+        )
         
     except Exception as e:
         error_msg = f"Error during membrane embedding: {type(e).__name__}: {str(e)}"

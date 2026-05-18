@@ -32,6 +32,45 @@ ATOM     24  O3'   U B   2       9.000  14.000   0.000  1.00  0.00           O
 END
 """
 
+_STANDARD_NUCLEIC_REBUILD_PDB = """\
+ATOM      1  O5'  DC A   1     -19.071   4.593   5.171  1.00 35.30           O
+ATOM      2  C5'  DC A   1     -19.480   5.704   5.922  1.00 33.81           C
+ATOM      3  C4'  DC A   1     -18.585   6.910   5.665  1.00 34.46           C
+ATOM      4  O4'  DC A   1     -17.346   6.758   6.394  1.00 33.94           O
+ATOM      5  C3'  DC A   1     -18.161   7.117   4.222  1.00 33.34           C
+ATOM      6  O3'  DC A   1     -19.138   7.834   3.512  1.00 30.79           O
+ATOM      7  C2'  DC A   1     -16.870   7.899   4.375  1.00 32.88           C
+ATOM      8  C1'  DC A   1     -16.265   7.277   5.623  1.00 32.31           C
+ATOM      9  N1   DC A   1     -15.327   6.176   5.327  1.00 29.52           N
+ATOM     10  C2   DC A   1     -14.122   6.463   4.683  1.00 27.09           C
+ATOM     11  O2   DC A   1     -13.889   7.623   4.356  1.00 28.83           O
+ATOM     12  N3   DC A   1     -13.266   5.463   4.420  1.00 28.28           N
+ATOM     13  C4   DC A   1     -13.567   4.223   4.782  1.00 30.37           C
+ATOM     14  N4   DC A   1     -12.677   3.267   4.505  1.00 29.19           N
+ATOM     15  C5   DC A   1     -14.787   3.912   5.454  1.00 31.39           C
+ATOM     16  C6   DC A   1     -15.628   4.909   5.695  1.00 29.01           C
+ATOM     17  O5'   A B   1      10.751   3.325 -41.079  1.00 29.78           O
+ATOM     18  C5'   A B   1       9.400   2.902 -41.189  1.00 28.67           C
+ATOM     19  C4'   A B   1       9.308   1.418 -41.432  1.00 26.37           C
+ATOM     20  O4'   A B   1       9.991   1.081 -42.670  1.00 22.63           O
+ATOM     21  C3'   A B   1       9.979   0.529 -40.397  1.00 27.52           C
+ATOM     22  O3'   A B   1       9.209   0.333 -39.226  1.00 31.63           O
+ATOM     23  C2'   A B   1      10.231  -0.745 -41.184  1.00 23.82           C
+ATOM     24  O2'   A B   1       9.032  -1.490 -41.347  1.00 23.53           O
+ATOM     25  C1'   A B   1      10.634  -0.170 -42.537  1.00 21.54           C
+ATOM     26  N9    A B   1      12.089   0.041 -42.619  1.00 19.19           N
+ATOM     27  C8    A B   1      12.784   1.224 -42.588  1.00 19.31           C
+ATOM     28  N7    A B   1      14.084   1.073 -42.683  1.00 18.78           N
+ATOM     29  C5    A B   1      14.254  -0.303 -42.776  1.00 17.46           C
+ATOM     30  C6    A B   1      15.393  -1.117 -42.901  1.00 16.65           C
+ATOM     31  N6    A B   1      16.644  -0.651 -42.954  1.00 17.63           N
+ATOM     32  N1    A B   1      15.202  -2.453 -42.977  1.00 15.99           N
+ATOM     33  C2    A B   1      13.952  -2.930 -42.926  1.00 15.57           C
+ATOM     34  N3    A B   1      12.804  -2.268 -42.809  1.00 15.87           N
+ATOM     35  C4    A B   1      13.031  -0.947 -42.740  1.00 17.48           C
+END
+"""
+
 
 def _write_pdb(tmp_path: Path, text: str = _DNA_RNA_PDB) -> str:
     path = tmp_path / "dna_rna.pdb"
@@ -112,20 +151,48 @@ def test_split_molecules_emits_nucleic_files(tmp_path):
     assert {i["chain_type"] for i in result["chain_file_info"]} == {"nucleic"}
 
 
-def test_prepare_complex_passes_nucleics_through(tmp_path):
+def test_prepare_complex_rebuilds_standard_nucleic_hydrogens(tmp_path):
     from mdclaw.structure_server import prepare_complex
 
     result = prepare_complex(
-        structure_file=_write_pdb(tmp_path),
+        structure_file=_write_pdb(tmp_path, _STANDARD_NUCLEIC_REBUILD_PDB),
         output_dir=str(tmp_path / "prep"),
     )
 
     assert result["success"], result.get("errors")
     assert len(result["nucleics"]) == 2
     assert all(n["success"] for n in result["nucleics"])
+    dna = next(n for n in result["nucleics"] if n["nucleic_subtype"] == "dna")
+    rna = next(n for n in result["nucleics"] if n["nucleic_subtype"] == "rna")
+    assert dna["hydrogen_rebuild_method"] == "openmm_modeller"
+    assert dna["nucleic_forcefield_xml"] == "amber/DNA.OL15.xml"
+    assert dna["hydrogens_added"] > 0
+    assert rna["hydrogen_rebuild_method"] == "openmm_modeller"
+    assert rna["nucleic_forcefield_xml"] == "amber/RNA.OL3.xml"
+    assert rna["hydrogens_added"] > 0
+    assert Path(dna["output_file"]).read_text().count(" H") > 0
     assert result["merged_pdb"]
     assert result["preparation_summary"]["has_nucleic"] is True
     assert set(result["preparation_summary"]["nucleic_subtypes"]) == {"dna", "rna"}
+    assert result["preparation_summary"]["nucleic_hydrogens_added"] > 0
+
+
+def test_standard_nucleic_hydrogen_rebuild_failure_has_stable_code(tmp_path):
+    from mdclaw.structure_server import _prepare_standard_nucleic
+
+    incomplete = """\
+ATOM      1  P    DA A   1       0.000   0.000   0.000  1.00  0.00           P
+ATOM      2  O5'  DA A   1       1.000   0.000   0.000  1.00  0.00           O
+END
+"""
+    result = _prepare_standard_nucleic(
+        _write_pdb(tmp_path, incomplete),
+        nucleic_subtype="dna",
+        ph=7.4,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "nucleic_hydrogen_rebuild_failed"
 
 
 def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path):

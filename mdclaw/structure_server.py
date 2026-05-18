@@ -51,6 +51,10 @@ PDB_CHAIN_ID_POOL = (
     + list("abcdefghijklmnopqrstuvwxyz")
     + list("0123456789")
 )
+DEFAULT_TERMINAL_CAP_FORCEFIELD = "ff19SB"
+SUPPORTED_N_TERMINAL_CAPS = {"ACE"}
+SUPPORTED_C_TERMINAL_CAPS = {"NME"}
+TERMINAL_CAP_RESIDUES = SUPPORTED_N_TERMINAL_CAPS | SUPPORTED_C_TERMINAL_CAPS
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -2142,6 +2146,9 @@ def clean_protein(
     pdb_file: str,
     ignore_terminal_missing_residues: bool = True,
     cap_termini: bool = False,
+    n_terminal_cap: str | None = None,
+    c_terminal_cap: str | None = None,
+    terminal_cap_forcefield: str | None = None,
     replace_nonstandard_residues: bool = True,
     remove_heterogens: bool = True,
     keep_water: bool = False,
@@ -2162,12 +2169,16 @@ def clean_protein(
         pdb_file: Input protein PDB or mmCIF file path (single chain from split_molecules)
         ignore_terminal_missing_residues: Ignore missing residues at chain termini
                                           instead of modeling them (default: True)
-        cap_termini: Flag to indicate that ACE/NME caps should be added to termini.
-                     Note: PDBFixer cannot add caps directly. When True, the return dict
-                     will include cap_termini_required=True to signal that downstream
-                     tooling needs to add caps before openmmforcefields can build the
-                     System (PDBFixer leaves the original termini in place).
-                     (default: False)
+        cap_termini: Backward-compatible shortcut for adding ACE at the
+                     N terminus and NME at the C terminus (default: False).
+        n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
+                        ``"ACE"`` or an explicit none-like value.
+        c_terminal_cap: Optional one-sided C-terminal cap. Currently supports
+                        ``"NME"`` or an explicit none-like value.
+        terminal_cap_forcefield: Protein force field used only for OpenMM
+                                 Modeller cap-hydrogen completion. Defaults
+                                 to ff19SB; pass the planned topology protein
+                                 force field when it differs.
         replace_nonstandard_residues: Replace non-standard residues with standard ones (default: True)
         remove_heterogens: Remove heteroatoms (ligands, ions, etc.) (default: True)
         keep_water: Keep water molecules when removing heterogens (default: False)
@@ -2194,6 +2205,10 @@ def clean_protein(
             - cap_termini_required: bool - True if ACE/NME caps still need to be
               added before openmmforcefields can build the System (PDBFixer cannot
               add caps directly).
+            - n_terminal_cap: str | None - Applied/requested N-terminal cap.
+            - c_terminal_cap: str | None - Applied/requested C-terminal cap.
+            - terminal_cap_hydrogen_completion: dict - OpenMM Modeller cap-H
+              completion report when ACE/NME caps are present.
             - operations: list[dict] - Details of each operation performed
             - warnings: list[str] - Non-critical issues encountered
             - errors: list[str] - Critical errors (empty if success=True)
@@ -2209,6 +2224,11 @@ def clean_protein(
         "output_file": None,
         "input_file": str(pdb_file),
         "cap_termini_required": False,
+        "n_terminal_cap": None,
+        "c_terminal_cap": None,
+        "terminal_caps": {},
+        "terminal_cap_forcefield": terminal_cap_forcefield or DEFAULT_TERMINAL_CAP_FORCEFIELD,
+        "terminal_cap_hydrogen_completion": None,
         "operations": [],
         "warnings": [],
         "errors": [],
@@ -2223,10 +2243,25 @@ def clean_protein(
             protonation_states=protonation_states,
             histidine_states=histidine_states,
         )
+        resolved_n_terminal_cap, resolved_c_terminal_cap = _resolve_terminal_cap_settings(
+            cap_termini=cap_termini,
+            n_terminal_cap=n_terminal_cap,
+            c_terminal_cap=c_terminal_cap,
+        )
     except ValueError as exc:
         result["errors"].append(str(exc))
-        result["code"] = "invalid_protonation_state"
+        result["code"] = (
+            "invalid_terminal_cap"
+            if "terminal cap" in str(exc)
+            else "invalid_protonation_state"
+        )
         return result
+    result["n_terminal_cap"] = resolved_n_terminal_cap
+    result["c_terminal_cap"] = resolved_c_terminal_cap
+    result["terminal_caps"] = {
+        "n_terminal": resolved_n_terminal_cap,
+        "c_terminal": resolved_c_terminal_cap,
+    }
     
     # Validate input file
     input_path = Path(pdb_file)
@@ -2293,7 +2328,8 @@ def clean_protein(
         chains = list(fixer.topology.chains())
         
         # Step 1a: Handle terminal missing residues
-        if ignore_terminal_missing_residues and not cap_termini:
+        terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
+        if ignore_terminal_missing_residues and not terminal_caps_requested:
             # Remove terminal missing residues from the dictionary
             keys_to_remove = []
             for key in list(fixer.missingResidues.keys()):
@@ -2314,23 +2350,35 @@ def clean_protein(
                 })
                 result["warnings"].append(f"Ignored {len(keys_to_remove)} terminal missing residue(s)")
         
-        # Step 1b: Add ACE/NME caps if requested
-        if cap_termini:
+        # Step 1b: Add requested terminal caps. ``cap_termini=True`` resolves
+        # to the historical ACE+NME pair; explicit one-sided cap arguments
+        # can request only one terminus.
+        if terminal_caps_requested:
             capped_chains = []
             for chain_idx, chain in enumerate(chains):
                 chain_length = len(list(chain.residues()))
-                # Force add ACE cap at N-terminus (position 0)
-                fixer.missingResidues[chain_idx, 0] = ['ACE']
-                # Force add NME cap at C-terminus (position after last residue)
-                fixer.missingResidues[chain_idx, chain_length] = ['NME']
+                if resolved_n_terminal_cap:
+                    fixer.missingResidues[chain_idx, 0] = [resolved_n_terminal_cap]
+                if resolved_c_terminal_cap:
+                    fixer.missingResidues[chain_idx, chain_length] = [resolved_c_terminal_cap]
                 capped_chains.append(chain.id)
             
             result["operations"].append({
                 "step": "terminal_caps",
                 "status": "added_to_missing",
-                "details": f"Added ACE/NME caps as missing residues for {len(capped_chains)} chain(s): {capped_chains}"
+                "n_terminal_cap": resolved_n_terminal_cap,
+                "c_terminal_cap": resolved_c_terminal_cap,
+                "details": (
+                    "Added requested terminal caps as missing residues for "
+                    f"{len(capped_chains)} chain(s): {capped_chains}"
+                ),
             })
-            logger.info(f"Added ACE/NME caps to missingResidues for chains: {capped_chains}")
+            logger.info(
+                "Added terminal caps to missingResidues for chains %s: N=%s C=%s",
+                capped_chains,
+                resolved_n_terminal_cap,
+                resolved_c_terminal_cap,
+            )
         
         # Report remaining missing residues (excluding caps)
         internal_missing = []
@@ -2346,7 +2394,7 @@ def clean_protein(
                 "residues": internal_missing,
                 "details": f"Found {len(internal_missing)} internal missing residue(s) to be modeled"
             })
-        elif num_missing_residues == 0 and not cap_termini:
+        elif num_missing_residues == 0 and not terminal_caps_requested:
             result["operations"].append({
                 "step": "missing_residues",
                 "status": "none_found",
@@ -2604,7 +2652,7 @@ def clean_protein(
             result["warnings"].append("Hydrogens not added - required for most MD simulations")
         
         # Step 7: Record if terminal caps were requested
-        result["cap_termini_required"] = cap_termini
+        result["cap_termini_required"] = terminal_caps_requested
         
         # Step 8: Write output file
         logger.info(f"Writing cleaned structure to {output_file}")
@@ -2789,6 +2837,50 @@ def clean_protein(
             # Keep the PDBFixer output as the final output if conversion fails
             result["warnings"].append("Using PDBFixer output without Amber naming convention conversion")
 
+        # Step 10: Complete terminal-cap hydrogens, scoped to ACE/NME caps.
+        # Topology generation intentionally does no generic H repair; capped
+        # peptides must be hydrogen-complete before they leave prep.
+        output_for_cap_completion = result.get("output_file")
+        if output_for_cap_completion:
+            expected_caps = {
+                cap
+                for cap in (resolved_n_terminal_cap, resolved_c_terminal_cap)
+                if cap
+            }
+            cap_residues_present = (
+                _pdb_residue_names(output_for_cap_completion) & TERMINAL_CAP_RESIDUES
+            )
+            if expected_caps or cap_residues_present:
+                cap_h_result = _complete_terminal_cap_hydrogens_with_modeller(
+                    output_for_cap_completion,
+                    expected_caps=expected_caps,
+                    forcefield_name=terminal_cap_forcefield,
+                    ph=ph,
+                )
+                result["terminal_cap_hydrogen_completion"] = cap_h_result
+                result["warnings"].extend(cap_h_result.get("warnings", []))
+                if not cap_h_result["success"]:
+                    result["errors"].extend(cap_h_result.get("errors", []))
+                    result["code"] = cap_h_result.get(
+                        "code",
+                        "terminal_cap_hydrogen_completion_failed",
+                    )
+                    return result
+                if not cap_h_result.get("skipped"):
+                    result["output_file"] = cap_h_result["output_file"]
+                    result["terminal_cap_forcefield"] = cap_h_result.get("forcefield")
+                    result["operations"].append({
+                        "step": "terminal_cap_hydrogen_completion",
+                        "status": "success",
+                        "method": "openmm_modeller",
+                        "forcefield": cap_h_result.get("forcefield"),
+                        "forcefield_xml": cap_h_result.get("forcefield_xml"),
+                        "n_terminal_cap": resolved_n_terminal_cap,
+                        "c_terminal_cap": resolved_c_terminal_cap,
+                        "cap_residues_present": cap_h_result.get("cap_residues_present", []),
+                        "cap_hydrogens_added": cap_h_result.get("cap_hydrogens_added", 0),
+                    })
+
         # Build structured provenance summary at top level
         # (operations[] is kept for full detail, summary for quick access)
         operations = result.get("operations", [])
@@ -2817,6 +2909,15 @@ def clean_protein(
                 provenance["component_disposition_recorded"] = True
                 provenance["experimental_isotopes_excluded"] = True
                 provenance["component_disposition_details"] = op.get("details", "")
+            elif step == "terminal_caps" and op.get("status") == "added_to_missing":
+                provenance["n_terminal_cap"] = op.get("n_terminal_cap")
+                provenance["c_terminal_cap"] = op.get("c_terminal_cap")
+                provenance["terminal_capping_recorded"] = True
+            elif step == "terminal_cap_hydrogen_completion" and op.get("status") == "success":
+                provenance["terminal_cap_hydrogen_completion_method"] = op.get("method")
+                provenance["terminal_cap_forcefield"] = op.get("forcefield")
+                provenance["terminal_cap_forcefield_xml"] = op.get("forcefield_xml")
+                provenance["terminal_cap_hydrogens_added"] = op.get("cap_hydrogens_added", 0)
         result["provenance"] = provenance
 
         result["success"] = True
@@ -3278,6 +3379,379 @@ def clean_ligand(
         elif "sanitize" in str(e).lower():
             result["errors"].append("Hint: Chemical validation failed - check for unusual atoms or bonds")
     
+    return result
+
+
+def _pdb_atom_count(pdb_file: str | Path) -> int:
+    """Count atom records in a PDB file."""
+    return sum(
+        1
+        for line in Path(pdb_file).read_text().splitlines()
+        if line.startswith(("ATOM  ", "HETATM"))
+    )
+
+
+def _pdb_hydrogen_count(pdb_file: str | Path) -> int:
+    """Count hydrogen-like atom records in a PDB file."""
+    count = 0
+    for line in Path(pdb_file).read_text().splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        atom_name = line[12:16].strip().upper()
+        if element in {"H", "D"} or atom_name.startswith(("H", "D")):
+            count += 1
+    return count
+
+
+def _normalize_terminal_cap_choice(
+    value: str | None,
+    *,
+    terminus: str,
+) -> str | None:
+    """Normalize a user-facing terminal cap choice.
+
+    The current Amber/OpenMM path only supports the standard ACE/NME pair.
+    ``None`` and common explicit "no cap" spellings mean uncapped.
+    """
+    if value is None:
+        return None
+    normalized = str(value).strip().upper()
+    if normalized in {"", "NONE", "NO", "FALSE", "UNCAPPED", "OFF"}:
+        return None
+    allowed = (
+        SUPPORTED_N_TERMINAL_CAPS
+        if terminus == "n"
+        else SUPPORTED_C_TERMINAL_CAPS
+    )
+    if normalized not in allowed:
+        allowed_text = ", ".join(sorted(allowed))
+        raise ValueError(
+            f"Unsupported {terminus.upper()}-terminal cap {value!r}; "
+            f"supported values are: {allowed_text}, or none"
+        )
+    return normalized
+
+
+def _resolve_terminal_cap_settings(
+    *,
+    cap_termini: bool,
+    n_terminal_cap: str | None,
+    c_terminal_cap: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve legacy ``cap_termini`` and explicit one-sided cap settings."""
+    n_cap = _normalize_terminal_cap_choice(n_terminal_cap, terminus="n")
+    c_cap = _normalize_terminal_cap_choice(c_terminal_cap, terminus="c")
+    if cap_termini:
+        if n_terminal_cap is None:
+            n_cap = "ACE"
+        if c_terminal_cap is None:
+            c_cap = "NME"
+    return n_cap, c_cap
+
+
+def _pdb_residue_names(pdb_file: str | Path) -> set[str]:
+    """Return residue names present in a PDB file."""
+    names: set[str] = set()
+    for line in Path(pdb_file).read_text().splitlines():
+        if line.startswith(("ATOM", "HETATM")) and len(line) >= 20:
+            names.add(line[17:20].strip().upper())
+    return names
+
+
+def _pdb_hydrogen_counts_by_resname(
+    pdb_file: str | Path,
+    residue_names: set[str],
+) -> dict[str, int]:
+    """Count hydrogen-like atom records grouped by residue name."""
+    counts = {name: 0 for name in residue_names}
+    for line in Path(pdb_file).read_text().splitlines():
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        resname = line[17:20].strip().upper()
+        if resname not in counts:
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        atom_name = line[12:16].strip().upper()
+        if element in {"H", "D"} or atom_name.startswith(("H", "D")):
+            counts[resname] += 1
+    return counts
+
+
+def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | None, str | None]:
+    """Resolve a protein force field name to the XML used for cap H completion."""
+    from mdclaw import forcefield_catalog as _ff_catalog
+
+    requested = forcefield_name or DEFAULT_TERMINAL_CAP_FORCEFIELD
+    canonical = _ff_catalog.normalize_protein(requested)
+    if not canonical or canonical not in _ff_catalog.PROTEIN_FORCEFIELDS:
+        return None, requested
+    entry = _ff_catalog.PROTEIN_FORCEFIELDS[canonical]
+    if not entry.openmm_xml:
+        return None, canonical
+    return entry.openmm_xml[0], canonical
+
+
+def _complete_terminal_cap_hydrogens_with_modeller(
+    pdb_file: str | Path,
+    *,
+    expected_caps: set[str] | None = None,
+    forcefield_name: str | None = None,
+    ph: float = 7.4,
+) -> dict:
+    """Complete ACE/NME cap hydrogens with OpenMM Modeller during prep.
+
+    This is deliberately a prep-only, cap-scoped helper. Topology generation
+    still validates atom/H completeness and does not perform generic repair.
+    """
+    input_path = Path(pdb_file).resolve()
+    output_file = input_path.with_name(f"{input_path.stem}.cap_h.pdb")
+    expected_caps = {str(c).upper() for c in (expected_caps or set()) if c}
+    result: dict[str, Any] = {
+        "success": False,
+        "input_file": str(input_path),
+        "output_file": str(output_file),
+        "method": "openmm_modeller",
+        "forcefield": forcefield_name or DEFAULT_TERMINAL_CAP_FORCEFIELD,
+        "forcefield_xml": None,
+        "cap_residues_present": [],
+        "expected_caps": sorted(expected_caps),
+        "hydrogens_added": 0,
+        "cap_hydrogens_added": 0,
+        "cap_hydrogen_count_before": {},
+        "cap_hydrogen_count_after": {},
+        "warnings": [],
+        "errors": [],
+        "operations": [],
+    }
+
+    if not input_path.exists():
+        result["code"] = "terminal_cap_hydrogen_completion_failed"
+        result["errors"].append(f"Input PDB not found: {input_path}")
+        return result
+
+    present_caps = _pdb_residue_names(input_path) & TERMINAL_CAP_RESIDUES
+    result["cap_residues_present"] = sorted(present_caps)
+    missing_expected = sorted(expected_caps - present_caps)
+    if missing_expected:
+        result["code"] = "terminal_cap_missing"
+        result["errors"].append(
+            "Requested terminal cap residue(s) are absent after cleaning: "
+            f"{missing_expected}"
+        )
+        return result
+    if not present_caps:
+        result["success"] = True
+        result["skipped"] = True
+        result["operations"].append({
+            "step": "terminal_cap_hydrogen_completion",
+            "status": "skipped",
+            "details": "No ACE/NME terminal cap residues present",
+        })
+        return result
+
+    forcefield_xml, canonical_forcefield = _terminal_cap_forcefield_xml(forcefield_name)
+    result["forcefield"] = canonical_forcefield or result["forcefield"]
+    result["forcefield_xml"] = forcefield_xml
+    if not forcefield_xml:
+        result["code"] = "terminal_cap_hydrogen_completion_unavailable"
+        result["errors"].append(
+            "Could not resolve an OpenMM protein force-field XML for terminal "
+            f"cap hydrogen completion: {forcefield_name!r}"
+        )
+        return result
+
+    residues_before = _read_pdb_unique_residues(input_path)
+    cap_h_before = _pdb_hydrogen_counts_by_resname(input_path, present_caps)
+    total_h_before = _pdb_hydrogen_count(input_path)
+    result["cap_hydrogen_count_before"] = cap_h_before
+
+    try:
+        from openmm.app import ForceField, Modeller
+
+        pdb = PDBFile(str(input_path))
+        forcefield = ForceField(forcefield_xml)
+        modeller = Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(forcefield, pH=ph)
+        with output_file.open("w") as handle:
+            PDBFile.writeFile(
+                modeller.topology,
+                modeller.positions,
+                handle,
+                keepIds=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "terminal_cap_hydrogen_completion_failed"
+        result["errors"].append(
+            f"Terminal cap hydrogen completion failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    residues_after = _read_pdb_unique_residues(output_file)
+    if residues_after != residues_before:
+        result["code"] = "terminal_cap_hydrogen_completion_failed"
+        result["errors"].append(
+            "Terminal cap hydrogen completion changed residue identity/order."
+        )
+        return result
+
+    cap_h_after = _pdb_hydrogen_counts_by_resname(output_file, present_caps)
+    total_h_after = _pdb_hydrogen_count(output_file)
+    cap_added = sum(cap_h_after.values()) - sum(cap_h_before.values())
+    result["cap_hydrogen_count_after"] = cap_h_after
+    result["hydrogens_added"] = max(0, total_h_after - total_h_before)
+    result["cap_hydrogens_added"] = max(0, cap_added)
+    if result["cap_hydrogens_added"] == 0:
+        result["warnings"].append(
+            "OpenMM Modeller completed but did not add cap hydrogens; "
+            "the cap residues may already have been hydrogen-complete."
+        )
+
+    result["operations"].append({
+        "step": "terminal_cap_hydrogen_completion",
+        "status": "success",
+        "method": "openmm_modeller",
+        "forcefield": result["forcefield"],
+        "forcefield_xml": forcefield_xml,
+        "ph": ph,
+        "cap_residues_present": sorted(present_caps),
+        "cap_hydrogens_added": result["cap_hydrogens_added"],
+    })
+    result["success"] = True
+    return result
+
+
+def _prepare_standard_nucleic(
+    nucleic_file: str,
+    *,
+    nucleic_subtype: str | None,
+    ph: float,
+) -> dict:
+    """Rebuild hydrogens for a standard DNA/RNA chain with OpenMM Modeller."""
+    input_path = Path(nucleic_file).resolve()
+    output_file = input_path.with_name(f"{input_path.stem}.nucleic_h.pdb")
+    result: dict[str, Any] = {
+        "success": False,
+        "input_file": str(input_path),
+        "output_file": str(output_file),
+        "nucleic_subtype": nucleic_subtype,
+        "hydrogen_rebuild_method": "openmm_modeller",
+        "nucleic_forcefield_xml": None,
+        "hydrogens_added": 0,
+        "atom_count_before": 0,
+        "atom_count_after": 0,
+        "hydrogen_count_before": 0,
+        "hydrogen_count_after": 0,
+        "warnings": [],
+        "errors": [],
+        "operations": [],
+    }
+
+    residues_before = _read_pdb_unique_residues(input_path)
+    residue_names = {str(r["resname"]).upper() for r in residues_before}
+    nucleic_info = classify_nucleic_residues(residue_names)
+    subtype = (nucleic_subtype or nucleic_info.get("subtype") or "").lower()
+    result["nucleic_subtype"] = subtype or nucleic_subtype
+
+    if nucleic_info.get("modified_residue_names") or subtype not in {"dna", "rna"}:
+        result["code"] = "unsupported_modified_nucleic_residue"
+        result["errors"].append(
+            f"{MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE} "
+            f"Residues={sorted(residue_names)} subtype={subtype or 'unknown'}."
+        )
+        return result
+
+    if subtype == "dna":
+        forcefield_xml = "amber/DNA.OL15.xml"
+    else:
+        forcefield_xml = "amber/RNA.OL3.xml"
+    result["nucleic_forcefield_xml"] = forcefield_xml
+
+    try:
+        from openmm.app import ForceField, Modeller
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "nucleic_hydrogen_rebuild_unavailable"
+        result["errors"].append(
+            f"OpenMM Modeller/ForceField is required for standard nucleic "
+            f"hydrogen rebuild: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    try:
+        result["atom_count_before"] = _pdb_atom_count(input_path)
+        result["hydrogen_count_before"] = _pdb_hydrogen_count(input_path)
+        pdb = PDBFile(str(input_path))
+        forcefield = ForceField(forcefield_xml)
+        modeller = Modeller(pdb.topology, pdb.positions)
+        variants = modeller.addHydrogens(forcefield, pH=ph)
+        with output_file.open("w") as handle:
+            PDBFile.writeFile(
+                modeller.topology,
+                modeller.positions,
+                handle,
+                keepIds=True,
+            )
+    except ValueError as exc:
+        result["code"] = "nucleic_hydrogen_rebuild_failed"
+        result["errors"].append(
+            f"Standard nucleic hydrogen rebuild failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        code = (
+            "nucleic_hydrogen_rebuild_unavailable"
+            if "Could not locate file" in str(exc)
+            else "nucleic_hydrogen_rebuild_failed"
+        )
+        result["code"] = code
+        result["errors"].append(
+            f"Standard nucleic hydrogen rebuild failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    result["atom_count_after"] = _pdb_atom_count(output_file)
+    result["hydrogen_count_after"] = _pdb_hydrogen_count(output_file)
+    result["hydrogens_added"] = max(
+        0,
+        result["hydrogen_count_after"] - result["hydrogen_count_before"],
+    )
+    result["variants"] = [
+        str(v) if v is not None else None
+        for v in variants
+    ]
+
+    residues_after = _read_pdb_unique_residues(output_file)
+    if residues_after != residues_before:
+        result["code"] = "nucleic_hydrogen_rebuild_failed"
+        result["errors"].append(
+            "Nucleic hydrogen rebuild changed residue identity/order."
+        )
+        return result
+    if result["atom_count_after"] < result["atom_count_before"]:
+        result["code"] = "nucleic_hydrogen_rebuild_failed"
+        result["errors"].append(
+            "Nucleic hydrogen rebuild removed atom records unexpectedly."
+        )
+        return result
+    if (
+        result["hydrogen_count_before"] == 0
+        and result["hydrogen_count_after"] == 0
+    ):
+        result["code"] = "nucleic_hydrogen_rebuild_failed"
+        result["errors"].append(
+            "Nucleic hydrogen rebuild completed without adding hydrogens."
+        )
+        return result
+
+    result["operations"].append({
+        "step": "nucleic_hydrogen_rebuild",
+        "status": "success",
+        "method": "openmm_modeller",
+        "forcefield_xml": forcefield_xml,
+        "ph": ph,
+        "hydrogens_added": result["hydrogens_added"],
+    })
+    result["success"] = True
     return result
 
 
@@ -4264,6 +4738,9 @@ def _validate_prepare_node_context(
     select_chains: Optional[List[str]],
     ph: float,
     cap_termini: bool,
+    n_terminal_cap: str | None,
+    c_terminal_cap: str | None,
+    terminal_cap_forcefield: str | None,
     process_proteins: bool,
     process_ligands: bool,
     include_types: Optional[List[str]],
@@ -4286,6 +4763,9 @@ def _validate_prepare_node_context(
             "select_chains": select_chains,
             "ph": ph,
             "cap_termini": cap_termini,
+            "n_terminal_cap": n_terminal_cap,
+            "c_terminal_cap": c_terminal_cap,
+            "terminal_cap_forcefield": terminal_cap_forcefield,
             "process_proteins": process_proteins,
             "process_ligands": process_ligands,
             "include_types": include_types,
@@ -4331,6 +4811,9 @@ def prepare_complex(
     select_chains: Optional[List[str]] = None,
     ph: float = 7.4,
     cap_termini: bool = False,
+    n_terminal_cap: str | None = None,
+    c_terminal_cap: str | None = None,
+    terminal_cap_forcefield: str | None = None,
     process_proteins: bool = True,
     process_ligands: bool = True,
     ligand_smiles: Optional[Dict[str, str]] = None,
@@ -4356,7 +4839,7 @@ def prepare_complex(
     1. Inspect the structure to identify chains
     2. Split the structure into individual chain files
     3. Clean protein chains (PDBFixer + pdb4amber)
-    4. Pass standard DNA/RNA chains through unchanged
+    4. Rebuild hydrogens on standard DNA/RNA chains with OpenMM Modeller
     5. Clean ligand chains (SMILES template matching)
     6. Record ligand chemistry artifacts for topology-time ligand FF resolution
     7. Merge all prepared structures into a single PDB file
@@ -4382,7 +4865,16 @@ def prepare_complex(
                        subchain label like ``Axp`` / ``Ax1`` / ``Axw`` and
                        is not user-facing. None = all chains.
         ph: pH for protonation state (default: 7.4)
-        cap_termini: Add ACE/NME caps to protein termini (default: False)
+        cap_termini: Backward-compatible shortcut to add ACE at the
+                     N terminus and NME at the C terminus (default: False).
+        n_terminal_cap: Optional one-sided N-terminal cap. Currently supports
+                        ``"ACE"`` or an explicit none-like value.
+        c_terminal_cap: Optional one-sided C-terminal cap. Currently supports
+                        ``"NME"`` or an explicit none-like value.
+        terminal_cap_forcefield: Protein force field used only for prep-stage
+                                 cap hydrogen completion. Use the planned
+                                 topology force field when specified; default
+                                 is ff19SB.
         process_proteins: Whether to clean protein chains (default: True)
         process_ligands: Whether to clean ligands and record topology-time
                          chemistry inputs (default: True)
@@ -4446,11 +4938,13 @@ def prepare_complex(
                 - output_file: str (cleaned .amber.pdb)
                 - success: bool
                 - statistics: dict
-            - nucleics: list[dict] - Standard DNA/RNA chains passed through:
+            - nucleics: list[dict] - Standard DNA/RNA chains prepared for topology:
                 - chain_id: str
                 - input_file: str
-                - output_file: str
+                - output_file: str (hydrogen-complete nucleic PDB)
                 - nucleic_subtype: str
+                - hydrogens_added: int
+                - nucleic_forcefield_xml: str
                 - success: bool
             - glycans: list[dict] - Glycan chains passed through for GLYCAM:
                 - chain_id: str
@@ -4537,6 +5031,9 @@ def prepare_complex(
             select_chains=select_chains,
             ph=ph,
             cap_termini=cap_termini,
+            n_terminal_cap=n_terminal_cap,
+            c_terminal_cap=c_terminal_cap,
+            terminal_cap_forcefield=terminal_cap_forcefield,
             process_proteins=process_proteins,
             process_ligands=process_ligands,
             include_types=include_types,
@@ -4697,6 +5194,19 @@ def prepare_complex(
             disulfide_source = "auto_detected"
         result["disulfide_bonds"] = disulfide_bonds
         result["disulfide_source"] = disulfide_source
+
+        try:
+            resolved_n_terminal_cap, resolved_c_terminal_cap = _resolve_terminal_cap_settings(
+                cap_termini=cap_termini,
+                n_terminal_cap=n_terminal_cap,
+                c_terminal_cap=c_terminal_cap,
+            )
+        except ValueError as exc:
+            result["errors"].append(str(exc))
+            result["code"] = "invalid_terminal_cap"
+            result["overall_status"] = "failed"
+            return result
+        terminal_caps_requested = bool(resolved_n_terminal_cap or resolved_c_terminal_cap)
 
         # Step 2: Split structure
         logger.info("Step 2: Splitting structure...")
@@ -4863,7 +5373,10 @@ def prepare_complex(
                         pdb_file=protein_file,
                         ph=ph,
                         cap_termini=cap_termini,
-                        ignore_terminal_missing_residues=not cap_termini,
+                        n_terminal_cap=n_terminal_cap,
+                        c_terminal_cap=c_terminal_cap,
+                        terminal_cap_forcefield=terminal_cap_forcefield,
+                        ignore_terminal_missing_residues=not terminal_caps_requested,
                         disulfide_pairs=sa_disulfide_pairs,
                         histidine_states=sa_histidine_states,
                         protonation_states=sa_protonation_states,
@@ -4873,6 +5386,15 @@ def prepare_complex(
                         protein_result["output_file"] = clean_result["output_file"]
                         protein_result["statistics"] = clean_result.get("statistics", {})
                         protein_result["provenance"] = clean_result.get("provenance", {})
+                        protein_result["n_terminal_cap"] = clean_result.get("n_terminal_cap")
+                        protein_result["c_terminal_cap"] = clean_result.get("c_terminal_cap")
+                        protein_result["terminal_caps"] = clean_result.get("terminal_caps", {})
+                        protein_result["terminal_cap_forcefield"] = clean_result.get(
+                            "terminal_cap_forcefield"
+                        )
+                        protein_result["terminal_cap_hydrogen_completion"] = clean_result.get(
+                            "terminal_cap_hydrogen_completion"
+                        )
                         protein_result["component_disposition_summary"] = clean_result.get(
                             "component_disposition_summary",
                             _component_disposition_payload([])["summary"],
@@ -4895,12 +5417,11 @@ def prepare_complex(
 
                 result["proteins"].append(protein_result)
 
-        # Step 4: Pass standard DNA/RNA chains through unchanged. The
-        # openmmforcefields build path picks up the appropriate
-        # ``amber/DNA.*.xml`` / ``amber/RNA.*.xml`` ForceField in
-        # ``build_amber_system``.
+        # Step 4: Rebuild standard DNA/RNA hydrogens during prep. Topology
+        # generation deliberately validates atom/H completeness without doing
+        # generic repair.
         if split_result.get("nucleic_files"):
-            logger.info(f"Step 4: Passing through {len(split_result['nucleic_files'])} nucleic chain(s)...")
+            logger.info(f"Step 4: Preparing {len(split_result['nucleic_files'])} nucleic chain(s)...")
             for nucleic_file in split_result["nucleic_files"]:
                 chain_id = None
                 cinfo_for_nucleic = {}
@@ -4909,16 +5430,32 @@ def prepare_complex(
                         chain_id = cid
                         cinfo_for_nucleic = cinfo
                         break
-                result["nucleics"].append({
+                nucleic_result = _prepare_standard_nucleic(
+                    nucleic_file,
+                    nucleic_subtype=cinfo_for_nucleic.get("nucleic_subtype"),
+                    ph=ph,
+                )
+                nucleic_result.update({
                     "chain_id": chain_id,
                     "author_chain": cinfo_for_nucleic.get("author_chain", chain_id),
                     "input_file": nucleic_file,
-                    "output_file": nucleic_file,
-                    "nucleic_subtype": cinfo_for_nucleic.get("nucleic_subtype"),
-                    "success": True,
-                    "warnings": [],
                 })
-                logger.info(f"  ✓ Nucleic {chain_id}: {nucleic_file}")
+                if nucleic_result["success"]:
+                    logger.info(
+                        f"  ✓ Nucleic {chain_id}: {nucleic_result['output_file']} "
+                        f"({nucleic_result['hydrogens_added']} H added)"
+                    )
+                else:
+                    result["errors"].extend(nucleic_result.get("errors", []))
+                    result["warnings"].append(
+                        f"Nucleic {chain_id} preparation failed: "
+                        f"{nucleic_result.get('errors', [])}"
+                    )
+                    logger.warning(
+                        f"  ✗ Nucleic {chain_id} failed: "
+                        f"{nucleic_result.get('errors', [])}"
+                    )
+                result["nucleics"].append(nucleic_result)
 
         # Step 4.5: Pass glycan chains through unchanged. GLYCAM support is
         # applied during build_amber_system; these should not be parameterized
@@ -5105,8 +5642,7 @@ def prepare_complex(
                 if p["success"] and p.get("output_file"):
                     pdb_files_to_merge.append(p["output_file"])
 
-            # Add nucleic files as-is; topology generation loads DNA/RNA
-            # force fields instead of treating these chains as ligands.
+            # Add hydrogen-complete standard DNA/RNA files.
             for nuc in result["nucleics"]:
                 if nuc["success"] and nuc.get("output_file"):
                     pdb_files_to_merge.append(nuc["output_file"])
@@ -5398,6 +5934,49 @@ def prepare_complex(
                             preparation_summary.get("missing_residues_count", 0) + val
                     elif key not in preparation_summary:
                         preparation_summary[key] = val
+        successful_proteins = [p for p in result.get("proteins", []) if p.get("success")]
+        n_caps = sorted({
+            p.get("n_terminal_cap")
+            for p in successful_proteins
+            if p.get("n_terminal_cap")
+        })
+        c_caps = sorted({
+            p.get("c_terminal_cap")
+            for p in successful_proteins
+            if p.get("c_terminal_cap")
+        })
+        cap_h_reports = [
+            p.get("terminal_cap_hydrogen_completion") or {}
+            for p in successful_proteins
+        ]
+        cap_h_reports = [r for r in cap_h_reports if r.get("success") and not r.get("skipped")]
+        if n_caps or c_caps or cap_h_reports:
+            preparation_summary["terminal_capping_recorded"] = True
+            if n_caps:
+                preparation_summary["n_terminal_cap"] = n_caps[0] if len(n_caps) == 1 else n_caps
+            if c_caps:
+                preparation_summary["c_terminal_cap"] = c_caps[0] if len(c_caps) == 1 else c_caps
+            preparation_summary["terminal_cap_hydrogen_completion_method"] = "openmm_modeller"
+            preparation_summary["terminal_cap_hydrogens_added"] = sum(
+                int(r.get("cap_hydrogens_added") or 0)
+                for r in cap_h_reports
+            )
+            cap_forcefields = sorted({
+                str(r.get("forcefield"))
+                for r in cap_h_reports
+                if r.get("forcefield")
+            })
+            cap_forcefield_xml = sorted({
+                str(r.get("forcefield_xml"))
+                for r in cap_h_reports
+                if r.get("forcefield_xml")
+            })
+            if cap_forcefields:
+                preparation_summary["terminal_cap_forcefield"] = (
+                    cap_forcefields[0] if len(cap_forcefields) == 1 else cap_forcefields
+                )
+            if cap_forcefield_xml:
+                preparation_summary["terminal_cap_forcefield_xml"] = cap_forcefield_xml
         if result.get("nucleics"):
             successful_nucleics = [n for n in result["nucleics"] if n.get("success")]
             preparation_summary["has_nucleic"] = bool(successful_nucleics)
@@ -5411,9 +5990,22 @@ def prepare_complex(
                     "chain_id": n.get("chain_id"),
                     "author_chain": n.get("author_chain"),
                     "nucleic_subtype": n.get("nucleic_subtype"),
+                    "hydrogen_rebuild_method": n.get("hydrogen_rebuild_method"),
+                    "nucleic_forcefield_xml": n.get("nucleic_forcefield_xml"),
+                    "hydrogens_added": n.get("hydrogens_added", 0),
                 }
                 for n in successful_nucleics
             ]
+            preparation_summary["nucleic_hydrogen_rebuild_method"] = "openmm_modeller"
+            preparation_summary["nucleic_hydrogens_added"] = sum(
+                int(n.get("hydrogens_added") or 0)
+                for n in successful_nucleics
+            )
+            preparation_summary["nucleic_forcefield_xml"] = sorted({
+                n.get("nucleic_forcefield_xml")
+                for n in successful_nucleics
+                if n.get("nucleic_forcefield_xml")
+            })
             residue_names = set()
             for info in split_result.get("chain_file_info", []):
                 if info.get("chain_type") == "nucleic":

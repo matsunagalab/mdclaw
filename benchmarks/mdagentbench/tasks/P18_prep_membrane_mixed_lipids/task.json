@@ -68,12 +68,12 @@
         "weight": 0.5
       },
       {
-        "check_id": "lipid_ratio_recorded",
-        "check_type": "json_allowed_values",
         "allowed_values": [
           "POPC:POPE:CHL1=2:1:1",
           "PC:PE:CHL=2:1:1"
         ],
+        "check_id": "lipid_ratio_recorded",
+        "check_type": "json_allowed_values",
         "json_file": "metrics.json",
         "json_path": "preparation.lipid_ratio",
         "weight": 0.3
