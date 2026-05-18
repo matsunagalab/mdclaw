@@ -226,6 +226,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
             assert "skiperrors" in script
             assert "nohisdetect nodisulfides" in script
             assert "keepaltloc highestocc" in script
+            assert " noh " not in f" {script} "
             cpptraj_pdb = cwd_path / "system.prepareforleap.pdb"
             cpptraj_pdb_text = cpptraj_pdb.read_text(encoding="utf-8")
             assert "LINK" in cpptraj_pdb_text
@@ -249,6 +250,8 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
     def _fake_om_build(**kwargs):
         from mdclaw import forcefield_catalog as _fc
         from mdclaw.amber_server import _resolve_glycan_name_from_library
+        assert kwargs["glycam_bond_plan"]["bond_count"] == 1
+        assert kwargs["glycam_normalization_file"].name == "system.glycam_normalization.json"
         bundle = _fc.resolve_xml_bundle(
             protein=_fc.normalize_protein(kwargs["forcefield"]) or kwargs["forcefield"],
             water=_fc.normalize_water(kwargs["water_model"]) if kwargs["water_model"] else None,
@@ -309,9 +312,88 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
     assert result["parameters"]["glycan_library"] == "leaprc.GLYCAM_06j-1"
     assert result["glycan_linkage_plan"][0]["status"] == "handled_by_prepareforleap"
     assert result["glycam_prepareforleap"]["prepared_pdb"].endswith("system.glycam.pdb")
+    assert result["glycam_bond_plan"]["bond_count"] == 1
     assert "amber/GLYCAM_06j-1.xml" in captured.get("bundle", []), (
         "GLYCAM XML must be resolved into the SystemGenerator bundle"
     )
+
+
+def test_glycam_prepareforleap_bond_plan_is_structured(tmp_path):
+    from mdclaw.amber_server import _parse_glycam_leap_bond_plan
+
+    prepared_pdb = tmp_path / "system.glycam.pdb"
+    lines = []
+    serial = 1
+    for unit_index in range(1, 17):
+        is_nln = unit_index % 2 == 1
+        atom = "ND2" if is_nln else "C1"
+        resname = "NLN" if is_nln else "0YB"
+        element = "N" if is_nln else "C"
+        record = "ATOM" if is_nln else "HETATM"
+        lines.append(
+            f"{record:<6}{serial:5d} {atom:>4} "
+            f"{resname:>3} A{unit_index:4d}    "
+            f"{float(unit_index):8.3f}{0.0:8.3f}{0.0:8.3f}"
+            f"  1.00  0.00          {element:>2}"
+        )
+        serial += 1
+        lines.append("TER")
+    lines.append("END")
+    prepared_pdb.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    leap_script = tmp_path / "system.glycam.leap.in"
+    leap_script.write_text(
+        "\n".join(
+            ["mol = loadpdb system.glycam.pdb"]
+            + [f"bond mol.{i}.ND2 mol.{i + 1}.C1" for i in range(1, 17, 2)]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    plan = _parse_glycam_leap_bond_plan(leap_script, prepared_pdb)
+
+    assert plan["bond_count"] == 8
+    assert plan["errors"] == []
+    assert plan["bonds"][0]["left"]["resname"] == "NLN"
+    assert plan["bonds"][0]["right"]["resname"] == "0YB"
+
+
+def test_glycam_bond_plan_apply_failure_is_structured(tmp_path):
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber_server import _normalize_glycam_topology
+
+    topology = Topology()
+    chain = topology.addChain("A")
+    residue = topology.addResidue("NLN", chain, "1")
+    topology.addAtom("ND2", element.nitrogen, residue)
+    positions = unit.Quantity([Vec3(0, 0, 0)], unit.nanometer)
+    plan = {
+        "bonds": [{
+            "left": {"unit_index": 1, "atom": "ND2", "resname": "NLN"},
+            "right": {"unit_index": 2, "atom": "C1", "resname": "0YB"},
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    _topology, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=object(),
+        unit_module=unit,
+    )
+
+    assert report["completed"] is False
+    assert report["code"] == "glycam_bond_plan_apply_failed"
+    assert "unit 2" in report["errors"][0]
 
 
 def test_packmol_solute_identity_restore_keeps_water_renumbering(tmp_path):

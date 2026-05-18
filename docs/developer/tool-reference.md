@@ -90,7 +90,12 @@ skill examples.
   artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
   prep emits `ligand_chemistry`; topology resolves compatible Amber geostd
   templates first and uses `GAFFTemplateGenerator` when geostd is missing or
-  incompatible with the recorded ligand charge/atom count.
+  incompatible with the recorded ligand charge/atom count. For glycoproteins,
+  `cpptraj prepareforleap` is scoped to Amber/GLYCAM residue conversion and
+  bond-plan generation; `build_amber_system` records
+  `system.glycam_bond_plan.json` and `system.glycam_normalization.json` while
+  applying GLYCAM bonds and glycan-only hydrogen completion inside the topo
+  node.
   Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
   "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
   matching `implicit/*.xml` is added to the SystemGenerator bundle so

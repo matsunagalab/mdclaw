@@ -13,6 +13,9 @@ Provides tools for:
 - Handling protein-ligand complexes by consuming prep-stage
   ``ligand_chemistry`` records; topology resolves geostd templates first and
   falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+- Handling glycoproteins by converting deposited glycan residues to
+  Amber/GLYCAM notation at topology time, preserving the generated bond plan,
+  and completing only GLYCAM-specific hydrogens before System creation.
 
 The XML triple is the only topology contract on the run side; tleap and
 parm7/rst7 are not produced or consumed anywhere. AmberTools
@@ -95,6 +98,12 @@ PHOSAA_LIBRARY_FOR_FF = {
     "ff14SB": "leaprc.phosaa14SB",
     "ff14SBonlysc": "leaprc.phosaa14SB",
 }
+
+_GLYCAM_TOPOLOGY_RESNAMES = {
+    "0YB", "4YA", "4YB", "0LB", "VMB", "0MB", "0FA", "2MA", "0LA",
+    "BMA", "MAN", "NAG", "0YA", "4YS", "0LS",
+}
+_GLYCAM_LINKED_ASN_RESNAME = "NLN"
 
 
 def _gemmi_available() -> bool:
@@ -662,6 +671,353 @@ def _patch_template_internal_bonds(omm_topology: Any, forcefield: Any) -> int:
             existing_internal_bonds.add(key)
             bonds_added += 1
     return bonds_added
+
+
+def _is_glycam_topology_residue(residue_name: str) -> bool:
+    return str(residue_name or "").upper() in _GLYCAM_TOPOLOGY_RESNAMES
+
+
+def _topology_has_bond(omm_topology: Any, atom1: Any, atom2: Any) -> bool:
+    key = tuple(sorted((atom1.index, atom2.index)))
+    return any(
+        tuple(sorted((bond.atom1.index, bond.atom2.index))) == key
+        for bond in omm_topology.bonds()
+    )
+
+
+def _collect_pdb_residue_units(pdb_path: Path) -> list[dict[str, Any]]:
+    units: list[dict[str, Any]] = []
+    last_key: tuple[str, str, str, str] | None = None
+    try:
+        lines = pdb_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return units
+    for line in lines:
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 27:
+            continue
+        key = (
+            _normalize_pdb_chain_id(line[21:22]),
+            line[22:26].strip(),
+            line[26:27].strip(),
+            line[17:20].strip(),
+        )
+        if key != last_key:
+            units.append({
+                "unit_index": len(units) + 1,
+                "chain": key[0],
+                "resnum": key[1],
+                "icode": key[2],
+                "resname": key[3],
+                "atoms": set(),
+            })
+            last_key = key
+        units[-1]["atoms"].add(line[12:16].strip())
+    return units
+
+
+def _parse_glycam_leap_bond_plan(
+    leap_script: Path,
+    prepared_pdb: Path,
+) -> dict[str, Any]:
+    """Parse cpptraj prepareforleap's bond commands into a stable JSON plan."""
+    plan: dict[str, Any] = {
+        "schema_version": "1.0",
+        "source": "cpptraj_prepareforleap",
+        "leap_script": str(leap_script),
+        "prepared_pdb": str(prepared_pdb),
+        "bond_count": 0,
+        "bonds": [],
+        "warnings": [],
+        "errors": [],
+    }
+    units = _collect_pdb_residue_units(prepared_pdb)
+    unit_by_index = {int(item["unit_index"]): item for item in units}
+    if not units:
+        plan["warnings"].append(
+            f"Could not parse residue units from GLYCAM PDB {prepared_pdb}"
+        )
+    try:
+        lines = leap_script.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        plan["errors"].append(f"Could not read GLYCAM LEaP bond plan: {exc}")
+        return plan
+
+    bond_re = re.compile(
+        r"^\s*bond\s+mol\.(?P<u1>\d+)\.(?P<a1>[A-Za-z0-9'_*+-]+)\s+"
+        r"mol\.(?P<u2>\d+)\.(?P<a2>[A-Za-z0-9'_*+-]+)\s*$"
+    )
+    for line_no, line in enumerate(lines, start=1):
+        match = bond_re.match(line)
+        if not match:
+            continue
+        u1 = int(match.group("u1"))
+        u2 = int(match.group("u2"))
+        a1 = match.group("a1")
+        a2 = match.group("a2")
+        left_unit = unit_by_index.get(u1)
+        right_unit = unit_by_index.get(u2)
+        left = {
+            "unit_index": u1,
+            "atom": a1,
+            "chain": left_unit.get("chain") if left_unit else None,
+            "resnum": left_unit.get("resnum") if left_unit else None,
+            "icode": left_unit.get("icode") if left_unit else None,
+            "resname": left_unit.get("resname") if left_unit else None,
+        }
+        right = {
+            "unit_index": u2,
+            "atom": a2,
+            "chain": right_unit.get("chain") if right_unit else None,
+            "resnum": right_unit.get("resnum") if right_unit else None,
+            "icode": right_unit.get("icode") if right_unit else None,
+            "resname": right_unit.get("resname") if right_unit else None,
+        }
+        errors: list[str] = []
+        if left_unit is None:
+            errors.append(f"left unit {u1} not found in {prepared_pdb.name}")
+        elif a1 not in left_unit["atoms"]:
+            errors.append(f"left atom mol.{u1}.{a1} not found in {prepared_pdb.name}")
+        if right_unit is None:
+            errors.append(f"right unit {u2} not found in {prepared_pdb.name}")
+        elif a2 not in right_unit["atoms"]:
+            errors.append(f"right atom mol.{u2}.{a2} not found in {prepared_pdb.name}")
+        if errors:
+            plan["errors"].extend(errors)
+        plan["bonds"].append({
+            "source_line": line,
+            "source_line_number": line_no,
+            "left": left,
+            "right": right,
+            "status": "parsed" if not errors else "unresolved",
+        })
+    plan["bond_count"] = len(plan["bonds"])
+    return plan
+
+
+def _protein_hydrogen_signature_for_glycam(omm_topology: Any) -> dict[tuple[Any, ...], tuple[str, ...]]:
+    signature: dict[tuple[Any, ...], tuple[str, ...]] = {}
+    for residue in omm_topology.residues():
+        residue_name = str(residue.name or "")
+        if residue_name == _GLYCAM_LINKED_ASN_RESNAME or _is_glycam_topology_residue(residue_name):
+            continue
+        hydrogens = tuple(
+            sorted(atom.name for atom in residue.atoms() if _is_hydrogen_like_atom(atom))
+        )
+        signature[
+            (
+                residue.index,
+                _normalize_pdb_chain_id(getattr(residue.chain, "id", "")),
+                str(residue.id),
+                residue_name,
+            )
+        ] = hydrogens
+    return signature
+
+
+def _add_glycam_backbone_bonds(
+    omm_topology: Any,
+    omm_positions: Any,
+    unit_module: Any,
+) -> int:
+    try:
+        positions_nm = [p.value_in_unit(unit_module.nanometer) for p in omm_positions]
+    except Exception:  # noqa: BLE001
+        return 0
+
+    added = 0
+    max_peptide_bond_nm = 0.18
+    for chain in omm_topology.chains():
+        residues = list(chain.residues())
+        for left_residue, right_residue in zip(residues, residues[1:]):
+            if (
+                left_residue.name != _GLYCAM_LINKED_ASN_RESNAME
+                and right_residue.name != _GLYCAM_LINKED_ASN_RESNAME
+            ):
+                continue
+            left_c = next((a for a in left_residue.atoms() if a.name == "C"), None)
+            right_n = next((a for a in right_residue.atoms() if a.name == "N"), None)
+            if left_c is None or right_n is None:
+                continue
+            if _topology_has_bond(omm_topology, left_c, right_n):
+                continue
+            x1, y1, z1 = positions_nm[left_c.index]
+            x2, y2, z2 = positions_nm[right_n.index]
+            d2 = (x1 - x2) ** 2 + (y1 - y2) ** 2 + (z1 - z2) ** 2
+            if d2 > max_peptide_bond_nm * max_peptide_bond_nm:
+                continue
+            omm_topology.addBond(left_c, right_n)
+            added += 1
+    return added
+
+
+def _normalize_glycam_topology(
+    *,
+    omm_topology: Any,
+    omm_positions: Any,
+    glycam_bond_plan: dict[str, Any],
+    protein_forcefield: str,
+    phosaa_name: Optional[str],
+    dna_name: Optional[str],
+    rna_name: Optional[str],
+    glycan_name: Optional[str],
+    lipid_name: Optional[str],
+    app_module: Any,
+    unit_module: Any,
+) -> tuple[Any, Any, dict[str, Any]]:
+    """Apply explicit GLYCAM topology normalization after prepareforleap."""
+    report: dict[str, Any] = {
+        "schema_version": "1.0",
+        "stage": "glycam_topology_normalization",
+        "attempted": True,
+        "completed": False,
+        "glycam_bond_plan": {
+            "bond_count": len(glycam_bond_plan.get("bonds", []) or []),
+            "applied_count": 0,
+            "failed_count": 0,
+        },
+        "removed_substituted_h_count": 0,
+        "backbone_bonds_added_count": 0,
+        "hydrogen_completion": {
+            "attempted": False,
+            "added_atom_count": 0,
+        },
+        "protein_hydrogen_set_preserved": None,
+        "warnings": list(glycam_bond_plan.get("warnings", []) or []),
+        "errors": list(glycam_bond_plan.get("errors", []) or []),
+    }
+    if report["errors"]:
+        report["code"] = "glycam_bond_plan_apply_failed"
+        return omm_topology, omm_positions, report
+
+    linked_nln_units: set[int] = set()
+    for bond in glycam_bond_plan.get("bonds", []) or []:
+        left = bond.get("left") or {}
+        right = bond.get("right") or {}
+        endpoints = (left, right)
+        if any(
+            str(endpoint.get("resname") or "") == _GLYCAM_LINKED_ASN_RESNAME
+            and str(endpoint.get("atom") or "") == "ND2"
+            for endpoint in endpoints
+        ) and any(
+            _is_glycam_topology_residue(str(endpoint.get("resname") or ""))
+            and str(endpoint.get("atom") or "") == "C1"
+            for endpoint in endpoints
+        ):
+            for endpoint in endpoints:
+                if str(endpoint.get("resname") or "") == _GLYCAM_LINKED_ASN_RESNAME:
+                    linked_nln_units.add(int(endpoint["unit_index"]))
+
+    if linked_nln_units:
+        residues = list(omm_topology.residues())
+        hd22_atoms = []
+        for unit_index in linked_nln_units:
+            if unit_index < 1 or unit_index > len(residues):
+                report["errors"].append(
+                    f"glycam bond plan refers to missing NLN unit {unit_index}"
+                )
+                continue
+            residue = residues[unit_index - 1]
+            hd22 = next((atom for atom in residue.atoms() if atom.name == "HD22"), None)
+            if hd22 is not None:
+                hd22_atoms.append(hd22)
+        if report["errors"]:
+            report["code"] = "glycam_bond_plan_apply_failed"
+            return omm_topology, omm_positions, report
+        if hd22_atoms:
+            modeller = app_module.Modeller(omm_topology, omm_positions)
+            modeller.delete(hd22_atoms)
+            omm_topology = modeller.topology
+            omm_positions = modeller.positions
+            report["removed_substituted_h_count"] = len(hd22_atoms)
+
+    residues = list(omm_topology.residues())
+    for bond in glycam_bond_plan.get("bonds", []) or []:
+        endpoint_atoms = []
+        for side in ("left", "right"):
+            endpoint = bond.get(side) or {}
+            try:
+                unit_index = int(endpoint.get("unit_index"))
+            except (TypeError, ValueError):
+                report["errors"].append(f"Invalid GLYCAM bond endpoint: {endpoint}")
+                continue
+            if unit_index < 1 or unit_index > len(residues):
+                report["errors"].append(
+                    f"GLYCAM bond endpoint unit {unit_index} not found"
+                )
+                continue
+            residue = residues[unit_index - 1]
+            atom_name = str(endpoint.get("atom") or "")
+            atom = next((candidate for candidate in residue.atoms() if candidate.name == atom_name), None)
+            if atom is None:
+                report["errors"].append(
+                    f"GLYCAM bond endpoint atom mol.{unit_index}.{atom_name} "
+                    f"not found in residue {residue.name}#{residue.id}"
+                )
+                continue
+            endpoint_atoms.append(atom)
+        if len(endpoint_atoms) != 2:
+            continue
+        atom1, atom2 = endpoint_atoms
+        if not _topology_has_bond(omm_topology, atom1, atom2):
+            omm_topology.addBond(atom1, atom2)
+        report["glycam_bond_plan"]["applied_count"] += 1
+
+    if report["errors"]:
+        report["glycam_bond_plan"]["failed_count"] = (
+            report["glycam_bond_plan"]["bond_count"]
+            - report["glycam_bond_plan"]["applied_count"]
+        )
+        report["code"] = "glycam_bond_plan_apply_failed"
+        return omm_topology, omm_positions, report
+
+    report["backbone_bonds_added_count"] = _add_glycam_backbone_bonds(
+        omm_topology,
+        omm_positions,
+        unit_module,
+    )
+
+    before_signature = _protein_hydrogen_signature_for_glycam(omm_topology)
+    before_atom_count = omm_topology.getNumAtoms()
+    report["hydrogen_completion"]["attempted"] = True
+    try:
+        app_module.Modeller.loadHydrogenDefinitions("glycam-hydrogens.xml")
+        hydrogen_xml = _ff_catalog.resolve_xml_bundle(
+            protein=protein_forcefield,
+            water="tip3p",
+            phosaa=phosaa_name,
+            dna=dna_name,
+            rna=rna_name,
+            glycan=glycan_name,
+            lipid=lipid_name,
+        )
+        hydrogen_ff = app_module.ForceField(*hydrogen_xml)
+        modeller = app_module.Modeller(omm_topology, omm_positions)
+        modeller.addHydrogens(hydrogen_ff, pH=7.0)
+        omm_topology = modeller.topology
+        omm_positions = modeller.positions
+        report["hydrogen_completion"]["forcefield_xml"] = hydrogen_xml
+        report["hydrogen_completion"]["added_atom_count"] = (
+            omm_topology.getNumAtoms() - before_atom_count
+        )
+    except Exception as exc:  # noqa: BLE001
+        report["errors"].append(
+            f"GLYCAM hydrogen completion failed: {type(exc).__name__}: {exc}"
+        )
+        report["code"] = "glycam_hydrogen_completion_failed"
+        return omm_topology, omm_positions, report
+
+    after_signature = _protein_hydrogen_signature_for_glycam(omm_topology)
+    report["protein_hydrogen_set_preserved"] = before_signature == after_signature
+    if before_signature != after_signature:
+        report["errors"].append(
+            "GLYCAM hydrogen completion changed non-GLYCAM protein/water "
+            "hydrogen atom sets; topology build does not perform generic H repair."
+        )
+        report["code"] = "glycam_normalization_changed_protein_hydrogens"
+        return omm_topology, omm_positions, report
+
+    report["completed"] = True
+    return omm_topology, omm_positions, report
 
 
 def _patch_ligand_molecule_internal_bonds(
@@ -1910,6 +2266,8 @@ def _prepare_glycam_pdb_with_cpptraj(
         "code": None,
         "prepared_pdb": None,
         "leap_script": None,
+        "glycam_bond_plan": None,
+        "glycam_bond_plan_file": None,
         "cpptraj_input": None,
         "cpptraj_pdb_input": None,
         "cpptraj_log": None,
@@ -1923,6 +2281,7 @@ def _prepare_glycam_pdb_with_cpptraj(
 
     prepared_pdb = out_dir / f"{output_name}.glycam.pdb"
     generated_leap = out_dir / f"{output_name}.glycam.leap.in"
+    bond_plan_file = out_dir / f"{output_name}.glycam_bond_plan.json"
     cpptraj_input = out_dir / f"{output_name}.prepareforleap.in"
     cpptraj_pdb_input = out_dir / f"{output_name}.prepareforleap.pdb"
     cpptraj_log = out_dir / f"{output_name}.prepareforleap.log"
@@ -1958,7 +2317,7 @@ def _prepare_glycam_pdb_with_cpptraj(
             (
                 "prepareforleap crdset MDClawCrd name MDClawPrepared "
                 f"out {generated_leap} leapunitname mol pdbout {prepared_pdb} "
-                "skiperrors nowat noh keepaltloc highestocc nohisdetect nodisulfides"
+                "skiperrors nowat keepaltloc highestocc nohisdetect nodisulfides"
             ),
             "go",
             "quit",
@@ -1996,6 +2355,11 @@ def _prepare_glycam_pdb_with_cpptraj(
         result["errors"].append("cpptraj prepareforleap completed but LEaP command file was not created")
     if result["errors"]:
         return result
+
+    bond_plan = _parse_glycam_leap_bond_plan(generated_leap, prepared_pdb)
+    result["glycam_bond_plan"] = bond_plan
+    result["glycam_bond_plan_file"] = str(bond_plan_file)
+    bond_plan_file.write_text(json.dumps(bond_plan, indent=2), encoding="utf-8")
 
     result["success"] = True
     return result
@@ -3150,7 +3514,10 @@ def build_amber_system(
         result["parameters"]["glycam_prepareforleap"] = {
             "prepared_pdb": glycam_prepare["prepared_pdb"],
             "leap_script": glycam_prepare["leap_script"],
+            "glycam_bond_plan_file": glycam_prepare.get("glycam_bond_plan_file"),
         }
+        if glycam_prepare.get("glycam_bond_plan"):
+            result["glycam_bond_plan"] = glycam_prepare["glycam_bond_plan"]
         pdb_path = Path(glycam_prepare["prepared_pdb"]).resolve()
 
     try:
@@ -3255,6 +3622,10 @@ def build_amber_system(
             valid_metal_params=valid_metal_params or [],
             valid_modxna_params=valid_modxna_params or [],
             disulfide_bonds=disulfide_bonds,
+            glycam_bond_plan=(
+                glycam_prepare.get("glycam_bond_plan") if glycam_prepare else None
+            ),
+            glycam_normalization_file=out_dir / f"{output_name}.glycam_normalization.json",
             hmr=hmr,
             implicit_solvent=canonical_implicit_solvent,
             stage_callback=(
@@ -3263,6 +3634,10 @@ def build_amber_system(
             ),
         )
         result["warnings"].extend(om_result.get("warnings", []))
+        if om_result.get("glycam_bond_plan"):
+            result["glycam_bond_plan"] = om_result["glycam_bond_plan"]
+        if om_result.get("glycam_normalization"):
+            result["glycam_normalization"] = om_result["glycam_normalization"]
         if om_result.get("success"):
             _record_topology_build_stage(job_dir, node_id, "completed")
             result["system_xml"] = om_result["system_xml"]
@@ -3340,6 +3715,8 @@ def build_amber_system(
                     "glycam_prepareforleap_pdb": f"artifacts/{output_name}.prepareforleap.pdb",
                     "glycam_prepareforleap_script": f"artifacts/{output_name}.prepareforleap.in",
                     "glycam_prepareforleap_leap": f"artifacts/{output_name}.glycam.leap.in",
+                    "glycam_bond_plan": f"artifacts/{output_name}.glycam_bond_plan.json",
+                    "glycam_normalization": f"artifacts/{output_name}.glycam_normalization.json",
                     "glycam_prepareforleap_log": f"artifacts/{output_name}.prepareforleap.log",
                 })
             complete_node(job_dir, node_id,
@@ -3363,6 +3740,8 @@ def build_amber_system(
                     "glycan_library": glycan_library,
                     "glycan_content": glycan_content if glycan_content.get("has_glycan") else None,
                     "glycan_linkage_plan": result.get("glycan_linkage_plan"),
+                    "glycam_bond_plan": result.get("glycam_bond_plan"),
+                    "glycam_normalization": result.get("glycam_normalization"),
                     "glycam_prepareforleap": result.get("parameters", {}).get("glycam_prepareforleap"),
                     "modxna_params": valid_modxna_params or None,
                     "phosaa_library": phosaa_library,
@@ -3533,6 +3912,8 @@ def _run_openmmforcefields_build(
     valid_metal_params: list[Dict[str, Any]],
     valid_modxna_params: list[Dict[str, Any]],
     disulfide_bonds: Optional[list[Dict[str, Any]]],
+    glycam_bond_plan: Optional[dict[str, Any]] = None,
+    glycam_normalization_file: Optional[Path] = None,
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
     extra_xml: Optional[list[str]] = None,
@@ -3554,8 +3935,13 @@ def _run_openmmforcefields_build(
     - ``forcefield_provenance`` (dict) on success
     """
     result: Dict[str, Any] = {"success": False, "errors": [], "warnings": []}
+    has_explicit_glycam_plan = bool(glycam_bond_plan and glycam_bond_plan.get("bonds"))
+    if glycam_bond_plan:
+        result["glycam_bond_plan"] = glycam_bond_plan
     if minimization_report_file is None:
         minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
+    if glycam_normalization_file is None:
+        glycam_normalization_file = out_dir / f"{output_name}.glycam_normalization.json"
     extra_xml = list(extra_xml or [])
     extra_smiles = list(extra_smiles or [])
 
@@ -4093,6 +4479,41 @@ def _run_openmmforcefields_build(
             f"(lipid21 / GLYCAM templates supply the missing bonds)."
         )
 
+    if has_explicit_glycam_plan:
+        _stage("glycam_topology_normalization")
+        omm_topology, omm_positions, glycam_normalization = _normalize_glycam_topology(
+            omm_topology=omm_topology,
+            omm_positions=omm_positions,
+            glycam_bond_plan=glycam_bond_plan or {},
+            protein_forcefield=canon_protein,
+            phosaa_name=phosaa_name,
+            dna_name=dna_name,
+            rna_name=rna_name,
+            glycan_name=glycan_name,
+            lipid_name=lipid_name,
+            app_module=app,
+            unit_module=unit,
+        )
+        result["glycam_normalization"] = glycam_normalization
+        glycam_normalization_file.write_text(
+            json.dumps(glycam_normalization, indent=2),
+            encoding="utf-8",
+        )
+        if not glycam_normalization.get("completed"):
+            result["errors"].extend(glycam_normalization.get("errors", []))
+            result["warnings"].extend(glycam_normalization.get("warnings", []))
+            result["code"] = (
+                glycam_normalization.get("code")
+                or "glycam_topology_normalization_failed"
+            )
+            return result
+        result["warnings"].extend(glycam_normalization.get("warnings", []))
+        result["warnings"].append(
+            "Applied GLYCAM topology normalization from cpptraj prepareforleap "
+            f"bond plan ({glycam_normalization['glycam_bond_plan']['applied_count']} "
+            "bond(s)); glycan hydrogens were completed without generic protein repair."
+        )
+
     # Patch missing inter-residue (external) bonds. ``packmol-memgen`` and
     # ``cpptraj prepareforleap`` write residues with the right geometry but
     # rely on tleap/parmed-side bond inference to connect them. The
@@ -4126,6 +4547,11 @@ def _run_openmmforcefields_build(
         ext_candidates: list[tuple[Any, int, str]] = []
         ext_budget: dict[int, int] = {}
         for residue in omm_topology.residues():
+            if has_explicit_glycam_plan and (
+                residue.name == _GLYCAM_LINKED_ASN_RESNAME
+                or _is_glycam_topology_residue(residue.name)
+            ):
+                continue
             template = sg.forcefield._templates.get(residue.name)
             if template is None or not template.externalBonds:
                 continue
@@ -4228,22 +4654,23 @@ def _run_openmmforcefields_build(
         # the residue is functionally a plain ASN — rename it so
         # ``addHydrogens`` can place HD22 from the ASN template and
         # ``protein.ff*.xml`` matches the side chain.
-        nln_renamed = 0
-        for residue in omm_topology.residues():
-            if residue.name != "NLN":
-                continue
-            nd2 = next((a for a in residue.atoms() if a.name == "ND2"), None)
-            if nd2 is None:
-                continue
-            if ext_budget.get(nd2.index, 0) > 0:
-                residue.name = "ASN"
-                nln_renamed += 1
-        if nln_renamed:
-            result["warnings"].append(
-                f"Renamed {nln_renamed} NLN residue(s) without a matched "
-                f"glycan partner back to ASN (addHydrogens fills in HD22 "
-                f"and the protein FF treats them as plain asparagine)."
-            )
+        if not has_explicit_glycam_plan:
+            nln_renamed = 0
+            for residue in omm_topology.residues():
+                if residue.name != "NLN":
+                    continue
+                nd2 = next((a for a in residue.atoms() if a.name == "ND2"), None)
+                if nd2 is None:
+                    continue
+                if ext_budget.get(nd2.index, 0) > 0:
+                    residue.name = "ASN"
+                    nln_renamed += 1
+            if nln_renamed:
+                result["warnings"].append(
+                    f"Renamed {nln_renamed} NLN residue(s) without a matched "
+                    f"glycan partner back to ASN (addHydrogens fills in HD22 "
+                    f"and the protein FF treats them as plain asparagine)."
+                )
 
         # Drop orphan GLYCAM residues whose external bonds are still
         # unpaired — these arise when ``cpptraj prepareforleap`` lays out
@@ -4263,56 +4690,57 @@ def _run_openmmforcefields_build(
         # delete any GLYCAM residue whose realised external-bond count is
         # less than its template demands. Cap at a few iterations so a
         # bug here cannot loop indefinitely on a healthy glycan tree.
-        from openmm.app import Modeller as _ModellerForOrphans
-        all_dropped: list[str] = []
-        for _orphan_pass in range(8):
-            cross_bonds_now: dict[int, int] = {}
-            for bond in omm_topology.bonds():
-                if bond.atom1.residue.index != bond.atom2.residue.index:
-                    cross_bonds_now[bond.atom1.index] = (
-                        cross_bonds_now.get(bond.atom1.index, 0) + 1
-                    )
-                    cross_bonds_now[bond.atom2.index] = (
-                        cross_bonds_now.get(bond.atom2.index, 0) + 1
-                    )
-            this_round: list[Any] = []
-            for residue in omm_topology.residues():
-                if residue.name not in _GLYCAN_RESNAMES:
-                    continue
-                template = sg.forcefield._templates.get(residue.name)
-                if template is None or not template.externalBonds:
-                    continue
-                atom_by_name = {a.name: a for a in residue.atoms()}
-                template_external_count: dict[str, int] = {}
-                for ti in template.externalBonds:
-                    name = template.atoms[ti].name
-                    template_external_count[name] = (
-                        template_external_count.get(name, 0) + 1
-                    )
-                unpaired = False
-                for name, expected in template_external_count.items():
-                    atom = atom_by_name.get(name)
-                    if atom is None:
+        if not has_explicit_glycam_plan:
+            from openmm.app import Modeller as _ModellerForOrphans
+            all_dropped: list[str] = []
+            for _orphan_pass in range(8):
+                cross_bonds_now: dict[int, int] = {}
+                for bond in omm_topology.bonds():
+                    if bond.atom1.residue.index != bond.atom2.residue.index:
+                        cross_bonds_now[bond.atom1.index] = (
+                            cross_bonds_now.get(bond.atom1.index, 0) + 1
+                        )
+                        cross_bonds_now[bond.atom2.index] = (
+                            cross_bonds_now.get(bond.atom2.index, 0) + 1
+                        )
+                this_round: list[Any] = []
+                for residue in omm_topology.residues():
+                    if residue.name not in _GLYCAN_RESNAMES:
                         continue
-                    if cross_bonds_now.get(atom.index, 0) < expected:
-                        unpaired = True
-                        break
-                if unpaired:
-                    this_round.append(residue)
-            if not this_round:
-                break
-            mod = _ModellerForOrphans(omm_topology, omm_positions)
-            mod.delete([a for r in this_round for a in r.atoms()])
-            omm_topology = mod.topology
-            omm_positions = mod.positions
-            all_dropped.extend(f"{r.name}#{r.id}" for r in this_round)
-        if all_dropped:
-            result["warnings"].append(
-                f"Dropped {len(all_dropped)} orphan GLYCAM residue(s) whose "
-                f"external bond partner was missing from the prep output: "
-                f"{all_dropped[:5]}"
-                f"{'...' if len(all_dropped) > 5 else ''}"
-            )
+                    template = sg.forcefield._templates.get(residue.name)
+                    if template is None or not template.externalBonds:
+                        continue
+                    atom_by_name = {a.name: a for a in residue.atoms()}
+                    template_external_count: dict[str, int] = {}
+                    for ti in template.externalBonds:
+                        name = template.atoms[ti].name
+                        template_external_count[name] = (
+                            template_external_count.get(name, 0) + 1
+                        )
+                    unpaired = False
+                    for name, expected in template_external_count.items():
+                        atom = atom_by_name.get(name)
+                        if atom is None:
+                            continue
+                        if cross_bonds_now.get(atom.index, 0) < expected:
+                            unpaired = True
+                            break
+                    if unpaired:
+                        this_round.append(residue)
+                if not this_round:
+                    break
+                mod = _ModellerForOrphans(omm_topology, omm_positions)
+                mod.delete([a for r in this_round for a in r.atoms()])
+                omm_topology = mod.topology
+                omm_positions = mod.positions
+                all_dropped.extend(f"{r.name}#{r.id}" for r in this_round)
+            if all_dropped:
+                result["warnings"].append(
+                    f"Dropped {len(all_dropped)} orphan GLYCAM residue(s) whose "
+                    f"external bond partner was missing from the prep output: "
+                    f"{all_dropped[:5]}"
+                    f"{'...' if len(all_dropped) > 5 else ''}"
+                )
 
     _stage("modeller_prepare")
     modeller = Modeller(omm_topology, omm_positions)
@@ -4368,6 +4796,8 @@ def _run_openmmforcefields_build(
                 valid_metal_params=valid_metal_params,
                 valid_modxna_params=valid_modxna_params,
                 disulfide_bonds=disulfide_bonds,
+                glycam_bond_plan=glycam_bond_plan,
+                glycam_normalization_file=glycam_normalization_file,
                 hmr=hmr,
                 implicit_solvent=implicit_solvent,
                 extra_xml=extra_xml,
@@ -4562,6 +4992,7 @@ def _run_openmmforcefields_build(
         "addExtraParticles": True,
         "manual_bonds": {
             "disulfides": list(disulfide_bonds or []),
+            "glycam": glycam_bond_plan if has_explicit_glycam_plan else None,
         },
     }
     try:

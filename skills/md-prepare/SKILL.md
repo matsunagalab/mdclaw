@@ -120,6 +120,9 @@ use the HPacker-based `create_mutated_structure` branch in
    `component_disposition.json` rather than hand-writing it. If the user
    explicitly asks for isotope-preserving MD, treat that as unsupported for now
    and stop with a structured explanation instead of silently converting D to H.
+   For glycoproteins, prep preserves glycan provenance/linkages; Amber/GLYCAM
+   conversion, bond-plan application, and glycan-only H completion are topology
+   normalization artifacts written by `build_amber_system`.
    When creating the `topo` node, use the correct completed parent node and let
    `build_amber_system` auto-resolve its input; do not supply a free-standing
    `--pdb-file` or re-enter the workflow from a raw PDB.

@@ -73,7 +73,11 @@ class TestPipelineGlycoproteinDag:
         assert topo_node["artifacts"]["glycam_prepared_pdb"] == "artifacts/system.glycam.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_pdb"] == "artifacts/system.prepareforleap.pdb"
         assert topo_node["artifacts"]["glycam_prepareforleap_leap"] == "artifacts/system.glycam.leap.in"
+        assert topo_node["artifacts"]["glycam_bond_plan"] == "artifacts/system.glycam_bond_plan.json"
+        assert topo_node["artifacts"]["glycam_normalization"] == "artifacts/system.glycam_normalization.json"
         assert topo_node["metadata"]["glycan_library"] == "leaprc.GLYCAM_06j-1"
         assert topo_node["metadata"]["glycan_content"]["has_glycan"] is True
         assert topo_node["metadata"]["glycan_linkage_plan"] is not None
+        assert topo_node["metadata"]["glycam_bond_plan"] is not None
+        assert topo_node["metadata"]["glycam_normalization"] is not None
         assert topo_node["metadata"]["glycam_prepareforleap"]["prepared_pdb"].endswith("system.glycam.pdb")
