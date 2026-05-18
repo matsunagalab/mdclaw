@@ -120,11 +120,14 @@ manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:
 write manifest.outputs.minimized_structure and
 manifest.outputs.minimization_report. Fill metrics.json paths listed in
 submission_contract.json metric_requirements, especially task-specific
-metrics.preparation.* entries. Do not run full equilibration or production for
-prep tasks unless the prompt explicitly asks for it. For restart tasks, run the
-requested chunks and attempt trajectory concatenation/continuity checks. For
-comparative answer tasks, run the requested systems before reporting an effect
-direction.
+metrics.preparation.* entries. If `prepare_complex` writes
+component_disposition.json or excluded_components.json, copy those tool-owned
+artifacts into the submission, list them in manifest.outputs when relevant, and
+summarize their values in metrics/provenance; do not invent them by hand. Do not
+run full equilibration or production for prep tasks unless the prompt explicitly
+asks for it. For restart tasks, run the requested chunks and attempt trajectory
+concatenation/continuity checks. For comparative answer tasks, run the requested
+systems before reporting an effect direction.
 
 Minimal completed prep manifest shape:
 
@@ -169,6 +172,15 @@ sources as needed, and writes the standard `submission/` directory.
 After the agent writes `submission/`, score only with scripts:
 
 ```bash
-mdclaw validate_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir>
-mdclaw score_benchmark_submission --task-file <canonical_task_dir>/task.json --submission-dir <submission_dir> --run-id <run_id> --output-file <run_task_dir>/score.json
+mdclaw validate_and_score_benchmark_submission \
+  --task-file <canonical_task_dir>/task.json \
+  --submission-dir <submission_dir> \
+  --run-id <run_id> \
+  --validation-output-file <run_task_dir>/validation.json \
+  --output-file <run_task_dir>/score.json
 ```
+
+Read the wrapper's normalized fields: `validation_success`, `score_status`,
+`weighted_total`, and `benchmark_passed`. Do not infer benchmark pass/fail from
+the wrapper's `success` field alone; `success` only means the evaluator wrapper
+completed.

@@ -792,6 +792,42 @@ def _check_minimized_structure_component_rescan(check: DeterministicCheck,
     return _check_component_counts_for_structure(check, structure_path)
 
 
+def _pdb_deuterium_records(path: Path) -> list[str]:
+    records: list[str] = []
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM", "HETATM")):
+                continue
+            atom_name = line[12:16].strip().upper()
+            element = line[76:78].strip().upper() if len(line) >= 78 else ""
+            if element == "D" or (atom_name.startswith("D") and element in {"", "D"}):
+                chain_id = line[21:22].strip()
+                resseq = line[22:26].strip()
+                resname = line[17:20].strip()
+                records.append(f"{atom_name}:{resname}:{chain_id}:{resseq}")
+    return records
+
+
+def _check_pdb_no_deuterium_atoms(check: DeterministicCheck,
+                                  submission_dir: Path,
+                                  manifest: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest, check.structure_manifest_path, "outputs.prepared_structure",
+    ) or check.structure_path or "prepared_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+    try:
+        records = _pdb_deuterium_records(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+    if records:
+        preview = ", ".join(records[:5])
+        extra = "" if len(records) <= 5 else f", ... +{len(records) - 5} more"
+        return False, 0.0, f"found {len(records)} deuterium atom record(s): {preview}{extra}"
+    return True, 1.0, f"no deuterium atom records in {structure_path.name}"
+
+
 def _check_component_counts_for_structure(check: DeterministicCheck,
                                           structure_path: Path):
     if not structure_path.is_file():
@@ -1116,6 +1152,7 @@ _DETERMINISTIC_DISPATCH = {
     "trajectory_rescan": _check_trajectory_rescan,
     "topology_solvent_rescan": _check_topology_solvent_rescan,
     "structure_component_rescan": _check_structure_component_rescan,
+    "pdb_no_deuterium_atoms": _check_pdb_no_deuterium_atoms,
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
     "assembly_identity_check": _check_assembly_identity,

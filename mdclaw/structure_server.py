@@ -80,6 +80,83 @@ def _path_lookup_keys(path: str | Path | None) -> set[str]:
     return keys
 
 
+def _pdb_atom_descriptor(line: str) -> dict[str, Any]:
+    """Return a compact, serializable descriptor for a PDB atom record."""
+    chain = line[21].strip() if len(line) > 21 else ""
+    return {
+        "serial": line[6:11].strip(),
+        "atom_name": line[12:16].strip(),
+        "resname": line[17:20].strip(),
+        "chain": chain,
+        "resnum": line[22:26].strip(),
+        "icode": line[26].strip() if len(line) > 26 else "",
+        "element": line[76:78].strip() if len(line) >= 78 else "",
+    }
+
+
+def _is_deuterium_atom_record(line: str) -> bool:
+    """Return True for experimental deuterium atom records in PDB text."""
+    if not line.startswith(("ATOM", "HETATM")):
+        return False
+    atom_name = line[12:16].strip().upper()
+    element = line[76:78].strip().upper() if len(line) >= 78 else ""
+    if element == "D":
+        return True
+    return bool(atom_name) and atom_name.startswith("D") and element in {"", "D"}
+
+
+def _component_disposition_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the v1 component disposition artifact payload."""
+    excluded_entries = [entry for entry in entries if entry.get("action_taken") == "excluded"]
+    isotope_atoms = sum(
+        int(entry.get("atom_count", 0))
+        for entry in excluded_entries
+        if entry.get("classification") == "experimental_isotope"
+    )
+    excluded_atoms = sum(int(entry.get("atom_count", 0)) for entry in excluded_entries)
+    return {
+        "schema_version": "mdclaw.component_disposition.v1",
+        "summary": {
+            "experimental_isotope_atoms_excluded": isotope_atoms,
+            "excluded_atom_count": excluded_atoms,
+            "excluded_component_count": len(excluded_entries),
+        },
+        "entries": entries,
+    }
+
+
+def _exclude_deuterium_atoms_from_pdb(input_path: Path, output_path: Path) -> dict[str, Any]:
+    """Write *output_path* with experimental deuterium atom records removed."""
+    lines = input_path.read_text().splitlines()
+    kept: list[str] = []
+    excluded_atoms: list[dict[str, Any]] = []
+    for line in lines:
+        if _is_deuterium_atom_record(line):
+            excluded_atoms.append(_pdb_atom_descriptor(line))
+            continue
+        kept.append(line)
+
+    if excluded_atoms:
+        output_path.write_text("\n".join(kept) + "\n")
+        entries = [
+            {
+                "component_id": "experimental_isotope_deuterium",
+                "classification": "experimental_isotope",
+                "default_action": "exclude",
+                "action_taken": "excluded",
+                "atom_count": len(excluded_atoms),
+                "reason": (
+                    "Experimental deuterium atoms are excluded from the default "
+                    "classical MD preparation path; standard hydrogens are rebuilt downstream."
+                ),
+                "sample_atoms": excluded_atoms[:20],
+            }
+        ]
+    else:
+        entries = []
+    return _component_disposition_payload(entries)
+
+
 def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dict[str, int]:
     """Rewrite CYS/CYX residue names in *pdb_file* to match *disulfide_bonds*.
 
@@ -2136,7 +2213,9 @@ def clean_protein(
         "warnings": [],
         "errors": [],
         "statistics": {},
-        "disulfide_bonds": []
+        "disulfide_bonds": [],
+        "component_disposition": _component_disposition_payload([]),
+        "component_disposition_summary": _component_disposition_payload([])["summary"],
     }
 
     try:
@@ -2162,9 +2241,36 @@ def clean_protein(
     result["output_file"] = str(output_file)
     
     try:
+        cleaning_input_path = input_path
+        deuterium_stripped_file = input_path.parent / f"{stem}.deuterium_stripped.pdb"
+        component_disposition = _exclude_deuterium_atoms_from_pdb(
+            input_path,
+            deuterium_stripped_file,
+        )
+        result["component_disposition"] = component_disposition
+        result["component_disposition_summary"] = component_disposition["summary"]
+        excluded_deuterium_count = component_disposition["summary"][
+            "experimental_isotope_atoms_excluded"
+        ]
+        if excluded_deuterium_count:
+            cleaning_input_path = deuterium_stripped_file
+            result["deuterium_stripped_input_file"] = str(deuterium_stripped_file)
+            result["operations"].append({
+                "step": "component_disposition",
+                "status": "excluded",
+                "details": (
+                    f"Excluded {excluded_deuterium_count} experimental deuterium atom(s); "
+                    "standard hydrogens will be rebuilt downstream"
+                ),
+            })
+            result["warnings"].append(
+                f"Excluded {excluded_deuterium_count} experimental deuterium atom(s) "
+                "from MD preparation input; standard hydrogens will be rebuilt"
+            )
+
         # Load structure
         logger.info("Loading structure with PDBFixer")
-        fixer = PDBFixer(filename=str(input_path))
+        fixer = PDBFixer(filename=str(cleaning_input_path))
         
         # Get initial statistics
         initial_chains = list(fixer.topology.chains())
@@ -2348,7 +2454,11 @@ def clean_protein(
             for residue in fixer.topology.residues():
                 if residue.name == 'CYS':
                     cys_residues.add(residue)
-                    cys_by_chain_resnum[(residue.chain.id, residue.index)] = residue
+                    try:
+                        residue_number = int(residue.id)
+                    except (TypeError, ValueError):
+                        residue_number = residue.index
+                    cys_by_chain_resnum[(residue.chain.id, residue_number)] = residue
 
             disulfide_info = []
             cyx_residues = set()  # Track residues to rename
@@ -2703,6 +2813,10 @@ def clean_protein(
                     provenance["disulfide_bonds_details"] = op.get("details", "")
                 elif op.get("status") == "none_found":
                     provenance["disulfide_bonds_applied"] = False
+            elif step == "component_disposition" and op.get("status") == "excluded":
+                provenance["component_disposition_recorded"] = True
+                provenance["experimental_isotopes_excluded"] = True
+                provenance["component_disposition_details"] = op.get("details", "")
         result["provenance"] = provenance
 
         result["success"] = True
@@ -4204,6 +4318,10 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
         "ligands": [],
         "errors": [],
         "warnings": [],
+        "component_disposition": _component_disposition_payload([]),
+        "component_disposition_summary": _component_disposition_payload([])["summary"],
+        "component_disposition_file": None,
+        "excluded_components_file": None,
     }
 
 
@@ -4755,6 +4873,14 @@ def prepare_complex(
                         protein_result["output_file"] = clean_result["output_file"]
                         protein_result["statistics"] = clean_result.get("statistics", {})
                         protein_result["provenance"] = clean_result.get("provenance", {})
+                        protein_result["component_disposition_summary"] = clean_result.get(
+                            "component_disposition_summary",
+                            _component_disposition_payload([])["summary"],
+                        )
+                        protein_result["component_disposition"] = clean_result.get(
+                            "component_disposition",
+                            _component_disposition_payload([]),
+                        )
                         protein_result["success"] = True
                         logger.info(f"  ✓ Protein {chain_id}: {clean_result['output_file']}")
                     else:
@@ -5219,12 +5345,44 @@ def prepare_complex(
                 "options": options,
             }
 
+        component_entries: list[dict[str, Any]] = []
+        for protein in result.get("proteins", []):
+            component_payload = protein.get("component_disposition") or {}
+            for entry in component_payload.get("entries", []) or []:
+                recorded_entry = dict(entry)
+                recorded_entry.setdefault("source_file", protein.get("input_file"))
+                recorded_entry.setdefault("chain_id", protein.get("chain_id"))
+                component_entries.append(recorded_entry)
+        component_disposition = _component_disposition_payload(component_entries)
+        excluded_components = {
+            "schema_version": component_disposition["schema_version"],
+            "summary": component_disposition["summary"],
+            "entries": [
+                entry for entry in component_entries
+                if entry.get("action_taken") == "excluded"
+            ],
+        }
+        component_disposition_json = base_dir / "component_disposition.json"
+        excluded_components_json = base_dir / "excluded_components.json"
+        with open(component_disposition_json, "w") as f:
+            json.dump(component_disposition, f, indent=2)
+        with open(excluded_components_json, "w") as f:
+            json.dump(excluded_components, f, indent=2)
+        result["component_disposition"] = component_disposition
+        result["component_disposition_summary"] = component_disposition["summary"]
+        result["component_disposition_file"] = str(component_disposition_json)
+        result["excluded_components_file"] = str(excluded_components_json)
+
         # Aggregate provenance from all proteins into top-level summary
         # so LLM can read it directly without digging into proteins[]
         preparation_summary = {}
         if result.get("source_structure_id"):
             preparation_summary["source_structure_id"] = result["source_structure_id"]
             preparation_summary["source_selection"] = result.get("source_selection") or {}
+        preparation_summary["disulfide_pairs"] = result.get("disulfide_bonds", [])
+        preparation_summary["disulfide_detection_recorded"] = bool(
+            result.get("disulfide_source")
+        )
         for p in result.get("proteins", []):
             prov = p.get("provenance", {})
             if prov:
@@ -5293,6 +5451,16 @@ def prepare_complex(
                 ),
                 "artifact": "chain_identity_map.json",
             }
+        component_summary = result.get("component_disposition_summary") or {}
+        preparation_summary["component_disposition_recorded"] = bool(
+            result.get("component_disposition_file")
+        )
+        preparation_summary["experimental_isotope_atoms_excluded"] = int(
+            component_summary.get("experimental_isotope_atoms_excluded", 0)
+        )
+        preparation_summary["experimental_isotopes_excluded"] = (
+            preparation_summary["experimental_isotope_atoms_excluded"] > 0
+        )
         result["preparation_summary"] = preparation_summary
 
         # -- confirmation_needed: structured block for HITL review --------
@@ -5442,6 +5610,10 @@ def prepare_complex(
             # can auto-resolve it from the prep ancestor.
             if (base_dir / "disulfide_bonds.json").exists():
                 artifacts["disulfide_bonds"] = "artifacts/disulfide_bonds.json"
+            if (base_dir / "component_disposition.json").exists():
+                artifacts["component_disposition"] = "artifacts/component_disposition.json"
+            if (base_dir / "excluded_components.json").exists():
+                artifacts["excluded_components"] = "artifacts/excluded_components.json"
             if (base_dir / "residue_mapping.json").exists():
                 artifacts["residue_mapping"] = "artifacts/residue_mapping.json"
             if (base_dir / "chain_identity_map.json").exists():

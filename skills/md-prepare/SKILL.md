@@ -112,7 +112,12 @@ use the HPacker-based `create_mutated_structure` branch in
    to explicit solvent. A deliberate vacuum/no-solvent topology may keep
    explicit ions, but it is not the default MD workflow. `build_amber_system`
    will reject implicit builds that still contain explicit ions with
-   `code="explicit_ions_in_implicit_solvent"`.
+   `code="explicit_ions_in_implicit_solvent"`. Experimental isotope atoms such
+   as deuterium are excluded by `prepare_complex` from the default classical MD
+   path, then standard hydrogens are rebuilt; copy the tool-written
+   `component_disposition.json` rather than hand-writing it. If the user
+   explicitly asks for isotope-preserving MD, treat that as unsupported for now
+   and stop with a structured explanation instead of silently converting D to H.
 6. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
    available:

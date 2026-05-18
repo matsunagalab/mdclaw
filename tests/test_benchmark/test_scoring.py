@@ -826,6 +826,42 @@ def test_structure_component_rescan_counts_required_and_forbidden_residues(tmp_p
     assert "SO4" in failed.message
 
 
+def test_pdb_no_deuterium_atoms_check(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_d",
+            check_type="pdb_no_deuterium_atoms",
+            structure_manifest_path="outputs.prepared_structure",
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   ARG A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "END\n"
+    )
+    passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert passed.passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   ARG A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  D1  ARG A   1       0.100   0.000   0.000  1.00  0.00           D\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "deuterium" in failed.message
+    assert "D1" in failed.message
+
+
 def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
     task = _make_task(
         primary="preparation",

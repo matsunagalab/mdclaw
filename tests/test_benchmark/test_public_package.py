@@ -131,6 +131,37 @@ def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
     ]
 
 
+def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
+    tmp_path: Path,
+):
+    out_dir = tmp_path / "public_mdagentbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P10_prep_bpti_disulfides"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    requirements = {
+        item["json_path"]: (item["operator"], item["value"])
+        for item in contract["metric_requirements"]
+    }
+
+    assert "component_disposition.json" in contract["required_outputs"]
+    assert "excluded_components.json" in contract["required_outputs"]
+    assert requirements["preparation.disulfide_pairs"] == ("min_length", 3)
+    assert requirements["preparation.component_disposition_recorded"] == ("equals", True)
+    assert requirements["preparation.experimental_isotopes_excluded"] == ("equals", True)
+    assert requirements["preparation.experimental_isotope_atoms_excluded"] == ("min", 1)
+
+
 def test_export_public_package_exposes_p25_net_neutrality_contract(
     tmp_path: Path,
 ):

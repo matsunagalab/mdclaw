@@ -4,7 +4,7 @@ You are evaluating an MD agent on `P10_prep_bpti_disulfides`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Disulfide auto/override: detect the canonical BPTI disulfides, or respect an explicit user override for named pairs.
+Task: Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components.
 
 Public source anchors: PDB 5PTI.
 
@@ -16,6 +16,8 @@ Your submission directory must contain:
 - `evidence_report.json`
 - `prepared_structure.pdb`
 - `minimization_report.json`
+- `component_disposition.json`
+- `excluded_components.json`
 
 Your `manifest.json` must also point `outputs.topology` to the backend-specific topology artifacts and `outputs.minimized_structure` to a structure after minimization. For OpenMM or MDClaw submissions, `outputs.topology` should be a JSON list containing the `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short minimization or equivalent backend-native energy check and record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
 

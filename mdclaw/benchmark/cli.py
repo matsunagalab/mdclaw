@@ -238,6 +238,98 @@ def score_benchmark_submission(
     }
 
 
+def validate_and_score_benchmark_submission(
+    task_file: str,
+    submission_dir: str,
+    run_id: str = "",
+    output_file: Optional[str] = None,
+    validation_output_file: Optional[str] = None,
+    llm_judge_file: Optional[str] = None,
+    require_validation_success: bool = True,
+) -> dict[str, Any]:
+    """Validate, score, and return normalized status fields.
+
+    This is the evaluator-side convenience wrapper for benchmark harnesses.
+    It deliberately does not run an MD agent. It only consumes a completed
+    ``submission/`` directory, writes optional validation/score artifacts, and
+    exposes the canonical pass/fail fields so callers do not need to know the
+    internal shape returned by :func:`score_benchmark_submission`.
+    """
+    sub_dir = Path(submission_dir)
+    validation_result = validate_benchmark_submission(task_file, submission_dir)
+    validation_file = None
+    if validation_output_file:
+        validation_path = Path(validation_output_file)
+        ensure_directory(validation_path.parent)
+        validation_path.write_text(
+            json.dumps(validation_result, indent=2, sort_keys=True, default=str) + "\n"
+        )
+        validation_file = str(validation_path)
+
+    if require_validation_success and not validation_result.get("success"):
+        return {
+            "success": False,
+            "task_id": validation_result.get("task_id"),
+            "submission_dir": str(sub_dir),
+            "validation_success": False,
+            "validation_file": validation_file,
+            "score_success": False,
+            "score_file": None,
+            "score_status": None,
+            "weighted_total": None,
+            "scores": None,
+            "benchmark_passed": False,
+            "validation": validation_result,
+            "score": None,
+            "errors": validation_result.get("errors", []),
+        }
+
+    score_result = score_benchmark_submission(
+        task_file=task_file,
+        submission_dir=submission_dir,
+        run_id=run_id,
+        output_file=output_file,
+        llm_judge_file=llm_judge_file,
+    )
+    if not score_result.get("success"):
+        return {
+            "success": False,
+            "task_id": validation_result.get("task_id"),
+            "submission_dir": str(sub_dir),
+            "validation_success": bool(validation_result.get("success")),
+            "validation_file": validation_file,
+            "score_success": False,
+            "score_file": score_result.get("score_file"),
+            "score_status": None,
+            "weighted_total": None,
+            "scores": None,
+            "benchmark_passed": False,
+            "validation": validation_result,
+            "score": None,
+            "errors": score_result.get("errors", []),
+        }
+
+    score_payload = score_result.get("score") or {}
+    score_status = score_payload.get("status")
+    weighted_total = score_payload.get("weighted_total")
+    return {
+        "success": True,
+        "task_id": score_payload.get("task_id") or validation_result.get("task_id"),
+        "submission_dir": str(sub_dir),
+        "validation_success": bool(validation_result.get("success")),
+        "validation_file": validation_file,
+        "score_success": True,
+        "score_file": score_result.get("score_file"),
+        "score_status": score_status,
+        "weighted_total": weighted_total,
+        "scores": score_payload.get("scores"),
+        "benchmark_passed": score_status == "passed",
+        "validation": validation_result,
+        "score": score_payload,
+        "errors": [],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Schema / dataset maintenance
 
@@ -436,6 +528,7 @@ __all__ = [
     "list_benchmark_tasks",
     "validate_benchmark_task",
     "validate_benchmark_submission",
+    "validate_and_score_benchmark_submission",
     "score_benchmark_submission",
     "write_benchmark_schemas",
     "export_benchmark_public_package",

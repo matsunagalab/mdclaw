@@ -56,6 +56,53 @@ def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
     assert summ["scores"]["scientific_answer"] is None
 
 
+def test_validate_and_score_wrapper_returns_normalized_fields(tmp_path: Path):
+    sub_dir = tmp_path / "submission"
+    _fake_submissions.GENERATORS[TASK_ID](sub_dir, run_id="wrapper_p11", mode="honest")
+    task_file = str(DATASET_DIR / "tasks" / TASK_ID / "task.json")
+
+    result = cli.validate_and_score_benchmark_submission(
+        task_file=task_file,
+        submission_dir=str(sub_dir),
+        run_id="wrapper_p11",
+        output_file=str(tmp_path / "score.json"),
+        validation_output_file=str(tmp_path / "validation.json"),
+    )
+
+    assert result["success"] is True
+    assert result["validation_success"] is True
+    assert result["score_success"] is True
+    assert result["score_status"] == "passed"
+    assert result["weighted_total"] == 1.0
+    assert result["benchmark_passed"] is True
+    assert Path(result["score_file"]).is_file()
+    assert Path(result["validation_file"]).is_file()
+
+
+def test_validate_and_score_wrapper_stops_on_validation_failure(tmp_path: Path):
+    sub_dir = tmp_path / "submission"
+    sub_dir.mkdir()
+    (sub_dir / "manifest.json").write_text('{"task_id": "wrong", "status": "completed"}')
+    task_file = str(DATASET_DIR / "tasks" / TASK_ID / "task.json")
+
+    result = cli.validate_and_score_benchmark_submission(
+        task_file=task_file,
+        submission_dir=str(sub_dir),
+        run_id="bad_wrapper",
+        output_file=str(tmp_path / "score.json"),
+        validation_output_file=str(tmp_path / "validation.json"),
+    )
+
+    assert result["success"] is False
+    assert result["validation_success"] is False
+    assert result["score_success"] is False
+    assert result["score_status"] is None
+    assert result["weighted_total"] is None
+    assert result["benchmark_passed"] is False
+    assert not (tmp_path / "score.json").exists()
+    assert (tmp_path / "validation.json").is_file()
+
+
 def test_summary_dedup_on_re_run(tmp_path: Path):
     """summarize_benchmark_run twice must not stack rows in summaries.jsonl."""
     output_dir = tmp_path / "benchmark_runs"

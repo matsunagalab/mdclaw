@@ -27,7 +27,9 @@
     "provenance.json",
     "evidence_report.json",
     "prepared_structure.pdb",
-    "minimization_report.json"
+    "minimization_report.json",
+    "component_disposition.json",
+    "excluded_components.json"
   ],
   "requires_tools": [
     "structure_preparation"
@@ -41,7 +43,7 @@
         "json_file": "metrics.json",
         "json_path": "preparation.disulfide_pairs",
         "min_length": 3,
-        "weight": 0.6
+        "weight": 0.35
       },
       {
         "check_id": "disulfide_method_recorded",
@@ -49,7 +51,38 @@
         "equals": true,
         "json_file": "metrics.json",
         "json_path": "preparation.disulfide_detection_recorded",
-        "weight": 0.4
+        "weight": 0.15
+      },
+      {
+        "check_id": "component_disposition_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.component_disposition_recorded",
+        "weight": 0.15
+      },
+      {
+        "check_id": "experimental_isotopes_excluded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.experimental_isotopes_excluded",
+        "weight": 0.1
+      },
+      {
+        "check_id": "experimental_isotope_atoms_excluded",
+        "check_type": "json_min",
+        "json_file": "metrics.json",
+        "json_path": "preparation.experimental_isotope_atoms_excluded",
+        "min_value": 1,
+        "weight": 0.1
+      },
+      {
+        "check_id": "prepared_structure_has_no_deuterium",
+        "check_type": "pdb_no_deuterium_atoms",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.15
       },
       {
         "check_id": "topology_artifact_bundle_present",
@@ -75,6 +108,13 @@
         "check_type": "minimization_report_check",
         "minimization_report_manifest_path": "outputs.minimization_report",
         "weight": 1.0
+      },
+      {
+        "check_id": "minimized_prepared_structure_has_no_deuterium",
+        "check_type": "pdb_no_deuterium_atoms",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.15
       }
     ],
     "ground_truth_checks": [],
@@ -116,6 +156,6 @@
     "evidence_communication"
   ],
   "task_id": "P10_prep_bpti_disulfides",
-  "task_intent": "Disulfide auto/override: detect the canonical BPTI disulfides, or respect an explicit user override for named pairs.",
+  "task_intent": "Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components.",
   "time_limit_minutes": 60
 }

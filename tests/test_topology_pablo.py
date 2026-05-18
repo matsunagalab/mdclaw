@@ -136,6 +136,30 @@ def test_add_disulfide_bonds_links_sg_atoms(tmp_path):
     assert bond_atoms == set(sgs)
 
 
+def test_add_disulfide_bonds_accepts_prepare_complex_schema():
+    """Current disulfide_bonds.json uses cys1/cys2 from prepare_complex."""
+    from openmm.app import Element, Topology
+
+    top = Topology()
+    chain = top.addChain("A")
+    sgs = []
+    for resnum in [5, 55]:
+        res = top.addResidue("CYX", chain, str(resnum))
+        sgs.append(top.addAtom("SG", Element.getBySymbol("S"), res))
+
+    pairs = [
+        {
+            "cys1": {"chain": "A", "resnum": 5},
+            "cys2": {"chain": "A", "resnum": 55},
+        }
+    ]
+    assert tp.add_disulfide_bonds(top, pairs) == 1
+    assert tp.add_disulfide_bonds(top, pairs) == 0
+    bonds = list(top.bonds())
+    assert len(bonds) == 1
+    assert {bonds[0][0], bonds[0][1]} == set(sgs)
+
+
 def test_add_disulfide_bonds_silently_skips_unresolvable_pairs():
     """Non-existent residue numbers must not raise — return 0 added."""
     from openmm.app import Topology

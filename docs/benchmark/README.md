@@ -69,7 +69,7 @@ and per-task `prompt.md` plus `submission_contract.json`. It omits `task.json`,
 | P07_prep_rna_crystallographic_ions | Ion triage | PDB 4RBQ | Prepare RNA while preserving designated K+ ions. |
 | P08_prep_t4l_l99a_branch | Point mutation | PDB 2LZM | Branch WT to L99A without renumbering drift. |
 | P09_prep_t4l_double_mutant | Multi-mutant | PDB 2LZM | Apply L99A and M102Q together. |
-| P10_prep_bpti_disulfides | Disulfides | PDB 5PTI | Record canonical BPTI disulfides. |
+| P10_prep_bpti_disulfides | Disulfides | PDB 5PTI | Record canonical BPTI disulfides and exclude experimental deuterium with component disposition evidence. |
 | P11_prep_site_protonation_t4l_glu11 | Protonation | PDB 2LZM | Preserve explicit A:11 GLH protonation. |
 | P12_prep_restore_deposited_sep | Deposited PTM | PDB 5K9P | Restore deposited SEP and PTM provenance. |
 | P13_prep_user_requested_sep | Requested PTM | PDB 1UBQ | Convert Ser20 to SEP on request. |

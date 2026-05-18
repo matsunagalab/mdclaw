@@ -75,6 +75,17 @@ def _json_min_length(check_id: str, path: str, minimum: int, weight: float = 1.0
     }
 
 
+def _json_min(check_id: str, path: str, minimum: float, weight: float = 1.0) -> dict:
+    return {
+        "check_id": check_id,
+        "check_type": "json_min",
+        "json_file": "metrics.json",
+        "json_path": path,
+        "min_value": minimum,
+        "weight": weight,
+    }
+
+
 def _provenance_text_check(
     check_id: str,
     required_text_groups: list[list[str]],
@@ -115,6 +126,16 @@ def _component_check(
     if residue_aliases:
         out["residue_aliases"] = residue_aliases
     return out
+
+
+def _no_deuterium_check(check_id: str, weight: float = 1.0) -> dict:
+    return {
+        "check_id": check_id,
+        "check_type": "pdb_no_deuterium_atoms",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": weight,
+    }
 
 
 def _residue_check(
@@ -191,6 +212,12 @@ def _minimized_persistence_checks(checks: list[dict]) -> list[dict]:
             copied = copy.deepcopy(check)
             copied["check_id"] = f"minimized_{check['check_id']}"
             copied["structure_manifest_path"] = "outputs.minimized_structure"
+            out.append(copied)
+        elif check.get("check_type") == "pdb_no_deuterium_atoms":
+            copied = copy.deepcopy(check)
+            copied["check_id"] = f"minimized_{check['check_id']}"
+            copied["structure_manifest_path"] = "outputs.minimized_structure"
+            copied["structure_path"] = "minimized_structure.pdb"
             out.append(copied)
     return out
 
@@ -433,14 +460,24 @@ TASK_DEFS: list[dict] = [
         "P10_prep_bpti_disulfides",
         "Disulfide auto/override",
         "PDB 5PTI",
-        "detect the canonical BPTI disulfides, or respect an explicit user override for named pairs.",
+        "prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components.",
         [
-            _json_min_length("three_disulfides_recorded", "preparation.disulfide_pairs", 3, 0.6),
-            _json_check("disulfide_method_recorded", "preparation.disulfide_detection_recorded", True, 0.4),
+            _json_min_length("three_disulfides_recorded", "preparation.disulfide_pairs", 3, 0.35),
+            _json_check("disulfide_method_recorded", "preparation.disulfide_detection_recorded", True, 0.15),
+            _json_check("component_disposition_recorded", "preparation.component_disposition_recorded", True, 0.15),
+            _json_check("experimental_isotopes_excluded", "preparation.experimental_isotopes_excluded", True, 0.1),
+            _json_min(
+                "experimental_isotope_atoms_excluded",
+                "preparation.experimental_isotope_atoms_excluded",
+                1,
+                0.1,
+            ),
+            _no_deuterium_check("prepared_structure_has_no_deuterium", 0.15),
         ],
         priority=2,
         tags=["disulfide", "bond_detection"],
         references=[{"source": "PDB 5PTI", "url": "https://www.rcsb.org/structure/5PTI"}],
+        extra_outputs=["component_disposition.json", "excluded_components.json"],
     ),
     _task(
         "P11_prep_site_protonation_t4l_glu11",

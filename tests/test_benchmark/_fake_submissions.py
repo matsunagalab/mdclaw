@@ -95,6 +95,10 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
         minimum = int(check.get("min_length") or 1)
         value = list(range(minimum)) if mode == "honest" else []
         _set_path(metrics, check["json_path"], value)
+    elif check_type == "json_min" and check.get("json_path"):
+        minimum = float(check.get("min_value") or 0.0)
+        value = minimum if mode == "honest" else minimum - 1.0
+        _set_path(metrics, check["json_path"], value)
     elif check_type == "rmsd_recompute" and check.get("json_path"):
         _set_path(metrics, check["json_path"], 0.0 if mode == "honest" else 9.9)
     elif check_type == "assembly_identity_check":
@@ -342,6 +346,36 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     })
     _write(sub_dir / "prepared_structure.pdb", prepared_structure)
     _write(sub_dir / "minimized_structure.pdb", minimized_structure)
+    if "component_disposition.json" in (task.get("required_outputs") or []):
+        excluded_count = int(
+            metrics.get("preparation", {}).get("experimental_isotope_atoms_excluded", 0) or 0
+        )
+        disposition = {
+            "schema_version": "mdclaw.component_disposition.v1",
+            "summary": {
+                "experimental_isotope_atoms_excluded": excluded_count,
+                "excluded_atom_count": excluded_count,
+                "excluded_component_count": 1 if excluded_count else 0,
+            },
+            "entries": [
+                {
+                    "component_id": "experimental_isotope_deuterium",
+                    "classification": "experimental_isotope",
+                    "default_action": "exclude",
+                    "action_taken": "excluded",
+                    "atom_count": excluded_count,
+                    "reason": "synthetic fixture",
+                }
+            ] if excluded_count else [],
+        }
+        _write(sub_dir / "component_disposition.json", disposition)
+        _write(sub_dir / "excluded_components.json", {
+            **disposition,
+            "entries": [
+                entry for entry in disposition["entries"]
+                if entry.get("action_taken") == "excluded"
+            ],
+        })
 
 
 def _load_task_ids() -> list[str]:

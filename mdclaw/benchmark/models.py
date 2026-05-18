@@ -52,6 +52,7 @@ DeterministicCheckType = Literal[
     "trajectory_rescan",
     "topology_solvent_rescan",
     "structure_component_rescan",
+    "pdb_no_deuterium_atoms",
     "pdb_residue_state",
     "rmsd_recompute",
     "assembly_identity_check",

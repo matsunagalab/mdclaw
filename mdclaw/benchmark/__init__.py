@@ -21,6 +21,7 @@ from mdclaw.benchmark.cli import (
     export_benchmark_public_package,
     list_benchmark_tasks,
     score_benchmark_submission,
+    validate_and_score_benchmark_submission,
     validate_benchmark_submission,
     validate_benchmark_task,
     write_benchmark_schemas,
@@ -32,5 +33,6 @@ TOOLS = {
     "write_benchmark_schemas": write_benchmark_schemas,
     "validate_benchmark_task": validate_benchmark_task,
     "validate_benchmark_submission": validate_benchmark_submission,
+    "validate_and_score_benchmark_submission": validate_and_score_benchmark_submission,
     "score_benchmark_submission": score_benchmark_submission,
 }

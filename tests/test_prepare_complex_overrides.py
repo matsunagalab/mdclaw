@@ -145,6 +145,47 @@ class TestDisulfideOverride:
         assert persisted[0]["cys1"]["resnum"] == 10
 
 
+class TestComponentDisposition:
+
+    def test_exclude_deuterium_atoms_records_disposition(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        pdb = tmp_path / "deuterated.pdb"
+        pdb.write_text(textwrap.dedent("""\
+            ATOM      1  N   ARG A   1       0.000   0.000   0.000  1.00  0.00           N
+            ATOM      2  D1  ARG A   1       0.100   0.000   0.000  1.00  0.00           D
+            ATOM      3  CA  ARG A   1       1.000   0.000   0.000  1.00  0.00           C
+            END
+            """))
+        out = tmp_path / "deuterium_stripped.pdb"
+
+        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+
+        assert out.exists()
+        assert " D1 " not in out.read_text()
+        assert " CA " in out.read_text()
+        assert disposition["summary"]["experimental_isotope_atoms_excluded"] == 1
+        assert disposition["entries"][0]["classification"] == "experimental_isotope"
+        assert disposition["entries"][0]["action_taken"] == "excluded"
+
+    def test_exclude_deuterium_atoms_zero_summary_for_standard_pdb(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        pdb = tmp_path / "standard.pdb"
+        pdb.write_text(textwrap.dedent("""\
+            ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N
+            END
+            """))
+        out = tmp_path / "unused.pdb"
+
+        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+
+        assert not out.exists()
+        assert disposition["summary"]["experimental_isotope_atoms_excluded"] == 0
+        assert disposition["summary"]["excluded_atom_count"] == 0
+        assert disposition["entries"] == []
+
+
 class TestHistidineOverride:
 
     def test_histidine_states_override_flagged_in_confirmation(

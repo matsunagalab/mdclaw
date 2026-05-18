@@ -179,11 +179,13 @@ def add_disulfide_bonds(
 
     Pablo identifies cysteine residues as such (CYS) but does not infer
     disulfide bridges from proximity. The mdclaw prep pipeline emits a list of
-    explicit pairs as ``disulfide_bonds.json`` (each item shaped like
-    ``{"residue_a": {"chain_id": "A", "residue_number": 11, ...},
-    "residue_b": {...}}``); this function walks the topology and adds the
-    SG-SG bond for each pair so ``SystemGenerator.create_system`` produces the
-    crosslink in the resulting System.
+    explicit pairs as ``disulfide_bonds.json``. Current prep emits
+    ``{"cys1": {"chain": "A", "resnum": 11, ...}, "cys2": {...}}``;
+    older artifacts used ``{"residue_a": {"chain_id": "A",
+    "residue_number": 11, ...}, "residue_b": {...}}``. This function accepts
+    both shapes and adds the SG-SG bond for each pair so
+    ``SystemGenerator.create_system`` produces the crosslink in the resulting
+    System.
 
     Returns the number of bonds actually added (silently skips pairs where one
     side cannot be resolved — the caller can warn on a non-zero discrepancy).
@@ -206,20 +208,45 @@ def add_disulfide_bonds(
                 sg_index[(chain_id, resnum)] = atom
                 break
 
+    existing_bonds = {
+        frozenset({getattr(atom1, "index", id(atom1)), getattr(atom2, "index", id(atom2))})
+        for atom1, atom2 in topology.bonds()
+    }
+
+    def _pair_endpoint(pair: dict[str, Any], current_key: str, legacy_key: str) -> tuple[str, int] | None:
+        current = pair.get(current_key)
+        if isinstance(current, dict):
+            chain = current.get("chain")
+            resnum = current.get("resnum")
+        else:
+            current = pair.get(legacy_key)
+            if not isinstance(current, dict):
+                return None
+            chain = current.get("chain_id")
+            resnum = current.get("residue_number")
+        try:
+            return (chain or "", int(resnum))
+        except (TypeError, ValueError):
+            return None
+
     added = 0
     for pair in disulfide_pairs:
-        a = pair.get("residue_a", {}) or {}
-        b = pair.get("residue_b", {}) or {}
-        try:
-            key_a = (a.get("chain_id", ""), int(a.get("residue_number")))
-            key_b = (b.get("chain_id", ""), int(b.get("residue_number")))
-        except (TypeError, ValueError):
+        key_a = _pair_endpoint(pair, "cys1", "residue_a")
+        key_b = _pair_endpoint(pair, "cys2", "residue_b")
+        if key_a is None or key_b is None:
             continue
         sg_a = sg_index.get(key_a)
         sg_b = sg_index.get(key_b)
         if sg_a is None or sg_b is None:
             continue
+        bond_key = frozenset({
+            getattr(sg_a, "index", id(sg_a)),
+            getattr(sg_b, "index", id(sg_b)),
+        })
+        if bond_key in existing_bonds:
+            continue
         topology.addBond(sg_a, sg_b)
+        existing_bonds.add(bond_key)
         added += 1
     return added
 
