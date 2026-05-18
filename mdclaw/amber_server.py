@@ -1789,8 +1789,14 @@ def _write_pdb_with_glycan_link_records(
     """Reinject remapped glycoprotein connectivity before prepareforleap."""
     result: Dict[str, Any] = {
         "path": str(output_path),
+        "success": True,
+        "expected_linkage_count": len(glycan_linkages or []),
+        "emitted_link_count": 0,
+        "emitted_conect_pair_count": 0,
+        "missing_link_count": 0,
         "link_records": [],
         "conect_records": [],
+        "errors": [],
         "warnings": [],
     }
     atoms: dict[tuple[str, str, str, str, str], int] = {}
@@ -1823,21 +1829,9 @@ def _write_pdb_with_glycan_link_records(
         glycan_icode = str(glycan.get("merged_icode") or glycan.get("icode") or "")
         if not all([protein.get("atom"), protein.get("resname"), protein_chain, protein_resnum,
                     glycan.get("atom"), glycan.get("resname"), glycan_chain, glycan_resnum]):
-            result["warnings"].append(f"Skipped incomplete glycan LINK record: {linkage}")
+            result["missing_link_count"] += 1
+            result["errors"].append(f"Incomplete glycan LINK record: {linkage}")
             continue
-        line = _format_pdb_link_line(
-            atom1=str(protein["atom"]),
-            resname1=str(protein["resname"]),
-            chain1=protein_chain,
-            resnum1=protein_resnum,
-            icode1=protein_icode,
-            atom2=str(glycan["atom"]),
-            resname2=str(glycan["resname"]),
-            chain2=glycan_chain,
-            resnum2=glycan_resnum,
-            icode2=glycan_icode,
-        )
-        link_lines.append(line)
         protein_atom_key = (
             protein_chain,
             str(protein_resnum),
@@ -1855,10 +1849,24 @@ def _write_pdb_with_glycan_link_records(
         protein_serial = atoms.get(protein_atom_key)
         glycan_serial = atoms.get(glycan_atom_key)
         if protein_serial is None or glycan_serial is None:
-            result["warnings"].append(
-                f"Could not add glycan CONECT record; atom not found: {protein_atom_key} - {glycan_atom_key}"
+            result["missing_link_count"] += 1
+            result["errors"].append(
+                f"Could not resolve glycan LINK endpoint atoms: {protein_atom_key} - {glycan_atom_key}"
             )
             continue
+        line = _format_pdb_link_line(
+            atom1=str(protein["atom"]),
+            resname1=str(protein["resname"]),
+            chain1=protein_chain,
+            resnum1=protein_resnum,
+            icode1=protein_icode,
+            atom2=str(glycan["atom"]),
+            resname2=str(glycan["resname"]),
+            chain2=glycan_chain,
+            resnum2=glycan_resnum,
+            icode2=glycan_icode,
+        )
+        link_lines.append(line)
         conect_lines.append(f"CONECT{protein_serial:5d}{glycan_serial:5d}")
         conect_lines.append(f"CONECT{glycan_serial:5d}{protein_serial:5d}")
 
@@ -1874,6 +1882,14 @@ def _write_pdb_with_glycan_link_records(
     output_path.write_text("\n".join(output_lines) + "\n", encoding="utf-8")
     result["link_records"] = link_lines
     result["conect_records"] = conect_lines
+    result["emitted_link_count"] = len(link_lines)
+    result["emitted_conect_pair_count"] = len(conect_lines) // 2
+    if result["expected_linkage_count"] and (
+        result["missing_link_count"]
+        or result["emitted_link_count"] != result["expected_linkage_count"]
+        or result["emitted_conect_pair_count"] != result["expected_linkage_count"]
+    ):
+        result["success"] = False
     return result
 
 
@@ -1891,6 +1907,7 @@ def _prepare_glycam_pdb_with_cpptraj(
     """
     result: Dict[str, Any] = {
         "success": False,
+        "code": None,
         "prepared_pdb": None,
         "leap_script": None,
         "cpptraj_input": None,
@@ -1915,8 +1932,23 @@ def _prepare_glycam_pdb_with_cpptraj(
         glycan_linkages=glycan_linkages,
     )
     result["warnings"].extend(linked_pdb["warnings"])
+    result["errors"].extend(linked_pdb.get("errors", []))
     result["link_records"] = linked_pdb["link_records"]
     result["conect_records"] = linked_pdb["conect_records"]
+    result["link_injection"] = {
+        key: linked_pdb.get(key)
+        for key in (
+            "success",
+            "expected_linkage_count",
+            "emitted_link_count",
+            "emitted_conect_pair_count",
+            "missing_link_count",
+            "path",
+        )
+    }
+    if not linked_pdb.get("success", True):
+        result["code"] = "glycan_linkage_mapping_failed"
+        return result
     pdb_path = cpptraj_pdb_input
 
     cpptraj_input.write_text(
@@ -3097,11 +3129,18 @@ def build_amber_system(
         if not glycam_prepare["success"]:
             result["errors"].extend(glycam_prepare.get("errors", []))
             result["warnings"].extend(glycam_prepare.get("warnings", []))
+            code = glycam_prepare.get("code") or "glycam_prepareforleap_failed"
+            message = (
+                "Could not map deposited protein-glycan linkage endpoints onto the topology input PDB."
+                if code == "glycan_linkage_mapping_failed"
+                else "cpptraj prepareforleap failed while converting PDB glycans to GLYCAM notation."
+            )
             blocked = {
                 **result,
                 "error_type": "ToolExecutionError",
-                "code": "glycam_prepareforleap_failed",
-                "message": "cpptraj prepareforleap failed while converting PDB glycans to GLYCAM notation.",
+                "code": code,
+                "message": message,
+                "glycam_prepareforleap": glycam_prepare,
             }
             if _node_mode:
                 from mdclaw._node import fail_node

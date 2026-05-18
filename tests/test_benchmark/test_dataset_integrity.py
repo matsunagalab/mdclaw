@@ -200,6 +200,25 @@ def test_p03_ligand_pose_truth_is_real_181l_protein_ligand_reference():
     assert "protein_l99a_chain_retained" in check_ids
 
 
+def test_p14_minimized_glycan_check_accepts_glycam_residue_names():
+    task = json.loads(
+        (DATASET_DIR / "tasks" / "P14_prep_glycoprotein_glycan" / "task.json").read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    prepared_check = checks["nag_glycan_retained"]
+    minimized_check = checks["minimized_nag_glycan_retained"]
+
+    assert prepared_check["min_residue_counts"] == {"NAG": 1}
+    assert minimized_check["min_residue_counts"] == {"NAG": 1}
+    assert {"0YB", "4YA", "4YB"}.issubset(
+        set(minimized_check["residue_aliases"]["NAG"])
+    )
+
+
 def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

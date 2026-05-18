@@ -3822,6 +3822,51 @@ def _enrich_chain_identity_map(
     return enriched
 
 
+def _as_linkage_resnum(value: object) -> object:
+    text = str(value or "").strip()
+    return int(text) if text.lstrip("-").isdigit() else text
+
+
+def _glycan_linkage_key(linkage: dict) -> tuple:
+    protein = linkage.get("protein") or {}
+    glycan = linkage.get("glycan") or {}
+    return (
+        str(protein.get("chain", "")),
+        str(protein.get("resnum", "")),
+        str(protein.get("icode", "") or ""),
+        str(protein.get("resname", "")).upper(),
+        str(protein.get("atom", "")),
+        str(glycan.get("chain", "")),
+        str(glycan.get("resnum", "")),
+        str(glycan.get("icode", "") or ""),
+        str(glycan.get("resname", "")).upper(),
+        str(glycan.get("atom", "")),
+    )
+
+
+def _endpoint_metadata(
+    *,
+    atom: str,
+    resname: str,
+    chain: str,
+    resnum: object,
+    icode: str,
+    source: str,
+    connection_id: str | None,
+    reported_distance: float | None,
+) -> dict:
+    return {
+        "atom": atom,
+        "resname": resname,
+        "chain": chain,
+        "resnum": _as_linkage_resnum(resnum),
+        "icode": icode,
+        "source": source,
+        "connection_id": connection_id,
+        "reported_distance": reported_distance,
+    }
+
+
 def _parse_pdb_glycan_link_records(structure_path: Path) -> list[dict]:
     """Parse PDB LINK records that connect a protein residue to a glycan."""
     linkages: list[dict] = []
@@ -3860,22 +3905,137 @@ def _parse_pdb_glycan_link_records(structure_path: Path) -> list[dict]:
 
         linkages.append({
             "source": "pdb_link",
-            "protein": {
-                "atom": protein[0],
-                "resname": protein[1],
-                "chain": protein[2],
-                "resnum": int(protein[3]) if protein[3].lstrip("-").isdigit() else protein[3],
-                "icode": protein[4],
-            },
-            "glycan": {
-                "atom": glycan[0],
-                "resname": glycan[1],
-                "chain": glycan[2],
-                "resnum": int(glycan[3]) if glycan[3].lstrip("-").isdigit() else glycan[3],
-                "icode": glycan[4],
-            },
+            "connection_id": None,
+            "reported_distance": None,
+            "protein": _endpoint_metadata(
+                atom=protein[0],
+                resname=protein[1],
+                chain=protein[2],
+                resnum=protein[3],
+                icode=protein[4],
+                source="pdb_link",
+                connection_id=None,
+                reported_distance=None,
+            ),
+            "glycan": _endpoint_metadata(
+                atom=glycan[0],
+                resname=glycan[1],
+                chain=glycan[2],
+                resnum=glycan[3],
+                icode=glycan[4],
+                source="pdb_link",
+                connection_id=None,
+                reported_distance=None,
+            ),
         })
     return linkages
+
+
+def _parse_gemmi_glycan_link_records(structure_path: Path) -> list[dict]:
+    """Parse mmCIF/PDB covalent connections between protein and glycans."""
+    try:
+        import gemmi
+    except ImportError:
+        return []
+
+    try:
+        suffix = structure_path.suffix.lower()
+        if suffix in {".cif", ".mmcif"}:
+            doc = gemmi.cif.read(str(structure_path))
+            structure = gemmi.make_structure_from_block(doc[0])
+            source = "mmcif_struct_conn"
+        else:
+            structure = gemmi.read_pdb(str(structure_path))
+            source = "pdb_struct_conn"
+    except Exception:
+        return []
+
+    protein_resnames = AMINO_ACIDS | AMBER_PROTEIN_RESIDUES
+    covalent_type = getattr(gemmi.ConnectionType, "Covale", None)
+    linkages: list[dict] = []
+
+    def _is_covalent(conn: object) -> bool:
+        conn_type = getattr(conn, "type", None)
+        if covalent_type is not None and conn_type == covalent_type:
+            return True
+        return "coval" in str(conn_type).lower()
+
+    def _partner_tuple(partner: object) -> tuple[str, str, str, object, str]:
+        res_id = getattr(partner, "res_id", None)
+        seqid = getattr(res_id, "seqid", None)
+        return (
+            str(getattr(partner, "atom_name", "") or "").strip(),
+            str(getattr(res_id, "name", "") or "").strip().upper(),
+            str(getattr(partner, "chain_name", "") or "").strip() or "A",
+            getattr(seqid, "num", "") if seqid is not None else "",
+            str(getattr(seqid, "icode", "") or "").strip(),
+        )
+
+    for conn in getattr(structure, "connections", []):
+        if not _is_covalent(conn):
+            continue
+        p1 = _partner_tuple(conn.partner1)
+        p2 = _partner_tuple(conn.partner2)
+        side1_is_glycan = is_glycan_residue_name(p1[1])
+        side2_is_glycan = is_glycan_residue_name(p2[1])
+        side1_is_protein = p1[1] in protein_resnames
+        side2_is_protein = p2[1] in protein_resnames
+        if side1_is_protein and side2_is_glycan:
+            protein, glycan = p1, p2
+        elif side2_is_protein and side1_is_glycan:
+            protein, glycan = p2, p1
+        else:
+            continue
+
+        reported_distance = getattr(conn, "reported_distance", None)
+        try:
+            reported_distance = float(reported_distance) if reported_distance is not None else None
+        except (TypeError, ValueError):
+            reported_distance = None
+        connection_id = str(getattr(conn, "name", "") or "").strip() or None
+        linkages.append({
+            "source": source,
+            "connection_id": connection_id,
+            "reported_distance": reported_distance,
+            "protein": _endpoint_metadata(
+                atom=protein[0],
+                resname=protein[1],
+                chain=protein[2],
+                resnum=protein[3],
+                icode=protein[4],
+                source=source,
+                connection_id=connection_id,
+                reported_distance=reported_distance,
+            ),
+            "glycan": _endpoint_metadata(
+                atom=glycan[0],
+                resname=glycan[1],
+                chain=glycan[2],
+                resnum=glycan[3],
+                icode=glycan[4],
+                source=source,
+                connection_id=connection_id,
+                reported_distance=reported_distance,
+            ),
+        })
+    return linkages
+
+
+def _parse_glycan_link_records(structure_path: Path) -> list[dict]:
+    """Parse protein-glycan covalent linkages from mmCIF/PDB metadata."""
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for linkage in _parse_gemmi_glycan_link_records(structure_path):
+        key = _glycan_linkage_key(linkage)
+        if key not in seen:
+            out.append(linkage)
+            seen.add(key)
+    for linkage in _parse_pdb_glycan_link_records(structure_path):
+        key = _glycan_linkage_key(linkage)
+        if key not in seen:
+            out.append(linkage)
+            seen.add(key)
+    return out
 
 
 def _remap_glycan_linkages(
@@ -4346,7 +4506,7 @@ def prepare_complex(
         # ``openmmforcefields.SystemGenerator`` bundle.
         from mdclaw.research_server import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
-        detected_glycan_linkages = _parse_pdb_glycan_link_records(Path(structure_file))
+        detected_glycan_linkages = _parse_glycan_link_records(Path(structure_file))
 
         # Token optimization: Store only essential inspection info (not full chains/entities)
         result["inspection"] = {

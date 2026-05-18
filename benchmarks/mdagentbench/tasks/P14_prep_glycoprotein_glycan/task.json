@@ -41,16 +41,39 @@
         "min_residue_counts": {
           "NAG": 1
         },
+        "residue_aliases": {
+          "NAG": [
+            "0YB",
+            "4YA",
+            "4YB"
+          ]
+        },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.5
       },
       {
-        "check_id": "glycan_metadata_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.glycan_metadata_recorded",
+        "check_id": "glycan_linkage_provenance_recorded",
+        "check_type": "artifact_provenance_text",
+        "required_text_groups": [
+          [
+            "glycan"
+          ],
+          [
+            "NAG"
+          ],
+          [
+            "N-linked",
+            "N linked",
+            "glycosylation",
+            "linkage"
+          ]
+        ],
+        "text_files": [
+          "provenance.json",
+          "evidence_report.json",
+          "manifest.json"
+        ],
         "weight": 0.5
       },
       {
@@ -85,6 +108,13 @@
           "NAG": 1
         },
         "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "NAG": [
+            "0YB",
+            "4YA",
+            "4YB"
+          ]
+        },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "minimized_structure.pdb",
         "weight": 0.5

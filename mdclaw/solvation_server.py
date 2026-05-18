@@ -356,6 +356,92 @@ def _record_packmol_memgen_output(
     logger.info(f"{success_message}: {output_file}")
 
 
+def _pdb_atom_lines(path: Path) -> list[str]:
+    return [
+        line.rstrip("\n")
+        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+
+
+def _pdb_atom_name(line: str) -> str:
+    return line[12:16].strip() if len(line) >= 16 else ""
+
+
+def _pdb_element(line: str) -> str:
+    if len(line) >= 78 and line[76:78].strip():
+        return line[76:78].strip().upper()
+    atom = _pdb_atom_name(line)
+    return "".join(ch for ch in atom if ch.isalpha())[:1].upper()
+
+
+def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
+    """Restore solute PDB identity columns after packmol-memgen renumbering."""
+    report = {
+        "solute_identity_restored": False,
+        "solute_identity_restored_atom_count": 0,
+        "solute_identity_restore_warnings": [],
+    }
+    try:
+        input_atoms = _pdb_atom_lines(input_pdb)
+        output_lines = output_pdb.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError as exc:
+        report["solute_identity_restore_warnings"].append(f"Could not read PDB for solute identity restore: {exc}")
+        return report
+
+    if not input_atoms:
+        report["solute_identity_restore_warnings"].append("Input PDB has no ATOM/HETATM records")
+        return report
+
+    output_atom_indices = [
+        idx for idx, line in enumerate(output_lines)
+        if line.startswith(("ATOM", "HETATM"))
+    ]
+    if len(output_atom_indices) < len(input_atoms):
+        report["solute_identity_restore_warnings"].append(
+            f"Packmol output has fewer atom records ({len(output_atom_indices)}) than input solute ({len(input_atoms)})"
+        )
+        return report
+
+    mismatches: list[str] = []
+    for atom_i, (src, out_idx) in enumerate(zip(input_atoms, output_atom_indices), start=1):
+        dst = output_lines[out_idx]
+        src_name = _pdb_atom_name(src)
+        dst_name = _pdb_atom_name(dst)
+        src_element = _pdb_element(src)
+        dst_element = _pdb_element(dst)
+        if src_name != dst_name or (src_element and dst_element and src_element != dst_element):
+            mismatches.append(
+                f"atom {atom_i}: {src_name}/{src_element} != {dst_name}/{dst_element}"
+            )
+            if len(mismatches) >= 3:
+                break
+    if mismatches:
+        report["solute_identity_restore_warnings"].append(
+            "Skipped solute identity restore because packmol output prefix did not match input solute: "
+            + "; ".join(mismatches)
+        )
+        return report
+
+    restored_lines = list(output_lines)
+    for src, out_idx in zip(input_atoms, output_atom_indices):
+        dst = restored_lines[out_idx].ljust(80)
+        src_padded = src.ljust(80)
+        restored_lines[out_idx] = (
+            src_padded[:6]
+            + dst[6:12]
+            + src_padded[12:27]
+            + dst[27:76]
+            + src_padded[76:78]
+            + dst[78:]
+        ).rstrip()
+
+    output_pdb.write_text("\n".join(restored_lines) + "\n", encoding="utf-8")
+    report["solute_identity_restored"] = True
+    report["solute_identity_restored_atom_count"] = len(input_atoms)
+    return report
+
+
 def _solvate_with_openmm(
     pdb_path: Path,
     result: dict,
@@ -818,6 +904,10 @@ def solvate_structure(
             result=result,
             success_message="Successfully solvated structure",
         )
+        if result.get("success") and output_file.exists():
+            restore_report = _restore_packmol_solute_identity(input_copy, output_file)
+            result.update(restore_report)
+            result["warnings"].extend(restore_report.get("solute_identity_restore_warnings", []))
         
     except Exception as e:
         error_msg = f"Error during solvation: {type(e).__name__}: {str(e)}"

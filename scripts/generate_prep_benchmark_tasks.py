@@ -471,8 +471,18 @@ TASK_DEFS: list[dict] = [
         "PDB 6YA2",
         "keep N-linked glycans as glycans rather than treating them as ordinary small-molecule ligands.",
         [
-            _component_check("nag_glycan_retained", min_counts={"NAG": 1}, weight=0.5),
-            _json_check("glycan_metadata_recorded", "preparation.glycan_metadata_recorded", True, 0.5),
+            _component_check(
+                "nag_glycan_retained",
+                min_counts={"NAG": 1},
+                residue_aliases={"NAG": ["0YB", "4YA", "4YB"]},
+                weight=0.5,
+            ),
+            _provenance_text_check(
+                "glycan_linkage_provenance_recorded",
+                [["glycan"], ["NAG"], ["N-linked", "N linked", "glycosylation", "linkage"]],
+                weight=0.5,
+                text_files=["provenance.json", "evidence_report.json", "manifest.json"],
+            ),
         ],
         priority=1,
         tags=["glycan", "glycoprotein"],
