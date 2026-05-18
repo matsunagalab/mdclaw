@@ -48,6 +48,22 @@ def _json_check(check_id: str, path: str, equals, weight: float = 1.0) -> dict:
     }
 
 
+def _json_allowed_values(
+    check_id: str,
+    path: str,
+    allowed_values: list,
+    weight: float = 1.0,
+) -> dict:
+    return {
+        "check_id": check_id,
+        "check_type": "json_allowed_values",
+        "json_file": "metrics.json",
+        "json_path": path,
+        "allowed_values": allowed_values,
+        "weight": weight,
+    }
+
+
 def _json_min_length(check_id: str, path: str, minimum: int, weight: float = 1.0) -> dict:
     return {
         "check_id": check_id,
@@ -543,10 +559,19 @@ TASK_DEFS: list[dict] = [
             _component_check(
                 "lipid_species_present",
                 min_counts={"POPC": 2, "POPE": 1, "CHL1": 1},
-                residue_aliases={"POPC": ["PC"], "POPE": ["PE"], "CHL1": ["CHL"]},
+                residue_aliases={
+                    "POPC": ["PC"],
+                    "POPE": ["PE"],
+                    "CHL1": ["CHL", "CHOL"],
+                },
                 weight=0.5,
             ),
-            _json_check("lipid_ratio_recorded", "preparation.lipid_ratio", "POPC:POPE:CHL1=2:1:1", 0.3),
+            _json_allowed_values(
+                "lipid_ratio_recorded",
+                "preparation.lipid_ratio",
+                ["POPC:POPE:CHL1=2:1:1", "PC:PE:CHL=2:1:1"],
+                0.3,
+            ),
         ],
         priority=1,
         tags=["membrane", "lipids"],
@@ -718,8 +743,9 @@ def _prompt(task: dict) -> str:
         "Your `manifest.json` must also point `outputs.topology` to the "
         "backend-specific topology artifacts and `outputs.minimized_structure` "
         "to a structure after minimization. For OpenMM or MDClaw submissions, "
-        "`outputs.topology` should include the `system.xml`, `topology.pdb`, "
-        "and `state.xml` artifact triple. Run a short minimization or equivalent "
+        "`outputs.topology` should be a JSON list containing the `system.xml`, "
+        "`topology.pdb`, and `state.xml` artifact triple. Run a short "
+        "minimization or equivalent "
         "backend-native energy check and record the result in "
         "`minimization_report.json` and `metrics.json`. Full equilibration and "
         "production MD are not required for this prep task.\n\n"

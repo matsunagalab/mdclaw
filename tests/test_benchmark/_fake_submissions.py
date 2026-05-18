@@ -87,6 +87,10 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
         value = check.get("equals")
         _set_path(metrics, check["json_path"],
                   value if mode == "honest" else _wrong_value(value))
+    elif check_type == "json_allowed_values" and check.get("json_path"):
+        values = check.get("allowed_values") or []
+        value = values[0] if mode == "honest" and values else "__wrong_value__"
+        _set_path(metrics, check["json_path"], value)
     elif check_type == "json_min_length" and check.get("json_path"):
         minimum = int(check.get("min_length") or 1)
         value = list(range(minimum)) if mode == "honest" else []

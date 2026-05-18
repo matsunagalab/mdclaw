@@ -22,6 +22,10 @@ from mdclaw.benchmark.models import (
 )
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+
+
 def _make_task(primary, secondaries=None, det_checks=None, gt_checks=None):
     return Task(
         schema_version="1.0",
@@ -520,6 +524,90 @@ def test_openmm_topology_and_minimization_checks_pass(tmp_path: Path):
     assert all(result.passed for result in score.deterministic_checks)
 
 
+def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
+    task_file = DATASET_DIR / "tasks" / "P01_prep_simple_monomer_t4l" / "task.json"
+    task = validation.load_task(task_file)
+    _write_openmm_bundle(tmp_path)
+
+    protein_lines = [
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n",
+        "ATOM      2  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00           C\n",
+        "ATOM      3  C   ALA A   1       2.000   0.000   0.000  1.00  0.00           C\n",
+        "ATOM      4  O   ALA A   1       3.000   0.000   0.000  1.00  0.00           O\n",
+        "ATOM      5  CB  ALA A   1       1.000   1.000   0.000  1.00  0.00           C\n",
+        "END\n",
+    ]
+    prepared = "".join(protein_lines)
+    (tmp_path / "prepared_structure.pdb").write_text(prepared)
+    (tmp_path / "minimized_structure.pdb").write_text(prepared)
+
+    report = {
+        "minimization": {
+            "attempted": True,
+            "completed": True,
+            "energy_initial_kj_mol": 0.0,
+            "energy_final_kj_mol": 0.0,
+            "energy_is_finite": True,
+            "positions_are_finite": True,
+            "atom_count_preserved": True,
+            "backend": "openmm",
+        }
+    }
+    (tmp_path / "minimization_report.json").write_text(json.dumps(report))
+    _write_submission(
+        tmp_path,
+        manifest={
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "status": "completed",
+            "outputs": {
+                "prepared_structure": "prepared_structure.pdb",
+                "minimized_structure": "minimized_structure.pdb",
+                "minimization_report": "minimization_report.json",
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+        metrics={
+            "preparation": {
+                "source_pdb_id": "2LZM",
+                "solvent_model": "explicit",
+                "topology_ready": True,
+            },
+            "topology": {
+                "backend": "openmm",
+                "build_success": True,
+                "forcefield": "synthetic-fixture",
+                "water_model": "none",
+                "solvent_model": "explicit",
+            },
+            "minimization": report["minimization"],
+        },
+        provenance={"schema_version": "1.0", "task_id": task.task_id},
+        evidence={
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "summary": (
+                "Corrected P01 fixture with current manifest status, topology "
+                "artifact list, preparation metrics, topology artifacts, and "
+                "finite minimization evidence. This long summary keeps the "
+                "artifact realistic enough for integrity byte-floor checks."
+            ),
+            "evidence": {"topology": "OpenMM artifact triple loaded."},
+        },
+    )
+
+    validation_result = validation.validate_submission(task_file, tmp_path)
+    assert validation_result["success"], validation_result
+
+    score = scoring.score_submission(task, tmp_path)
+    assert score.status == "passed"
+    assert score.weighted_total == pytest.approx(1.0)
+
+
 def test_broken_openmm_system_is_critical_failure(tmp_path: Path):
     task = _make_task(
         primary="preparation",
@@ -771,6 +859,86 @@ def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
     )
     score = scoring.score_submission(task, tmp_path)
     assert score.deterministic_checks[0].passed is True
+
+
+def test_json_allowed_values_accepts_lipid_ratio_synonym(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="lipid_ratio",
+            check_type="json_allowed_values",
+            json_path="preparation.lipid_ratio",
+            allowed_values=[
+                "POPC:POPE:CHL1=2:1:1",
+                "PC:PE:CHL=2:1:1",
+            ],
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"lipid_ratio": "PC:PE:CHL=2:1:1"}},
+    )
+    passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert passed.passed is True
+
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"lipid_ratio": "PC:PE:CHL=1:1:1"}},
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "PC:PE:CHL=1:1:1" in failed.message
+    assert "PC:PE:CHL=2:1:1" in failed.message
+
+
+def test_p18_lipid_aliases_count_species_but_not_tail_fragments(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="lipids",
+            check_type="structure_component_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            min_residue_counts={"POPC": 2, "POPE": 1, "CHL1": 1},
+            residue_aliases={
+                "POPC": ["PC"],
+                "POPE": ["PE"],
+                "CHL1": ["CHL", "CHOL"],
+            },
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "HETATM    1  C1   PC A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1   PC A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  C1   PE A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    4  C1 CHOL A   4       3.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert passed.passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "HETATM    1  C1   PA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1   PA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  C1   OL A   3       2.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    4  C1   OL A   4       3.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "POPC" in failed.message
+    assert "POPE" in failed.message
 
 
 def test_artifact_provenance_text_checks_provenance_and_evidence(tmp_path: Path):

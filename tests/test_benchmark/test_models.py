@@ -218,6 +218,46 @@ def test_submission_manifest_status_enum():
             "task_id": "x",
             "status": "weird",
         })
+    with pytest.raises(ValidationError):
+        SubmissionManifest.model_validate({
+            "schema_version": "1.0",
+            "task_id": "x",
+            "status": "success",
+        })
+
+
+def test_submission_manifest_topology_outputs_are_list_not_role_dict():
+    manifest = SubmissionManifest.model_validate({
+        "schema_version": "1.0",
+        "task_id": "x",
+        "status": "completed",
+        "outputs": {
+            "topology": [
+                "topology/system.xml",
+                "topology/topology.pdb",
+                "topology/state.xml",
+            ],
+        },
+    })
+    assert manifest.outputs.topology == [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
+
+    with pytest.raises(ValidationError):
+        SubmissionManifest.model_validate({
+            "schema_version": "1.0",
+            "task_id": "x",
+            "status": "completed",
+            "outputs": {
+                "topology": {
+                    "system_xml": "topology/system.xml",
+                    "topology_pdb": "topology/topology.pdb",
+                    "state_xml": "topology/state.xml",
+                },
+            },
+        })
 
 
 def test_task_supports_optional_agent_benchmark_metadata():

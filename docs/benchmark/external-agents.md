@@ -187,6 +187,11 @@ It should solve the prompt, retrieve public sources as needed, and write real
 metrics, evidence, provenance, and artifacts. When the submission is genuinely
 complete, set `manifest.status` to `completed`; otherwise use `partial`,
 `blocked`, or intentional `failed` as appropriate.
+Use `submission_contract.json` for machine-readable requirements. In particular,
+`outputs.topology` is a list of artifact paths. For OpenMM/MDClaw this is
+usually `["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
+and task-specific `metric_requirements` list the `metrics.json` paths that must
+be populated.
 
 Validate and score:
 

@@ -103,8 +103,14 @@ Every completed prep submission must also point `manifest.outputs.topology` to
 backend-specific topology artifacts and `manifest.outputs.minimized_structure`
 to the post-minimization structure. OpenMM/MDClaw submissions should include the
 `system.xml`, `topology.pdb`, and `state.xml` artifact triple under
-`outputs.topology`. Amber and GROMACS submissions may use their native topology
-artifacts, with minimization evidence recorded in `minimization_report.json`.
+`outputs.topology` as a JSON list, not a role-keyed object. Amber and GROMACS
+submissions may use their native topology artifacts, with minimization evidence
+recorded in `minimization_report.json`.
+
+The public `submission_contract.json` records the agent-facing metric paths
+that must be populated in `metrics.json`. For example, P01 requires
+`preparation.source_pdb_id`, `preparation.solvent_model`, and
+`preparation.topology_ready`.
 
 Individual tasks may inspect specific paths inside `metrics.json`, component
 counts in `prepared_structure.pdb` or the minimized structure, or scorer-side

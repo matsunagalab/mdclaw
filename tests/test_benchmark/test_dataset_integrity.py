@@ -219,6 +219,36 @@ def test_p14_minimized_glycan_check_accepts_glycam_residue_names():
     )
 
 
+def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
+    task = json.loads(
+        (
+            DATASET_DIR / "tasks" / "P18_prep_membrane_mixed_lipids" / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    lipid_ratio = checks["lipid_ratio_recorded"]
+    assert lipid_ratio["check_type"] == "json_allowed_values"
+    assert lipid_ratio["allowed_values"] == [
+        "POPC:POPE:CHL1=2:1:1",
+        "PC:PE:CHL=2:1:1",
+    ]
+
+    prepared_aliases = checks["lipid_species_present"]["residue_aliases"]
+    minimized_aliases = checks["minimized_lipid_species_present"]["residue_aliases"]
+    for aliases in (prepared_aliases, minimized_aliases):
+        assert aliases["POPC"] == ["PC"]
+        assert aliases["POPE"] == ["PE"]
+        assert aliases["CHL1"] == ["CHL", "CHOL"]
+        assert "PA" not in aliases["POPC"]
+        assert "OL" not in aliases["POPC"]
+        assert "PA" not in aliases["POPE"]
+        assert "OL" not in aliases["POPE"]
+
+
 def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

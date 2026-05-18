@@ -37,6 +37,14 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         contract = json.loads(contract_path.read_text())
         assert contract["task_id"] == task_id
         assert contract["required_outputs"]
+        assert contract["manifest_contract"]["completed_status"] == "completed"
+        assert contract["manifest_contract"]["topology_output_shape"] == "list[str]"
+        assert contract["manifest_contract"]["openmm_topology_example"] == [
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ]
+        assert "metric_requirements" in contract
         assert contract["submission_manifest_schema"].endswith(
             "submission_manifest.schema.json"
         )
@@ -64,6 +72,89 @@ def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
         assert "deterministic_checks" not in contract
         assert "ground_truth_checks" not in contract
         assert "truth" not in contract
+
+
+def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
+    out_dir = tmp_path / "public_mdagentbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P01_prep_simple_monomer_t4l"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    requirements = {
+        item["json_path"]: (item["operator"], item["value"])
+        for item in contract["metric_requirements"]
+    }
+
+    assert requirements["preparation.source_pdb_id"] == ("equals", "2LZM")
+    assert requirements["preparation.solvent_model"] == ("equals", "explicit")
+    assert requirements["preparation.topology_ready"] == ("equals", True)
+
+
+def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
+    tmp_path: Path,
+):
+    out_dir = tmp_path / "public_mdagentbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P18_prep_membrane_mixed_lipids"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    requirements = {
+        item["json_path"]: item
+        for item in contract["metric_requirements"]
+    }
+
+    lipid_ratio = requirements["preparation.lipid_ratio"]
+    assert lipid_ratio["operator"] == "allowed_values"
+    assert lipid_ratio["value"] == [
+        "POPC:POPE:CHL1=2:1:1",
+        "PC:PE:CHL=2:1:1",
+    ]
+
+
+def test_export_public_package_exposes_p25_net_neutrality_contract(
+    tmp_path: Path,
+):
+    out_dir = tmp_path / "public_mdagentbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P25_prep_kcl_ion_concentration"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    requirements = {
+        item["json_path"]: (item["operator"], item["value"])
+        for item in contract["metric_requirements"]
+    }
+
+    assert requirements["preparation.net_charge_neutralized"] == ("equals", True)
 
 
 def test_export_public_package_refuses_to_overwrite_unmarked_directory(

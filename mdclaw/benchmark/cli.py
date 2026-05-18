@@ -74,6 +74,51 @@ def _intent_summary(task_intent: str) -> str:
     return first_sentence
 
 
+def _public_metric_requirements(task: Task) -> list[dict[str, Any]]:
+    """Return agent-facing metrics keys that are part of the public contract."""
+    requirements: list[dict[str, Any]] = []
+    supported = {
+        "json_equals": ("equals", "equals"),
+        "json_min": ("min", "min_value"),
+        "json_max": ("max", "max_value"),
+        "json_min_length": ("min_length", "min_length"),
+        "json_allowed_values": ("allowed_values", "allowed_values"),
+    }
+    for check in task.scoring.deterministic_checks:
+        if check.check_type not in supported:
+            continue
+        if check.json_file not in (None, "metrics.json"):
+            continue
+        if not check.json_path:
+            continue
+        operator, field_name = supported[check.check_type]
+        requirements.append({
+            "json_path": check.json_path,
+            "operator": operator,
+            "value": getattr(check, field_name),
+        })
+    return requirements
+
+
+def _manifest_contract() -> dict[str, Any]:
+    """Return the public manifest rules most often missed by agents."""
+    return {
+        "allowed_statuses": ["completed", "partial", "failed", "blocked"],
+        "completed_status": "completed",
+        "topology_output_shape": "list[str]",
+        "openmm_topology_example": [
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ],
+        "required_output_fields_for_completed_prep": [
+            "outputs.topology",
+            "outputs.minimized_structure",
+            "outputs.minimization_report",
+        ],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Discovery
 
@@ -319,6 +364,8 @@ def export_benchmark_public_package(
                 "capability_tags": list(task.capability_tags),
                 "environment_type": task.environment_type,
                 "requires_tools": list(task.requires_tools),
+                "metric_requirements": _public_metric_requirements(task),
+                "manifest_contract": _manifest_contract(),
                 "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",
             }
             contract_path = public_task_dir / "submission_contract.json"
@@ -338,7 +385,9 @@ def export_benchmark_public_package(
             "Agents should read `tasks/<task_id>/prompt.md`, write a `submission/` "
             "directory matching `tasks/<task_id>/submission_contract.json`, and "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
-            "files from the canonical repository tree.\n\n"
+            "files from the canonical repository tree. The contract lists required "
+            "`metrics.json` paths and manifest rules such as `status=\"completed\"` "
+            "and `outputs.topology` as a list of artifact paths.\n\n"
             "Score submissions with the MDClaw benchmark scorer from the canonical "
             "dataset checkout.\n"
         )

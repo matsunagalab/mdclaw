@@ -53,7 +53,8 @@
         },
         "residue_aliases": {
           "CHL1": [
-            "CHL"
+            "CHL",
+            "CHOL"
           ],
           "POPC": [
             "PC"
@@ -68,8 +69,11 @@
       },
       {
         "check_id": "lipid_ratio_recorded",
-        "check_type": "json_equals",
-        "equals": "POPC:POPE:CHL1=2:1:1",
+        "check_type": "json_allowed_values",
+        "allowed_values": [
+          "POPC:POPE:CHL1=2:1:1",
+          "PC:PE:CHL=2:1:1"
+        ],
         "json_file": "metrics.json",
         "json_path": "preparation.lipid_ratio",
         "weight": 0.3
@@ -110,7 +114,8 @@
         "minimized_structure_manifest_path": "outputs.minimized_structure",
         "residue_aliases": {
           "CHL1": [
-            "CHL"
+            "CHL",
+            "CHOL"
           ],
           "POPC": [
             "PC"
