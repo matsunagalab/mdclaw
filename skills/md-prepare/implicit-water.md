@@ -63,10 +63,10 @@ mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
 
 The input PDB is auto-resolved from the completed `prep` parent's `merged_pdb`.
 Do not pass a manual `--pdb-file`; if the prep artifact is wrong, branch a new
-`prep` node and build topology from that completed node. When implicit solvent
-is planned before prep, pass `--solvent-type implicit` to `prepare_complex` so
-explicit crystallographic ions are excluded and recorded in
-`component_disposition.json` before `merged_pdb` is written.
+`prep` node and build topology from that completed node. Pass
+`--solvent-type implicit` to `prepare_complex` so explicit crystallographic
+ions are excluded and recorded in `component_disposition.json` before
+`merged_pdb` is written.
 
 `build_amber_system` resolves the matching GB XML from
 `forcefield_catalog` (`implicit/gbn2.xml` for GBn2) and bakes the
@@ -79,9 +79,9 @@ Calling contract:
   with `--box-dimensions` returns
   `code="implicit_solvent_explicit_box_conflict"`.
 - The input PDB must not contain explicit ions. `prepare_complex
-  --solvent-type implicit` excludes them during prep when the intent is known;
-  if ions still reach topology, `build_amber_system` returns
-  `code="explicit_ions_in_implicit_solvent"`.
+  --solvent-type implicit` excludes them during prep; `build_amber_system`
+  validates the invariant and returns `code="explicit_ions_in_implicit_solvent"`
+  if ions still reach topology.
 - Ligand parameters auto-resolve from the `prep` ancestor's artifacts.
 - Highly charged ligands and close contacts are recorded as topology
   diagnostics and do not stop the workflow or select a special

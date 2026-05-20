@@ -582,6 +582,19 @@ class TestStructureServer:
         assert entries[0]["classification"] == "explicit_ion"
         assert entries[0]["action_taken"] == "excluded"
 
+        explicit_result = prepare_complex(
+            structure_file=str(ion_pdb),
+            output_dir=str(tmp_path / "prep_explicit"),
+            include_types=["ion"],
+            process_proteins=False,
+            process_ligands=False,
+        )
+        assert explicit_result["success"] is True
+        assert explicit_result["solvent_type"] == "explicit"
+        assert explicit_result["retained_ion_files"]
+        assert explicit_result["excluded_ion_files"] == []
+        assert Path(explicit_result["merged_pdb"]).exists()
+
 
 # ---------------------------------------------------------------------------
 # solvation_server

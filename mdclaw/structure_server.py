@@ -166,9 +166,9 @@ def _exclude_deuterium_atoms_from_pdb(input_path: Path, output_path: Path) -> di
 
 
 def _normalize_prepare_solvent_type(solvent_type: Optional[str]) -> Optional[str]:
-    """Normalize prep-stage solvent intent without inferring a default."""
+    """Normalize prep-stage solvent intent; prep defaults to explicit solvent."""
     if solvent_type is None:
-        return None
+        return "explicit"
     normalized = str(solvent_type).strip().lower().replace("-", "_")
     aliases = {
         "explicit_water": "explicit",
@@ -179,7 +179,7 @@ def _normalize_prepare_solvent_type(solvent_type: Optional[str]) -> Optional[str
     }
     normalized = aliases.get(normalized, normalized)
     if normalized == "":
-        return None
+        return "explicit"
     return normalized
 
 
@@ -251,7 +251,7 @@ def _component_disposition_metadata(chain_info: dict, component_type: str) -> di
 def _apply_component_disposition_to_split_result(
     split_result: dict,
     *,
-    solvent_type: Optional[str] = None,
+    solvent_type: Optional[str] = "explicit",
 ) -> dict[str, Any]:
     """Apply component-common prep disposition to split PDB fragments.
 
@@ -2414,8 +2414,6 @@ def clean_protein(
         "errors": [],
         "statistics": {},
         "disulfide_bonds": [],
-        "component_disposition": _component_disposition_payload([]),
-        "component_disposition_summary": _component_disposition_payload([])["summary"],
     }
 
     try:
@@ -2456,36 +2454,9 @@ def clean_protein(
     result["output_file"] = str(output_file)
     
     try:
-        cleaning_input_path = input_path
-        deuterium_stripped_file = input_path.parent / f"{stem}.deuterium_stripped.pdb"
-        component_disposition = _exclude_deuterium_atoms_from_pdb(
-            input_path,
-            deuterium_stripped_file,
-        )
-        result["component_disposition"] = component_disposition
-        result["component_disposition_summary"] = component_disposition["summary"]
-        excluded_deuterium_count = component_disposition["summary"][
-            "experimental_isotope_atoms_excluded"
-        ]
-        if excluded_deuterium_count:
-            cleaning_input_path = deuterium_stripped_file
-            result["deuterium_stripped_input_file"] = str(deuterium_stripped_file)
-            result["operations"].append({
-                "step": "component_disposition",
-                "status": "excluded",
-                "details": (
-                    f"Excluded {excluded_deuterium_count} experimental deuterium atom(s); "
-                    "standard hydrogens will be rebuilt downstream"
-                ),
-            })
-            result["warnings"].append(
-                f"Excluded {excluded_deuterium_count} experimental deuterium atom(s) "
-                "from MD preparation input; standard hydrogens will be rebuilt"
-            )
-
         # Load structure
         logger.info("Loading structure with PDBFixer")
-        fixer = PDBFixer(filename=str(cleaning_input_path))
+        fixer = PDBFixer(filename=str(input_path))
         
         # Get initial statistics
         initial_chains = list(fixer.topology.chains())
@@ -3085,10 +3056,6 @@ def clean_protein(
                     provenance["disulfide_bonds_details"] = op.get("details", "")
                 elif op.get("status") == "none_found":
                     provenance["disulfide_bonds_applied"] = False
-            elif step == "component_disposition" and op.get("status") == "excluded":
-                provenance["component_disposition_recorded"] = True
-                provenance["experimental_isotopes_excluded"] = True
-                provenance["component_disposition_details"] = op.get("details", "")
             elif step == "terminal_caps" and op.get("status") == "added_to_missing":
                 provenance["n_terminal_cap"] = op.get("n_terminal_cap")
                 provenance["c_terminal_cap"] = op.get("c_terminal_cap")
@@ -4980,7 +4947,7 @@ def _validate_prepare_node_context(
     include_ligand_ids: Optional[List[str]],
     exclude_ligand_ids: Optional[List[str]],
     keep_crystal_waters: bool,
-    solvent_type: Optional[str] = None,
+    solvent_type: Optional[str] = "explicit",
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
@@ -5063,7 +5030,7 @@ def prepare_complex(
     histidine_states: Optional[Dict[str, str]] = None,
     protonation_states: Optional[Dict[str, Any]] = None,
     keep_crystal_waters: bool = False,
-    solvent_type: Optional[str] = None,
+    solvent_type: Optional[str] = "explicit",
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
@@ -5122,11 +5089,10 @@ def prepare_complex(
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
-        solvent_type: Optional prep-stage solvent intent. Pass ``"implicit"``
-                      when building an implicit-solvent topology downstream so
-                      explicit ion components are excluded before merge and
-                      recorded in component_disposition. ``None`` preserves
-                      legacy prep behavior.
+        solvent_type: Prep-stage solvent intent. Defaults to ``"explicit"``.
+                      Pass ``"implicit"`` when building an implicit-solvent
+                      topology downstream so explicit ion components are
+                      excluded before merge and recorded in component_disposition.
         source_structure_id: Candidate ID from the source bundle to prepare,
                              e.g. ``candidate_002``. Used only in node mode
                              when the source bundle contains multiple candidates.
@@ -5681,14 +5647,6 @@ def prepare_complex(
                         )
                         protein_result["terminal_cap_hydrogen_completion"] = clean_result.get(
                             "terminal_cap_hydrogen_completion"
-                        )
-                        protein_result["component_disposition_summary"] = clean_result.get(
-                            "component_disposition_summary",
-                            _component_disposition_payload([])["summary"],
-                        )
-                        protein_result["component_disposition"] = clean_result.get(
-                            "component_disposition",
-                            _component_disposition_payload([]),
                         )
                         protein_result["success"] = True
                         logger.info(f"  ✓ Protein {chain_id}: {clean_result['output_file']}")

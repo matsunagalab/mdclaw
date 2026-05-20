@@ -182,7 +182,7 @@ flowchart TD
   D2 --> D3["solvated_pdb + box_dimensions + membrane_metadata"]
 
   B -->|"implicit solvent"| E["skip explicit solvation"]
-  E --> E0["prepare_complex solvent_type=implicit excludes explicit ions when intent is known"]
+  E --> E0["prepare_complex solvent_type=implicit excludes explicit ions"]
   E0 --> E1["build_amber_system consumes merged_pdb + implicit_solvent"]
   E1 --> E2["topology still blocks any remaining explicit ions"]
 

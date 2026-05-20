@@ -144,7 +144,7 @@
     <text class="heading" x="890" y="847">implicit / vacuum path</text>
     <text class="body" x="912" y="878">No solv node required.</text>
     <text class="small" x="912" y="904">topo consumes prep.merged_pdb directly.</text>
-    <text class="small" x="912" y="926">prep excludes explicit ions when implicit intent is known.</text>
+    <text class="small" x="912" y="926">prep excludes explicit ions for implicit solvent.</text>
   </g>
 
   <g id="topo-node">
@@ -204,6 +204,6 @@
     <rect class="panel" x="45" y="1135" width="1710" height="110"/>
     <text class="heading" x="70" y="1170">Reading notes</text>
     <text class="body" x="70" y="1202">A box shows the tool-level computation plus the exact logical artifact keys written to node.json. File paths shown under artifacts are relative to the node directory. Inline artifacts, such as ligand_chemistry, are structured values whose nested file paths are normalized recursively.</text>
-    <text class="note" x="70" y="1230">Current contract: component_disposition is written at prep-node level from the shared component disposition pass; topology keeps a fallback guard for explicit ions in implicit builds.</text>
+    <text class="note" x="70" y="1230">Current contract: component_disposition is written at prep-node level from the shared component disposition pass; topology validates explicit-ion absence for implicit builds.</text>
   </g>
 </svg>

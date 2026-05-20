@@ -114,8 +114,8 @@ use the HPacker-based `create_mutated_structure` branch in
    ion components from `merged_pdb` and record them in
    `component_disposition.json`. A deliberate vacuum/no-solvent topology may
    keep explicit ions, but it is not the default MD workflow. `build_amber_system`
-   still rejects implicit builds that contain explicit ions with
-   `code="explicit_ions_in_implicit_solvent"` as a fallback guardrail.
+   validates the same invariant and rejects implicit builds that contain
+   explicit ions with `code="explicit_ions_in_implicit_solvent"`.
    Experimental isotope atoms such as deuterium are excluded by
    `prepare_complex` across split components from the default classical MD
    path, then standard hydrogens are rebuilt; copy the tool-written

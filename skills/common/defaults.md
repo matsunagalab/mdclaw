@@ -24,7 +24,7 @@ Guardrail examples:
 - `forcefield_water_blocked`: incompatible explicit-solvent forcefield/water
   pairing.
 - `explicit_ions_in_implicit_solvent`: the prepared structure still has
-  explicit ion residues but the topology request is implicit solvent. Prefer
+  explicit ion residues but the topology request is implicit solvent. Run
   `prepare_complex --solvent-type implicit` so prep records and excludes them,
   or use explicit solvent / a deliberate vacuum-no-solvent choice instead.
 - `openmm_fallback_unsupported_water_model`: OpenMM fallback cannot produce the
