@@ -283,6 +283,37 @@ class TestTerminalCaps:
                 c_terminal_cap=None,
             )
 
+    def test_noncap_hydrogen_signature_ignores_hetatm_caps(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        pdb = tmp_path / "hetatm_caps.pdb"
+        pdb.write_text(textwrap.dedent("""\
+            HETATM    1  H1  ACE A   1       0.000   0.000   0.000  1.00  0.00           H
+            HETATM    2  H2  ACE A   1       0.100   0.000   0.000  1.00  0.00           H
+            ATOM      3  N   ALA A   2       1.000   0.000   0.000  1.00  0.00           N
+            ATOM      4  HA  ALA A   2       1.100   0.000   0.000  1.00  0.00           H
+            HETATM    5  H1  NME A   3       2.000   0.000   0.000  1.00  0.00           H
+            END
+            """))
+
+        signature = ss._pdb_noncap_protein_hydrogen_signature(pdb)
+
+        assert signature == {"A:2::ALA": ("HA",)}
+
+    def test_noncap_hydrogen_signature_includes_noncap_hetatm(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        pdb = tmp_path / "hetatm_noncap.pdb"
+        pdb.write_text(textwrap.dedent("""\
+            HETATM    1  H1  MSE A   7       0.000   0.000   0.000  1.00  0.00           H
+            HETATM    2  C1  MSE A   7       0.100   0.000   0.000  1.00  0.00           C
+            END
+            """))
+
+        signature = ss._pdb_noncap_protein_hydrogen_signature(pdb)
+
+        assert signature == {"A:7::MSE": ("H1",)}
+
     def test_terminal_cap_hydrogen_completion_adds_cap_hydrogens(self, tmp_path):
         pytest.importorskip("openmmforcefields")
         from mdclaw import structure_server as ss

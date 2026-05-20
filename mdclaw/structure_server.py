@@ -3487,7 +3487,7 @@ def _pdb_noncap_protein_hydrogen_signature(
     """Return non-cap protein H atom-name sets keyed by residue identity."""
     hydrogens: dict[str, list[str]] = {}
     for line in Path(pdb_file).read_text().splitlines():
-        if not line.startswith("ATOM  "):
+        if not line.startswith(("ATOM  ", "HETATM")):
             continue
         resname = line[17:20].strip().upper()
         if resname in TERMINAL_CAP_RESIDUES:
