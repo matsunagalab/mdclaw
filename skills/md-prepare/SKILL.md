@@ -49,21 +49,41 @@ guidance pages for the relevant solvation mode have been read.
 Direct-run fast path: if the user gives a clear single-system MD request, such
 as "simulate 1AKE chain A" or "run this PDB in explicit water", continue with
 this prepare workflow directly. Do not force the request through
-`skills/md-study/SKILL.md`. You may still create a thin `study_dir` with one
-`jobs/main` job, but `study_plan.json` is optional for these straightforward
-runs. The minimum two-command bootstrap is:
+`skills/md-study/SKILL.md`. Still create a thin `study_dir` with one
+`jobs/main` job so the execution uses the same study/job contract;
+`study_plan.json` is optional for these straightforward runs.
+The minimum bootstrap is:
 
 ```bash
 mdclaw init_study --study-dir <study_dir> --title "<short title>"
 mdclaw add_study_job --study-dir <study_dir> \
   --job-id main --job-dir <study_dir>/jobs/main --create-job-dir
+mdclaw update_job_params --job-dir <study_dir>/jobs/main \
+  --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
 ```
+
+Replace `"explicit"` with `"implicit"`, `"vacuum"`, or `"membrane"` when the
+direct-run request names that regime. This job param is required even when
+`study_plan.json` is omitted.
 
 Study-planning handoff: if the user is asking a scientific comparison or
 campaign-level question (mutant vs WT, apo vs holo, controls, replicates,
 analysis criteria, or "what MD should I run?"), use `skills/md-study/SKILL.md`
 first to record the scientific question, MD goal, planned jobs, analysis
-observables, and decision criteria.
+observables, solvent regime, and decision criteria.
+
+`solvent_regime` is decided at study-planning time. `md-prepare` does not
+choose it except on the direct-run fast path, where the default is `explicit`
+unless the user explicitly asks for implicit solvent, vacuum/no-solvent, or a
+membrane workflow. When a study/job already records `solvent_regime`, treat it
+as intent and map it to tool calls:
+
+| `solvent_regime` | prep call | next structural step | topology mode |
+|---|---|---|---|
+| `explicit` | `prepare_complex --solvent-type explicit` | `solvate_structure` | `build_amber_system` with `box_dimensions` |
+| `implicit` | `prepare_complex --solvent-type implicit` | skip solv | `build_amber_system --implicit-solvent <MODEL>` |
+| `vacuum` | `prepare_complex --solvent-type vacuum` | skip solv | `build_amber_system` without box or GB |
+| `membrane` | `prepare_complex --solvent-type explicit` | `embed_in_membrane` | `build_amber_system` with membrane box |
 
 Start from a study. For a simple one-system request, create one study job such
 as `jobs/main`; for broader investigations, register multiple jobs under the
@@ -78,26 +98,36 @@ use the HPacker-based `create_mutated_structure` branch in
    - `execution_mode=autonomous` unless the user explicitly asks for
      checkpoint-by-checkpoint confirmation.
    - Persistence to `progress.json` happens after the source node is
-     created (see setup.md), via:
+     created and after the effective `solvent_regime` has been determined
+     (see setup.md), via:
      ```bash
      mdclaw update_job_params --job-dir <job_dir> \
-       --params '{"execution_mode":"autonomous"}'
+       --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
      ```
 2. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
    setup guidance for acquisition, inspection, cleaning, branches, and resume.
    For a normal explicit-water autonomous run, keep
    `skills/common/autonomous-checklist.md` as the short execution spine and
    open only the task-specific guidance pages tagged by `setup.md`.
-3. **Read the solvation-specific guidance page** — required before stating
+3. Determine the effective `solvent_regime` from the study plan / job params
+   when present; otherwise use the direct-run default above. Then read the
+   matching guidance page. If the current job lacks `solvent_regime`, write the
+   direct-run value to `progress.json` with `update_job_params` before running
+   `prepare_complex`.
+4. **Read the solvation-specific guidance page** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
    - Implicit solvent → `skills/md-prepare/implicit-water.md`
-4. **Now present the Step 0 confirmation summary** (see Step 0 below)
+   - Membrane → explicit-water guidance plus membrane setup guidance from
+     `setup.md`
+   - Vacuum/no-solvent → implicit-water guidance for the no-solvation topology
+     contract, but do not pass `--implicit-solvent`
+5. **Now present the Step 0 confirmation summary** (see Step 0 below)
    to the user. Only the fields enumerated there belong in the table —
    forcefield, water model, box geometry, etc. are tool-level defaults
    surfaced from the guidance pages read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
-5. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
+6. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
    solvation guidance. If the user specifies site-specific residue
    protonation, pass it explicitly through `protonation_states`; do not leave
    it as a free-text note. If the user specifies a biological assembly, request
@@ -108,10 +138,12 @@ use the HPacker-based `create_mutated_structure` branch in
    many chains, do not treat the one-character PDB chain ID in `merged_pdb` as
    a canonical identity. Read `chain_identity_map.json` and use `component_id`,
    source label/auth IDs, topology chain index, and atom/residue ranges to
-   identify components. Keep supported crystallographic ions by default on the
-   explicit-solvent path. If the user requests implicit solvent, pass
-   `--solvent-type implicit` to `prepare_complex`; prep will exclude explicit
-   ion components from `merged_pdb` and record them in
+   identify components. Always pass the effective solvent regime to
+   `prepare_complex`: `explicit` for explicit-water and membrane systems,
+   `implicit` for implicit solvent, and `vacuum` for deliberate no-solvent
+   topologies. Keep supported crystallographic ions by default on the
+   explicit-solvent path. In implicit solvent, prep will exclude explicit ion
+   components from `merged_pdb` and record them in
    `component_disposition.json`. A deliberate vacuum/no-solvent topology may
    keep explicit ions, but it is not the default MD workflow. `build_amber_system`
    validates the same invariant and rejects implicit builds that contain
@@ -137,7 +169,7 @@ use the HPacker-based `create_mutated_structure` branch in
    When creating the `topo` node, use the correct completed parent node and let
    `build_amber_system` auto-resolve its input; do not supply a free-standing
    `--pdb-file` or re-enter the workflow from a raw PDB.
-6. After each completed structural node where human inspection is useful
+7. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
    available:
    ```bash
@@ -157,14 +189,14 @@ use the HPacker-based `create_mutated_structure` branch in
    inspection is unavailable, register `reviewer_type=not_available` and show
    the PNG path to the user. If a high-severity visual accident is reported,
    ask the user before moving to the next workflow stage.
-7. After `topo_001` completes, hand off to the equilibration skill on the
+8. After `topo_001` completes, hand off to the equilibration skill on the
    same `job_dir`. In harnesses with slash commands, `/md-equilibration` is
    the shortcut. This skill does not auto-chain into equilibration — each
    stage is user-initiated.
 
 ## Step 0: Parse and Confirm
 
-Run this **after** Workflow steps 2–3 (the guidance pages have been read).
+Run this **after** Workflow steps 2–4 (the guidance pages have been read).
 
 The summary table includes only the fields listed below. Do **not**
 add forcefield, water model, box geometry, or any other tool-level
@@ -182,7 +214,7 @@ systems.
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
 | Chain(s) | (if specified; after inspection, expand to ligand label chains when ligands should be included) |
 | Ligands | include / exclude (use inspected ligand `unique_id` values) |
-| Solvation | explicit (default) / implicit |
+| Solvent regime | explicit (default) / implicit / vacuum / membrane |
 | Mutations | (if any — one-letter notation, e.g. K27A) |
 | Production length | (if specified) |
 | Other | (only parameters the user explicitly named — do not pre-fill defaults here) |

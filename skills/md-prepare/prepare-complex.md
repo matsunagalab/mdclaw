@@ -1,10 +1,14 @@
 # Prepare Complex
 
-Create a `prep` node after `source` and run `prepare_complex`.
+Create a `prep` node after `source` and run `prepare_complex`. The
+`--solvent-type` value comes from the study-level `solvent_regime`:
+`explicit` for explicit-water and membrane workflows, `implicit` for GB, and
+`vacuum` for deliberate no-solvent topologies.
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids source_001
 mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+  --solvent-type explicit \
   --select-chains A \
   --include-types protein nucleic glycan ligand
 ```

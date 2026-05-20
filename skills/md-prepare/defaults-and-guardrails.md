@@ -4,8 +4,11 @@ Read `skills/common/defaults.md` first.
 
 Preparation-specific defaults:
 
-- Solvation mode is explicit solvent unless the user explicitly asks for
-  implicit/vacuum/no-solvent or membrane handling.
+- Solvent regime is study-level intent. Use the `solvent_regime` recorded by
+  `md-study` when present; on the direct-run fast path default to explicit
+  solvent unless the user explicitly asks for implicit/vacuum/no-solvent or
+  membrane handling, and record the chosen regime with `update_job_params`
+  before running `prepare_complex`.
 - pH-aware protein protonation through `clean_protein`.
 - User-specified residue protonation states use `protonation_states`, e.g.
   `{"A:57": "HIP", "A:25": "ASH"}` or a list of `{chain, resnum, state}`
@@ -17,9 +20,10 @@ Preparation-specific defaults:
   generation resolves Amber geostd first and uses `GAFFTemplateGenerator` for
   remaining ligands.
 - Supported crystallographic ions are retained by default for explicit-solvent
-  systems. For implicit solvent, remove explicit ion residues before topology
-  or switch the task back to explicit solvent. Deliberate vacuum/no-solvent
-  topologies may keep explicit ions, but they are not the default MD workflow.
+  systems. For implicit solvent, pass `--solvent-type implicit` to
+  `prepare_complex` so explicit ions are removed during prep. Deliberate
+  vacuum/no-solvent topologies may keep explicit ions, but they are not the
+  default MD workflow.
 - Metal ions should be detected and parameterized explicitly when needed on
   explicit-solvent paths.
 

@@ -33,8 +33,10 @@ already gives a concrete target and asks to run it, hand off directly to
 - "Run this PDB in explicit water for 100 ns."
 - "Try this protein in implicit solvent."
 
-Direct runs may still use a thin `study_dir` with one `jobs/main` job, but
-`study_plan.json` is optional.
+Direct runs still use a thin `study_dir` with one `jobs/main` job so execution
+state and artifacts live under the same study/job contract, but
+`study_plan.json` is optional; `md-prepare` records the direct-run
+`solvent_regime` on the job params instead.
 
 ## Step 0: Parse and Confirm
 
@@ -46,6 +48,7 @@ Extract parameters from the user's request and present a summary.
 | Study directory | (path, e.g. `studies/<study_id>`) |
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
 | Variants / planned jobs | (WT vs mutant, apo vs holo, etc., if the user named them) |
+| Solvent regime | `explicit` (default) / `implicit` / `vacuum` / `membrane` |
 | Compute budget | (free text the user gave, e.g. "1x A100 for 7 days"; or "not specified") |
 | Other | (only parameters the user explicitly named) |
 
@@ -102,6 +105,7 @@ required fields are:
   "plan_schema_version": 2,
   "question": "...",
   "md_goal": "...",
+  "solvent_regime": "explicit",
   "jobs": [
     {
       "job_id": "main",
@@ -116,6 +120,25 @@ required fields are:
   }
 }
 ```
+
+`solvent_regime` is required study-level intent, not a topology afterthought.
+Use one of:
+
+- `"explicit"` — default for ordinary biomolecular MD; downstream prepare runs
+  `prepare_complex --solvent-type explicit`, then `solvate_structure` or
+  `embed_in_membrane` only if the regime below requires it.
+- `"implicit"` — continuum solvent; downstream prepare runs
+  `prepare_complex --solvent-type implicit`, skips explicit solvation, and
+  topology must pass an explicit `--implicit-solvent <MODEL>`.
+- `"vacuum"` — deliberate research/no-solvent topology; downstream prepare runs
+  `prepare_complex --solvent-type vacuum` and skips solvation and GB.
+- `"membrane"` — explicit membrane/water environment; downstream prepare runs
+  `prepare_complex --solvent-type explicit`, then `embed_in_membrane`.
+
+Default to `"explicit"` unless the user explicitly asks for implicit solvent,
+vacuum/no-solvent, or a membrane workflow. Do not defer this decision to
+topology generation; it affects prep-time component disposition such as whether
+explicit ion components are retained.
 
 An optional top-level `budget` block records the user's compute budget
 and the derived (replicates × length) plan. Include it only when the
@@ -272,21 +295,25 @@ attached to the study and is auditable when results come back.
 4. Restate the scientific question in one clear sentence.
 5. Translate it into an MD goal: what structural, dynamical, or interaction
    behavior MD can measure.
-6. Propose the smallest job set that can answer the question. Prefer one
+6. Choose the study-level `solvent_regime`. Default to `explicit`; choose
+   `implicit`, `vacuum`, or `membrane` only when the user requested it or the
+   scientific question requires it. Record the reason briefly in `notes` when
+   it is not the default.
+7. Propose the smallest job set that can answer the question. Prefer one
    baseline/control and one test variant when possible.
-7. Propose a short analysis list tied to the question. Avoid long generic
+8. Propose a short analysis list tied to the question. Avoid long generic
    metric catalogs.
-8. State decision criteria for support, against, and inconclusive outcomes.
-8.5. **Compute budget (only if the user mentioned compute).** Follow the
+9. State decision criteria for support, against, and inconclusive outcomes.
+9.5. **Compute budget (only if the user mentioned compute).** Follow the
    "Compute Budget" section above: parse the user-stated budget, call
    `estimate_md_throughput`, derive `(replicates × length)` with 15 %
    headroom, run the INSUFFICIENT_BUDGET guardrail, and stage the
    `budget` block for inclusion in the plan JSON. If the user did not
    mention compute, skip this step and omit the `budget` block.
-9. **HIL only**: confirm the restated question, jobs, analysis, and decision
+10. **HIL only**: confirm the restated question, solvent regime, jobs, analysis, and decision
    criteria with the user before writing them. In autonomous mode, skip this
    confirmation unless a required value is missing or genuinely ambiguous.
-10. Create or reuse a `study_dir` and record the plan:
+11. Create or reuse a `study_dir` and record the plan:
 
     ```bash
     mdclaw init_study --study-dir <study_dir> --title "<short title>" \
@@ -295,8 +322,8 @@ attached to the study and is auditable when results come back.
     mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
     ```
 
-11. Register planned jobs and propagate `execution_mode` so downstream skills
-    inherit it:
+12. Register planned jobs and propagate `execution_mode` and `solvent_regime`
+    so downstream skills inherit them:
 
     ```bash
     mdclaw add_study_job --study-dir <study_dir> \
@@ -306,13 +333,13 @@ attached to the study and is auditable when results come back.
       --create-job-dir
 
     mdclaw update_job_params --job-dir <study_dir>/jobs/<id> \
-      --params '{"execution_mode":"autonomous"}'
+      --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
     ```
 
     Register jobs only when the job IDs are clear. Otherwise leave job
     creation to the downstream prepare step.
 
-12. Handoff:
+13. Handoff:
 
     - **`autonomous`**: Invoke the next-stage skill on the first registered
       structural-setup job. Choose by current job state:
@@ -321,10 +348,10 @@ attached to the study and is auditable when results come back.
         * Equilibrated, not run → `skills/md-production/SKILL.md`
         * Trajectories already present → `skills/md-analyze/SKILL.md`
 
-      Pass the `job_dir`, the variant / system summary from the plan, and any
-      job-specific instructions (e.g. mutation, chain selection) to the
-      invoked skill. After it returns, continue with the next planned job in
-      the same conversation turn.
+      Pass the `job_dir`, the variant / system summary from the plan,
+      `solvent_regime`, and any job-specific instructions (e.g. mutation,
+      chain selection) to the invoked skill. After it returns, continue with
+      the next planned job in the same conversation turn.
 
     - **`human_in_the_loop`**: Report the plan summary, the next-stage skill
       path, and a copy-pasteable command, then stop:
