@@ -1,9 +1,9 @@
 """MDAgentBench framework.
 
 The package owns the dataset models, validators, deterministic scorer, and
-durable run summaries. It deliberately does not launch benchmark agents; agents
-receive ``prompt.md`` through the active skill/harness and submit artifacts
-under ``submission/`` for validation and scoring.
+durable run summaries. It deliberately keeps scoring artifact-based and
+agent-agnostic: agents receive ``prompt.md`` through the active skill/harness
+and submit artifacts under ``submission/`` for validation and scoring.
 
 - ``models``: pydantic v2 BaseModels for Task, Submission, Score, RunConfig.
 - ``integrity``: md5 verification, trajectory rescan, manifest/metrics
@@ -26,9 +26,19 @@ from mdclaw.benchmark.cli import (
     validate_benchmark_task,
     write_benchmark_schemas,
 )
+from mdclaw.benchmark.run import (
+    init_benchmark_run,
+    prepare_benchmark_run,
+    score_benchmark_run,
+    summarize_benchmark_run,
+)
 
 TOOLS = {
     "list_benchmark_tasks": list_benchmark_tasks,
+    "init_benchmark_run": init_benchmark_run,
+    "prepare_benchmark_run": prepare_benchmark_run,
+    "score_benchmark_run": score_benchmark_run,
+    "summarize_benchmark_run": summarize_benchmark_run,
     "export_benchmark_public_package": export_benchmark_public_package,
     "write_benchmark_schemas": write_benchmark_schemas,
     "validate_benchmark_task": validate_benchmark_task,

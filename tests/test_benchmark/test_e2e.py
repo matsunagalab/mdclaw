@@ -79,6 +79,38 @@ def test_validate_and_score_wrapper_returns_normalized_fields(tmp_path: Path):
     assert Path(result["validation_file"]).is_file()
 
 
+def test_prepare_and_score_benchmark_run_convenience_tools(tmp_path: Path):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="convenience_p11",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        execution_mode="dry_run",
+    )
+    assert prepared["success"], prepared
+    assert prepared["task_count"] == 1
+    assert Path(prepared["public_package_dir"]).is_dir()
+    assert Path(prepared["agent_tasks_file"]).is_file()
+
+    sub_dir = output_dir / "convenience_p11" / "tasks" / TASK_ID / "submission"
+    _fake_submissions.GENERATORS[TASK_ID](
+        sub_dir,
+        run_id="convenience_p11",
+        mode="honest",
+    )
+
+    result = benchmark_run.score_benchmark_run(
+        run_dir=str(output_dir / "convenience_p11"),
+        dataset_dir=str(DATASET_DIR),
+    )
+    assert result["success"], result
+    assert result["passed_task_count"] == 1
+    assert result["failed_task_count"] == 0
+    assert Path(output_dir / "convenience_p11" / "tasks" / TASK_ID / "score.json").is_file()
+    assert result["summary"]["summary"]["overall_score"] == 1.0
+
+
 def test_validate_and_score_wrapper_stops_on_validation_failure(tmp_path: Path):
     sub_dir = tmp_path / "submission"
     sub_dir.mkdir()

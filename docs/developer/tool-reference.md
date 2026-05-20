@@ -218,6 +218,25 @@ skill examples.
 ## `evidence_server.py`
 
 - `generate_md_evidence_report(...)`: JSON evidence summary for one job.
+
+## `benchmark`
+
+- `list_benchmark_tasks(...)`: list MDAgentBench tasks from
+  `benchmarks/mdagentbench/dataset.json`, including family and intent summary.
+- `prepare_benchmark_run(...)`: create a run directory, export an agent-safe
+  public task package, and write per-task prompt/submission/scoring
+  instructions for an MDClaw or external harness.
+- `score_benchmark_run(...)`: validate and score every `submission/` under a
+  run directory, then summarize the run.
+- `init_benchmark_run(...)` / `summarize_benchmark_run(...)`: lower-level run
+  record helpers used by harnesses.
+- `export_benchmark_public_package(...)`: export prompt/contract-only task
+  files for external agents; omits canonical `task.json`, `truth/`, and
+  scorer-only material.
+- `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`,
+  `validate_and_score_benchmark_submission(...)`,
+  `score_benchmark_submission(...)`, `write_benchmark_schemas(...)`: evaluator
+  and maintenance helpers for task/submission lifecycle.
   Registered `visual_review_json` artifacts are included as evidence artifacts;
   they are best-effort visual accident checks, not scientific validation.
 - `generate_md_methods_report(...)`: Methods Markdown for one job lineage.

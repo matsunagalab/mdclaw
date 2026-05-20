@@ -566,8 +566,10 @@ class TestSubprocessCLI:
         assert payload["success"] is True
         tool_names = {tool["name"] for tool in payload["tools"]}
         assert "solvate_structure" in tool_names
-        assert "init_benchmark_run" not in tool_names
-        assert "summarize_benchmark_run" not in tool_names
+        assert "init_benchmark_run" in tool_names
+        assert "prepare_benchmark_run" in tool_names
+        assert "score_benchmark_run" in tool_names
+        assert "summarize_benchmark_run" in tool_names
 
     def test_tool_help(self):
         result = subprocess.run(

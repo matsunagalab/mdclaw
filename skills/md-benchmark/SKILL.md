@@ -89,6 +89,22 @@ the run as partial or blocked-only, not full.
 
 ## MDClaw Agent
 
+Prepare an MDClaw benchmark run from the repository root with:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id <run_id> \
+  --dataset-dir benchmarks/mdagentbench \
+  --execution-mode lite
+```
+
+The command writes `<run_dir>/agent_tasks.json` plus one
+`task_instructions.json` per task. Each instruction points to the agent-safe
+`prompt.md`, `submission_contract.json`, and the task's `submission/`
+directory. Use `--task-ids P01_prep_simple_monomer_t4l P02_prep_1ake_chain_ap5`
+to run a subset.
+
 For MDClaw, launch one sub-agent per task and give it this prompt:
 
 ```text
@@ -194,6 +210,15 @@ mdclaw validate_and_score_benchmark_submission \
   --run-id <run_id> \
   --validation-output-file <run_task_dir>/validation.json \
   --output-file <run_task_dir>/score.json
+```
+
+For a run directory prepared by MDClaw, score all task submissions and write the
+run summary with:
+
+```bash
+mdclaw score_benchmark_run \
+  --run-dir <run_dir> \
+  --dataset-dir benchmarks/mdagentbench
 ```
 
 Read the wrapper's normalized fields: `validation_success`, `score_status`,

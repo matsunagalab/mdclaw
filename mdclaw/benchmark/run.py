@@ -29,6 +29,7 @@ from mdclaw.benchmark.models import (
 
 
 _BENCHMARK_VERSION = "MDAgentBench-prep-v0.1"
+_DEFAULT_DATASET_DIR = "benchmarks/mdagentbench"
 
 
 def _now_utc() -> str:
@@ -86,20 +87,32 @@ def _write_jsonl_dedup(path: Path, record: dict[str, Any], key: str) -> None:
             f.write(json.dumps(row, sort_keys=True, default=str) + "\n")
 
 
-def _list_pilot_task_ids() -> list[str]:
-    """Discover task ids by reading benchmarks/mdagentbench/dataset.json.
+def _dataset_dir_candidates(dataset_dir: str) -> list[Path]:
+    requested = Path(dataset_dir)
+    return [
+        requested,
+        Path(__file__).resolve().parents[2] / dataset_dir,
+    ]
+
+
+def _resolve_dataset_dir(dataset_dir: str = _DEFAULT_DATASET_DIR) -> Path:
+    for candidate in _dataset_dir_candidates(dataset_dir):
+        if (candidate / "dataset.json").is_file():
+            return candidate
+    return Path(dataset_dir)
+
+
+def _list_pilot_task_ids(dataset_dir: str = _DEFAULT_DATASET_DIR) -> list[str]:
+    """Discover task ids by reading the benchmark dataset metadata.
 
     This avoids hard-coding the task list in code so dataset edits do not
     require code changes.
     """
-    candidates = [
-        Path("benchmarks/mdagentbench/dataset.json"),
-        Path(__file__).resolve().parents[2] / "benchmarks/mdagentbench/dataset.json",
-    ]
-    for c in candidates:
-        if c.is_file():
+    for dataset in _dataset_dir_candidates(dataset_dir):
+        dataset_file = dataset / "dataset.json"
+        if dataset_file.is_file():
             try:
-                payload = json.loads(c.read_text())
+                payload = json.loads(dataset_file.read_text())
             except json.JSONDecodeError:
                 continue
             ids = payload.get("task_ids")
@@ -194,6 +207,133 @@ def init_benchmark_run(
     }
 
 
+def prepare_benchmark_run(
+    output_dir: str = "benchmark_runs",
+    run_id: str = "",
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    task_ids: Optional[list[str]] = None,
+    execution_mode: str = "lite",
+    judge_mode: str = "deterministic",
+    backend_name: str = "mdclaw",
+    backend_version: str = MDCLAW_VERSION,
+    backend_container: str = "",
+    harness_name: str = "manual-mdclaw-skill",
+    harness_version: str = "",
+    harness_adapter: str = "md-benchmark",
+    model_name: str = "cursor-agent",
+    model_provider: str = "cursor",
+    model_version: str = "",
+    max_walltime_minutes_per_task: int = 180,
+    max_gpu_hours: float = 0.0,
+    max_tokens_per_task: int = 0,
+    max_simulation_ns: float = 0.0,
+    public_package_dir: Optional[str] = None,
+) -> dict[str, Any]:
+    """Create a benchmark run workspace plus agent-safe task package.
+
+    This is the MDClaw-side convenience entry point. It preserves the
+    agent-agnostic benchmark boundary: agents get prompt/contract files and a
+    submission directory, while canonical ``task.json`` remains for the scorer.
+    """
+    if task_ids is None:
+        task_ids = _list_pilot_task_ids(dataset_dir)
+
+    init = init_benchmark_run(
+        output_dir=output_dir,
+        run_id=run_id,
+        execution_mode=execution_mode,
+        judge_mode=judge_mode,
+        backend_name=backend_name,
+        backend_version=backend_version,
+        backend_container=backend_container,
+        harness_name=harness_name,
+        harness_version=harness_version,
+        harness_adapter=harness_adapter,
+        model_name=model_name,
+        model_provider=model_provider,
+        model_version=model_version,
+        max_walltime_minutes_per_task=max_walltime_minutes_per_task,
+        max_gpu_hours=max_gpu_hours,
+        max_tokens_per_task=max_tokens_per_task,
+        max_simulation_ns=max_simulation_ns,
+        task_ids=task_ids,
+    )
+    if not init.get("success"):
+        return init
+
+    dataset = _resolve_dataset_dir(dataset_dir)
+    run_dir = Path(init["run_dir"])
+    if public_package_dir is None:
+        public_dir = run_dir / "public_tasks"
+    else:
+        public_dir = Path(public_package_dir)
+
+    from mdclaw.benchmark import cli as benchmark_cli
+
+    public_export = benchmark_cli.export_benchmark_public_package(
+        dataset_dir=str(dataset),
+        output_dir=str(public_dir),
+    )
+    if not public_export.get("success"):
+        return {
+            "success": False,
+            "run_id": init["run_id"],
+            "run_dir": str(run_dir),
+            "errors": public_export.get("errors", []),
+            "public_export": public_export,
+        }
+
+    task_instructions: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        task_run_dir = run_dir / "tasks" / task_id
+        ensure_directory(task_run_dir)
+        ensure_directory(task_run_dir / "submission")
+        instruction = {
+            "task_id": task_id,
+            "prompt_file": str(public_dir / "tasks" / task_id / "prompt.md"),
+            "submission_contract": str(
+                public_dir / "tasks" / task_id / "submission_contract.json"
+            ),
+            "submission_dir": str(task_run_dir / "submission"),
+            "validation_output_file": str(task_run_dir / "validation.json"),
+            "score_file": str(task_run_dir / "score.json"),
+            "score_command": (
+                "mdclaw validate_and_score_benchmark_submission "
+                f"--task-file {dataset / 'tasks' / task_id / 'task.json'} "
+                f"--submission-dir {task_run_dir / 'submission'} "
+                f"--run-id {init['run_id']} "
+                f"--validation-output-file {task_run_dir / 'validation.json'} "
+                f"--output-file {task_run_dir / 'score.json'}"
+            ),
+        }
+        _write_json(task_run_dir / "task_instructions.json", instruction)
+        task_instructions.append(instruction)
+
+    _write_json(
+        run_dir / "agent_tasks.json",
+        {
+            "run_id": init["run_id"],
+            "dataset_dir": str(dataset),
+            "public_package_dir": str(public_dir),
+            "task_count": len(task_instructions),
+            "tasks": task_instructions,
+        },
+    )
+
+    return {
+        "success": True,
+        "run_id": init["run_id"],
+        "run_dir": str(run_dir),
+        "run_config": init["run_config"],
+        "environment": init["environment"],
+        "public_package_dir": str(public_dir),
+        "agent_tasks_file": str(run_dir / "agent_tasks.json"),
+        "task_count": len(task_instructions),
+        "tasks": task_instructions,
+        "public_export": public_export,
+    }
+
+
 def summarize_benchmark_run(
     run_dir: str,
     output_file: Optional[str] = None,
@@ -264,6 +404,82 @@ def summarize_benchmark_run(
         "run_id": summary.run_id,
         "summary_file": str(summary_path),
         "summary": summary_payload,
+    }
+
+
+def score_benchmark_run(
+    run_dir: str,
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    require_validation_success: bool = True,
+    llm_judge_file: Optional[str] = None,
+    summarize: bool = True,
+) -> dict[str, Any]:
+    """Validate and score every task submission in a benchmark run directory."""
+    rd = Path(run_dir)
+    cfg_path = rd / "run_config.json"
+    if not cfg_path.is_file():
+        return {"success": False, "errors": [f"missing run_config.json under {rd}"]}
+    try:
+        cfg_payload = json.loads(cfg_path.read_text())
+    except json.JSONDecodeError as exc:
+        return {"success": False, "errors": [f"run_config.json invalid: {exc}"]}
+
+    dataset = _resolve_dataset_dir(dataset_dir)
+    run_id = str(cfg_payload.get("run_id") or rd.name)
+    task_ids = [str(t) for t in cfg_payload.get("task_ids", [])]
+    if not task_ids:
+        task_ids = _list_pilot_task_ids(str(dataset))
+
+    from mdclaw.benchmark import cli as benchmark_cli
+
+    task_results: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        task_run_dir = rd / "tasks" / task_id
+        submission_dir = task_run_dir / "submission"
+        task_file = dataset / "tasks" / task_id / "task.json"
+        if not submission_dir.is_dir():
+            task_results.append({
+                "success": False,
+                "task_id": task_id,
+                "submission_dir": str(submission_dir),
+                "validation_success": False,
+                "score_success": False,
+                "score_status": None,
+                "weighted_total": None,
+                "benchmark_passed": False,
+                "errors": [f"missing submission directory: {submission_dir}"],
+            })
+            continue
+
+        result = benchmark_cli.validate_and_score_benchmark_submission(
+            task_file=str(task_file),
+            submission_dir=str(submission_dir),
+            run_id=run_id,
+            output_file=str(task_run_dir / "score.json"),
+            validation_output_file=str(task_run_dir / "validation.json"),
+            llm_judge_file=llm_judge_file,
+            require_validation_success=require_validation_success,
+        )
+        task_results.append(result)
+
+    summary_result = None
+    if summarize:
+        summary_result = summarize_benchmark_run(run_dir=str(rd))
+
+    failed = [item for item in task_results if not item.get("benchmark_passed")]
+    return {
+        "success": not failed and (summary_result is None or summary_result.get("success", False)),
+        "run_id": run_id,
+        "run_dir": str(rd),
+        "task_count": len(task_results),
+        "passed_task_count": len(task_results) - len(failed),
+        "failed_task_count": len(failed),
+        "tasks": task_results,
+        "summary": summary_result,
+        "errors": [] if not failed else [
+            f"{item.get('task_id')}: {', '.join(item.get('errors') or []) or item.get('score_status')}"
+            for item in failed
+        ],
     }
 
 
