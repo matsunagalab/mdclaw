@@ -80,9 +80,9 @@
     <text class="tag" x="450" y="367">node_type = "prep"</text>
     <line class="line" x1="450" y1="385" x2="780" y2="385"/>
     <text class="section" x="450" y="413">Runs</text>
-    <text class="body" x="472" y="438">select source candidate → inspect → split</text>
-    <text class="body" x="472" y="460">protein clean / nucleic H rebuild / ligand chemistry</text>
-    <text class="body" x="472" y="482">glycan provenance / ion retention / merge</text>
+    <text class="body" x="472" y="438">read job solvent_regime → select source candidate</text>
+    <text class="body" x="472" y="460">inspect → split → protein clean / nucleic H rebuild</text>
+    <text class="body" x="472" y="482">ligand chemistry / glycan provenance / ion disposition / merge</text>
     <text class="section" x="450" y="517">artifacts</text>
     <text class="mono" x="472" y="542">merged_pdb</text>
     <text class="small" x="625" y="542">artifacts/merge/merged.pdb</text>
@@ -144,7 +144,7 @@
     <text class="heading" x="890" y="847">implicit / vacuum path</text>
     <text class="body" x="912" y="878">No solv node required.</text>
     <text class="small" x="912" y="904">topo consumes prep.merged_pdb directly.</text>
-    <text class="small" x="912" y="926">prep excludes explicit ions for implicit solvent.</text>
+    <text class="small" x="912" y="926">prep used solvent_regime=implicit disposition.</text>
   </g>
 
   <g id="topo-node">

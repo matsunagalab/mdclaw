@@ -40,9 +40,11 @@ normalization where needed, and serialize the OpenMM artifact triple.
 
 ```mermaid
 flowchart TD
-  A["source node / raw PDB, mmCIF, AF, local, or prediction"] --> B["source_bundle.json and candidate files"]
+  S["md-study or direct-run job params"] --> S1["record solvent_regime"]
+  S1 --> A["source node / raw PDB, mmCIF, AF, local, or prediction"]
+  A --> B["source_bundle.json and candidate files"]
   B --> C{"candidate selection needed?"}
-  C -->|"single candidate"| D["prepare_complex"]
+  C -->|"single candidate"| D["prepare_complex --solvent-type <regime>"]
   C -->|"assembly / NMR / ensemble"| E["select source candidate"]
   E --> D
 
@@ -53,20 +55,25 @@ flowchart TD
   F1 --> G
   F2 --> G
 
-  G --> H{"solvent mode"}
-  H -->|"explicit water default"| I["solvate_structure"]
+  G --> H{"solvent_regime"}
+  H -->|"explicit"| I["solvate_structure"]
   H -->|"membrane"| J["embed_in_membrane"]
-  H -->|"implicit or vacuum"| K["use merged_pdb directly"]
+  H -->|"implicit"| K["use merged_pdb directly"]
+  H -->|"vacuum"| V["use merged_pdb directly"]
 
   I --> L["solvated_pdb + box_dimensions"]
   J --> L
   K --> M["prepared PDB without box_dimensions"]
+  V --> M
 
-  L --> N["build_amber_system"]
-  M --> N
+  L --> N["build_amber_system explicit/membrane"]
+  K --> N1["build_amber_system --implicit-solvent"]
+  V --> N2["build_amber_system vacuum/no GB"]
   M --> O["build_openmm_system research escape hatch"]
 
   N --> P["system.xml + topology.pdb + state.xml"]
+  N1 --> P
+  N2 --> P
   O --> P
   P --> Q["minimization_report.json"]
   Q --> R["handoff to equilibration / benchmark submission"]
@@ -105,8 +112,8 @@ flowchart TD
   L2 --> L3["write ligand_chemistry.json for topology"]
 
   X --> I{"ion chains"}
-  I -->|"explicit or vacuum / unspecified"| I1["retain supported explicit ions"]
-  I -->|"implicit solvent intent"| I2["exclude explicit ions and record component_disposition"]
+  I -->|"solvent_regime explicit or vacuum"| I1["retain supported explicit ions"]
+  I -->|"solvent_regime implicit"| I2["exclude explicit ions and record component_disposition"]
 
   P7 --> M["merge_structures"]
   N2 --> M
@@ -165,9 +172,10 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-  A["merged_pdb from prep branch"] --> B{"requested environment"}
+  A["job params: solvent_regime"] --> B{"solvent_regime"}
+  P["merged_pdb from prep branch"] --> B
 
-  B -->|"explicit water default"| C["solvate_structure"]
+  B -->|"explicit"| C["solvate_structure"]
   C --> C1["packmol-memgen with water model, buffer, salt"]
   C1 --> C2{"neutralization needs more ions than saltcon?"}
   C2 -->|"yes"| C3["rerun with --salt_override and record warning"]
@@ -181,12 +189,12 @@ flowchart TD
   D1 --> D2["same salt_override fallback when required"]
   D2 --> D3["solvated_pdb + box_dimensions + membrane_metadata"]
 
-  B -->|"implicit solvent"| E["skip explicit solvation"]
-  E --> E0["prepare_complex solvent_type=implicit excludes explicit ions"]
+  B -->|"implicit"| E["skip explicit solvation"]
+  E --> E0["prep already used solvent_type=implicit"]
   E0 --> E1["build_amber_system consumes merged_pdb + implicit_solvent"]
   E1 --> E2["topology still blocks any remaining explicit ions"]
 
-  B -->|"vacuum research path"| F["skip explicit solvation"]
+  B -->|"vacuum"| F["skip explicit solvation"]
   F --> F1["build_amber_system consumes merged_pdb without box or GB"]
 ```
 
@@ -283,11 +291,13 @@ artifact triple for downstream run tools.
 
 - `source` owns raw source normalization and optional Gemmi biological assembly
   generation. `prep` selects one candidate before making a physical MD system.
+- `md-study` or the direct-run bootstrap records `solvent_regime` before
+  structure preparation begins.
 - `prepare_complex` owns component selection, component-common disposition
-  (including deuterium exclusion for all split components and optional
-  implicit-solvent ion exclusion), cleaning, protonation, standard DNA/RNA H
-  rebuild, terminal caps, ligand chemistry artifacts, disulfide provenance,
-  and glycan provenance.
+  (including deuterium exclusion for all split components and
+  `solvent_regime=implicit` ion exclusion), cleaning, protonation, standard
+  DNA/RNA H rebuild, terminal caps, ligand chemistry artifacts, disulfide
+  provenance, and glycan provenance.
 - `solvate_structure` and `embed_in_membrane` own explicit environment
   construction and `box_dimensions`. Their output is the only explicit-solvent
   input expected by topology.

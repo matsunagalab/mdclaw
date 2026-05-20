@@ -43,6 +43,7 @@
   <g id="prep">
     <rect class="box box-prep" x="345" y="110" width="400" height="265"/>
     <text class="heading" x="370" y="146">2. prepare_complex</text>
+    <text class="small" x="370" y="165">• uses job solvent_regime</text>
     <text class="small" x="370" y="177">• inspect and split molecules</text>
     <text class="small" x="370" y="199">• clean proteins, disulfides, protonation</text>
     <text class="small" x="370" y="221">• standard DNA/RNA H rebuild</text>
@@ -65,13 +66,13 @@
   <g id="environment">
     <rect class="box box-env" x="800" y="120" width="260" height="300"/>
     <text class="heading" x="824" y="156">3. Environment</text>
-    <text class="small" x="824" y="188">Default: explicit water</text>
+    <text class="small" x="824" y="188">Driven by solvent_regime</text>
     <text class="small" x="824" y="214">solvate_structure</text>
     <text class="small" x="844" y="236">water + salt + box_dimensions</text>
     <text class="small" x="824" y="268">embed_in_membrane</text>
     <text class="small" x="844" y="290">lipids + water + salt</text>
     <text class="small" x="824" y="322">implicit / vacuum</text>
-    <text class="small" x="844" y="344">use merged_pdb; prep excludes ions when implicit</text>
+    <text class="small" x="844" y="344">use merged_pdb directly</text>
     <line x1="824" y1="366" x2="1036" y2="366" stroke="#7dd3fc" stroke-width="2"/>
     <text class="small" x="824" y="392">salt_override fallback is recorded</text>
   </g>
