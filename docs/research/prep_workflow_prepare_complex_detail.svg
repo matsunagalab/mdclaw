@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="1000" viewBox="0 0 1500 1000" role="img" aria-labelledby="title desc">
+  <title id="title">prepare_complex detailed implementation flow</title>
+  <desc id="desc">Detailed flow inside prepare_complex, showing inspection, splitting, component-specific preparation, merging, and metadata artifacts.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 32px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .box { fill: #ffffff; stroke: #94a3b8; stroke-width: 2; rx: 9; }
+      .input { fill: #eff6ff; stroke: #3b82f6; }
+      .control { fill: #f1f5f9; stroke: #64748b; }
+      .protein { fill: #ecfdf5; stroke: #10b981; }
+      .nucleic { fill: #f0f9ff; stroke: #0284c7; }
+      .glycan { fill: #fefce8; stroke: #eab308; }
+      .ligand { fill: #fff7ed; stroke: #f97316; }
+      .ion { fill: #faf5ff; stroke: #a855f7; }
+      .merge { fill: #f5f3ff; stroke: #8b5cf6; }
+      .heading { font: 700 18px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .small { font: 500 12.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .mono { font: 600 13px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #1e293b; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.2; marker-end: url(#arrow); }
+      .thin { fill: none; stroke: #64748b; stroke-width: 1.8; marker-end: url(#arrow); }
+      .lane-title { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1500" height="1000"/>
+  <text class="title" x="40" y="54">prepare_complex Detail</text>
+  <text class="subtitle" x="40" y="80">Prep-owned chemistry and provenance before solvation/topology. Topology later validates; it does not generically repair.</text>
+
+  <g id="top-row">
+    <rect class="box input" x="50" y="120" width="210" height="110"/>
+    <text class="heading" x="72" y="154">Resolve input</text>
+    <text class="small" x="72" y="184">source candidate or</text>
+    <text class="small" x="72" y="204">explicit structure_file</text>
+
+    <rect class="box control" x="300" y="120" width="210" height="110"/>
+    <text class="heading" x="322" y="154">Inspect</text>
+    <text class="small" x="322" y="184">chains, residues, ligands,</text>
+    <text class="small" x="322" y="204">nucleic/glycan/PTM summary</text>
+
+    <rect class="box control" x="550" y="120" width="220" height="110"/>
+    <text class="heading" x="572" y="154">Record source signals</text>
+    <text class="small" x="572" y="184">PTMs, glycan LINK records,</text>
+    <text class="small" x="572" y="204">SSBOND / struct_conn</text>
+
+    <rect class="box control" x="810" y="120" width="210" height="110"/>
+    <text class="heading" x="832" y="154">Plan overrides</text>
+    <text class="small" x="832" y="184">disulfides, histidines,</text>
+    <text class="small" x="832" y="204">protonation_states, caps</text>
+
+    <rect class="box control" x="1060" y="120" width="210" height="110"/>
+    <text class="heading" x="1082" y="154">Split molecules</text>
+    <text class="small" x="1082" y="184">protein / nucleic / glycan</text>
+    <text class="small" x="1082" y="204">ligand / ion / water</text>
+  </g>
+
+  <path class="arrow" d="M260 175 H300"/>
+  <path class="arrow" d="M510 175 H550"/>
+  <path class="arrow" d="M770 175 H810"/>
+  <path class="arrow" d="M1020 175 H1060"/>
+
+  <text class="lane-title" x="60" y="300">Component processors</text>
+
+  <g id="protein">
+    <rect class="box protein" x="50" y="325" width="260" height="330"/>
+    <text class="heading" x="72" y="360">Protein chains</text>
+    <text class="body" x="72" y="390">clean_protein</text>
+    <text class="small" x="72" y="420">1. PDBFixer missing residues/atoms</text>
+    <text class="small" x="72" y="442">2. optional ACE/NME caps</text>
+    <text class="small" x="72" y="464">3. nonstandard residue handling</text>
+    <text class="small" x="72" y="486">4. CYS/CYX disulfide handling</text>
+    <text class="small" x="72" y="508">5. pdb2pqr+propka or pdb4amber</text>
+    <text class="small" x="72" y="530">6. explicit protonation_states</text>
+    <text class="small" x="72" y="552">7. cap-only H completion invariant</text>
+    <line x1="72" y1="600" x2="288" y2="600" stroke="#86efac" stroke-width="2"/>
+    <text class="mono" x="72" y="626">*.amber.pdb / *.cap_h.pdb</text>
+  </g>
+
+  <g id="nucleic">
+    <rect class="box nucleic" x="345" y="325" width="240" height="250"/>
+    <text class="heading" x="367" y="360">Standard DNA/RNA</text>
+    <text class="body" x="367" y="390">_prepare_standard_nucleic</text>
+    <text class="small" x="367" y="420">• modified residues fail early</text>
+    <text class="small" x="367" y="442">• OpenMM Modeller.addHydrogens</text>
+    <text class="small" x="367" y="464">• DNA.OL15 or RNA.OL3</text>
+    <text class="small" x="367" y="486">• residue identity/order checked</text>
+    <line x1="367" y1="514" x2="563" y2="514" stroke="#7dd3fc" stroke-width="2"/>
+    <text class="mono" x="367" y="540">*.nucleic_h.pdb</text>
+  </g>
+
+  <g id="glycan">
+    <rect class="box glycan" x="620" y="325" width="225" height="250"/>
+    <text class="heading" x="642" y="360">Glycans</text>
+    <text class="body" x="642" y="390">pass through prep</text>
+    <text class="small" x="642" y="420">• keep glycan PDB fragments</text>
+    <text class="small" x="642" y="442">• remap linkage endpoints</text>
+    <text class="small" x="642" y="464">• do not GAFF-parameterize</text>
+    <text class="small" x="642" y="486">• GLYCAM normalization is topo-only</text>
+    <line x1="642" y1="514" x2="823" y2="514" stroke="#fde68a" stroke-width="2"/>
+    <text class="mono" x="642" y="540">glycan_linkages.json</text>
+  </g>
+
+  <g id="ligand">
+    <rect class="box ligand" x="880" y="325" width="250" height="250"/>
+    <text class="heading" x="902" y="360">Ligands</text>
+    <text class="body" x="902" y="390">clean_ligand</text>
+    <text class="small" x="902" y="420">• preserve bound coordinates</text>
+    <text class="small" x="902" y="442">• fetch/use SMILES only for chemistry</text>
+    <text class="small" x="902" y="464">• write SDF and cleaned PDB</text>
+    <text class="small" x="902" y="486">• charge/protonation provenance</text>
+    <line x1="902" y1="514" x2="1108" y2="514" stroke="#fed7aa" stroke-width="2"/>
+    <text class="mono" x="902" y="540">ligand_chemistry.json</text>
+  </g>
+
+  <g id="ions">
+    <rect class="box ion" x="1165" y="325" width="240" height="250"/>
+    <text class="heading" x="1187" y="360">Ions / waters</text>
+    <text class="small" x="1187" y="390">• ions retained when included</text>
+    <text class="small" x="1187" y="412">• waters excluded by default prep</text>
+    <text class="small" x="1187" y="434">• explicit solvent adds waters later</text>
+    <text class="small" x="1187" y="456">• explicit ions excluded for implicit prep</text>
+    <line x1="1187" y1="514" x2="1383" y2="514" stroke="#e9d5ff" stroke-width="2"/>
+    <text class="mono" x="1187" y="540">ion fragments as-is</text>
+  </g>
+
+  <path class="thin" d="M1165 230 V300 H180 V325"/>
+  <path class="thin" d="M1165 230 V300 H465 V325"/>
+  <path class="thin" d="M1165 230 V300 H732 V325"/>
+  <path class="thin" d="M1165 230 V300 H1005 V325"/>
+  <path class="thin" d="M1165 230 V300 H1285 V325"/>
+
+  <g id="merge">
+    <rect class="box merge" x="345" y="740" width="760" height="185"/>
+    <text class="heading" x="372" y="778">Merge and publish prep artifacts</text>
+    <text class="body" x="372" y="810">merge_structures creates the single prepared physical system.</text>
+    <text class="small" x="372" y="842">• merged.pdb</text>
+    <text class="small" x="372" y="864">• chain_identity_map.json and residue mappings</text>
+    <text class="small" x="372" y="886">• glycan_metadata.json / glycan_linkages.json</text>
+    <text class="small" x="725" y="842">• disulfide_bonds.json</text>
+    <text class="small" x="725" y="864">• component_disposition.json / excluded_components.json</text>
+    <text class="small" x="725" y="886">• preparation_summary and confirmation_needed</text>
+  </g>
+
+  <path class="arrow" d="M180 655 V740"/>
+  <path class="arrow" d="M465 575 V740"/>
+  <path class="arrow" d="M732 575 V740"/>
+  <path class="arrow" d="M1005 575 V740"/>
+  <path class="arrow" d="M1285 575 V690 H970 V740"/>
+
+  <text class="small" x="1125" y="720">Outputs feed solvate_structure,</text>
+  <text class="small" x="1125" y="742">embed_in_membrane, or topology.</text>
+</svg>

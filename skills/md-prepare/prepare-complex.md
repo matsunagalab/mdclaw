@@ -23,8 +23,9 @@ model-derived candidate.
 
 For the default explicit-solvent path, retain supported crystallographic ions
 when they are part of the requested system by including `ion` in
-`--include-types`. For implicit solvent, omit `ion`; explicit ion particles are
-not compatible with the implicit topology path. For a deliberate
+`--include-types`. For implicit solvent, pass `--solvent-type implicit`;
+`prepare_complex` will exclude explicit ion components from `merged_pdb` and
+record them in `component_disposition.json`. For a deliberate
 vacuum/no-solvent topology, explicit ions may be retained.
 
 `--select-chains` is a chain gate for all included molecular types. If the

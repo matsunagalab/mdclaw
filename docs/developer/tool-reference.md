@@ -36,7 +36,11 @@ skill examples.
   requested independently with `n_terminal_cap="ACE"` and/or
   `c_terminal_cap="NME"`; the legacy `cap_termini=True` shortcut means both.
   ACE/NME cap hydrogens are completed in prep with OpenMM Modeller using the
-  requested `terminal_cap_forcefield` or the ff19SB default.
+  requested `terminal_cap_forcefield` or the ff19SB default. `solvent_type` is
+  optional prep-stage intent; pass `"implicit"` to exclude explicit ion
+  components from `merged_pdb` and record them in `component_disposition.json`.
+  The same component disposition layer excludes experimental deuterium across
+  all split components before component-specific preparation.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,

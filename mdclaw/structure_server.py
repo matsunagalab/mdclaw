@@ -56,6 +56,7 @@ DEFAULT_TERMINAL_CAP_FORCEFIELD = "ff19SB"
 SUPPORTED_N_TERMINAL_CAPS = {"ACE"}
 SUPPORTED_C_TERMINAL_CAPS = {"NME"}
 TERMINAL_CAP_RESIDUES = SUPPORTED_N_TERMINAL_CAPS | SUPPORTED_C_TERMINAL_CAPS
+SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -162,6 +163,182 @@ def _exclude_deuterium_atoms_from_pdb(input_path: Path, output_path: Path) -> di
     else:
         entries = []
     return _component_disposition_payload(entries)
+
+
+def _normalize_prepare_solvent_type(solvent_type: Optional[str]) -> Optional[str]:
+    """Normalize prep-stage solvent intent without inferring a default."""
+    if solvent_type is None:
+        return None
+    normalized = str(solvent_type).strip().lower().replace("-", "_")
+    aliases = {
+        "explicit_water": "explicit",
+        "explicit_solvent": "explicit",
+        "implicit_solvent": "implicit",
+        "no_solvent": "vacuum",
+        "none": "vacuum",
+    }
+    normalized = aliases.get(normalized, normalized)
+    if normalized == "":
+        return None
+    return normalized
+
+
+def _pdb_atom_record_count(path: Path) -> int:
+    """Count atom records in a PDB fragment for disposition summaries."""
+    try:
+        return sum(
+            1 for line in path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        )
+    except OSError:
+        return 0
+
+
+def _split_file_list_key(component_type: str) -> str:
+    return {
+        "protein": "protein_files",
+        "nucleic": "nucleic_files",
+        "glycan": "glycan_files",
+        "ligand": "ligand_files",
+        "ion": "ion_files",
+        "water": "water_files",
+    }.get(component_type, "ligand_files")
+
+
+def _replace_split_result_file(
+    split_result: dict,
+    *,
+    component_type: str,
+    old_path: str,
+    new_path: str,
+) -> None:
+    """Update split_molecules path bookkeeping after component normalization."""
+    key = _split_file_list_key(component_type)
+    split_result[key] = [
+        new_path if path == old_path else path
+        for path in split_result.get(key, [])
+    ]
+    for info in split_result.get("chain_file_info", []):
+        if info.get("file") == old_path:
+            info.setdefault("source_file", old_path)
+            info["file"] = new_path
+            info["normalized_file"] = new_path
+
+
+def _component_disposition_metadata(chain_info: dict, component_type: str) -> dict[str, Any]:
+    """Return shared component identity fields for disposition entries."""
+    metadata: dict[str, Any] = {
+        "component_type": component_type,
+        "chain_id": chain_info.get("chain_id"),
+        "author_chain": chain_info.get("author_chain"),
+        "resnum": chain_info.get("resnum"),
+        "unique_id": chain_info.get("unique_id"),
+        "nucleic_subtype": chain_info.get("nucleic_subtype"),
+    }
+    residue_names = chain_info.get("residue_names")
+    if isinstance(residue_names, dict):
+        names = residue_names.get("unique_residues", [])
+    elif isinstance(residue_names, list):
+        names = residue_names
+    else:
+        names = []
+    if names:
+        metadata["residue_names"] = sorted(set(names))
+        metadata["residue_name"] = metadata["residue_names"][0]
+    return {key: value for key, value in metadata.items() if value not in (None, [], {})}
+
+
+def _apply_component_disposition_to_split_result(
+    split_result: dict,
+    *,
+    solvent_type: Optional[str] = None,
+) -> dict[str, Any]:
+    """Apply component-common prep disposition to split PDB fragments.
+
+    The split result is mutated in place so all downstream preparation steps
+    consume normalized component files.
+    """
+    entries: list[dict[str, Any]] = []
+    retained_ion_files: list[str] = []
+    excluded_ion_files: list[str] = []
+    all_chain_lookup = {
+        chain.get("chain_id"): chain
+        for chain in split_result.get("all_chains", []) or []
+    }
+
+    for info in split_result.get("chain_file_info", []) or []:
+        component_type = info.get("chain_type", "ligand")
+        current_file = info.get("file")
+        if not current_file:
+            continue
+        info = {
+            **all_chain_lookup.get(info.get("chain_id"), {}),
+            **info,
+        }
+        current_path = Path(current_file)
+        metadata = _component_disposition_metadata(info, component_type)
+
+        deuterium_stripped_file = current_path.parent / (
+            f"{current_path.stem}.deuterium_stripped{current_path.suffix}"
+        )
+        deuterium_payload = _exclude_deuterium_atoms_from_pdb(
+            current_path,
+            deuterium_stripped_file,
+        )
+        if deuterium_payload.get("entries"):
+            new_file = str(deuterium_stripped_file)
+            _replace_split_result_file(
+                split_result,
+                component_type=component_type,
+                old_path=current_file,
+                new_path=new_file,
+            )
+            info = {
+                **info,
+                "source_file": current_file,
+                "file": new_file,
+                "normalized_file": new_file,
+            }
+            current_file = new_file
+            current_path = deuterium_stripped_file
+            for entry in deuterium_payload.get("entries", []):
+                entries.append({
+                    **entry,
+                    **metadata,
+                    "source_file": str(info.get("source_file")),
+                    "normalized_file": new_file,
+                })
+
+        if component_type == "ion":
+            if solvent_type == "implicit":
+                atom_count = _pdb_atom_record_count(current_path)
+                excluded_ion_files.append(current_file)
+                entries.append({
+                    "component_id": (
+                        f"explicit_ion:{metadata.get('unique_id')}"
+                        if metadata.get("unique_id")
+                        else f"explicit_ion:{current_path.stem}"
+                    ),
+                    "classification": "explicit_ion",
+                    "default_action": "retain",
+                    "action_taken": "excluded",
+                    "atom_count": atom_count,
+                    "reason": (
+                        "Explicit ion particles are excluded from the prep "
+                        "output for implicit solvent; continuum solvent "
+                        "topology should not retain discrete ions."
+                    ),
+                    **metadata,
+                    "source_file": current_file,
+                })
+            else:
+                retained_ion_files.append(current_file)
+
+    return {
+        "component_disposition": _component_disposition_payload(entries),
+        "retained_ion_files": retained_ion_files,
+        "excluded_ion_files": excluded_ion_files,
+    }
 
 
 def _reconcile_cyx_cys_in_pdb(pdb_file: str, disulfide_bonds: List[dict]) -> Dict[str, int]:
@@ -4803,6 +4980,7 @@ def _validate_prepare_node_context(
     include_ligand_ids: Optional[List[str]],
     exclude_ligand_ids: Optional[List[str]],
     keep_crystal_waters: bool,
+    solvent_type: Optional[str] = None,
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
@@ -4828,6 +5006,7 @@ def _validate_prepare_node_context(
             "include_ligand_ids": include_ligand_ids,
             "exclude_ligand_ids": exclude_ligand_ids,
             "keep_crystal_waters": keep_crystal_waters,
+            "solvent_type": solvent_type,
             "source_structure_id": source_structure_id,
             "source_candidate_id": source_candidate_id,
             "source_model_index": source_model_index,
@@ -4858,6 +5037,8 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
         "component_disposition_summary": _component_disposition_payload([])["summary"],
         "component_disposition_file": None,
         "excluded_components_file": None,
+        "retained_ion_files": [],
+        "excluded_ion_files": [],
     }
 
 
@@ -4882,6 +5063,7 @@ def prepare_complex(
     histidine_states: Optional[Dict[str, str]] = None,
     protonation_states: Optional[Dict[str, Any]] = None,
     keep_crystal_waters: bool = False,
+    solvent_type: Optional[str] = None,
     source_structure_id: Optional[str] = None,
     source_candidate_id: Optional[str] = None,
     source_model_index: Optional[int] = None,
@@ -4940,6 +5122,11 @@ def prepare_complex(
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
                             Default is False (crystal waters excluded for MD simulations).
+        solvent_type: Optional prep-stage solvent intent. Pass ``"implicit"``
+                      when building an implicit-solvent topology downstream so
+                      explicit ion components are excluded before merge and
+                      recorded in component_disposition. ``None`` preserves
+                      legacy prep behavior.
         source_structure_id: Candidate ID from the source bundle to prepare,
                              e.g. ``candidate_002``. Used only in node mode
                              when the source bundle contains multiple candidates.
@@ -5055,6 +5242,28 @@ def prepare_complex(
     result["source_selection_file"] = _resolved_structure.get("source_selection_file")
     result["source_selection"] = _resolved_structure.get("source_selection")
     result["source_structure_id"] = _resolved_structure.get("source_structure_id")
+    solvent_type = _normalize_prepare_solvent_type(solvent_type)
+    result["solvent_type"] = solvent_type
+    if solvent_type is not None and solvent_type not in SUPPORTED_PREP_SOLVENT_TYPES:
+        blocked = {
+            **result,
+            **create_validation_error(
+                "solvent_type",
+                f"Unknown prep solvent_type: {solvent_type}",
+                expected=f"One of: {sorted(SUPPORTED_PREP_SOLVENT_TYPES)}",
+                actual=solvent_type,
+                code="invalid_prep_solvent_type",
+            ),
+        }
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="prepare_complex invalid prep solvent_type",
+            )
+        return blocked
 
     if _resolved_structure.get("input_resolution_error"):
         blocked = {
@@ -5096,6 +5305,7 @@ def prepare_complex(
             include_ligand_ids=include_ligand_ids,
             exclude_ligand_ids=exclude_ligand_ids,
             keep_crystal_waters=keep_crystal_waters,
+            solvent_type=solvent_type,
             source_structure_id=_resolved_structure.get("source_structure_id"),
             source_candidate_id=source_candidate_id,
             source_model_index=source_model_index,
@@ -5280,6 +5490,25 @@ def prepare_complex(
         if split_result["success"]:
             result["output_dir"] = split_result["output_dir"]
             out_dir = Path(split_result["output_dir"])
+            disposition_result = _apply_component_disposition_to_split_result(
+                split_result,
+                solvent_type=solvent_type,
+            )
+            component_disposition = disposition_result["component_disposition"]
+            result["component_disposition"] = component_disposition
+            result["component_disposition_summary"] = component_disposition["summary"]
+            result["retained_ion_files"] = disposition_result["retained_ion_files"]
+            result["excluded_ion_files"] = disposition_result["excluded_ion_files"]
+            if component_disposition["summary"]["experimental_isotope_atoms_excluded"]:
+                result["warnings"].append(
+                    "Excluded experimental deuterium atom(s) during component "
+                    "disposition; standard hydrogens will be rebuilt downstream"
+                )
+            if disposition_result["excluded_ion_files"]:
+                result["warnings"].append(
+                    "Excluded explicit ion component(s) from implicit-solvent "
+                    "prep output; topology will use the continuum solvent model"
+                )
         
         result["split"] = {
             "success": split_result["success"],
@@ -5288,6 +5517,8 @@ def prepare_complex(
             "glycan_files": split_result.get("glycan_files", []),
             "ligand_files": split_result.get("ligand_files", []),
             "ion_files": split_result.get("ion_files", []),
+            "retained_ion_files": result.get("retained_ion_files", []),
+            "excluded_ion_files": result.get("excluded_ion_files", []),
             "water_files": split_result.get("water_files", []),
             "chain_file_info": split_result.get("chain_file_info", [])
         }
@@ -5726,7 +5957,7 @@ def prepare_complex(
             # must land in merged.pdb so parameterize_metal_ion can locate
             # them; otherwise the metal would silently disappear between
             # split and merge even though "ion" was in include_types.
-            for ion_pdb in split_result.get("ion_files", []):
+            for ion_pdb in result.get("retained_ion_files", split_result.get("ion_files", [])):
                 if ion_pdb and Path(ion_pdb).exists():
                     pdb_files_to_merge.append(ion_pdb)
 
@@ -5753,7 +5984,7 @@ def prepare_complex(
                         nucleics=result.get("nucleics", []),
                         glycans=result.get("glycans", []),
                         ligands=result.get("ligands", []),
-                        ion_files=split_result.get("ion_files", []),
+                        ion_files=result.get("retained_ion_files", split_result.get("ion_files", [])),
                     )
                     chain_identity_map = _enrich_chain_identity_map(
                         merge_result.get("chain_identity_map", {}),
@@ -5937,15 +6168,8 @@ def prepare_complex(
                 "options": options,
             }
 
-        component_entries: list[dict[str, Any]] = []
-        for protein in result.get("proteins", []):
-            component_payload = protein.get("component_disposition") or {}
-            for entry in component_payload.get("entries", []) or []:
-                recorded_entry = dict(entry)
-                recorded_entry.setdefault("source_file", protein.get("input_file"))
-                recorded_entry.setdefault("chain_id", protein.get("chain_id"))
-                component_entries.append(recorded_entry)
-        component_disposition = _component_disposition_payload(component_entries)
+        component_disposition = result.get("component_disposition") or _component_disposition_payload([])
+        component_entries = list(component_disposition.get("entries", []) or [])
         excluded_components = {
             "schema_version": component_disposition["schema_version"],
             "summary": component_disposition["summary"],
@@ -6103,11 +6327,16 @@ def prepare_complex(
         preparation_summary["component_disposition_recorded"] = bool(
             result.get("component_disposition_file")
         )
+        if solvent_type:
+            preparation_summary["prep_solvent_type"] = solvent_type
         preparation_summary["experimental_isotope_atoms_excluded"] = int(
             component_summary.get("experimental_isotope_atoms_excluded", 0)
         )
         preparation_summary["experimental_isotopes_excluded"] = (
             preparation_summary["experimental_isotope_atoms_excluded"] > 0
+        )
+        preparation_summary["explicit_ion_components_excluded"] = len(
+            result.get("excluded_ion_files", [])
         )
         result["preparation_summary"] = preparation_summary
 

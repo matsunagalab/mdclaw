@@ -31,7 +31,9 @@ Guardrail handling:
 - If ligand preparation returns `workflow_recommendation.options`, present only
   those valid options to the user.
 - If `recommended_next_action = hard_fail`, stop.
-- If topology returns `explicit_ions_in_implicit_solvent`, either rebuild the
-  prep branch without explicit ions for implicit solvent, use the
-  explicit-solvent path with `solvate_structure`, or make a deliberate
-  vacuum/no-solvent choice if that is the scientific request.
+- If implicit solvent is planned, pass `--solvent-type implicit` to
+  `prepare_complex` so explicit ions are excluded and recorded during prep.
+- If topology still returns `explicit_ions_in_implicit_solvent`, rebuild the
+  prep branch with that solvent intent, use the explicit-solvent path with
+  `solvate_structure`, or make a deliberate vacuum/no-solvent choice if that
+  is the scientific request.

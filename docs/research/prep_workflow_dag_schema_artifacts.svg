@@ -1,0 +1,209 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1300" viewBox="0 0 1800 1300" role="img" aria-labelledby="title desc">
+  <title id="title">MDClaw prep workflow with DAG node schemas and artifacts</title>
+  <desc id="desc">Combined diagram of the MDClaw prep workflow and the node.json schema, artifacts, and metadata saved at source, prep, solv, and topo DAG nodes.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#334155"/>
+    </marker>
+    <marker id="thinArrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M2,2 L8,5 L2,8 Z" fill="#64748b"/>
+    </marker>
+    <style>
+      .bg { fill: #f8fafc; }
+      .title { font: 700 34px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .subtitle { font: 500 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .panel { fill: #ffffff; stroke: #cbd5e1; stroke-width: 2; rx: 12; }
+      .common { fill: #f1f5f9; stroke: #64748b; }
+      .source { fill: #eff6ff; stroke: #3b82f6; }
+      .prep { fill: #ecfdf5; stroke: #10b981; }
+      .branch { fill: #fefce8; stroke: #eab308; }
+      .solv { fill: #f0f9ff; stroke: #0284c7; }
+      .topo { fill: #fff7ed; stroke: #f97316; }
+      .run { fill: #f5f3ff; stroke: #8b5cf6; }
+      .heading { font: 700 20px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .section { font: 700 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #0f172a; }
+      .body { font: 500 13.5px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+      .small { font: 500 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #475569; }
+      .mono { font: 600 12.5px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #1e293b; }
+      .note { font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #7c2d12; }
+      .arrow { fill: none; stroke: #334155; stroke-width: 2.5; marker-end: url(#arrow); }
+      .thin { fill: none; stroke: #64748b; stroke-width: 1.8; stroke-dasharray: 6 6; marker-end: url(#thinArrow); }
+      .line { stroke: #cbd5e1; stroke-width: 1.5; }
+      .tag { font: 700 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #334155; }
+    </style>
+  </defs>
+
+  <rect class="bg" width="1800" height="1300"/>
+  <text class="title" x="45" y="58">MDClaw Prep Workflow + DAG Node Schema / Artifacts</text>
+  <text class="subtitle" x="45" y="86">Node-level view of what each stage runs and what is saved in node.json and artifacts/.</text>
+
+  <g id="common-schema">
+    <rect class="panel common" x="45" y="120" width="1710" height="145"/>
+    <text class="heading" x="70" y="156">Common node.json schema for every DAG node</text>
+    <text class="mono" x="70" y="190">schema_version</text>
+    <text class="mono" x="220" y="190">node_id</text>
+    <text class="mono" x="330" y="190">node_type</text>
+    <text class="mono" x="460" y="190">status</text>
+    <text class="mono" x="570" y="190">parent_node_ids</text>
+    <text class="mono" x="760" y="190">dependency_node_ids</text>
+    <text class="mono" x="980" y="190">label</text>
+    <text class="mono" x="1060" y="190">created_at / updated_at</text>
+    <text class="mono" x="1305" y="190">conditions</text>
+    <text class="mono" x="1435" y="190">artifacts</text>
+    <text class="mono" x="1560" y="190">metadata</text>
+    <text class="mono" x="1680" y="190">warnings</text>
+    <line class="line" x1="70" y1="210" x2="1730" y2="210"/>
+    <text class="body" x="70" y="238">Tools call begin_node() → complete_node() or fail_node(). Artifact paths are stored relative to the node directory and normalized recursively; failed nodes store errors under metadata.errors. progress.json is a thin index/cache, not the source of truth.</text>
+  </g>
+
+  <g id="source-node">
+    <rect class="panel source" x="45" y="335" width="320" height="345"/>
+    <text class="heading" x="70" y="372">source node</text>
+    <text class="tag" x="70" y="397">node_type = "source"</text>
+    <line class="line" x1="70" y1="415" x2="340" y2="415"/>
+    <text class="section" x="70" y="443">Runs</text>
+    <text class="body" x="92" y="468">fetch_structure / local source registration</text>
+    <text class="body" x="92" y="490">optional Gemmi biological assembly candidates</text>
+    <text class="section" x="70" y="525">artifacts</text>
+    <text class="mono" x="92" y="550">structure_file</text>
+    <text class="small" x="205" y="550">primary candidate file</text>
+    <text class="mono" x="92" y="574">source_bundle</text>
+    <text class="small" x="205" y="574">artifacts/source_bundle.json</text>
+    <text class="section" x="70" y="609">metadata</text>
+    <text class="small" x="92" y="632">source_type, source_id, format</text>
+    <text class="small" x="92" y="652">sha256, file_size_bytes, fetched_at</text>
+  </g>
+
+  <g id="prep-node">
+    <rect class="panel prep" x="425" y="305" width="380" height="445"/>
+    <text class="heading" x="450" y="342">prep node: prepare_complex</text>
+    <text class="tag" x="450" y="367">node_type = "prep"</text>
+    <line class="line" x1="450" y1="385" x2="780" y2="385"/>
+    <text class="section" x="450" y="413">Runs</text>
+    <text class="body" x="472" y="438">select source candidate → inspect → split</text>
+    <text class="body" x="472" y="460">protein clean / nucleic H rebuild / ligand chemistry</text>
+    <text class="body" x="472" y="482">glycan provenance / ion retention / merge</text>
+    <text class="section" x="450" y="517">artifacts</text>
+    <text class="mono" x="472" y="542">merged_pdb</text>
+    <text class="small" x="625" y="542">artifacts/merge/merged.pdb</text>
+    <text class="mono" x="472" y="566">ligand_chemistry</text>
+    <text class="small" x="625" y="566">inline structured list when ligands exist</text>
+    <text class="mono" x="472" y="590">disulfide_bonds</text>
+    <text class="small" x="625" y="590">artifacts/disulfide_bonds.json</text>
+    <text class="mono" x="472" y="614">component_disposition</text>
+    <text class="small" x="625" y="614">artifacts/component_disposition.json</text>
+    <text class="mono" x="472" y="638">excluded_components</text>
+    <text class="small" x="625" y="638">artifacts/excluded_components.json</text>
+    <text class="mono" x="472" y="662">chain_identity_map</text>
+    <text class="small" x="625" y="662">artifacts/chain_identity_map.json</text>
+    <text class="mono" x="472" y="686">residue_mapping / glycan_* / source_selection</text>
+    <text class="section" x="450" y="718">metadata</text>
+    <text class="small" x="472" y="740">preparation_summary: source selection, disulfides,</text>
+  </g>
+  <text class="small" x="897" y="1040"></text>
+  <text class="small" x="472" y="763">protonation, caps, nucleic/glycan summaries,</text>
+  <text class="small" x="472" y="783">component disposition counts, chain map summary</text>
+
+  <g id="branch-node">
+    <rect class="panel branch" x="425" y="810" width="380" height="250"/>
+    <text class="heading" x="450" y="847">optional prep branch node</text>
+    <text class="tag" x="450" y="872">node_type = "prep"</text>
+    <line class="line" x1="450" y1="890" x2="780" y2="890"/>
+    <text class="section" x="450" y="918">Runs</text>
+    <text class="body" x="472" y="943">create_mutated_structure or phosphorylate_residues</text>
+    <text class="section" x="450" y="976">artifacts</text>
+    <text class="mono" x="472" y="1001">merged_pdb</text>
+    <text class="small" x="625" y="1001">branch output for downstream nodes</text>
+    <text class="mono" x="472" y="1025">mutated_pdb</text>
+    <text class="small" x="625" y="1025">HPacker branch only</text>
+    <text class="mono" x="472" y="1049">phosphorylated_pdb</text>
+    <text class="small" x="625" y="1049">PTM branch only</text>
+  </g>
+
+  <g id="solv-node">
+    <rect class="panel solv" x="865" y="335" width="350" height="345"/>
+    <text class="heading" x="890" y="372">solv node</text>
+    <text class="tag" x="890" y="397">node_type = "solv"</text>
+    <line class="line" x1="890" y1="415" x2="1190" y2="415"/>
+    <text class="section" x="890" y="443">Runs</text>
+    <text class="body" x="912" y="468">solvate_structure or embed_in_membrane</text>
+    <text class="body" x="912" y="490">packmol-memgen, optional salt_override retry</text>
+    <text class="section" x="890" y="525">artifacts</text>
+    <text class="mono" x="912" y="550">solvated_pdb</text>
+    <text class="small" x="1055" y="550">artifacts/{output_name}.pdb</text>
+    <text class="mono" x="912" y="574">box_dimensions</text>
+    <text class="small" x="1055" y="574">artifacts/box_dimensions.json</text>
+    <text class="section" x="890" y="609">metadata</text>
+    <text class="small" x="912" y="632">explicit: water_model, box_shape, buffer_distance,</text>
+    <text class="small" x="912" y="652">salt_concentration, total_atoms</text>
+    <text class="small" x="912" y="672">membrane: lipid_type, is_membrane, salt_override</text>
+  </g>
+
+  <g id="implicit-path">
+    <rect class="panel solv" x="865" y="810" width="350" height="155"/>
+    <text class="heading" x="890" y="847">implicit / vacuum path</text>
+    <text class="body" x="912" y="878">No solv node required.</text>
+    <text class="small" x="912" y="904">topo consumes prep.merged_pdb directly.</text>
+    <text class="small" x="912" y="926">prep excludes explicit ions when implicit intent is known.</text>
+  </g>
+
+  <g id="topo-node">
+    <rect class="panel topo" x="1275" y="305" width="480" height="505"/>
+    <text class="heading" x="1300" y="342">topo node</text>
+    <text class="tag" x="1300" y="367">node_type = "topo"</text>
+    <line class="line" x1="1300" y1="385" x2="1730" y2="385"/>
+    <text class="section" x="1300" y="413">Runs</text>
+    <text class="body" x="1322" y="438">build_amber_system or build_openmm_system</text>
+    <text class="body" x="1322" y="460">Pablo / ForceField load, System creation, short minimization</text>
+    <text class="section" x="1300" y="495">artifacts</text>
+    <text class="mono" x="1322" y="520">system_xml</text>
+    <text class="small" x="1495" y="520">artifacts/system.system.xml</text>
+    <text class="mono" x="1322" y="544">topology_pdb</text>
+    <text class="small" x="1495" y="544">artifacts/system.topology.pdb</text>
+    <text class="mono" x="1322" y="568">state_xml</text>
+    <text class="small" x="1495" y="568">artifacts/system.state.xml</text>
+    <text class="mono" x="1322" y="592">minimization_report</text>
+    <text class="small" x="1495" y="592">artifacts/system.minimization_report.json</text>
+    <text class="mono" x="1322" y="616">glycam_* artifacts</text>
+    <text class="small" x="1495" y="616">only for glycoproteins</text>
+    <text class="section" x="1300" y="651">metadata</text>
+    <text class="small" x="1322" y="674">forcefield, effective_forcefield, water_model,</text>
+    <text class="small" x="1322" y="694">solvent_type, implicit_solvent, hmr, is_membrane</text>
+    <text class="small" x="1322" y="714">system_artifact_kind = openmm_system_xml</text>
+    <text class="small" x="1322" y="734">forcefield_provenance, minimization</text>
+    <text class="small" x="1322" y="754">nucleic/glycan/phosaa/modxna summaries when present</text>
+  </g>
+
+  <g id="handoff">
+    <rect class="panel run" x="1275" y="895" width="480" height="180"/>
+    <text class="heading" x="1300" y="932">downstream run contract</text>
+    <text class="body" x="1322" y="963">eq / prod consume the topology artifact triple only.</text>
+    <text class="mono" x="1322" y="998">system_xml + topology_pdb + state_xml</text>
+    <text class="small" x="1322" y="1024">Run side does not reconstruct a System from ForceField XML.</text>
+    <text class="small" x="1322" y="1048">minimization metadata supports benchmark evidence and sanity checks.</text>
+  </g>
+
+  <path class="arrow" d="M365 505 H425"/>
+  <path class="arrow" d="M805 505 H865"/>
+  <path class="arrow" d="M1215 505 H1275"/>
+  <path class="arrow" d="M1515 810 V895"/>
+  <path class="arrow" d="M615 750 V810"/>
+  <path class="arrow" d="M805 935 H865"/>
+  <path class="arrow" d="M1215 887 H1275"/>
+  <path class="thin" d="M1040 680 V740 H1275"/>
+  <path class="thin" d="M615 1060 V1130 H1515 V1075"/>
+
+  <text class="section" x="390" y="493">source_bundle candidate</text>
+  <text class="section" x="820" y="493">merged_pdb</text>
+  <text class="section" x="1228" y="493">solvated_pdb + box</text>
+  <text class="section" x="1028" y="734">explicit artifacts path</text>
+  <text class="section" x="895" y="880">implicit/vacuum</text>
+  <text class="section" x="1260" y="870">merged_pdb direct to topo</text>
+
+  <g id="legend">
+    <rect class="panel" x="45" y="1135" width="1710" height="110"/>
+    <text class="heading" x="70" y="1170">Reading notes</text>
+    <text class="body" x="70" y="1202">A box shows the tool-level computation plus the exact logical artifact keys written to node.json. File paths shown under artifacts are relative to the node directory. Inline artifacts, such as ligand_chemistry, are structured values whose nested file paths are normalized recursively.</text>
+    <text class="note" x="70" y="1230">Current contract: component_disposition is written at prep-node level from the shared component disposition pass; topology keeps a fallback guard for explicit ions in implicit builds.</text>
+  </g>
+</svg>

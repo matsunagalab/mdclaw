@@ -495,6 +495,93 @@ class TestStructureServer:
         on_disk = _json.loads(json_candidates[0].read_text())
         assert len(on_disk) == 1
 
+    def test_component_disposition_normalizes_nonprotein_deuterium(self, tmp_path):
+        """The prep-level disposition pass is shared by non-protein components."""
+        from structure_server import _apply_component_disposition_to_split_result
+
+        def write_fragment(name, line):
+            path = tmp_path / name
+            path.write_text(line + "END\n")
+            return str(path)
+
+        nucleic = write_fragment(
+            "nucleic_1.pdb",
+            "ATOM      1  D5'  DA N   1      11.000  12.000  13.000  1.00 20.00           D\n",
+        )
+        glycan = write_fragment(
+            "glycan_1.pdb",
+            "HETATM    1  D1  NAG G   1      11.000  12.000  13.000  1.00 20.00           D\n",
+        )
+        ligand = write_fragment(
+            "ligand_ADP_A1.pdb",
+            "HETATM    1  D1  ADP L   1      11.000  12.000  13.000  1.00 20.00           D\n",
+        )
+        split_result = {
+            "protein_files": [],
+            "nucleic_files": [nucleic],
+            "glycan_files": [glycan],
+            "ligand_files": [ligand],
+            "ion_files": [],
+            "water_files": [],
+            "all_chains": [
+                {"chain_id": "N", "residue_names": {"unique_residues": ["DA"]}},
+                {"chain_id": "G", "residue_names": {"unique_residues": ["NAG"]}},
+                {"chain_id": "L", "residue_names": {"unique_residues": ["ADP"]}},
+            ],
+            "chain_file_info": [
+                {"chain_id": "N", "author_chain": "N", "chain_type": "nucleic", "file": nucleic},
+                {"chain_id": "G", "author_chain": "G", "chain_type": "glycan", "file": glycan},
+                {"chain_id": "L", "author_chain": "L", "chain_type": "ligand", "file": ligand},
+            ],
+        }
+
+        result = _apply_component_disposition_to_split_result(split_result)
+
+        assert result["component_disposition"]["summary"]["experimental_isotope_atoms_excluded"] == 3
+        assert {entry["component_type"] for entry in result["component_disposition"]["entries"]} == {
+            "nucleic",
+            "glycan",
+            "ligand",
+        }
+        for path in (
+            split_result["nucleic_files"]
+            + split_result["glycan_files"]
+            + split_result["ligand_files"]
+        ):
+            assert Path(path).name.endswith(".deuterium_stripped.pdb")
+            assert " D\n" not in Path(path).read_text()
+
+    def test_prepare_complex_excludes_ions_for_implicit_solvent(self, tmp_path):
+        """Implicit-solvent prep records explicit ions as excluded before merge."""
+        import json as _json
+        from structure_server import prepare_complex
+
+        ion_pdb = tmp_path / "ion_only.pdb"
+        ion_pdb.write_text(
+            "HETATM    1 ZN    ZN A   1      11.000  12.000  13.000  1.00 20.00          ZN\n"
+            "END\n"
+        )
+
+        result = prepare_complex(
+            structure_file=str(ion_pdb),
+            output_dir=str(tmp_path / "prep"),
+            include_types=["ion"],
+            process_proteins=False,
+            process_ligands=False,
+            solvent_type="implicit",
+        )
+
+        assert result["success"] is True
+        assert result["retained_ion_files"] == []
+        assert result["excluded_ion_files"]
+        assert result.get("merged_pdb") is None
+        summary = result["component_disposition_summary"]
+        assert summary["excluded_component_count"] == 1
+        disposition_file = Path(result["component_disposition_file"])
+        entries = _json.loads(disposition_file.read_text())["entries"]
+        assert entries[0]["classification"] == "explicit_ion"
+        assert entries[0]["action_taken"] == "excluded"
+
 
 # ---------------------------------------------------------------------------
 # solvation_server

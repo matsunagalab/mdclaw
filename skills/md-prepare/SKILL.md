@@ -109,13 +109,15 @@ use the HPacker-based `create_mutated_structure` branch in
    a canonical identity. Read `chain_identity_map.json` and use `component_id`,
    source label/auth IDs, topology chain index, and atom/residue ranges to
    identify components. Keep supported crystallographic ions by default on the
-   explicit-solvent path. If the user requests implicit solvent, exclude
-   explicit ion residues before topology or stop and ask whether to switch back
-   to explicit solvent. A deliberate vacuum/no-solvent topology may keep
-   explicit ions, but it is not the default MD workflow. `build_amber_system`
-   will reject implicit builds that still contain explicit ions with
-   `code="explicit_ions_in_implicit_solvent"`. Experimental isotope atoms such
-   as deuterium are excluded by `prepare_complex` from the default classical MD
+   explicit-solvent path. If the user requests implicit solvent, pass
+   `--solvent-type implicit` to `prepare_complex`; prep will exclude explicit
+   ion components from `merged_pdb` and record them in
+   `component_disposition.json`. A deliberate vacuum/no-solvent topology may
+   keep explicit ions, but it is not the default MD workflow. `build_amber_system`
+   still rejects implicit builds that contain explicit ions with
+   `code="explicit_ions_in_implicit_solvent"` as a fallback guardrail.
+   Experimental isotope atoms such as deuterium are excluded by
+   `prepare_complex` across split components from the default classical MD
    path, then standard hydrogens are rebuilt; copy the tool-written
    `component_disposition.json` rather than hand-writing it. If the user
    requests terminal caps, use `--n-terminal-cap ACE` and/or
