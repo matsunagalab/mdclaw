@@ -850,6 +850,138 @@ def _add_glycam_backbone_bonds(
     return added
 
 
+def _glycam_residue_id_matches(residue: Any, resnum: str, icode: str) -> bool:
+    residue_id = str(getattr(residue, "id", "") or "").strip()
+    if not resnum:
+        return True
+    expected = f"{resnum}{icode}".strip()
+    return residue_id in {resnum, expected}
+
+
+def _glycam_residue_identity_payload(residue: Any) -> dict[str, str]:
+    return {
+        "chain": _normalize_pdb_chain_id(getattr(residue.chain, "id", "")),
+        "resnum": str(getattr(residue, "id", "") or "").strip(),
+        "resname": str(getattr(residue, "name", "") or "").strip().upper(),
+    }
+
+
+def _resolve_glycam_bond_endpoint_residue(
+    endpoint: dict[str, Any],
+    residues: list[Any],
+) -> tuple[Any | None, str | None, dict[str, Any] | None]:
+    unit_index = None
+    try:
+        unit_index = int(endpoint.get("unit_index"))
+    except (TypeError, ValueError):
+        pass
+
+    expected_resname = str(endpoint.get("resname") or "").strip().upper()
+    expected_chain = _normalize_pdb_chain_id(endpoint.get("chain"))
+    expected_resnum = str(endpoint.get("resnum") or "").strip()
+    expected_icode = str(endpoint.get("icode") or "").strip()
+    has_identity = bool(expected_chain or expected_resnum)
+
+    if has_identity:
+        matches = [
+            residue
+            for residue in residues
+            if (
+                not expected_resname
+                or str(residue.name or "").upper() == expected_resname
+            )
+            and (
+                not expected_chain
+                or _normalize_pdb_chain_id(getattr(residue.chain, "id", ""))
+                == expected_chain
+            )
+            and _glycam_residue_id_matches(residue, expected_resnum, expected_icode)
+        ]
+        if len(matches) == 1:
+            residue = matches[0]
+            warning = None
+            if unit_index is None:
+                warning = {
+                    "code": "glycam_bond_plan_unit_index_invalid_but_identity_resolved",
+                    "unit_index": endpoint.get("unit_index"),
+                    "resolved_residue": _glycam_residue_identity_payload(residue),
+                    "message": (
+                        "GLYCAM bond endpoint unit_index is invalid, but "
+                        "identity lookup resolved the residue."
+                    ),
+                }
+            elif unit_index < 1 or unit_index > len(residues):
+                warning = {
+                    "code": "glycam_bond_plan_unit_index_out_of_range_but_identity_resolved",
+                    "unit_index": unit_index,
+                    "resolved_residue": _glycam_residue_identity_payload(residue),
+                    "message": (
+                        "GLYCAM bond endpoint unit_index is out of range, but "
+                        "identity lookup resolved the residue."
+                    ),
+                }
+            elif residues[unit_index - 1] is not residue:
+                warning = {
+                    "code": "glycam_bond_plan_unit_index_drift",
+                    "unit_index": unit_index,
+                    "unit_index_residue": _glycam_residue_identity_payload(
+                        residues[unit_index - 1]
+                    ),
+                    "resolved_residue": _glycam_residue_identity_payload(residue),
+                    "message": (
+                        "GLYCAM bond endpoint unit_index drifted from "
+                        "identity lookup; using the identity-matched residue."
+                    ),
+                }
+            return residue, None, warning
+        if not matches:
+            return (
+                None,
+                "GLYCAM bond endpoint identity mismatch for "
+                f"unit {endpoint.get('unit_index')!r}: chain={expected_chain!r} "
+                f"resnum={expected_resnum!r} icode={expected_icode!r} "
+                f"resname={expected_resname!r}",
+                None,
+            )
+        return (
+            None,
+            "GLYCAM bond endpoint identity is ambiguous for "
+            f"unit {endpoint.get('unit_index')!r}: chain={expected_chain!r} "
+            f"resnum={expected_resnum!r} icode={expected_icode!r} "
+            f"resname={expected_resname!r}; matched {len(matches)} residues",
+            None,
+        )
+
+    if unit_index is None:
+        return None, f"Invalid GLYCAM bond endpoint: {endpoint}", None
+    if unit_index < 1 or unit_index > len(residues):
+        return None, f"GLYCAM bond endpoint unit {unit_index} not found", None
+    residue = residues[unit_index - 1]
+    if expected_resname and str(residue.name or "").upper() != expected_resname:
+        return (
+            None,
+            "GLYCAM bond endpoint unit-index fallback residue mismatch for "
+            f"unit {unit_index}: topology residue {residue.name}#{residue.id} "
+            f"!= expected {expected_resname}",
+            None,
+        )
+    return residue, None, None
+
+
+def _record_glycam_resolver_warning(
+    report: dict[str, Any],
+    warning: dict[str, Any] | None,
+) -> None:
+    if not warning:
+        return
+    drift = report.setdefault("unit_index_drift", [])
+    if warning not in drift:
+        drift.append(warning)
+    message = warning.get("message")
+    if message and message not in report["warnings"]:
+        report["warnings"].append(message)
+
+
 def _normalize_glycam_topology(
     *,
     omm_topology: Any,
@@ -882,6 +1014,7 @@ def _normalize_glycam_topology(
             "added_atom_count": 0,
         },
         "protein_hydrogen_set_preserved": None,
+        "unit_index_drift": [],
         "warnings": list(glycam_bond_plan.get("warnings", []) or []),
         "errors": list(glycam_bond_plan.get("errors", []) or []),
     }
@@ -889,7 +1022,7 @@ def _normalize_glycam_topology(
         report["code"] = "glycam_bond_plan_apply_failed"
         return omm_topology, omm_positions, report
 
-    linked_nln_units: set[int] = set()
+    linked_nln_endpoints: list[dict[str, Any]] = []
     for bond in glycam_bond_plan.get("bonds", []) or []:
         left = bond.get("left") or {}
         right = bond.get("right") or {}
@@ -905,18 +1038,24 @@ def _normalize_glycam_topology(
         ):
             for endpoint in endpoints:
                 if str(endpoint.get("resname") or "") == _GLYCAM_LINKED_ASN_RESNAME:
-                    linked_nln_units.add(int(endpoint["unit_index"]))
+                    linked_nln_endpoints.append(endpoint)
 
-    if linked_nln_units:
+    if linked_nln_endpoints:
         residues = list(omm_topology.residues())
         hd22_atoms = []
-        for unit_index in linked_nln_units:
-            if unit_index < 1 or unit_index > len(residues):
-                report["errors"].append(
-                    f"glycam bond plan refers to missing NLN unit {unit_index}"
-                )
+        seen_residue_indices: set[int] = set()
+        for endpoint in linked_nln_endpoints:
+            residue, error, warning = _resolve_glycam_bond_endpoint_residue(
+                endpoint,
+                residues,
+            )
+            _record_glycam_resolver_warning(report, warning)
+            if error:
+                report["errors"].append(error)
                 continue
-            residue = residues[unit_index - 1]
+            if residue.index in seen_residue_indices:
+                continue
+            seen_residue_indices.add(residue.index)
             hd22 = next((atom for atom in residue.atoms() if atom.name == "HD22"), None)
             if hd22 is not None:
                 hd22_atoms.append(hd22)
@@ -935,17 +1074,15 @@ def _normalize_glycam_topology(
         endpoint_atoms = []
         for side in ("left", "right"):
             endpoint = bond.get(side) or {}
-            try:
-                unit_index = int(endpoint.get("unit_index"))
-            except (TypeError, ValueError):
-                report["errors"].append(f"Invalid GLYCAM bond endpoint: {endpoint}")
+            residue, error, warning = _resolve_glycam_bond_endpoint_residue(
+                endpoint,
+                residues,
+            )
+            _record_glycam_resolver_warning(report, warning)
+            if error:
+                report["errors"].append(error)
                 continue
-            if unit_index < 1 or unit_index > len(residues):
-                report["errors"].append(
-                    f"GLYCAM bond endpoint unit {unit_index} not found"
-                )
-                continue
-            residue = residues[unit_index - 1]
+            unit_index = endpoint.get("unit_index")
             atom_name = str(endpoint.get("atom") or "")
             atom = next((candidate for candidate in residue.atoms() if candidate.name == atom_name), None)
             if atom is None:

@@ -103,6 +103,22 @@ def validate_submission(task_file: str | Path,
                 out["errors"].append(
                     "manifest.status='blocked' but task failure_policy "
                     "does not allow blocked outcomes")
+            if (
+                manifest.status == "completed"
+                and "minimized_structure.pdb" in task.required_outputs
+            ):
+                outputs = manifest_payload.get("outputs") or {}
+                minimized_rel = outputs.get("minimized_structure")
+                if not isinstance(minimized_rel, str) or not minimized_rel:
+                    out["errors"].append(
+                        "manifest.status='completed' requires "
+                        "outputs.minimized_structure"
+                    )
+                elif not (sub_dir / minimized_rel).exists():
+                    out["errors"].append(
+                        "outputs.minimized_structure points to missing file: "
+                        f"{minimized_rel}"
+                    )
 
     missing: list[str] = []
     for rel in task.required_outputs:

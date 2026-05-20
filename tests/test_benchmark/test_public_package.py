@@ -37,8 +37,10 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         contract = json.loads(contract_path.read_text())
         assert contract["task_id"] == task_id
         assert contract["required_outputs"]
+        assert "minimized_structure.pdb" in contract["required_outputs"]
         assert contract["manifest_contract"]["completed_status"] == "completed"
         assert contract["manifest_contract"]["topology_output_shape"] == "list[str]"
+        assert contract["manifest_contract"]["required_topology_backend"] == "openmm"
         assert contract["manifest_contract"]["openmm_topology_example"] == [
             "topology/system.xml",
             "topology/topology.pdb",

@@ -524,6 +524,102 @@ def test_openmm_topology_and_minimization_checks_pass(tmp_path: Path):
     assert all(result.passed for result in score.deterministic_checks)
 
 
+def test_completed_prep_submission_requires_minimized_structure_output(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    task.required_outputs = ["manifest.json", "minimized_structure.pdb"]
+    task_file = tmp_path / "task.json"
+    task_file.write_text(task.model_dump_json())
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"minimized_structure": "missing_minimized_structure.pdb"},
+        },
+    )
+
+    validation_result = validation.validate_submission(task_file, tmp_path)
+    score = scoring.score_submission(task, tmp_path)
+
+    assert validation_result["success"] is False
+    assert any(
+        "outputs.minimized_structure points to missing file" in error
+        for error in validation_result["errors"]
+    )
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any(
+        result.check_type == "minimized_structure_required"
+        and result.passed is False
+        for result in score.deterministic_checks
+    )
+
+
+def test_non_openmm_backend_cannot_skip_openmm_verification(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="load",
+                check_type="openmm_system_load",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="energy",
+                check_type="openmm_energy_rescan",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path, broken="system")
+    metrics = json.loads((tmp_path / "metrics.json").read_text())
+    metrics["topology"]["backend"] = "gromacs"
+    (tmp_path / "metrics.json").write_text(json.dumps(metrics))
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert all(not result.passed for result in score.deterministic_checks)
+    assert all(
+        "requires OpenMM topology bundle" in result.message
+        for result in score.deterministic_checks
+    )
+
+
+def test_unspecified_backend_without_openmm_bundle_fails_openmm_verification(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="load",
+                check_type="openmm_system_load",
+                topology_manifest_path="outputs.topology",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"topology": ["topology/placeholder.top"]},
+        },
+        metrics={"topology": {"build_success": True}},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert "requires OpenMM topology bundle" in score.deterministic_checks[0].message
+
+
 def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
     task_file = DATASET_DIR / "tasks" / "P01_prep_simple_monomer_t4l" / "task.json"
     task = validation.load_task(task_file)
@@ -745,6 +841,36 @@ def test_minimized_structure_component_loss_is_critical_failure(tmp_path: Path):
     assert score.weighted_total == 0.0
 
 
+def test_prepared_structure_component_loss_is_critical_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="prepared_ap5",
+                check_type="structure_component_rescan",
+                structure_manifest_path="outputs.prepared_structure",
+                min_residue_counts={"AP5": 1},
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_minimization_submission(tmp_path)
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["outputs"]["prepared_structure"] = "prepared_structure.pdb"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert score.deterministic_checks[0].check_type == "structure_component_rescan"
+    assert score.deterministic_checks[0].passed is False
+
+
 def test_pdb_residue_state_check_requires_variant_and_hydrogen(tmp_path: Path):
     task = _make_task(
         primary="preparation",
@@ -860,6 +986,62 @@ def test_pdb_no_deuterium_atoms_check(tmp_path: Path):
     assert failed.passed is False
     assert "deuterium" in failed.message
     assert "D1" in failed.message
+
+
+def test_pdb_no_deuterium_atoms_does_not_flag_deoxy_atom_names(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_d",
+            check_type="pdb_no_deuterium_atoms",
+            structure_manifest_path="outputs.prepared_structure",
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  D5'  DG A   1       0.000   0.000   0.000  1.00  0.00            \n"
+        "ATOM      2  D3'  DG A   1       1.000   0.000   0.000  1.00  0.00            \n"
+        "END\n"
+    )
+
+    passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+
+    assert passed.passed is True
+
+
+def test_prepared_deuterium_check_failure_is_critical(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_d",
+            check_type="pdb_no_deuterium_atoms",
+            structure_manifest_path="outputs.prepared_structure",
+            weight=1.0,
+        )],
+    )
+    _write_minimization_submission(tmp_path)
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   ARG A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  D1  ARG A   1       0.100   0.000   0.000  1.00  0.00           D\n"
+        "END\n"
+    )
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["outputs"]["prepared_structure"] = "prepared_structure.pdb"
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert score.deterministic_checks[0].passed is False
 
 
 def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):

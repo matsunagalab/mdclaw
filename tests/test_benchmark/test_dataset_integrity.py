@@ -140,6 +140,7 @@ def test_prep_tasks_require_topology_and_minimization_contract():
         task = Task.model_validate_json(
             (DATASET_DIR / "tasks" / task_id / "task.json").read_text()
         )
+        assert "minimized_structure.pdb" in task.required_outputs
         assert "minimization_report.json" in task.required_outputs
         check_types = {
             check.check_type for check in task.scoring.deterministic_checks

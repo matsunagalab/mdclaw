@@ -39,6 +39,24 @@ def _protein_pdb(*, resname: str = "LEU", chain: str = "A", resseq: int = 99) ->
     )
 
 
+def _two_residue_protein_pdb() -> str:
+    return "\n".join(
+        [
+            _atom_line(1, "N", "LEU", "A", 99, 0.0, 0.0, 0.0, "N"),
+            _atom_line(2, "CA", "LEU", "A", 99, 1.0, 0.0, 0.0, "C"),
+            _atom_line(3, "C", "LEU", "A", 99, 2.0, 0.0, 0.0, "C"),
+            _atom_line(4, "CB", "LEU", "A", 99, 1.0, 1.0, 0.0, "C"),
+            _atom_line(5, "N", "ALA", "A", 100, 3.0, 0.0, 0.0, "N"),
+            _atom_line(6, "CA", "ALA", "A", 100, 4.0, 0.0, 0.0, "C"),
+            _atom_line(7, "C", "ALA", "A", 100, 5.0, 0.0, 0.0, "C"),
+            _atom_line(8, "CB", "ALA", "A", 100, 4.0, 1.0, 0.0, "C"),
+            _atom_line(9, "C1", "BEN", "B", 1, 8.0, 5.0, 5.0, "C", record="HETATM"),
+            "END",
+            "",
+        ]
+    )
+
+
 class FakeHPacker:
     last_kwargs = None
 
@@ -166,6 +184,74 @@ def test_run_hpacker_preserves_protein_like_histidine_variant(monkeypatch, tmp_p
     text = output_pdb.read_text()
     assert " HID A  31" in text
     assert "HETATM" in text and " BEN B   1" in text
+
+
+def test_run_hpacker_rejects_missing_protein_residue_after_rebuild(monkeypatch, tmp_path):
+    from mdclaw import sidechain_packer
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_load_hpacker_class",
+        lambda: (FakeHPacker, "test-version"),
+    )
+
+    def drop_residue_100(input_pdb, output_pdb, reference_pdb=None):
+        lines = [
+            line
+            for line in Path(input_pdb).read_text().splitlines()
+            if not (
+                line.startswith("ATOM")
+                and line[21:22].strip() == "A"
+                and line[22:26].strip() == "100"
+            )
+        ]
+        output_pdb.write_text("\n".join(lines) + "\n")
+
+    monkeypatch.setattr(
+        sidechain_packer,
+        "_rebuild_protein_hydrogens",
+        drop_residue_100,
+    )
+
+    input_pdb = tmp_path / "input.pdb"
+    output_pdb = tmp_path / "packed.pdb"
+    input_pdb.write_text(_two_residue_protein_pdb())
+
+    result = sidechain_packer.run_hpacker_full_repack(input_pdb, output_pdb)
+
+    assert result.success is False
+    assert result.code == "mutation_validation_failed"
+    assert any(
+        "Protein residues missing after HPacker merge" in error
+        for error in result.errors
+    )
+
+
+def test_sort_protein_atoms_like_reference_rejects_missing_residue(tmp_path):
+    from mdclaw.sidechain_packer import (
+        HPackerExecutionError,
+        _sort_protein_atoms_like_reference,
+    )
+
+    reference = tmp_path / "reference.pdb"
+    rebuilt = tmp_path / "rebuilt_missing_residue.pdb"
+    output = tmp_path / "sorted.pdb"
+    reference.write_text(_two_residue_protein_pdb())
+    rebuilt.write_text(
+        "\n".join(
+            line
+            for line in _two_residue_protein_pdb().splitlines()
+            if not (
+                line.startswith("ATOM")
+                and line[21:22].strip() == "A"
+                and line[22:26].strip() == "100"
+            )
+        )
+        + "\n"
+    )
+
+    with pytest.raises(HPackerExecutionError, match="Protein residue missing"):
+        _sort_protein_atoms_like_reference(rebuilt, reference, output)
 
 
 def test_create_mutated_structure_uses_hpacker_metadata(monkeypatch, tmp_path):

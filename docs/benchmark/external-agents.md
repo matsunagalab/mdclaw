@@ -1,9 +1,12 @@
 # External Agents And Programs
 
 MDAgentBench is an artifact-based benchmark contract. Your agent does not need
-to use MDClaw. It may use GROMACS, OpenMM scripts, Amber, MDCrow, another
-workflow manager, or a custom LLM runner. The scorer only compares files under
-`submission/` against the canonical task contract and scorer-only truth files.
+to use MDClaw. It may use OpenMM scripts, Amber, GROMACS, MDCrow, another
+workflow manager, or a custom LLM runner upstream. For prep battery v0.1,
+however, a completed submission must export an OpenMM `system.xml` +
+`topology.pdb` + `state.xml` bundle so the scorer can reload and rescan the
+system. The scorer only compares files under `submission/` against the
+canonical task contract and scorer-only truth files.
 
 ## What To Read
 
@@ -65,6 +68,7 @@ benchmark_runs/<run_id>/
         provenance.json
         decision_log.jsonl
         prepared_structure.pdb
+        minimized_structure.pdb
         minimization_report.json
         figures/
         methods.md
@@ -84,8 +88,8 @@ Required files vary by task. Evaluator or harness code can read
   any non-default chemistry choices.
 - `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
   md5 records when available.
-- Task artifacts: `prepared_structure.pdb`, backend-specific topology files,
-  `minimized_structure`, and `minimization_report.json` for the current prep
+- Task artifacts: `prepared_structure.pdb`, `minimized_structure.pdb`,
+  OpenMM topology files, and `minimization_report.json` for the current prep
   battery.
 
 Preparation artifacts can be supplied through `manifest.outputs` rather than
@@ -107,8 +111,8 @@ copied to a benchmark-specific fixed filename:
 ```
 
 Paths are resolved relative to the `submission/` directory. This keeps the
-benchmark agent-independent: an agent with a file registry only needs to point
-the manifest at the relevant exported files.
+benchmark agent-independent while requiring a common OpenMM topology artifact
+format for the current prep battery.
 
 ## What The Scorer Compares
 
@@ -116,11 +120,12 @@ The scorer does not read chat transcripts, tool-call logs, or private runner
 state. It reads `task.json`, scorer-only `truth/` when needed, scorer helper
 files, and your `submission/` files.
 
-- Preparation tasks compare required artifacts, backend-neutral metadata,
+- Preparation tasks compare required artifacts, metadata,
   residue/component counts in submitted and minimized structures, site-specific
   residue states, ligand-pose RMSD when a scorer-side reference is provided,
-  topology artifact completeness, and minimization evidence. OpenMM submissions
-  are additionally reloaded for finite-energy rescans.
+  topology artifact completeness, and minimization evidence. Completed prep
+  submissions must provide an OpenMM topology bundle, which is reloaded for
+  finite-energy rescans.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
 
@@ -188,8 +193,9 @@ metrics, evidence, provenance, and artifacts. When the submission is genuinely
 complete, set `manifest.status` to `completed`; otherwise use `partial`,
 `blocked`, or intentional `failed` as appropriate.
 Use `submission_contract.json` for machine-readable requirements. In particular,
-`outputs.topology` is a list of artifact paths. For OpenMM/MDClaw this is
-usually `["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
+`outputs.topology` is a list of artifact paths. For prep battery v0.1 this must
+be an OpenMM bundle, usually
+`["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
 and task-specific `metric_requirements` list the `metrics.json` paths that must
 be populated.
 
@@ -217,7 +223,7 @@ minimization evidence. The key deterministic checks are:
 ```text
 submission/metrics.json: preparation.requested_protonation_state == "GLH"
 submission/prepared_structure.pdb: residue A:11 is GLH with atom HE2
-submission/manifest.json: outputs.topology points to backend topology artifacts
+submission/manifest.json: outputs.topology points to OpenMM topology artifacts
 submission/manifest.json: outputs.minimized_structure points to the minimized structure
 submission/minimization_report.json: minimization.completed == true and finite energies/positions
 ```

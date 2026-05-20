@@ -396,6 +396,300 @@ def test_glycam_bond_plan_apply_failure_is_structured(tmp_path):
     assert "unit 2" in report["errors"][0]
 
 
+def test_glycam_bond_plan_uses_identity_not_residue_order(tmp_path):
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber_server import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            return None
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    glycan_chain = topology.addChain("B")
+    glycan = topology.addResidue("0YB", glycan_chain, "2")
+    topology.addAtom("C1", element.carbon, glycan)
+    protein_chain = topology.addChain("A")
+    nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, nln)
+    positions = unit.Quantity([Vec3(0, 0, 0), Vec3(0.1, 0, 0)], unit.nanometer)
+    plan = {
+        "bonds": [{
+            "left": {
+                "unit_index": 1,
+                "atom": "ND2",
+                "resname": "NLN",
+                "chain": "A",
+                "resnum": "1",
+                "icode": "",
+            },
+            "right": {
+                "unit_index": 2,
+                "atom": "C1",
+                "resname": "0YB",
+                "chain": "B",
+                "resnum": "2",
+                "icode": "",
+            },
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    normalized, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is True, report
+    assert report["glycam_bond_plan"]["applied_count"] == 1
+    assert len(list(normalized.bonds())) == 1
+    assert {
+        item["code"]
+        for item in report["unit_index_drift"]
+    } == {"glycam_bond_plan_unit_index_drift"}
+    assert len(report["unit_index_drift"]) == 2
+
+
+def test_glycam_bond_plan_applies_when_unit_and_identity_match(tmp_path):
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber_server import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            return None
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    protein_chain = topology.addChain("A")
+    nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, nln)
+    glycan_chain = topology.addChain("B")
+    glycan = topology.addResidue("0YB", glycan_chain, "2")
+    topology.addAtom("C1", element.carbon, glycan)
+    positions = unit.Quantity([Vec3(0, 0, 0), Vec3(0.1, 0, 0)], unit.nanometer)
+    plan = {
+        "bonds": [{
+            "left": {
+                "unit_index": 1,
+                "atom": "ND2",
+                "resname": "NLN",
+                "chain": "A",
+                "resnum": "1",
+                "icode": "",
+            },
+            "right": {
+                "unit_index": 2,
+                "atom": "C1",
+                "resname": "0YB",
+                "chain": "B",
+                "resnum": "2",
+                "icode": "",
+            },
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    normalized, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is True, report
+    assert report["glycam_bond_plan"]["applied_count"] == 1
+    assert len(list(normalized.bonds())) == 1
+    assert report["unit_index_drift"] == []
+
+
+def test_glycam_bond_plan_ambiguous_identity_fails(tmp_path):
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber_server import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            return None
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    protein_chain = topology.addChain("A")
+    first_nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, first_nln)
+    second_nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, second_nln)
+    glycan_chain = topology.addChain("B")
+    glycan = topology.addResidue("0YB", glycan_chain, "2")
+    topology.addAtom("C1", element.carbon, glycan)
+    positions = unit.Quantity(
+        [Vec3(0, 0, 0), Vec3(0.1, 0, 0), Vec3(0.2, 0, 0)],
+        unit.nanometer,
+    )
+    plan = {
+        "bonds": [{
+            "left": {
+                "unit_index": 1,
+                "atom": "ND2",
+                "resname": "NLN",
+                "chain": "A",
+                "resnum": "1",
+                "icode": "",
+            },
+            "right": {
+                "unit_index": 3,
+                "atom": "C1",
+                "resname": "0YB",
+                "chain": "B",
+                "resnum": "2",
+                "icode": "",
+            },
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    _topology, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is False
+    assert report["code"] == "glycam_bond_plan_apply_failed"
+    assert "identity is ambiguous" in report["errors"][0]
+
+
+def test_glycam_bond_plan_legacy_unit_index_fallback_still_applies(tmp_path):
+    from openmm import Vec3, unit
+    from openmm.app import Topology, element
+    from mdclaw.amber_server import _normalize_glycam_topology
+
+    class FakeModeller:
+        def __init__(self, topology, positions):
+            self.topology = topology
+            self.positions = positions
+
+        @staticmethod
+        def loadHydrogenDefinitions(_path):
+            return None
+
+        def addHydrogens(self, _forcefield, pH=7.0):
+            return None
+
+    class FakeApp:
+        Modeller = FakeModeller
+
+        class ForceField:
+            def __init__(self, *_args):
+                return None
+
+    topology = Topology()
+    protein_chain = topology.addChain("A")
+    nln = topology.addResidue("NLN", protein_chain, "1")
+    topology.addAtom("ND2", element.nitrogen, nln)
+    glycan_chain = topology.addChain("B")
+    glycan = topology.addResidue("0YB", glycan_chain, "2")
+    topology.addAtom("C1", element.carbon, glycan)
+    positions = unit.Quantity([Vec3(0, 0, 0), Vec3(0.1, 0, 0)], unit.nanometer)
+    plan = {
+        "bonds": [{
+            "left": {"unit_index": 1, "atom": "ND2", "resname": "NLN"},
+            "right": {"unit_index": 2, "atom": "C1", "resname": "0YB"},
+        }],
+        "warnings": [],
+        "errors": [],
+    }
+
+    normalized, _positions, report = _normalize_glycam_topology(
+        omm_topology=topology,
+        omm_positions=positions,
+        glycam_bond_plan=plan,
+        protein_forcefield="ff19SB",
+        phosaa_name=None,
+        dna_name=None,
+        rna_name=None,
+        glycan_name="GLYCAM_06j-1",
+        lipid_name=None,
+        app_module=FakeApp,
+        unit_module=unit,
+    )
+
+    assert report["completed"] is True, report
+    assert report["glycam_bond_plan"]["applied_count"] == 1
+    assert len(list(normalized.bonds())) == 1
+    assert report["unit_index_drift"] == []
+
+
 def test_packmol_solute_identity_restore_keeps_water_renumbering(tmp_path):
     from mdclaw.solvation_server import _restore_packmol_solute_identity
 

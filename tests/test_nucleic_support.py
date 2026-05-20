@@ -177,6 +177,27 @@ def test_prepare_complex_rebuilds_standard_nucleic_hydrogens(tmp_path):
     assert result["preparation_summary"]["nucleic_hydrogens_added"] > 0
 
 
+def test_deuterium_detection_does_not_treat_deoxy_atom_names_as_isotopes():
+    from mdclaw.structure_server import _is_deuterium_atom_record
+
+    true_deuterium = (
+        "ATOM      1  D1  ARG A   1       0.000   0.000   0.000  "
+        "1.00  0.00           D"
+    )
+    deoxy_d5_blank_element = (
+        "ATOM      2  D5'  DG A   1       1.000   0.000   0.000  "
+        "1.00  0.00            "
+    )
+    deoxy_d3_blank_element = (
+        "ATOM      3  D3'  DG A   1       2.000   0.000   0.000  "
+        "1.00  0.00            "
+    )
+
+    assert _is_deuterium_atom_record(true_deuterium) is True
+    assert _is_deuterium_atom_record(deoxy_d5_blank_element) is False
+    assert _is_deuterium_atom_record(deoxy_d3_blank_element) is False
+
+
 def test_standard_nucleic_hydrogen_rebuild_failure_has_stable_code(tmp_path):
     from mdclaw.structure_server import _prepare_standard_nucleic
 

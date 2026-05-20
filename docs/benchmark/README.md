@@ -4,10 +4,12 @@ MDAgentBench is an artifact-based benchmark dataset for molecular dynamics
 agents. The current dataset is a prep-only battery:
 `MDAgentBench-prep-v0.1`.
 
-The benchmark is agent- and backend-agnostic. An evaluated agent receives only
-the public prompt and submission contract, then writes a standard submission
-directory. The scorer reads the submitted artifacts and private task metadata;
-it does not inspect chat transcripts or MDClaw-internal state.
+The benchmark is agent-agnostic. An evaluated agent receives only the public
+prompt and submission contract, then writes a standard submission directory.
+Prep battery v0.1 requires an OpenMM topology bundle for completed submissions
+so the scorer can reload the system and rescan finite energy. The scorer reads
+the submitted artifacts and private task metadata; it does not inspect chat
+transcripts or MDClaw-internal state.
 
 ## Current Scope
 
@@ -96,16 +98,17 @@ metrics.json
 provenance.json
 evidence_report.json
 prepared_structure.pdb
+minimized_structure.pdb
 minimization_report.json
 ```
 
 Every completed prep submission must also point `manifest.outputs.topology` to
-backend-specific topology artifacts and `manifest.outputs.minimized_structure`
-to the post-minimization structure. OpenMM/MDClaw submissions should include the
-`system.xml`, `topology.pdb`, and `state.xml` artifact triple under
-`outputs.topology` as a JSON list, not a role-keyed object. Amber and GROMACS
-submissions may use their native topology artifacts, with minimization evidence
-recorded in `minimization_report.json`.
+an OpenMM topology bundle and `manifest.outputs.minimized_structure` to the
+post-minimization structure. The OpenMM bundle must include the `system.xml`,
+`topology.pdb`, and `state.xml` artifact triple under `outputs.topology` as a
+JSON list, not a role-keyed object. Amber or GROMACS can still be used upstream,
+but completed prep submissions must export an OpenMM-compatible artifact triple
+for scoring.
 
 The public `submission_contract.json` records the agent-facing metric paths
 that must be populated in `metrics.json`. For example, P01 requires
@@ -135,15 +138,15 @@ Scoring is deterministic by default:
 - `minimized_structure_component_rescan`
 - artifact integrity checks such as byte floors and template-marker rejection
 
-OpenMM topology artifacts are strongly rescanned by the scorer. Non-OpenMM
-backends are initially checked through artifact presence and minimization
-reports; backend-specific reload adapters can be added later without changing
-the public submission contract.
+OpenMM topology artifacts are required and strongly rescanned by the scorer.
+Non-OpenMM reload adapters can be added later, but prep battery v0.1 does not
+award completed-submission credit for native-only Amber or GROMACS topology
+placeholders.
 
 Modified DNA/RNA is intentionally outside the core prep battery because the
 current standard topology path does not support MD-ready parameterization of
 modified nucleotides. Those cases belong in MDClaw regression or optional
-unsupported-chemistry handling tests, not in the backend-neutral core score.
+unsupported-chemistry handling tests, not in the core prep score.
 
 Run validation and scoring with:
 

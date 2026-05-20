@@ -185,8 +185,77 @@ class TestComponentDisposition:
         assert disposition["summary"]["excluded_atom_count"] == 0
         assert disposition["entries"] == []
 
+    def test_exclude_deuterium_atoms_keeps_deoxy_atom_names(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        pdb = tmp_path / "deoxy_names.pdb"
+        pdb.write_text(textwrap.dedent("""\
+            ATOM      1  D5'  DG A   1       0.000   0.000   0.000  1.00  0.00
+            ATOM      2  D3'  DG A   1       1.000   0.000   0.000  1.00  0.00
+            END
+            """))
+        out = tmp_path / "unused.pdb"
+
+        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+
+        assert not out.exists()
+        assert disposition["summary"]["experimental_isotope_atoms_excluded"] == 0
+        assert disposition["entries"] == []
+
 
 class TestTerminalCaps:
+    @staticmethod
+    def _write_terminal_cap_fixture(path: Path) -> None:
+        path.write_text(textwrap.dedent("""\
+            ATOM      1  CH3 ACE A   1       2.000   1.000   0.000  1.00  0.00           C
+            ATOM      2  C   ACE A   1       0.517   0.768   0.000  1.00  0.00           C
+            ATOM      3  O   ACE A   1       0.018   0.768  -1.133  1.00  0.00           O
+            ATOM      4  N   ALA A   2      -0.150   0.540   1.114  1.00  0.00           N
+            ATOM      5  CA  ALA A   2      -1.600   0.308   1.114  1.00  0.00           C
+            ATOM      6  HA  ALA A   2      -1.949  -0.013   0.138  1.00  0.00           H
+            ATOM      7  CB  ALA A   2      -1.905  -0.770   2.152  1.00  0.00           C
+            ATOM      8  C   ALA A   2      -2.326   1.608   1.432  1.00  0.00           C
+            ATOM      9  O   ALA A   2      -1.738   2.399   2.170  1.00  0.00           O
+            ATOM     10  N   NME A   3      -3.537   1.817   0.909  1.00  0.00           N
+            ATOM     11  CH3 NME A   3      -4.300   3.029   1.180  1.00  0.00           C
+            TER
+            END
+            """))
+
+    @staticmethod
+    def _make_noncap_h_complete_cap_h_missing(
+        source: Path,
+        output: Path,
+        *,
+        cap_resname: str = "NME",
+    ) -> None:
+        from openmm.app import ForceField, Modeller, PDBFile
+
+        full = output.with_name(f"{output.stem}.full_h.pdb")
+        pdb = PDBFile(str(source))
+        modeller = Modeller(pdb.topology, pdb.positions)
+        modeller.addHydrogens(ForceField("amber/protein.ff19SB.xml"), pH=7.4)
+        with full.open("w") as handle:
+            PDBFile.writeFile(
+                modeller.topology,
+                modeller.positions,
+                handle,
+                keepIds=True,
+            )
+
+        lines = []
+        for line in full.read_text().splitlines():
+            if line.startswith(("ATOM", "HETATM")):
+                resname = line[17:20].strip().upper()
+                element = line[76:78].strip().upper() if len(line) >= 78 else ""
+                atom_name = line[12:16].strip().upper()
+                if (
+                    resname == cap_resname
+                    and (element == "H" or atom_name.startswith("H"))
+                ):
+                    continue
+            lines.append(line)
+        output.write_text("\n".join(lines) + "\n")
 
     def test_resolve_terminal_cap_settings_supports_one_sided_caps(self):
         from mdclaw import structure_server as ss
@@ -218,22 +287,14 @@ class TestTerminalCaps:
         pytest.importorskip("openmmforcefields")
         from mdclaw import structure_server as ss
 
-        capped = tmp_path / "ace_ala_nme_missing_cap_h.pdb"
-        capped.write_text(textwrap.dedent("""\
-            ATOM      1  CH3 ACE A   1       2.000   1.000   0.000  1.00  0.00           C
-            ATOM      2  C   ACE A   1       0.517   0.768   0.000  1.00  0.00           C
-            ATOM      3  O   ACE A   1       0.018   0.768  -1.133  1.00  0.00           O
-            ATOM      4  N   ALA A   2      -0.150   0.540   1.114  1.00  0.00           N
-            ATOM      5  CA  ALA A   2      -1.600   0.308   1.114  1.00  0.00           C
-            ATOM      6  HA  ALA A   2      -1.949  -0.013   0.138  1.00  0.00           H
-            ATOM      7  CB  ALA A   2      -1.905  -0.770   2.152  1.00  0.00           C
-            ATOM      8  C   ALA A   2      -2.326   1.608   1.432  1.00  0.00           C
-            ATOM      9  O   ALA A   2      -1.738   2.399   2.170  1.00  0.00           O
-            ATOM     10  N   NME A   3      -3.537   1.817   0.909  1.00  0.00           N
-            ATOM     11  CH3 NME A   3      -4.300   3.029   1.180  1.00  0.00           C
-            TER
-            END
-            """))
+        heavy = tmp_path / "ace_ala_nme_heavy.pdb"
+        capped = tmp_path / "ace_ala_nme_missing_nme_h.pdb"
+        self._write_terminal_cap_fixture(heavy)
+        self._make_noncap_h_complete_cap_h_missing(
+            heavy,
+            capped,
+            cap_resname="NME",
+        )
 
         result = ss._complete_terminal_cap_hydrogens_with_modeller(
             capped,
@@ -248,6 +309,7 @@ class TestTerminalCaps:
         assert result["forcefield_xml"] == "amber/protein.ff19SB.xml"
         assert result["cap_hydrogens_added"] >= 4
         assert result["cap_hydrogen_count_after"]["NME"] >= 4
+        assert result["noncap_hydrogen_signature_preserved"] is True
 
         output_text = Path(result["output_file"]).read_text()
         assert " NME " in output_text
@@ -255,6 +317,31 @@ class TestTerminalCaps:
             line[17:20].strip() == "NME" and line[12:16].strip().startswith("H")
             for line in output_text.splitlines()
             if line.startswith(("ATOM", "HETATM"))
+        )
+
+    def test_terminal_cap_hydrogen_completion_rejects_noncap_repair(self, tmp_path):
+        pytest.importorskip("openmmforcefields")
+        from mdclaw import structure_server as ss
+
+        capped = tmp_path / "ace_ala_nme_noncap_h_incomplete.pdb"
+        self._write_terminal_cap_fixture(capped)
+
+        result = ss._complete_terminal_cap_hydrogens_with_modeller(
+            capped,
+            expected_caps={"NME"},
+            forcefield_name="ff19SB",
+            ph=7.4,
+        )
+
+        assert result["success"] is False
+        assert (
+            result["code"]
+            == "terminal_cap_hydrogen_completion_changed_noncap_hydrogens"
+        )
+        assert result["noncap_hydrogen_signature_preserved"] is False
+        assert any(
+            "A:2::ALA" in item
+            for item in result["noncap_hydrogen_signature_changed_residues"]
         )
 
 

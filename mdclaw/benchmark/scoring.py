@@ -12,6 +12,7 @@ Public entry points:
 from __future__ import annotations
 
 import math
+import re
 import statistics
 from pathlib import Path
 from typing import Any, Optional
@@ -30,12 +31,19 @@ from mdclaw.benchmark.models import (
 
 
 _CRITICAL_PREP_CHECK_TYPES = {
+    "structure_component_rescan",
+    "pdb_residue_state",
+    "pdb_no_deuterium_atoms",
+    "assembly_identity_check",
     "topology_artifact_bundle",
     "openmm_system_load",
     "openmm_energy_rescan",
     "minimization_report_check",
     "minimized_structure_component_rescan",
+    "minimized_structure_required",
 }
+
+_DEUTERIUM_FALLBACK_ATOM_NAME_RE = re.compile(r"^D[0-9]*$")
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +113,14 @@ def score_submission(
             provenance=provenance, evidence=evidence, task_dir=task_dir,
         )
         deterministic_results.append(result)
+
+    minimized_required = _completed_minimized_structure_check(
+        task,
+        manifest,
+        submission_dir,
+    )
+    if minimized_required is not None:
+        deterministic_results.append(minimized_required)
 
     critical_failures = [
         result for result in deterministic_results
@@ -228,6 +244,39 @@ def _run_deterministic(
         check_id=check.check_id, check_type=check.check_type,
         passed=passed, score=score, weight=check.weight, message=message,
     )
+
+
+def _completed_minimized_structure_check(
+    task: Task,
+    manifest: dict, submission_dir: Path,
+) -> CheckResult | None:
+    if "minimized_structure.pdb" not in task.required_outputs:
+        return None
+    if manifest.get("status", "completed") != "completed":
+        return None
+    rel = _manifest_artifact_path(
+        manifest, "outputs.minimized_structure", "outputs.minimized_structure",
+    )
+    if not rel:
+        return CheckResult(
+            check_id="completed_manifest_minimized_structure_present",
+            check_type="minimized_structure_required",
+            passed=False,
+            score=0.0,
+            weight=1.0,
+            message="manifest.status='completed' requires outputs.minimized_structure",
+        )
+    path = _resolve_relative(submission_dir, rel)
+    if not path.is_file():
+        return CheckResult(
+            check_id="completed_manifest_minimized_structure_present",
+            check_type="minimized_structure_required",
+            passed=False,
+            score=0.0,
+            weight=1.0,
+            message=f"outputs.minimized_structure points to missing file: {rel}",
+        )
+    return None
 
 
 def _check_required_files(check: DeterministicCheck, submission_dir: Path,
@@ -459,6 +508,13 @@ def _check_topology_artifact_bundle(check: DeterministicCheck,
             0.0,
             f"topology.backend={backend!r} expected {required_backend!r}",
         )
+    if not required_backend and backend != "openmm":
+        return (
+            False,
+            0.0,
+            "prep battery requires OpenMM topology bundle; "
+            f"topology.backend={backend or 'unspecified'!r}",
+        )
 
     topology_rels = _manifest_artifact_paths(
         manifest, check.topology_manifest_path, "outputs.topology",
@@ -502,8 +558,13 @@ def _check_openmm_system_load(check: DeterministicCheck,
                               manifest: dict,
                               metrics: dict, **_):
     backend = _topology_backend(check, submission_dir, metrics, manifest)
-    if backend and backend != "openmm":
-        return True, 1.0, f"skipped OpenMM load for backend={backend!r}"
+    if backend != "openmm":
+        return (
+            False,
+            0.0,
+            "prep battery requires OpenMM topology bundle; "
+            f"topology.backend={backend or 'unspecified'!r}",
+        )
 
     loaded = _load_openmm_bundle(check, submission_dir, manifest)
     if not loaded["success"]:
@@ -516,8 +577,13 @@ def _check_openmm_energy_rescan(check: DeterministicCheck,
                                 manifest: dict,
                                 metrics: dict, **_):
     backend = _topology_backend(check, submission_dir, metrics, manifest)
-    if backend and backend != "openmm":
-        return True, 1.0, f"skipped OpenMM energy rescan for backend={backend!r}"
+    if backend != "openmm":
+        return (
+            False,
+            0.0,
+            "prep battery requires OpenMM topology bundle; "
+            f"topology.backend={backend or 'unspecified'!r}",
+        )
 
     loaded = _load_openmm_bundle(check, submission_dir, manifest)
     if not loaded["success"]:
@@ -798,14 +864,31 @@ def _pdb_deuterium_records(path: Path) -> list[str]:
         for line in handle:
             if not line.startswith(("ATOM", "HETATM")):
                 continue
-            atom_name = line[12:16].strip().upper()
-            element = line[76:78].strip().upper() if len(line) >= 78 else ""
-            if element == "D" or (atom_name.startswith("D") and element in {"", "D"}):
+            if _is_deuterium_atom_record(line):
+                atom_name = line[12:16].strip().upper()
                 chain_id = line[21:22].strip()
                 resseq = line[22:26].strip()
                 resname = line[17:20].strip()
                 records.append(f"{atom_name}:{resname}:{chain_id}:{resseq}")
     return records
+
+
+def _is_deuterium_atom_record(line: str) -> bool:
+    """Return True for experimental deuterium PDB atom records.
+
+    Prefer the element column. If legacy PDB text lacks an element, only
+    isotope-like atom names such as D, D1, D2, ... are treated as deuterium;
+    deoxy nucleic atom names such as D5' or D3' are not.
+    """
+    if not line.startswith(("ATOM", "HETATM")):
+        return False
+    atom_name = line[12:16].strip().upper()
+    element = line[76:78].strip().upper() if len(line) >= 78 else ""
+    if element == "D":
+        return True
+    if element:
+        return False
+    return bool(_DEUTERIUM_FALLBACK_ATOM_NAME_RE.fullmatch(atom_name))
 
 
 def _check_pdb_no_deuterium_atoms(check: DeterministicCheck,

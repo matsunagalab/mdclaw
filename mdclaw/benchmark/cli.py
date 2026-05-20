@@ -106,6 +106,7 @@ def _manifest_contract() -> dict[str, Any]:
         "allowed_statuses": ["completed", "partial", "failed", "blocked"],
         "completed_status": "completed",
         "topology_output_shape": "list[str]",
+        "required_topology_backend": "openmm",
         "openmm_topology_example": [
             "topology/system.xml",
             "topology/topology.pdb",

@@ -25,6 +25,7 @@ COMMON_OUTPUTS = [
     "provenance.json",
     "evidence_report.json",
     "prepared_structure.pdb",
+    "minimized_structure.pdb",
     "minimization_report.json",
 ]
 
@@ -168,6 +169,7 @@ def _topology_minimization_checks() -> list[dict]:
             "check_id": "topology_artifact_bundle_present",
             "check_type": "topology_artifact_bundle",
             "topology_manifest_path": "outputs.topology",
+            "required_topology_backend": "openmm",
             "min_topology_artifact_count": 1,
             "weight": 1.0,
         },
@@ -175,12 +177,14 @@ def _topology_minimization_checks() -> list[dict]:
             "check_id": "openmm_system_loads_when_applicable",
             "check_type": "openmm_system_load",
             "topology_manifest_path": "outputs.topology",
+            "required_topology_backend": "openmm",
             "weight": 1.0,
         },
         {
             "check_id": "openmm_energy_rescan_when_applicable",
             "check_type": "openmm_energy_rescan",
             "topology_manifest_path": "outputs.topology",
+            "required_topology_backend": "openmm",
             "weight": 1.0,
         },
         {
@@ -285,6 +289,7 @@ def _task(
                     "check_type": "status_artifact_floor",
                     "status_floor": {
                         "prepared_structure.pdb": 250,
+                        "minimized_structure.pdb": 250,
                         "minimization_report.json": 100,
                     },
                 },
@@ -777,19 +782,18 @@ def _prompt(task: dict) -> str:
         f"Public source anchors: {references}.\n\n"
         "Your submission directory must contain:\n\n"
         f"{outputs}\n\n"
-        "Your `manifest.json` must also point `outputs.topology` to the "
-        "backend-specific topology artifacts and `outputs.minimized_structure` "
-        "to a structure after minimization. For OpenMM or MDClaw submissions, "
-        "`outputs.topology` should be a JSON list containing the `system.xml`, "
-        "`topology.pdb`, and `state.xml` artifact triple. Run a short "
-        "minimization or equivalent "
-        "backend-native energy check and record the result in "
+        "Your `manifest.json` must also point `outputs.topology` to an "
+        "OpenMM topology bundle and `outputs.minimized_structure` to a "
+        "structure after minimization. For prep battery v0.1, "
+        "`outputs.topology` must be a JSON list containing the OpenMM "
+        "`system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run "
+        "a short minimization or OpenMM energy check and record the result in "
         "`minimization_report.json` and `metrics.json`. Full equilibration and "
         "production MD are not required for this prep task.\n\n"
         f"{task.get('public_prompt_extra', '')}\n\n"
-        "The submission must be backend-neutral. You may use MDClaw, OpenMM scripts, "
-        "Amber, GROMACS, MDCrow, or another MD-preparation workflow, but the final "
-        "files must satisfy the artifact contract above. Record sources retrieved, "
+        "You may use MDClaw, direct OpenMM scripts, or another preparation workflow "
+        "upstream, but the final submitted topology must be an OpenMM artifact "
+        "triple that the scorer can reload. Record sources retrieved, "
         "commands or tool actions, preparation decisions, limitations, and any "
         "non-default choices in `provenance.json` and `evidence_report.json`.\n"
     )

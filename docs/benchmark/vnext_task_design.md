@@ -7,7 +7,7 @@ suites:
 
 1. **Preparation Workflow Battery**: can an agent turn structurally messy
    public inputs into topology-built, minimized MD-ready systems with
-   backend-neutral provenance?
+   agent-neutral provenance and a scorer-loadable OpenMM artifact bundle?
 2. **Scientific MD Reasoning**: can an agent plan, run/analyze, and defend a
    scientific conclusion for an experimentally validated question?
 
@@ -41,14 +41,14 @@ Recommended scoring split:
 - 10-20% provenance and decision trace checks.
 - 0-15% LLM judge for concise rationale, only where a choice must be explained.
 
-The submission should be backend-neutral: MDClaw/OpenMM XML triples, Amber,
-GROMACS, or other formats are acceptable if the required public artifacts and
-metrics are present and the scorer can verify the task-specific properties. In
-the current implementation, every completed prep submission must include
-topology artifacts, a minimized structure, and minimization evidence. OpenMM
-artifacts are reloaded and rescanned for finite energy; non-OpenMM backends are
-initially checked through artifact/report evidence until backend adapters are
-added.
+The submission is agent-neutral, but prep battery v0.1 requires a common
+OpenMM topology artifact format for completed submissions. MDClaw/OpenMM XML
+triples are accepted directly, and other workflows can be used upstream if they
+export `system.xml`, `topology.pdb`, and `state.xml` for scoring. Every
+completed prep submission must include topology artifacts, a minimized
+structure, and minimization evidence. OpenMM artifacts are reloaded and
+rescanned for finite energy; native-only Amber/GROMACS validation is deferred
+until backend adapters are added.
 
 ### Current Prep Contract
 
@@ -60,11 +60,12 @@ Every P01-P25 task requires these files in the submission directory:
 - `evidence_report.json`
 - `prepared_structure.pdb`
 - `minimization_report.json`
+- `minimized_structure.pdb`
 
 Every completed prep submission must also set these manifest outputs:
 
-- `outputs.topology`: backend-specific topology artifacts. For OpenMM/MDClaw,
-  this should include `system.xml`, `topology.pdb`, and `state.xml`.
+- `outputs.topology`: OpenMM topology artifacts. This must include
+  `system.xml`, `topology.pdb`, and `state.xml`.
 - `outputs.minimized_structure`: a structure after minimization. It may be the
   topology PDB if that file contains the minimized coordinates.
 - `outputs.minimization_report`: normally `minimization_report.json`.
@@ -257,7 +258,7 @@ agent tasks.
 
 ## Implementation Roadmap
 
-1. Keep the public package prompt-only and backend-neutral: expose
+1. Keep the public package prompt-only and agent-neutral: expose
    `prompt.md` plus `submission_contract.json`; keep `task.json`, truth files,
    and scorer details private to the harness. This is the current export
    behavior.
@@ -317,9 +318,9 @@ Still to do:
 - Do not score scientific tasks as "experiment matched = pass, otherwise fail."
 - Do not expose `task.json`, hidden truth, scorer prompts, or reference poses to
   evaluated agents.
-- Do not require MDClaw-specific artifact names in the public prompt; OpenMM
-  triples are strongly checked when provided, but the public contract remains
-  backend-neutral.
+- Do not require MDClaw-specific artifact names in the public prompt; prep
+  battery v0.1 requires an OpenMM topology triple, while backend-specific native
+  adapters are deferred.
 - Do not add full equilibration or production MD to the prep battery. Those
   belong in execution or scientific reasoning suites.
 

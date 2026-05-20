@@ -432,11 +432,18 @@ def _sort_protein_atoms_like_reference(
     previous_chain: str | None = None
     previous_residue: ProteinResidue | None = None
     for residue in reference_residues:
+        if residue.hpacker_id not in groups:
+            raise HPackerExecutionError(
+                "Protein residue missing after HPacker hydrogen rebuild: "
+                f"{residue.chain or '<blank>'}:{residue.resseq}{residue.icode} "
+                f"{residue.resname}"
+            )
         if previous_chain is not None and residue.chain != previous_chain and previous_residue:
             ordered.append(_ter_line(serial, previous_residue))
             serial += 1
-        ordered.extend(groups.get(residue.hpacker_id, []))
-        serial += len(groups.get(residue.hpacker_id, []))
+        residue_lines = groups[residue.hpacker_id]
+        ordered.extend(residue_lines)
+        serial += len(residue_lines)
         previous_chain = residue.chain
         previous_residue = residue
     if previous_residue:
@@ -482,6 +489,22 @@ def _validate_output(
         if element == "D" and atom_name.startswith("H"):
             errors.append(f"Hydrogen atom {atom_name} was written with element D")
     output_resnames = _resname_by_hpacker_id(output_path)
+    input_residue_ids = {
+        residue.hpacker_id for residue in _protein_residues_from_lines(input_lines)
+    }
+    output_residue_ids = set(output_resnames)
+    missing_residue_ids = sorted(input_residue_ids - output_residue_ids)
+    extra_residue_ids = sorted(output_residue_ids - input_residue_ids)
+    if missing_residue_ids:
+        errors.append(
+            "Protein residues missing after HPacker merge: "
+            + ", ".join(str(res_id) for res_id in missing_residue_ids)
+        )
+    if extra_residue_ids:
+        errors.append(
+            "Unexpected protein residues appeared after HPacker merge: "
+            + ", ".join(str(res_id) for res_id in extra_residue_ids)
+        )
     for res_id, expected_resname in mutation_map.items():
         if output_resnames.get(res_id) != expected_resname:
             errors.append(

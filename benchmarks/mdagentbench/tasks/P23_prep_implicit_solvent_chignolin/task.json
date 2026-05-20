@@ -27,6 +27,7 @@
     "provenance.json",
     "evidence_report.json",
     "prepared_structure.pdb",
+    "minimized_structure.pdb",
     "minimization_report.json"
   ],
   "requires_tools": [
@@ -66,18 +67,21 @@
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,
+        "required_topology_backend": "openmm",
         "topology_manifest_path": "outputs.topology",
         "weight": 1.0
       },
       {
         "check_id": "openmm_system_loads_when_applicable",
         "check_type": "openmm_system_load",
+        "required_topology_backend": "openmm",
         "topology_manifest_path": "outputs.topology",
         "weight": 1.0
       },
       {
         "check_id": "openmm_energy_rescan_when_applicable",
         "check_type": "openmm_energy_rescan",
+        "required_topology_backend": "openmm",
         "topology_manifest_path": "outputs.topology",
         "weight": 1.0
       },
@@ -125,6 +129,7 @@
         "check_type": "status_artifact_floor",
         "status_floor": {
           "minimization_report.json": 100,
+          "minimized_structure.pdb": 250,
           "prepared_structure.pdb": 250
         }
       }

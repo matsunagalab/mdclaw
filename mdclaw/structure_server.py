@@ -51,6 +51,7 @@ PDB_CHAIN_ID_POOL = (
     + list("abcdefghijklmnopqrstuvwxyz")
     + list("0123456789")
 )
+_DEUTERIUM_FALLBACK_ATOM_NAME_RE = re.compile(r"^D[0-9]*$")
 DEFAULT_TERMINAL_CAP_FORCEFIELD = "ff19SB"
 SUPPORTED_N_TERMINAL_CAPS = {"ACE"}
 SUPPORTED_C_TERMINAL_CAPS = {"NME"}
@@ -106,7 +107,9 @@ def _is_deuterium_atom_record(line: str) -> bool:
     element = line[76:78].strip().upper() if len(line) >= 78 else ""
     if element == "D":
         return True
-    return bool(atom_name) and atom_name.startswith("D") and element in {"", "D"}
+    if element:
+        return False
+    return bool(_DEUTERIUM_FALLBACK_ATOM_NAME_RE.fullmatch(atom_name))
 
 
 def _component_disposition_payload(entries: list[dict[str, Any]]) -> dict[str, Any]:
@@ -3478,6 +3481,32 @@ def _pdb_hydrogen_counts_by_resname(
     return counts
 
 
+def _pdb_noncap_protein_hydrogen_signature(
+    pdb_file: str | Path,
+) -> dict[str, tuple[str, ...]]:
+    """Return non-cap protein H atom-name sets keyed by residue identity."""
+    hydrogens: dict[str, list[str]] = {}
+    for line in Path(pdb_file).read_text().splitlines():
+        if not line.startswith("ATOM  "):
+            continue
+        resname = line[17:20].strip().upper()
+        if resname in TERMINAL_CAP_RESIDUES:
+            continue
+        element = line[76:78].strip().upper() if len(line) >= 78 else ""
+        atom_name = line[12:16].strip().upper()
+        if element not in {"H", "D"} and not atom_name.startswith(("H", "D")):
+            continue
+        chain = line[21:22].strip()
+        resseq = line[22:26].strip()
+        icode = line[26:27].strip()
+        key = f"{chain}:{resseq}:{icode}:{resname}"
+        hydrogens.setdefault(key, []).append(atom_name)
+    return {
+        key: tuple(sorted(names))
+        for key, names in hydrogens.items()
+    }
+
+
 def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | None, str | None]:
     """Resolve a protein force field name to the XML used for cap H completion."""
     from mdclaw import forcefield_catalog as _ff_catalog
@@ -3520,6 +3549,8 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         "cap_hydrogens_added": 0,
         "cap_hydrogen_count_before": {},
         "cap_hydrogen_count_after": {},
+        "noncap_hydrogen_signature_preserved": None,
+        "noncap_hydrogen_signature_changed_residues": [],
         "warnings": [],
         "errors": [],
         "operations": [],
@@ -3563,6 +3594,7 @@ def _complete_terminal_cap_hydrogens_with_modeller(
 
     residues_before = _read_pdb_unique_residues(input_path)
     cap_h_before = _pdb_hydrogen_counts_by_resname(input_path, present_caps)
+    noncap_h_signature_before = _pdb_noncap_protein_hydrogen_signature(input_path)
     total_h_before = _pdb_hydrogen_count(input_path)
     result["cap_hydrogen_count_before"] = cap_h_before
 
@@ -3594,6 +3626,30 @@ def _complete_terminal_cap_hydrogens_with_modeller(
             "Terminal cap hydrogen completion changed residue identity/order."
         )
         return result
+
+    noncap_h_signature_after = _pdb_noncap_protein_hydrogen_signature(output_file)
+    if noncap_h_signature_after != noncap_h_signature_before:
+        changed = sorted(
+            key
+            for key in (
+                set(noncap_h_signature_before)
+                | set(noncap_h_signature_after)
+            )
+            if noncap_h_signature_before.get(key)
+            != noncap_h_signature_after.get(key)
+        )
+        result["code"] = "terminal_cap_hydrogen_completion_changed_noncap_hydrogens"
+        result["noncap_hydrogen_signature_preserved"] = False
+        result["noncap_hydrogen_signature_changed_residues"] = changed
+        preview = ", ".join(changed[:5])
+        if len(changed) > 5:
+            preview += f", ... (+{len(changed) - 5} more)"
+        result["errors"].append(
+            "Terminal cap hydrogen completion changed non-cap protein "
+            f"hydrogens: {preview}"
+        )
+        return result
+    result["noncap_hydrogen_signature_preserved"] = True
 
     cap_h_after = _pdb_hydrogen_counts_by_resname(output_file, present_caps)
     total_h_after = _pdb_hydrogen_count(output_file)
