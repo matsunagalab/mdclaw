@@ -87,6 +87,29 @@ def _json_min(check_id: str, path: str, minimum: float, weight: float = 1.0) -> 
     }
 
 
+def _candidate_selection_check(
+    check_id: str,
+    *,
+    required_candidate_id: str | None = None,
+    required_model_rank: int | None = None,
+    require_selection_reason: bool = False,
+    weight: float = 1.0,
+) -> dict:
+    out = {
+        "check_id": check_id,
+        "check_type": "candidate_selection_check",
+        "source_selection_manifest_path": "outputs.source_selection",
+        "source_selection_path": "source_selection.json",
+        "require_selection_reason": require_selection_reason,
+        "weight": weight,
+    }
+    if required_candidate_id is not None:
+        out["required_candidate_id"] = required_candidate_id
+    if required_model_rank is not None:
+        out["required_model_rank"] = required_model_rank
+    return out
+
+
 def _provenance_text_check(
     check_id: str,
     required_text_groups: list[list[str]],
@@ -595,9 +618,15 @@ TASK_DEFS: list[dict] = [
         "P18_prep_membrane_mixed_lipids",
         "Membrane embedding and lipid composition",
         "PDB 2LOP",
-        "prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio.",
+        "prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.",
         [
             _json_check("membrane_flag_recorded", "preparation.membrane", True, 0.2),
+            _json_check("selected_model_rank_recorded", "preparation.selected_model_rank", 1, 0.1),
+            _candidate_selection_check(
+                "source_selection_model_1",
+                required_model_rank=1,
+                weight=0.2,
+            ),
             _component_check(
                 "lipid_species_present",
                 min_counts={"POPC": 2, "POPE": 1, "CHL1": 1},
@@ -623,11 +652,19 @@ TASK_DEFS: list[dict] = [
         "P19_prep_nmr_model_selection",
         "Candidate/model selection",
         "PDB 2K39",
-        "select a specified NMR model/candidate before preparation rather than silently using model 1 or averaging the ensemble.",
+        "select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. Record the selected candidate as candidate_005, the selected model rank as 5, and source-selection evidence with a selection reason in `source_selection.json` or structured provenance.",
         [
-            _json_check("candidate_selected", "preparation.selected_candidate_id", "model_005", 0.45),
-            _json_check("selection_reason_recorded", "preparation.candidate_selection_reason_recorded", True, 0.35),
-            _json_check("single_structure_used", "preparation.single_concrete_structure_used", True, 0.2),
+            _json_check("candidate_selected", "preparation.selected_candidate_id", "candidate_005", 0.15),
+            _json_check("selected_model_rank_recorded", "preparation.selected_model_rank", 5, 0.15),
+            _candidate_selection_check(
+                "source_selection_model_5",
+                required_candidate_id="candidate_005",
+                required_model_rank=5,
+                require_selection_reason=True,
+                weight=0.45,
+            ),
+            _json_check("selection_reason_recorded", "preparation.candidate_selection_reason_recorded", True, 0.15),
+            _json_check("single_structure_used", "preparation.single_concrete_structure_used", True, 0.1),
         ],
         priority=2,
         tags=["candidate_selection", "nmr_ensemble"],

@@ -11,6 +11,15 @@ so the scorer can reload the system and rescan finite energy. The scorer reads
 the submitted artifacts and private task metadata; it does not inspect chat
 transcripts or MDClaw-internal state.
 
+The runner is not a hidden solution script. It may create run directories,
+launch agents, enforce time limits, and call validation/scoring, but it must not
+inject task-specific MDClaw command-line arguments or preparation parameters
+that are absent from the public prompt and `submission_contract.json`.
+`prepare_benchmark_run` writes agent-facing `agent_tasks.json` /
+`task_instructions.json` separately from harness-facing `harness_tasks.json` /
+`harness_instructions.json`; only the agent-facing files should be handed to
+the evaluated agent.
+
 ## Current Scope
 
 The current task set replaces the former v1.0 mixed benchmark. Scientific MD
@@ -114,6 +123,10 @@ The public `submission_contract.json` records the agent-facing metric paths
 that must be populated in `metrics.json`. For example, P01 requires
 `preparation.source_pdb_id`, `preparation.solvent_model`, and
 `preparation.topology_ready`.
+When a task requires source/model selection, the public contract also includes
+`candidate_selection_requirements`; satisfy those with `source_selection.json`
+listed from `manifest.outputs.source_selection`, or with equivalent structured
+`source_selection` evidence in provenance, metrics, or the evidence report.
 
 Individual tasks may inspect specific paths inside `metrics.json`, component
 counts in `prepared_structure.pdb` or the minimized structure, or scorer-side
@@ -132,6 +145,7 @@ Scoring is deterministic by default:
   (with task-defined residue-name aliases for backend-specific ion/lipid names)
 - `pdb_residue_state`
 - `rmsd_recompute`
+- `candidate_selection_check`
 - `topology_artifact_bundle`
 - `openmm_system_load` and `openmm_energy_rescan`
 - `minimization_report_check`

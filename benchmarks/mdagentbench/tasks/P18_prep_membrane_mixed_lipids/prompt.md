@@ -4,7 +4,7 @@ You are evaluating an MD agent on `P18_prep_membrane_mixed_lipids`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Membrane embedding and lipid composition: prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio.
+Task: Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.
 
 Public source anchors: PDB 2LOP.
 

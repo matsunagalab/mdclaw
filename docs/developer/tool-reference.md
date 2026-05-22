@@ -224,8 +224,8 @@ skill examples.
 - `list_benchmark_tasks(...)`: list MDAgentBench tasks from
   `benchmarks/mdagentbench/dataset.json`, including family and intent summary.
 - `prepare_benchmark_run(...)`: create a run directory, export an agent-safe
-  public task package, and write per-task prompt/submission/scoring
-  instructions for an MDClaw or external harness.
+  public task package, write per-task prompt/submission instructions for the
+  evaluated agent, and write separate harness scoring metadata.
 - `score_benchmark_run(...)`: validate and score every `submission/` under a
   run directory, then summarize the run.
 - `init_benchmark_run(...)` / `summarize_benchmark_run(...)`: lower-level run

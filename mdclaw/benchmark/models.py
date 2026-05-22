@@ -56,6 +56,7 @@ DeterministicCheckType = Literal[
     "pdb_residue_state",
     "rmsd_recompute",
     "assembly_identity_check",
+    "candidate_selection_check",
     "artifact_provenance_text",
     "topology_artifact_bundle",
     "openmm_system_load",
@@ -197,6 +198,13 @@ class DeterministicCheck(BaseModel):
     require_output_chains_in_structure: bool = False
     require_unique_output_chains: bool = False
 
+    # candidate_selection_check
+    source_selection_manifest_path: Optional[str] = None
+    source_selection_path: Optional[str] = None
+    required_candidate_id: Optional[str] = None
+    required_model_rank: Optional[int] = None
+    require_selection_reason: bool = False
+
     # artifact_provenance_text
     text_files: Optional[list[str]] = None
     required_text_groups: Optional[list[list[str]]] = None
@@ -336,6 +344,7 @@ class SubmissionOutputs(BaseModel):
     prepared_structure: Optional[str] = None
     minimized_structure: Optional[str] = None
     minimization_report: Optional[str] = None
+    source_selection: Optional[str] = None
 
 
 class SubmissionError(BaseModel):
@@ -457,6 +466,7 @@ class RunConfig(BaseModel):
     model: ModelInfo = Field(default_factory=ModelInfo)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     task_ids: list[str] = Field(default_factory=list)
+    dataset_dir: Optional[str] = None
 
 
 class RunSummary(BaseModel):

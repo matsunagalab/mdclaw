@@ -174,14 +174,31 @@ def extract_box_size_from_packmol_inp(inp_file: str) -> Optional[dict]:
         with open(inp_file, 'r') as f:
             content = f.read()
 
-        # Match 'inside box xmin ymin zmin xmax ymax zmax'
-        match = re.search(
+        # Match all 'inside box xmin ymin zmin xmax ymax zmax' regions.
+        # Membrane packmol inputs contain separate leaflet/water/ion boxes; the
+        # downstream periodic box must cover their union, not just the first
+        # leaflet region.
+        matches = list(re.finditer(
             r'inside\s+box\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)',
             content
-        )
-        if match:
-            xmin, ymin, zmin = float(match.group(1)), float(match.group(2)), float(match.group(3))
-            xmax, ymax, zmax = float(match.group(4)), float(match.group(5)), float(match.group(6))
+        ))
+        if matches:
+            xmins: list[float] = []
+            ymins: list[float] = []
+            zmins: list[float] = []
+            xmaxs: list[float] = []
+            ymaxs: list[float] = []
+            zmaxs: list[float] = []
+            for match in matches:
+                xmins.append(float(match.group(1)))
+                ymins.append(float(match.group(2)))
+                zmins.append(float(match.group(3)))
+                xmaxs.append(float(match.group(4)))
+                ymaxs.append(float(match.group(5)))
+                zmaxs.append(float(match.group(6)))
+
+            xmin, ymin, zmin = min(xmins), min(ymins), min(zmins)
+            xmax, ymax, zmax = max(xmaxs), max(ymaxs), max(zmaxs)
 
             a = xmax - xmin
             b = ymax - ymin
@@ -317,7 +334,21 @@ def _record_packmol_memgen_output(
     success_message: str,
 ) -> None:
     """Record output artifacts and diagnostics for packmol-memgen based tools."""
+    diagnostics = _packmol_memgen_diagnostics(
+        out_dir=out_dir,
+        output_name=output_name,
+        proc_result=proc_result,
+    )
+    packing_failure_reasons = _packmol_quality_failure_reasons(diagnostics)
     if not output_file.exists():
+        if packing_failure_reasons:
+            _record_packmol_quality_failure(
+                result,
+                packing_failure_reasons,
+                "packmol-memgen failed before producing a usable output PDB, "
+                "and Packmol reported imperfect packing or membrane piercing.",
+            )
+            return
         result["errors"].append("packmol-memgen completed but output file not created")
         result["errors"].append("Hint: Check packmol log for details")
         logger.error("Output file not created")
@@ -326,7 +357,6 @@ def _record_packmol_memgen_output(
         return
 
     result["output_file"] = str(output_file)
-    result["success"] = True
 
     try:
         result["statistics"]["total_atoms"] = count_atoms_in_pdb(output_file)
@@ -353,6 +383,23 @@ def _record_packmol_memgen_output(
     if log_file.exists():
         result["packmol_log"] = str(log_file)
 
+    if packing_failure_reasons:
+        _record_packmol_quality_failure(
+            result,
+            packing_failure_reasons,
+            "packmol-memgen produced an output PDB, but Packmol reported "
+            "imperfect packing or membrane piercing; refusing to treat this "
+            "structure as MD-ready.",
+        )
+        logger.error(
+            "Packmol quality failure for %s: %s",
+            output_file,
+            ", ".join(packing_failure_reasons),
+        )
+        return
+
+    result["success"] = True
+    result["packing_quality"] = {"passed": True, "failure_reasons": []}
     logger.info(f"{success_message}: {output_file}")
 
 
@@ -382,6 +429,91 @@ def _packmol_memgen_diagnostics(
             except OSError:
                 pass
     return "\n".join(chunks)
+
+
+def _packmol_quality_failure_reasons(text: str) -> list[str]:
+    """Return stable reason codes for Packmol outputs that are not MD-ready."""
+    normalized = text.lower()
+    reasons: list[str] = []
+    checks = {
+        "packmol_imperfect_packing": "ended without perfect packing",
+        "packmol_no_solution": "packmol was not able to find a solution",
+        "packmol_gencan_exhausted": "maximum number of gencan loops achieved",
+        "membrane_lipid_piercing": "lipid piercing finder failed",
+    }
+    for code, needle in checks.items():
+        if needle in normalized:
+            reasons.append(code)
+    return reasons
+
+
+def _record_packmol_quality_failure(
+    result: dict,
+    failure_reasons: list[str],
+    message: str,
+) -> None:
+    """Record a structured Packmol packing-quality failure."""
+    result["success"] = False
+    result["code"] = "packmol_packing_quality_failed"
+    result["packing_quality"] = {
+        "passed": False,
+        "failure_reasons": failure_reasons,
+    }
+    _attach_membrane_packing_retry_suggestion(result, failure_reasons)
+    result["errors"].append(message)
+
+
+def _attach_membrane_packing_retry_suggestion(
+    result: dict,
+    failure_reasons: list[str],
+) -> None:
+    """Attach structured retry advice for membrane packing failures."""
+    parameters = result.get("parameters") or {}
+    if "leaflet" not in parameters or "dist_wat" not in parameters:
+        return
+
+    try:
+        current_dist = float(parameters.get("dist", 15.0))
+        current_dist_wat = float(parameters.get("dist_wat", 17.5))
+        current_leaflet = float(parameters.get("leaflet", 23.0))
+        current_nloop = int(parameters.get("nloop", 20))
+        current_nloop_all = int(parameters.get("nloop_all", 50))
+    except (TypeError, ValueError):
+        return
+
+    suggested_dist = max(current_dist + 10.0, current_dist * 1.5)
+    suggested_parameters = {
+        "lipids": parameters.get("lipids"),
+        "ratio": parameters.get("ratio"),
+        "dist": round(suggested_dist, 3),
+        "dist_wat": round(current_dist_wat, 3),
+        "leaflet": round(current_leaflet, 3),
+        "preoriented": parameters.get("preoriented"),
+        "salt": parameters.get("salt"),
+        "salt_c": parameters.get("salt_c"),
+        "salt_a": parameters.get("salt_a"),
+        "saltcon": parameters.get("saltcon"),
+        "salt_override": parameters.get("salt_override"),
+        "water_model": parameters.get("water_model"),
+        "nloop": max(current_nloop, 30),
+        "nloop_all": max(current_nloop_all, 80),
+    }
+    result["recommended_next_action"] = "retry_membrane_with_larger_box"
+    result["retry_suggestion"] = {
+        "action": "retry_membrane_with_larger_box",
+        "box_growth_axis": "xy",
+        "preserve_z_parameters": ["dist_wat", "leaflet"],
+        "reason_codes": failure_reasons,
+        "suggested_parameters": suggested_parameters,
+        "agent_guidance": (
+            "Preserve the requested lipid species and ratio. If the public "
+            "prompt or user explicitly fixed membrane geometry, ask before "
+            "changing it; otherwise retry from the same prep parent with the "
+            "larger lateral xy box parameters. Do not increase leaflet or "
+            "dist_wat unless the prompt or user explicitly asks for a thicker "
+            "membrane/water slab. Record both attempts."
+        ),
+    }
 
 
 def _diagnostics_require_salt_override(text: str) -> bool:
@@ -1111,8 +1243,8 @@ def embed_in_membrane(
     overwrite: bool = True,
     notprotonate: bool = True,
     keepligs: bool = True,
-    nloop: int = 10,
-    nloop_all: int = 20,
+    nloop: int = 20,
+    nloop_all: int = 50,
     water_model: str = "opc",
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
@@ -1162,8 +1294,8 @@ def embed_in_membrane(
         notprotonate: Skip protonation (default: True, assumes pre-protonated)
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes with MEMEMBED.
-        nloop: PACKMOL GENCAN loops for individual packing (default: 50)
-        nloop_all: PACKMOL GENCAN loops for final packing (default: 200)
+        nloop: PACKMOL GENCAN loops for individual packing (default: 20)
+        nloop_all: PACKMOL GENCAN loops for final packing (default: 50)
         water_model: Water model type (default: "opc").
                      Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      Must match the water model used in build_amber_system.
@@ -1229,6 +1361,8 @@ def embed_in_membrane(
             "saltcon": saltcon,
             "salt_override": salt_override,
             "water_model": water_model,
+            "nloop": nloop,
+            "nloop_all": nloop_all,
         },
         "packmol_log": None,
         "statistics": {},
@@ -1416,6 +1550,7 @@ def embed_in_membrane(
         # Run packmol-memgen (membrane building can take longer)
         membrane_timeout = get_timeout("membrane")
         packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
+        packing_failure_recorded = False
         try:
             proc_result = packmol_memgen_wrapper.run(args, cwd=out_dir, timeout=membrane_timeout)
         except subprocess.CalledProcessError as exc:
@@ -1436,6 +1571,16 @@ def embed_in_membrane(
                 proc_result = packmol_memgen_wrapper.run(
                     args, cwd=out_dir, timeout=membrane_timeout
                 )
+            elif failure_reasons := _packmol_quality_failure_reasons(diagnostics):
+                _record_packmol_quality_failure(
+                    result,
+                    failure_reasons,
+                    "packmol-memgen failed and Packmol reported imperfect "
+                    "packing or membrane piercing; refusing to treat this "
+                    "structure as MD-ready.",
+                )
+                packing_failure_recorded = True
+                proc_result = exc
             else:
                 raise
         else:
@@ -1462,24 +1607,31 @@ def embed_in_membrane(
                     args, cwd=out_dir, timeout=membrane_timeout
                 )
 
-        _run_packmol_if_needed(
-            output_file=output_file,
-            packmol_inp_file=packmol_inp_file,
-            packmol_path=packmol_path,
-            out_dir=out_dir,
-            output_name=output_name,
-            timeout=membrane_timeout,
-            result=result,
-        )
-        _record_packmol_memgen_output(
-            output_file=output_file,
-            packmol_inp_file=packmol_inp_file,
-            out_dir=out_dir,
-            output_name=output_name,
-            proc_result=proc_result,
-            result=result,
-            success_message="Successfully embedded structure in membrane",
-        )
+        if not packing_failure_recorded:
+            _run_packmol_if_needed(
+                output_file=output_file,
+                packmol_inp_file=packmol_inp_file,
+                packmol_path=packmol_path,
+                out_dir=out_dir,
+                output_name=output_name,
+                timeout=membrane_timeout,
+                result=result,
+            )
+            _record_packmol_memgen_output(
+                output_file=output_file,
+                packmol_inp_file=packmol_inp_file,
+                out_dir=out_dir,
+                output_name=output_name,
+                proc_result=proc_result,
+                result=result,
+                success_message="Successfully embedded structure in membrane",
+            )
+            if result.get("success") and output_file.exists():
+                restore_report = _restore_packmol_solute_identity(input_copy, output_file)
+                result.update(restore_report)
+                result["warnings"].extend(
+                    restore_report.get("solute_identity_restore_warnings", [])
+                )
         
     except Exception as e:
         error_msg = f"Error during membrane embedding: {type(e).__name__}: {str(e)}"

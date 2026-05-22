@@ -263,6 +263,10 @@ def prepare_benchmark_run(
 
     dataset = _resolve_dataset_dir(dataset_dir)
     run_dir = Path(init["run_dir"])
+    cfg_path = run_dir / "run_config.json"
+    cfg_payload = json.loads(cfg_path.read_text())
+    cfg_payload["dataset_dir"] = str(dataset)
+    _write_json(cfg_path, cfg_payload)
     if public_package_dir is None:
         public_dir = run_dir / "public_tasks"
     else:
@@ -284,6 +288,7 @@ def prepare_benchmark_run(
         }
 
     task_instructions: list[dict[str, Any]] = []
+    harness_instructions: list[dict[str, Any]] = []
     for task_id in task_ids:
         task_run_dir = run_dir / "tasks" / task_id
         ensure_directory(task_run_dir)
@@ -294,6 +299,11 @@ def prepare_benchmark_run(
             "submission_contract": str(
                 public_dir / "tasks" / task_id / "submission_contract.json"
             ),
+            "submission_dir": str(task_run_dir / "submission"),
+        }
+        harness_instruction = {
+            "task_id": task_id,
+            "canonical_task_file": str(dataset / "tasks" / task_id / "task.json"),
             "submission_dir": str(task_run_dir / "submission"),
             "validation_output_file": str(task_run_dir / "validation.json"),
             "score_file": str(task_run_dir / "score.json"),
@@ -307,7 +317,9 @@ def prepare_benchmark_run(
             ),
         }
         _write_json(task_run_dir / "task_instructions.json", instruction)
+        _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
         task_instructions.append(instruction)
+        harness_instructions.append(harness_instruction)
 
     _write_json(
         run_dir / "agent_tasks.json",
@@ -319,6 +331,15 @@ def prepare_benchmark_run(
             "tasks": task_instructions,
         },
     )
+    _write_json(
+        run_dir / "harness_tasks.json",
+        {
+            "run_id": init["run_id"],
+            "dataset_dir": str(dataset),
+            "task_count": len(harness_instructions),
+            "tasks": harness_instructions,
+        },
+    )
 
     return {
         "success": True,
@@ -328,6 +349,7 @@ def prepare_benchmark_run(
         "environment": init["environment"],
         "public_package_dir": str(public_dir),
         "agent_tasks_file": str(run_dir / "agent_tasks.json"),
+        "harness_tasks_file": str(run_dir / "harness_tasks.json"),
         "task_count": len(task_instructions),
         "tasks": task_instructions,
         "public_export": public_export,
@@ -337,6 +359,7 @@ def prepare_benchmark_run(
 def summarize_benchmark_run(
     run_dir: str,
     output_file: Optional[str] = None,
+    dataset_dir: Optional[str] = None,
 ) -> dict[str, Any]:
     """Aggregate per-task score.json files into summary.json and
     summaries.jsonl. Idempotent: re-running replaces (not stacks) the
@@ -351,21 +374,48 @@ def summarize_benchmark_run(
         return {"success": False, "errors": [f"missing run_config.json under {rd}"]}
     cfg_payload = json.loads(cfg_path.read_text())
 
+    configured_task_ids = [str(t) for t in cfg_payload.get("task_ids", [])]
+    tasks_dir = rd / "tasks"
+    if not configured_task_ids and tasks_dir.is_dir():
+        configured_task_ids = sorted(p.name for p in tasks_dir.iterdir() if p.is_dir())
+
+    lookup_dataset_dir = dataset_dir or cfg_payload.get("dataset_dir")
+    if lookup_dataset_dir:
+        cfg_payload = {**cfg_payload, "dataset_dir": str(_resolve_dataset_dir(lookup_dataset_dir))}
+
     scores: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
     tasks_dir = rd / "tasks"
-    if tasks_dir.is_dir():
-        for task_subdir in sorted(p for p in tasks_dir.iterdir() if p.is_dir()):
-            score_path = task_subdir / "score.json"
-            if not score_path.is_file():
-                continue
+    for task_id in configured_task_ids:
+        task_contract = _lookup_task_contract(task_id, cfg_payload)
+        score_path = tasks_dir / task_id / "score.json"
+        if score_path.is_file():
             try:
                 score_payload = json.loads(score_path.read_text())
-            except json.JSONDecodeError:
-                continue
-            scores.append(score_payload)
-            # Locate task contract: prefer the canonical pilot path.
-            tasks.append(_lookup_task_contract(task_subdir.name, cfg_payload))
+            except json.JSONDecodeError as exc:
+                score_payload = _synthetic_failed_score(
+                    task_id,
+                    task_contract,
+                    f"score.json invalid: {exc}",
+                    run_id=str(cfg_payload.get("run_id") or rd.name),
+                )
+            else:
+                if not isinstance(score_payload, dict):
+                    score_payload = _synthetic_failed_score(
+                        task_id,
+                        task_contract,
+                        "score.json did not contain a JSON object",
+                        run_id=str(cfg_payload.get("run_id") or rd.name),
+                    )
+        else:
+            score_payload = _synthetic_failed_score(
+                task_id,
+                task_contract,
+                f"missing score.json for task {task_id}",
+                run_id=str(cfg_payload.get("run_id") or rd.name),
+            )
+        scores.append(score_payload)
+        tasks.append(task_contract)
 
     aggregate = scoring.aggregate_run_scores(scores, tasks)
     summary = RunSummary(
@@ -464,7 +514,10 @@ def score_benchmark_run(
 
     summary_result = None
     if summarize:
-        summary_result = summarize_benchmark_run(run_dir=str(rd))
+        summary_result = summarize_benchmark_run(
+            run_dir=str(rd),
+            dataset_dir=str(dataset),
+        )
 
     failed = [item for item in task_results if not item.get("benchmark_passed")]
     return {
@@ -492,11 +545,15 @@ def _lookup_task_contract(task_id: str, cfg_payload: dict[str, Any]
     not found, we fall back to a permissive record (axis=None) so the run
     still summarizes.
     """
-    candidates = [
+    candidates = []
+    if cfg_payload.get("dataset_dir"):
+        dataset = _resolve_dataset_dir(str(cfg_payload["dataset_dir"]))
+        candidates.append(dataset / "tasks" / task_id / "task.json")
+    candidates.extend([
         Path("benchmarks/mdagentbench/tasks") / task_id / "task.json",
         Path(__file__).resolve().parents[2]
         / "benchmarks/mdagentbench/tasks" / task_id / "task.json",
-    ]
+    ])
     for c in candidates:
         if c.is_file():
             try:
@@ -504,3 +561,31 @@ def _lookup_task_contract(task_id: str, cfg_payload: dict[str, Any]
             except json.JSONDecodeError:
                 continue
     return {"task_id": task_id, "primary_score": None, "secondary_scores": []}
+
+
+def _synthetic_failed_score(
+    task_id: str,
+    task_contract: dict[str, Any],
+    message: str,
+    *,
+    run_id: str,
+) -> dict[str, Any]:
+    scores = {axis: None for axis in scoring.SCORE_AXES}
+    primary = task_contract.get("primary_score")
+    if primary in scores:
+        scores[primary] = 0.0
+    return {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "primary_score": primary,
+        "status": "failed",
+        "weighted_total": 0.0,
+        "scores": scores,
+        "deterministic_checks": [],
+        "ground_truth_checks": [],
+        "llm_judge": {"enabled": False},
+        "runtime": {"walltime_minutes": 0.0, "tokens": 0, "gpu_hours": 0.0},
+        "integrity_warnings": [],
+        "errors": [{"message": message}],
+    }

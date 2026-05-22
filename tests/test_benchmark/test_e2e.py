@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 from pathlib import Path
 
 from mdclaw.benchmark import cli
@@ -12,6 +14,7 @@ from tests.test_benchmark import _fake_submissions
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
+MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
 
 
 def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
@@ -109,6 +112,136 @@ def test_prepare_and_score_benchmark_run_convenience_tools(tmp_path: Path):
     assert result["failed_task_count"] == 0
     assert Path(output_dir / "convenience_p11" / "tasks" / TASK_ID / "score.json").is_file()
     assert result["summary"]["summary"]["overall_score"] == 1.0
+
+
+def test_score_run_summary_counts_missing_submission_tasks(tmp_path: Path):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="missing_submission_p11",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        execution_mode="dry_run",
+    )
+    assert prepared["success"], prepared
+
+    submission_dir = (
+        output_dir / "missing_submission_p11" / "tasks" / TASK_ID / "submission"
+    )
+    shutil.rmtree(submission_dir)
+
+    result = benchmark_run.score_benchmark_run(
+        run_dir=str(output_dir / "missing_submission_p11"),
+        dataset_dir=str(DATASET_DIR),
+    )
+
+    assert result["success"] is False
+    assert result["failed_task_count"] == 1
+    summary = result["summary"]["summary"]
+    assert summary["n_tasks"] == 1
+    assert summary["n_failed_tasks"] == 1
+    assert summary["overall_score"] == 0.0
+    assert summary["task_scores"][0]["task_id"] == TASK_ID
+    assert summary["task_scores"][0]["status"] == "failed"
+    assert not (
+        output_dir / "missing_submission_p11" / "tasks" / TASK_ID / "score.json"
+    ).exists()
+
+
+def test_summary_uses_custom_dataset_dir_for_missing_scores(tmp_path: Path):
+    dataset_dir = tmp_path / "custom_dataset"
+    task_id = "CUSTOM_prep_task"
+    task_dir = dataset_dir / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (dataset_dir / "dataset.json").write_text(
+        json.dumps({"schema_version": "1.0", "task_ids": [task_id]})
+    )
+    (task_dir / "task.json").write_text(
+        json.dumps(
+            {
+                "task_id": task_id,
+                "primary_score": "preparation",
+                "secondary_scores": [],
+            }
+        )
+    )
+    run_dir = tmp_path / "run"
+    (run_dir / "tasks" / task_id).mkdir(parents=True)
+    (run_dir / "run_config.json").write_text(
+        json.dumps(
+            {
+                "run_id": "custom_missing",
+                "execution_mode": "lite",
+                "judge_mode": "deterministic",
+                "backend": {},
+                "harness": {},
+                "model": {},
+                "task_ids": [task_id],
+                "dataset_dir": str(dataset_dir),
+            }
+        )
+    )
+
+    result = benchmark_run.summarize_benchmark_run(str(run_dir))
+
+    assert result["success"], result
+    summary = result["summary"]
+    assert summary["n_tasks"] == 1
+    assert summary["n_failed_tasks"] == 1
+    assert summary["scores"]["preparation"] == 0.0
+
+
+def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
+    tmp_path: Path,
+):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="agent_safe_p18",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[MEMBRANE_TASK_ID],
+        execution_mode="dry_run",
+    )
+    assert prepared["success"], prepared
+    assert "harness_tasks" not in prepared
+
+    task_run_dir = output_dir / "agent_safe_p18" / "tasks" / MEMBRANE_TASK_ID
+    task_instructions = json.loads((task_run_dir / "task_instructions.json").read_text())
+    agent_tasks = json.loads((output_dir / "agent_safe_p18" / "agent_tasks.json").read_text())
+    harness_instructions = json.loads(
+        (task_run_dir / "harness_instructions.json").read_text()
+    )
+    harness_tasks = json.loads((output_dir / "agent_safe_p18" / "harness_tasks.json").read_text())
+
+    assert set(task_instructions) == {
+        "task_id",
+        "prompt_file",
+        "submission_contract",
+        "submission_dir",
+    }
+    assert agent_tasks["tasks"] == [task_instructions]
+    forbidden_agent_fields = {
+        "canonical_task_file",
+        "score_command",
+        "validation_output_file",
+        "score_file",
+        "command",
+        "commands",
+        "mdclaw_args",
+        "selected_chains",
+        "source_model_index",
+        "membrane",
+        "dist",
+        "dist_wat",
+        "leaflet",
+        "preoriented",
+    }
+    assert forbidden_agent_fields.isdisjoint(task_instructions)
+    assert forbidden_agent_fields.isdisjoint(agent_tasks["tasks"][0])
+
+    assert harness_instructions["canonical_task_file"].endswith("task.json")
+    assert "score_command" in harness_instructions
+    assert harness_tasks["tasks"] == [harness_instructions]
 
 
 def test_validate_and_score_wrapper_stops_on_validation_failure(tmp_path: Path):

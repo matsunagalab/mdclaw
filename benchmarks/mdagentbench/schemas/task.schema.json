@@ -97,6 +97,7 @@
             "pdb_residue_state",
             "rmsd_recompute",
             "assembly_identity_check",
+            "candidate_selection_check",
             "artifact_provenance_text",
             "topology_artifact_bundle",
             "openmm_system_load",
@@ -406,6 +407,11 @@
           "title": "Require Output Chains In Structure",
           "type": "boolean"
         },
+        "require_selection_reason": {
+          "default": false,
+          "title": "Require Selection Reason",
+          "type": "boolean"
+        },
         "require_unique_output_chains": {
           "default": false,
           "title": "Require Unique Output Chains",
@@ -438,6 +444,18 @@
           "default": null,
           "title": "Required Atom Names"
         },
+        "required_candidate_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Candidate Id"
+        },
         "required_mapping_fields": {
           "anyOf": [
             {
@@ -452,6 +470,18 @@
           ],
           "default": null,
           "title": "Required Mapping Fields"
+        },
+        "required_model_rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Model Rank"
         },
         "required_operator_ids": {
           "anyOf": [
@@ -605,6 +635,30 @@
           ],
           "default": null,
           "title": "Selection"
+        },
+        "source_selection_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Selection Manifest Path"
+        },
+        "source_selection_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Selection Path"
         },
         "state_xml_manifest_path": {
           "anyOf": [

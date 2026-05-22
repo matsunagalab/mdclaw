@@ -178,7 +178,7 @@ def test_multi_file_bundle_requires_explicit_structure_selection(tmp_path):
     assert selected["raw_file"].endswith("candidate_b.pdb")
 
 
-def test_source_model_index_selection_prefers_exact_index_before_rank():
+def test_source_model_index_selection_prefers_user_facing_rank_before_raw_index():
     bundle = {
         "schema_version": 1,
         "structures": [
@@ -194,7 +194,7 @@ def test_source_model_index_selection_prefers_exact_index_before_rank():
     }
 
     selected = select_source_structure(bundle, {"model_index": 2})
-    assert selected["structure_id"] == "index_two"
+    assert selected["structure_id"] == "rank_two"
 
 
 def test_source_bundle_records_candidate_metadata_length_warning(tmp_path):

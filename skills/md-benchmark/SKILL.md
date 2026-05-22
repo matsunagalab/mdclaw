@@ -41,7 +41,10 @@ No fake trajectories, fake metrics, fake citations, or guessed conclusions.
 Treat canonical `task.json` as runner/scorer metadata, not a solution recipe.
 Harness code may read `failure_policy`, `time_limit_minutes`, required outputs,
 and scoring checks before deciding whether a task can be blocked; agents should
-not read it.
+not read it. The runner must not inject task-specific MDClaw command-line
+arguments, geometry values, selected chains, model numbers, or workflow knobs
+that are not present in the public prompt/submission contract. Those choices
+belong to the evaluated agent and must be justified in its submission.
 
 ## Minimum Attempt Policy
 
@@ -102,8 +105,10 @@ mdclaw prepare_benchmark_run \
 The command writes `<run_dir>/agent_tasks.json` plus one
 `task_instructions.json` per task. Each instruction points to the agent-safe
 `prompt.md`, `submission_contract.json`, and the task's `submission/`
-directory. Use `--task-ids P01_prep_simple_monomer_t4l P02_prep_1ake_chain_ap5`
-to run a subset.
+directory. Scoring metadata is written separately to `harness_tasks.json` and
+`harness_instructions.json`; do not give those files to the evaluated agent.
+Use `--task-ids P01_prep_simple_monomer_t4l P02_prep_1ake_chain_ap5` to run a
+subset.
 
 For MDClaw, launch one sub-agent per task and give it this prompt:
 
@@ -113,7 +118,7 @@ You are the MDClaw benchmark agent for <task_id>.
 Read <task_dir>/prompt.md as the task. Retrieve public sources named in the
 prompt as needed.
 If <task_dir>/submission_contract.json exists, read it and satisfy its
-manifest_contract and metric_requirements.
+manifest_contract, metric_requirements, and candidate_selection_requirements.
 Do not read truth/ or scorer/.
 
 Use MDClaw CLI tools and MDClaw skills to run real prep/minimization work when
@@ -136,6 +141,19 @@ retain explicit ions. Explicit solvation/membrane tools first try the requested
 salt concentration; if neutralization requires more ions, they may automatically
 rerun packmol-memgen with `--salt_override` while keeping explicit-solvent mode
 unchanged. Record the warning/metadata in provenance and metrics evidence.
+For membrane prep, use `embed_in_membrane` defaults unless the prompt explicitly
+specifies membrane geometry or pre-orientation; a
+`packmol_packing_quality_failed` result is a real blocker, not a completed
+topology candidate. If the result also has
+`recommended_next_action="retry_membrane_with_larger_box"`, preserve the prompt
+lipid species and ratio, retry from the same prep parent with the
+`retry_suggestion.suggested_parameters`, and record both attempts. The retry
+suggestion should expand the lateral xy box; do not inflate z by changing
+`leaflet` or `dist_wat` unless the prompt explicitly asks for it. If the prompt
+explicitly fixed geometry, report the conflict instead of silently changing it.
+Do not increase Packmol loop counts beyond the CLI suggestion just to make the
+attempt run longer; benchmark attempts should fail fast with structured
+evidence when packing remains unsuitable.
 For nucleic-acid prep tasks such as P15/P16/P17, submit the
 hydrogen-complete standard DNA/RNA prep artifact written by `prepare_complex`;
 do not rely on topology-time hydrogen repair.
@@ -152,11 +170,17 @@ manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:
 write manifest.outputs.minimized_structure and
 manifest.outputs.minimization_report. Fill metrics.json paths listed in
 submission_contract.json metric_requirements, especially task-specific
-metrics.preparation.* entries. If `prepare_complex` writes
+metrics.preparation.* entries. If the public contract lists
+candidate_selection_requirements, satisfy them with `source_selection.json`
+listed from manifest.outputs.source_selection or equivalent structured
+source_selection evidence in provenance, metrics, or the evidence report. If
+`prepare_complex` writes
 component_disposition.json or excluded_components.json, copy those tool-owned
 artifacts into the submission, list them in manifest.outputs when relevant, and
-summarize their values in metrics/provenance; do not invent them by hand. Do not
-run full equilibration or production for prep tasks unless the prompt explicitly
+summarize their values in metrics/provenance; do not invent them by hand. If
+`prepare_complex` writes `source_selection.json` for an NMR/model selection,
+copy it into the submission and list it as `manifest.outputs.source_selection`.
+Do not run full equilibration or production for prep tasks unless the prompt explicitly
 asks for it. For restart tasks, run the requested chunks and attempt trajectory
 concatenation/continuity checks. For comparative answer tasks, run the requested
 systems before reporting an effect direction.

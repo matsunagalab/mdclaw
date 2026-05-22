@@ -96,6 +96,22 @@ Explicit solvation and membrane tools first try the requested `--saltcon`
 (default 0.15 M). If neutralization requires a higher ion concentration, MDClaw
 automatically reruns packmol-memgen with `--salt_override` without changing the
 explicit-solvent mode, and records a warning plus metadata for provenance.
+If `embed_in_membrane` returns `code="packmol_packing_quality_failed"` and
+`recommended_next_action="retry_membrane_with_larger_box"`, keep the requested
+lipid species and ratio fixed, retry from the same `prep` parent with the
+`retry_suggestion.suggested_parameters`, and record both attempts. The retry
+suggestion increases the lateral xy box via `dist`; keep `leaflet` and
+`dist_wat` unchanged unless the user or prompt explicitly asks for a thicker
+membrane/water slab. Do not increase Packmol loop counts by hand just to make
+the command run longer; the CLI keeps retry loop counts modest and returns a
+structured failure when packing remains unsuitable.
+
+Common structured outcomes:
+
+| `code` / action | What it means | Agent response |
+|---|---|---|
+| `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | Packmol made an output, but packing was imperfect or lipids pierced the membrane. The box/packing is not MD-ready. | Retry with the CLI-provided larger xy/lateral box suggestion and modest loop counts unless geometry was explicitly fixed. |
+| `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images

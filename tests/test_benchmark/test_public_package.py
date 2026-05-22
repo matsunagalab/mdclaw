@@ -131,6 +131,77 @@ def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
         "POPC:POPE:CHL1=2:1:1",
         "PC:PE:CHL=2:1:1",
     ]
+    candidate_requirements = contract["candidate_selection_requirements"]
+    assert len(candidate_requirements) == 1
+    candidate_requirement = candidate_requirements[0]
+    assert candidate_requirement["check_id"] == "source_selection_model_1"
+    assert candidate_requirement["required_candidate_id"] is None
+    assert candidate_requirement["required_model_rank"] == 1
+    assert candidate_requirement["require_selection_reason"] is False
+    assert candidate_requirement["required_for_completed_submission"] is True
+    assert "source_selection.json" in candidate_requirement["accepted_locations"]
+    assert "provenance.source_selection" in candidate_requirement["accepted_locations"]
+    assert candidate_requirement["expected_shape"]["selected_structure"]["origin"] == {
+        "model_rank": 1,
+    }
+
+
+def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
+    out_dir = tmp_path / "public_mdagentbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    task_dir = out_dir / "tasks" / "P19_prep_nmr_model_selection"
+    prompt = (task_dir / "prompt.md").read_text()
+    assert "model 5" in prompt
+    assert "candidate_005" in prompt
+    assert "selected model rank as 5" in prompt
+    assert "source_selection.json" in prompt
+    assert "structured provenance" in prompt
+    assert "selection reason" in prompt
+
+    contract = json.loads((task_dir / "submission_contract.json").read_text())
+    requirements = {
+        item["json_path"]: (item["operator"], item["value"])
+        for item in contract["metric_requirements"]
+    }
+    assert requirements["preparation.selected_candidate_id"] == (
+        "equals",
+        "candidate_005",
+    )
+    assert requirements["preparation.selected_model_rank"] == (
+        "equals",
+        5,
+    )
+    assert "outputs.source_selection" in contract["manifest_contract"][
+        "recommended_optional_outputs"
+    ]
+    candidate_requirements = contract["candidate_selection_requirements"]
+    assert len(candidate_requirements) == 1
+    candidate_requirement = candidate_requirements[0]
+    assert candidate_requirement["check_id"] == "source_selection_model_5"
+    assert candidate_requirement["required_candidate_id"] == "candidate_005"
+    assert candidate_requirement["required_model_rank"] == 5
+    assert candidate_requirement["require_selection_reason"] is True
+    assert candidate_requirement["required_for_completed_submission"] is True
+    assert candidate_requirement["accepted_locations"] == [
+        "manifest.outputs.source_selection -> source_selection.json",
+        "source_selection.json",
+        "provenance.source_selection",
+        "metrics.source_selection",
+        "evidence_report.source_selection",
+    ]
+    assert candidate_requirement["expected_shape"] == {
+        "selected_structure": {
+            "structure_id": "candidate_005",
+            "candidate_id": "candidate_005",
+            "origin": {"model_rank": 5},
+        },
+        "selection": {"reason": "..."},
+    }
 
 
 def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(

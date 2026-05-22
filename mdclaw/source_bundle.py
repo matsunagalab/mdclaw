@@ -700,10 +700,13 @@ def select_source_structure(
 
     if selection.get("model_index") is not None:
         requested_index = int(selection["model_index"])
+        # ``source_model_index`` is the user-facing model number, so prefer
+        # one-based ranks. Fall back to zero-based provenance only for legacy
+        # bundles that do not carry model_rank/rank.
         for get_value in (
-            lambda record: (record.get("origin") or {}).get("model_index"),
             lambda record: (record.get("origin") or {}).get("model_rank"),
             lambda record: record.get("rank"),
+            lambda record: (record.get("origin") or {}).get("model_index"),
         ):
             for record in structures:
                 if get_value(record) == requested_index:

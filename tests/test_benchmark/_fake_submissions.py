@@ -129,7 +129,43 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
                         "output_chain_id": chain_ids[index % len(chain_ids)],
                         "naming_policy": "short",
                     })
-            _set_path(metrics, mapping_path, mapping)
+        _set_path(metrics, mapping_path, mapping)
+
+
+def _source_selection_for_task(task: dict[str, Any], mode: str) -> dict[str, Any] | None:
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "candidate_selection_check":
+            continue
+        expected_rank = int(check.get("required_model_rank") or 1)
+        candidate_id = str(
+            check.get("required_candidate_id") or f"candidate_{expected_rank:03d}"
+        )
+        if mode != "honest":
+            candidate_id = "candidate_001" if candidate_id != "candidate_001" else "candidate_002"
+            expected_rank = 1 if expected_rank != 1 else 2
+        return {
+            "schema_version": 1,
+            "source_bundle": "source/source_bundle.json",
+            "selection": {
+                "structure_id": candidate_id,
+                "reason": (
+                    f"Selected model rank {expected_rank} from the public prompt."
+                ),
+            },
+            "selected_structure": {
+                "structure_id": candidate_id,
+                "candidate_id": candidate_id,
+                "rank": expected_rank,
+                "path": f"artifacts/candidates/{candidate_id}.pdb",
+                "origin": {
+                    "kind": "pdb",
+                    "model_index": expected_rank - 1,
+                    "model_rank": expected_rank,
+                    "model_id": str(expected_rank),
+                },
+            },
+        }
+    return None
 
 
 def _provenance_text_for_checks(task: dict[str, Any], mode: str) -> str:
@@ -294,22 +330,27 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     prepared_structure = _prepared_structure(task_dir, task, mode)
     topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode)
     minimized_structure = prepared_structure if mode == "honest" else "END\n"
+    source_selection = _source_selection_for_task(task, mode)
 
     status = "completed"
+    outputs = {
+        "metrics": "metrics.json",
+        "provenance": "provenance.json",
+        "evidence_report": "evidence_report.json",
+        "prepared_structure": "prepared_structure.pdb",
+        "topology": topology_outputs,
+        "minimized_structure": "minimized_structure.pdb",
+        "minimization_report": "minimization_report.json",
+    }
+    if source_selection is not None:
+        outputs["source_selection"] = "source_selection.json"
+
     _write(sub_dir / "manifest.json", {
         "schema_version": "1.0",
         "run_id": run_id,
         "task_id": task_id,
         "status": status,
-        "outputs": {
-            "metrics": "metrics.json",
-            "provenance": "provenance.json",
-            "evidence_report": "evidence_report.json",
-            "prepared_structure": "prepared_structure.pdb",
-            "topology": topology_outputs,
-            "minimized_structure": "minimized_structure.pdb",
-            "minimization_report": "minimization_report.json",
-        },
+        "outputs": outputs,
         "limitations": ["synthetic CI fixture; no real MD preparation was run"],
     })
     _write(sub_dir / "metrics.json", metrics)
@@ -323,6 +364,8 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     provenance["artifact_provenance_text_evidence"] = _provenance_text_for_checks(
         task, mode,
     )
+    if source_selection is not None:
+        provenance["source_selection"] = source_selection
     _write(sub_dir / "provenance.json", provenance)
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
@@ -346,6 +389,8 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     })
     _write(sub_dir / "prepared_structure.pdb", prepared_structure)
     _write(sub_dir / "minimized_structure.pdb", minimized_structure)
+    if source_selection is not None:
+        _write(sub_dir / "source_selection.json", source_selection)
     if "component_disposition.json" in (task.get("required_outputs") or []):
         excluded_count = int(
             metrics.get("preparation", {}).get("experimental_isotope_atoms_excluded", 0) or 0

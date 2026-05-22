@@ -39,9 +39,27 @@
       {
         "check_id": "candidate_selected",
         "check_type": "json_equals",
-        "equals": "model_005",
+        "equals": "candidate_005",
         "json_file": "metrics.json",
         "json_path": "preparation.selected_candidate_id",
+        "weight": 0.15
+      },
+      {
+        "check_id": "selected_model_rank_recorded",
+        "check_type": "json_equals",
+        "equals": 5,
+        "json_file": "metrics.json",
+        "json_path": "preparation.selected_model_rank",
+        "weight": 0.15
+      },
+      {
+        "check_id": "source_selection_model_5",
+        "check_type": "candidate_selection_check",
+        "require_selection_reason": true,
+        "required_candidate_id": "candidate_005",
+        "required_model_rank": 5,
+        "source_selection_manifest_path": "outputs.source_selection",
+        "source_selection_path": "source_selection.json",
         "weight": 0.45
       },
       {
@@ -50,7 +68,7 @@
         "equals": true,
         "json_file": "metrics.json",
         "json_path": "preparation.candidate_selection_reason_recorded",
-        "weight": 0.35
+        "weight": 0.15
       },
       {
         "check_id": "single_structure_used",
@@ -58,7 +76,7 @@
         "equals": true,
         "json_file": "metrics.json",
         "json_path": "preparation.single_concrete_structure_used",
-        "weight": 0.2
+        "weight": 0.1
       },
       {
         "check_id": "topology_artifact_bundle_present",
@@ -129,6 +147,6 @@
     "evidence_communication"
   ],
   "task_id": "P19_prep_nmr_model_selection",
-  "task_intent": "Candidate/model selection: select a specified NMR model/candidate before preparation rather than silently using model 1 or averaging the ensemble.",
+  "task_intent": "Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. Record the selected candidate as candidate_005, the selected model rank as 5, and source-selection evidence with a selection reason in `source_selection.json` or structured provenance.",
   "time_limit_minutes": 60
 }

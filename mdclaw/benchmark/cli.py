@@ -100,6 +100,46 @@ def _public_metric_requirements(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
+def _public_candidate_selection_requirements(task: Task) -> list[dict[str, Any]]:
+    """Return agent-facing source-selection evidence requirements."""
+    requirements: list[dict[str, Any]] = []
+    for check in task.scoring.deterministic_checks:
+        if check.check_type != "candidate_selection_check":
+            continue
+
+        selected_structure: dict[str, Any] = {}
+        if check.required_candidate_id is not None:
+            selected_structure["structure_id"] = check.required_candidate_id
+            selected_structure["candidate_id"] = check.required_candidate_id
+        if check.required_model_rank is not None:
+            selected_structure["origin"] = {
+                "model_rank": check.required_model_rank,
+            }
+
+        expected_shape: dict[str, Any] = {}
+        if selected_structure:
+            expected_shape["selected_structure"] = selected_structure
+        if check.require_selection_reason:
+            expected_shape["selection"] = {"reason": "..."}
+
+        requirements.append({
+            "check_id": check.check_id,
+            "required_candidate_id": check.required_candidate_id,
+            "required_model_rank": check.required_model_rank,
+            "require_selection_reason": check.require_selection_reason,
+            "required_for_completed_submission": True,
+            "accepted_locations": [
+                "manifest.outputs.source_selection -> source_selection.json",
+                "source_selection.json",
+                "provenance.source_selection",
+                "metrics.source_selection",
+                "evidence_report.source_selection",
+            ],
+            "expected_shape": expected_shape,
+        })
+    return requirements
+
+
 def _manifest_contract() -> dict[str, Any]:
     """Return the public manifest rules most often missed by agents."""
     return {
@@ -116,6 +156,9 @@ def _manifest_contract() -> dict[str, Any]:
             "outputs.topology",
             "outputs.minimized_structure",
             "outputs.minimization_report",
+        ],
+        "recommended_optional_outputs": [
+            "outputs.source_selection",
         ],
     }
 
@@ -458,6 +501,9 @@ def export_benchmark_public_package(
                 "environment_type": task.environment_type,
                 "requires_tools": list(task.requires_tools),
                 "metric_requirements": _public_metric_requirements(task),
+                "candidate_selection_requirements": (
+                    _public_candidate_selection_requirements(task)
+                ),
                 "manifest_contract": _manifest_contract(),
                 "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",
             }

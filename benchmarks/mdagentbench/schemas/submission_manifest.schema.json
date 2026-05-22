@@ -147,6 +147,18 @@
           "default": "provenance.json",
           "title": "Provenance"
         },
+        "source_selection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Selection"
+        },
         "topology": {
           "items": {
             "type": "string"

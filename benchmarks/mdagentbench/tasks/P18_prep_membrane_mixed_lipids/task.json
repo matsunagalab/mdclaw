@@ -45,6 +45,23 @@
         "weight": 0.2
       },
       {
+        "check_id": "selected_model_rank_recorded",
+        "check_type": "json_equals",
+        "equals": 1,
+        "json_file": "metrics.json",
+        "json_path": "preparation.selected_model_rank",
+        "weight": 0.1
+      },
+      {
+        "check_id": "source_selection_model_1",
+        "check_type": "candidate_selection_check",
+        "require_selection_reason": false,
+        "required_model_rank": 1,
+        "source_selection_manifest_path": "outputs.source_selection",
+        "source_selection_path": "source_selection.json",
+        "weight": 0.2
+      },
+      {
         "check_id": "lipid_species_present",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
@@ -173,6 +190,6 @@
     "evidence_communication"
   ],
   "task_id": "P18_prep_membrane_mixed_lipids",
-  "task_intent": "Membrane embedding and lipid composition: prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio.",
+  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.",
   "time_limit_minutes": 60
 }

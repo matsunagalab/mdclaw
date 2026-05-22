@@ -35,6 +35,7 @@ _CRITICAL_PREP_CHECK_TYPES = {
     "pdb_residue_state",
     "pdb_no_deuterium_atoms",
     "assembly_identity_check",
+    "candidate_selection_check",
     "topology_artifact_bundle",
     "openmm_system_load",
     "openmm_energy_rescan",
@@ -44,6 +45,12 @@ _CRITICAL_PREP_CHECK_TYPES = {
 }
 
 _DEUTERIUM_FALLBACK_ATOM_NAME_RE = re.compile(r"^D[0-9]*$")
+
+# A finite OpenMM energy is not automatically physically meaningful. Values
+# above this per-particle scale indicate severe clashes or bad periodic boxes,
+# like Packmol-forced membrane outputs that produce 1e20 kJ/mol energies.
+_MAX_ABS_PREP_ENERGY_PER_PARTICLE_KJ_MOL = 1.0e6
+_MAX_ABS_PREP_TOTAL_ENERGY_KJ_MOL = 1.0e12
 
 
 # ---------------------------------------------------------------------------
@@ -624,6 +631,16 @@ def _check_openmm_energy_rescan(check: DeterministicCheck,
         )
         if not math.isfinite(float(energy)):
             return False, 0.0, f"potential energy is not finite: {energy!r}"
+        particle_count = max(1, system.getNumParticles())
+        energy_per_particle = abs(float(energy)) / particle_count
+        if energy_per_particle > _MAX_ABS_PREP_ENERGY_PER_PARTICLE_KJ_MOL:
+            return (
+                False,
+                0.0,
+                "OpenMM potential energy is finite but physically implausible: "
+                f"{float(energy):.6g} kJ/mol "
+                f"({energy_per_particle:.6g} kJ/mol/particle)",
+            )
         rescanned_positions = rescanned.getPositions(asNumpy=True).value_in_unit(
             unit.nanometer
         )
@@ -678,6 +695,18 @@ def _check_minimization_report(check: DeterministicCheck,
             continue
         if not math.isfinite(numeric):
             issues.append(energy_field)
+        elif abs(numeric) > _MAX_ABS_PREP_TOTAL_ENERGY_KJ_MOL:
+            atom_count_raw = value("atom_count") or value("particle_count")
+            try:
+                atom_count = max(1, int(atom_count_raw))
+            except (TypeError, ValueError):
+                atom_count = 1
+            if (
+                atom_count == 1
+                or abs(numeric) / atom_count
+                > _MAX_ABS_PREP_ENERGY_PER_PARTICLE_KJ_MOL
+            ):
+                issues.append(energy_field)
     if issues:
         return False, 0.0, f"minimization report failed required fields: {issues}"
     return True, 1.0, "minimization report confirms completed finite-energy minimization"
@@ -1060,16 +1089,6 @@ def _check_assembly_identity(check: DeterministicCheck,
     except OSError as exc:
         return False, 0.0, f"could not read structure file: {exc}"
 
-    chain_count = len(chain_ids)
-    if check.exact_chain_count is not None:
-        expected = int(check.exact_chain_count)
-        if chain_count != expected:
-            issues.append(f"chain count {chain_count} != expected {expected}")
-    if check.min_chain_count is not None:
-        minimum = int(check.min_chain_count)
-        if chain_count < minimum:
-            issues.append(f"chain count {chain_count} < min {minimum}")
-
     if check.required_assembly_id is not None:
         assembly_id = _read_submission_json_path(
             submission_dir,
@@ -1128,8 +1147,26 @@ def _check_assembly_identity(check: DeterministicCheck,
         for entry in mapping_entries
         if str(entry.get("output_chain_id", "")).strip()
     ]
+    mapped_output_chain_ids = set(output_chain_ids)
+    if mapped_output_chain_ids:
+        chain_count = len(mapped_output_chain_ids)
+        chain_count_label = "mapped output chain count"
+    else:
+        chain_count = len(chain_ids)
+        chain_count_label = "structure chain count"
+    if check.exact_chain_count is not None:
+        expected = int(check.exact_chain_count)
+        if chain_count != expected:
+            issues.append(
+                f"{chain_count_label} {chain_count} != expected {expected}"
+            )
+    if check.min_chain_count is not None:
+        minimum = int(check.min_chain_count)
+        if chain_count < minimum:
+            issues.append(f"{chain_count_label} {chain_count} < min {minimum}")
+
     if check.min_distinct_output_chains is not None:
-        distinct_count = len(set(output_chain_ids))
+        distinct_count = len(mapped_output_chain_ids)
         minimum = int(check.min_distinct_output_chains)
         if distinct_count < minimum:
             issues.append(
@@ -1169,6 +1206,229 @@ def _check_assembly_identity(check: DeterministicCheck,
         f"assembly identity satisfied: chains={sorted(chain_ids)}, "
         f"mapping_entries={len(mapping_entries)}",
     )
+
+
+def _check_candidate_selection(check: DeterministicCheck,
+                               submission_dir: Path,
+                               manifest: dict,
+                               metrics: dict,
+                               provenance: dict,
+                               evidence: dict, **_):
+    payloads = _candidate_selection_payloads(
+        check,
+        submission_dir=submission_dir,
+        manifest=manifest,
+        metrics=metrics,
+        provenance=provenance,
+        evidence=evidence,
+    )
+    if not payloads:
+        return False, 0.0, "no source selection artifact or structured provenance found"
+
+    issues: list[str] = []
+    for label, payload in payloads:
+        extracted = _extract_candidate_selection(payload)
+        payload_issues = _candidate_selection_issues(check, extracted)
+        if not payload_issues:
+            details = []
+            if extracted.get("candidate_ids"):
+                details.append(f"candidate_ids={sorted(extracted['candidate_ids'])}")
+            if extracted.get("model_rank") is not None:
+                details.append(f"model_rank={extracted['model_rank']}")
+            if extracted.get("selection_reason"):
+                details.append("selection_reason=present")
+            return True, 1.0, f"{label} satisfies candidate selection ({', '.join(details)})"
+        issues.append(f"{label}: {'; '.join(payload_issues)}")
+
+    return False, 0.0, "candidate selection mismatch: " + " | ".join(issues)
+
+
+def _candidate_selection_payloads(
+    check: DeterministicCheck,
+    *,
+    submission_dir: Path,
+    manifest: dict,
+    metrics: dict,
+    provenance: dict,
+    evidence: dict,
+) -> list[tuple[str, dict[str, Any]]]:
+    payloads: list[tuple[str, dict[str, Any]]] = []
+    seen_paths: set[Path] = set()
+
+    manifest_rel = _manifest_artifact_path(
+        manifest,
+        check.source_selection_manifest_path,
+        "outputs.source_selection",
+    )
+    candidate_paths = [manifest_rel, check.source_selection_path or "source_selection.json"]
+    for rel in candidate_paths:
+        if not rel:
+            continue
+        path = _resolve_relative(submission_dir, rel)
+        if path in seen_paths or not path.is_file():
+            continue
+        seen_paths.add(path)
+        payload = integrity.read_json_safe(path)
+        if payload:
+            payloads.append((rel, payload))
+
+    for label, payload in (
+        ("provenance.json", provenance),
+        ("metrics.json", metrics),
+        ("evidence_report.json", evidence),
+    ):
+        extracted = _extract_candidate_selection(payload)
+        if (
+            extracted.get("has_structured_selection")
+            or extracted.get("selected_structure_present")
+        ):
+            payloads.append((label, payload))
+
+    return payloads
+
+
+def _extract_candidate_selection(payload: dict[str, Any]) -> dict[str, Any]:
+    candidate_ids: set[str] = set()
+    model_rank: int | None = None
+    selection_reason: str | None = None
+    selected_structure_present = False
+    has_structured_selection = False
+
+    for path in (
+        "selected_structure",
+        "source_selection.selected_structure",
+        "candidate_selection.selected_structure",
+        "preparation.source_selection.selected_structure",
+        "preparation.selected_structure",
+    ):
+        selected_structure = _safe_path_with_index(payload, path)
+        if isinstance(selected_structure, dict):
+            selected_structure_present = True
+            candidate_ids.update(_candidate_ids_from_mapping(selected_structure))
+            origin = selected_structure.get("origin") or {}
+            model_rank = _first_int(
+                origin.get("model_rank"),
+                selected_structure.get("model_rank"),
+                selected_structure.get("rank"),
+                _one_based_index(origin.get("model_index")),
+            )
+            break
+
+    for path in (
+        "selection",
+        "source_selection.selection",
+        "candidate_selection.selection",
+        "preparation.source_selection.selection",
+        "candidate_selection",
+        "source_selection",
+        "preparation.source_selection",
+    ):
+        selection = _safe_path_with_index(payload, path)
+        if isinstance(selection, dict):
+            has_structured_selection = True
+            candidate_ids.update(_candidate_ids_from_mapping(selection))
+            if model_rank is None:
+                model_rank = _first_int(
+                    selection.get("model_rank"),
+                    selection.get("selected_model_rank"),
+                    selection.get("source_model_rank"),
+                    selection.get("model_index"),
+                    selection.get("source_model_index"),
+                )
+            if not selection_reason:
+                selection_reason = _first_nonempty_string(
+                    selection.get("selection_reason"),
+                    selection.get("reason"),
+                    selection.get("rationale"),
+                )
+
+    candidate_ids.update(_candidate_ids_from_mapping(payload))
+    if model_rank is None:
+        model_rank = _first_int(payload.get("model_rank"), payload.get("selected_model_rank"))
+    if not selection_reason:
+        selection_reason = _first_nonempty_string(
+            payload.get("selection_reason"),
+            payload.get("candidate_selection_reason"),
+        )
+
+    return {
+        "candidate_ids": candidate_ids,
+        "model_rank": model_rank,
+        "selection_reason": selection_reason,
+        "selected_structure_present": selected_structure_present,
+        "has_structured_selection": has_structured_selection,
+    }
+
+
+def _candidate_selection_issues(
+    check: DeterministicCheck,
+    extracted: dict[str, Any],
+) -> list[str]:
+    issues: list[str] = []
+    required_candidate = check.required_candidate_id
+    if required_candidate:
+        candidate_ids = extracted.get("candidate_ids") or set()
+        if required_candidate not in candidate_ids:
+            issues.append(
+                f"candidate ids {sorted(candidate_ids)} do not include {required_candidate!r}"
+            )
+
+    required_rank = check.required_model_rank
+    if required_rank is not None and extracted.get("model_rank") != int(required_rank):
+        issues.append(
+            f"model_rank {extracted.get('model_rank')!r} != {int(required_rank)}"
+        )
+
+    if check.require_selection_reason and not extracted.get("selection_reason"):
+        issues.append("selection reason missing")
+
+    if not (
+        extracted.get("selected_structure_present")
+        or extracted.get("has_structured_selection")
+    ):
+        issues.append("structured selected_structure/source_selection record missing")
+
+    return issues
+
+
+def _candidate_ids_from_mapping(mapping: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    for key in (
+        "structure_id",
+        "candidate_id",
+        "source_structure_id",
+        "source_candidate_id",
+        "selected_candidate_id",
+    ):
+        value = mapping.get(key)
+        if isinstance(value, str) and value.strip():
+            ids.add(value.strip())
+    return ids
+
+
+def _first_int(*values: Any) -> int | None:
+    for value in values:
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _one_based_index(value: Any) -> int | None:
+    index = _first_int(value)
+    if index is None:
+        return None
+    return index + 1
+
+
+def _first_nonempty_string(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
 
 
 def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
@@ -1239,6 +1499,7 @@ _DETERMINISTIC_DISPATCH = {
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,
     "assembly_identity_check": _check_assembly_identity,
+    "candidate_selection_check": _check_candidate_selection,
     "artifact_provenance_text": _check_artifact_provenance_text,
     "topology_artifact_bundle": _check_topology_artifact_bundle,
     "openmm_system_load": _check_openmm_system_load,
@@ -1433,7 +1694,7 @@ def aggregate_run_scores(scores: list[dict[str, Any]],
 
     totals = [float(s.get("weighted_total", 0.0) or 0.0) for s in scores]
     overall = round(statistics.fmean(totals), 4) if totals else 0.0
-    n_failed = sum(1 for s in scores if s.get("status") in {"failed", "errored"})
+    n_failed = sum(1 for s in scores if s.get("status") != "passed")
 
     runtime = {
         "total_tokens": sum(int((s.get("runtime") or {}).get("tokens", 0) or 0)

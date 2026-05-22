@@ -56,7 +56,12 @@ def _write_submission(tmp: Path, manifest: dict, metrics: dict | None = None,
         (tmp / "evidence_report.json").write_text(json.dumps(evidence))
 
 
-def _write_openmm_bundle(tmp: Path, *, broken: str | None = None) -> None:
+def _write_openmm_bundle(
+    tmp: Path,
+    *,
+    broken: str | None = None,
+    huge_energy: bool = False,
+) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
     system_xml = topo_dir / "system.xml"
@@ -76,6 +81,7 @@ def _write_openmm_bundle(tmp: Path, *, broken: str | None = None) -> None:
     from openmm import (
         Context,
         Platform,
+        CustomExternalForce,
         System,
         Vec3,
         VerletIntegrator,
@@ -93,6 +99,10 @@ def _write_openmm_bundle(tmp: Path, *, broken: str | None = None) -> None:
     pdb_positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
     system = System()
     system.addParticle(12.0)
+    if huge_energy:
+        force = CustomExternalForce("2000000")
+        force.addParticle(0, [])
+        system.addForce(force)
     integrator = VerletIntegrator(1.0 * unit.femtoseconds)
     context = Context(system, integrator, Platform.getPlatformByName("Reference"))
     context.setPositions(positions)
@@ -148,6 +158,51 @@ def _write_minimization_submission(tmp: Path, *, completed: bool = True,
             "topology": {"backend": "openmm", "build_success": completed},
             "minimization": report["minimization"],
         },
+    )
+
+
+def _source_selection_record(
+    *,
+    candidate_id: str,
+    model_rank: int,
+    include_reason: bool = True,
+) -> dict:
+    selection = {"structure_id": candidate_id}
+    if include_reason:
+        selection["reason"] = f"Selected model rank {model_rank} from the prompt."
+    return {
+        "schema_version": 1,
+        "source_bundle": "source/source_bundle.json",
+        "selection": selection,
+        "selected_structure": {
+            "structure_id": candidate_id,
+            "candidate_id": candidate_id,
+            "rank": model_rank,
+            "origin": {
+                "kind": "pdb",
+                "model_index": model_rank - 1,
+                "model_rank": model_rank,
+                "model_id": str(model_rank),
+            },
+        },
+    }
+
+
+def _write_source_selection(
+    tmp: Path,
+    *,
+    candidate_id: str,
+    model_rank: int,
+    include_reason: bool = True,
+) -> None:
+    (tmp / "source_selection.json").write_text(
+        json.dumps(
+            _source_selection_record(
+                candidate_id=candidate_id,
+                model_rank=model_rank,
+                include_reason=include_reason,
+            )
+        )
     )
 
 
@@ -386,6 +441,181 @@ def test_forbidden_files_check(tmp_path: Path):
     failed = score_with_file.deterministic_checks[0]
     assert failed.passed is False
     assert "forbidden files present" in failed.message
+
+
+def test_candidate_selection_check_requires_structured_source_selection(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="candidate_metric",
+                check_type="json_equals",
+                json_path="preparation.selected_candidate_id",
+                equals="candidate_005",
+                weight=0.1,
+            ),
+            DeterministicCheck(
+                check_id="model_rank_metric",
+                check_type="json_equals",
+                json_path="preparation.selected_model_rank",
+                equals=5,
+                weight=0.1,
+            ),
+            DeterministicCheck(
+                check_id="source_selection_model_5",
+                check_type="candidate_selection_check",
+                required_candidate_id="candidate_005",
+                required_model_rank=5,
+                require_selection_reason=True,
+                source_selection_manifest_path="outputs.source_selection",
+                source_selection_path="source_selection.json",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"metrics": "metrics.json"},
+        },
+        metrics={
+            "preparation": {
+                "selected_candidate_id": "candidate_005",
+                "selected_model_rank": 5,
+                "candidate_selection_reason_recorded": True,
+            }
+        },
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    failed = {
+        result.check_id: result
+        for result in score.deterministic_checks
+        if not result.passed
+    }
+    assert "source_selection_model_5" in failed
+
+
+def test_candidate_selection_check_accepts_source_selection_artifact(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="source_selection_model_5",
+                check_type="candidate_selection_check",
+                required_candidate_id="candidate_005",
+                required_model_rank=5,
+                require_selection_reason=True,
+                source_selection_manifest_path="outputs.source_selection",
+                source_selection_path="source_selection.json",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_source_selection(tmp_path, candidate_id="candidate_005", model_rank=5)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"source_selection": "source_selection.json"},
+        },
+        metrics={},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "passed"
+    assert score.weighted_total == 1.0
+    assert score.deterministic_checks[0].passed is True
+
+
+def test_candidate_selection_check_accepts_structured_provenance(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="source_selection_model_5",
+                check_type="candidate_selection_check",
+                required_candidate_id="candidate_005",
+                required_model_rank=5,
+                require_selection_reason=True,
+                source_selection_manifest_path="outputs.source_selection",
+                source_selection_path="source_selection.json",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {},
+        },
+        metrics={},
+        provenance={
+            "source_selection": _source_selection_record(
+                candidate_id="candidate_005",
+                model_rank=5,
+            )
+        },
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "passed"
+    assert score.weighted_total == 1.0
+    assert score.deterministic_checks[0].passed is True
+    assert "provenance.json satisfies candidate selection" in (
+        score.deterministic_checks[0].message
+    )
+
+
+def test_candidate_selection_check_requires_selection_reason(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="source_selection_model_5",
+                check_type="candidate_selection_check",
+                required_candidate_id="candidate_005",
+                required_model_rank=5,
+                require_selection_reason=True,
+                source_selection_manifest_path="outputs.source_selection",
+                source_selection_path="source_selection.json",
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_source_selection(
+        tmp_path,
+        candidate_id="candidate_005",
+        model_rank=5,
+        include_reason=False,
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"source_selection": "source_selection.json"},
+        },
+        metrics={},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    failed = score.deterministic_checks[0]
+    assert failed.passed is False
+    assert "selection reason missing" in failed.message
 
 
 def test_trajectory_rescan_uses_manifest_outputs(tmp_path: Path, monkeypatch):
@@ -774,6 +1004,41 @@ def test_openmm_energy_rescan_rejects_nan_positions(tmp_path: Path):
     assert score.weighted_total == 0.0
 
 
+def test_openmm_energy_rescan_rejects_huge_finite_energy(tmp_path: Path):
+    _write_openmm_bundle(tmp_path, huge_energy=True)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+        metrics={"topology": {"backend": "openmm"}},
+    )
+    task = _make_task(
+        primary="execution",
+        det_checks=[
+            DeterministicCheck(
+                check_id="energy",
+                check_type="openmm_energy_rescan",
+                weight=1.0,
+            )
+        ],
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert "physically implausible" in score.deterministic_checks[0].message
+
+
 def test_incomplete_minimization_report_is_critical_failure(tmp_path: Path):
     task = _make_task(
         primary="preparation",
@@ -807,6 +1072,34 @@ def test_nonfinite_minimization_report_energy_is_critical_failure(tmp_path: Path
         ],
     )
     _write_minimization_submission(tmp_path, finite_report_energy=False)
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_huge_finite_minimization_report_energy_is_critical_failure(tmp_path: Path):
+    _write_minimization_submission(tmp_path)
+    report_path = tmp_path / "minimization_report.json"
+    report = json.loads(report_path.read_text())
+    report["minimization"]["energy_final_kj_mol"] = 1.0e20
+    report_path.write_text(json.dumps(report))
+    metrics_path = tmp_path / "metrics.json"
+    metrics = json.loads(metrics_path.read_text())
+    metrics["minimization"]["energy_final_kj_mol"] = 1.0e20
+    metrics_path.write_text(json.dumps(metrics))
+    task = _make_task(
+        primary="execution",
+        det_checks=[
+            DeterministicCheck(
+                check_id="min",
+                check_type="minimization_report_check",
+                minimization_report_manifest_path="outputs.minimization_report",
+                weight=1.0,
+            )
+        ],
+    )
 
     score = scoring.score_submission(task, tmp_path)
 
@@ -1256,6 +1549,10 @@ def test_assembly_identity_check_matches_structure_and_chain_map(tmp_path: Path)
         "ATOM      2  CA  GLY B   1       1.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      3  CA  GLY C   1       2.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      4  CA  GLY D   1       3.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    5  C1  BTN E 300       4.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    6  C1  BTN F 300       5.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    7  C1  BTN G 300       6.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    8  C1  BTN H 300       7.000   0.000   0.000  1.00  0.00           C\n"
         "END\n"
     )
     score = scoring.score_submission(task, tmp_path)
@@ -1267,7 +1564,7 @@ def test_assembly_identity_check_matches_structure_and_chain_map(tmp_path: Path)
     )
     failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
     assert failed.passed is False
-    assert "chain count 1 != expected 4" in failed.message
+    assert "mapped output chains absent from structure: ['B', 'C', 'D']" in failed.message
 
 
 def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):

@@ -250,6 +250,52 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
         assert "OL" not in aliases["POPE"]
 
 
+def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
+    p18_prompt = (
+        DATASET_DIR / "tasks" / "P18_prep_membrane_mixed_lipids" / "prompt.md"
+    ).read_text()
+    assert "model 1" in p18_prompt
+    assert "PDB 2LOP NMR ensemble" in p18_prompt
+    assert "source_selection.json" in p18_prompt
+    assert "structured provenance" in p18_prompt
+
+    p19_dir = DATASET_DIR / "tasks" / "P19_prep_nmr_model_selection"
+    p19_prompt = (p19_dir / "prompt.md").read_text()
+    assert "model 5" in p19_prompt
+    assert "candidate_005" in p19_prompt
+    assert "selected model rank as 5" in p19_prompt
+    assert "source_selection.json" in p19_prompt
+    assert "structured provenance" in p19_prompt
+    assert "selection reason" in p19_prompt
+
+    task = json.loads((p19_dir / "task.json").read_text())
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+    assert checks["candidate_selected"]["equals"] == "candidate_005"
+    assert checks["selected_model_rank_recorded"]["equals"] == 5
+    assert checks["source_selection_model_5"]["check_type"] == "candidate_selection_check"
+    assert checks["source_selection_model_5"]["required_candidate_id"] == "candidate_005"
+    assert checks["source_selection_model_5"]["required_model_rank"] == 5
+    assert checks["source_selection_model_5"]["require_selection_reason"] is True
+
+    p18_task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P18_prep_membrane_mixed_lipids"
+            / "task.json"
+        ).read_text()
+    )
+    p18_checks = {
+        check["check_id"]: check
+        for check in p18_task["scoring"]["deterministic_checks"]
+    }
+    assert p18_checks["selected_model_rank_recorded"]["equals"] == 1
+    assert p18_checks["source_selection_model_1"]["required_model_rank"] == 1
+
+
 def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

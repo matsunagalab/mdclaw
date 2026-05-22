@@ -30,6 +30,15 @@ The evaluated agent should read only files from that public package:
   public output contract containing required outputs, time limit, execution
   mode, and failure policy. It contains no scoring checks or held-back truth.
 
+A benchmark runner should pass those files plus the target submission directory
+to the agent. It must not silently add task-specific command-line options such
+as selected chains, model indices, membrane geometry, salt settings, or
+preorientation flags unless those requirements are stated in the public prompt
+or `submission_contract.json`. In MDClaw-generated run directories,
+`agent_tasks.json` and each `task_instructions.json` are the files intended for
+the evaluated agent; `harness_tasks.json` and `harness_instructions.json` are
+for validation/scoring only.
+
 Repository-local development may read the canonical prompt at
 `benchmarks/mdagentbench/tasks/<task_id>/prompt.md`, but do not hand the
 whole canonical task directory to the evaluated agent.
@@ -197,7 +206,10 @@ Use `submission_contract.json` for machine-readable requirements. In particular,
 be an OpenMM bundle, usually
 `["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
 and task-specific `metric_requirements` list the `metrics.json` paths that must
-be populated.
+be populated. If `candidate_selection_requirements` is non-empty, also submit
+the requested source/model-selection evidence in `source_selection.json` or an
+equivalent structured `source_selection` record in provenance, metrics, or the
+evidence report.
 
 Validate and score:
 
