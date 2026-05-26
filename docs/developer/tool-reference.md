@@ -141,11 +141,11 @@ skill examples.
 
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
-- `run_equilibration(...)`: staged minimization, warmup, NVT, and optional NPT.
-  In node mode topology inputs resolve from the `topo` ancestor. Agents should
-  prefer `nvt_time_ns` / `npt_time_ns` (CLI: `--nvt-time-ns` /
-  `--npt-time-ns`) for user-facing duration requests; explicit
-  `nvt_steps` / `npt_steps` remain available for low-level reproducibility.
+- `run_equilibration(...)`: one equilibration stage condition (`NVT` or `NPT`).
+  In node mode topology inputs resolve from the `topo` ancestor, and eq-chain
+  restarts resolve from an eq/prod ancestor. Agents should prefer
+  `stage_time_ns` (CLI: `--stage-time-ns`) for user-facing duration requests;
+  explicit `stage_steps` remains available for low-level reproducibility.
 - `run_production(...)`: production MD with HMR, state/checkpoint persistence,
   DAG restart resolution, and timeline metadata.
 
@@ -196,9 +196,11 @@ skill examples.
 ## `node_server.py`
 
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
-  to production continuation and records explicit extension intent.
-- `inspect_job(...)`: read-only summary of node statuses, leaves, claims, open
-  needs, warnings, and the progress index for weak-agent re-entry.
+  to production continuation and records explicit extension intent. Analyze nodes
+  require `conditions.analysis_data_scope`; comparison analyses also require
+  explicit subjects and mapping.
+- `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
+  claims/open needs, warnings, and the progress index for weak-agent re-entry.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
 - `update_job_params(...)`: merge workflow-level metadata into `progress.json`.

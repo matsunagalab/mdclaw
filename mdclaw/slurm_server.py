@@ -35,6 +35,7 @@ from mdclaw._common import (
     run_command,
     split_guardrail_results,
 )
+from mdclaw._event import write_event
 from mdclaw._lock import file_lock
 from mdclaw._node import (
     _atomic_write_json,
@@ -70,6 +71,34 @@ _SLURM_SUBMISSION_INTENT_KEYS = (
 _JOBS_JSONL = ".mdclaw_jobs.jsonl"
 
 logger = logging.getLogger(__name__)
+
+
+def _write_slurm_observation_event(
+    job_dir: str,
+    node_id: str,
+    slurm_state: str,
+    *,
+    stderr_tail: Optional[str] = None,
+    elapsed: Optional[str] = None,
+    exit_code: Optional[str] = None,
+) -> None:
+    details: dict[str, Any] = {"slurm_state": slurm_state}
+    if stderr_tail:
+        details["slurm_stderr_tail"] = stderr_tail
+    if exit_code:
+        details["slurm_exit_code"] = exit_code
+    if elapsed:
+        details["slurm_elapsed"] = elapsed
+    try:
+        write_event(
+            job_dir,
+            node_id,
+            "slurm_observed",
+            success=True,
+            details=details,
+        )
+    except Exception as exc:
+        logger.warning("Could not write SLURM observation event: %s", exc)
 
 
 def _validate_sbatch_directive_value(field: str, value: Any) -> Optional[dict]:
@@ -565,7 +594,16 @@ def _sync_slurm_state_to_node(
 
     if state in {"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "NODE_FAIL",
                  "BOOT_FAIL", "DEADLINE"}:
-        # Leave tool-owned failures alone but still annotate stderr.
+        _write_slurm_observation_event(
+            str(job_dir),
+            node_id,
+            state,
+            stderr_tail=stderr_tail,
+            elapsed=elapsed,
+            exit_code=exit_code,
+        )
+        # Leave tool-owned completions alone; post-completion observations live
+        # in events rather than mutating sealed node.json evidence.
         if current == "completed":
             return (
                 f"node {node_id} already completed but SLURM reports {state}; "
@@ -598,15 +636,19 @@ def _sync_slurm_state_to_node(
         return None
 
     if state == "COMPLETED":
+        _write_slurm_observation_event(
+            str(job_dir),
+            node_id,
+            state,
+            stderr_tail=stderr_tail,
+            elapsed=elapsed,
+            exit_code=exit_code,
+        )
         meta: dict = {"slurm_state": state}
         if exit_code:
             meta["slurm_exit_code"] = exit_code
         if elapsed:
             meta["slurm_elapsed"] = elapsed
-        try:
-            update_node(str(job_dir), node_id, {"metadata": meta})
-        except Exception as e:
-            return f"could not annotate node {node_id}: {e}"
 
         if current == "completed":
             return None
@@ -625,13 +667,9 @@ def _sync_slurm_state_to_node(
                     ),
                 ],
             )
+            meta["slurm_zombie_detected"] = True
             update_node(str(job_dir), node_id, {
-                "metadata": {
-                    "slurm_state": state,
-                    "slurm_zombie_detected": True,
-                    **({"slurm_exit_code": exit_code} if exit_code else {}),
-                    **({"slurm_elapsed": elapsed} if elapsed else {}),
-                }
+                "metadata": meta
             })
         except Exception as e:
             return f"could not fail zombie node {node_id}: {e}"

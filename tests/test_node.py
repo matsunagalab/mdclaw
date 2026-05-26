@@ -43,6 +43,29 @@ from mdclaw._node import complete_node as _real_complete_node
 from mdclaw._node import _sync_progress_node_entry
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
 
+ANALYSIS_PRODUCTION_CHAIN_CONDITIONS = {"analysis_data_scope": "production_chain"}
+
+
+def _create_two_analyze_parents(job_dir: Path) -> list[str]:
+    jd = str(job_dir)
+    create_node(jd, "prod")
+    create_node(jd, "prod")
+    first = create_node(
+        jd,
+        "analyze",
+        parent_node_ids=["prod_001"],
+        conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+    )
+    second = create_node(
+        jd,
+        "analyze",
+        parent_node_ids=["prod_002"],
+        conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+    )
+    assert first["success"] is True
+    assert second["success"] is True
+    return [first["node_id"], second["node_id"]]
+
 
 # ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -177,6 +200,347 @@ class TestCreateNode:
         node = read_node(str(job_dir), result["node_id"])
         assert node["label"] == "300K"
         assert node["conditions"]["temperature_kelvin"] == 300.0
+
+    def test_analyze_requires_analysis_data_scope(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+        )
+
+        assert result["success"] is False
+        assert "analysis_data_scope" in result["error"]
+
+    def test_analyze_rejects_legacy_chain_scope(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions={"analysis_data_scope": "chain"},
+        )
+
+        assert result["success"] is False
+        assert "analysis_data_scope" in result["error"]
+
+    def test_analyze_accepts_production_chain_scope(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
+
+        assert result["success"] is True
+        node = read_node(str(job_dir), result["node_id"])
+        assert node["conditions"]["analysis_data_scope"] == "production_chain"
+
+    def test_analyze_accepts_segment_scope_without_subjects(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions={"analysis_data_scope": "segment"},
+        )
+
+        assert result["success"] is True
+        node = read_node(str(job_dir), result["node_id"])
+        assert node["conditions"]["analysis_data_scope"] == "segment"
+        assert "analysis_subjects" not in node["conditions"]
+
+    def test_analyze_comparison_requires_subjects_and_mapping(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={"analysis_data_scope": "comparison"},
+        )
+
+        assert result["success"] is False
+        assert "analysis_subjects" in result["error"]
+
+    def test_analyze_accepts_residue_number_comparison_mapping(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A", "chain_id": "A"},
+                    {"label": "chain_B", "chain_id": "B"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["chain_A:10", "chain_B:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is True
+
+    def test_analyze_accepts_label_only_comparison_subjects(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "apo"},
+                    {"label": "holo"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["apo:10", "holo:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is True
+
+    def test_analyze_treats_residue_id_as_string(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "apo"},
+                    {"label": "holo"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["apo:10A", "holo:10A"]],
+                },
+            },
+        )
+
+        assert result["success"] is True
+
+    def test_analyze_rejects_duplicate_subject_labels(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A", "chain_id": "A"},
+                    {"label": "chain_A", "chain_id": "B"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["chain_A:10", "chain_A:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "duplicate" in result["error"]
+
+    def test_analyze_rejects_unknown_mapping_subject_label(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A", "chain_id": "A"},
+                    {"label": "chain_B", "chain_id": "B"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["chain_A:10", "chain_C:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "unknown" in result["error"]
+
+    def test_analyze_rejects_non_binary_comparison_subjects(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A"},
+                    {"label": "chain_B"},
+                    {"label": "chain_C"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["chain_A:10", "chain_B:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "binary" in result["error"]
+
+    def test_analyze_rejects_residue_pair_missing_binary_subject(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A"},
+                    {"label": "chain_B"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["chain_A:10", "chain_A:11"]],
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "both binary" in result["error"]
+
+    def test_analyze_accepts_atom_selection_comparison_mapping(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A", "chain_id": "A"},
+                    {"label": "chain_B", "chain_id": "B"},
+                ],
+                "comparison_mapping": {
+                    "type": "atom_selection",
+                    "selections": {
+                        "chain_A": "chainid A and name CA",
+                        "chain_B": "chainid B and name CA",
+                    },
+                },
+            },
+        )
+
+        assert result["success"] is True
+
+    def test_analyze_rejects_atom_selection_missing_binary_subject(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A"},
+                    {"label": "chain_B"},
+                ],
+                "comparison_mapping": {
+                    "type": "atom_selection",
+                    "selections": {
+                        "chain_A": "chainid A and name CA",
+                    },
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "exactly the two" in result["error"]
+
+    def test_analyze_rejects_empty_atom_selection(self, job_dir):
+        analyze_parents = _create_two_analyze_parents(job_dir)
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=analyze_parents,
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "chain_A"},
+                    {"label": "chain_B"},
+                ],
+                "comparison_mapping": {
+                    "type": "atom_selection",
+                    "selections": {
+                        "chain_A": "chainid A and name CA",
+                        "chain_B": " ",
+                    },
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "non-empty" in result["error"]
+
+    def test_analyze_rejects_comparison_directly_on_prod_parent(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions={
+                "analysis_data_scope": "comparison",
+                "analysis_subjects": [
+                    {"label": "apo"},
+                    {"label": "holo"},
+                ],
+                "comparison_mapping": {
+                    "type": "residue_number",
+                    "pairs": [["apo:10", "holo:10"]],
+                },
+            },
+        )
+
+        assert result["success"] is False
+        assert "exactly two analyze parents" in result["error"]
+
+    def test_analyze_rejects_mapping_without_comparison_scope(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = create_node(
+            str(job_dir),
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions={
+                "analysis_data_scope": "production_chain",
+                "comparison_mapping": {"type": "residue_number", "pairs": []},
+            },
+        )
+
+        assert result["success"] is False
+        assert "comparison_mapping" in result["error"]
 
     def test_invalid_type(self, job_dir):
         result = create_node(str(job_dir), "invalid_type")
@@ -849,6 +1213,42 @@ class TestStateTransitions:
         pj = json.loads((job_dir / "progress.json").read_text())
         assert pj["nodes"]["eq_001"]["status"] == "completed"
 
+    def test_complete_node_clears_operational_metadata_before_sealing(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        claim_node(jd, "eq_001", "agent-a", lease_seconds=60)
+        add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production",
+                "rationale": "Additional sampling would improve confidence.",
+            },
+        )
+
+        complete_node(jd, "eq_001", artifacts={"state": "artifacts/state.xml"})
+
+        node = read_node(jd, "eq_001")
+        assert node["status"] == "completed"
+        assert "claimed_by" not in node["metadata"]
+        assert "claim_expires_at" not in node["metadata"]
+        assert "open_needs" not in node["metadata"]
+        entry = json.loads((job_dir / "progress.json").read_text())["nodes"]["eq_001"]
+        assert "claim" not in entry
+        assert "open_needs_count" not in entry
+
+    def test_complete_node_rejects_operational_metadata_payload(self, job_dir):
+        create_node(str(job_dir), "eq")
+
+        with pytest.raises(ValueError, match="operational fields"):
+            complete_node(
+                str(job_dir),
+                "eq_001",
+                artifacts={"state": "artifacts/state.xml"},
+                metadata={"open_needs": []},
+            )
+
     def test_complete_node_with_warnings(self, job_dir):
         create_node(str(job_dir), "solv")
         complete_node(str(job_dir), "solv_001",
@@ -968,6 +1368,13 @@ class TestUpdateNode:
         node = read_node(str(job_dir), "prep_001")
         assert node["label"] == "reheat"
 
+    def test_update_node_refuses_identity_edits(self, job_dir):
+        create_node(str(job_dir), "prep")
+        with pytest.raises(ValueError, match="immutable node identity"):
+            update_node(str(job_dir), "prep_001", {
+                "conditions": {"temperature_kelvin": 300.0}
+            })
+
     def test_update_node_refuses_status_edits(self, job_dir):
         """update_node must not write the ``status`` field — that is
         routed through update_node_status so the progress.json index
@@ -975,6 +1382,33 @@ class TestUpdateNode:
         create_node(str(job_dir), "prep")
         with pytest.raises(ValueError, match="status"):
             update_node(str(job_dir), "prep_001", {"status": "running"})
+
+    def test_update_node_refuses_completed_node_edits(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(
+            str(job_dir),
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merged.pdb"},
+        )
+
+        with pytest.raises(ValueError, match="sealed"):
+            update_node(str(job_dir), "prep_001", {
+                "metadata": {"post_completion_note": "late note"}
+            })
+
+    def test_update_node_status_refuses_completed_node_edits(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(
+            str(job_dir),
+            "prep_001",
+            artifacts={"merged_pdb": "artifacts/merged.pdb"},
+        )
+
+        result = update_node_status(str(job_dir), "prep_001", "failed")
+
+        assert result["success"] is False
+        assert result["code"] == "completed_node_sealed"
+        assert read_node(str(job_dir), "prep_001")["status"] == "completed"
 
 
 # ── update_job_summaries ───────────────────────────────────────────────────
@@ -1078,14 +1512,15 @@ class TestProgressIndexRebuild:
             artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
             metadata={"producer_agent": "agent-a"},
         )
+        create_node(jd, "eq", label="needs_more_sampling")
         add_node_need(
             jd,
-            "prep_001",
+            "eq_001",
             {
-                "need_type": "solvation",
-                "query": "solvate prepared structure",
-                "rationale": "Topology requires a solvated system.",
-                "preferred_node_type": "solv",
+                "need_type": "prod_extension",
+                "query": "extend production by 100 ns",
+                "rationale": "RMSD has not converged yet.",
+                "preferred_node_type": "prod",
             },
         )
 
@@ -1098,14 +1533,16 @@ class TestProgressIndexRebuild:
 
         assert result["success"] is True
         rebuilt = json.loads(progress_path.read_text())["nodes"]
-        assert list(rebuilt) == ["prep_001"]
+        assert set(rebuilt) == {"prep_001", "eq_001"}
         assert rebuilt["prep_001"]["type"] == "prep"
         assert rebuilt["prep_001"]["status"] == "completed"
         assert rebuilt["prep_001"]["label"] == "protein_only"
         assert rebuilt["prep_001"]["producer_agent"] == "agent-a"
         assert rebuilt["prep_001"]["artifact_keys"] == ["merged_pdb"]
-        assert rebuilt["prep_001"]["open_needs_count"] == 1
-        assert rebuilt["prep_001"]["open_need_types"] == ["solvation"]
+        assert "open_needs_count" not in rebuilt["prep_001"]
+        assert rebuilt["eq_001"]["status"] == "pending"
+        assert rebuilt["eq_001"]["open_needs_count"] == 1
+        assert rebuilt["eq_001"]["open_need_types"] == ["prod_extension"]
 
     def test_rebuild_progress_index_warns_on_unreadable_node(self, job_dir):
         create_node(str(job_dir), "prep")
@@ -1213,6 +1650,16 @@ class TestNodeClaim:
 
         assert result["success"] is False
         assert result["code"] == "claim_owner_mismatch"
+
+    def test_claim_node_rejects_completed_node(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prod")
+        complete_node(jd, "prod_001", artifacts={"trajectory": "artifacts/t.dcd"})
+
+        result = claim_node(jd, "prod_001", "agent-a", lease_seconds=60)
+
+        assert result["success"] is False
+        assert result["code"] == "completed_node_sealed"
 
 
 class TestNodeNeeds:
@@ -1331,6 +1778,24 @@ class TestNodeNeeds:
         assert result["success"] is False
         assert result["code"] == "invalid_need"
 
+    def test_add_node_need_rejects_completed_node(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "eq")
+        complete_node(jd, "eq_001", artifacts={"state": "artifacts/state.xml"})
+
+        result = add_node_need(
+            jd,
+            "eq_001",
+            {
+                "need_type": "prod_extension",
+                "query": "extend production",
+                "rationale": "Additional sampling would improve confidence.",
+            },
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "completed_node_sealed"
+
 
 # ── DAG auto-resolve ──────────────────────────────────────────────────────
 
@@ -1432,9 +1897,17 @@ class TestDAGAutoResolve:
     def test_resolve_node_inputs_blocks_failed_parent_with_artifacts(self, job_dir):
         jd = str(job_dir)
         create_node(jd, "topo")
-        complete_node(jd, "topo_001",
-                      artifacts={"system_xml": "artifacts/system.xml",
-                                 "topology_pdb": "artifacts/topology.pdb", "state_xml": "artifacts/state.xml"})
+        update_node(
+            jd,
+            "topo_001",
+            {
+                "artifacts": {
+                    "system_xml": "artifacts/system.xml",
+                    "topology_pdb": "artifacts/topology.pdb",
+                    "state_xml": "artifacts/state.xml",
+                }
+            },
+        )
         fail_node(jd, "topo_001", errors=["topology invalid"])
         create_node(jd, "eq", parent_node_ids=["topo_001"])
 
@@ -2075,7 +2548,12 @@ class TestDAGAutoResolve:
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
                                  "state": "artifacts/state.xml"})
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         assert "topology_file" in inputs
         assert inputs["topology_file"].endswith("topo_001/artifacts/topology.pdb")
@@ -2100,7 +2578,12 @@ class TestDAGAutoResolve:
         complete_node(jd, "prod_002",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
                                  "energy": "artifacts/energy.dat"})
-        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_002"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         energy_chain = inputs.get("energy_chain")
         assert energy_chain is not None
@@ -2128,7 +2611,12 @@ class TestDAGAutoResolve:
         create_node(jd, "prod", continue_from="prod_001")
         complete_node(jd, "prod_002",
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
-        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_002"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         # 2 trajectories, but only 1 energy
         assert len(inputs["trajectory_chain"]) == 2
@@ -2153,7 +2641,12 @@ class TestDAGAutoResolve:
         complete_node(jd, "prod_003",
                       artifacts={"trajectory": "artifacts/trajectory.dcd",
                                  "state": "artifacts/state.xml"})
-        create_node(jd, "analyze", parent_node_ids=["prod_003"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_003"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         chain = inputs["trajectory_chain"]
         assert len(chain) == 3
@@ -2171,7 +2664,12 @@ class TestDAGAutoResolve:
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
         # prod_002 exists but has no artifacts (never completed)
         create_node(jd, "prod", continue_from="prod_001")
-        create_node(jd, "analyze", parent_node_ids=["prod_002"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_002"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         assert "trajectory_chain" not in inputs
         assert "input_resolution_error" in inputs
@@ -2188,12 +2686,22 @@ class TestDAGAutoResolve:
         # Phase 1 concat shape (parent=prod)
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         complete_node(jd, "analyze_001",
                       artifacts={"combined_trajectory": "artifacts/combined.dcd",
                                  "reference_pdb": "artifacts/combined.pdb"})
         # Phase 2 shape (parent=analyze)
-        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["analyze_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_002", "analyze")
         assert inputs["trajectory_file"].endswith(
             "analyze_001/artifacts/combined.dcd"
@@ -2218,7 +2726,12 @@ class TestDAGAutoResolve:
         jd = str(full_dag)
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         # A single analyze node that emitted both artifacts (unusual
         # in practice but allowed — fit_trajectory does exactly this
         # when re-emitting reference_pdb and writing fitted.dcd)
@@ -2226,7 +2739,12 @@ class TestDAGAutoResolve:
                       artifacts={"combined_trajectory": "artifacts/combined.dcd",
                                  "fitted_trajectory": "artifacts/fitted.dcd",
                                  "reference_pdb": "artifacts/combined.pdb"})
-        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["analyze_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_002", "analyze")
         assert inputs["trajectory_file"].endswith(
             "analyze_001/artifacts/fitted.dcd"
@@ -2241,7 +2759,12 @@ class TestDAGAutoResolve:
         jd = str(full_dag)
         complete_node(jd, "prod_001",
                       artifacts={"trajectory": "artifacts/trajectory.dcd"})
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         complete_node(jd, "analyze_001",
                       artifacts={"combined_trajectory": "artifacts/combined.dcd",
                                  "reference_pdb": "artifacts/combined.pdb"})
@@ -2367,7 +2890,12 @@ class TestDAGAutoResolve:
                 "state": "artifacts/state.xml",
             },
         )
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         inputs = resolve_node_inputs(jd, "analyze_001", "analyze")
         assert inputs["topology_file"].endswith(
             "topo_001/artifacts/topology.pdb"
@@ -2949,7 +3477,12 @@ class TestSourceNode:
             "prod_001",
             artifacts={"trajectory": "artifacts/trajectory.dcd"},
         )
-        create_node(jd, "analyze", parent_node_ids=["prod_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["prod_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
         artifacts_dir = job_dir / "nodes" / "analyze_001" / "artifacts"
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         (artifacts_dir / "result.json").write_text("{}")
@@ -2963,7 +3496,12 @@ class TestSourceNode:
                 "report": {"result_json": "artifacts/result.json"},
             },
         )
-        create_node(jd, "analyze", parent_node_ids=["analyze_001"])
+        create_node(
+            jd,
+            "analyze",
+            parent_node_ids=["analyze_001"],
+            conditions=ANALYSIS_PRODUCTION_CHAIN_CONDITIONS,
+        )
 
         result_json = find_ancestor_artifact(
             jd, "analyze_002", "analyze", "result_json"

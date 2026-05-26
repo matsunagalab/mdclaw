@@ -35,9 +35,38 @@ Confirm these fields before running analysis:
 | Parameter | Value |
 |-----------|-------|
 | Target | job directory |
+| Analysis data scope | segment, production_chain, or comparison |
+| Analysis subjects | optional for segment/production_chain; required for comparison |
+| Comparison mapping | required for different chains/topologies; initial types: `residue_number`, `atom_selection` |
+| Validation | require `analysis_data_scope`; comparison is binary/pairwise with two unique subject `label`s |
 | Leaf prod node | requested node or deepest continuation leaf |
 | Atom selection | mdtraj selection, default `"protein"` |
 | Stride | integer, default `1` |
+
+For comparison analyses, create the node with explicit subjects and mapping:
+Use two completed `production_chain` analyze nodes as parents.
+Put `analysis_subjects` and `comparison_mapping` on the comparison node itself,
+not on the parent `production_chain` analyze nodes.
+The resolver still exposes multi-parent analyze inputs as `branches_input` for
+tool compatibility.
+For `residue_number` mappings, each reference uses
+`subject_label:residue_id`; the `residue_id` is a string, not a number.
+For `atom_selection` mappings, selection values are mdtraj selection strings.
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type analyze \
+  --parent-node-ids <analyze_apo> <analyze_holo> \
+  --label "apo_vs_holo" \
+  --conditions '{"analysis_data_scope": "comparison",
+                 "analysis_subjects": [
+                   {"label": "apo"},
+                   {"label": "holo"}
+                 ],
+                 "comparison_mapping": {
+                   "type": "residue_number",
+                   "pairs": [["apo:10", "holo:10"]]
+                 }}'
+```
 
 Create an `analyze` node first, then run analysis tools with both `--job-dir`
 and `--node-id`.

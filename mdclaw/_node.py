@@ -56,8 +56,156 @@ NODE_STATUSES = frozenset({"pending", "queued", "running", "completed", "failed"
 NODE_STATUS_ALIASES = {
     "submitted": "queued",
 }
+ANALYSIS_DATA_SCOPES = frozenset({"segment", "production_chain", "comparison"})
+COMPARISON_MAPPING_TYPES = frozenset({"residue_number", "atom_selection"})
+IMMUTABLE_NODE_UPDATE_KEYS = frozenset({
+    "schema_version",
+    "node_id",
+    "node_type",
+    "type",
+    "parent_node_ids",
+    "parents",
+    "dependency_node_ids",
+    "dependencies",
+    "conditions",
+    "created_at",
+})
+OPERATIONAL_METADATA_KEYS = ("claimed_by", "claim_expires_at", "open_needs")
 
 SCHEMA_VERSION = 3
+
+
+def _validate_analysis_subjects(value: Any, *, required: bool) -> tuple[bool, set[str], str]:
+    if value is None:
+        if required:
+            return False, set(), (
+                "analysis_subjects is required when "
+                "analysis_data_scope='comparison'"
+            )
+        return True, set(), ""
+    if not isinstance(value, list) or not value:
+        return False, set(), "analysis_subjects must be a non-empty list"
+
+    labels: set[str] = set()
+    for idx, subject in enumerate(value):
+        if not isinstance(subject, dict):
+            return False, set(), f"analysis_subjects[{idx}] must be an object"
+        label = subject.get("label")
+        if not isinstance(label, str) or not label.strip():
+            return False, set(), (
+                f"analysis_subjects[{idx}].label must be a non-empty string"
+            )
+        if label in labels:
+            return False, set(), f"duplicate analysis_subjects label: {label!r}"
+        labels.add(label)
+    return True, labels, ""
+
+
+def _subject_label_from_mapping_ref(value: Any) -> Optional[str]:
+    if not isinstance(value, str) or ":" not in value:
+        return None
+    label, suffix = value.split(":", 1)
+    if not label or not suffix:
+        return None
+    return label
+
+
+def _validate_comparison_mapping(value: Any, subject_labels: set[str]) -> Optional[str]:
+    if not isinstance(value, dict):
+        return "comparison_mapping is required when analysis_data_scope='comparison'"
+
+    mapping_type = value.get("type")
+    if mapping_type not in COMPARISON_MAPPING_TYPES:
+        return (
+            "comparison_mapping.type must be one of "
+            f"{sorted(COMPARISON_MAPPING_TYPES)}"
+        )
+
+    if mapping_type == "residue_number":
+        pairs = value.get("pairs")
+        if not isinstance(pairs, list) or not pairs:
+            return "comparison_mapping.pairs must be a non-empty list"
+        for pair_idx, pair in enumerate(pairs):
+            if not isinstance(pair, list) or len(pair) != 2:
+                return (
+                    f"comparison_mapping.pairs[{pair_idx}] must be a "
+                    "two-item list"
+                )
+            pair_labels: set[str] = set()
+            for ref in pair:
+                label = _subject_label_from_mapping_ref(ref)
+                if label is None:
+                    return (
+                        "comparison_mapping residue references must use "
+                        "'<subject_label>:<residue_id>'"
+                    )
+                if label not in subject_labels:
+                    return (
+                        "comparison_mapping references unknown "
+                        f"analysis_subjects label {label!r}"
+                    )
+                pair_labels.add(label)
+            if pair_labels != subject_labels:
+                return (
+                    "comparison_mapping.pairs must reference both binary "
+                    "analysis_subjects exactly once"
+                )
+        return None
+
+    selections = value.get("selections")
+    if not isinstance(selections, dict) or not selections:
+        return (
+            "comparison_mapping.selections must be a non-empty object "
+            "for type='atom_selection'"
+        )
+    selection_labels = set(selections.keys())
+    if selection_labels != subject_labels:
+        return (
+            "comparison_mapping.selections must include exactly the two "
+            "binary analysis_subjects"
+        )
+    for label, selection in selections.items():
+        if not isinstance(selection, str) or not selection.strip():
+            return (
+                "comparison_mapping.selections values must be non-empty "
+                "atom-selection strings"
+            )
+    return None
+
+
+def _validate_analyze_conditions(conditions: Optional[dict]) -> Optional[str]:
+    if not isinstance(conditions, dict):
+        return "analyze nodes require conditions with analysis_data_scope"
+
+    scope = conditions.get("analysis_data_scope")
+    if scope not in ANALYSIS_DATA_SCOPES:
+        return (
+            "analysis_data_scope must be one of "
+            f"{sorted(ANALYSIS_DATA_SCOPES)}"
+        )
+
+    subjects_ok, subject_labels, subject_error = _validate_analysis_subjects(
+        conditions.get("analysis_subjects"),
+        required=scope == "comparison",
+    )
+    if not subjects_ok:
+        return subject_error
+
+    mapping = conditions.get("comparison_mapping")
+    if scope != "comparison":
+        if mapping is not None:
+            return (
+                "comparison_mapping is only valid when "
+                "analysis_data_scope='comparison'"
+            )
+        return None
+
+    if len(subject_labels) != 2:
+        return (
+            "comparison analyses are binary/pairwise and require exactly "
+            "two analysis_subjects"
+        )
+    return _validate_comparison_mapping(mapping, subject_labels)
 
 
 def _normalize_node_status(status: str) -> Optional[str]:
@@ -67,6 +215,22 @@ def _normalize_node_status(status: str) -> Optional[str]:
     normalized = status.strip().lower()
     normalized = NODE_STATUS_ALIASES.get(normalized, normalized)
     return normalized if normalized in NODE_STATUSES else None
+
+
+def _node_is_completed(data: dict) -> bool:
+    return _normalize_node_status(data.get("status")) == "completed"
+
+
+def _completed_node_sealed_response(node_id: str) -> dict:
+    return {
+        "success": False,
+        "code": "completed_node_sealed",
+        "node_id": node_id,
+        "error": (
+            f"Completed node record '{node_id}' is sealed; write a post-completion "
+            "event or create a new node instead of mutating node.json."
+        ),
+    }
 
 _STRUCTURED_ARTIFACT_PATH_KEYS = frozenset({
     "path",
@@ -591,6 +755,26 @@ def create_node(
                         "parents = analyze)."
                     ),
                 }
+            conditions_error = _validate_analyze_conditions(conditions)
+            if conditions_error:
+                return {
+                    "success": False,
+                    "error": conditions_error,
+                }
+            if (
+                isinstance(conditions, dict)
+                and conditions.get("analysis_data_scope") == "comparison"
+                and (len(parents) != 2 or set(parent_types) != {"analyze"})
+            ):
+                return {
+                    "success": False,
+                    "error": (
+                        "comparison analyze nodes require exactly two "
+                        "analyze parents. Create one production_chain "
+                        "analyze node per branch first, then compare "
+                        "those analyze nodes."
+                    ),
+                }
 
         if node_type == "prep":
             source_lineages = set()
@@ -684,12 +868,24 @@ def update_node(job_dir: str, node_id: str, updates: dict) -> None:
             "update_node() must not set 'status' — use update_node_status() "
             "so the progress.json index stays in sync."
         )
+    immutable_keys = sorted(set(updates) & IMMUTABLE_NODE_UPDATE_KEYS)
+    if immutable_keys:
+        raise ValueError(
+            "update_node() must not mutate immutable node identity fields: "
+            f"{immutable_keys}. Create a new node for changed scientific "
+            "identity."
+        )
 
     node_dir = Path(job_dir) / "nodes" / node_id
     node_json = node_dir / "node.json"
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            raise ValueError(
+                "completed node.json records are sealed; write a post-completion "
+                "event instead of mutating node.json"
+            )
         for key, value in updates.items():
             if isinstance(value, dict) and isinstance(data.get(key), dict):
                 data[key].update(value)
@@ -742,6 +938,11 @@ def _apply_status(
     node_json = node_dir / "node.json"
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            raise ValueError(
+                "completed node.json records are sealed; write a post-completion "
+                "event instead of mutating node.json"
+            )
         if artifact_paths_for_hash:
             artifact_hashes = {}
             for key, rel_path in artifact_paths_for_hash.items():
@@ -825,7 +1026,30 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
             },
             "recoverable": True,
         }
-    _apply_status(job_dir, node_id, canonical_status)
+    try:
+        _apply_status(job_dir, node_id, canonical_status)
+    except ValueError as exc:
+        message = str(exc)
+        if "completed node.json records are sealed" in message:
+            return {
+                "success": False,
+                "error_type": "ValidationError",
+                "code": "completed_node_sealed",
+                "message": message,
+                "errors": [message],
+                "warnings": [],
+                "hints": [
+                    "Create a new node for changed scientific state.",
+                    "Write operational observations as events instead of mutating completed node.json records.",
+                ],
+                "context": {
+                    "node_id": node_id,
+                    "requested_status": canonical_status,
+                    "code": "completed_node_sealed",
+                },
+                "recoverable": True,
+            }
+        raise
     return {"success": True, "node_id": node_id, "status": canonical_status}
 
 
@@ -863,6 +1087,8 @@ def claim_node(
     expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
         metadata = data.setdefault("metadata", {})
         claimed_by = metadata.get("claimed_by")
         claim_expires_at = metadata.get("claim_expires_at")
@@ -935,6 +1161,8 @@ def release_node_claim(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
         metadata = data.setdefault("metadata", {})
         claimed_by = metadata.get("claimed_by")
         if agent_id and claimed_by and claimed_by != agent_id:
@@ -1031,6 +1259,8 @@ def add_node_need(job_dir: str, node_id: str, need: dict) -> dict:
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.setdefault("open_needs", [])
         if not isinstance(open_needs, list):
@@ -1079,6 +1309,8 @@ def clear_node_need(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):
@@ -1150,6 +1382,8 @@ def record_node_need_attempt(
 
     with file_lock(node_dir / "node.lock"):
         data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
         metadata = data.setdefault("metadata", {})
         open_needs = metadata.get("open_needs", [])
         if not isinstance(open_needs, list):
@@ -1241,6 +1475,12 @@ def complete_node(
     artifacts = normalize_artifact_paths(job_dir, node_id, artifacts)
     payload: dict = {"artifacts": artifacts}
     merged_metadata = dict(metadata or {})
+    operational_metadata = sorted(set(merged_metadata) & set(OPERATIONAL_METADATA_KEYS))
+    if operational_metadata:
+        raise ValueError(
+            "complete_node() metadata must not include operational fields "
+            f"{operational_metadata}; completed node.json records are sealed."
+        )
     if merged_metadata:
         payload["metadata"] = merged_metadata
     if warnings:
@@ -1251,6 +1491,7 @@ def complete_node(
         node_id,
         "completed",
         payload=payload,
+        clear_metadata_keys=list(OPERATIONAL_METADATA_KEYS),
         artifact_paths_for_hash=artifacts,
     )
     write_event(job_dir, node_id, "tool_completed", success=True)

@@ -669,13 +669,14 @@ class TestHPCParameters:
             "run_equilibration",
             "--system-xml-file", "sys.system.xml",
             "--topology-pdb-file", "sys.topology.pdb",
-            "--nvt-time-ns", "0.1",
-            "--npt-time-ns", "0.1",
+            "--stage", "NPT",
+            "--stage-time-ns", "0.1",
+            "--pressure-bar", "1.0",
         ])
-        assert args.nvt_time_ns == 0.1
-        assert args.npt_time_ns == 0.1
-        assert args.nvt_steps is None
-        assert args.npt_steps is None
+        assert args.stage == "NPT"
+        assert args.stage_time_ns == 0.1
+        assert args.stage_steps is None
+        assert args.pressure_bar == 1.0
 
     def test_equilibration_time_flags_in_list_json(self):
         from mdclaw._cli import _discover_tools, _tool_list_json
@@ -687,10 +688,15 @@ class TestHPCParameters:
             if tool["name"] == "run_equilibration"
         )
         flags = {param["cli_flag"]: param for param in run_eq["parameters"]}
-        assert "--nvt-time-ns" in flags
-        assert "--npt-time-ns" in flags
-        assert flags["--nvt-time-ns"]["type"] == "Optional[float]"
-        assert flags["--npt-time-ns"]["type"] == "Optional[float]"
+        assert "--stage" in flags
+        assert "--stage-time-ns" in flags
+        assert "--stage-steps" in flags
+        assert not any(
+            flag.startswith("--nvt-") or flag.startswith("--npt-")
+            for flag in flags
+        )
+        assert flags["--stage-time-ns"]["type"] == "Optional[float]"
+        assert flags["--stage-steps"]["type"] == "Optional[int]"
 
     def test_hmr_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
@@ -899,6 +905,47 @@ class TestNodeCLIParameters:
                 "--parent-node-ids", "prod_001",
             ])
         assert exc_info.value.code != 0
+
+    def test_create_analyze_node_accepts_analysis_data_scope(self, tmp_path, capsys):
+        from mdclaw._cli import main
+        from mdclaw._node import create_node
+
+        create_node(str(tmp_path), "prod")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "create_node",
+                "--job-dir", str(tmp_path),
+                "--node-type", "analyze",
+                "--parent-node-ids", "prod_001",
+                "--conditions", '{"analysis_data_scope":"production_chain"}',
+            ])
+
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is True
+        assert payload["node_id"] == "analyze_001"
+
+    def test_create_analyze_node_rejects_missing_analysis_data_scope(
+        self, tmp_path, capsys
+    ):
+        from mdclaw._cli import main
+        from mdclaw._node import create_node
+
+        create_node(str(tmp_path), "prod")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "create_node",
+                "--job-dir", str(tmp_path),
+                "--node-type", "analyze",
+                "--parent-node-ids", "prod_001",
+            ])
+
+        assert exc_info.value.code != 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is False
+        assert "analysis_data_scope" in payload["error"]
 
     def test_update_node_status_accepts_required_flags(self):
         from mdclaw._cli import _build_parser, _discover_tools

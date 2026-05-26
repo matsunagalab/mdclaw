@@ -1,7 +1,9 @@
 # Concatenate Production Trajectories
 
-Use this for Phase 1 analysis: combine one continuous production lineage into a
-compact analysis trajectory.
+Use this for production-chain data scope analysis: combine one continuous
+Production Chain into a compact analysis trajectory. For segment data scope
+analysis, parent the analyze node to the specific Production Segment and make
+the requested scope explicit in the node label or conditions.
 
 ## Locate The Leaf Production Node
 
@@ -14,7 +16,8 @@ leaf unless the user asks otherwise.
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type analyze \
   --parent-node-ids <leaf_prod_id> \
-  --label "protein-only"
+  --label "chain_protein_only" \
+  --conditions '{"analysis_data_scope": "production_chain"}'
 ```
 
 ## Run `concat_trajectory`

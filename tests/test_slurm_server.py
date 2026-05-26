@@ -1694,6 +1694,55 @@ class TestCheckJobNodeSync:
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
+    def test_completed_node_keeps_slurm_observation_in_events(
+        self, mock_run, mock_check, tmp_path, monkeypatch,
+    ):
+        monkeypatch.chdir(tmp_path)
+        jd = _make_job_with_nodes(tmp_path, "job_completed_sealed", ["prod_001"])
+
+        _append_job_record({
+            "job_id": "99999",
+            "status": "RUNNING",
+            "job_dir": str(jd),
+            "node_id": "prod_001",
+        })
+
+        (jd / "nodes" / "prod_001" / "node.json").write_text(json.dumps({
+            "node_id": "prod_001",
+            "type": "prod",
+            "status": "completed",
+            "parents": [],
+            "metadata": {"final_step": 1000},
+            "artifacts": {"trajectory": "artifacts/trajectory.dcd"},
+            "warnings": [],
+        }))
+
+        def side_effect(cmd, **kwargs):
+            if cmd[0] == "squeue":
+                raise subprocess.CalledProcessError(1, cmd)
+            return _mock_run_command(stdout=json.dumps({
+                "jobs": [{
+                    "state": {"current": ["COMPLETED"]},
+                    "nodes": "compute03",
+                    "exit_code": {"return_code": 0},
+                    "time": {"elapsed": "00:05:00"},
+                }]
+            }))
+        mock_run.side_effect = side_effect
+
+        result = check_job("99999")
+
+        assert result["state"] == "COMPLETED"
+        node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
+        assert node["metadata"] == {"final_step": 1000}
+        event_files = list((jd / "events").glob("*slurm_observed*"))
+        assert len(event_files) == 1
+        event = json.loads(event_files[0].read_text())
+        assert event["details"]["slurm_state"] == "COMPLETED"
+        assert event["details"]["slurm_elapsed"] == "00:05:00"
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
     def test_tracker_lookup_can_use_job_dir_not_cwd(
         self, mock_run, mock_check, tmp_path, monkeypatch,
     ):

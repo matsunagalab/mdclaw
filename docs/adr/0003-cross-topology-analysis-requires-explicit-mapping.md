@@ -1,0 +1,11 @@
+# Cross-topology analysis requires explicit mapping
+
+MDClaw allows comparison analyses across different chains and even different Topologies, but only when the Analysis Subjects and Comparison Mapping are declared. Initial support accepts only explicit user/agent-supplied mappings of type `residue_number` or `atom_selection`, not automatically inferred sequence or residue alignments. This prevents branch comparisons from silently assuming shared atom indices or residue numbering, while still supporting biologically natural questions such as chain A versus chain B or separately simulated constructs.
+
+Comparison Analysis Nodes should carry `analysis_data_scope`, `analysis_subjects`, and `comparison_mapping` in their conditions so the scientific comparison is part of node identity.
+
+`analysis_subjects` and `comparison_mapping` belong to the Comparison Analysis Node itself. Parent `production_chain` Analysis Nodes may describe their own local analysis targets, but they do not own the cross-branch subject namespace or correspondence used by the comparison.
+
+Validation should be lightweight before the analysis runs: required condition fields, supported scope and mapping type values, subject labels, and mapping references should be syntactically consistent. Topology-backed checks such as residue/atom existence and per-branch compatibility are metric-specific checks, not a global gate.
+
+The lightweight check requires `analysis_data_scope` on every Analysis Node. Allowed values are `segment`, `production_chain`, and `comparison`. For `comparison`, `analysis_subjects` and `comparison_mapping` are required; for `segment` and `production_chain`, `analysis_subjects` is optional unless a metric-specific tool requires it. Subject entries only require a unique `label` at this layer; descriptor fields remain metric-specific. Initial comparison support is binary/pairwise: exactly two analyze parents and exactly two subjects per Comparison Analysis Node, and residue-number mapping keeps the lightweight `subject_label:residue_id` string form while covering both declared subject labels. The `residue_id` suffix is treated as an opaque string, not a number. Atom-selection mapping values are mdtraj selection strings; the shared lightweight check only requires non-empty strings.

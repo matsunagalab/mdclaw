@@ -89,8 +89,22 @@ one-system request can still be represented as a study with one job, usually
 `jobs/main`; broader investigations register multiple job DAGs under the same
 study.
 
-Inside a job, the `source` node records a structural source bundle. The
-required execution contract is `source_bundle.json` plus normalized
+Node type names are short on disk and in the CLI, while design discussions use
+the formal names from `CONTEXT.md`:
+
+| CLI / Disk Type | Formal Name | Usual Product |
+|---|---|---|
+| `source` | Source Node | Source Bundle |
+| `prep` | Preparation Node | Prepared System |
+| `solv` | Solvation Node | Solvated System |
+| `topo` | Topology Node | Topology |
+| `eq` | Equilibration Node | Equilibrated state artifacts |
+| `prod` | Production Node | Production Segment artifacts |
+| `analyze` | Analysis Node | Analysis evidence artifacts |
+
+Inside a job, the `source` node acquires structural input, records a structural
+source bundle, and normalizes downstream-selectable candidates. The required
+execution contract is `source_bundle.json` plus normalized
 `artifacts/candidates/candidate_*.pdb|cif` files. Raw input files may also be
 kept for provenance, but `prep` always selects one candidate file before
 producing an MD-ready physical system. Candidate files can come from ordinary
@@ -99,6 +113,76 @@ assembly/chain choices, or generated prediction ensemble members from
 Boltz/BioEm-like tools. Generator-specific rank and confidence data live on
 the relevant candidate records and are surfaced through `list_source_candidates`.
 Variants then branch from `prep`, `solv`, `topo`, `eq`, or `prod`.
+
+Preparation nodes select one candidate, choose MD-relevant molecular
+components, clean and standardize them, record chemistry and provenance for
+topology building, and produce a prepared system. They do not create explicit
+solvent boxes, apply force fields, or run MD protocols.
+
+Topology nodes own force-field, template, and parameter resolution. Preparation
+nodes provide chemistry and provenance materials such as ligand chemistry,
+disulfide records, component disposition, and chain identity; topology nodes
+turn those materials into an MD-ready topology artifact contract.
+
+Production continuations are represented as new Production Nodes in the same
+Production Chain. The timeline metadata continues from the selected ancestor,
+but each Production Segment writes its own node-owned artifacts.
+
+Analysis nodes declare an Analysis Data Scope. The condition field is
+`analysis_data_scope`, with supported values `segment`, `production_chain`, and
+`comparison`. A single production parent can mean either the parent Production
+Segment or the full Production Chain ending at that leaf, depending on the
+analysis intent. A comparison node consumes exactly two analyze parent nodes;
+create one `production_chain` analyze node per branch first, then compare those
+analysis artifacts. The comparison node owns `analysis_subjects` and
+`comparison_mapping` in its own conditions; parent analyze nodes describe their
+own data scope, not the cross-branch subject namespace or correspondence. The
+resolver continues to expose multi-parent analyze inputs as `branches_input`;
+that internal name is kept for existing tools even when the data scope is
+`comparison`.
+Cross-topology comparisons are allowed only when the Analysis Subjects and
+Comparison Mapping are explicit; the same-topology path may use one shared
+topology file, but different-topology comparisons need per-branch topology and
+mapping data rather than atom-index assumptions. Initial support should not
+infer mappings automatically from sequence or residue similarity. Initial
+mapping types are limited to `residue_number` and `atom_selection`.
+Analysis tools should apply lightweight validation before execution: required
+condition fields, supported scope and mapping type values, subject labels, and
+mapping references should be syntactically consistent. Topology-backed checks
+such as referenced residue/atom existence and per-branch compatibility are
+metric-specific checks, not a global gate.
+For `analysis_data_scope="comparison"`, `analysis_subjects` and
+`comparison_mapping` are required. For `segment` and `production_chain`,
+`analysis_subjects` is optional unless a metric-specific tool requires a
+subject. Subject entries only require a unique `label` at this layer; descriptor
+fields such as `chain_id`, `selection`, `residue_range`, or `resname` remain
+metric-specific. Initial comparison support is binary/pairwise: exactly two
+analyze parents and exactly two subjects per comparison node. Residue-number
+mapping keeps the lightweight string form `subject_label:residue_id` in `pairs`,
+with each pair referencing both subjects exactly once. The `residue_id` part is
+an opaque string, not a number, so insertion codes and source-specific residue
+identifiers remain representable. Atom-selection mapping uses a `selections`
+object keyed by the two subject labels. Selection values are mdtraj selection
+strings; lightweight validation only checks that they are present and non-empty.
+
+Recommended comparison conditions:
+
+```json
+{
+  "analysis_data_scope": "comparison",
+  "analysis_subjects": [
+    {"label": "apo"},
+    {"label": "holo"}
+  ],
+  "comparison_mapping": {
+    "type": "residue_number",
+    "pairs": [
+      ["apo:10", "holo:10"],
+      ["apo:11", "holo:11"]
+    ]
+  }
+}
+```
 
 ```mermaid
 flowchart LR
@@ -174,6 +258,11 @@ DAG invariants:
   contract.
 - A completed topology node must provide the full OpenMM XML triple; run-side
   tools do not fall back to legacy Amber `parm7/rst7`.
+- Completed node.json records are sealed scientific records. Create a new node
+  for changed conditions, parents, artifacts, or scientific metadata.
+  Post-completion scheduler observations belong in append-only events.
+- Agent claims and open needs are work-routing hints for unfinished or retryable
+  nodes. Completion clears those operational hints before sealing the node.
 - Events are append-only files, not a shared JSON array.
 - Broken or unsupported chemistry should surface as structured errors rather
   than silent best-effort topology builds.
@@ -225,6 +314,10 @@ load_ligand_molecules -> pablo_load -> system_generator_init ->
 modeller_prepare -> system_generator_create_system -> initial_minimization ->
 serialization -> collect_provenance -> completed
 ```
+
+The `initial_minimization` stage is topology-time minimization: it validates
+the force-field-applied system and writes the initial `state.xml`. It is not an
+Equilibration Node and should not be described as an MD equilibration protocol.
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
 Molecules. Topology resolves compatible Amber geostd XMLs first and passes
