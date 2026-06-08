@@ -168,7 +168,19 @@ evidence are complete. Put topology artifacts in
 manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:
 ["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]. Also
 write manifest.outputs.minimized_structure and
-manifest.outputs.minimization_report. Fill metrics.json paths listed in
+manifest.outputs.minimization_report. When the public contract sets
+`required_topology_backend: openmm`, record the backend where the scorer reads
+it: write `topology.backend = "openmm"` in metrics.json. The
+topology_artifact_bundle / openmm_system_load / openmm_energy_rescan checks read
+metrics.json at path `topology.backend`; if it is missing, every prep task fails
+those three checks even when the artifact triple is valid and reloadable. Write
+minimization_report.json with the canonical fields the scorer reads (under a
+`minimization` object or at top level): `attempted=true`, `completed=true`,
+`energy_is_finite=true`, `positions_are_finite=true`,
+`atom_count_preserved=true`, plus numeric `energy_initial_kj_mol` and
+`energy_final_kj_mol`. Do not use non-canonical key names such as
+`energy_reloaded_state_kj_mol` / `energy_after_minimization_kj_mol` — the
+minimization_report_check will not find them. Fill metrics.json paths listed in
 submission_contract.json metric_requirements, especially task-specific
 metrics.preparation.* entries. If the public contract lists
 candidate_selection_requirements, satisfy them with `source_selection.json`
@@ -203,6 +215,30 @@ Minimal completed prep manifest shape:
     ],
     "minimized_structure": "minimized_structure.pdb",
     "minimization_report": "minimization_report.json"
+  }
+}
+
+Minimal scorer-readable metrics.json + minimization_report.json shape:
+
+metrics.json:
+{
+  "schema_version": "1.0",
+  "topology": { "backend": "openmm" },
+  "preparation": { ...task-specific metric_requirements... }
+}
+
+minimization_report.json:
+{
+  "schema_version": "1.0",
+  "minimization": {
+    "attempted": true,
+    "completed": true,
+    "backend": "openmm",
+    "energy_initial_kj_mol": <number>,
+    "energy_final_kj_mol": <number>,
+    "energy_is_finite": true,
+    "positions_are_finite": true,
+    "atom_count_preserved": true
   }
 }
 
