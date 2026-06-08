@@ -332,6 +332,7 @@ def _record_packmol_memgen_output(
     proc_result,
     result: dict,
     success_message: str,
+    allow_forced_output: bool = False,
 ) -> None:
     """Record output artifacts and diagnostics for packmol-memgen based tools."""
     diagnostics = _packmol_memgen_diagnostics(
@@ -340,7 +341,15 @@ def _record_packmol_memgen_output(
         proc_result=proc_result,
     )
     packing_failure_reasons = _packmol_quality_failure_reasons(diagnostics)
-    if not output_file.exists():
+    forced_output = output_file.with_name(f"{output_file.name}_FORCED")
+    forced_output_accepted = (
+        allow_forced_output
+        and bool(packing_failure_reasons)
+        and forced_output.exists()
+    )
+    recorded_output = forced_output if forced_output_accepted else output_file
+
+    if not recorded_output.exists():
         if packing_failure_reasons:
             _record_packmol_quality_failure(
                 result,
@@ -356,15 +365,26 @@ def _record_packmol_memgen_output(
             result["errors"].append(f"stderr: {proc_result.stderr[:500]}")
         return
 
-    result["output_file"] = str(output_file)
+    result["output_file"] = str(recorded_output)
+    if forced_output_accepted:
+        result["forced_output_accepted"] = True
+        result["forced_output_file"] = str(forced_output)
+        if output_file.exists():
+            result["packmol_primary_output_file"] = str(output_file)
+        result["code"] = "packmol_forced_output_accepted"
+        result["warnings"].append(
+            "Accepted Packmol FORCED output for downstream topology-time "
+            "minimization; packing_quality remains failed and the structure "
+            "must pass minimization/energy checks before MD use."
+        )
 
     try:
-        result["statistics"]["total_atoms"] = count_atoms_in_pdb(output_file)
+        result["statistics"]["total_atoms"] = count_atoms_in_pdb(recorded_output)
     except Exception as e:
         result["warnings"].append(f"Could not count atoms: {e}")
 
     box_info = extract_box_size(
-        str(output_file),
+        str(recorded_output),
         str(packmol_inp_file) if packmol_inp_file.exists() else None,
     )
     if box_info:
@@ -384,6 +404,19 @@ def _record_packmol_memgen_output(
         result["packmol_log"] = str(log_file)
 
     if packing_failure_reasons:
+        if forced_output_accepted:
+            result["success"] = True
+            result["packing_quality"] = {
+                "passed": False,
+                "failure_reasons": packing_failure_reasons,
+                "forced_output_accepted": True,
+            }
+            logger.warning(
+                "Accepted Packmol FORCED output for %s despite quality failure: %s",
+                forced_output,
+                ", ".join(packing_failure_reasons),
+            )
+            return
         _record_packmol_quality_failure(
             result,
             packing_failure_reasons,
@@ -1246,6 +1279,7 @@ def embed_in_membrane(
     nloop: int = 20,
     nloop_all: int = 50,
     water_model: str = "opc",
+    allow_forced_output: bool = True,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -1300,6 +1334,11 @@ def embed_in_membrane(
                      Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      Must match the water model used in build_amber_system.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
+        allow_forced_output: Accept packmol-memgen's ``*_FORCED`` PDB as the
+                     solvated artifact when Packmol reports imperfect packing.
+                     Defaults to True for membrane workflows because the
+                     topology build performs an immediate minimization/energy
+                     check; set False to require perfect Packmol packing.
     
     Returns:
         Dict with:
@@ -1363,6 +1402,7 @@ def embed_in_membrane(
             "water_model": water_model,
             "nloop": nloop,
             "nloop_all": nloop_all,
+            "allow_forced_output": allow_forced_output,
         },
         "packmol_log": None,
         "statistics": {},
@@ -1409,6 +1449,7 @@ def embed_in_membrane(
                 "salt_a": salt_a,
                 "saltcon": saltcon,
                 "salt_override": salt_override,
+                "allow_forced_output": allow_forced_output,
             },
         )
         if not _ctx["success"]:
@@ -1572,15 +1613,18 @@ def embed_in_membrane(
                     args, cwd=out_dir, timeout=membrane_timeout
                 )
             elif failure_reasons := _packmol_quality_failure_reasons(diagnostics):
-                _record_packmol_quality_failure(
-                    result,
-                    failure_reasons,
-                    "packmol-memgen failed and Packmol reported imperfect "
-                    "packing or membrane piercing; refusing to treat this "
-                    "structure as MD-ready.",
-                )
-                packing_failure_recorded = True
-                proc_result = exc
+                if allow_forced_output:
+                    proc_result = exc
+                else:
+                    _record_packmol_quality_failure(
+                        result,
+                        failure_reasons,
+                        "packmol-memgen failed and Packmol reported imperfect "
+                        "packing or membrane piercing; refusing to treat this "
+                        "structure as MD-ready.",
+                    )
+                    packing_failure_recorded = True
+                    proc_result = exc
             else:
                 raise
         else:
@@ -1625,9 +1669,14 @@ def embed_in_membrane(
                 proc_result=proc_result,
                 result=result,
                 success_message="Successfully embedded structure in membrane",
+                allow_forced_output=allow_forced_output,
             )
-            if result.get("success") and output_file.exists():
-                restore_report = _restore_packmol_solute_identity(input_copy, output_file)
+            if result.get("success") and result.get("output_file"):
+                restored_output = Path(str(result["output_file"]))
+                restore_report = _restore_packmol_solute_identity(
+                    input_copy,
+                    restored_output,
+                )
                 result.update(restore_report)
                 result["warnings"].extend(
                     restore_report.get("solute_identity_restore_warnings", [])
@@ -1650,9 +1699,10 @@ def embed_in_membrane(
     if _node_mode:
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success"):
+            artifact_output = Path(str(result.get("output_file") or output_file))
             complete_node(job_dir, node_id,
                 artifacts={
-                    "solvated_pdb": f"artifacts/{output_name}.pdb",
+                    "solvated_pdb": f"artifacts/{artifact_output.name}",
                     "box_dimensions": "artifacts/box_dimensions.json",
                 },
                 metadata={
@@ -1661,6 +1711,10 @@ def embed_in_membrane(
                     "is_membrane": True,
                     "salt_concentration_M": saltcon,
                     "salt_override": salt_override,
+                    "packing_quality": result.get("packing_quality"),
+                    "forced_output_accepted": bool(
+                        result.get("forced_output_accepted")
+                    ),
                 })
             update_job_summaries(job_dir, params={
                 "solvation_type": "membrane",

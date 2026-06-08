@@ -105,12 +105,18 @@ suggestion increases the lateral xy box via `dist`; keep `leaflet` and
 membrane/water slab. Do not increase Packmol loop counts by hand just to make
 the command run longer; the CLI keeps retry loop counts modest and returns a
 structured failure when packing remains unsuitable.
+For membrane embedding, `embed_in_membrane` accepts Packmol's `*_FORCED` PDB
+by default when imperfect packing is reported. Treat that artifact as a
+topology/minimization candidate, not as MD-ready evidence: proceed to
+`build_amber_system`, then require the topology-time minimization and OpenMM
+energy checks to pass before marking the preparation completed.
 
 Common structured outcomes:
 
 | `code` / action | What it means | Agent response |
 |---|---|---|
 | `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | Packmol made an output, but packing was imperfect or lipids pierced the membrane. The box/packing is not MD-ready. | Retry with the CLI-provided larger xy/lateral box suggestion and modest loop counts unless geometry was explicitly fixed. |
+| `packmol_forced_output_accepted` | Packmol reported imperfect packing, but wrote a `*_FORCED` PDB that MDClaw accepted for topology-time minimization. | Continue to `build_amber_system`; only trust the structure if minimization and energy rescans pass. |
 | `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
 
 ### Domain Knowledge

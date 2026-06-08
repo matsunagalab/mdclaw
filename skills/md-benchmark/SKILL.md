@@ -143,8 +143,8 @@ rerun packmol-memgen with `--salt_override` while keeping explicit-solvent mode
 unchanged. Record the warning/metadata in provenance and metrics evidence.
 For membrane prep, use `embed_in_membrane` defaults unless the prompt explicitly
 specifies membrane geometry or pre-orientation; a
-`packmol_packing_quality_failed` result is a real blocker, not a completed
-topology candidate. If the result also has
+`packmol_packing_quality_failed` result means the packing is not MD-ready. If
+the result also has
 `recommended_next_action="retry_membrane_with_larger_box"`, preserve the prompt
 lipid species and ratio, retry from the same prep parent with the
 `retry_suggestion.suggested_parameters`, and record both attempts. The retry
@@ -153,7 +153,12 @@ suggestion should expand the lateral xy box; do not inflate z by changing
 explicitly fixed geometry, report the conflict instead of silently changing it.
 Do not increase Packmol loop counts beyond the CLI suggestion just to make the
 attempt run longer; benchmark attempts should fail fast with structured
-evidence when packing remains unsuitable.
+evidence when packing remains unsuitable. When `embed_in_membrane` accepts
+Packmol's `*_FORCED` output (`code="packmol_forced_output_accepted"`, the
+default for membrane workflows), continue to `build_amber_system` and rely on
+the topology-time minimization plus OpenMM energy rescan to decide whether the
+forced layout is usable. Do not call the forced structure MD-ready until those
+checks pass.
 For nucleic-acid prep tasks such as P15/P16/P17, submit the
 hydrogen-complete standard DNA/RNA prep artifact written by `prepare_complex`;
 do not rely on topology-time hydrogen repair.
