@@ -183,6 +183,7 @@ def build_openmm_system(
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
     minimize: bool = True,
+    minimize_max_iterations: int = 1000,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -237,8 +238,14 @@ def build_openmm_system(
              shipped XML is also in ``forcefield_xml``; for purely
              custom GB XML, leave the metadata as ``None`` and accept
              that the run-side topology guard cannot match.
-        minimize: Run a short LocalEnergyMinimizer pass before
-            serializing the state. Disable for debugging.
+        minimize: Run a LocalEnergyMinimizer pass before serializing the
+            state. Disable for debugging.
+        minimize_max_iterations: L-BFGS iteration cap for the minimization
+            (default 1000; 0 = run to convergence). A single short pass
+            (the old default of 200) can leave freshly solvated systems at a
+            high positive potential energy when packing places close
+            contacts; ~1000 iterations relaxes them to a strongly negative
+            (physically settled) energy.
         output_name: Stem for the artifact file names.
         output_dir / job_dir / node_id: Standard mdclaw I/O knobs.
 
@@ -587,7 +594,7 @@ def build_openmm_system(
             initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
         if minimize:
-            simulation.minimizeEnergy(maxIterations=200)
+            simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
         state = simulation.context.getState(
             getEnergy=True,
             getPositions=True,
@@ -611,7 +618,7 @@ def build_openmm_system(
             "attempted": bool(minimize),
             "completed": bool(minimize),
             "backend": "openmm",
-            "max_iterations": 200 if minimize else 0,
+            "max_iterations": minimize_max_iterations if minimize else 0,
             "energy_initial_kj_mol": energy_initial_kj_mol,
             "energy_final_kj_mol": energy_final_kj_mol,
             "energy_is_finite": (

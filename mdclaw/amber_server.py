@@ -2592,6 +2592,7 @@ def build_amber_system(
     implicit_solvent: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
+    minimize_max_iterations: int = 1000,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -2678,6 +2679,13 @@ def build_amber_system(
                      ``{output_name}.topology.pdb``,
                      ``{output_name}.state.xml``, and
                      ``{output_name}.minimization_report.json``.
+        minimize_max_iterations: L-BFGS iteration cap for the build-time
+                     energy minimization (default 1000; 0 = run to
+                     convergence). A single short pass (the old default of
+                     200) can leave freshly solvated systems at a high
+                     positive potential energy when solvation places close
+                     contacts; ~1000 iterations relaxes them to a strongly
+                     negative (physically settled) energy.
         output_dir / job_dir / node_id: Standard mdclaw I/O knobs. In
                      node mode, the topo node's metadata is stamped with
                      ``system_artifact_kind="openmm_system_xml"`` and a
@@ -3765,6 +3773,7 @@ def build_amber_system(
             glycam_normalization_file=out_dir / f"{output_name}.glycam_normalization.json",
             hmr=hmr,
             implicit_solvent=canonical_implicit_solvent,
+            minimize_max_iterations=minimize_max_iterations,
             stage_callback=(
                 (lambda stage: _record_topology_build_stage(job_dir, node_id, stage))
                 if _node_mode else None
@@ -4057,6 +4066,7 @@ def _run_openmmforcefields_build(
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
+    minimize_max_iterations: int = 1000,
     allow_geostd_ligands: bool = True,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
@@ -4940,6 +4950,7 @@ def _run_openmmforcefields_build(
                 extra_xml=extra_xml,
                 extra_smiles=extra_smiles,
                 stage_callback=stage_callback,
+                minimize_max_iterations=minimize_max_iterations,
                 allow_geostd_ligands=False,
             )
             fallback["warnings"] = (
@@ -4995,7 +5006,7 @@ def _run_openmmforcefields_build(
         energy_initial_kj_mol = float(
             initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
-        simulation.minimizeEnergy(maxIterations=200)
+        simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
         state = simulation.context.getState(
             getEnergy=True,
             getPositions=True,
@@ -5019,7 +5030,7 @@ def _run_openmmforcefields_build(
             "attempted": True,
             "completed": True,
             "backend": "openmm",
-            "max_iterations": 200,
+            "max_iterations": minimize_max_iterations,
             "energy_initial_kj_mol": energy_initial_kj_mol,
             "energy_final_kj_mol": energy_final_kj_mol,
             "energy_is_finite": (
