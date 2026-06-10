@@ -669,13 +669,14 @@ class TestHPCParameters:
             "run_equilibration",
             "--system-xml-file", "sys.system.xml",
             "--topology-pdb-file", "sys.topology.pdb",
-            "--stage", "NPT",
-            "--stage-time-ns", "0.1",
+            "--nvt-time-ns", "0.05",
+            "--npt-time-ns", "0.1",
             "--pressure-bar", "1.0",
         ])
-        assert args.stage == "NPT"
-        assert args.stage_time_ns == 0.1
-        assert args.stage_steps is None
+        assert args.nvt_time_ns == 0.05
+        assert args.npt_time_ns == 0.1
+        assert args.nvt_steps is None
+        assert args.npt_steps is None
         assert args.pressure_bar == 1.0
 
     def test_equilibration_time_flags_in_list_json(self):
@@ -688,15 +689,17 @@ class TestHPCParameters:
             if tool["name"] == "run_equilibration"
         )
         flags = {param["cli_flag"]: param for param in run_eq["parameters"]}
-        assert "--stage" in flags
-        assert "--stage-time-ns" in flags
-        assert "--stage-steps" in flags
-        assert not any(
-            flag.startswith("--nvt-") or flag.startswith("--npt-")
-            for flag in flags
-        )
-        assert flags["--stage-time-ns"]["type"] == "Optional[float]"
-        assert flags["--stage-steps"]["type"] == "Optional[int]"
+        assert "--nvt-time-ns" in flags
+        assert "--npt-time-ns" in flags
+        assert "--nvt-steps" in flags
+        assert "--npt-steps" in flags
+        assert "--stage" not in flags
+        assert "--stage-time-ns" not in flags
+        assert "--stage-steps" not in flags
+        assert flags["--nvt-time-ns"]["type"] == "Optional[float]"
+        assert flags["--npt-time-ns"]["type"] == "Optional[float]"
+        assert flags["--nvt-steps"]["type"] == "Optional[int]"
+        assert flags["--npt-steps"]["type"] == "Optional[int]"
 
     def test_hmr_params(self):
         from mdclaw._cli import _build_parser, _discover_tools
