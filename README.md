@@ -365,7 +365,7 @@ submitted artifacts.
 With the `md-benchmark` skill, user-facing benchmark prompts should stay short:
 
 ```text
-MDPrepBenchを run_id=prep_smoke で実行して評価して
+MDPrepBenchを run_id=prep_full_run で実行して評価して
 ```
 
 ```text
@@ -383,7 +383,7 @@ Create a run workspace from the repository root:
 ```bash
 mdclaw prepare_benchmark_run \
   --output-dir benchmark_runs \
-  --run-id prep_smoke \
+  --run-id prep_full_run \
   --dataset-dir benchmarks/mdprepbench \
   --execution-mode lite
 ```
@@ -407,6 +407,8 @@ points to agent-safe `prompt.md`, `submission_contract.json`,
 agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
 `truth/`, or `scorer/`. Each evaluated agent should solve only its current task;
 do not ask it to inspect the full suite or write a benchmark-wide solver script.
+`run_id` is only a label; do not infer smoke-test shortcuts or task subsets from
+words in it.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 
@@ -427,7 +429,7 @@ full three-task curated suite:
 ```bash
 mdclaw prepare_benchmark_run \
   --output-dir benchmark_runs \
-  --run-id study_smoke \
+  --run-id study_full_run \
   --dataset-dir benchmarks/mdstudybench \
   --execution-mode lite
 ```

@@ -25,14 +25,15 @@ the evaluated agent.
 When using the `md-benchmark` skill, a short user instruction is enough:
 
 ```text
-MDPrepBenchを run_id=prep_smoke で実行して評価して
+MDPrepBenchを run_id=prep_full_run で実行して評価して
 ```
 
 The prepared run contains one short `agent_prompt.md` per task. Give that file
 to the evaluated agent; keep harness/scorer files for the evaluator only. The
 evaluated task agent should solve only that task. Suite-level batching belongs
 to the harness/operator, not to a benchmark-wide solver script inside the
-submission.
+submission. `run_id` is only a label; do not infer smoke-test shortcuts or task
+subsets from words in it.
 
 ## Current Scope
 

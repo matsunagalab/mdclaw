@@ -63,6 +63,11 @@ benchmark-wide solver scripts. A task-local helper script is allowed only when
 it executes real workflow steps for the current task and is recorded in
 `provenance.command_log`.
 
+`run_id` is an opaque label for the run directory and records. Do not infer task
+subset, smoke-test behavior, execution depth, or expected outcome from words in
+the run ID. Suite and task selection come only from the benchmark name, dataset
+directory, and explicit task IDs.
+
 ## Minimum Attempt Policy
 
 If `failure_policy.blocked_by_missing_input_allowed=false` and
@@ -117,7 +122,7 @@ the run as partial or blocked-only, not full.
 The intended user-facing prompts are short:
 
 ```text
-MDPrepBenchを run_id=prep_smoke で実行して評価して
+MDPrepBenchを run_id=prep_full_run で実行して評価して
 ```
 
 ```text
@@ -179,6 +184,8 @@ Internal submission rules for this skill:
 
 - Solve only the task referenced by the current `agent_prompt.md`; do not
   inspect sibling task directories or categorize all benchmark tasks.
+- Treat `run_id` and directory names as labels only; do not infer smoke-test
+  shortcuts, task subsets, or expected outcomes from them.
 - Do not write benchmark-wide solver scripts or task-ID case tables. Batch
   orchestration belongs to the harness/operator, not the evaluated agent.
 - Task-local helper scripts are allowed only if they run real workflow steps

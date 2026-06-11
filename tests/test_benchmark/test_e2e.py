@@ -230,9 +230,12 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "task_instructions.json" in agent_prompt
     assert "Solve only this task." in agent_prompt
     assert "benchmark-wide solver scripts" in agent_prompt
+    assert "Run IDs and directory names are labels only" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
-    assert len(agent_prompt) < 1200
+    assert len(agent_prompt) < 1400
     assert Path(prepared["operator_prompt_file"]).is_file()
+    operator_prompt = Path(prepared["operator_prompt_file"]).read_text()
+    assert "The run_id and directory names are labels only" in operator_prompt
     forbidden_agent_fields = {
         "canonical_task_file",
         "score_command",
