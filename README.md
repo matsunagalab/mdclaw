@@ -408,7 +408,9 @@ agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
 `truth/`, or `scorer/`. Each evaluated agent should solve only its current task;
 do not ask it to inspect the full suite or write a benchmark-wide solver script.
 `run_id` is only a label; do not infer smoke-test shortcuts or task subsets from
-words in it.
+words in it. Task-local Python helpers should run via
+`conda run -n mdclaw python ...`, and agents should retry failed workflow steps
+with new MDClaw nodes rather than deleting node directories by hand.
 
 For normal MDClaw DAG runs, create a `min` node after topology and run:
 

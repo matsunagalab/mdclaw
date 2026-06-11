@@ -190,6 +190,12 @@ Internal submission rules for this skill:
   orchestration belongs to the harness/operator, not the evaluated agent.
 - Task-local helper scripts are allowed only if they run real workflow steps
   for the current task and are recorded in `provenance.command_log`.
+- Run Python helpers inside the MDClaw environment, e.g.
+  `conda run -n mdclaw python ...`; system `python3` may not have OpenMM,
+  gemmi, or MDClaw installed.
+- Do not delete or hand-edit DAG node directories, `node.json`, or
+  `progress.json`. If a step must be retried, create a new node or use the
+  MDClaw node/need tools so provenance remains auditable.
 - For MDPrepBench, attempt source, prep, topology export, and the `min` stage.
 - For completed prep submissions, use `manifest.outputs.topology` as a list
   containing `system.xml`, `topology.pdb`, and `state.xml`.
