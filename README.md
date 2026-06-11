@@ -405,7 +405,8 @@ listed in `benchmark_runs/<run_id>/agent_tasks.json`. Each task instruction
 points to agent-safe `prompt.md`, `submission_contract.json`,
 `submission_checklist.md`, and target `submission/` paths. Do not give the
 agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
-`truth/`, or `scorer/`.
+`truth/`, or `scorer/`. Each evaluated agent should solve only its current task;
+do not ask it to inspect the full suite or write a benchmark-wide solver script.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 

@@ -57,6 +57,12 @@ arguments, geometry values, selected chains, model numbers, or workflow knobs
 that are not present in the public prompt/submission contract. Those choices
 belong to the evaluated agent and must be justified in its submission.
 
+Evaluated agents solve exactly one task at a time. They must not inspect,
+categorize, or hardcode behavior across the benchmark suite, and must not write
+benchmark-wide solver scripts. A task-local helper script is allowed only when
+it executes real workflow steps for the current task and is recorded in
+`provenance.command_log`.
+
 ## Minimum Attempt Policy
 
 If `failure_policy.blocked_by_missing_input_allowed=false` and
@@ -171,6 +177,12 @@ keep task-specific requirements in `prompt.md`, `submission_contract.json`, and
 
 Internal submission rules for this skill:
 
+- Solve only the task referenced by the current `agent_prompt.md`; do not
+  inspect sibling task directories or categorize all benchmark tasks.
+- Do not write benchmark-wide solver scripts or task-ID case tables. Batch
+  orchestration belongs to the harness/operator, not the evaluated agent.
+- Task-local helper scripts are allowed only if they run real workflow steps
+  for the current task and are recorded in `provenance.command_log`.
 - For MDPrepBench, attempt source, prep, topology export, and minimization.
 - For completed prep submissions, use `manifest.outputs.topology` as a list
   containing `system.xml`, `topology.pdb`, and `state.xml`.

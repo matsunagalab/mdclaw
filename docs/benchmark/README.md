@@ -29,7 +29,10 @@ MDPrepBenchを run_id=prep_smoke で実行して評価して
 ```
 
 The prepared run contains one short `agent_prompt.md` per task. Give that file
-to the evaluated agent; keep harness/scorer files for the evaluator only.
+to the evaluated agent; keep harness/scorer files for the evaluator only. The
+evaluated task agent should solve only that task. Suite-level batching belongs
+to the harness/operator, not to a benchmark-wide solver script inside the
+submission.
 
 ## Current Scope
 

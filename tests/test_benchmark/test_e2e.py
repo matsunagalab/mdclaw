@@ -228,6 +228,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     agent_prompt = Path(task_instructions["agent_prompt"]).read_text()
     assert "Use the md-benchmark skill." in agent_prompt
     assert "task_instructions.json" in agent_prompt
+    assert "Solve only this task." in agent_prompt
+    assert "benchmark-wide solver scripts" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
     assert len(agent_prompt) < 1200
     assert Path(prepared["operator_prompt_file"]).is_file()
