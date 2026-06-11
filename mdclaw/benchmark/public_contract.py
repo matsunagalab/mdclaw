@@ -107,6 +107,146 @@ def manifest_contract(task: Task) -> dict[str, Any]:
     return contract
 
 
+def submission_blueprint(task: Task) -> dict[str, Any]:
+    """Return a concrete submission skeleton for agent-side self-checks."""
+    outputs: dict[str, Any] = {
+        "metrics": "metrics.json",
+        "provenance": "provenance.json",
+        "evidence_report": "evidence_report.json",
+    }
+    if "prepared_structure.pdb" in task.required_outputs:
+        outputs["prepared_structure"] = "prepared_structure.pdb"
+    if "minimized_structure.pdb" in task.required_outputs:
+        outputs["minimized_structure"] = "minimized_structure.pdb"
+    if "minimization_report.json" in task.required_outputs:
+        outputs["minimization_report"] = "minimization_report.json"
+    if task.primary_score == PREPARATION_SCORE_AXIS:
+        outputs["topology"] = OPENMM_TOPOLOGY_EXAMPLE
+        if _has_candidate_selection(task):
+            outputs["source_selection"] = "source_selection.json"
+
+    return {
+        "manifest_minimum": {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "status": "completed",
+            "outputs": outputs,
+        },
+        "metrics_minimum": {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "topology": {"backend": "openmm"},
+            "preparation": {
+                item["json_path"].removeprefix("preparation."): item["value"]
+                for item in public_metric_requirements(task)
+                if item["operator"] == "equals"
+                and item["json_path"].startswith("preparation.")
+            },
+        },
+        "minimization_report_minimum": {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "minimization": {
+                "attempted": True,
+                "completed": True,
+                "energy_is_finite": True,
+                "positions_are_finite": True,
+                "atom_count_preserved": True,
+                "energy_initial_kj_mol": "<number>",
+                "energy_final_kj_mol": "<number>",
+            },
+        },
+        "provenance_minimum": {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "command_log": [
+                {
+                    "stage": "source",
+                    "command": "<command or agent action>",
+                    "exit_code": 0,
+                    "walltime_seconds": "<number>",
+                },
+                {
+                    "stage": "prep",
+                    "command": "<command or agent action>",
+                    "exit_code": 0,
+                    "walltime_seconds": "<number>",
+                },
+                {
+                    "stage": "topo",
+                    "command": "<command or agent action>",
+                    "exit_code": 0,
+                    "walltime_seconds": "<number>",
+                },
+                {
+                    "stage": "minimization",
+                    "command": "<command or agent action>",
+                    "exit_code": 0,
+                    "walltime_seconds": "<number>",
+                },
+            ],
+            "raw_outputs": [
+                {
+                    "path": "<relative path under submission/>",
+                    "md5": "<md5 hash>",
+                }
+            ],
+        },
+    }
+
+
+def submission_checklist(task: Task) -> list[str]:
+    """Return agent-facing checks to run before handing off to the scorer."""
+    checks = [
+        "manifest.json parses and manifest.task_id matches this task",
+        "manifest.outputs paths are relative and stay inside submission/",
+        "every required_outputs file exists in submission/",
+        "provenance.json includes command_log entries for source, prep, topo, and minimization",
+        "metrics.json contains every metric_requirements json_path from this contract",
+    ]
+    if task.primary_score == PREPARATION_SCORE_AXIS:
+        checks.extend([
+            "manifest.outputs.topology is a list containing system.xml, topology.pdb, and state.xml",
+            'metrics.json sets topology.backend to "openmm"',
+            "manifest.outputs.minimized_structure and outputs.minimization_report are present",
+            "minimization_report.json confirms attempted/completed finite-energy minimization",
+        ])
+    if _has_candidate_selection(task):
+        checks.append(
+            "source_selection.json or equivalent structured source_selection evidence is present"
+        )
+    return checks
+
+
+def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
+    """Render a short per-task checklist for public package exports."""
+    lines = [
+        f"# Submission Checklist: {task.task_id}",
+        "",
+        "Use this checklist before submitting. The canonical scorer still reads",
+        "`submission_contract.json`; this file is only a human/agent aid.",
+        "",
+        "## Required Files",
+        "",
+    ]
+    lines.extend(f"- `{rel}`" for rel in task.required_outputs)
+    lines.extend([
+        "",
+        "## Manifest Outputs",
+        "",
+    ])
+    for key, value in contract["submission_blueprint"]["manifest_minimum"]["outputs"].items():
+        lines.append(f"- `outputs.{key}`: `{value}`")
+    lines.extend([
+        "",
+        "## Pre-Submission Checks",
+        "",
+    ])
+    lines.extend(f"- {item}" for item in contract["submission_checklist"])
+    lines.append("")
+    return "\n".join(lines)
+
+
 def public_submission_contract(
     task: Task,
     *,
@@ -130,5 +270,14 @@ def public_submission_contract(
         "metric_requirements": public_metric_requirements(task),
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
         "manifest_contract": manifest_contract(task),
+        "submission_blueprint": submission_blueprint(task),
+        "submission_checklist": submission_checklist(task),
         "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",
     }
+
+
+def _has_candidate_selection(task: Task) -> bool:
+    return any(
+        check.check_type == "candidate_selection_check"
+        for check in task.scoring.deterministic_checks
+    )

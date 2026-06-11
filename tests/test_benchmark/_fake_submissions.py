@@ -56,6 +56,32 @@ def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
         "agent": {"name": "fake_submissions.py", "mode": mode},
         "backend": {"name": "synthetic-fixture", "version": "prep-v0.1"},
         "harness": {"name": "fake_submissions.py"},
+        "command_log": [
+            {
+                "stage": "source",
+                "command": f"synthetic fixture source retrieval for {task_id}",
+                "exit_code": 0,
+                "walltime_seconds": 0.1,
+            },
+            {
+                "stage": "prep",
+                "command": f"synthetic fixture preparation for {task_id}",
+                "exit_code": 0,
+                "walltime_seconds": 0.1,
+            },
+            {
+                "stage": "topo",
+                "command": f"synthetic fixture topology build for {task_id}",
+                "exit_code": 0,
+                "walltime_seconds": 0.1,
+            },
+            {
+                "stage": "minimization",
+                "command": f"synthetic fixture minimization for {task_id}",
+                "exit_code": 0,
+                "walltime_seconds": 0.1,
+            },
+        ],
         "scripts": [],
         "raw_outputs": [],
     }

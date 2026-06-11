@@ -13,6 +13,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from mdclaw.benchmark import integrity
 from mdclaw.benchmark.models import SubmissionManifest, Task
 
 
@@ -103,11 +104,20 @@ def validate_submission(task_file: str | Path,
                 out["errors"].append(
                     "manifest.status='blocked' but task failure_policy "
                     "does not allow blocked outcomes")
+            raw_outputs = manifest_payload.get("outputs") or {}
+            outputs = raw_outputs if isinstance(raw_outputs, dict) else {}
+            path_warnings = integrity.manifest_path_safety_warnings(
+                manifest_payload,
+                sub_dir,
+            )
+            out["errors"].extend(path_warnings)
+
+            if manifest.status == "completed":
+                _validate_completed_manifest_outputs(task, outputs, sub_dir, out)
             if (
                 manifest.status == "completed"
                 and "minimized_structure.pdb" in task.required_outputs
             ):
-                outputs = manifest_payload.get("outputs") or {}
                 minimized_rel = outputs.get("minimized_structure")
                 if not isinstance(minimized_rel, str) or not minimized_rel:
                     out["errors"].append(
@@ -134,3 +144,54 @@ def validate_submission(task_file: str | Path,
 
     out["success"] = not out["errors"]
     return out
+
+
+def _validate_completed_manifest_outputs(
+    task: Task,
+    outputs: dict[str, Any],
+    sub_dir: Path,
+    out: dict[str, Any],
+) -> None:
+    required_fields = ["metrics", "provenance", "evidence_report"]
+    if "prepared_structure.pdb" in task.required_outputs:
+        required_fields.append("prepared_structure")
+    if "minimized_structure.pdb" in task.required_outputs:
+        required_fields.append("minimized_structure")
+    if "minimization_report.json" in task.required_outputs:
+        required_fields.append("minimization_report")
+    if any(
+        check.check_type == "topology_artifact_bundle"
+        for check in task.scoring.deterministic_checks
+    ):
+        required_fields.append("topology")
+
+    for field in required_fields:
+        if field not in outputs:
+            out["errors"].append(
+                "manifest.status='completed' requires "
+                f"outputs.{field}"
+            )
+            continue
+        value = outputs[field]
+        if field == "topology":
+            if not isinstance(value, list) or not value:
+                out["errors"].append(
+                    "manifest.status='completed' requires outputs.topology "
+                    "as a non-empty list"
+                )
+                continue
+            for rel in value:
+                if isinstance(rel, str) and not (sub_dir / rel).is_file():
+                    out["errors"].append(
+                        f"outputs.topology points to missing file: {rel}"
+                    )
+        elif isinstance(value, str) and value:
+            if not (sub_dir / value).is_file():
+                out["errors"].append(
+                    f"outputs.{field} points to missing file: {value}"
+                )
+        else:
+            out["errors"].append(
+                f"manifest.status='completed' requires outputs.{field} "
+                "as a non-empty string"
+            )

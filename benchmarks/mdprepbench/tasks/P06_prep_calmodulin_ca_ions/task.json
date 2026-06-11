@@ -121,9 +121,20 @@
           "minimized_structure.pdb": 250,
           "prepared_structure.pdb": 250
         }
+      },
+      {
+        "check_id": "workflow_execution_recorded",
+        "check_type": "provenance_execution_evidence",
+        "min_command_count": 4,
+        "required_stages": [
+          "source",
+          "prep",
+          "topo",
+          "minimization"
+        ]
       }
     ],
-    "integrity_policy": "warn",
+    "integrity_policy": "reject",
     "llm_judge_rubrics": [
       "provenance_traceability",
       "limitations"

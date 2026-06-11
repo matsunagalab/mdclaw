@@ -10,7 +10,8 @@ scientific study tasks do not share one overloaded dataset.
 
 Both suites use the same artifact-based scorer framework:
 
-- agent-visible files: `prompt.md` and exported `submission_contract.json`
+- agent-visible files: `prompt.md`, exported `submission_contract.json`, and
+  exported `submission_checklist.md`
 - harness/scorer files: canonical `task.json`
 - scorer-only files: `truth/` and optional `scorer/`
 
@@ -33,3 +34,10 @@ mdclaw export_benchmark_public_package \
   --dataset-dir benchmarks/mdstudybench \
   --output-dir benchmark_public/mdstudybench
 ```
+
+For MDPrepBench, the exported contract includes a `submission_blueprint` and
+checklist so agents can build a complete `submission/` directory without seeing
+scorer-only checks. Completed prep submissions are scored with strict artifact
+integrity: unsafe manifest paths, missing OpenMM topology/minimization outputs,
+template placeholders, or missing provenance execution evidence are hard
+failures.

@@ -411,9 +411,14 @@ def export_benchmark_public_package(
             contract_path.write_text(
                 json.dumps(contract, indent=2, sort_keys=True) + "\n"
             )
+            checklist_path = public_task_dir / "submission_checklist.md"
+            checklist_path.write_text(
+                public_contract.submission_checklist_markdown(task, contract)
+            )
             task_files.extend([
                 str(dest / "tasks" / task_id / "prompt.md"),
                 str(dest / "tasks" / task_id / "submission_contract.json"),
+                str(dest / "tasks" / task_id / "submission_checklist.md"),
             ])
 
         readme = staging / "README.md"
@@ -421,8 +426,13 @@ def export_benchmark_public_package(
             "# MD Benchmark Public Package\n\n"
             "This directory is safe to give to benchmark agents. It contains task "
             "prompts and submission-facing contracts only.\n\n"
-            "Agents should read `tasks/<task_id>/prompt.md`, write a `submission/` "
-            "directory matching `tasks/<task_id>/submission_contract.json`, and "
+            "Agents should read `tasks/<task_id>/prompt.md`, then use "
+            "`tasks/<task_id>/submission_contract.json` and "
+            "`tasks/<task_id>/submission_checklist.md` to build a `submission/` "
+            "directory. The contract includes a `submission_blueprint` for the "
+            "minimum manifest, metrics, provenance, and minimization-report "
+            "shape expected by the scorer.\n\n"
+            "Agents "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
             "files from the canonical repository tree. The contract lists required "
             "outputs, metric requirements, and manifest rules such as "

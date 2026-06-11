@@ -219,6 +219,38 @@ def manifest_metrics_consistency(
     return warnings
 
 
+def manifest_path_safety_warnings(
+    manifest: dict[str, Any],
+    submission_dir: Path,
+) -> list[str]:
+    """Return warnings for manifest output paths that escape ``submission/``."""
+    warnings: list[str] = []
+    outputs = manifest.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return ["manifest.outputs is not an object"]
+    for dotted, rel in _manifest_output_paths(outputs):
+        issue = unsafe_relative_path_issue(submission_dir, rel)
+        if issue:
+            warnings.append(f"manifest.outputs.{dotted}: {issue}")
+    return warnings
+
+
+def unsafe_relative_path_issue(submission_dir: Path, rel: Any) -> Optional[str]:
+    """Return a path-safety issue for a submitted artifact reference."""
+    if not isinstance(rel, str) or not rel.strip():
+        return "artifact path must be a non-empty relative string"
+    path = Path(rel)
+    if path.is_absolute():
+        return f"absolute artifact path is not allowed: {rel!r}"
+    try:
+        base = submission_dir.resolve()
+        resolved = (base / path).resolve()
+        resolved.relative_to(base)
+    except ValueError:
+        return f"artifact path escapes submission directory: {rel!r}"
+    return None
+
+
 # ---------------------------------------------------------------------------
 # helpers
 
@@ -564,6 +596,74 @@ def check_manifest_artifact_floor(
     return warnings
 
 
+def check_provenance_execution_evidence(
+    provenance: dict[str, Any],
+    required_stages: list[str],
+    min_command_count: int = 1,
+) -> list[str]:
+    """Require structured evidence that real workflow commands/actions ran.
+
+    This does not forbid Python or custom scripts; it rejects the weaker pattern
+    where a submission only includes generated JSON/PDB files and possibly
+    script filenames, but no stage-aware execution log tying those artifacts to
+    source/prep/topology/minimization work.
+    """
+    if not isinstance(provenance, dict):
+        return ["provenance.json is not a JSON object"]
+
+    command_log = _first_list(
+        provenance,
+        "command_log",
+        "commands",
+        "execution_log",
+        "attempts",
+    )
+    if not command_log:
+        return [
+            "provenance lacks command_log/commands/execution_log entries; "
+            "scripts alone are not execution evidence"
+        ]
+
+    structured: list[dict[str, Any]] = [
+        entry for entry in command_log if isinstance(entry, dict)
+    ]
+    warnings: list[str] = []
+    if len(structured) < min_command_count:
+        warnings.append(
+            f"provenance execution log has {len(structured)} structured "
+            f"entry(ies); require >= {min_command_count}"
+        )
+
+    stages_seen: set[str] = set()
+    for index, entry in enumerate(structured):
+        stage = str(entry.get("stage") or "").strip().lower()
+        command = _first_nonempty(entry, "command", "action", "tool")
+        status = entry.get("exit_code", entry.get("status", entry.get("result")))
+        if not stage:
+            warnings.append(f"provenance command_log[{index}] missing stage")
+        else:
+            stages_seen.add(stage)
+        if not command:
+            warnings.append(
+                f"provenance command_log[{index}] missing command/action/tool"
+            )
+        if status is None or status == "":
+            warnings.append(
+                f"provenance command_log[{index}] missing exit_code/status/result"
+            )
+
+    missing_stages = [
+        stage for stage in required_stages
+        if str(stage).strip().lower() not in stages_seen
+    ]
+    if missing_stages:
+        warnings.append(
+            "provenance execution log missing required stage(s): "
+            f"{missing_stages}"
+        )
+    return warnings
+
+
 def run_artifact_integrity(
     submission_dir: Path,
     integrity_checks: list[Any],
@@ -643,6 +743,15 @@ def run_artifact_integrity(
                     min_bytes=int(check.min_bytes or 1),
                 )
                 warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "provenance_execution_evidence":
+                provenance_path = submission_dir / "provenance.json"
+                provenance = read_json_safe(provenance_path)
+                ws = check_provenance_execution_evidence(
+                    provenance,
+                    required_stages=check.required_stages or [],
+                    min_command_count=int(check.min_command_count or 1),
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
             else:
                 warnings.append(
                     f"[{check.check_id}] unknown integrity check_type {ctype!r}"
@@ -652,3 +761,41 @@ def run_artifact_integrity(
                 f"[{check.check_id}] integrity check raised {type(exc).__name__}: {exc}"
             )
     return warnings
+
+
+def _manifest_output_paths(outputs: dict[str, Any]):
+    for key, value in outputs.items():
+        yield from _walk_manifest_output_value(str(key), value)
+
+
+def _walk_manifest_output_value(prefix: str, value: Any):
+    if value is None:
+        return
+    if isinstance(value, str):
+        yield prefix, value
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_manifest_output_value(f"{prefix}.{index}", item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _walk_manifest_output_value(f"{prefix}.{key}", item)
+        return
+    yield prefix, value
+
+
+def _first_list(obj: dict[str, Any], *keys: str) -> list[Any]:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _first_nonempty(obj: dict[str, Any], *keys: str) -> Optional[str]:
+    for key in keys:
+        value = obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None

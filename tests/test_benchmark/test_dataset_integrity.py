@@ -136,6 +136,12 @@ def test_prep_tasks_require_topology_and_minimization_contract():
         "openmm_energy_rescan",
         "minimization_report_check",
     }
+    required_integrity_check_types = {
+        "artifact_min_bytes",
+        "template_markers",
+        "status_artifact_floor",
+        "provenance_execution_evidence",
+    }
 
     for task_id in dataset["task_ids"]:
         task = Task.model_validate_json(
@@ -147,6 +153,13 @@ def test_prep_tasks_require_topology_and_minimization_contract():
             check.check_type for check in task.scoring.deterministic_checks
         }
         assert required_check_types.issubset(check_types), task_id
+        integrity_check_types = {
+            check.check_type for check in task.scoring.integrity_checks
+        }
+        assert required_integrity_check_types.issubset(
+            integrity_check_types
+        ), task_id
+        assert task.scoring.integrity_policy == "reject", task_id
 
 
 def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():

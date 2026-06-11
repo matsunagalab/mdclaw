@@ -34,7 +34,10 @@ The evaluated agent should read only files from the selected public package:
   public prompt suitable for handing directly to an MD agent.
 - `benchmark_public/mdprepbench/tasks/<task_id>/submission_contract.json`:
   public output contract containing required outputs, time limit, execution
-  mode, and failure policy. It contains no scoring checks or held-back truth.
+  mode, failure policy, `submission_blueprint`, and machine-readable metric
+  requirements. It contains no scoring checks or held-back truth.
+- `benchmark_public/mdprepbench/tasks/<task_id>/submission_checklist.md`:
+  per-task pre-submission checklist derived from the public contract.
 
 Use the analogous `benchmark_public/mdstudybench/...` paths when running
 MDStudyBench tasks.
@@ -105,7 +108,10 @@ Required files vary by task. Evaluator or harness code can read
 - `evidence_report.json`: preparation decisions, evidence, limitations, and
   any non-default chemistry choices.
 - `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
-  md5 records when available.
+  md5 records when available. Completed prep submissions must include a
+  structured `command_log` or equivalent execution log covering source
+  retrieval, preparation, topology export, and minimization; listing scripts
+  alone is not enough.
 - Task artifacts: `prepared_structure.pdb`, `minimized_structure.pdb`,
   OpenMM topology files, and `minimization_report.json` for the current prep
   battery.
@@ -128,7 +134,8 @@ copied to a benchmark-specific fixed filename:
 }
 ```
 
-Paths are resolved relative to the `submission/` directory. This keeps the
+Paths are resolved relative to the `submission/` directory and must stay inside
+that directory. Absolute paths and `../` escapes are rejected. This keeps the
 benchmark agent-independent while requiring a common OpenMM topology artifact
 format for the current prep battery.
 
@@ -144,6 +151,10 @@ files, and your `submission/` files.
   topology artifact completeness, and minimization evidence. Completed prep
   submissions must provide an OpenMM topology bundle, which is reloaded for
   finite-energy rescans.
+- MDPrepBench v0.1 treats artifact integrity warnings as hard failures for
+  completed submissions: unsafe manifest paths, template placeholder outputs,
+  missing topology/minimization artifacts, and missing execution evidence clamp
+  the score to zero.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
 
@@ -218,7 +229,8 @@ and task-specific `metric_requirements` list the `metrics.json` paths that must
 be populated. If `candidate_selection_requirements` is non-empty, also submit
 the requested source/model-selection evidence in `source_selection.json` or an
 equivalent structured `source_selection` record in provenance, metrics, or the
-evidence report.
+evidence report. Use the exported `submission_checklist.md` as the final
+agent-side self-check before validation.
 
 Validate and score:
 

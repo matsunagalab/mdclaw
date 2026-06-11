@@ -68,8 +68,8 @@ mdclaw export_benchmark_public_package \
 ```
 
 The exported package contains only `dataset.json`, submission-facing schemas,
-and per-task `prompt.md` plus `submission_contract.json`. It omits `task.json`,
-`truth/`, and `scorer/`.
+and per-task `prompt.md`, `submission_contract.json`, and
+`submission_checklist.md`. It omits `task.json`, `truth/`, and `scorer/`.
 
 ## Prep Tasks
 
@@ -124,13 +124,18 @@ but completed prep submissions must export an OpenMM-compatible artifact triple
 for scoring.
 
 The public `submission_contract.json` records the agent-facing metric paths
-that must be populated in `metrics.json`. For example, P01 requires
-`preparation.source_pdb_id`, `preparation.solvent_model`, and
-`preparation.topology_ready`.
+that must be populated in `metrics.json`, plus a `submission_blueprint` showing
+the minimum manifest, metrics, minimization report, and provenance shape. For
+example, P01 requires `preparation.source_pdb_id`,
+`preparation.solvent_model`, and `preparation.topology_ready`.
 When a task requires source/model selection, the public contract also includes
 `candidate_selection_requirements`; satisfy those with `source_selection.json`
 listed from `manifest.outputs.source_selection`, or with equivalent structured
 `source_selection` evidence in provenance, metrics, or the evidence report.
+All `manifest.outputs` paths must be relative paths under `submission/`;
+absolute paths and parent-directory escapes are rejected. Completed prep
+submissions must include structured provenance execution evidence, usually
+`provenance.command_log`, covering source, prep, topology, and minimization.
 
 Individual tasks may inspect specific paths inside `metrics.json`, component
 counts in `prepared_structure.pdb` or the minimized structure, or scorer-side
@@ -154,12 +159,15 @@ Scoring is deterministic by default:
 - `openmm_system_load` and `openmm_energy_rescan`
 - `minimization_report_check`
 - `minimized_structure_component_rescan`
-- artifact integrity checks such as byte floors and template-marker rejection
+- artifact integrity checks such as byte floors, template-marker rejection,
+  safe manifest paths, and provenance execution evidence
 
 OpenMM topology artifacts are required and strongly rescanned by the scorer.
 Non-OpenMM reload adapters can be added later, but prep battery v0.1 does not
 award completed-submission credit for native-only Amber or GROMACS topology
-placeholders.
+placeholders. MDPrepBench v0.1 uses `integrity_policy="reject"`: artifact or
+provenance integrity warnings on a completed submission are treated as hard
+score failures rather than soft notes.
 
 Modified DNA/RNA is intentionally outside the core prep battery because the
 current standard topology path does not support MD-ready parameterization of

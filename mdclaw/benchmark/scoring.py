@@ -92,7 +92,15 @@ def score_submission(
         integrity.manifest_metrics_consistency(manifest, metrics)
     )
 
-    # 2b. artifact integrity (re-verify bytes on disk, not just JSON values)
+    # 2a. Keep all manifest-declared artifacts inside submission/.
+    path_safety_warnings = integrity.manifest_path_safety_warnings(
+        manifest,
+        submission_dir,
+    )
+    integrity_warnings.extend(path_safety_warnings)
+
+    # 2b. artifact/provenance integrity (re-verify bytes and execution evidence,
+    # not just JSON values)
     artifact_warnings = integrity.run_artifact_integrity(
         submission_dir,
         task.scoring.integrity_checks,
@@ -155,12 +163,12 @@ def score_submission(
         manifest_status, weighted_total, axis_scores, ground_truth_results,
     )
 
-    # 7a. reject-phase clamp — if the task opts in to integrity_policy="reject"
-    # and any artifact integrity warning fired, weighted_total drops to 0.
-    # This is a hard contract: the agent cannot earn primary score with a
-    # template-stub submission.
+    # 7a. reject-phase clamp. Path traversal is always a hard failure; task
+    # integrity_policy="reject" also turns artifact/provenance warnings into a
+    # zero score.
     integrity_rejected = bool(
-        task.scoring.integrity_policy == "reject" and artifact_warnings
+        path_safety_warnings
+        or (task.scoring.integrity_policy == "reject" and artifact_warnings)
     )
     if integrity_rejected:
         weighted_total = 0.0

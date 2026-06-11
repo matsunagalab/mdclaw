@@ -306,6 +306,84 @@ def test_manifest_artifact_floor_requires_min_count(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# manifest path safety
+
+
+def test_manifest_path_safety_flags_escape(tmp_path: Path):
+    manifest = {
+        "outputs": {
+            "metrics": "metrics.json",
+            "topology": ["topology/system.xml", "../task.json"],
+        }
+    }
+
+    warnings = integrity.manifest_path_safety_warnings(manifest, tmp_path)
+
+    assert len(warnings) == 1
+    assert "escapes submission directory" in warnings[0]
+
+
+def test_manifest_path_safety_flags_absolute_path(tmp_path: Path):
+    manifest = {"outputs": {"metrics": "/tmp/metrics.json"}}
+
+    warnings = integrity.manifest_path_safety_warnings(manifest, tmp_path)
+
+    assert len(warnings) == 1
+    assert "absolute artifact path" in warnings[0]
+
+
+def test_manifest_path_safety_recurses_nested_outputs(tmp_path: Path):
+    manifest = {
+        "outputs": {
+            "topology": {
+                "system_xml": "../system.xml",
+                "topology_pdb": "topology/topology.pdb",
+            },
+        },
+    }
+
+    warnings = integrity.manifest_path_safety_warnings(manifest, tmp_path)
+
+    assert len(warnings) == 1
+    assert "outputs.topology.system_xml" in warnings[0]
+    assert "escapes submission directory" in warnings[0]
+
+
+# ---------------------------------------------------------------------------
+# provenance_execution_evidence
+
+
+def test_provenance_execution_evidence_requires_stage_log():
+    warnings = integrity.check_provenance_execution_evidence(
+        {"scripts": [{"path": "make_fake.py"}]},
+        required_stages=["source", "prep", "topo", "minimization"],
+        min_command_count=4,
+    )
+
+    assert len(warnings) == 1
+    assert "scripts alone" in warnings[0]
+
+
+def test_provenance_execution_evidence_passes_stage_log():
+    provenance = {
+        "command_log": [
+            {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
+            {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
+            {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
+            {"stage": "minimization", "command": "mdclaw minimize", "exit_code": 0},
+        ],
+    }
+
+    warnings = integrity.check_provenance_execution_evidence(
+        provenance,
+        required_stages=["source", "prep", "topo", "minimization"],
+        min_command_count=4,
+    )
+
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
 # run_artifact_integrity dispatch
 
 

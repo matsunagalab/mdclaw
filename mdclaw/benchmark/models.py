@@ -82,6 +82,7 @@ IntegrityCheckType = Literal[
     "figures_are_png",
     "status_artifact_floor",
     "manifest_artifact_floor",
+    "provenance_execution_evidence",
 ]
 
 IntegrityPolicy = Literal["warn", "reject"]
@@ -280,6 +281,11 @@ class IntegrityCheck(BaseModel):
     manifest_path: Optional[str] = None
     min_count: Optional[int] = None
 
+    # provenance_execution_evidence: require structured command/action records
+    # proving that a completed submission attempted the relevant workflow stages.
+    required_stages: Optional[list[str]] = None
+    min_command_count: Optional[int] = None
+
 
 class TaskScoring(BaseModel):
     deterministic_checks: list[DeterministicCheck] = Field(default_factory=list)
@@ -287,8 +293,7 @@ class TaskScoring(BaseModel):
     llm_judge_rubrics: list[str] = Field(default_factory=list)
     integrity_checks: list[IntegrityCheck] = Field(default_factory=list)
     # "warn" only records warnings; "reject" clamps weighted_total to 0 on any
-    # integrity failure. v1.0.x ships with "warn"; later releases flip to
-    # "reject" once submissions in the wild have been migrated.
+    # artifact/provenance integrity failure.
     integrity_policy: IntegrityPolicy = "warn"
 
 

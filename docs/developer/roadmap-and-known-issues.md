@@ -2,24 +2,6 @@
 
 ## Known Issues
 
-### Benchmark Integrity Rollout
-
-MDPrepBench currently keeps some task `integrity_policy` values in `warn` mode while
-external-agent submissions are still being calibrated. The intent is not to
-leave warn mode indefinitely:
-
-- v1.1 should switch benchmark tasks that have artifact integrity checks to
-  `integrity_policy="reject"`.
-- Before that switch, run at least one honest external-agent pass through the
-  full task set and confirm that no honest submission loses more than 0.2
-  weighted-total points from integrity warnings alone.
-- Any known fabricated/template-derived regression fixture, such as the
-  2026-05-11 Haiku v1 T06 submission, must remain below its historical
-  unpenalized score when rescored under warn mode.
-- If an honest submission warns, either tighten the task instructions/schema or
-  document why the warning represents a real contract violation before
-  enabling reject mode.
-
 ### packmol-memgen NumPy Compatibility
 
 Some packmol-memgen versions still reference removed NumPy aliases.
@@ -38,6 +20,19 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 2. Fallback: `pdb4amber` + reduce for geometry-based protonation.
 
 ## Resolved
+
+### Benchmark Integrity Rollout
+
+MDPrepBench v0.1 now uses `integrity_policy="reject"` for the prep task set and
+requires structured provenance execution evidence in addition to artifact byte
+floors, template-marker rejection, topology bundle checks, and minimization
+checks. Public exports include a `submission_blueprint` and
+`submission_checklist.md` so external agents can build contract-complete
+submissions without seeing scorer-only task metadata.
+
+Future external-agent calibration should tune task wording or public contract
+helpers if an honest run emits an integrity warning that does not represent a
+real contract violation.
 
 ### Ligand Chemistry Handoff
 

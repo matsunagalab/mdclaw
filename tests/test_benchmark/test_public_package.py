@@ -47,6 +47,20 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "topology/topology.pdb",
             "topology/state.xml",
         ]
+        assert "submission_blueprint" in contract
+        assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
+            "topology"
+        ] == [
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ]
+        assert any(
+            "command_log" in item for item in contract["submission_checklist"]
+        )
+        checklist = (task_dir / "submission_checklist.md").read_text()
+        assert "Pre-Submission Checks" in checklist
+        assert "outputs.topology" in checklist
         assert "metric_requirements" in contract
         assert contract["submission_manifest_schema"].endswith(
             "submission_manifest.schema.json"
@@ -75,6 +89,7 @@ def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
         assert "deterministic_checks" not in contract
         assert "ground_truth_checks" not in contract
         assert "truth" not in contract
+    assert not list(out_dir.glob("tasks/*/task.json"))
 
 
 def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):

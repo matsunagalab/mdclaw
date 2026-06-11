@@ -17,6 +17,7 @@ from mdclaw.benchmark import scoring, validation
 from mdclaw.benchmark.models import (
     DeterministicCheck,
     GroundTruthCheck,
+    IntegrityCheck,
     Task,
     TaskScoring,
 )
@@ -54,6 +55,15 @@ def _write_submission(tmp: Path, manifest: dict, metrics: dict | None = None,
         (tmp / "provenance.json").write_text(json.dumps(provenance))
     if evidence is not None:
         (tmp / "evidence_report.json").write_text(json.dumps(evidence))
+
+
+def _prep_command_log() -> list[dict]:
+    return [
+        {"stage": "source", "command": "fixture source retrieval", "exit_code": 0},
+        {"stage": "prep", "command": "fixture prepare_complex", "exit_code": 0},
+        {"stage": "topo", "command": "fixture build_openmm_system", "exit_code": 0},
+        {"stage": "minimization", "command": "fixture minimization", "exit_code": 0},
+    ]
 
 
 def _write_openmm_bundle(
@@ -316,6 +326,147 @@ def test_validate_submission_rejects_disallowed_blocked_status(tmp_path: Path):
     result = validation.validate_submission(task_file, submission_dir)
     assert result["success"] is False
     assert any("does not allow blocked" in err for err in result["errors"])
+
+
+def test_validate_submission_rejects_manifest_output_path_escape(tmp_path: Path):
+    task = _make_task(primary="execution")
+    task_file = tmp_path / "task.json"
+    task_file.write_text(task.model_dump_json())
+    submission_dir = tmp_path / "submission"
+    _write_submission(
+        submission_dir,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"metrics": "../task.json"},
+        },
+        metrics={"execution": {"completed": True}},
+    )
+
+    result = validation.validate_submission(task_file, submission_dir)
+
+    assert result["success"] is False
+    assert any("escapes submission directory" in err for err in result["errors"])
+
+
+def test_completed_prep_validation_requires_topology_manifest_output(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="topo",
+                check_type="topology_artifact_bundle",
+                weight=1.0,
+            )
+        ],
+    )
+    task.required_outputs = [
+        "manifest.json",
+        "metrics.json",
+        "provenance.json",
+        "evidence_report.json",
+        "prepared_structure.pdb",
+        "minimized_structure.pdb",
+        "minimization_report.json",
+    ]
+    task_file = tmp_path / "task.json"
+    task_file.write_text(task.model_dump_json())
+    submission_dir = tmp_path / "submission"
+    _write_submission(
+        submission_dir,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "metrics": "metrics.json",
+                "provenance": "provenance.json",
+                "evidence_report": "evidence_report.json",
+                "prepared_structure": "prepared_structure.pdb",
+                "minimized_structure": "minimized_structure.pdb",
+                "minimization_report": "minimization_report.json",
+            },
+        },
+        metrics={},
+        provenance={},
+        evidence={},
+    )
+    for name in task.required_outputs:
+        if name != "manifest.json":
+            (submission_dir / name).write_text("{}")
+
+    result = validation.validate_submission(task_file, submission_dir)
+
+    assert result["success"] is False
+    assert any("outputs.topology" in err for err in result["errors"])
+
+
+def test_score_submission_rejects_manifest_output_path_escape(tmp_path: Path):
+    task = _make_task(
+        primary="execution",
+        det_checks=[
+            DeterministicCheck(
+                check_id="ok",
+                check_type="json_equals",
+                json_path="execution.completed",
+                equals=True,
+                weight=1.0,
+            )
+        ],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"metrics": "../stolen_metrics.json"},
+        },
+        metrics={"execution": {"completed": True}},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any("escapes submission directory" in w for w in score.integrity_warnings)
+
+
+def test_score_submission_rejects_missing_execution_evidence_under_reject_policy(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="ok",
+                check_type="json_equals",
+                json_path="preparation.topology_ready",
+                equals=True,
+                weight=1.0,
+            )
+        ],
+    )
+    task.scoring.integrity_policy = "reject"
+    task.scoring.integrity_checks = [
+        IntegrityCheck(
+            check_id="workflow_execution_recorded",
+            check_type="provenance_execution_evidence",
+            required_stages=["source", "prep", "topo", "minimization"],
+            min_command_count=4,
+        )
+    ]
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"topology_ready": True}},
+        provenance={"scripts": [{"path": "make_fake.py"}]},
+        evidence={},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any("scripts alone" in w for w in score.integrity_warnings)
 
 
 def test_status_failed_keeps_score_when_allowed_truth_passes(tmp_path: Path):
@@ -887,6 +1038,9 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
             "task_id": task.task_id,
             "status": "completed",
             "outputs": {
+                "metrics": "metrics.json",
+                "provenance": "provenance.json",
+                "evidence_report": "evidence_report.json",
                 "prepared_structure": "prepared_structure.pdb",
                 "minimized_structure": "minimized_structure.pdb",
                 "minimization_report": "minimization_report.json",
@@ -912,7 +1066,11 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
             },
             "minimization": report["minimization"],
         },
-        provenance={"schema_version": "1.0", "task_id": task.task_id},
+        provenance={
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+            "command_log": _prep_command_log(),
+        },
         evidence={
             "schema_version": "1.0",
             "task_id": task.task_id,

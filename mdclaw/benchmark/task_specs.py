@@ -82,4 +82,54 @@ def build_task_payload(
     scoring.update(spec_scoring)
     payload["scoring"] = scoring
 
-    return payload
+    return _ordered_task_payload(payload)
+
+
+def _ordered_task_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    top_level_order = [
+        "capability_tags",
+        "category",
+        "environment_type",
+        "evaluation_target",
+        "execution_mode",
+        "failure_policy",
+        "primary_score",
+        "public_source",
+        "references",
+        "required_outputs",
+        "requires_tools",
+        "schema_version",
+        "scoring",
+        "secondary_scores",
+        "task_id",
+        "task_intent",
+        "time_limit_minutes",
+    ]
+    scoring_order = [
+        "deterministic_checks",
+        "ground_truth_checks",
+        "integrity_checks",
+        "integrity_policy",
+        "llm_judge_rubrics",
+    ]
+    ordered: dict[str, Any] = {}
+    for key in top_level_order:
+        if key == "scoring" and isinstance(payload.get(key), dict):
+            ordered[key] = _ordered_dict(payload[key], scoring_order)
+        elif key in payload:
+            ordered[key] = payload[key]
+    for key, value in payload.items():
+        if key not in ordered:
+            ordered[key] = value
+    return ordered
+
+
+def _ordered_dict(payload: dict[str, Any], key_order: list[str]) -> dict[str, Any]:
+    ordered: dict[str, Any] = {}
+    for key in key_order:
+        if key in payload:
+            ordered[key] = payload[key]
+    for key, value in payload.items():
+        if key not in ordered:
+            ordered[key] = value
+    return ordered
