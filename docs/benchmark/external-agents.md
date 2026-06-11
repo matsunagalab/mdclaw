@@ -49,9 +49,9 @@ to the agent. It must not silently add task-specific command-line options such
 as selected chains, model indices, membrane geometry, salt settings, or
 preorientation flags unless those requirements are stated in the public prompt
 or `submission_contract.json`. In MDClaw-generated run directories,
-`agent_tasks.json` and each `task_instructions.json` are the files intended for
-the evaluated agent; `harness_tasks.json` and `harness_instructions.json` are
-for validation/scoring only.
+`agent_tasks.json`, each `task_instructions.json`, and each `agent_prompt.md`
+are the files intended for the evaluated agent; `harness_tasks.json` and
+`harness_instructions.json` are for validation/scoring only.
 
 Repository-local development may read the canonical prompt at
 `benchmarks/<suite>/tasks/<task_id>/prompt.md`, but do not hand the whole
@@ -230,6 +230,13 @@ It should solve the prompt, retrieve public sources as needed, and write real
 metrics, evidence, provenance, and artifacts. When the submission is genuinely
 complete, set `manifest.status` to `completed`; otherwise use `partial`,
 `blocked`, or intentional `failed` as appropriate.
+For MDClaw-generated run directories, the shortest safe launch prompt is:
+
+```text
+Use the md-benchmark skill. Run the task in:
+benchmark_runs/<run_id>/tasks/<task_id>/agent_prompt.md
+```
+
 Use `submission_contract.json` for machine-readable requirements. In particular,
 `outputs.topology` is a list of artifact paths. For prep battery v0.1 this must
 be an OpenMM bundle, usually

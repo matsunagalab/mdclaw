@@ -106,6 +106,26 @@ scored, and the MD execution / comparative-answer tasks were
 genuinely attempted. If long MD tasks only received blocked placeholders, report
 the run as partial or blocked-only, not full.
 
+## Short Prompt Interface
+
+The intended user-facing prompts are short:
+
+```text
+MDPrepBenchを run_id=prep_smoke で実行して評価して
+```
+
+```text
+MDPrepBenchの P11_prep_site_protonation_t4l_glu11 だけを実行して評価して
+```
+
+```text
+MDStudyBenchの S03_t4l_wt_vs_l99a_methods だけを実行して評価して
+```
+
+For these prompts, prepare the run, execute each task from its generated
+`agent_prompt.md`, then run `score_benchmark_run`. Keep the evaluated task
+agent and the scorer separated as described below.
+
 ## MDClaw Agent
 
 Prepare an MDClaw benchmark run from the repository root with:
@@ -137,158 +157,39 @@ mdclaw prepare_benchmark_run \
   --task-ids S01_stability_t4l_l99a
 ```
 
-For MDClaw, launch one sub-agent per task and give it this prompt:
+For MDClaw, launch one evaluated agent per task with the generated prompt:
 
 ```text
-You are the MDClaw benchmark agent for <task_id>.
-
-Read <task_dir>/prompt.md as the task. Retrieve public sources named in the
-prompt as needed.
-If <task_dir>/submission_contract.json exists, read it and satisfy its
-manifest_contract, submission_blueprint, metric_requirements, and
-candidate_selection_requirements. If <task_dir>/submission_checklist.md exists,
-use it as the final pre-submission self-check.
-Do not read truth/ or scorer/.
-
-Use MDClaw CLI tools and MDClaw skills to run real prep/minimization work when
-the task asks for it. For StudyBench tasks, use `md-study` for the study plan
-when the prompt asks a scientific question, then hand off to preparation,
-equilibration, production, analysis, and evidence/reporting skills as needed.
-Write the required benchmark submission files to <submission_dir>/.
-
-If blocked outcomes are not allowed, do not stop because the task is long; run
-until success, timeout, or a concrete tool/runtime failure.
-
-For prep tasks, attempt source retrieval, preparation, explicit solvation unless
-the prompt explicitly requests implicit/no-solvent or membrane handling,
-topology build, and minimization evidence. Run topology from completed MDClaw
-DAG artifacts only: explicit/membrane tasks use the completed `solv` parent,
-implicit/vacuum tasks use the completed `prep` parent. Do not pass a raw/manual
-PDB file directly to `build_amber_system` or `build_openmm_system`. For implicit
-prep tasks, exclude explicit ions before topology; if those ions are
-scientifically required, report the mode conflict instead of silently building
-an implicit ion system. A prompt that explicitly asks for vacuum/no-solvent may
-retain explicit ions. Explicit solvation/membrane tools first try the requested
-salt concentration; if neutralization requires more ions, they may automatically
-rerun packmol-memgen with `--salt_override` while keeping explicit-solvent mode
-unchanged. Record the warning/metadata in provenance and metrics evidence.
-For membrane prep, use `embed_in_membrane` defaults unless the prompt explicitly
-specifies membrane geometry or pre-orientation; a
-`packmol_packing_quality_failed` result means the packing is not MD-ready. If
-the result also has
-`recommended_next_action="retry_membrane_with_larger_box"`, preserve the prompt
-lipid species and ratio, retry from the same prep parent with the
-`retry_suggestion.suggested_parameters`, and record both attempts. The retry
-suggestion should expand the lateral xy box; do not inflate z by changing
-`leaflet` or `dist_wat` unless the prompt explicitly asks for it. If the prompt
-explicitly fixed geometry, report the conflict instead of silently changing it.
-Do not increase Packmol loop counts beyond the CLI suggestion just to make the
-attempt run longer; benchmark attempts should fail fast with structured
-evidence when packing remains unsuitable. When `embed_in_membrane` accepts
-Packmol's `*_FORCED` output (`code="packmol_forced_output_accepted"`, the
-default for membrane workflows), continue to `build_amber_system` and rely on
-the topology-time minimization plus OpenMM energy rescan to decide whether the
-forced layout is usable. Do not call the forced structure MD-ready until those
-checks pass.
-For nucleic-acid prep tasks such as P15/P16/P17, submit the
-hydrogen-complete standard DNA/RNA prep artifact written by `prepare_complex`;
-do not rely on topology-time hydrogen repair.
-For terminal-capping tasks, use `prepare_complex --n-terminal-cap ACE` and/or
-`--c-terminal-cap NME` according to the prompt. Use `--cap-termini` only when
-both caps are requested. If the prompt specifies a non-default protein force
-field, pass it through `--terminal-cap-forcefield` so prep-stage cap hydrogens
-are rebuilt with the same protein template family.
-For OpenMM / MDClaw submissions, write
-manifest.status="completed" only after the required artifacts and minimization
-evidence are complete. Put topology artifacts in
-manifest.outputs.topology as a JSON list of paths, not as a role-keyed object:
-["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]. Also
-write manifest.outputs.minimized_structure and
-manifest.outputs.minimization_report. When the public contract sets
-`required_topology_backend: openmm`, record the backend where the scorer reads
-it: write `topology.backend = "openmm"` in metrics.json. The
-topology_artifact_bundle / openmm_system_load / openmm_energy_rescan checks read
-metrics.json at path `topology.backend`; if it is missing, every prep task fails
-those three checks even when the artifact triple is valid and reloadable. Write
-minimization_report.json with the canonical fields the scorer reads (under a
-`minimization` object or at top level): `attempted=true`, `completed=true`,
-`energy_is_finite=true`, `positions_are_finite=true`,
-`atom_count_preserved=true`, plus numeric `energy_initial_kj_mol` and
-`energy_final_kj_mol`. Do not use non-canonical key names such as
-`energy_reloaded_state_kj_mol` / `energy_after_minimization_kj_mol` — the
-minimization_report_check will not find them. Fill metrics.json paths listed in
-submission_contract.json metric_requirements, especially task-specific
-metrics.preparation.* entries. If the public contract lists
-candidate_selection_requirements, satisfy them with `source_selection.json`
-listed from manifest.outputs.source_selection or equivalent structured
-source_selection evidence in provenance, metrics, or the evidence report. If
-`prepare_complex` writes
-component_disposition.json or excluded_components.json, copy those tool-owned
-artifacts into the submission, list them in manifest.outputs when relevant, and
-summarize their values in metrics/provenance; do not invent them by hand. If
-`prepare_complex` writes `source_selection.json` for an NMR/model selection,
-copy it into the submission and list it as `manifest.outputs.source_selection`.
-Do not run full equilibration or production for prep tasks unless the prompt explicitly
-asks for it. For restart tasks, run the requested chunks and attempt trajectory
-concatenation/continuity checks. For StudyBench comparative answer tasks, run or
-stage the requested WT/mutant or condition-pair systems, analyze task-relevant
-observables, list real trajectory artifacts in `manifest.outputs.trajectories`,
-and state `evidence_report.effect.direction` only after connecting the
-submitted MD metrics to the conclusion. For StudyBench dry-run evidence-bundle
-tasks, do not invent trajectories; submit the requested methods, decision log,
-evidence report, and study/report provenance evidence.
-
-Minimal completed prep manifest shape:
-
-{
-  "schema_version": "1.0",
-  "task_id": "<task_id>",
-  "status": "completed",
-  "outputs": {
-    "metrics": "metrics.json",
-    "provenance": "provenance.json",
-    "evidence_report": "evidence_report.json",
-    "prepared_structure": "prepared_structure.pdb",
-    "topology": [
-      "topology/system.xml",
-      "topology/topology.pdb",
-      "topology/state.xml"
-    ],
-    "minimized_structure": "minimized_structure.pdb",
-    "minimization_report": "minimization_report.json"
-  }
-}
-
-Minimal scorer-readable metrics.json + minimization_report.json shape:
-
-metrics.json:
-{
-  "schema_version": "1.0",
-  "topology": { "backend": "openmm" },
-  "preparation": { ...task-specific metric_requirements... }
-}
-
-minimization_report.json:
-{
-  "schema_version": "1.0",
-  "minimization": {
-    "attempted": true,
-    "completed": true,
-    "backend": "openmm",
-    "energy_initial_kj_mol": <number>,
-    "energy_final_kj_mol": <number>,
-    "energy_is_finite": true,
-    "positions_are_finite": true,
-    "atom_count_preserved": true
-  }
-}
-
-Do not fabricate. If blocked after real attempts, write
-manifest.status="blocked" and explain the real blocker in evidence_report.json
-and provenance/decision logs. Include public sources retrieved, commands or
-sub-agent actions attempted, deepest stage reached, exit codes or timeout
-status, log paths, walltime, and the next command that would have been run.
+Use the md-benchmark skill. Run the task in:
+<run_dir>/tasks/<task_id>/agent_prompt.md
 ```
+
+The generated `agent_prompt.md` points to `task_instructions.json`, which in
+turn points to only agent-safe files. Do not hand-write long benchmark prompts;
+keep task-specific requirements in `prompt.md`, `submission_contract.json`, and
+`submission_checklist.md`.
+
+Internal submission rules for this skill:
+
+- For MDPrepBench, attempt source, prep, topology export, and minimization.
+- For completed prep submissions, use `manifest.outputs.topology` as a list
+  containing `system.xml`, `topology.pdb`, and `state.xml`.
+- Record `topology.backend = "openmm"` in `metrics.json` when the public
+  contract requires OpenMM topology artifacts.
+- Fill every public `metric_requirements` path and follow
+  `submission_blueprint`; do not invent hidden task options.
+- Record provenance `command_log` entries for the stages named by the public
+  checklist.
+- For MDStudyBench comparative tasks, submit real trajectories under
+  `manifest.outputs.trajectories` and connect `metrics.md_analysis` to the
+  conclusion.
+- For MDStudyBench dry-run evidence-bundle tasks, submit methods, decision log,
+  evidence report, and study/report provenance without inventing trajectories.
+- If blocked after real attempts, use a non-completed status and record the
+  attempted commands, deepest stage, exit code or timeout, logs, walltime,
+  blocker, and next intended command.
+- Scoring is always separate: evaluated agents stop after writing
+  `submission/`; the harness runs scorer commands.
 
 ## MDCrow Agent
 

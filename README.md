@@ -362,6 +362,20 @@ Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
 submitted artifacts.
 
+With the `md-benchmark` skill, user-facing benchmark prompts should stay short:
+
+```text
+MDPrepBenchを run_id=prep_smoke で実行して評価して
+```
+
+```text
+MDPrepBenchの P11_prep_site_protonation_t4l_glu11 だけを実行して評価して
+```
+
+The skill prepares the run, executes each task through the generated
+`agent_prompt.md`, and scores the finished submissions with the canonical
+scorer.
+
 ### MDPrepBench
 
 Create a run workspace from the repository root:
@@ -385,11 +399,13 @@ mdclaw prepare_benchmark_run \
   --task-ids P11_prep_site_protonation_t4l_glu11
 ```
 
-Give the evaluated agent the files listed in
-`benchmark_runs/<run_id>/agent_tasks.json`. Each task instruction points to an
-agent-safe `prompt.md`, `submission_contract.json`, and target `submission/`
-directory. Do not give the agent `harness_tasks.json`,
-`harness_instructions.json`, canonical `task.json`, `truth/`, or `scorer/`.
+Give the evaluated agent the per-task
+`benchmark_runs/<run_id>/tasks/<task_id>/agent_prompt.md`, or the task entries
+listed in `benchmark_runs/<run_id>/agent_tasks.json`. Each task instruction
+points to agent-safe `prompt.md`, `submission_contract.json`,
+`submission_checklist.md`, and target `submission/` paths. Do not give the
+agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
+`truth/`, or `scorer/`.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 

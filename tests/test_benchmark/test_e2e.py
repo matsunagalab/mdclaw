@@ -217,12 +217,20 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
 
     assert set(task_instructions) == {
         "task_id",
+        "agent_prompt",
         "prompt_file",
         "submission_contract",
         "submission_checklist",
         "submission_dir",
     }
     assert agent_tasks["tasks"] == [task_instructions]
+    assert Path(task_instructions["agent_prompt"]).is_file()
+    agent_prompt = Path(task_instructions["agent_prompt"]).read_text()
+    assert "Use the md-benchmark skill." in agent_prompt
+    assert "task_instructions.json" in agent_prompt
+    assert "The evaluator scores separately." in agent_prompt
+    assert len(agent_prompt) < 1200
+    assert Path(prepared["operator_prompt_file"]).is_file()
     forbidden_agent_fields = {
         "canonical_task_file",
         "score_command",
@@ -273,6 +281,7 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     assert run_config["benchmark_version"] == "MDStudyBench-v0.1"
     assert run_config["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
+    assert "agent_prompt" in agent_tasks["tasks"][0]
     assert "submission_checklist" in agent_tasks["tasks"][0]
     assert contract["primary_score"] == "evidence_communication"
     assert "topology_output_shape" not in contract["manifest_contract"]

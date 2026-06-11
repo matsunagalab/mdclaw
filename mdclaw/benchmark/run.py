@@ -74,6 +74,48 @@ def _write_json(path: Path, payload: Any) -> None:
                     + "\n")
 
 
+def _write_text(path: Path, text: str) -> None:
+    ensure_directory(path.parent)
+    path.write_text(text)
+
+
+def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
+    """Short prompt intended for the evaluated task agent."""
+    return (
+        f"# MD Benchmark Task Agent: {task_id}\n\n"
+        "Use the md-benchmark skill.\n\n"
+        "Run the benchmark task described by this agent-safe instruction file:\n\n"
+        f"{instruction_file}\n\n"
+        "Read only the files named in that JSON: prompt_file, "
+        "submission_contract, submission_checklist, and submission_dir. "
+        "Write all outputs under submission_dir.\n\n"
+        "Do not read harness_instructions.json, harness_tasks.json, canonical "
+        "task.json, truth/, or scorer/. Do not fabricate artifacts or metrics; "
+        "if blocked, record the attempted commands and blocker in the required "
+        "submission files.\n\n"
+        "Stop after writing submission/. The evaluator scores separately.\n"
+    )
+
+
+def _operator_prompt(run_dir: Path, dataset: Path) -> str:
+    """Short prompt intended for the benchmark operator, not evaluated agents."""
+    return (
+        "# MD Benchmark Operator\n\n"
+        "Use the md-benchmark skill.\n\n"
+        f"Run every evaluated task listed in `{run_dir / 'agent_tasks.json'}`. "
+        "For each task, give the evaluated agent only its `agent_prompt` file "
+        "or the agent-safe files referenced from `task_instructions.json`.\n\n"
+        "Do not give evaluated agents harness_tasks.json, "
+        "harness_instructions.json, canonical task.json, truth/, or scorer/.\n\n"
+        "After submissions are written, evaluate fairly with:\n\n"
+        "```bash\n"
+        "mdclaw score_benchmark_run \\\n"
+        f"  --run-dir {run_dir} \\\n"
+        f"  --dataset-dir {dataset}\n"
+        "```\n"
+    )
+
+
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
@@ -278,10 +320,13 @@ def prepare_benchmark_run(
     harness_instructions: list[dict[str, Any]] = []
     for task_id in task_ids:
         task_run_dir = run_dir / "tasks" / task_id
+        task_instruction_path = task_run_dir / "task_instructions.json"
+        agent_prompt_path = task_run_dir / "agent_prompt.md"
         ensure_directory(task_run_dir)
         ensure_directory(task_run_dir / "submission")
         instruction = {
             "task_id": task_id,
+            "agent_prompt": str(agent_prompt_path),
             "prompt_file": str(public_dir / "tasks" / task_id / "prompt.md"),
             "submission_contract": str(
                 public_dir / "tasks" / task_id / "submission_contract.json"
@@ -306,11 +351,14 @@ def prepare_benchmark_run(
                 f"--output-file {task_run_dir / 'score.json'}"
             ),
         }
-        _write_json(task_run_dir / "task_instructions.json", instruction)
+        _write_json(task_instruction_path, instruction)
+        _write_text(agent_prompt_path, _task_agent_prompt(task_id, task_instruction_path))
         _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
         task_instructions.append(instruction)
         harness_instructions.append(harness_instruction)
 
+    operator_prompt_path = run_dir / "benchmark_operator_prompt.md"
+    _write_text(operator_prompt_path, _operator_prompt(run_dir, dataset))
     _write_json(
         run_dir / "agent_tasks.json",
         {
@@ -340,6 +388,7 @@ def prepare_benchmark_run(
         "public_package_dir": str(public_dir),
         "agent_tasks_file": str(run_dir / "agent_tasks.json"),
         "harness_tasks_file": str(run_dir / "harness_tasks.json"),
+        "operator_prompt_file": str(operator_prompt_path),
         "task_count": len(task_instructions),
         "tasks": task_instructions,
         "public_export": public_export,

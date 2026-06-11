@@ -22,6 +22,15 @@ that are absent from the public prompt and `submission_contract.json`.
 `harness_instructions.json`; only the agent-facing files should be handed to
 the evaluated agent.
 
+When using the `md-benchmark` skill, a short user instruction is enough:
+
+```text
+MDPrepBenchを run_id=prep_smoke で実行して評価して
+```
+
+The prepared run contains one short `agent_prompt.md` per task. Give that file
+to the evaluated agent; keep harness/scorer files for the evaluator only.
+
 ## Current Scope
 
 The current task set replaces the former mixed benchmark's preparation tasks.
