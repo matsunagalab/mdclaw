@@ -360,13 +360,95 @@ family:
 
 Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
-submitted artifacts. For external agents, export the agent-visible package
-first:
+submitted artifacts.
+
+### MDPrepBench
+
+Create a run workspace from the repository root:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id prep_smoke \
+  --dataset-dir benchmarks/mdprepbench \
+  --execution-mode lite
+```
+
+To run only a small subset:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id prep_p11 \
+  --dataset-dir benchmarks/mdprepbench \
+  --execution-mode lite \
+  --task-ids P11_prep_site_protonation_t4l_glu11
+```
+
+Give the evaluated agent the files listed in
+`benchmark_runs/<run_id>/agent_tasks.json`. Each task instruction points to an
+agent-safe `prompt.md`, `submission_contract.json`, and target `submission/`
+directory. Do not give the agent `harness_tasks.json`,
+`harness_instructions.json`, canonical `task.json`, `truth/`, or `scorer/`.
+
+After the agent writes the task `submission/` directories, evaluate the run:
+
+```bash
+mdclaw score_benchmark_run \
+  --run-dir benchmark_runs/<run_id> \
+  --dataset-dir benchmarks/mdprepbench
+```
+
+This writes per-task `validation.json` / `score.json` files and a run-level
+`summary.json`.
+
+### MDStudyBench
+
+MDStudyBench uses the same run/evaluate tools with the study dataset. For the
+full three-task curated suite:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id study_smoke \
+  --dataset-dir benchmarks/mdstudybench \
+  --execution-mode lite
+```
+
+For the methods-bundle task only:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id study_methods_s03 \
+  --dataset-dir benchmarks/mdstudybench \
+  --execution-mode dry_run \
+  --task-ids S03_t4l_wt_vs_l99a_methods
+```
+
+After submissions are written, evaluate with:
+
+```bash
+mdclaw score_benchmark_run \
+  --run-dir benchmark_runs/<run_id> \
+  --dataset-dir benchmarks/mdstudybench
+```
+
+`S01` and `S02` expect comparative MD evidence and submitted
+`metrics.md_analysis`; `S03` focuses on methods, provenance, decision logging,
+and a calibrated evidence report.
+
+For an external agent or runner that should receive only public files, export
+the agent-visible package first:
 
 ```bash
 mdclaw export_benchmark_public_package \
   --dataset-dir benchmarks/mdprepbench \
   --output-dir benchmark_public/mdprepbench
+
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdstudybench \
+  --output-dir benchmark_public/mdstudybench
 ```
 
 The exported package contains prompts, submission contracts, and
