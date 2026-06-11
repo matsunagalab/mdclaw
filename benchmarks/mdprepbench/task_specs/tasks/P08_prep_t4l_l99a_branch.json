@@ -1,0 +1,58 @@
+{
+  "task_id": "P08_prep_t4l_l99a_branch",
+  "public_source": "PDB 2LZM",
+  "capability_tags_extra": [
+    "mutation",
+    "branching"
+  ],
+  "task_intent": "Point mutation branch: prepare WT T4 lysozyme and a branched L99A mutant without overwriting the WT artifacts or shifting residue numbering.",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "l99a_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.45
+      },
+      {
+        "check_id": "branch_parent_recorded",
+        "check_type": "json_equals",
+        "equals": "WT",
+        "json_file": "metrics.json",
+        "json_path": "preparation.branch_parent",
+        "weight": 0.25
+      },
+      {
+        "check_id": "wt_mutant_separated",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.wt_mutant_artifacts_separated",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_l99a_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.45
+      }
+    ]
+  }
+}

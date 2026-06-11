@@ -1,0 +1,69 @@
+{
+  "task_id": "P01_prep_simple_monomer_t4l",
+  "public_source": "PDB 2LZM",
+  "capability_tags_extra": [
+    "simple_protein",
+    "explicit_solvent"
+  ],
+  "task_intent": "Simple monomer preparation: retrieve T4 lysozyme chain A, clean it, prepare an explicit-water-compatible topology, and report that no unintended ligands were retained.",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "source_pdb_reported",
+        "check_type": "json_equals",
+        "equals": "2LZM",
+        "json_file": "metrics.json",
+        "json_path": "preparation.source_pdb_id",
+        "weight": 0.25
+      },
+      {
+        "check_id": "explicit_solvent_reported",
+        "check_type": "json_equals",
+        "equals": "explicit",
+        "json_file": "metrics.json",
+        "json_path": "preparation.solvent_model",
+        "weight": 0.25
+      },
+      {
+        "check_id": "no_unrequested_ligands",
+        "check_type": "structure_component_rescan",
+        "max_residue_counts": {
+          "AP5": 0,
+          "BEN": 0
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.25
+      },
+      {
+        "check_id": "topology_ready_reported",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.topology_ready",
+        "weight": 0.25
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_no_unrequested_ligands",
+        "check_type": "minimized_structure_component_rescan",
+        "max_residue_counts": {
+          "AP5": 0,
+          "BEN": 0
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.25
+      }
+    ]
+  }
+}

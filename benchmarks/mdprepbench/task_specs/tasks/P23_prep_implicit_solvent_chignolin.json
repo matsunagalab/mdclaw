@@ -1,0 +1,61 @@
+{
+  "task_id": "P23_prep_implicit_solvent_chignolin",
+  "public_source": "PDB 5AWL",
+  "capability_tags_extra": [
+    "implicit_solvent",
+    "small_protein"
+  ],
+  "task_intent": "Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box.",
+  "references": [
+    {
+      "source": "PDB 5AWL",
+      "url": "https://www.rcsb.org/structure/5AWL"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "implicit_solvent_reported",
+        "check_type": "json_equals",
+        "equals": "implicit",
+        "json_file": "metrics.json",
+        "json_path": "preparation.solvent_model",
+        "weight": 0.5
+      },
+      {
+        "check_id": "no_explicit_water_box",
+        "check_type": "structure_component_rescan",
+        "max_residue_counts": {
+          "HOH": 0,
+          "WAT": 0
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "implicit_model_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.implicit_model_recorded",
+        "weight": 0.2
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_no_explicit_water_box",
+        "check_type": "minimized_structure_component_rescan",
+        "max_residue_counts": {
+          "HOH": 0,
+          "WAT": 0
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      }
+    ]
+  }
+}

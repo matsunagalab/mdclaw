@@ -6,6 +6,8 @@ agent-agnostic: agents receive ``prompt.md`` through the active skill/harness
 and submit artifacts under ``submission/`` for validation and scoring.
 
 - ``models``: pydantic v2 BaseModels for Task, Submission, Score, RunConfig.
+- ``datasets``: dataset defaults, suite path resolution, and task discovery.
+- ``public_contract``: agent-facing submission contract generation.
 - ``integrity``: md5 verification, trajectory rescan, manifest/metrics
   consistency checks.
 - ``scoring``: deterministic check execution and axis aggregation.

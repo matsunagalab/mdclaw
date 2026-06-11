@@ -1,0 +1,85 @@
+{
+  "task_id": "P03_prep_ligand_pose_t4l_benzene",
+  "public_source": "PDB 181L",
+  "capability_tags_extra": [
+    "ligand_pose",
+    "small_molecule"
+  ],
+  "task_intent": "Ligand pose preservation: Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included.",
+  "references": [
+    {
+      "source": "PDB 181L",
+      "url": "https://www.rcsb.org/structure/181L"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "align_selection": "name CA",
+        "check_id": "ligand_pose_preserved",
+        "check_type": "rmsd_recompute",
+        "max_value": 0.5,
+        "reference_pdb": "truth/ligand_reference.pdb",
+        "selection": "resname BNZ and not element H",
+        "tolerance_angstrom": 0.05,
+        "weight": 0.5
+      },
+      {
+        "check_id": "protein_l99a_chain_retained",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "N",
+          "CA",
+          "C",
+          "O"
+        ],
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "benzene_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "BNZ": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.2
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_protein_l99a_chain_retained",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "N",
+          "CA",
+          "C",
+          "O"
+        ],
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "minimized_benzene_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "BNZ": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.2
+      }
+    ]
+  }
+}

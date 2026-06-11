@@ -1,0 +1,51 @@
+{
+  "task_id": "P06_prep_calmodulin_ca_ions",
+  "public_source": "PDB 1CLL",
+  "capability_tags_extra": [
+    "ion_retention",
+    "supported_metal_ion"
+  ],
+  "task_intent": "Supported metal ion retention: prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands.",
+  "references": [
+    {
+      "source": "PDB 1CLL",
+      "url": "https://www.rcsb.org/structure/1CLL"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "four_calcium_ions_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "CA": 4
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.65
+      },
+      {
+        "check_id": "ion_parameter_source_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.ion_parameter_source_recorded",
+        "weight": 0.35
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_four_calcium_ions_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "CA": 4
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.65
+      }
+    ]
+  }
+}

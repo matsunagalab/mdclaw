@@ -1,0 +1,56 @@
+{
+  "task_id": "P11_prep_site_protonation_t4l_glu11",
+  "public_source": "PDB 2LZM",
+  "capability_tags_extra": [
+    "site_specific_protonation",
+    "hydrogen_rebuild"
+  ],
+  "task_intent": "Specific residue protonation: override the default pH assignment for chain A residue 11 so Glu11 is protonated as GLH.",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "requested_state_reported",
+        "check_type": "json_equals",
+        "equals": "GLH",
+        "json_file": "metrics.json",
+        "json_path": "preparation.requested_protonation_state",
+        "weight": 0.3
+      },
+      {
+        "check_id": "glu11_is_glh_with_he2",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "HE2"
+        ],
+        "required_residue_name": "GLH",
+        "residue_chain": "A",
+        "residue_number": "11",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.7
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_glu11_is_glh_with_he2",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "HE2"
+        ],
+        "required_residue_name": "GLH",
+        "residue_chain": "A",
+        "residue_number": "11",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.7
+      }
+    ]
+  }
+}

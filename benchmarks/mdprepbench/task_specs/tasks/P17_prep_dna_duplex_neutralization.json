@@ -1,0 +1,75 @@
+{
+  "task_id": "P17_prep_dna_duplex_neutralization",
+  "public_source": "PDB 1BNA",
+  "capability_tags_extra": [
+    "dna",
+    "nucleic_acid",
+    "chain_selection",
+    "neutralization"
+  ],
+  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain.",
+  "references": [
+    {
+      "source": "PDB 1BNA",
+      "url": "https://www.rcsb.org/structure/1BNA"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "dna_library_reported",
+        "check_type": "json_equals",
+        "equals": "DNA",
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_acid_type",
+        "weight": 0.25
+      },
+      {
+        "check_id": "duplex_chain_count_recorded",
+        "check_type": "json_equals",
+        "equals": 2,
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_chain_count",
+        "weight": 0.25
+      },
+      {
+        "check_id": "standard_dna_residues_present",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "DA": 1,
+          "DC": 1,
+          "DG": 1,
+          "DT": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.25
+      },
+      {
+        "check_id": "counterion_neutralization_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.net_charge_neutralized",
+        "weight": 0.25
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_standard_dna_residues_present",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "DA": 1,
+          "DC": 1,
+          "DG": 1,
+          "DT": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.25
+      }
+    ]
+  }
+}

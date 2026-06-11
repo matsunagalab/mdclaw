@@ -1,0 +1,67 @@
+{
+  "task_id": "P02_prep_1ake_chain_ap5",
+  "public_source": "PDB 1AKE",
+  "capability_tags_extra": [
+    "ligand_selection",
+    "chain_identity"
+  ],
+  "task_intent": "Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain.",
+  "references": [
+    {
+      "source": "PDB 1AKE",
+      "url": "https://www.rcsb.org/structure/1AKE"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "source_pdb_reported",
+        "check_type": "json_equals",
+        "equals": "1AKE",
+        "json_file": "metrics.json",
+        "json_path": "preparation.source_pdb_id",
+        "weight": 0.2
+      },
+      {
+        "check_id": "ap5_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "AP5": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.45
+      },
+      {
+        "check_id": "ligand_chemistry_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.ligand_chemistry_recorded",
+        "weight": 0.2
+      },
+      {
+        "check_id": "auth_chain_reported",
+        "check_type": "json_equals",
+        "equals": "A",
+        "json_file": "metrics.json",
+        "json_path": "preparation.selected_auth_chain",
+        "weight": 0.15
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_ap5_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "AP5": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.45
+      }
+    ]
+  }
+}

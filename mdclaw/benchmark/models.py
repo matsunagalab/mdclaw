@@ -16,6 +16,8 @@ from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from mdclaw.benchmark.datasets import DEFAULT_BENCHMARK_VERSION
+
 # ---------------------------------------------------------------------------
 # Enumerated string types
 
@@ -455,7 +457,7 @@ class BudgetSpec(BaseModel):
 
 class RunConfig(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDPrepBench-v0.1"
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"
@@ -470,7 +472,7 @@ class RunConfig(BaseModel):
 
 class RunSummary(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDPrepBench-v0.1"
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"

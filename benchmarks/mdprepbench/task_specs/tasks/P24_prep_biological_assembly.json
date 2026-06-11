@@ -1,0 +1,102 @@
+{
+  "task_id": "P24_prep_biological_assembly",
+  "public_source": "PDB 1STP assembly 1; stress variant PDB 2MS2 assembly 1",
+  "capability_tags_extra": [
+    "biological_assembly",
+    "chain_identity"
+  ],
+  "task_intent": "Assembly/biological unit choice: generate or select the requested biological assembly by assembly_id while preserving source auth/label/operator provenance and stable chain identity.",
+  "references": [
+    {
+      "source": "PDB 1STP",
+      "url": "https://www.rcsb.org/structure/1STP"
+    },
+    {
+      "source": "PDB 2MS2",
+      "url": "https://www.rcsb.org/structure/2MS2"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "source_pdb_reported",
+        "check_type": "json_equals",
+        "equals": "1STP",
+        "json_file": "metrics.json",
+        "json_path": "preparation.source_pdb_id",
+        "weight": 0.15
+      },
+      {
+        "assembly_id_json_file": "metrics.json",
+        "assembly_id_json_path": "preparation.assembly_id",
+        "chain_identity_json_file": "metrics.json",
+        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
+        "check_id": "assembly_generated_and_mapped",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 4,
+        "min_distinct_output_chains": 4,
+        "min_mapping_entries": 4,
+        "require_output_chains_in_structure": true,
+        "required_assembly_id": "1",
+        "required_mapping_fields": [
+          "source_pdb_id",
+          "assembly_id",
+          "source_auth_asym_id",
+          "source_label_asym_id|source_subchain_id",
+          "operator_id",
+          "output_chain_id",
+          "naming_policy"
+        ],
+        "required_operator_ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "structure_manifest_path": "outputs.prepared_structure",
+        "weight": 0.75
+      },
+      {
+        "check_id": "many_chain_policy_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.many_chain_policy_recorded",
+        "weight": 0.1
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "assembly_id_json_file": "metrics.json",
+        "assembly_id_json_path": "preparation.assembly_id",
+        "chain_identity_json_file": "metrics.json",
+        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
+        "check_id": "minimized_assembly_generated_and_mapped",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 4,
+        "min_distinct_output_chains": 4,
+        "min_mapping_entries": 4,
+        "require_output_chains_in_structure": true,
+        "required_assembly_id": "1",
+        "required_mapping_fields": [
+          "source_pdb_id",
+          "assembly_id",
+          "source_auth_asym_id",
+          "source_label_asym_id|source_subchain_id",
+          "operator_id",
+          "output_chain_id",
+          "naming_policy"
+        ],
+        "required_operator_ids": [
+          "1",
+          "2",
+          "3",
+          "4"
+        ],
+        "structure_manifest_path": "outputs.minimized_structure",
+        "weight": 0.75
+      }
+    ]
+  }
+}

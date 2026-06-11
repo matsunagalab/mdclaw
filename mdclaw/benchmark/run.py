@@ -18,6 +18,16 @@ from typing import Any, Optional
 from mdclaw import __version__ as MDCLAW_VERSION
 from mdclaw._common import ensure_directory
 from mdclaw.benchmark import scoring
+from mdclaw.benchmark.datasets import (
+    DEFAULT_BENCHMARK_VERSION,
+    DEFAULT_DATASET_DIR,
+    benchmark_version_for_dataset,
+    builtin_task_contract_candidates,
+    dataset_dir_candidates,
+    list_task_ids,
+    load_dataset_metadata,
+    resolve_dataset_dir,
+)
 from mdclaw.benchmark.models import (
     BackendInfo,
     BudgetSpec,
@@ -28,8 +38,13 @@ from mdclaw.benchmark.models import (
 )
 
 
-_DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.1"
-_DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
+_DEFAULT_BENCHMARK_VERSION = DEFAULT_BENCHMARK_VERSION
+_DEFAULT_DATASET_DIR = DEFAULT_DATASET_DIR
+_dataset_dir_candidates = dataset_dir_candidates
+_resolve_dataset_dir = resolve_dataset_dir
+_load_dataset_metadata = load_dataset_metadata
+_benchmark_version_for_dataset = benchmark_version_for_dataset
+_list_task_ids = list_task_ids
 
 
 def _now_utc() -> str:
@@ -85,58 +100,6 @@ def _write_jsonl_dedup(path: Path, record: dict[str, Any], key: str) -> None:
     with path.open("w") as f:
         for row in existing:
             f.write(json.dumps(row, sort_keys=True, default=str) + "\n")
-
-
-def _dataset_dir_candidates(dataset_dir: str) -> list[Path]:
-    requested = Path(dataset_dir)
-    return [
-        requested,
-        Path(__file__).resolve().parents[2] / dataset_dir,
-    ]
-
-
-def _resolve_dataset_dir(dataset_dir: str = _DEFAULT_DATASET_DIR) -> Path:
-    for candidate in _dataset_dir_candidates(dataset_dir):
-        if (candidate / "dataset.json").is_file():
-            return candidate
-    return Path(dataset_dir)
-
-
-def _load_dataset_metadata(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, Any]:
-    dataset = _resolve_dataset_dir(dataset_dir)
-    dataset_file = dataset / "dataset.json"
-    if not dataset_file.is_file():
-        return {}
-    try:
-        payload = json.loads(dataset_file.read_text())
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _benchmark_version_for_dataset(dataset_dir: str = _DEFAULT_DATASET_DIR) -> str:
-    payload = _load_dataset_metadata(dataset_dir)
-    version = payload.get("benchmark_version")
-    return str(version) if version else _DEFAULT_BENCHMARK_VERSION
-
-
-def _list_task_ids(dataset_dir: str = _DEFAULT_DATASET_DIR) -> list[str]:
-    """Discover task ids by reading the benchmark dataset metadata.
-
-    This avoids hard-coding the task list in code so dataset edits do not
-    require code changes.
-    """
-    for dataset in _dataset_dir_candidates(dataset_dir):
-        dataset_file = dataset / "dataset.json"
-        if dataset_file.is_file():
-            try:
-                payload = json.loads(dataset_file.read_text())
-            except json.JSONDecodeError:
-                continue
-            ids = payload.get("task_ids")
-            if isinstance(ids, list):
-                return [str(t) for t in ids]
-    return []
 
 
 def init_benchmark_run(
@@ -585,22 +548,13 @@ def _lookup_task_contract(task_id: str, cfg_payload: dict[str, Any]
     paths; if the task is not found, we fall back to a permissive record
     (axis=None) so the run still summarizes.
     """
-    candidates = []
-    if cfg_payload.get("dataset_dir"):
-        dataset = _resolve_dataset_dir(str(cfg_payload["dataset_dir"]))
-        candidates.append(dataset / "tasks" / task_id / "task.json")
-    candidates.extend([
-        Path("benchmarks/mdprepbench/tasks") / task_id / "task.json",
-        Path("benchmarks/mdstudybench/tasks") / task_id / "task.json",
-        Path(__file__).resolve().parents[2]
-        / "benchmarks/mdprepbench/tasks" / task_id / "task.json",
-        Path(__file__).resolve().parents[2]
-        / "benchmarks/mdstudybench/tasks" / task_id / "task.json",
-    ])
-    for c in candidates:
-        if c.is_file():
+    for candidate in builtin_task_contract_candidates(
+        task_id,
+        cfg_payload.get("dataset_dir"),
+    ):
+        if candidate.is_file():
             try:
-                return json.loads(c.read_text())
+                return json.loads(candidate.read_text())
             except json.JSONDecodeError:
                 continue
     return {"task_id": task_id, "primary_score": None, "secondary_scores": []}

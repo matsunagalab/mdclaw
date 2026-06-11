@@ -1,0 +1,87 @@
+{
+  "task_id": "P25_prep_kcl_ion_concentration",
+  "public_source": "PDB 5AWL",
+  "capability_tags_extra": [
+    "ion_concentration",
+    "explicit_solvent"
+  ],
+  "task_intent": "Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality.",
+  "references": [
+    {
+      "source": "PDB 5AWL",
+      "url": "https://www.rcsb.org/structure/5AWL"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "salt_species_reported",
+        "check_type": "json_equals",
+        "equals": "KCl",
+        "json_file": "metrics.json",
+        "json_path": "preparation.salt_species",
+        "weight": 0.25
+      },
+      {
+        "check_id": "salt_concentration_reported",
+        "check_type": "json_equals",
+        "equals": 0.3,
+        "json_file": "metrics.json",
+        "json_path": "preparation.salt_concentration_molar",
+        "weight": 0.25
+      },
+      {
+        "check_id": "kcl_ions_present",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "CL": 1,
+          "K": 1
+        },
+        "residue_aliases": {
+          "CL": [
+            "CL-",
+            "Cl-"
+          ],
+          "K": [
+            "K+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "neutrality_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.net_charge_neutralized",
+        "weight": 0.2
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_kcl_ions_present",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "CL": 1,
+          "K": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "CL": [
+            "CL-",
+            "Cl-"
+          ],
+          "K": [
+            "K+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      }
+    ]
+  }
+}

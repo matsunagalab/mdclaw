@@ -1,0 +1,81 @@
+{
+  "task_id": "P14_prep_glycoprotein_glycan",
+  "public_source": "PDB 6YA2",
+  "capability_tags_extra": [
+    "glycan",
+    "glycoprotein"
+  ],
+  "task_intent": "Glycoprotein/glycan pass-through: keep N-linked glycans as glycans rather than treating them as ordinary small-molecule ligands.",
+  "references": [
+    {
+      "source": "PDB 6YA2",
+      "url": "https://www.rcsb.org/structure/6YA2"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "nag_glycan_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "NAG": 1
+        },
+        "residue_aliases": {
+          "NAG": [
+            "0YB",
+            "4YA",
+            "4YB"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "glycan_linkage_provenance_recorded",
+        "check_type": "artifact_provenance_text",
+        "required_text_groups": [
+          [
+            "glycan"
+          ],
+          [
+            "NAG"
+          ],
+          [
+            "N-linked",
+            "N linked",
+            "glycosylation",
+            "linkage"
+          ]
+        ],
+        "text_files": [
+          "provenance.json",
+          "evidence_report.json",
+          "manifest.json"
+        ],
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_nag_glycan_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "NAG": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "NAG": [
+            "0YB",
+            "4YA",
+            "4YB"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      }
+    ]
+  }
+}

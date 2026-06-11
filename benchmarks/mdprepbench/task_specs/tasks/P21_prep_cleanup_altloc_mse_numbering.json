@@ -1,0 +1,74 @@
+{
+  "task_id": "P21_prep_cleanup_altloc_mse_numbering",
+  "public_source": "PDB 4Q5T",
+  "capability_tags_extra": [
+    "pdb_cleanup",
+    "altloc",
+    "numbering"
+  ],
+  "task_intent": "PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block.",
+  "references": [
+    {
+      "source": "PDB 4Q5T",
+      "url": "https://www.rcsb.org/structure/4Q5T"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "mse_removed_met_present",
+        "check_type": "structure_component_rescan",
+        "max_residue_counts": {
+          "MSE": 0
+        },
+        "min_residue_counts": {
+          "MET": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.35
+      },
+      {
+        "check_id": "altloc_decision_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.altloc_decision_recorded",
+        "weight": 0.25
+      },
+      {
+        "check_id": "author_numbering_preserved",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.author_numbering_preserved",
+        "weight": 0.25
+      },
+      {
+        "check_id": "missing_residue_decision_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.missing_residue_decision_recorded",
+        "weight": 0.15
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_mse_removed_met_present",
+        "check_type": "minimized_structure_component_rescan",
+        "max_residue_counts": {
+          "MSE": 0
+        },
+        "min_residue_counts": {
+          "MET": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.35
+      }
+    ]
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "task_id": "P04_prep_multi_ligand_filter_3pwb",
+  "public_source": "PDB 3PWB",
+  "capability_tags_extra": [
+    "ligand_filtering",
+    "heterogen_triage"
+  ],
+  "task_intent": "Multi-ligand inclusion and exclusion: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens.",
+  "references": [
+    {
+      "source": "PDB 3PWB",
+      "url": "https://www.rcsb.org/structure/3PWB"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "requested_ligands_present",
+        "check_type": "structure_component_rescan",
+        "max_residue_counts": {
+          "SO4": 0
+        },
+        "min_residue_counts": {
+          "BEN": 1,
+          "GOL": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.75
+      },
+      {
+        "check_id": "ligand_filter_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.heterogen_filter_recorded",
+        "weight": 0.25
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_requested_ligands_present",
+        "check_type": "minimized_structure_component_rescan",
+        "max_residue_counts": {
+          "SO4": 0
+        },
+        "min_residue_counts": {
+          "BEN": 1,
+          "GOL": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.75
+      }
+    ]
+  }
+}

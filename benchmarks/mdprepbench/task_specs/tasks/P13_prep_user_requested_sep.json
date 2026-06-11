@@ -1,0 +1,56 @@
+{
+  "task_id": "P13_prep_user_requested_sep",
+  "public_source": "PDB 1UBQ",
+  "capability_tags_extra": [
+    "phosphorylation",
+    "ptm_insertion"
+  ],
+  "task_intent": "User-requested phosphorylation: apply phosphorylation to unmodified ubiquitin Ser20 and prepare the resulting SEP-containing system.",
+  "references": [
+    {
+      "source": "PDB 1UBQ",
+      "url": "https://www.rcsb.org/structure/1UBQ"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "ser20_became_sep",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "P"
+        ],
+        "required_residue_name": "SEP",
+        "residue_chain": "A",
+        "residue_number": "20",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.55
+      },
+      {
+        "check_id": "requested_phosphorylation_recorded",
+        "check_type": "json_equals",
+        "equals": "A:20:SEP",
+        "json_file": "metrics.json",
+        "json_path": "preparation.requested_phosphorylation",
+        "weight": 0.45
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_ser20_became_sep",
+        "check_type": "pdb_residue_state",
+        "required_atom_names": [
+          "P"
+        ],
+        "required_residue_name": "SEP",
+        "residue_chain": "A",
+        "residue_number": "20",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.55
+      }
+    ]
+  }
+}

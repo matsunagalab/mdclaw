@@ -1,0 +1,70 @@
+{
+  "task_id": "P09_prep_t4l_double_mutant",
+  "public_source": "PDB 2LZM",
+  "capability_tags_extra": [
+    "mutation",
+    "multi_mutant"
+  ],
+  "task_intent": "Multi-mutant branch: apply L99A and M102Q from one prompt on a branched prep node.",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "l99a_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.35
+      },
+      {
+        "check_id": "m102q_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "GLN",
+        "residue_chain": "A",
+        "residue_number": "102",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.35
+      },
+      {
+        "check_id": "two_mutations_recorded",
+        "check_type": "json_equals",
+        "equals": 2,
+        "json_file": "metrics.json",
+        "json_path": "preparation.mutation_count",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_l99a_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "ALA",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.35
+      },
+      {
+        "check_id": "minimized_m102q_present",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "GLN",
+        "residue_chain": "A",
+        "residue_number": "102",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.35
+      }
+    ]
+  }
+}

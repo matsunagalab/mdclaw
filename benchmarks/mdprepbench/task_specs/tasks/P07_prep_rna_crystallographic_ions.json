@@ -1,0 +1,93 @@
+{
+  "task_id": "P07_prep_rna_crystallographic_ions",
+  "public_source": "PDB 4RBQ",
+  "capability_tags_extra": [
+    "rna",
+    "ion_triage"
+  ],
+  "task_intent": "Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system.",
+  "references": [
+    {
+      "source": "PDB 4RBQ",
+      "url": "https://www.rcsb.org/structure/4RBQ"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "rna_residues_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "U": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "potassium_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "K": 1
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.45
+      },
+      {
+        "check_id": "crystallographic_ion_triage_documented",
+        "check_type": "artifact_provenance_text",
+        "required_text_groups": [
+          [
+            "crystallographic"
+          ],
+          [
+            "K+",
+            "potassium"
+          ],
+          [
+            "water",
+            "waters",
+            "HOH"
+          ],
+          [
+            "exclude",
+            "excluded",
+            "removed",
+            "not retain"
+          ]
+        ],
+        "text_files": [
+          "provenance.json",
+          "evidence_report.json"
+        ],
+        "weight": 0.25
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_rna_residues_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "U": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "minimized_potassium_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "K": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.45
+      }
+    ]
+  }
+}

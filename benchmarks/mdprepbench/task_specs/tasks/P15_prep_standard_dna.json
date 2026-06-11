@@ -1,0 +1,38 @@
+{
+  "task_id": "P15_prep_standard_dna",
+  "public_source": "PDB 5MVQ",
+  "capability_tags_extra": [
+    "dna",
+    "nucleic_acid"
+  ],
+  "task_intent": "Standard DNA topology: prepare a DNA dodecamer without assuming protein or ligand defaults.",
+  "references": [
+    {
+      "source": "PDB 5MVQ",
+      "url": "https://www.rcsb.org/structure/5MVQ"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "dna_library_reported",
+        "check_type": "json_equals",
+        "equals": "DNA",
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_acid_type",
+        "weight": 0.5
+      },
+      {
+        "check_id": "dna_forcefield_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_library_recorded",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      }
+    ]
+  }
+}

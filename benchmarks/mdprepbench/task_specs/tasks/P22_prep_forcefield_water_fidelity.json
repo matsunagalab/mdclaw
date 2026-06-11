@@ -1,0 +1,46 @@
+{
+  "task_id": "P22_prep_forcefield_water_fidelity",
+  "public_source": "PDB 2LZM",
+  "capability_tags_extra": [
+    "forcefield_selection",
+    "water_model"
+  ],
+  "task_intent": "Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults.",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "forcefield_honored",
+        "check_type": "json_equals",
+        "equals": "ff19SB",
+        "json_file": "metrics.json",
+        "json_path": "preparation.forcefield",
+        "weight": 0.4
+      },
+      {
+        "check_id": "water_model_honored",
+        "check_type": "json_equals",
+        "equals": "OPC",
+        "json_file": "metrics.json",
+        "json_path": "preparation.water_model",
+        "weight": 0.4
+      },
+      {
+        "check_id": "explicit_solvent_reported",
+        "check_type": "json_equals",
+        "equals": "explicit",
+        "json_file": "metrics.json",
+        "json_path": "preparation.solvent_model",
+        "weight": 0.2
+      },
+      {
+        "$bundle": "topology_minimization"
+      }
+    ]
+  }
+}

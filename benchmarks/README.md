@@ -14,6 +14,14 @@ Both suites use the same artifact-based scorer framework:
 - harness/scorer files: canonical `task.json`
 - scorer-only files: `truth/` and optional `scorer/`
 
+MDPrepBench task contracts are maintained from compact specs under
+`benchmarks/mdprepbench/task_specs/`. Regenerate the canonical scorer-facing
+`tasks/<task_id>/task.json` files with:
+
+```bash
+conda run -n mdclaw python benchmarks/mdprepbench/scripts/generate_tasks.py
+```
+
 Export an agent-visible package before giving tasks to external agents:
 
 ```bash

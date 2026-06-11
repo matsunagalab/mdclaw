@@ -1,0 +1,38 @@
+{
+  "task_id": "P16_prep_standard_rna",
+  "public_source": "PDB 4RBQ",
+  "capability_tags_extra": [
+    "rna",
+    "nucleic_acid"
+  ],
+  "task_intent": "Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library.",
+  "references": [
+    {
+      "source": "PDB 4RBQ",
+      "url": "https://www.rcsb.org/structure/4RBQ"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "rna_library_reported",
+        "check_type": "json_equals",
+        "equals": "RNA",
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_acid_type",
+        "weight": 0.5
+      },
+      {
+        "check_id": "rna_forcefield_recorded",
+        "check_type": "json_equals",
+        "equals": true,
+        "json_file": "metrics.json",
+        "json_path": "preparation.nucleic_library_recorded",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      }
+    ]
+  }
+}
