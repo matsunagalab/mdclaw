@@ -1,0 +1,42 @@
+{
+  "task_id": "S02_ppi_hotspot_barnase_d39a",
+  "capability_tags_extra": [
+    "comparative_md",
+    "mutation_effect",
+    "protein_protein_interface"
+  ],
+  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS) from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (delta interface SASA, delta inter-chain contact count, delta hydrogen-bond count, delta salt-bridge count, delta water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
+  "references": [
+    {
+      "note": "SKEMPI 2.0 curated PPI mutation effects (scorer-side citation pool).",
+      "source": "SKEMPI"
+    },
+    {
+      "note": "ASEdb alanine-scanning energetics database (scorer-side citation pool).",
+      "source": "ASEdb"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "effect_direction_in_allowed_set",
+        "check_type": "json_allowed_values",
+        "json_file": "evidence_report.json",
+        "json_path": "effect.direction",
+        "allowed_values": [
+          "weakened_binding",
+          "strengthened_binding",
+          "neutral"
+        ],
+        "weight": 0.0
+      },
+      {
+        "$bundle": "comparative_md_evidence"
+      }
+    ],
+    "llm_judge_rubrics": [
+      "confidence_calibration",
+      "limitations"
+    ]
+  }
+}

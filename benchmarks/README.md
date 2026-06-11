@@ -23,6 +23,14 @@ MDPrepBench task contracts are maintained from compact specs under
 conda run -n mdclaw python benchmarks/mdprepbench/scripts/generate_tasks.py
 ```
 
+MDStudyBench uses the same compact-spec pattern, but its shared defaults are
+limited to study-level contracts such as evidence reports, trajectories,
+methods drafts, decision logs, and provenance execution records:
+
+```bash
+conda run -n mdclaw python benchmarks/mdstudybench/scripts/generate_tasks.py
+```
+
 Export an agent-visible package before giving tasks to external agents:
 
 ```bash
@@ -41,3 +49,8 @@ scorer-only checks. Completed prep submissions are scored with strict artifact
 integrity: unsafe manifest paths, missing OpenMM topology/minimization outputs,
 template placeholders, or missing provenance execution evidence are hard
 failures.
+
+For MDStudyBench, the same public-contract helpers are used without prep-only
+topology requirements. S01/S02 require trajectory-backed comparative evidence;
+S03 remains a dry-run methods/evidence bundle with methods, decision-log, and
+study/report provenance requirements.

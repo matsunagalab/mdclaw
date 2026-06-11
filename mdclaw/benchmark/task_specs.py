@@ -44,6 +44,14 @@ def build_task_payload(
 
     top_level_keys = [
         "task_id",
+        "category",
+        "primary_score",
+        "secondary_scores",
+        "execution_mode",
+        "time_limit_minutes",
+        "failure_policy",
+        "environment_type",
+        "requires_tools",
         "public_source",
         "task_intent",
         "references",

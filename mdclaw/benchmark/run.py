@@ -286,6 +286,9 @@ def prepare_benchmark_run(
             "submission_contract": str(
                 public_dir / "tasks" / task_id / "submission_contract.json"
             ),
+            "submission_checklist": str(
+                public_dir / "tasks" / task_id / "submission_checklist.md"
+            ),
             "submission_dir": str(task_run_dir / "submission"),
         }
         harness_instruction = {

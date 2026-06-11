@@ -1,17 +1,25 @@
 {
-  "capability_tags": [
-    "study_workflow",
+  "task_id": "S03_t4l_wt_vs_l99a_methods",
+  "category": "publication_ready_evidence",
+  "primary_score": "evidence_communication",
+  "secondary_scores": [
+    "scientific_answer"
+  ],
+  "execution_mode": "dry_run",
+  "time_limit_minutes": 60,
+  "capability_tags_extra": [
     "study_bundle",
     "methods_draft",
     "decision_log"
   ],
-  "category": "publication_ready_evidence",
-  "execution_mode": "dry_run",
-  "failure_policy": {
-    "blocked_by_missing_input_allowed": false,
-    "insufficient_information_allowed": false
-  },
-  "primary_score": "evidence_communication",
+  "required_outputs": [
+    "manifest.json",
+    "evidence_report.json",
+    "methods.md",
+    "provenance.json",
+    "decision_log.jsonl"
+  ],
+  "task_intent": "Evidence-and-methods test: package a WT vs L99A T4 lysozyme comparison as an auditable study bundle. Include WT and mutant roles in provenance.study.roles, a methods.md draft describing the comparison protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices.",
   "references": [
     {
       "note": "Eriksson et al. 1992 - L99A destabilization.",
@@ -22,14 +30,6 @@
       "source": "PDB 2LZM"
     }
   ],
-  "required_outputs": [
-    "manifest.json",
-    "evidence_report.json",
-    "methods.md",
-    "provenance.json",
-    "decision_log.jsonl"
-  ],
-  "schema_version": "1.0",
   "scoring": {
     "deterministic_checks": [
       {
@@ -62,15 +62,9 @@
         "weight": 0.2
       }
     ],
-    "ground_truth_checks": [
-      {
-        "check_id": "effect_direction_matches_truth",
-        "truth_file": "truth/experimental_truth.json",
-        "truth_path": "expected_direction",
-        "submission_file": "evidence_report.json",
-        "submission_path": "effect.direction",
-        "weight": 1.0
-      }
+    "llm_judge_rubrics": [
+      "methods_traceability",
+      "limitations"
     ],
     "integrity_checks": [
       {
@@ -124,17 +118,6 @@
           "report"
         ]
       }
-    ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "methods_traceability",
-      "limitations"
     ]
-  },
-  "secondary_scores": [
-    "scientific_answer"
-  ],
-  "task_id": "S03_t4l_wt_vs_l99a_methods",
-  "task_intent": "Evidence-and-methods test: package a WT vs L99A T4 lysozyme comparison as an auditable study bundle. Include WT and mutant roles in provenance.study.roles, a methods.md draft describing the comparison protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices.",
-  "time_limit_minutes": 60
+  }
 }

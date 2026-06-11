@@ -152,20 +152,14 @@ def _validate_completed_manifest_outputs(
     sub_dir: Path,
     out: dict[str, Any],
 ) -> None:
-    required_fields = ["metrics", "provenance", "evidence_report"]
-    if "prepared_structure.pdb" in task.required_outputs:
-        required_fields.append("prepared_structure")
-    if "minimized_structure.pdb" in task.required_outputs:
-        required_fields.append("minimized_structure")
-    if "minimization_report.json" in task.required_outputs:
-        required_fields.append("minimization_report")
+    required_fields = _required_manifest_output_fields(task)
     if any(
         check.check_type == "topology_artifact_bundle"
         for check in task.scoring.deterministic_checks
     ):
         required_fields.append("topology")
 
-    for field in required_fields:
+    for field in dict.fromkeys(required_fields):
         if field not in outputs:
             out["errors"].append(
                 "manifest.status='completed' requires "
@@ -195,3 +189,57 @@ def _validate_completed_manifest_outputs(
                 f"manifest.status='completed' requires outputs.{field} "
                 "as a non-empty string"
             )
+
+    for field, min_count in _required_manifest_list_fields(task).items():
+        value = outputs.get(field)
+        if not isinstance(value, list) or len(value) < min_count:
+            out["errors"].append(
+                "manifest.status='completed' requires "
+                f"outputs.{field} as a list with at least {min_count} item(s)"
+            )
+            continue
+        for rel in value:
+            if isinstance(rel, str) and not (sub_dir / rel).is_file():
+                out["errors"].append(
+                    f"outputs.{field} points to missing file: {rel}"
+                )
+
+
+def _required_manifest_output_fields(task: Task) -> list[str]:
+    output_fields = {
+        "metrics.json": "metrics",
+        "provenance.json": "provenance",
+        "evidence_report.json": "evidence_report",
+        "decision_log.jsonl": "decision_log",
+        "methods.md": "methods",
+        "prepared_structure.pdb": "prepared_structure",
+        "minimized_structure.pdb": "minimized_structure",
+        "minimization_report.json": "minimization_report",
+    }
+    return [
+        output_fields[rel]
+        for rel in task.required_outputs
+        if rel in output_fields
+    ]
+
+
+def _required_manifest_list_fields(task: Task) -> dict[str, int]:
+    fields: dict[str, int] = {}
+    for check in task.scoring.deterministic_checks:
+        if (
+            check.check_type == "json_min_length"
+            and check.json_file == "manifest.json"
+            and check.json_path
+            and check.json_path.startswith("outputs.")
+        ):
+            field = check.json_path.split(".", 1)[1]
+            fields[field] = max(fields.get(field, 0), int(check.min_length or 1))
+    for check in task.scoring.integrity_checks:
+        if (
+            check.check_type == "manifest_artifact_floor"
+            and check.manifest_path
+            and check.manifest_path.startswith("outputs.")
+        ):
+            field = check.manifest_path.split(".", 1)[1]
+            fields[field] = max(fields.get(field, 0), int(check.min_count or 1))
+    return fields

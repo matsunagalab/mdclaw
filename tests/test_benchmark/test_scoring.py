@@ -400,6 +400,77 @@ def test_completed_prep_validation_requires_topology_manifest_output(tmp_path: P
     assert any("outputs.topology" in err for err in result["errors"])
 
 
+def test_study_methods_validation_does_not_require_metrics_output(tmp_path: Path):
+    repo_root = Path(__file__).resolve().parents[2]
+    task_file = (
+        repo_root
+        / "benchmarks"
+        / "mdstudybench"
+        / "tasks"
+        / "S03_t4l_wt_vs_l99a_methods"
+        / "task.json"
+    )
+    submission_dir = tmp_path / "submission"
+    submission_dir.mkdir()
+    manifest = {
+        "schema_version": "1.0",
+        "task_id": "S03_t4l_wt_vs_l99a_methods",
+        "status": "completed",
+        "outputs": {
+            "evidence_report": "evidence_report.json",
+            "methods": "methods.md",
+            "provenance": "provenance.json",
+            "decision_log": "decision_log.jsonl",
+        },
+    }
+    (submission_dir / "manifest.json").write_text(json.dumps(manifest))
+    (submission_dir / "evidence_report.json").write_text("{}")
+    (submission_dir / "methods.md").write_text("## Methods\n\n## Limitations\n")
+    (submission_dir / "provenance.json").write_text("{}")
+    (submission_dir / "decision_log.jsonl").write_text("{}\n")
+
+    result = validation.validate_submission(task_file, submission_dir)
+
+    assert result["success"] is True
+    assert not any("outputs.metrics" in err for err in result["errors"])
+
+
+def test_study_answer_validation_requires_trajectory_manifest_outputs(
+    tmp_path: Path,
+):
+    repo_root = Path(__file__).resolve().parents[2]
+    task_file = (
+        repo_root
+        / "benchmarks"
+        / "mdstudybench"
+        / "tasks"
+        / "S01_stability_t4l_l99a"
+        / "task.json"
+    )
+    submission_dir = tmp_path / "submission"
+    _write_submission(
+        submission_dir,
+        manifest={
+            "schema_version": "1.0",
+            "task_id": "S01_stability_t4l_l99a",
+            "status": "completed",
+            "outputs": {
+                "metrics": "metrics.json",
+                "provenance": "provenance.json",
+                "evidence_report": "evidence_report.json",
+            },
+        },
+        metrics={"md_analysis": {"production_time_ns": 1.0}},
+        provenance={},
+        evidence={},
+    )
+
+    result = validation.validate_submission(task_file, submission_dir)
+
+    assert result["success"] is False
+    assert any("outputs.trajectories" in err for err in result["errors"])
+
+
 def test_score_submission_rejects_manifest_output_path_escape(tmp_path: Path):
     task = _make_task(
         primary="execution",

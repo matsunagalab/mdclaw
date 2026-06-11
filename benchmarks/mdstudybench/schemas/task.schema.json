@@ -942,7 +942,8 @@
             "citation_pool",
             "figures_are_png",
             "status_artifact_floor",
-            "manifest_artifact_floor"
+            "manifest_artifact_floor",
+            "provenance_execution_evidence"
           ],
           "title": "Check Type",
           "type": "string"
@@ -1009,6 +1010,18 @@
           ],
           "default": null,
           "title": "Min Bytes"
+        },
+        "min_command_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Command Count"
         },
         "min_count": {
           "anyOf": [
@@ -1087,6 +1100,21 @@
           ],
           "default": null,
           "title": "Required Sections"
+        },
+        "required_stages": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Stages"
         },
         "status_floor": {
           "anyOf": [

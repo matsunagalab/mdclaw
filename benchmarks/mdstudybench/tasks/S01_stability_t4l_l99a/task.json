@@ -1,23 +1,34 @@
 {
-  "schema_version": "1.0",
-  "task_id": "S01_stability_t4l_l99a",
-  "category": "experimental_ground_truth",
-  "primary_score": "scientific_answer",
-  "secondary_scores": [
-    "evidence_communication"
+  "capability_tags": [
+    "study_workflow",
+    "comparative_md",
+    "mutation_effect",
+    "protein_stability"
   ],
+  "category": "experimental_ground_truth",
   "execution_mode": "lite",
-  "time_limit_minutes": 120,
   "failure_policy": {
     "blocked_by_missing_input_allowed": false,
     "insufficient_information_allowed": false
   },
+  "primary_score": "scientific_answer",
+  "references": [
+    {
+      "note": "FireProtDB curated single-mutation DDG database (scorer-side citation pool).",
+      "source": "FireProtDB"
+    },
+    {
+      "note": "S669 / Ssym single-mutation DDG benchmark (scorer-side citation pool).",
+      "source": "S669"
+    }
+  ],
   "required_outputs": [
     "manifest.json",
     "metrics.json",
     "provenance.json",
     "evidence_report.json"
   ],
+  "schema_version": "1.0",
   "scoring": {
     "deterministic_checks": [
       {
@@ -58,10 +69,6 @@
         "submission_path": "effect.direction",
         "weight": 1.0
       }
-    ],
-    "llm_judge_rubrics": [
-      "confidence_calibration",
-      "overclaim_detection"
     ],
     "integrity_checks": [
       {
@@ -104,19 +111,30 @@
         "check_type": "citation_pool",
         "allowed_pool_file": "truth/reference_pool.json",
         "citation_field": "evidence.citations"
+      },
+      {
+        "check_id": "workflow_execution_recorded",
+        "check_type": "provenance_execution_evidence",
+        "min_command_count": 5,
+        "required_stages": [
+          "source",
+          "prep",
+          "prod",
+          "analysis",
+          "report"
+        ]
       }
     ],
-    "integrity_policy": "reject"
+    "integrity_policy": "reject",
+    "llm_judge_rubrics": [
+      "confidence_calibration",
+      "overclaim_detection"
+    ]
   },
+  "secondary_scores": [
+    "evidence_communication"
+  ],
+  "task_id": "S01_stability_t4l_l99a",
   "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM) from MD-derived evidence. Run short comparative MD of WT and the L99A mutant, populate metrics.md_analysis with quantitative differences (core SASA, cavity volume, packing density, C-alpha RMSF in the mutated region, hydrophobic contact count, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
-  "references": [
-    {
-      "note": "FireProtDB curated single-mutation DDG database (scorer-side citation pool).",
-      "source": "FireProtDB"
-    },
-    {
-      "note": "S669 / Ssym single-mutation DDG benchmark (scorer-side citation pool).",
-      "source": "S669"
-    }
-  ]
+  "time_limit_minutes": 120
 }

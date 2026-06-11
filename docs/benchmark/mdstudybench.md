@@ -42,6 +42,19 @@ mdclaw export_benchmark_public_package \
   --output-dir benchmark_public/mdstudybench
 ```
 
+The public package contains each task's `prompt.md`,
+`submission_contract.json`, and `submission_checklist.md`. The contract includes
+a task-specific `submission_blueprint`: S01/S02 ask for real trajectory artifacts
+listed in `manifest.outputs.trajectories`, while S03 asks for the methods draft
+and decision log. StudyBench does not inherit MDPrepBench's topology or
+minimization artifact requirements.
+
+For completed submissions, all `manifest.outputs` paths must be relative paths
+under `submission/`. S01/S02 require structured provenance execution evidence
+for source retrieval, preparation, production, analysis, and reporting. S03 is a
+dry-run evidence-bundle task, so it only requires study/report execution
+evidence and does not require trajectory artifacts.
+
 Run setup is the same scorer framework used by MDPrepBench:
 
 ```bash
@@ -50,4 +63,12 @@ mdclaw prepare_benchmark_run \
   --run-id <run_id> \
   --dataset-dir benchmarks/mdstudybench \
   --execution-mode lite
+```
+
+Task contracts are maintained from compact specs under
+`benchmarks/mdstudybench/task_specs/`. Regenerate canonical `task.json` files
+with:
+
+```bash
+conda run -n mdclaw python benchmarks/mdstudybench/scripts/generate_tasks.py
 ```

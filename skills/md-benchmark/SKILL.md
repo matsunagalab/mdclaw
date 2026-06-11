@@ -35,7 +35,7 @@ Agent-facing files:
 - `<task_dir>/prompt.md`
 - For external agents, prefer an exported public package from
   `mdclaw export_benchmark_public_package`; give the agent only
-  `prompt.md` and `submission_contract.json`.
+  `prompt.md`, `submission_contract.json`, and `submission_checklist.md`.
 
 Canonical harness/scorer metadata:
 
@@ -77,9 +77,12 @@ choice and may keep explicit ions. Full equilibration and production are not par
 execution tasks outside the prep battery, attempt the MD work requested by the
 prompt. For restart tasks, run the requested chunks and attempt the
 concatenation/continuity checks. For MDStudyBench comparative answer tasks, run
-the requested systems before reporting an effect direction, and mirror the
-quantitative MD analysis in `metrics.md_analysis` and
-`evidence_report.evidence.md_metrics`.
+the requested systems before reporting an effect direction, list real trajectory
+artifacts in `manifest.outputs.trajectories`, and mirror the quantitative MD
+analysis in `metrics.md_analysis` and `evidence_report.evidence.md_metrics`.
+For MDStudyBench dry-run evidence-bundle tasks, do not invent trajectories;
+submit the requested methods, decision log, evidence report, and study/report
+provenance evidence.
 
 Before writing `manifest.status="blocked"`, record enough evidence to prove
 that the task was actually attempted:
@@ -142,7 +145,9 @@ You are the MDClaw benchmark agent for <task_id>.
 Read <task_dir>/prompt.md as the task. Retrieve public sources named in the
 prompt as needed.
 If <task_dir>/submission_contract.json exists, read it and satisfy its
-manifest_contract, metric_requirements, and candidate_selection_requirements.
+manifest_contract, submission_blueprint, metric_requirements, and
+candidate_selection_requirements. If <task_dir>/submission_checklist.md exists,
+use it as the final pre-submission self-check.
 Do not read truth/ or scorer/.
 
 Use MDClaw CLI tools and MDClaw skills to run real prep/minimization work when
@@ -227,8 +232,11 @@ Do not run full equilibration or production for prep tasks unless the prompt exp
 asks for it. For restart tasks, run the requested chunks and attempt trajectory
 concatenation/continuity checks. For StudyBench comparative answer tasks, run or
 stage the requested WT/mutant or condition-pair systems, analyze task-relevant
-observables, and state `evidence_report.effect.direction` only after connecting
-the submitted MD metrics to the conclusion.
+observables, list real trajectory artifacts in `manifest.outputs.trajectories`,
+and state `evidence_report.effect.direction` only after connecting the
+submitted MD metrics to the conclusion. For StudyBench dry-run evidence-bundle
+tasks, do not invent trajectories; submit the requested methods, decision log,
+evidence report, and study/report provenance evidence.
 
 Minimal completed prep manifest shape:
 

@@ -40,7 +40,9 @@ The evaluated agent should read only files from the selected public package:
   per-task pre-submission checklist derived from the public contract.
 
 Use the analogous `benchmark_public/mdstudybench/...` paths when running
-MDStudyBench tasks.
+MDStudyBench tasks. The StudyBench public contract uses the same
+`submission_blueprint` / `submission_checklist.md` helpers, but without
+MDPrepBench topology or minimization requirements.
 
 A benchmark runner should pass those files plus the target submission directory
 to the agent. It must not silently add task-specific command-line options such
@@ -138,6 +140,13 @@ Paths are resolved relative to the `submission/` directory and must stay inside
 that directory. Absolute paths and `../` escapes are rejected. This keeps the
 benchmark agent-independent while requiring a common OpenMM topology artifact
 format for the current prep battery.
+
+For MDStudyBench, completed scientific-answer tasks such as S01/S02 must list
+real comparative trajectory artifacts in `manifest.outputs.trajectories` and
+connect `metrics.md_analysis` to `evidence_report.effect.direction`. Dry-run
+study-bundle tasks such as S03 do not require trajectories; they require the
+methods draft, decision log, evidence report, and structured study/report
+provenance evidence.
 
 ## What The Scorer Compares
 

@@ -276,6 +276,10 @@ def test_studybench_dataset_json_matches_task_directories():
     assert dataset["benchmark_version"] == "MDStudyBench-v0.1"
     assert dataset["task_count"] == len(task_ids) == 3
     assert sorted(task_ids) == task_dirs
+    assert (
+        "tasks/<task_id>/submission_checklist.md"
+        in dataset["public_private_split"]["public"]
+    )
 
 
 def test_studybench_families_cover_each_task_once():
@@ -335,6 +339,37 @@ def test_studybench_contracts_and_prompts_define_study_boundary():
             assert truth_path.is_file(), (
                 f"missing truth file for {task_id}: {check.truth_file}"
             )
+
+
+def test_studybench_integrity_is_strict_without_prep_topology_requirements():
+    dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
+    comparative_tasks = {
+        "S01_stability_t4l_l99a",
+        "S02_ppi_hotspot_barnase_d39a",
+    }
+
+    for task_id in dataset["task_ids"]:
+        task = Task.model_validate_json(
+            (STUDY_DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+        )
+        check_types = {
+            check.check_type for check in task.scoring.integrity_checks
+        }
+        deterministic_types = {
+            check.check_type for check in task.scoring.deterministic_checks
+        }
+
+        assert task.scoring.integrity_policy == "reject", task_id
+        assert "provenance_execution_evidence" in check_types, task_id
+        assert "topology_artifact_bundle" not in deterministic_types, task_id
+        assert "minimization_report_check" not in deterministic_types, task_id
+
+        if task_id in comparative_tasks:
+            assert "manifest_artifact_floor" in check_types, task_id
+            assert "metrics.json" in task.required_outputs, task_id
+        else:
+            assert "manifest_artifact_floor" not in check_types, task_id
+            assert "metrics.json" not in task.required_outputs, task_id
 
 
 def test_list_benchmark_tasks_supports_studybench():

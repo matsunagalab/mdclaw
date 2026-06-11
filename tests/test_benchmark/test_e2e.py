@@ -219,6 +219,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "task_id",
         "prompt_file",
         "submission_contract",
+        "submission_checklist",
         "submission_dir",
     }
     assert agent_tasks["tasks"] == [task_instructions]
@@ -272,6 +273,7 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     assert run_config["benchmark_version"] == "MDStudyBench-v0.1"
     assert run_config["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
+    assert "submission_checklist" in agent_tasks["tasks"][0]
     assert contract["primary_score"] == "evidence_communication"
     assert "topology_output_shape" not in contract["manifest_contract"]
 

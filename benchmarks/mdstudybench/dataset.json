@@ -38,7 +38,8 @@
     "public": [
       "dataset.json",
       "tasks/<task_id>/prompt.md",
-      "tasks/<task_id>/submission_contract.json"
+      "tasks/<task_id>/submission_contract.json",
+      "tasks/<task_id>/submission_checklist.md"
     ]
   },
   "released": "2026-06-10",

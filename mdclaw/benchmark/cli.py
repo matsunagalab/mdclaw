@@ -333,7 +333,8 @@ def export_benchmark_public_package(
 
     - ``dataset.json``
     - submission-facing schemas
-    - one ``prompt.md`` plus a small ``submission_contract.json`` per task
+    - one ``prompt.md`` plus ``submission_contract.json`` and
+      ``submission_checklist.md`` per task
 
     It deliberately omits ``task.json``, ``truth/``, and ``scorer/``.
     """

@@ -345,3 +345,37 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     ] == contract["required_outputs"]
     assert "topology_output_shape" not in contract["manifest_contract"]
     assert "minimized_structure.pdb" not in contract["required_outputs"]
+    assert (out_dir / "tasks" / "S01_stability_t4l_l99a" / "submission_checklist.md").is_file()
+    assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
+        "trajectories"
+    ] == [
+        "trajectories/trajectory_1.dcd",
+        "trajectories/trajectory_2.dcd",
+    ]
+    assert contract["submission_blueprint"]["metrics_minimum"]["md_analysis"][
+        "production_time_ns"
+    ] == ">= 1.0"
+    assert any(
+        "source, prep, prod, analysis, report" in item
+        for item in contract["submission_checklist"]
+    )
+
+    methods_contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "S03_t4l_wt_vs_l99a_methods"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    methods_outputs = methods_contract["submission_blueprint"][
+        "manifest_minimum"
+    ]["outputs"]
+    assert methods_outputs["methods"] == "methods.md"
+    assert methods_outputs["decision_log"] == "decision_log.jsonl"
+    assert "metrics" not in methods_outputs
+    assert "trajectories" not in methods_outputs
+    assert any(
+        "study, report" in item
+        for item in methods_contract["submission_checklist"]
+    )

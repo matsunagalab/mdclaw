@@ -109,41 +109,49 @@ def manifest_contract(task: Task) -> dict[str, Any]:
 
 def submission_blueprint(task: Task) -> dict[str, Any]:
     """Return a concrete submission skeleton for agent-side self-checks."""
-    outputs: dict[str, Any] = {
-        "metrics": "metrics.json",
-        "provenance": "provenance.json",
-        "evidence_report": "evidence_report.json",
-    }
-    if "prepared_structure.pdb" in task.required_outputs:
-        outputs["prepared_structure"] = "prepared_structure.pdb"
-    if "minimized_structure.pdb" in task.required_outputs:
-        outputs["minimized_structure"] = "minimized_structure.pdb"
-    if "minimization_report.json" in task.required_outputs:
-        outputs["minimization_report"] = "minimization_report.json"
+    outputs = _manifest_output_blueprint(task)
     if task.primary_score == PREPARATION_SCORE_AXIS:
         outputs["topology"] = OPENMM_TOPOLOGY_EXAMPLE
         if _has_candidate_selection(task):
             outputs["source_selection"] = "source_selection.json"
 
-    return {
+    blueprint: dict[str, Any] = {
         "manifest_minimum": {
             "schema_version": "1.0",
             "task_id": task.task_id,
             "status": "completed",
             "outputs": outputs,
         },
-        "metrics_minimum": {
+        "provenance_minimum": {
             "schema_version": "1.0",
             "task_id": task.task_id,
-            "topology": {"backend": "openmm"},
-            "preparation": {
-                item["json_path"].removeprefix("preparation."): item["value"]
-                for item in public_metric_requirements(task)
-                if item["operator"] == "equals"
-                and item["json_path"].startswith("preparation.")
-            },
+            "command_log": _command_log_blueprint(task),
+            "raw_outputs": [
+                {
+                    "path": "<relative path under submission/>",
+                    "md5": "<md5 hash>",
+                }
+            ],
         },
-        "minimization_report_minimum": {
+    }
+    if "metrics" in outputs or public_metric_requirements(task):
+        metrics_minimum: dict[str, Any] = {
+            "schema_version": "1.0",
+            "task_id": task.task_id,
+        }
+        if task.primary_score == PREPARATION_SCORE_AXIS:
+            metrics_minimum["topology"] = {"backend": "openmm"}
+        for item in public_metric_requirements(task):
+            _set_nested(
+                metrics_minimum,
+                item["json_path"],
+                _requirement_placeholder(item),
+            )
+        blueprint["metrics_minimum"] = metrics_minimum
+    if "evidence_report" in outputs:
+        blueprint["evidence_report_minimum"] = _evidence_report_blueprint(task)
+    if "minimization_report" in outputs:
+        blueprint["minimization_report_minimum"] = {
             "schema_version": "1.0",
             "task_id": task.task_id,
             "minimization": {
@@ -155,55 +163,42 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
                 "energy_initial_kj_mol": "<number>",
                 "energy_final_kj_mol": "<number>",
             },
-        },
-        "provenance_minimum": {
-            "schema_version": "1.0",
-            "task_id": task.task_id,
-            "command_log": [
-                {
-                    "stage": "source",
-                    "command": "<command or agent action>",
-                    "exit_code": 0,
-                    "walltime_seconds": "<number>",
-                },
-                {
-                    "stage": "prep",
-                    "command": "<command or agent action>",
-                    "exit_code": 0,
-                    "walltime_seconds": "<number>",
-                },
-                {
-                    "stage": "topo",
-                    "command": "<command or agent action>",
-                    "exit_code": 0,
-                    "walltime_seconds": "<number>",
-                },
-                {
-                    "stage": "minimization",
-                    "command": "<command or agent action>",
-                    "exit_code": 0,
-                    "walltime_seconds": "<number>",
-                },
-            ],
-            "raw_outputs": [
-                {
-                    "path": "<relative path under submission/>",
-                    "md5": "<md5 hash>",
-                }
-            ],
-        },
-    }
+        }
+    return blueprint
 
 
 def submission_checklist(task: Task) -> list[str]:
     """Return agent-facing checks to run before handing off to the scorer."""
+    stages = _required_execution_stages(task)
     checks = [
         "manifest.json parses and manifest.task_id matches this task",
         "manifest.outputs paths are relative and stay inside submission/",
         "every required_outputs file exists in submission/",
-        "provenance.json includes command_log entries for source, prep, topo, and minimization",
-        "metrics.json contains every metric_requirements json_path from this contract",
     ]
+    if stages:
+        checks.append(
+            "provenance.json includes command_log entries for: "
+            + ", ".join(stages)
+        )
+    else:
+        checks.append(
+            "provenance.json records commands or agent actions attempted"
+        )
+    if public_metric_requirements(task):
+        checks.append(
+            "metrics.json contains every metric_requirements json_path from this contract"
+        )
+    if _manifest_list_outputs(task):
+        checks.append(
+            "manifest.outputs lists real artifact paths for: "
+            + ", ".join(sorted(_manifest_list_outputs(task)))
+        )
+    evidence_keys = _evidence_required_keys(task)
+    if evidence_keys:
+        checks.append(
+            "evidence_report.json contains required evidence keys: "
+            + ", ".join(evidence_keys)
+        )
     if task.primary_score == PREPARATION_SCORE_AXIS:
         checks.extend([
             "manifest.outputs.topology is a list containing system.xml, topology.pdb, and state.xml",
@@ -281,3 +276,163 @@ def _has_candidate_selection(task: Task) -> bool:
         check.check_type == "candidate_selection_check"
         for check in task.scoring.deterministic_checks
     )
+
+
+def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
+    outputs: dict[str, Any] = {}
+    fixed_outputs = {
+        "metrics.json": ("metrics", "metrics.json"),
+        "provenance.json": ("provenance", "provenance.json"),
+        "evidence_report.json": ("evidence_report", "evidence_report.json"),
+        "decision_log.jsonl": ("decision_log", "decision_log.jsonl"),
+        "methods.md": ("methods", "methods.md"),
+        "prepared_structure.pdb": ("prepared_structure", "prepared_structure.pdb"),
+        "minimized_structure.pdb": ("minimized_structure", "minimized_structure.pdb"),
+        "minimization_report.json": (
+            "minimization_report",
+            "minimization_report.json",
+        ),
+    }
+    for rel in task.required_outputs:
+        field = fixed_outputs.get(rel)
+        if field is not None:
+            outputs[field[0]] = field[1]
+
+    for field, min_count in _manifest_list_outputs(task).items():
+        outputs[field] = _manifest_list_example(field, min_count)
+    return outputs
+
+
+def _manifest_list_outputs(task: Task) -> dict[str, int]:
+    outputs: dict[str, int] = {}
+    for check in task.scoring.deterministic_checks:
+        if (
+            check.check_type == "json_min_length"
+            and check.json_file == "manifest.json"
+            and check.json_path
+            and check.json_path.startswith("outputs.")
+        ):
+            field = check.json_path.split(".", 1)[1]
+            outputs[field] = max(outputs.get(field, 0), int(check.min_length or 1))
+    for check in task.scoring.integrity_checks:
+        if (
+            check.check_type == "manifest_artifact_floor"
+            and check.manifest_path
+            and check.manifest_path.startswith("outputs.")
+        ):
+            field = check.manifest_path.split(".", 1)[1]
+            outputs[field] = max(outputs.get(field, 0), int(check.min_count or 1))
+    return outputs
+
+
+def _manifest_list_example(field: str, min_count: int) -> list[str]:
+    templates = {
+        "trajectories": "trajectories/trajectory_{index}.dcd",
+        "figures": "figures/figure_{index}.png",
+        "checkpoints": "checkpoints/checkpoint_{index}.xml",
+    }
+    template = templates.get(field, f"{field}/{field}_{{index}}.dat")
+    return [template.format(index=index) for index in range(1, min_count + 1)]
+
+
+def _required_execution_stages(task: Task) -> list[str]:
+    stages: list[str] = []
+    for check in task.scoring.integrity_checks:
+        if check.check_type != "provenance_execution_evidence":
+            continue
+        for stage in check.required_stages or []:
+            stage_text = str(stage)
+            if stage_text not in stages:
+                stages.append(stage_text)
+    return stages
+
+
+def _command_log_blueprint(task: Task) -> list[dict[str, Any]]:
+    stages = _required_execution_stages(task)
+    min_count = 1
+    for check in task.scoring.integrity_checks:
+        if check.check_type == "provenance_execution_evidence":
+            min_count = max(min_count, int(check.min_command_count or 1))
+    if not stages:
+        stages = ["<stage>"]
+    while len(stages) < min_count:
+        stages.append(f"additional_{len(stages) + 1}")
+    return [
+        {
+            "stage": stage,
+            "command": "<command or agent action>",
+            "exit_code": 0,
+            "walltime_seconds": "<number>",
+        }
+        for stage in stages
+    ]
+
+
+def _requirement_placeholder(item: dict[str, Any]) -> Any:
+    operator = item["operator"]
+    value = item["value"]
+    if operator == "equals":
+        return value
+    if operator == "min":
+        return f">= {value}"
+    if operator == "min_length":
+        return f"length >= {value}"
+    if operator == "allowed_values":
+        return {"one_of": value}
+    if operator == "max":
+        return f"<= {value}"
+    return "<required>"
+
+
+def _evidence_report_blueprint(task: Task) -> dict[str, Any]:
+    evidence: dict[str, Any] = {
+        "schema_version": "1.0",
+        "task_id": task.task_id,
+    }
+    for check in task.scoring.deterministic_checks:
+        if (
+            check.check_type == "json_allowed_values"
+            and check.json_file == "evidence_report.json"
+            and check.json_path
+        ):
+            _set_nested(
+                evidence,
+                check.json_path,
+                {"one_of": check.allowed_values or []},
+            )
+    for key in _evidence_required_keys(task):
+        _set_nested(evidence, key, _evidence_placeholder(key))
+    return evidence
+
+
+def _evidence_required_keys(task: Task) -> list[str]:
+    keys: list[str] = []
+    for check in task.scoring.integrity_checks:
+        if check.check_type != "evidence_completeness":
+            continue
+        for key in check.required_keys or []:
+            if key not in keys:
+                keys.append(key)
+    return keys
+
+
+def _evidence_placeholder(key: str) -> Any:
+    if key == "limitations":
+        return ["<limitation>"]
+    if key.endswith(".citations"):
+        return ["<public citation>"]
+    if key.endswith(".md_metrics"):
+        return {"<metric_name>": "<value>"}
+    return "<required>"
+
+
+def _set_nested(payload: dict[str, Any], dotted: str, value: Any) -> None:
+    cursor = payload
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        child = cursor.get(part)
+        if not isinstance(child, dict):
+            child = {}
+            cursor[part] = child
+        cursor = child
+    cursor[parts[-1]] = value

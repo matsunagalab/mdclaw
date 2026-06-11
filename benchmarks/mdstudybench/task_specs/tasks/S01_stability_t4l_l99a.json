@@ -1,0 +1,42 @@
+{
+  "task_id": "S01_stability_t4l_l99a",
+  "capability_tags_extra": [
+    "comparative_md",
+    "mutation_effect",
+    "protein_stability"
+  ],
+  "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM) from MD-derived evidence. Run short comparative MD of WT and the L99A mutant, populate metrics.md_analysis with quantitative differences (core SASA, cavity volume, packing density, C-alpha RMSF in the mutated region, hydrophobic contact count, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
+  "references": [
+    {
+      "note": "FireProtDB curated single-mutation DDG database (scorer-side citation pool).",
+      "source": "FireProtDB"
+    },
+    {
+      "note": "S669 / Ssym single-mutation DDG benchmark (scorer-side citation pool).",
+      "source": "S669"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "effect_direction_in_allowed_set",
+        "check_type": "json_allowed_values",
+        "json_file": "evidence_report.json",
+        "json_path": "effect.direction",
+        "allowed_values": [
+          "destabilizing",
+          "stabilizing",
+          "neutral"
+        ],
+        "weight": 0.0
+      },
+      {
+        "$bundle": "comparative_md_evidence"
+      }
+    ],
+    "llm_judge_rubrics": [
+      "confidence_calibration",
+      "overclaim_detection"
+    ]
+  }
+}
