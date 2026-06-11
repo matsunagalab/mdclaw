@@ -12,9 +12,11 @@ from tests.test_benchmark import _fake_submissions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
+STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
 MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
+STUDY_TASK_ID = "S03_t4l_wt_vs_l99a_methods"
 
 
 def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
@@ -242,6 +244,36 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert harness_instructions["canonical_task_file"].endswith("task.json")
     assert "score_command" in harness_instructions
     assert harness_tasks["tasks"] == [harness_instructions]
+
+
+def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="studybench_s03",
+        dataset_dir=str(STUDY_DATASET_DIR),
+        task_ids=[STUDY_TASK_ID],
+        execution_mode="dry_run",
+    )
+
+    assert prepared["success"], prepared
+    run_dir = output_dir / "studybench_s03"
+    run_config = json.loads((run_dir / "run_config.json").read_text())
+    agent_tasks = json.loads((run_dir / "agent_tasks.json").read_text())
+    contract = json.loads(
+        (
+            Path(prepared["public_package_dir"])
+            / "tasks"
+            / STUDY_TASK_ID
+            / "submission_contract.json"
+        ).read_text()
+    )
+
+    assert run_config["benchmark_version"] == "MDStudyBench-v0.1"
+    assert run_config["dataset_dir"] == str(STUDY_DATASET_DIR)
+    assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
+    assert contract["primary_score"] == "evidence_communication"
+    assert "topology_output_shape" not in contract["manifest_contract"]
 
 
 def test_validate_and_score_wrapper_stops_on_validation_failure(tmp_path: Path):

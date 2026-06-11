@@ -1,4 +1,4 @@
-"""Pydantic v2 models for MDAgentBench v1.0.
+"""Pydantic v2 models for the MD benchmark suites.
 
 These types are the single source of truth for task / submission / score
 shapes. JSON files on disk are parsed through these models; this gives us
@@ -320,7 +320,6 @@ class Task(BaseModel):
     environment_type: Optional[str] = None
     requires_tools: list[str] = Field(default_factory=list)
     evaluation_target: Optional[str] = None
-    prep_battery_priority: Optional[int] = None
     public_source: Optional[str] = None
     scoring: TaskScoring = Field(default_factory=TaskScoring)
     task_intent: str
@@ -456,7 +455,7 @@ class BudgetSpec(BaseModel):
 
 class RunConfig(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDAgentBench-prep-v0.1"
+    benchmark_version: str = "MDPrepBench-v0.1"
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"
@@ -471,7 +470,7 @@ class RunConfig(BaseModel):
 
 class RunSummary(BaseModel):
     schema_version: SchemaVersion = "1.0"
-    benchmark_version: str = "MDAgentBench-prep-v0.1"
+    benchmark_version: str = "MDPrepBench-v0.1"
     run_id: str
     created_at: str
     execution_mode: ExecutionMode = "lite"

@@ -1,0 +1,27 @@
+# MD Benchmark Suites
+
+The MDAgentBench family is split into focused suites so preparation tasks and
+scientific study tasks do not share one overloaded dataset.
+
+| Suite | Path | Version | Focus |
+|---|---|---|---|
+| MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.1` | System preparation, topology artifacts, minimization evidence, and preparation provenance. |
+| MDStudyBench | `benchmarks/mdstudybench/` | `MDStudyBench-v0.1` | A small curated set of scientific question answering and study-bundle tasks. |
+
+Both suites use the same artifact-based scorer framework:
+
+- agent-visible files: `prompt.md` and exported `submission_contract.json`
+- harness/scorer files: canonical `task.json`
+- scorer-only files: `truth/` and optional `scorer/`
+
+Export an agent-visible package before giving tasks to external agents:
+
+```bash
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_public/mdprepbench
+
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdstudybench \
+  --output-dir benchmark_public/mdstudybench
+```

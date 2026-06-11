@@ -1,4 +1,4 @@
-"""MDAgentBench framework.
+"""Artifact-based MD benchmark framework.
 
 The package owns the dataset models, validators, deterministic scorer, and
 durable run summaries. It deliberately keeps scoring artifact-based and

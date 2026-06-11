@@ -1,4 +1,4 @@
-"""Dataset-level integrity checks for the prep-only MDAgentBench dataset."""
+"""Dataset-level integrity checks for the MDPrepBench dataset."""
 
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from mdclaw.benchmark.models import SCORE_AXES, Task
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
+STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 
 
 def _walk_keys(value: Any):
@@ -248,6 +249,92 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
         assert "OL" not in aliases["POPC"]
         assert "PA" not in aliases["POPE"]
         assert "OL" not in aliases["POPE"]
+
+
+def test_studybench_dataset_json_matches_task_directories():
+    dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
+    task_ids = dataset["task_ids"]
+    task_dirs = sorted(
+        path.name
+        for path in (STUDY_DATASET_DIR / "tasks").iterdir()
+        if path.is_dir() and (path / "task.json").is_file()
+    )
+
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.1"
+    assert dataset["task_count"] == len(task_ids) == 3
+    assert sorted(task_ids) == task_dirs
+
+
+def test_studybench_families_cover_each_task_once():
+    dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
+    task_ids = set(dataset["task_ids"])
+    axes = set(SCORE_AXES)
+    covered: list[str] = []
+
+    families = dataset.get("families") or {}
+    assert set(families) == {
+        "scientific_answer_battery",
+        "study_evidence_bundle",
+    }
+
+    for family_key, family in families.items():
+        assert family["display_name"], family_key
+        assert family["intent"], family_key
+        assert family["score_axis"] in axes
+        assert family["task_ids"], family_key
+        covered.extend(family["task_ids"])
+
+        for task_id in family["task_ids"]:
+            task = Task.model_validate_json(
+                (STUDY_DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+            )
+            assert task.primary_score == family["score_axis"]
+
+    assert set(covered) == task_ids
+    assert len(covered) == len(set(covered))
+
+
+def test_studybench_contracts_and_prompts_define_study_boundary():
+    dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
+    axes = set(SCORE_AXES)
+
+    for task_id in dataset["task_ids"]:
+        task_file = STUDY_DATASET_DIR / "tasks" / task_id / "task.json"
+        payload = json.loads(task_file.read_text())
+        task = Task.model_validate(payload)
+        prompt = (STUDY_DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
+
+        assert task.task_id == task_id
+        assert task.primary_score in axes
+        assert set(task.secondary_scores).issubset(axes)
+        assert "Use this prompt as the task statement" in prompt
+        assert "do not read" in prompt.lower()
+        assert "truth/" in prompt
+        assert "scorer/" in prompt
+        assert "input/" not in prompt
+        assert "truth" not in payload
+        assert not any(str(key).startswith("expected_") for key in _walk_keys(payload))
+
+        for rel_path in task.required_outputs:
+            assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
+        for check in task.scoring.ground_truth_checks:
+            truth_path = STUDY_DATASET_DIR / "tasks" / task_id / check.truth_file
+            assert truth_path.is_file(), (
+                f"missing truth file for {task_id}: {check.truth_file}"
+            )
+
+
+def test_list_benchmark_tasks_supports_studybench():
+    result = cli.list_benchmark_tasks(str(STUDY_DATASET_DIR))
+
+    assert result["success"], result
+    assert result["benchmark_version"] == "MDStudyBench-v0.1"
+    assert result["task_count"] == 3
+    assert {task["task_id"] for task in result["tasks"]} == {
+        "S01_stability_t4l_l99a",
+        "S02_ppi_hotspot_barnase_d39a",
+        "S03_t4l_wt_vs_l99a_methods",
+    }
 
 
 def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():

@@ -15,7 +15,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 
 
 def _write(path: Path, payload: dict | str) -> None:

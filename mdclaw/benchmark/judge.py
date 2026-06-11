@@ -1,4 +1,4 @@
-"""LLM-judge plumbing for MDAgentBench.
+"""LLM-judge plumbing for MD benchmark submissions.
 
 The framework defines the *interface* for qualitative scoring, but does not
 itself call an LLM. An external evaluator is expected to:
@@ -53,7 +53,7 @@ def make_judge_prompt(task: dict[str, Any]) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
         "task_id": task.get("task_id"),
-        "judge_role": "MDAgentBench qualitative judge",
+        "judge_role": "MD benchmark qualitative judge",
         "instructions": (
             "Read the agent's submission and produce a JSON object whose "
             "`scores` keys are the rubric names listed in `rubrics` and whose "

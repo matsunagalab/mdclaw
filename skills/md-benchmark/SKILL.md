@@ -1,13 +1,23 @@
 ---
 name: md-benchmark
-description: "Run MDAgentBench tasks with prompt-driven MD agents and deterministic scorer commands. Use for benchmark runs, agent submissions, and comparing MD agents."
+description: "Run MDPrepBench and MDStudyBench tasks with prompt-driven MD agents and deterministic scorer commands. Use for benchmark runs, agent submissions, and comparing MD agents."
 ---
 
 # MD Benchmark
 
-MDAgentBench evaluates a prompt-driven MD agent. The agent may use MDClaw,
-MDCrow, GROMACS, Amber, OpenMM scripts, or another backend, but scoring is
-always artifact-based and script-driven.
+MDPrepBench and MDStudyBench evaluate prompt-driven MD agents under the
+MDAgentBench family. The agent may use MDClaw, MDCrow, GROMACS, Amber, OpenMM
+scripts, or another backend, but scoring is always artifact-based and
+script-driven.
+
+Use the suite that matches the task:
+
+- `benchmarks/mdprepbench`: preparation-only tasks (`P01`-`P25`), focused on
+  source retrieval, preparation, topology artifacts, minimization evidence, and
+  preparation provenance.
+- `benchmarks/mdstudybench`: scientific question / study tasks (`S01`-`S03`),
+  focused on comparative MD evidence, analysis metrics, methods drafts,
+  provenance, decision logs, and calibrated scientific answers.
 
 For MDClaw commands, do not use the external GNU `timeout` wrapper. macOS does
 not ship `timeout`; rely on the task time limit, tool/runtime errors, and
@@ -29,7 +39,8 @@ Agent-facing files:
 
 Canonical harness/scorer metadata:
 
-- `benchmarks/mdagentbench/tasks/<task_id>/task.json`
+- `benchmarks/mdprepbench/tasks/<task_id>/task.json`
+- `benchmarks/mdstudybench/tasks/<task_id>/task.json`
 
 Never expose:
 
@@ -65,8 +76,10 @@ particles for implicit solvent. Vacuum/no-solvent is a separate explicit prompt
 choice and may keep explicit ions. Full equilibration and production are not part of the prep battery. For
 execution tasks outside the prep battery, attempt the MD work requested by the
 prompt. For restart tasks, run the requested chunks and attempt the
-concatenation/continuity checks. For comparative answer tasks, run the requested
-systems before reporting an effect direction.
+concatenation/continuity checks. For MDStudyBench comparative answer tasks, run
+the requested systems before reporting an effect direction, and mirror the
+quantitative MD analysis in `metrics.md_analysis` and
+`evidence_report.evidence.md_metrics`.
 
 Before writing `manifest.status="blocked"`, record enough evidence to prove
 that the task was actually attempted:
@@ -98,7 +111,7 @@ Prepare an MDClaw benchmark run from the repository root with:
 mdclaw prepare_benchmark_run \
   --output-dir benchmark_runs \
   --run-id <run_id> \
-  --dataset-dir benchmarks/mdagentbench \
+  --dataset-dir benchmarks/mdprepbench \
   --execution-mode lite
 ```
 
@@ -109,6 +122,17 @@ directory. Scoring metadata is written separately to `harness_tasks.json` and
 `harness_instructions.json`; do not give those files to the evaluated agent.
 Use `--task-ids P01_prep_simple_monomer_t4l P02_prep_1ake_chain_ap5` to run a
 subset.
+
+For StudyBench, select the study dataset explicitly:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs \
+  --run-id <run_id> \
+  --dataset-dir benchmarks/mdstudybench \
+  --execution-mode lite \
+  --task-ids S01_stability_t4l_l99a
+```
 
 For MDClaw, launch one sub-agent per task and give it this prompt:
 
@@ -122,7 +146,9 @@ manifest_contract, metric_requirements, and candidate_selection_requirements.
 Do not read truth/ or scorer/.
 
 Use MDClaw CLI tools and MDClaw skills to run real prep/minimization work when
-the task asks for it.
+the task asks for it. For StudyBench tasks, use `md-study` for the study plan
+when the prompt asks a scientific question, then hand off to preparation,
+equilibration, production, analysis, and evidence/reporting skills as needed.
 Write the required benchmark submission files to <submission_dir>/.
 
 If blocked outcomes are not allowed, do not stop because the task is long; run
@@ -199,8 +225,10 @@ summarize their values in metrics/provenance; do not invent them by hand. If
 copy it into the submission and list it as `manifest.outputs.source_selection`.
 Do not run full equilibration or production for prep tasks unless the prompt explicitly
 asks for it. For restart tasks, run the requested chunks and attempt trajectory
-concatenation/continuity checks. For comparative answer tasks, run the requested
-systems before reporting an effect direction.
+concatenation/continuity checks. For StudyBench comparative answer tasks, run or
+stage the requested WT/mutant or condition-pair systems, analyze task-relevant
+observables, and state `evidence_report.effect.direction` only after connecting
+the submitted MD metrics to the conclusion.
 
 Minimal completed prep manifest shape:
 
@@ -283,8 +311,10 @@ run summary with:
 ```bash
 mdclaw score_benchmark_run \
   --run-dir <run_dir> \
-  --dataset-dir benchmarks/mdagentbench
+  --dataset-dir benchmarks/mdprepbench
 ```
+
+Use `--dataset-dir benchmarks/mdstudybench` for StudyBench runs.
 
 Read the wrapper's normalized fields: `validation_success`, `score_status`,
 `weighted_total`, and `benchmark_passed`. Do not infer benchmark pass/fail from

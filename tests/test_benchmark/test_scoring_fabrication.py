@@ -10,7 +10,7 @@ from mdclaw.benchmark.validation import load_task
 from tests.test_benchmark import _fake_submissions
 
 
-_BENCH_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "mdagentbench" / "tasks"
+_BENCH_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "mdprepbench" / "tasks"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
 
 

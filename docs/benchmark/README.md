@@ -1,8 +1,10 @@
-# MDAgentBench Prep Battery
+# MDPrepBench
 
-MDAgentBench is an artifact-based benchmark dataset for molecular dynamics
-agents. The current dataset is a prep-only battery:
-`MDAgentBench-prep-v0.1`.
+MDPrepBench is the preparation-focused suite in the MDAgentBench benchmark
+family. The current dataset is `MDPrepBench-v0.1`.
+
+For the full suite split, see `benchmarks/README.md`. For study-level
+scientific question tasks, see `docs/benchmark/mdstudybench.md`.
 
 The benchmark is agent-agnostic. An evaluated agent receives only the public
 prompt and submission contract, then writes a standard submission directory.
@@ -22,10 +24,12 @@ the evaluated agent.
 
 ## Current Scope
 
-The current task set replaces the former v1.0 mixed benchmark. Scientific MD
-reasoning tasks are intentionally deferred to a later suite. This battery asks
-whether an agent can convert messy public structural inputs into minimizable
-MD-ready systems with clear provenance.
+The current task set replaces the former mixed benchmark's preparation tasks.
+Scientific question answering and study-bundle tasks live separately in
+`benchmarks/mdstudybench/` as MDStudyBench; see
+`docs/benchmark/mdstudybench.md`. MDPrepBench asks whether an agent can convert
+messy public structural inputs into minimizable MD-ready systems with clear
+provenance.
 
 Public benchmark tasks do **not** require MDClaw-specific guardrail codes.
 MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
@@ -43,7 +47,7 @@ checks are the default.
 ## Dataset Layout
 
 ```text
-benchmarks/mdagentbench/
+benchmarks/mdprepbench/
   dataset.json
   schemas/
     task.schema.json
@@ -59,8 +63,8 @@ Export the agent-visible package before giving tasks to an external agent:
 
 ```bash
 mdclaw export_benchmark_public_package \
-  --dataset-dir benchmarks/mdagentbench \
-  --output-dir benchmark_public/mdagentbench
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_public/mdprepbench
 ```
 
 The exported package contains only `dataset.json`, submission-facing schemas,
@@ -166,11 +170,11 @@ Run validation and scoring with:
 
 ```bash
 conda run -n mdclaw mdclaw validate_benchmark_submission \
-  --task-file benchmarks/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
   --submission-dir benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/submission
 
 conda run -n mdclaw mdclaw score_benchmark_submission \
-  --task-file benchmarks/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
   --submission-dir benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/submission \
   --run-id <run_id> \
   --output-file benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/score.json
@@ -184,4 +188,4 @@ conda run -n mdclaw mdclaw --list-json
 ```
 
 For design rationale and future scientific-task planning, see
-[`vnext_task_design.md`](vnext_task_design.md).
+[`suite_design.md`](suite_design.md).

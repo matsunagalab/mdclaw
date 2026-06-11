@@ -31,7 +31,7 @@ package evidence with provenance.
 - Run locally, through containers, or on SLURM/HPC systems.
 - Analyze trajectories and package reproducible evidence, provenance, figures,
   and Methods-style reports.
-- Evaluate MD agents with the included MDAgentBench dataset and scorer.
+- Evaluate MD agents with the included MDPrepBench / MDStudyBench datasets and scorer.
 
 MDClaw is split into two things that are deployed together but should be
 understood separately:
@@ -285,7 +285,8 @@ ionic-lock occupancy, and intracellular cavity volume.
 | `bin/mdclaw` | Runtime wrapper used by plugin and local deployments. |
 | `mdclaw/` | Python package and CLI tool implementations. |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
-| `benchmarks/mdagentbench/` | MDAgentBench dataset and scorer contracts. |
+| `benchmarks/mdprepbench/` | Preparation workflow benchmark tasks and scorer contracts. |
+| `benchmarks/mdstudybench/` | Scientific question and study-bundle benchmark tasks. |
 | `docs/agents/` | Deployment notes for agent harnesses. |
 | `docs/developer/` | Architecture, CLI internals, testing, release, and tool references. |
 | `tests/` | Unit, smoke, benchmark, and integration tests. |
@@ -350,33 +351,44 @@ ordinary nucleotides.
 
 ## Benchmarking
 
-MDClaw includes MDAgentBench under `benchmarks/mdagentbench/`. The benchmark is
-agent-agnostic: evaluated agents read `prompt.md` and write `submission/`;
-the scorer reads `task.json`, scorer-only truth files, and submitted artifacts.
-For external agents, export the agent-visible package first:
+MDClaw includes two artifact-based benchmark suites under the MDAgentBench
+family:
+
+- `MDPrepBench-v0.1` in `benchmarks/mdprepbench/`: preparation workflow tasks.
+- `MDStudyBench-v0.1` in `benchmarks/mdstudybench/`: scientific-answer and
+  auditable study-bundle tasks.
+
+Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
+`submission/`; the scorer reads `task.json`, scorer-only truth files, and
+submitted artifacts. For external agents, export the agent-visible package
+first:
 
 ```bash
 mdclaw export_benchmark_public_package \
-  --dataset-dir benchmarks/mdagentbench \
-  --output-dir benchmark_public/mdagentbench
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_public/mdprepbench
 ```
 
 The exported package contains prompts, submission contracts, and
 submission-facing schemas only; it omits `task.json`, `truth/`, and `scorer/`.
 
-The current task set is `MDAgentBench-prep-v0.1`, a 25-task preparation
+The main preparation task set is `MDPrepBench-v0.1`, a 25-task preparation
 workflow battery:
 
 | Family | What It Tests | Example Tasks |
 |---|---|---|
 | Preparation Workflow Battery | MD-ready preparation artifacts, ligand/chain selection, residue protonation, PTMs, glycans, nucleic acids, membranes, assemblies, ion concentration, and backend-neutral provenance. | 1AKE + AP5 selection; T4L Glu11 GLH protonation; mixed-lipid membrane prep |
 
-Public benchmark tasks do not require MDClaw-specific guardrail codes; those
-remain ordinary MDClaw regression tests. Scientific MD reasoning tasks are
-planned as a later suite.
+`MDStudyBench-v0.1` currently seeds the study-level suite with three tasks:
+two scientific-answer comparisons and one study methods/provenance bundle.
 
-See `docs/benchmark/README.md` for the task table, submission contract,
-scorer runtime, and detailed validation commands.
+Public benchmark tasks do not require MDClaw-specific guardrail codes; those
+remain ordinary MDClaw regression tests. Scientific MD reasoning tasks now live
+in MDStudyBench; keep that suite small and curated rather than mixing study
+tasks back into MDPrepBench.
+
+See `benchmarks/README.md` for suite layout, `docs/benchmark/README.md` for
+MDPrepBench details, and `docs/benchmark/mdstudybench.md` for StudyBench tasks.
 
 ## Developer Quickstart
 

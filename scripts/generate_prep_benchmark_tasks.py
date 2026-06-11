@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the prep-only MDAgentBench task set.
+"""Generate the MDPrepBench task set.
 
 This script intentionally owns the mechanical JSON/prompt boilerplate for the
 P01-P25 prep battery so task definitions stay consistent while the benchmark is
@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DATASET = ROOT / "benchmarks" / "mdagentbench"
+DATASET = ROOT / "benchmarks" / "mdprepbench"
 TASKS = DATASET / "tasks"
 PRIVATE_REFERENCES = DATASET / "private_references"
 
@@ -321,7 +321,6 @@ def _task(
         },
         "task_intent": f"{title}: {task_text}",
         "references": references,
-        "prep_battery_priority": priority,
         "public_source": pdb_source,
         "public_prompt_extra": prompt_extra,
     }
@@ -862,7 +861,7 @@ def main() -> int:
             )
 
     dataset = {
-        "benchmark_version": "MDAgentBench-prep-v0.1",
+        "benchmark_version": "MDPrepBench-v0.1",
         "schema_version": "1.0",
         "benchmark_type": "artifact_based_agent_benchmark",
         "evaluation_unit": "submission_artifacts",
@@ -891,10 +890,10 @@ def main() -> int:
             }
         },
         "notes": [
-            "Prep-only replacement for the former MDAgentBench v1.0 task set.",
+            "Preparation-focused suite in the MDAgentBench benchmark family.",
             "The current prep contract includes topology build and minimization evidence.",
             "No public task requires an MDClaw-specific guardrail code.",
-            "Scientific MD reasoning tasks are intentionally deferred to a later suite.",
+            "Scientific MD reasoning tasks live in MDStudyBench.",
         ],
     }
     _write_json(DATASET / "dataset.json", dataset)

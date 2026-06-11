@@ -1,4 +1,4 @@
-"""Task and submission validators for MDAgentBench v1.0.
+"""Task and submission validators for the MD benchmark suites.
 
 These functions are thin wrappers around pydantic ``model_validate`` plus a
 handful of structural cross-checks that pydantic does not express naturally

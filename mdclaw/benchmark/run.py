@@ -28,8 +28,8 @@ from mdclaw.benchmark.models import (
 )
 
 
-_BENCHMARK_VERSION = "MDAgentBench-prep-v0.1"
-_DEFAULT_DATASET_DIR = "benchmarks/mdagentbench"
+_DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.1"
+_DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
 
 
 def _now_utc() -> str:
@@ -102,7 +102,25 @@ def _resolve_dataset_dir(dataset_dir: str = _DEFAULT_DATASET_DIR) -> Path:
     return Path(dataset_dir)
 
 
-def _list_pilot_task_ids(dataset_dir: str = _DEFAULT_DATASET_DIR) -> list[str]:
+def _load_dataset_metadata(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, Any]:
+    dataset = _resolve_dataset_dir(dataset_dir)
+    dataset_file = dataset / "dataset.json"
+    if not dataset_file.is_file():
+        return {}
+    try:
+        payload = json.loads(dataset_file.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _benchmark_version_for_dataset(dataset_dir: str = _DEFAULT_DATASET_DIR) -> str:
+    payload = _load_dataset_metadata(dataset_dir)
+    version = payload.get("benchmark_version")
+    return str(version) if version else _DEFAULT_BENCHMARK_VERSION
+
+
+def _list_task_ids(dataset_dir: str = _DEFAULT_DATASET_DIR) -> list[str]:
     """Discover task ids by reading the benchmark dataset metadata.
 
     This avoids hard-coding the task list in code so dataset edits do not
@@ -140,6 +158,7 @@ def init_benchmark_run(
     max_tokens_per_task: int = 0,
     max_simulation_ns: float = 0.0,
     task_ids: Optional[list[str]] = None,
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
 ) -> dict[str, Any]:
     """Create a benchmark run skeleton on disk and append a row to runs.jsonl.
 
@@ -156,8 +175,11 @@ def init_benchmark_run(
     ensure_directory(run_dir)
     ensure_directory(run_dir / "tasks")
 
+    dataset = _resolve_dataset_dir(dataset_dir)
+    benchmark_version = _benchmark_version_for_dataset(str(dataset))
+
     if task_ids is None:
-        task_ids = _list_pilot_task_ids()
+        task_ids = _list_task_ids(str(dataset))
 
     cfg = RunConfig(
         run_id=run_id,
@@ -177,9 +199,10 @@ def init_benchmark_run(
             max_simulation_ns=max_simulation_ns,
         ),
         task_ids=task_ids,
+        dataset_dir=str(dataset),
     )
     cfg_payload = cfg.model_dump()
-    cfg_payload["benchmark_version"] = _BENCHMARK_VERSION
+    cfg_payload["benchmark_version"] = benchmark_version
     _write_json(run_dir / "run_config.json", cfg_payload)
     _write_json(run_dir / "environment.json", _environment_record())
 
@@ -188,7 +211,7 @@ def init_benchmark_run(
         {
             "record_type": "run_init",
             "run_id": run_id,
-            "benchmark_version": _BENCHMARK_VERSION,
+            "benchmark_version": benchmark_version,
             "execution_mode": execution_mode,
             "judge_mode": judge_mode,
             "task_count": len(task_ids),
@@ -236,7 +259,7 @@ def prepare_benchmark_run(
     submission directory, while canonical ``task.json`` remains for the scorer.
     """
     if task_ids is None:
-        task_ids = _list_pilot_task_ids(dataset_dir)
+        task_ids = _list_task_ids(dataset_dir)
 
     init = init_benchmark_run(
         output_dir=output_dir,
@@ -257,6 +280,7 @@ def prepare_benchmark_run(
         max_tokens_per_task=max_tokens_per_task,
         max_simulation_ns=max_simulation_ns,
         task_ids=task_ids,
+        dataset_dir=dataset_dir,
     )
     if not init.get("success"):
         return init
@@ -381,7 +405,18 @@ def summarize_benchmark_run(
 
     lookup_dataset_dir = dataset_dir or cfg_payload.get("dataset_dir")
     if lookup_dataset_dir:
-        cfg_payload = {**cfg_payload, "dataset_dir": str(_resolve_dataset_dir(lookup_dataset_dir))}
+        cfg_payload = {
+            **cfg_payload,
+            "dataset_dir": str(_resolve_dataset_dir(lookup_dataset_dir)),
+        }
+    benchmark_version = str(
+        cfg_payload.get("benchmark_version")
+        or (
+            _benchmark_version_for_dataset(str(cfg_payload["dataset_dir"]))
+            if cfg_payload.get("dataset_dir")
+            else _DEFAULT_BENCHMARK_VERSION
+        )
+    )
 
     scores: list[dict[str, Any]] = []
     tasks: list[dict[str, Any]] = []
@@ -432,9 +467,9 @@ def summarize_benchmark_run(
         scores=aggregate["scores"],
         task_scores=aggregate["task_scores"],
         runtime=aggregate["runtime"],
+        benchmark_version=benchmark_version,
     )
     summary_payload = summary.model_dump()
-    summary_payload["benchmark_version"] = _BENCHMARK_VERSION
 
     summary_path = Path(output_file) if output_file else rd / "summary.json"
     _write_json(summary_path, summary_payload)
@@ -459,7 +494,7 @@ def summarize_benchmark_run(
 
 def score_benchmark_run(
     run_dir: str,
-    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    dataset_dir: Optional[str] = None,
     require_validation_success: bool = True,
     llm_judge_file: Optional[str] = None,
     summarize: bool = True,
@@ -474,11 +509,16 @@ def score_benchmark_run(
     except json.JSONDecodeError as exc:
         return {"success": False, "errors": [f"run_config.json invalid: {exc}"]}
 
-    dataset = _resolve_dataset_dir(dataset_dir)
+    selected_dataset_dir = (
+        dataset_dir
+        or cfg_payload.get("dataset_dir")
+        or _DEFAULT_DATASET_DIR
+    )
+    dataset = _resolve_dataset_dir(str(selected_dataset_dir))
     run_id = str(cfg_payload.get("run_id") or rd.name)
     task_ids = [str(t) for t in cfg_payload.get("task_ids", [])]
     if not task_ids:
-        task_ids = _list_pilot_task_ids(str(dataset))
+        task_ids = _list_task_ids(str(dataset))
 
     from mdclaw.benchmark import cli as benchmark_cli
 
@@ -541,18 +581,21 @@ def _lookup_task_contract(task_id: str, cfg_payload: dict[str, Any]
     """Return a minimal task contract for run-level aggregation.
 
     We need just ``primary_score`` and ``secondary_scores`` to apply the
-    in-scope axis filter. We try the canonical pilot path; if the task is
-    not found, we fall back to a permissive record (axis=None) so the run
-    still summarizes.
+    in-scope axis filter. We try the configured dataset and the built-in suite
+    paths; if the task is not found, we fall back to a permissive record
+    (axis=None) so the run still summarizes.
     """
     candidates = []
     if cfg_payload.get("dataset_dir"):
         dataset = _resolve_dataset_dir(str(cfg_payload["dataset_dir"]))
         candidates.append(dataset / "tasks" / task_id / "task.json")
     candidates.extend([
-        Path("benchmarks/mdagentbench/tasks") / task_id / "task.json",
+        Path("benchmarks/mdprepbench/tasks") / task_id / "task.json",
+        Path("benchmarks/mdstudybench/tasks") / task_id / "task.json",
         Path(__file__).resolve().parents[2]
-        / "benchmarks/mdagentbench/tasks" / task_id / "task.json",
+        / "benchmarks/mdprepbench/tasks" / task_id / "task.json",
+        Path(__file__).resolve().parents[2]
+        / "benchmarks/mdstudybench/tasks" / task_id / "task.json",
     ])
     for c in candidates:
         if c.is_file():

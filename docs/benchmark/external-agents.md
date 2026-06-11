@@ -1,12 +1,14 @@
 # External Agents And Programs
 
-MDAgentBench is an artifact-based benchmark contract. Your agent does not need
-to use MDClaw. It may use OpenMM scripts, Amber, GROMACS, MDCrow, another
-workflow manager, or a custom LLM runner upstream. For prep battery v0.1,
-however, a completed submission must export an OpenMM `system.xml` +
+MDPrepBench and MDStudyBench share an artifact-based benchmark contract. Your
+agent does not need to use MDClaw. It may use OpenMM scripts, Amber, GROMACS,
+MDCrow, another workflow manager, or a custom LLM runner upstream. For
+MDPrepBench v0.1, a completed submission must export an OpenMM `system.xml` +
 `topology.pdb` + `state.xml` bundle so the scorer can reload and rescan the
-system. The scorer only compares files under `submission/` against the
-canonical task contract and scorer-only truth files.
+system. MDStudyBench tasks instead require study evidence such as comparative
+trajectories, analysis metrics, methods drafts, provenance, and decision logs.
+The scorer only compares files under `submission/` against the canonical task
+contract and scorer-only truth files.
 
 ## What To Read
 
@@ -18,17 +20,24 @@ For external agents, first export the public package:
 
 ```bash
 mdclaw export_benchmark_public_package \
-  --dataset-dir benchmarks/mdagentbench \
-  --output-dir benchmark_public/mdagentbench
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_public/mdprepbench
+
+mdclaw export_benchmark_public_package \
+  --dataset-dir benchmarks/mdstudybench \
+  --output-dir benchmark_public/mdstudybench
 ```
 
-The evaluated agent should read only files from that public package:
+The evaluated agent should read only files from the selected public package:
 
-- `benchmark_public/mdagentbench/tasks/<task_id>/prompt.md`: plain-language
+- `benchmark_public/mdprepbench/tasks/<task_id>/prompt.md`: plain-language
   public prompt suitable for handing directly to an MD agent.
-- `benchmark_public/mdagentbench/tasks/<task_id>/submission_contract.json`:
+- `benchmark_public/mdprepbench/tasks/<task_id>/submission_contract.json`:
   public output contract containing required outputs, time limit, execution
   mode, and failure policy. It contains no scoring checks or held-back truth.
+
+Use the analogous `benchmark_public/mdstudybench/...` paths when running
+MDStudyBench tasks.
 
 A benchmark runner should pass those files plus the target submission directory
 to the agent. It must not silently add task-specific command-line options such
@@ -40,25 +49,25 @@ the evaluated agent; `harness_tasks.json` and `harness_instructions.json` are
 for validation/scoring only.
 
 Repository-local development may read the canonical prompt at
-`benchmarks/mdagentbench/tasks/<task_id>/prompt.md`, but do not hand the
-whole canonical task directory to the evaluated agent.
+`benchmarks/<suite>/tasks/<task_id>/prompt.md`, but do not hand the whole
+canonical task directory to the evaluated agent.
 
 Harness or evaluator code may also read:
 
-- `benchmarks/mdagentbench/dataset.json`: task list, benchmark version, and
+- `benchmarks/<suite>/dataset.json`: task list, benchmark version, and
   family metadata.
-- `benchmarks/mdagentbench/tasks/<task_id>/task.json`: runner/scorer contract,
+- `benchmarks/<suite>/tasks/<task_id>/task.json`: runner/scorer contract,
   scoring axes, required outputs, time limits, and deterministic checks. It is
   not a solution script, should not contain task-specific execution commands,
   and should not be given to the agent under test.
 
 Do not let the agent under test read:
 
-- `benchmarks/mdagentbench/tasks/<task_id>/truth/`: scorer-only answers. For
+- `benchmarks/<suite>/tasks/<task_id>/truth/`: scorer-only answers. For
   scientific-answer tasks, this contains the held-back experimental direction.
-- `benchmarks/mdagentbench/tasks/<task_id>/scorer/`: judge prompts and
+- `benchmarks/<suite>/tasks/<task_id>/scorer/`: judge prompts and
   evaluator material.
-- `benchmarks/mdagentbench/tasks/<task_id>/task.json`: scorer contract with
+- `benchmarks/<suite>/tasks/<task_id>/task.json`: scorer contract with
   deterministic checks and scorer-only reference paths.
 
 ## What To Submit
@@ -156,7 +165,7 @@ credit.
 ## MDCrow-Style File Registries
 
 MDCrow stores generated files in a checkpoint directory and tracks them through
-file IDs in `ckpt/paths_registry.json`. MDAgentBench does not need a
+file IDs in `ckpt/paths_registry.json`. The MD benchmark suites do not need a
 MDCrow-specific adapter if the final submission records the relevant files in
 the standard manifest.
 
@@ -192,8 +201,8 @@ target submission directory, for example:
 
 ```bash
 python run_agent.py \
-  --prompt-file benchmark_public/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/prompt.md \
-  --submission-contract benchmark_public/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/submission_contract.json \
+  --prompt-file benchmark_public/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/prompt.md \
+  --submission-contract benchmark_public/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/submission_contract.json \
   --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission
 ```
 
@@ -215,11 +224,11 @@ Validate and score:
 
 ```bash
 mdclaw validate_benchmark_submission \
-  --task-file benchmarks/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
   --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission
 
 mdclaw score_benchmark_submission \
-  --task-file benchmarks/mdagentbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
   --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission \
   --run-id 20260516_external_prep_p11 \
   --output-file benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/score.json
@@ -260,11 +269,12 @@ and matching metrics are required.
 
 ## Schemas
 
-Machine-readable schemas are checked in under
-`benchmarks/mdagentbench/schemas/`:
+Machine-readable schemas are checked in under each suite, for example
+`benchmarks/mdprepbench/schemas/` and `benchmarks/mdstudybench/schemas/`:
 
 - `task.schema.json`: evaluator-side task contract.
 - `submission_manifest.schema.json`: `submission/manifest.json` shape.
 - `score.schema.json`: scorer output shape.
 
-Use these schemas when building runners for other agents or workflow systems.
+Use the schemas from the same suite as the task when building runners for other
+agents or workflow systems.

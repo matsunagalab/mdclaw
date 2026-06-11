@@ -225,8 +225,8 @@ skill examples.
 
 ## `benchmark`
 
-- `list_benchmark_tasks(...)`: list MDAgentBench tasks from
-  `benchmarks/mdagentbench/dataset.json`, including family and intent summary.
+- `list_benchmark_tasks(...)`: list MDPrepBench or MDStudyBench tasks from a
+  selected dataset directory, including family and intent summary.
 - `prepare_benchmark_run(...)`: create a run directory, export an agent-safe
   public task package, write per-task prompt/submission instructions for the
   evaluated agent, and write separate harness scoring metadata.
@@ -251,7 +251,7 @@ skill examples.
 
 ## `benchmark/`
 
-- `list_benchmark_tasks(...)`: list MDAgentBench tasks, families, scoring axes,
+- `list_benchmark_tasks(...)`: list benchmark tasks, families, scoring axes,
   modes, and short intent summaries.
 - `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`: validate
   task contracts and submitted artifacts.

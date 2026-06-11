@@ -4,7 +4,7 @@
 
 ### Benchmark Integrity Rollout
 
-MDAgentBench v1.0.x keeps task `integrity_policy` values in `warn` mode while
+MDPrepBench currently keeps some task `integrity_policy` values in `warn` mode while
 external-agent submissions are still being calibrated. The intent is not to
 leave warn mode indefinitely:
 

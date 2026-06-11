@@ -14,11 +14,12 @@ from mdclaw.benchmark import cli
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
+STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 
 
 def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -53,7 +54,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
 
 
 def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -77,7 +78,7 @@ def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
 
 
 def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -105,7 +106,7 @@ def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
 def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
     tmp_path: Path,
 ):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -147,7 +148,7 @@ def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
 
 
 def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -207,7 +208,7 @@ def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
 def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
     tmp_path: Path,
 ):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -238,7 +239,7 @@ def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
 def test_export_public_package_exposes_p25_net_neutrality_contract(
     tmp_path: Path,
 ):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -264,7 +265,7 @@ def test_export_public_package_exposes_p25_net_neutrality_contract(
 def test_export_public_package_refuses_to_overwrite_unmarked_directory(
     tmp_path: Path,
 ):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     existing_file = out_dir / "keep.txt"
     out_dir.mkdir()
     existing_file.write_text("do not delete\n")
@@ -279,7 +280,7 @@ def test_export_public_package_refuses_to_overwrite_unmarked_directory(
 
 
 def test_export_public_package_refreshes_own_export(tmp_path: Path):
-    out_dir = tmp_path / "public_mdagentbench"
+    out_dir = tmp_path / "public_mdprepbench"
     first = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
         output_dir=str(out_dir),
@@ -295,3 +296,37 @@ def test_export_public_package_refreshes_own_export(tmp_path: Path):
 
     assert second["success"], second
     assert not stale_file.exists()
+
+
+def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
+    out_dir = tmp_path / "public_mdstudybench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(STUDY_DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+
+    assert result["success"], result
+    dataset = json.loads((out_dir / "dataset.json").read_text())
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.1"
+    assert result["task_count"] == 3
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "S01_stability_t4l_l99a"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    assert contract["primary_score"] == "scientific_answer"
+    assert contract["required_outputs"] == [
+        "manifest.json",
+        "metrics.json",
+        "provenance.json",
+        "evidence_report.json",
+    ]
+    assert contract["manifest_contract"][
+        "required_outputs_for_completed_submission"
+    ] == contract["required_outputs"]
+    assert "topology_output_shape" not in contract["manifest_contract"]
+    assert "minimized_structure.pdb" not in contract["required_outputs"]

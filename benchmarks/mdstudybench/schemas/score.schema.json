@@ -1,0 +1,245 @@
+{
+  "$defs": {
+    "CheckResult": {
+      "properties": {
+        "check_id": {
+          "title": "Check Id",
+          "type": "string"
+        },
+        "check_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Check Type"
+        },
+        "message": {
+          "default": "",
+          "title": "Message",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "score": {
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Score",
+          "type": "number"
+        },
+        "weight": {
+          "default": 1.0,
+          "maximum": 1.0,
+          "minimum": 0.0,
+          "title": "Weight",
+          "type": "number"
+        }
+      },
+      "required": [
+        "check_id",
+        "passed",
+        "score"
+      ],
+      "title": "CheckResult",
+      "type": "object"
+    },
+    "LLMJudgeResult": {
+      "properties": {
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "judge_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Judge Model"
+        },
+        "prompt_hash": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Prompt Hash"
+        },
+        "raw_response_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Raw Response File"
+        },
+        "rubric_version": {
+          "default": "1.0",
+          "title": "Rubric Version",
+          "type": "string"
+        },
+        "scores": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Scores",
+          "type": "object"
+        },
+        "temperature": {
+          "default": 0.0,
+          "title": "Temperature",
+          "type": "number"
+        },
+        "violations": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Violations",
+          "type": "array"
+        }
+      },
+      "title": "LLMJudgeResult",
+      "type": "object"
+    },
+    "RuntimeRecord": {
+      "properties": {
+        "gpu_hours": {
+          "default": 0.0,
+          "title": "Gpu Hours",
+          "type": "number"
+        },
+        "tokens": {
+          "default": 0,
+          "title": "Tokens",
+          "type": "integer"
+        },
+        "walltime_minutes": {
+          "default": 0.0,
+          "title": "Walltime Minutes",
+          "type": "number"
+        }
+      },
+      "title": "RuntimeRecord",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "deterministic_checks": {
+      "items": {
+        "$ref": "#/$defs/CheckResult"
+      },
+      "title": "Deterministic Checks",
+      "type": "array"
+    },
+    "errors": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Errors",
+      "type": "array"
+    },
+    "ground_truth_checks": {
+      "items": {
+        "$ref": "#/$defs/CheckResult"
+      },
+      "title": "Ground Truth Checks",
+      "type": "array"
+    },
+    "integrity_warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Integrity Warnings",
+      "type": "array"
+    },
+    "llm_judge": {
+      "$ref": "#/$defs/LLMJudgeResult"
+    },
+    "primary_score": {
+      "enum": [
+        "preparation",
+        "execution",
+        "scientific_answer",
+        "evidence_communication"
+      ],
+      "title": "Primary Score",
+      "type": "string"
+    },
+    "run_id": {
+      "default": "",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/RuntimeRecord"
+    },
+    "schema_version": {
+      "const": "1.0",
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "scores": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Scores",
+      "type": "object"
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "partial",
+        "failed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "task_id": {
+      "title": "Task Id",
+      "type": "string"
+    },
+    "weighted_total": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Weighted Total",
+      "type": "number"
+    }
+  },
+  "required": [
+    "task_id",
+    "primary_score",
+    "status",
+    "weighted_total"
+  ],
+  "title": "Score",
+  "type": "object"
+}

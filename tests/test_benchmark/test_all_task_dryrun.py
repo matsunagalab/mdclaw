@@ -17,7 +17,7 @@ from tests.test_benchmark import _fake_submissions
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DATASET_DIR = REPO_ROOT / "benchmarks" / "mdagentbench"
+DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 
 
 def _score_fake_run(tmp_path: Path, mode: str) -> tuple[dict, dict[str, dict]]:

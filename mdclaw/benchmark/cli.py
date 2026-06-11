@@ -1,4 +1,4 @@
-"""Top-level CLI tool functions for MDAgentBench v1.0.
+"""Top-level CLI tool functions for the MD benchmark suites.
 
 Each function is a thin orchestration layer over ``models``, ``validation``,
 ``scoring``, ``judge``, and ``run``. Every function returns a JSON-serializable
@@ -22,9 +22,10 @@ from mdclaw.benchmark.models import (
     Task,
 )
 
-_DEFAULT_DATASET_DIR = "benchmarks/mdagentbench"
-_PUBLIC_EXPORT_MARKER = ".mdagentbench-public-export.json"
-_PUBLIC_EXPORT_KIND = "mdagentbench_public_export"
+_DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.1"
+_DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
+_PUBLIC_EXPORT_MARKER = ".md-benchmark-public-export.json"
+_PUBLIC_EXPORT_KIND = "md_benchmark_public_export"
 
 
 def _has_valid_public_export_marker(path: Path) -> bool:
@@ -140,11 +141,17 @@ def _public_candidate_selection_requirements(task: Task) -> list[dict[str, Any]]
     return requirements
 
 
-def _manifest_contract() -> dict[str, Any]:
+def _manifest_contract(task: Task) -> dict[str, Any]:
     """Return the public manifest rules most often missed by agents."""
-    return {
+    contract: dict[str, Any] = {
         "allowed_statuses": ["completed", "partial", "failed", "blocked"],
         "completed_status": "completed",
+        "required_outputs_for_completed_submission": list(task.required_outputs),
+    }
+    if task.primary_score != "preparation":
+        return contract
+
+    contract.update({
         "topology_output_shape": "list[str]",
         "required_topology_backend": "openmm",
         "openmm_topology_example": [
@@ -160,7 +167,8 @@ def _manifest_contract() -> dict[str, Any]:
         "recommended_optional_outputs": [
             "outputs.source_selection",
         ],
-    }
+    })
+    return contract
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +215,9 @@ def list_benchmark_tasks(dataset_dir: str = _DEFAULT_DATASET_DIR) -> dict[str, A
 
     return {
         "success": True,
-        "benchmark_version": dataset.get("benchmark_version", "MDAgentBench-prep-v0.1"),
+        "benchmark_version": dataset.get(
+            "benchmark_version", _DEFAULT_BENCHMARK_VERSION
+        ),
         "schema_version": dataset.get("schema_version", "1.0"),
         "task_count": len(tasks_meta),
         "families": dataset.get("families", {}),
@@ -408,7 +418,7 @@ def export_benchmark_public_package(
     dataset_dir: str = _DEFAULT_DATASET_DIR,
     output_dir: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Export the agent-visible MDAgentBench package.
+    """Export the agent-visible benchmark package.
 
     The canonical dataset layout keeps ``prompt.md``, ``task.json``, and
     scorer-only ``truth/`` files next to each other for repository maintenance.
@@ -487,7 +497,7 @@ def export_benchmark_public_package(
             contract = {
                 "schema_version": "1.0",
                 "benchmark_version": dataset.get(
-                    "benchmark_version", "MDAgentBench-prep-v0.1"
+                    "benchmark_version", _DEFAULT_BENCHMARK_VERSION
                 ),
                 "task_id": task.task_id,
                 "category": task.category,
@@ -504,7 +514,7 @@ def export_benchmark_public_package(
                 "candidate_selection_requirements": (
                     _public_candidate_selection_requirements(task)
                 ),
-                "manifest_contract": _manifest_contract(),
+                "manifest_contract": _manifest_contract(task),
                 "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",
             }
             contract_path = public_task_dir / "submission_contract.json"
@@ -518,15 +528,15 @@ def export_benchmark_public_package(
 
         readme = staging / "README.md"
         readme.write_text(
-            "# MDAgentBench Public Package\n\n"
+            "# MD Benchmark Public Package\n\n"
             "This directory is safe to give to benchmark agents. It contains task "
             "prompts and submission-facing contracts only.\n\n"
             "Agents should read `tasks/<task_id>/prompt.md`, write a `submission/` "
             "directory matching `tasks/<task_id>/submission_contract.json`, and "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
             "files from the canonical repository tree. The contract lists required "
-            "`metrics.json` paths and manifest rules such as `status=\"completed\"` "
-            "and `outputs.topology` as a list of artifact paths.\n\n"
+            "outputs, metric requirements, and manifest rules such as "
+            "`status=\"completed\"`.\n\n"
             "Score submissions with the MDClaw benchmark scorer from the canonical "
             "dataset checkout.\n"
         )
@@ -538,7 +548,7 @@ def export_benchmark_public_package(
                     "kind": _PUBLIC_EXPORT_KIND,
                     "dataset_dir": str(source),
                     "benchmark_version": dataset.get(
-                        "benchmark_version", "MDAgentBench-prep-v0.1"
+                        "benchmark_version", _DEFAULT_BENCHMARK_VERSION
                     ),
                 },
                 indent=2,

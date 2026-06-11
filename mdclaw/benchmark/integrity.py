@@ -1,4 +1,4 @@
-"""Integrity checks for MDAgentBench v1.0 submissions.
+"""Integrity checks for MD benchmark submissions.
 
 These functions are the difference between v0.1 (JSON-trust) and v1.0
 (re-verify): they re-hash claimed files, re-load trajectories, and check

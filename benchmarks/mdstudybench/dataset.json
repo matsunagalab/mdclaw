@@ -1,0 +1,52 @@
+{
+  "agent_independent": true,
+  "benchmark_type": "artifact_based_agent_benchmark",
+  "benchmark_version": "MDStudyBench-v0.1",
+  "evaluation_unit": "submission_artifacts",
+  "families": {
+    "scientific_answer_battery": {
+      "display_name": "Scientific Answer Battery",
+      "intent": "Evaluate whether an agent can plan and execute small comparative MD studies, extract quantitative evidence, and answer a scientific question with calibrated confidence.",
+      "score_axis": "scientific_answer",
+      "task_ids": [
+        "S01_stability_t4l_l99a",
+        "S02_ppi_hotspot_barnase_d39a"
+      ]
+    },
+    "study_evidence_bundle": {
+      "display_name": "Study Evidence Bundle",
+      "intent": "Evaluate whether an agent can package an auditable MD study plan, methods draft, provenance, decision log, and evidence report.",
+      "score_axis": "evidence_communication",
+      "task_ids": [
+        "S03_t4l_wt_vs_l99a_methods"
+      ]
+    }
+  },
+  "notes": [
+    "Study-level suite in the MDAgentBench benchmark family.",
+    "Tasks focus on scientific question answering and auditable study bundles, not system preparation alone.",
+    "Preparation-only workflow tasks live in MDPrepBench."
+  ],
+  "public_private_split": {
+    "private_to_harness_scorer": [
+      "tasks/<task_id>/task.json"
+    ],
+    "private_to_scorer": [
+      "tasks/<task_id>/truth/",
+      "tasks/<task_id>/scorer/"
+    ],
+    "public": [
+      "dataset.json",
+      "tasks/<task_id>/prompt.md",
+      "tasks/<task_id>/submission_contract.json"
+    ]
+  },
+  "released": "2026-06-10",
+  "schema_version": "1.0",
+  "task_count": 3,
+  "task_ids": [
+    "S01_stability_t4l_l99a",
+    "S02_ppi_hotspot_barnase_d39a",
+    "S03_t4l_wt_vs_l99a_methods"
+  ]
+}
