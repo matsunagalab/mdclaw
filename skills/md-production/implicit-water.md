@@ -102,12 +102,20 @@ Radii must be between 1 and 2 Angstroms for neck lookup
 ```
 
 Do not retry the same prod command with identical parameters. Create a new
-`eq` node from the same `topo` parent and run both equilibration and production
-with `OBC2`:
+`min` node from the same `topo` parent, then a new `eq` node from that `min`
+node, and run both equilibration and production with `OBC2`:
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type eq \
+mdclaw create_node --job-dir <job_dir> --node-type min \
   --parent-node-ids topo_001 \
+  --label "min_OBC2" \
+  --conditions '{"max_iterations": 5000, "implicit_solvent": "OBC2"}'
+
+mdclaw --job-dir <job_dir> --node-id min_002 run_minimization \
+  --implicit-solvent OBC2
+
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids min_002 \
   --label "300K_OBC2" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 0, "implicit_solvent": "OBC2"}'
 

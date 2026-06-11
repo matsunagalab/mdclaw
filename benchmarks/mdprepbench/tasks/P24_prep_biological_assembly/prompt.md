@@ -18,7 +18,7 @@ Your submission directory must contain:
 - `minimized_structure.pdb`
 - `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short minimization or OpenMM energy check and record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short `mdclaw run_minimization` min-node step or an equivalent OpenMM minimization/finite-energy check, then record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
 
 For machine-readable scoring, record `preparation.source_pdb_id = "1STP"`, `preparation.assembly_id = "1"`, and `preparation.assembly_chain_identity_map` in `metrics.json`. The identity map should cover generated output chains and include `source_pdb_id`, `assembly_id`, `source_auth_asym_id`, `source_label_asym_id` or `source_subchain_id`, `operator_id`, `output_chain_id`, and `naming_policy`. The submitted structure should represent assembly 1 rather than the asymmetric unit alone.
 

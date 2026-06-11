@@ -1,6 +1,6 @@
 """Node-based job graph management (schema v3).
 
-Each pipeline step (prep, solv, topo, eq, prod) is a *node* with its own
+Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
 directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
 relationships form a DAG.  ``progress.json`` is a thin index of nodes.
 
@@ -51,7 +51,9 @@ def _atomic_write_json(path: Path, data: dict) -> None:
 
 # ── Constants ──────────────────────────────────────────────────────────────
 
-NODE_TYPES = frozenset({"source", "prep", "solv", "topo", "eq", "prod", "analyze"})
+NODE_TYPES = frozenset({
+    "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze",
+})
 NODE_STATUSES = frozenset({"pending", "queued", "running", "completed", "failed"})
 NODE_STATUS_ALIASES = {
     "submitted": "queued",
@@ -1689,11 +1691,15 @@ _ALLOWED_PARENT_TYPES = {
     # explicit-water topo descends from solv; implicit topo skips solv and
     # descends directly from prep.
     "topo": frozenset({"solv", "prep"}),
-    # eq → eq chaining lets users compose multi-stage equilibration
-    # (e.g. NPT → NVT → NPT) with one ensemble per node and per-stage
-    # restraint settings. The auto-resolver surfaces the parent eq's
-    # state.xml as the restart source.
-    "eq": frozenset({"topo", "eq"}),
+    # min owns force-field-level coordinate relaxation after topology
+    # generation. It writes a portable state artifact that eq can resume
+    # from without embedding minimization work in the eq node.
+    "min": frozenset({"topo", "min"}),
+    # New equilibration nodes should parent from min. topo remains accepted
+    # as a compatibility fallback for older DAGs; eq → eq chaining lets users
+    # compose multi-stage equilibration (e.g. NPT → NVT → NPT) with one
+    # ensemble per node and per-stage restraint settings.
+    "eq": frozenset({"min", "topo", "eq"}),
     "prod": frozenset({"eq", "prod"}),
     "analyze": frozenset({"prod", "analyze"}),
 }
@@ -2221,12 +2227,12 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     Topo nodes built via ``build_amber_system`` / ``build_openmm_system``
     emit a ``system_xml`` + ``topology_pdb`` + ``state_xml`` triple. The
     XML triple is the only supported topology contract on the run side —
-    eq / prod / analyze refuse to consume any other artifact set.
+    min / eq / prod / analyze refuse to consume any other artifact set.
 
     **Atomicity guarantee**: all triple components must come from the
     same topo node. We never fall back to an older topo ancestor for
     ``topology_pdb`` / ``state_xml``, because mixing artifacts across
-    topo nodes would point eq/prod at a different physical System.
+    topo nodes would point min/eq/prod at a different physical System.
     Missing components on the chosen topo node surface as
     ``input_resolution_error`` rather than a silent walk upward.
     """
@@ -2262,7 +2268,7 @@ def _resolve_topology_files(job_dir: str, node_id: str) -> dict:
     # Surface build-time choices the run side needs to validate against
     # runtime kwargs. ``implicit_solvent`` is the load-bearing one
     # (mismatch silently runs the wrong GB model); ``hmr`` and
-    # ``solvent_type`` are along for the ride so eq/prod can produce
+    # ``solvent_type`` are along for the ride so min/eq/prod can produce
     # cleaner diagnostics without re-deserializing system.xml. Missing
     # metadata keys (hand-built node.json) keep the value as ``None`` so
     # downstream guards can skip the check rather than blocking on noise.
@@ -2337,10 +2343,10 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
 def _select_md_restart_ancestor(
     job_dir: str, node_id: str,
 ) -> dict:
-    """Walk parents in BFS order and pick the first prod/eq ancestor that
+    """Walk parents in BFS order and pick the first min/prod/eq ancestor that
     *should* be the restart source for *node_id*.
 
-    For each prod/eq ancestor visited, three outcomes are possible:
+    For each min/prod/eq ancestor visited, three outcomes are possible:
 
     1. ``state`` is present — pick it (preferred; XML is cross-node
        portable). Stop the walk.
@@ -2361,10 +2367,10 @@ def _select_md_restart_ancestor(
     Returns one of:
       - ``{"restart_from": <abs path>, "restart_from_node_id": <str>}``
         on success.
-      - ``{"restart_from_error": <message>}`` when a completed prod/eq
+      - ``{"restart_from_error": <message>}`` when a completed min/prod/eq
         ancestor carries neither artifact.
-      - ``{}`` when no prod/eq ancestor exists at all (the run side
-        falls back to the topo state.xml for fresh eq runs).
+      - ``{}`` when no min/prod/eq ancestor exists at all (the run side
+        falls back to the topo state.xml for legacy fresh eq runs).
     """
     jd = Path(job_dir)
     progress = _load_progress_v3(jd / "progress.json")
@@ -2374,7 +2380,8 @@ def _select_md_restart_ancestor(
 
     for nid in _iter_ancestor_ids(nodes_index, node_id):
         info = nodes_index.get(nid, {})
-        if info.get("type") in ("prod", "eq"):
+        node_type = info.get("type")
+        if node_type in ("min", "prod", "eq"):
             state = _read_artifact_from_node(job_dir, nid, "state")
             checkpoint = (
                 _read_artifact_from_node(job_dir, nid, "checkpoint")
@@ -2384,11 +2391,13 @@ def _select_md_restart_ancestor(
                 return {
                     "restart_from": state,
                     "restart_from_node_id": nid,
+                    "restart_from_node_type": node_type,
                 }
             if checkpoint is not None:
                 return {
                     "restart_from": checkpoint,
                     "restart_from_node_id": nid,
+                    "restart_from_node_type": node_type,
                 }
             # Neither artifact. If the ancestor is completed, refuse
             # to skip it — restarting from an older ancestor would
@@ -2399,7 +2408,7 @@ def _select_md_restart_ancestor(
             if info.get("status") == "completed":
                 return {
                     "restart_from_error": (
-                        f"Nearest completed {info.get('type')} ancestor "
+                        f"Nearest completed {node_type} ancestor "
                         f"'{nid}' has neither 'state' nor 'checkpoint'; "
                         f"refusing to skip it and restart from an older "
                         f"ancestor. Re-run that node to produce a "
@@ -2415,15 +2424,15 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
 
     Search order: explicit ``continue_from`` ancestor first, then walk
     parents in BFS order. For each ancestor whose ``node_type`` is
-    ``"prod"`` or ``"eq"``, prefer the portable ``state`` (XML) artifact
-    and fall back to ``checkpoint`` (binary, same-GPU bit-exact replay)
-    *on that same ancestor* before considering older ancestors. Two
-    invariants:
+    ``"min"``, ``"prod"``, or ``"eq"``, prefer the portable ``state``
+    (XML) artifact and fall back to ``checkpoint`` (binary, same-GPU
+    bit-exact replay) *on that same ancestor* before considering older
+    ancestors. Two invariants:
 
-    1. A near prod ancestor that only carries a checkpoint wins against
+    1. A near prod/eq/min ancestor that only carries a checkpoint wins against
        a far ancestor that has a state — the alternative silently rolls
-       the run back across an unsaved prod step.
-    2. A *completed* prod/eq ancestor that carries neither artifact
+       the run back across an unsaved node step.
+    2. A *completed* min/prod/eq ancestor that carries neither artifact
        blocks resolution outright (``restart_from_error``). Skipping
        past it would lose whatever the user's tool produced on that
        node; the right answer is to re-run that node, not pretend it
@@ -2435,12 +2444,13 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
         ``metadata.final_step`` from that same node id so the
         cumulative step counter matches the loaded artifact.
       - ``restart_from_error`` (str) for ``continue_from`` that names a
-        node without either artifact, or for a completed prod/eq
+        node without either artifact, or for a completed min/prod/eq
         ancestor that carries neither artifact.
-      - empty when no prod/eq ancestor exists at all (fresh eq run).
+      - empty when no min/prod/eq ancestor exists at all (legacy fresh
+        eq run).
 
-    Both eq and prod nodes use the same resolver — eq → eq chaining
-    works the same way as prod → prod extension.
+    Eq and prod nodes use the same resolver — min → eq, eq → eq, and
+    prod → prod all share the same ancestor-selection invariants.
     """
     result: dict = {}
     continued_from = _read_continued_from(job_dir, node_id)
@@ -2451,12 +2461,19 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
         if src is not None:
             result["restart_from"] = src
             result["restart_from_node_id"] = continued_from
+            try:
+                node = read_node(job_dir, continued_from)
+                result["restart_from_node_type"] = (
+                    node.get("type") or node.get("node_type")
+                )
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                pass
         else:
             result["restart_from_error"] = (
                 f"continue_from='{continued_from}' but that node has neither a "
                 f"'state' nor 'checkpoint' artifact — extension cannot start. "
                 f"Wait for that node to finish (or fix the DAG to point at a "
-                f"completed eq/prod ancestor)."
+                f"completed min/eq/prod ancestor)."
             )
         return result
 
@@ -2499,9 +2516,12 @@ def resolve_node_inputs(
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_chemistry`` / ``metal_params`` from
                 nearest ``prep`` ancestor
+    - ``min``:  same topology artifacts as ``eq``; writes a minimized
+                portable state for downstream equilibration
     - ``eq``:   ``system_xml`` + ``topology_pdb`` + ``state_xml`` from nearest
                 ``topo`` ancestor (XML triple is the only supported
-                topology contract on the run side)
+                topology contract on the run side), plus ``state`` from a
+                nearest ``min`` or prior ``eq`` / ``prod`` ancestor when present
     - ``prod``: same topology artifacts as ``eq``;
                 ``checkpoint`` / ``state`` from nearest ``eq`` ancestor (parent)
     """
@@ -2582,6 +2602,14 @@ def resolve_node_inputs(
     elif node_type == "topo":
         result.update(_resolve_topo_inputs(job_dir, node_id))
 
+    elif node_type == "min":
+        result.update(_resolve_topology_files(job_dir, node_id))
+        topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
+        if topo_anc is not None:
+            is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
+            if isinstance(is_membrane, bool):
+                result["is_membrane"] = is_membrane
+
     elif node_type == "eq":
         result.update(_resolve_topology_files(job_dir, node_id))
         topo_anc = _find_ancestor_node_id(job_dir, node_id, "topo")
@@ -2589,11 +2617,11 @@ def resolve_node_inputs(
             is_membrane = _read_metadata_field(job_dir, topo_anc, "is_membrane")
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
-        # eq → eq chaining: when an eq ancestor exists, surface its state
-        # XML so the new eq node can resume from it (e.g. NPT → NVT → NPT
-        # multi-stage equilibration). First eq node from topo has no
-        # eq/prod ancestor and runs directly from the topo state.xml via
-        # the XML topology inputs.
+        # min → eq is the standard path: surface the min node's state XML so
+        # equilibration starts from explicitly minimized coordinates. eq → eq
+        # chaining continues to surface the parent eq state for multi-stage
+        # equilibration. A legacy first eq node from topo has no restart
+        # ancestor and runs directly from the topo state.xml.
         result.update(_resolve_md_restart(job_dir, node_id))
 
     elif node_type == "prod":
@@ -3040,7 +3068,7 @@ def read_ancestor_final_step(
     Returns ``None`` when:
     - the chosen ancestor has no ``final_step`` metadata (a node whose
       run didn't write it yet);
-    - no prod / eq ancestor exists at all;
+    - no min / prod / eq ancestor exists at all;
     - the caller explicitly asserted "external restart file" by passing
       ``restart_node_id=None``.
     """

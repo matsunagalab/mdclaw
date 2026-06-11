@@ -98,6 +98,10 @@ class TestImportServers:
 
         assert "inspect_openmm_platforms" in TOOLS
         assert callable(TOOLS["inspect_openmm_platforms"])
+        assert "export_state_pdb" in TOOLS
+        assert callable(TOOLS["export_state_pdb"])
+        assert "run_minimization" in TOOLS
+        assert callable(TOOLS["run_minimization"])
 
     def test_node_server_exposes_update_node_status(self):
         """Batch workflows depend on `mdclaw update_node_status` being a

@@ -141,9 +141,19 @@ skill examples.
 
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
+- `export_state_pdb(...)`: export a PDB by combining atom/residue records from
+  `topology.pdb` with positions from `state.xml`. Useful for report artifacts
+  and MDPrepBench `minimized_structure.pdb` submissions.
+- `run_minimization(...)`: standalone post-topology minimization. In node mode
+  topology inputs resolve from the `topo` ancestor, and the `min` node records
+  `state`, `minimized_structure`, and `minimization_report` artifacts for
+  downstream `eq` nodes.
 - `run_equilibration(...)`: restrained equilibration with an NVT heating stage
   and optional NPT density stage. In node mode topology inputs resolve from the
-  `topo` ancestor, and eq-chain restarts resolve from an eq/prod ancestor.
+  `topo` ancestor. New DAGs should parent `eq` from `min`; the minimized state
+  is then auto-resolved and coordinate minimization is skipped while low-
+  temperature warmup remains in eq. Eq-chain restarts resolve from eq/prod
+  ancestors.
   Agents should prefer `nvt_time_ns` / `npt_time_ns` (CLI:
   `--nvt-time-ns` / `--npt-time-ns`) for user-facing duration requests;
   explicit `nvt_steps` / `npt_steps` remain available for low-level

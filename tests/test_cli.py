@@ -189,6 +189,7 @@ class TestArgparseConstruction:
             "create_mutated_structure",
             "phosphorylate_residues",
             "prepare_modified_nucleic",
+            "run_minimization",
             "analyze_rmsf",
             "analyze_contact_frequency",
         }
@@ -656,6 +657,34 @@ class TestHPCParameters:
             "--topology-pdb-file", "sys.topology.pdb",
         ])
         assert args_default.restart_from is None
+
+    def test_minimization_tool_flags(self):
+        """run_minimization is a first-class workflow tool."""
+        from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_minimization",
+            "--system-xml-file", "sys.system.xml",
+            "--topology-pdb-file", "sys.topology.pdb",
+            "--state-xml-file", "sys.state.xml",
+            "--max-iterations", "10",
+            "--restraint-atoms", "heavy",
+        ])
+        assert args.max_iterations == 10
+        assert args.restraint_atoms == "heavy"
+
+        payload = _tool_list_json(tools)
+        run_min = next(
+            tool for tool in payload["tools"]
+            if tool["name"] == "run_minimization"
+        )
+        flags = {param["cli_flag"] for param in run_min["parameters"]}
+        assert "--max-iterations" in flags
+        assert "--restraint-atoms" in flags
+        assert "--restraint-force-constant" in flags
 
     def test_equilibration_time_flags(self):
         """run_equilibration exposes duration flags so agents do not

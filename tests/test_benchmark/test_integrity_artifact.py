@@ -356,7 +356,7 @@ def test_manifest_path_safety_recurses_nested_outputs(tmp_path: Path):
 def test_provenance_execution_evidence_requires_stage_log():
     warnings = integrity.check_provenance_execution_evidence(
         {"scripts": [{"path": "make_fake.py"}]},
-        required_stages=["source", "prep", "topo", "minimization"],
+        required_stages=["source", "prep", "topo", "min"],
         min_command_count=4,
     )
 
@@ -370,13 +370,32 @@ def test_provenance_execution_evidence_passes_stage_log():
             {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
             {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
             {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
-            {"stage": "minimization", "command": "mdclaw minimize", "exit_code": 0},
+            {"stage": "min", "command": "mdclaw run_minimization", "exit_code": 0},
         ],
     }
 
     warnings = integrity.check_provenance_execution_evidence(
         provenance,
-        required_stages=["source", "prep", "topo", "minimization"],
+        required_stages=["source", "prep", "topo", "min"],
+        min_command_count=4,
+    )
+
+    assert warnings == []
+
+
+def test_provenance_execution_evidence_accepts_legacy_minimization_stage():
+    provenance = {
+        "command_log": [
+            {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
+            {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
+            {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
+            {"stage": "minimization", "command": "mdclaw run_minimization", "exit_code": 0},
+        ],
+    }
+
+    warnings = integrity.check_provenance_execution_evidence(
+        provenance,
+        required_stages=["source", "prep", "topo", "min"],
         min_command_count=4,
     )
 

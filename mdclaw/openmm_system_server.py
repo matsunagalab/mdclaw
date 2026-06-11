@@ -7,8 +7,8 @@ catalog), ``build_openmm_system`` is the research-mode escape hatch: the
 user supplies a list of OpenMM ``ForceField`` XML files (e.g.
 ``GB99dms.xml`` from the Greener group) together with optional ligand
 molecules, and the tool emits the same ``system.xml + topology.pdb +
-state.xml`` artifact triple so eq/prod can consume the result through the
-same DAG resolver, plus a minimization report for benchmark evidence.
+state.xml`` artifact triple so min/eq/prod can consume the result through
+the same DAG resolver, plus a minimization report for benchmark evidence.
 
 The tool is intentionally permissive — there is no FF×water guardrail
 matrix here, because by definition the user is bringing their own XML
@@ -213,11 +213,11 @@ def build_openmm_system(
         constraints: ``"HBonds"`` (default) / ``"AllBonds"`` / ``"None"``.
         rigid_water: Pass-through to ``ForceField.createSystem``.
         hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
-             ``system.xml`` so a downstream ``run_equilibration`` /
-             ``run_production`` invocation with the default ``hmr=True``
+             ``system.xml`` so downstream ``run_minimization`` /
+             ``run_equilibration`` / ``run_production`` invocations with the default ``hmr=True``
              does not trip the modern-system contract check. Defaults
              match ``build_amber_system`` so a ``build_openmm_system →
-             run_equilibration → run_production`` chain works without
+             run_minimization → run_equilibration → run_production`` chain works without
              extra kwargs. Pass ``hmr=False`` to keep standard hydrogen
              masses (use a 2 fs timestep on the run_* side).
         implicit_solvent: Canonical GB model name (case-insensitive;
@@ -534,7 +534,7 @@ def build_openmm_system(
         create_system_kwargs["nonbondedCutoff"] = nonbonded_cutoff_nm * unit.nanometer
     # HMR is a build-time decision: bake ``hydrogenMass=4 amu`` into the
     # System so the run-side XML system validator accepts the default
-    # ``hmr=True`` from run_equilibration / run_production.
+    # ``hmr=True`` from run_minimization / run_equilibration / run_production.
     if hmr:
         create_system_kwargs["hydrogenMass"] = 4.0 * unit.amu
 
@@ -732,7 +732,7 @@ def build_openmm_system(
             "state_xml": f"artifacts/{output_name}.state.xml",
             "minimization_report": f"artifacts/{output_name}.minimization_report.json",
         }
-        # The eq/prod resolver reads ``metadata.implicit_solvent``,
+        # The min/eq/prod resolver reads ``metadata.implicit_solvent``,
         # ``metadata.solvent_type``, and ``metadata.hmr`` so the run-side
         # topology guard can match build-time choices to runtime kwargs.
         # Mirror of ``build_amber_system``'s metadata stamp so curated

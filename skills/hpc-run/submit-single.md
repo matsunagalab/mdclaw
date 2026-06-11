@@ -5,7 +5,18 @@ Use `submit_job` when one DAG node maps to one SLURM job.
 ```bash
 JD=$(realpath job_4m3j_B)
 
-mdclaw create_node --job-dir "$JD" --node-type eq --parent-node-ids topo_001 \
+mdclaw create_node --job-dir "$JD" --node-type min --parent-node-ids topo_001 \
+  --label minimized --conditions '{"max_iterations":5000}'
+
+mdclaw submit_job \
+  --job-dir "$JD" --node-id min_001 \
+  --script "mdclaw --job-dir $JD --node-id min_001 run_minimization \
+    --max-iterations 5000 --platform CUDA" \
+  --job-name min_4m3j_B \
+  --partition gpu --gpus 1 --cpus-per-task 4 \
+  --time-limit "00:30:00" --memory "32G"
+
+mdclaw create_node --job-dir "$JD" --node-type eq --parent-node-ids min_001 \
   --label 300K --conditions '{"temperature_kelvin":300,"pressure_bar":1.0}'
 
 mdclaw submit_job \
@@ -20,5 +31,5 @@ mdclaw submit_job \
 Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal DAG
 commands. The compute-node CLI resolves topology and restart inputs from the DAG.
 
-For `eq -> prod`, create both nodes on the login node and submit prod with an
-`afterok:<eq_slurm_id>` dependency.
+For `min -> eq -> prod`, create downstream nodes on the login node and submit
+them with `afterok:<upstream_slurm_id>` dependencies.

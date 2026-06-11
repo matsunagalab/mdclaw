@@ -5,7 +5,7 @@ scientific study tasks do not share one overloaded dataset.
 
 | Suite | Path | Version | Focus |
 |---|---|---|---|
-| MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.1` | System preparation, topology artifacts, minimization evidence, and preparation provenance. |
+| MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.1` | System preparation, topology artifacts, min-stage evidence, and preparation provenance. |
 | MDStudyBench | `benchmarks/mdstudybench/` | `MDStudyBench-v0.1` | A small curated set of scientific question answering and study-bundle tasks. |
 
 Both suites use the same artifact-based scorer framework:
@@ -46,8 +46,8 @@ mdclaw export_benchmark_public_package \
 For MDPrepBench, the exported contract includes a `submission_blueprint` and
 checklist so agents can build a complete `submission/` directory without seeing
 scorer-only checks. Completed prep submissions are scored with strict artifact
-integrity: unsafe manifest paths, missing OpenMM topology/minimization outputs,
-template placeholders, or missing provenance execution evidence are hard
+integrity: unsafe manifest paths, missing OpenMM topology/min outputs, template
+placeholders, or missing provenance execution evidence are hard
 failures.
 
 For MDStudyBench, the same public-contract helpers are used without prep-only

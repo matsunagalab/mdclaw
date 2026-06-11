@@ -592,9 +592,38 @@ class TestValidateNodeExecutionContext:
 
         assert ctx["success"] is False
         assert "parent_type_invalid" in ctx["blocking_codes"]
-        # eq accepts {"topo", "eq"} parents — rejection message lists
-        # both as the allowed set.
-        assert any("expected one of ['eq', 'topo']" in e for e in ctx["errors"])
+        # eq accepts {"topo", "min", "eq"} parents — rejection message lists
+        # all as the allowed set.
+        assert any("expected one of ['eq', 'min', 'topo']" in e
+                   for e in ctx["errors"])
+
+    def test_accepts_min_parent_for_eq(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(str(job_dir), "topo_001",
+                      artifacts={"system_xml": "artifacts/system.xml",
+                                 "topology_pdb": "artifacts/topology.pdb",
+                                 "state_xml": "artifacts/state.xml"})
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+        complete_node(str(job_dir), "min_001",
+                      artifacts={"state": "artifacts/minimized.xml",
+                                 "minimized_structure": "artifacts/minimized.pdb"})
+        create_node(str(job_dir), "eq", parent_node_ids=["min_001"])
+
+        ctx = validate_node_execution_context(str(job_dir), "eq_001", "eq")
+
+        assert ctx["success"] is True
+
+    def test_min_rejects_wrong_parent_type(self, job_dir):
+        create_node(str(job_dir), "prep")
+        complete_node(str(job_dir), "prep_001",
+                      artifacts={"merged_pdb": "artifacts/merged.pdb"})
+        create_node(str(job_dir), "min", parent_node_ids=["prep_001"])
+
+        ctx = validate_node_execution_context(str(job_dir), "min_001", "min")
+
+        assert ctx["success"] is False
+        assert "parent_type_invalid" in ctx["blocking_codes"]
+        assert any("expected one of ['min', 'topo']" in e for e in ctx["errors"])
 
     def test_rejects_condition_mismatch(self, job_dir):
         create_node(str(job_dir), "topo")
@@ -1950,6 +1979,46 @@ class TestDAGAutoResolve:
         # restart source is surfaced — it runs from the topo state.xml
         # as a fresh equilibration.
         assert "restart_from" not in inputs
+
+    def test_resolve_node_inputs_min(self, full_dag):
+        jd = str(full_dag)
+        create_node(jd, "min", parent_node_ids=["topo_001"])
+
+        inputs = resolve_node_inputs(jd, "min_001", "min")
+
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
+        assert inputs["topology_pdb_file"].endswith(
+            "topo_001/artifacts/topology.pdb"
+        )
+        assert inputs["state_xml_file"].endswith("topo_001/artifacts/state.xml")
+
+    def test_resolve_node_inputs_eq_uses_min_state(self, job_dir):
+        jd = str(job_dir)
+        create_node(jd, "prep")
+        complete_node(jd, "prep_001", artifacts={"merged_pdb": "x.pdb"})
+        create_node(jd, "topo", parent_node_ids=["prep_001"])
+        complete_node(
+            jd, "topo_001",
+            artifacts={"system_xml": "artifacts/system.xml",
+                       "topology_pdb": "artifacts/topology.pdb",
+                       "state_xml": "artifacts/state.xml"},
+        )
+        create_node(jd, "min", parent_node_ids=["topo_001"])
+        complete_node(
+            jd, "min_001",
+            artifacts={"state": "artifacts/minimized.xml",
+                       "minimized_structure": "artifacts/minimized_structure.pdb",
+                       "minimization_report": "artifacts/minimization_report.json"},
+            metadata={"final_step": 0},
+        )
+        create_node(jd, "eq", parent_node_ids=["min_001"])
+
+        inputs = resolve_node_inputs(jd, "eq_001", "eq")
+
+        assert inputs["system_xml_file"].endswith("topo_001/artifacts/system.xml")
+        assert inputs["restart_from"].endswith("min_001/artifacts/minimized.xml")
+        assert inputs["restart_from_node_id"] == "min_001"
+        assert inputs["restart_from_node_type"] == "min"
 
     def test_resolve_node_inputs_eq_chain_uses_prior_eq_state(self, full_dag):
         """eq → eq chaining: the second eq node restarts from the first

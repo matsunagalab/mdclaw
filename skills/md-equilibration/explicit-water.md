@@ -2,11 +2,11 @@
 
 ## Equilibration Protocol
 
-Restrained staged minimization and low-temperature NVT warmup, followed by
-normal-temperature NVT heating and NPT density equilibration, with CA positional
-restraints. The same staged minimization + warmup prelude is used for implicit
-and explicit systems. Both stages use 4 fs + HMR so the final checkpoint is
-compatible with production settings.
+Standalone restrained minimization in a `min` node, followed by low-temperature
+NVT warmup, normal-temperature NVT heating, and NPT density equilibration in an
+`eq` node, with CA positional restraints. The same `min -> eq` prelude is used
+for implicit and explicit systems. Both equilibration stages use 4 fs + HMR so
+the final checkpoint is compatible with production settings.
 
 ### Run Equilibration
 
@@ -29,20 +29,29 @@ for CPU-only debugging. Prefer the tool default `--platform auto`; if an
 explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
 
 ```bash
+mdclaw --job-dir <job_dir> --node-id min_001 run_minimization \
+  --max-iterations 5000 \
+  --restraint-atoms CA \
+  --restraint-force-constant 100.0
+
 mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> --pressure-bar 1.0 \
   --nvt-time-ns <NVT_NS> --npt-time-ns <NPT_NS>
 ```
 
-`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor.
+`run_minimization` auto-resolves `system_xml_file`, `topology_pdb_file`, and
+`state_xml_file` from the `topo` ancestor. `run_equilibration` auto-resolves
+the same topology bundle plus the parent `min` node's portable `state`.
 To override, pass `--system-xml-file` / `--topology-pdb-file` / `--state-xml-file` explicitly.
 
 The tool self-updates `node.json` and `progress.json` on success or failure.
 
 ### Domain Knowledge
 
-- Equilibration starts with standard staged minimization and low-temperature
-  warmup for all systems, then proceeds to normal NVT/NPT
+- New DAGs use `topo -> min -> eq`. `run_minimization` writes
+  `minimized_structure.pdb`, `minimized.xml`, and `minimization_report.json`.
+  `run_equilibration` starts from the `min` node's `state`, skips coordinate
+  minimization, then runs low-temperature warmup before normal NVT/NPT.
 - Equilibration uses positional restraints to prevent structural collapse.
   `--restraint-atoms` accepts:
   - `CA` (default): alpha carbons only — recommended for most workflows
@@ -69,13 +78,16 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 - For finer control (e.g. NPT compress with `heavy` → NVT thermalize with `CA`
   → NPT relax with no restraints), chain multiple eq nodes — see the
   "Multi-Stage Chaining" section in `skills/md-equilibration/SKILL.md`.
-- Energy should drop significantly during minimization (good sign)
+- Energy should drop during the `min` node minimization (good sign)
 
 ---
 
 ## Verify Output
 
 Read `nodes/eq_001/node.json`:
+- upstream `nodes/min_001/node.json` should be `"completed"` with
+  `artifacts.state`, `artifacts.minimized_structure`, and
+  `artifacts.minimization_report`
 - `status` should be `"completed"`
 - `artifacts.checkpoint` -- path to equilibrated.chk (for production restart)
 - `metadata` -- platform, nvt_steps, npt_steps, restraint info

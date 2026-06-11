@@ -504,7 +504,7 @@ def _register_preview_on_node(
 def _fail_preview_node_if_mutable(job_dir: str, node_id: str, errors: list[str]) -> None:
     """Fail only preview/analyze nodes that this tool owns.
 
-    A completed prep/solv/topo/prod node may request a post-hoc preview
+    A completed prep/solv/topo/min/eq/prod node may request a post-hoc preview
     attachment. Rendering failures must not rewrite that scientific node's
     status to failed.
     """

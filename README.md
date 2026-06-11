@@ -302,7 +302,7 @@ which artifacts were used.
 The main path is:
 
 ```text
-study question -> MD study plan -> source bundle -> select + prepare -> solvate -> topology / force field -> equilibrate -> production MD -> analyze / evidence
+study question -> MD study plan -> source bundle -> select + prepare -> solvate -> topology / force field -> minimize -> equilibrate -> production MD -> analyze / evidence
 ```
 
 A study is the outer record for the scientific question. It may contain one
@@ -322,7 +322,7 @@ one `jobs/main` job is enough. For scientific comparisons or campaigns,
 and decision criteria connected to the evidence report.
 
 Each step writes a node with its own state, artifacts, and provenance. Branches
-can fork from preparation, solvation, topology, equilibration, or production
+can fork from preparation, solvation, topology, minimization, equilibration, or production
 when comparing variants such as mutants, ligands, protocols, temperatures, or
 random seeds.
 
@@ -409,6 +409,28 @@ agent `harness_tasks.json`, `harness_instructions.json`, canonical `task.json`,
 do not ask it to inspect the full suite or write a benchmark-wide solver script.
 `run_id` is only a label; do not infer smoke-test shortcuts or task subsets from
 words in it.
+
+For normal MDClaw DAG runs, create a `min` node after topology and run:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id min_001 run_minimization
+```
+
+The `min` node writes `minimized_structure.pdb`, `minimized.xml`, and
+`minimization_report.json`; downstream `eq` nodes should parent from `min_001`.
+
+For MDPrepBench prep submissions that only need a PDB view of an existing
+topology `state.xml`, create `minimized_structure.pdb` with:
+
+```bash
+mdclaw export_state_pdb \
+  --topology-pdb-file <topology.pdb> \
+  --state-xml-file <state.xml> \
+  --output-pdb-file <submission_dir>/minimized_structure.pdb
+```
+
+Do not assume `topology.pdb` itself contains minimized coordinates unless that
+workflow explicitly wrote it that way.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 

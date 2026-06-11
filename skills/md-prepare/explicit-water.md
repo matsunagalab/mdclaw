@@ -62,7 +62,7 @@ contain source ligands. If either check fails, branch from the valid ancestor;
 do not rerun the same node with changed inputs. Prefer node artifacts and PDB
 contents over stale prose fields in logs or metadata.
 
-After solvation, run a local feasibility preflight before topology/eq/prod if
+After solvation, run a local feasibility preflight before topology/min/eq/prod if
 the next stages will run on this machine:
 
 ```bash
@@ -162,7 +162,18 @@ to `--hmr` (4 amu hydrogens) so the run-side default 4 fs timestep is
 loadable; the run-time validator rejects mismatched HMR with
 `modern_system_hmr_mismatch`. The XML triple is the only topology
 contract on the run side — tleap / `parm7` / `rst7` are not produced
-or consumed anywhere. To explore an older protein force field that is
+or consumed anywhere. The topo node's `state.xml` carries the topology-time
+minimized coordinates; `topology.pdb` supplies atom/residue topology. When a PDB
+view of the minimized state is needed for reports or MDPrepBench, run:
+
+```bash
+mdclaw export_state_pdb \
+  --topology-pdb-file <topology.pdb> \
+  --state-xml-file <state.xml> \
+  --output-pdb-file minimized_structure.pdb
+```
+
+To explore an older protein force field that is
 not the recommended default, override both sides together — e.g.
 `build_amber_system --forcefield ff14SB --water-model tip3p` selects the
 ff14SB bundle and TIP3P water in the SystemGenerator XML list, and is a

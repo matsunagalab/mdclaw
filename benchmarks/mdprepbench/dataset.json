@@ -39,7 +39,7 @@
   },
   "notes": [
     "Preparation-focused suite in the MDAgentBench benchmark family.",
-    "The current prep contract includes topology build and minimization evidence.",
+    "The current prep contract includes topology build and min-stage minimization evidence.",
     "No public task requires an MDClaw-specific guardrail code.",
     "Scientific question answering tasks live in MDStudyBench."
   ],

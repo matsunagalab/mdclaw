@@ -12,6 +12,35 @@ OPENMM_TOPOLOGY_EXAMPLE = [
     "topology/topology.pdb",
     "topology/state.xml",
 ]
+MINIMIZED_STRUCTURE_GUIDANCE = {
+    "required_filename": "minimized_structure.pdb",
+    "manifest_path": "outputs.minimized_structure",
+    "meaning": (
+        "PDB view of the coordinates after the required minimization / "
+        "finite-energy check."
+    ),
+    "mdclaw_state_source": (
+        "For MDClaw DAG runs, a min node writes minimized_structure.pdb and "
+        "minimized.xml. For topology bundles packaged directly, topology/state.xml "
+        "carries the post-build minimized coordinates and topology/topology.pdb "
+        "supplies the atom and residue topology."
+    ),
+    "mdclaw_dag_command_template": (
+        "mdclaw create_node --job-dir <job_dir> --node-type min "
+        "--parent-node-ids <topo_node_id>; "
+        "mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization"
+    ),
+    "mdclaw_export_command_template": (
+        "mdclaw export_state_pdb --topology-pdb-file topology/topology.pdb "
+        "--state-xml-file topology/state.xml "
+        "--output-pdb-file minimized_structure.pdb"
+    ),
+    "topology_pdb_note": (
+        "Do not assume topology/topology.pdb is post-minimization coordinates. "
+        "Use it directly only if your workflow documents that it was written "
+        "with the minimized positions."
+    ),
+}
 
 _PUBLIC_METRIC_CHECKS = {
     "json_equals": ("equals", "equals"),
@@ -95,6 +124,7 @@ def manifest_contract(task: Task) -> dict[str, Any]:
         "topology_output_shape": "list[str]",
         "required_topology_backend": "openmm",
         "openmm_topology_example": OPENMM_TOPOLOGY_EXAMPLE,
+        "minimized_structure_guidance": MINIMIZED_STRUCTURE_GUIDANCE,
         "required_output_fields_for_completed_prep": [
             "outputs.topology",
             "outputs.minimized_structure",
@@ -164,6 +194,19 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
                 "energy_final_kj_mol": "<number>",
             },
         }
+    if task.primary_score == PREPARATION_SCORE_AXIS and "minimized_structure" in outputs:
+        blueprint["mdclaw_minimized_structure_export"] = {
+            "purpose": (
+                "Create submission/minimized_structure.pdb from a min node "
+                "artifact, or from the minimized positions in topology/state.xml "
+                "when packaging a topology bundle directly."
+            ),
+            "preferred_command": (
+                MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_dag_command_template"]
+            ),
+            "command": MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_export_command_template"],
+            "record_in": "provenance.command_log",
+        }
     return blueprint
 
 
@@ -203,7 +246,7 @@ def submission_checklist(task: Task) -> list[str]:
         checks.extend([
             "manifest.outputs.topology is a list containing system.xml, topology.pdb, and state.xml",
             'metrics.json sets topology.backend to "openmm"',
-            "manifest.outputs.minimized_structure and outputs.minimization_report are present",
+            "manifest.outputs.minimized_structure points to minimized_structure.pdb from a min node or exported from the minimized state",
             "minimization_report.json confirms attempted/completed finite-energy minimization",
         ])
     if _has_candidate_selection(task):
@@ -238,6 +281,20 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
         "",
     ])
     lines.extend(f"- {item}" for item in contract["submission_checklist"])
+    guidance = contract.get("manifest_contract", {}).get(
+        "minimized_structure_guidance"
+    )
+    if guidance:
+        lines.extend([
+            "",
+            "## Minimized Structure Export",
+            "",
+            f"- `{guidance['required_filename']}`: {guidance['meaning']}",
+            f"- MDClaw source: {guidance['mdclaw_state_source']}",
+            f"- Preferred MDClaw DAG command: `{guidance['mdclaw_dag_command_template']}`",
+            f"- MDClaw command: `{guidance['mdclaw_export_command_template']}`",
+            f"- Note: {guidance['topology_pdb_note']}",
+        ])
     lines.append("")
     return "\n".join(lines)
 
@@ -360,12 +417,22 @@ def _command_log_blueprint(task: Task) -> list[dict[str, Any]]:
     return [
         {
             "stage": stage,
-            "command": "<command or agent action>",
+            "command": _command_placeholder_for_stage(stage),
             "exit_code": 0,
             "walltime_seconds": "<number>",
         }
         for stage in stages
     ]
+
+
+def _command_placeholder_for_stage(stage: str) -> str:
+    examples = {
+        "source": "<source retrieval command or agent action>",
+        "prep": "<preparation command or agent action>",
+        "topo": "<topology build/export command>",
+        "min": "mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization",
+    }
+    return examples.get(str(stage), "<command or agent action>")
 
 
 def _requirement_placeholder(item: dict[str, Any]) -> Any:

@@ -111,8 +111,9 @@ Required files vary by task. Evaluator or harness code can read
   any non-default chemistry choices.
 - `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
   md5 records when available. Completed prep submissions must include a
-  structured `command_log` or equivalent execution log covering source
-  retrieval, preparation, topology export, and minimization; listing scripts
+  structured `command_log` or equivalent execution log covering `source`,
+  `prep`, `topo`, and `min` stages. The legacy stage name `minimization` is
+  accepted as an alias, but new submissions should use `min`. Listing scripts
   alone is not enough.
 - Task artifacts: `prepared_structure.pdb`, `minimized_structure.pdb`,
   OpenMM topology files, and `minimization_report.json` for the current prep
@@ -130,11 +131,28 @@ copied to a benchmark-specific fixed filename:
       "topology/topology.pdb",
       "topology/state.xml"
     ],
-    "minimized_structure": "topology/topology.pdb",
+    "minimized_structure": "minimized_structure.pdb",
     "minimization_report": "minimization_report.json"
   }
 }
 ```
+
+For MDClaw DAG submissions, prefer packaging the `min` node's
+`minimized_structure.pdb` plus `minimization_report.json`. If you are packaging
+an existing topology bundle directly, export the minimized-state PDB explicitly:
+
+```bash
+mdclaw export_state_pdb \
+  --topology-pdb-file topology/topology.pdb \
+  --state-xml-file topology/state.xml \
+  --output-pdb-file minimized_structure.pdb
+```
+
+Then set `manifest.outputs.minimized_structure` to
+`"minimized_structure.pdb"`. In MDClaw topology builds, `state.xml` carries the
+topology-time minimized coordinates; `topology.pdb` is the topology reference
+used to write atom/residue records. Use `topology.pdb` directly only if your
+workflow documents that it already contains minimized coordinates.
 
 Paths are resolved relative to the `submission/` directory and must stay inside
 that directory. Absolute paths and `../` escapes are rejected. This keeps the

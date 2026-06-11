@@ -23,7 +23,7 @@ scientific investigation in the Amber/OpenMM ecosystem. It combines:
 
 `build_amber_system` and `build_openmm_system` emit a `system.xml` +
 `topology.pdb` + `state.xml` artifact triple — the only topology
-contract on the run side. eq / prod / analyze consume that triple via
+contract on the run side. min / eq / prod / analyze consume that triple via
 the DAG resolver; the run side never reconstructs a System from
 ForceField XML.
 
@@ -100,10 +100,13 @@ Core schema v3 rules:
   metadata, and confidence metrics to the agent/user.
 - `prep` selects one concrete candidate from the source bundle before creating
   an MD-ready physical system.
-- Branch variants from `prep`, `solv`, `topo`, `eq`, or `prod` after that
+- Branch variants from `prep`, `solv`, `topo`, `min`, `eq`, or `prod` after that
   concrete structure has been prepared.
-- `eq` accepts both `topo` and prior `eq` parents (multi-stage equilibration
-  chains, e.g. NPT compress -> NVT thermalize -> NPT relax).
+- `min` owns post-topology coordinate minimization and writes the portable
+  minimized `state` consumed by `eq`.
+- `eq` accepts `min` parents by default, with `topo` accepted only for legacy
+  DAGs and prior `eq` parents for multi-stage equilibration chains
+  (e.g. NPT compress -> NVT thermalize -> NPT relax).
 - Each node owns `node.json`, `node.lock`, and `artifacts/`.
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.

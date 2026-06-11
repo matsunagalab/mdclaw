@@ -99,7 +99,7 @@ Before writing `manifest.status="blocked"`, record enough evidence to prove
 that the task was actually attempted:
 
 - exact `mdclaw ...` commands or sub-agent actions attempted
-- deepest stage reached: `source`, `prep`, `solv`, `topo`, `eq`, `prod`,
+- deepest stage reached: `source`, `prep`, `solv`, `topo`, `min`, `eq`, `prod`,
   `analysis`, or `report`
 - exit code or timeout status
 - stdout/stderr or log file paths
@@ -190,15 +190,34 @@ Internal submission rules for this skill:
   orchestration belongs to the harness/operator, not the evaluated agent.
 - Task-local helper scripts are allowed only if they run real workflow steps
   for the current task and are recorded in `provenance.command_log`.
-- For MDPrepBench, attempt source, prep, topology export, and minimization.
+- For MDPrepBench, attempt source, prep, topology export, and the `min` stage.
 - For completed prep submissions, use `manifest.outputs.topology` as a list
   containing `system.xml`, `topology.pdb`, and `state.xml`.
+- For ordinary MDClaw DAG runs, use a `min` node after `topo` and record
+  `run_minimization` plus its `minimized_structure.pdb` /
+  `minimization_report.json` artifacts.
+- For MDClaw topology builds being packaged directly for MDPrepBench,
+  `state.xml` carries the topology-time minimized coordinates and
+  `topology.pdb` supplies the atom/residue topology. Create the benchmark
+  `minimized_structure.pdb` with:
+  ```bash
+  mdclaw export_state_pdb \
+    --topology-pdb-file <topology.pdb> \
+    --state-xml-file <state.xml> \
+    --output-pdb-file <submission_dir>/minimized_structure.pdb
+  ```
+  Record this command in `provenance.command_log`. Do not assume
+  `topology.pdb` itself is the minimized structure unless the workflow
+  explicitly wrote it with minimized coordinates.
+- Prefer a standalone `min` node for MDClaw MDPrepBench submissions. If you
+  package topology-time minimized coordinates directly from `state.xml`, record
+  that command as the `min` stage in `provenance.command_log`.
 - Record `topology.backend = "openmm"` in `metrics.json` when the public
   contract requires OpenMM topology artifacts.
 - Fill every public `metric_requirements` path and follow
   `submission_blueprint`; do not invent hidden task options.
 - Record provenance `command_log` entries for the stages named by the public
-  checklist.
+  checklist: normally `source`, `prep`, `topo`, and `min` for MDPrepBench.
 - For MDStudyBench comparative tasks, submit real trajectories under
   `manifest.outputs.trajectories` and connect `metrics.md_analysis` to the
   conclusion.

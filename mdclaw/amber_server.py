@@ -6,8 +6,9 @@ Provides tools for:
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
   ligand templates (geostd XML when available, otherwise
   ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
-  ``topology.pdb`` + ``state.xml`` triple consumed by ``run_equilibration`` /
-  ``run_production``, plus a minimization report for benchmark evidence.
+  ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
+  ``run_equilibration`` / ``run_production``, plus a minimization report for
+  benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
@@ -2604,7 +2605,8 @@ def build_amber_system(
     ``GAFFTemplateGenerator`` for ligands, optionally bakes in HMR via
     ``hydrogenMass=4 amu``, and serializes the result as the modern
     artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
-    (consumed by ``run_equilibration`` / ``run_production`` in node mode).
+    (consumed by ``run_minimization`` / ``run_equilibration`` /
+    ``run_production`` in node mode).
 
     The solvent type is determined from ``box_dimensions`` and
     ``implicit_solvent``:
@@ -2658,10 +2660,10 @@ def build_amber_system(
         is_membrane: Loads lipid21 when ``True``; resolved from DAG
                      metadata in node mode.
         hmr: When ``True`` (default), bakes ``hydrogenMass=4 amu`` into
-             ``system.xml`` so eq/prod can run a 4 fs timestep without
-             tripping the modern-system contract check. Defaults match
+             ``system.xml`` so min/eq/prod can validate and run with the
+             standard timestep settings. Defaults match ``run_minimization`` /
              ``run_equilibration`` / ``run_production`` so the standard
-             default workflow (build → eq → prod, no kwargs) succeeds.
+             default workflow (build → min → eq → prod, no kwargs) succeeds.
         implicit_solvent: GB model name (case-insensitive). Supported:
                           ``"HCT"``, ``"OBC1"``, ``"OBC2"``, ``"GBn"``,
                           ``"GBn2"``. When set, the matching
@@ -2985,7 +2987,7 @@ def build_amber_system(
     # The curated build path emits the modern XML triple. Callers should
     # consume ``system_xml``, ``topology_pdb``, and ``state_xml`` (set by
     # ``_run_openmmforcefields_build`` on success). The XML triple is the
-    # only topology contract; downstream code (DAG resolver, eq/prod)
+    # only topology contract; downstream code (DAG resolver, min/eq/prod)
     # never reads anything else.
     job_id = generate_job_id()
     solvent_type = (
@@ -3457,7 +3459,8 @@ def build_amber_system(
         return blocked
     
     # Output files. ``build_amber_system`` emits the XML triple consumed
-    # by run_equilibration / run_production through the DAG resolver.
+    # by run_minimization / run_equilibration / run_production through
+    # the DAG resolver.
     system_xml_file = out_dir / f"{output_name}.system.xml"
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"
@@ -4566,7 +4569,7 @@ def _run_openmmforcefields_build(
             f"bridge from frcmod+mol2. Use ``build_openmm_system`` with a "
             f"pre-converted OpenMM ForceField XML for the metal residue "
             f"(research escape hatch); the same system.xml + topology.pdb + "
-            f"state.xml triple flows to eq/prod."
+            f"state.xml triple flows to min/eq/prod."
         )
         result["code"] = "metal_openmm_xml_required"
         return result
@@ -4578,7 +4581,7 @@ def _run_openmmforcefields_build(
             f"bridge from frcmod+lib. Use ``build_openmm_system`` with a "
             f"pre-converted OpenMM ForceField XML for the modified residue "
             f"(research escape hatch); the same system.xml + topology.pdb + "
-            f"state.xml triple flows to eq/prod."
+            f"state.xml triple flows to min/eq/prod."
         )
         result["code"] = "modxna_openmm_xml_required"
         return result

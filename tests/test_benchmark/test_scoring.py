@@ -62,7 +62,7 @@ def _prep_command_log() -> list[dict]:
         {"stage": "source", "command": "fixture source retrieval", "exit_code": 0},
         {"stage": "prep", "command": "fixture prepare_complex", "exit_code": 0},
         {"stage": "topo", "command": "fixture build_openmm_system", "exit_code": 0},
-        {"stage": "minimization", "command": "fixture minimization", "exit_code": 0},
+        {"stage": "min", "command": "fixture minimization", "exit_code": 0},
     ]
 
 
@@ -521,7 +521,7 @@ def test_score_submission_rejects_missing_execution_evidence_under_reject_policy
         IntegrityCheck(
             check_id="workflow_execution_recorded",
             check_type="provenance_execution_evidence",
-            required_stages=["source", "prep", "topo", "minimization"],
+            required_stages=["source", "prep", "topo", "min"],
             min_command_count=4,
         )
     ]

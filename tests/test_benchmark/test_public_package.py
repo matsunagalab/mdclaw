@@ -47,6 +47,11 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "topology/topology.pdb",
             "topology/state.xml",
         ]
+        guidance = contract["manifest_contract"]["minimized_structure_guidance"]
+        assert guidance["required_filename"] == "minimized_structure.pdb"
+        assert "min node writes" in guidance["mdclaw_state_source"]
+        assert "run_minimization" in guidance["mdclaw_dag_command_template"]
+        assert "export_state_pdb" in guidance["mdclaw_export_command_template"]
         assert "submission_blueprint" in contract
         assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
             "topology"
@@ -55,12 +60,39 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "topology/topology.pdb",
             "topology/state.xml",
         ]
+        assert (
+            "run_minimization"
+            in contract["submission_blueprint"]["mdclaw_minimized_structure_export"][
+                "preferred_command"
+            ]
+        )
+        command_log = contract["submission_blueprint"]["provenance_minimum"][
+            "command_log"
+        ]
+        min_commands = [
+            item for item in command_log if item.get("stage") == "min"
+        ]
+        assert min_commands
+        assert "run_minimization" in min_commands[0]["command"]
+        assert (
+            "export_state_pdb"
+            in contract["submission_blueprint"]["mdclaw_minimized_structure_export"][
+                "command"
+            ]
+        )
         assert any(
             "command_log" in item for item in contract["submission_checklist"]
+        )
+        assert any(
+            "minimized_structure.pdb from a min node" in item
+            for item in contract["submission_checklist"]
         )
         checklist = (task_dir / "submission_checklist.md").read_text()
         assert "Pre-Submission Checks" in checklist
         assert "outputs.topology" in checklist
+        assert "Minimized Structure Export" in checklist
+        assert "run_minimization" in checklist
+        assert "export_state_pdb" in checklist
         assert "metric_requirements" in contract
         assert contract["submission_manifest_schema"].endswith(
             "submission_manifest.schema.json"

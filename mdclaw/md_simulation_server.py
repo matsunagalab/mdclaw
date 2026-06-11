@@ -140,7 +140,7 @@ def _check_topology_implicit_solvent_match(
             topo ancestor. ``None`` indicates the topo was built without
             GB (explicit / vacuum) or the metadata is missing.
         runtime_implicit_solvent: The ``--implicit-solvent`` value passed
-            to run_equilibration / run_production.
+            to run_minimization / run_equilibration / run_production.
 
     Returns:
         ``None`` when the choices line up; otherwise a structured-error
@@ -377,6 +377,122 @@ def _load_xml_topology_inputs(
         topology_pdb_path=Path(topology_pdb_file).resolve(),
         state_xml_path=state_path.resolve() if state_path else None,
     )
+
+
+def export_state_pdb(
+    topology_pdb_file: str,
+    state_xml_file: str,
+    output_pdb_file: str,
+    keep_ids: bool = True,
+) -> Dict[str, Any]:
+    """Export PDB coordinates from an OpenMM ``state.xml`` and ``topology.pdb``.
+
+    Use this when a workflow needs a PDB view of the coordinates stored in a
+    serialized OpenMM state. In MDClaw topology builds, ``build_amber_system``
+    and ``build_openmm_system`` write a ``system.xml`` + ``topology.pdb`` +
+    ``state.xml`` artifact triple. The ``state.xml`` carries the post-build
+    topology-time minimization coordinates, while ``topology.pdb`` supplies the
+    atom/residue topology used to write a PDB.
+
+    This helper is intentionally not a DAG node; it is an export/convenience
+    tool for reports and benchmark submissions. For MDPrepBench, write
+    ``output_pdb_file`` as ``submission/minimized_structure.pdb`` and record the
+    command in ``provenance.command_log``.
+
+    Args:
+        topology_pdb_file: Path to the ``topology.pdb`` from the same topology
+            build as the state.
+        state_xml_file: Path to the ``state.xml`` whose positions should be
+            exported.
+        output_pdb_file: Destination PDB path to write.
+        keep_ids: Preserve chain and residue IDs from ``topology.pdb`` when
+            writing the PDB.
+
+    Returns:
+        Dict with ``success``, ``output_pdb``, input paths, atom/position counts,
+        and ``errors`` / ``warnings``.
+    """
+    result: Dict[str, Any] = {
+        "success": False,
+        "topology_pdb_file": str(topology_pdb_file),
+        "state_xml_file": str(state_xml_file),
+        "output_pdb_file": str(output_pdb_file),
+        "atom_count": 0,
+        "position_count": 0,
+        "used_state_xml_positions": False,
+        "warnings": [],
+        "errors": [],
+    }
+
+    topology_path = Path(topology_pdb_file)
+    state_path = Path(state_xml_file)
+    output_path = Path(output_pdb_file)
+
+    if not topology_path.is_file():
+        result["code"] = "topology_pdb_not_found"
+        result["errors"].append(f"topology.pdb not found: {topology_path}")
+        return result
+    if not state_path.is_file():
+        result["code"] = "state_xml_not_found"
+        result["errors"].append(f"state.xml not found: {state_path}")
+        return result
+
+    try:
+        from openmm import XmlSerializer
+        from openmm.app import PDBFile
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "openmm_import_failed"
+        result["errors"].append(
+            f"OpenMM import failed: {type(exc).__name__}: {exc}"
+        )
+        return result
+
+    try:
+        pdb = PDBFile(str(topology_path))
+        topology = pdb.topology
+        atom_count = topology.getNumAtoms()
+        with state_path.open("r") as fh:
+            state = XmlSerializer.deserialize(fh.read())
+        positions = state.getPositions()
+        if positions is None:
+            result["code"] = "state_xml_missing_positions"
+            result["errors"].append("state.xml does not contain positions")
+            return result
+        position_count = len(positions)
+        result["atom_count"] = atom_count
+        result["position_count"] = position_count
+        if position_count != atom_count:
+            result["code"] = "state_topology_atom_count_mismatch"
+            result["errors"].append(
+                "state.xml position count does not match topology.pdb atom "
+                f"count: positions={position_count}, atoms={atom_count}"
+            )
+            return result
+
+        try:
+            box_vectors = state.getPeriodicBoxVectors()
+            if box_vectors is not None:
+                topology.setPeriodicBoxVectors(box_vectors)
+        except Exception as exc:  # noqa: BLE001
+            result["warnings"].append(
+                "Could not copy periodic box vectors from state.xml: "
+                f"{type(exc).__name__}: {exc}"
+            )
+
+        ensure_directory(output_path.parent)
+        with output_path.open("w") as fh:
+            PDBFile.writeFile(topology, positions, fh, keepIds=keep_ids)
+
+        result["success"] = True
+        result["output_pdb"] = str(output_path)
+        result["used_state_xml_positions"] = True
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "state_pdb_export_failed"
+        result["errors"].append(
+            f"state PDB export failed: {type(exc).__name__}: {exc}"
+        )
+        return result
 
 
 def _deserialize_xml_system(xml_inputs: _XMLTopologyInputs):
@@ -624,6 +740,22 @@ def _resolve_restart_node_id_for_run(
         job_dir, node_id, restart_from,
     )
     return anc_id
+
+
+def _restart_node_type_for_run(
+    job_dir: Optional[str],
+    restart_node_id: Optional[str],
+) -> Optional[str]:
+    """Return the DAG type of the restart-source node, when known."""
+    if not (job_dir and restart_node_id):
+        return None
+    try:
+        from mdclaw._node import read_node
+        node = read_node(job_dir, restart_node_id)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    value = node.get("type") or node.get("node_type")
+    return value if isinstance(value, str) else None
 
 
 def _detect_ensemble_mismatch(
@@ -1028,6 +1160,440 @@ def _record_production_node_result(
         fail_node(job_dir, node_id, errors=result.get("errors", []))
 
 
+def run_minimization(
+    system_xml_file: Optional[str] = None,
+    topology_pdb_file: Optional[str] = None,
+    state_xml_file: Optional[str] = None,
+    max_iterations: int = 5000,
+    restraint_atoms: str = "CA",
+    restraint_force_constant: float = 100.0,
+    name: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    is_membrane: bool = False,
+    implicit_solvent: Optional[str] = None,
+    platform: str = "auto",
+    device_index: Optional[str] = None,
+    hmr: bool = True,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run a standalone topology-level energy minimization DAG node.
+
+    This tool consumes the same OpenMM XML topology triple as equilibration:
+    ``system.xml`` + ``topology.pdb`` + ``state.xml`` from a ``topo`` ancestor.
+    It writes a portable minimized ``state`` artifact and a PDB view named
+    ``minimized_structure.pdb``. Downstream ``eq`` nodes parented to this node
+    auto-resolve the minimized state and therefore do not embed minimization in
+    the equilibration node.
+    """
+    if max_iterations < 0:
+        return create_validation_error(
+            "max_iterations",
+            "max_iterations must be non-negative",
+            expected="integer >= 0",
+            actual=max_iterations,
+            code="minimization_iterations_invalid",
+        )
+
+    _node_mode = bool(job_dir and node_id)
+    if _node_mode:
+        from mdclaw._node import (
+            begin_node, fail_node,
+            resolve_node_inputs, validate_node_execution_context,
+        )
+        _inputs = resolve_node_inputs(job_dir, node_id, "min")
+        if "input_resolution_error" in _inputs:
+            err = _inputs["input_resolution_error"]
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=[err])
+            return create_validation_error(
+                "job_dir/node_id",
+                err,
+                expected=(
+                    "Completed topo ancestor with system.xml + topology.pdb "
+                    "+ state.xml triple"
+                ),
+                actual=f"job_dir={job_dir}, node_id={node_id}",
+                context_extra={
+                    "input_resolution_errors": _inputs.get(
+                        "input_resolution_errors", []
+                    ),
+                },
+                code="input_resolution_blocked",
+            )
+        if not system_xml_file and "system_xml_file" in _inputs:
+            system_xml_file = _inputs["system_xml_file"]
+        if not topology_pdb_file and "topology_pdb_file" in _inputs:
+            topology_pdb_file = _inputs["topology_pdb_file"]
+        if not state_xml_file and "state_xml_file" in _inputs:
+            state_xml_file = _inputs["state_xml_file"]
+        if not is_membrane and _inputs.get("is_membrane"):
+            is_membrane = True
+
+        _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
+            topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
+            runtime_implicit_solvent=implicit_solvent,
+        )
+        if _topo_solvent_mismatch is not None:
+            begin_node(job_dir, node_id)
+            fail_node(job_dir, node_id, errors=_topo_solvent_mismatch["errors"])
+            err = create_validation_error(
+                "implicit_solvent",
+                _topo_solvent_mismatch["message"],
+                expected="build-time and runtime implicit_solvent agree",
+                actual=(
+                    f"build={_inputs.get('topology_implicit_solvent')!r}, "
+                    f"runtime={implicit_solvent!r}"
+                ),
+                code=_topo_solvent_mismatch["code"],
+            )
+            err["errors"] = _topo_solvent_mismatch["errors"]
+            return err
+
+        _ctx = validate_node_execution_context(
+            job_dir,
+            node_id,
+            "min",
+            actual_conditions={
+                "max_iterations": max_iterations,
+                "restraint_atoms": restraint_atoms,
+                "restraint_force_constant": restraint_force_constant,
+                "is_membrane": is_membrane,
+                "implicit_solvent": implicit_solvent,
+                "platform": platform,
+                "device_index": device_index,
+                "hmr": hmr,
+            },
+        )
+        if not _ctx["success"]:
+            return {"success": False, "error_type": "ValidationError", **_ctx}
+
+    if not (system_xml_file and topology_pdb_file):
+        return create_validation_error(
+            "topology_inputs",
+            "system_xml_file and topology_pdb_file are required",
+            expected="XML triple from build_amber_system / build_openmm_system",
+            actual=(
+                f"system_xml_file={system_xml_file!r}, "
+                f"topology_pdb_file={topology_pdb_file!r}"
+            ),
+            hints=["Run in node mode from a min node parented to topo."],
+            code="missing_xml_topology_inputs",
+        )
+
+    job_id = generate_job_id()
+    result: Dict[str, Any] = {
+        "success": False,
+        "job_id": job_id,
+        "output_dir": None,
+        "minimized_structure": None,
+        "state_file": None,
+        "minimization_report": None,
+        "max_iterations": max_iterations,
+        "restraint_atoms": restraint_atoms,
+        "restraint_count": 0,
+        "platform": None,
+        "nan_failure_diagnostics": None,
+        "errors": [],
+        "warnings": [],
+    }
+
+    system_xml_path = Path(system_xml_file).resolve()
+    topology_pdb_path = Path(topology_pdb_file).resolve()
+    state_xml_path = Path(state_xml_file).resolve() if state_xml_file else None
+    if not system_xml_path.is_file():
+        result["errors"].append(f"system.xml not found: {system_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if not topology_pdb_path.is_file():
+        result["errors"].append(f"topology.pdb not found: {topology_pdb_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+    if state_xml_path is not None and not state_xml_path.is_file():
+        result["errors"].append(f"state.xml not found: {state_xml_file}")
+        return _fail_node_if_running(job_dir, node_id, result)
+
+    try:
+        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2, PDBFile, Simulation
+        from openmm import CustomExternalForce, Platform, VerletIntegrator
+        from openmm.unit import kilojoules_per_mole, nanometer
+    except ImportError:
+        result["errors"].append("OpenMM not installed")
+        return _fail_node_if_running(job_dir, node_id, result)
+
+    IMPLICIT_MODELS = {
+        "HCT": HCT, "OBC1": OBC1, "OBC2": OBC2, "GBn": GBn, "GBn2": GBn2,
+    }
+    RESTRAINT_SELECTIONS = {
+        "CA": {"CA"},
+        "backbone": {"N", "CA", "C", "O"},
+        "heavy": None,
+    }
+    if restraint_atoms not in RESTRAINT_SELECTIONS:
+        result["errors"].append(
+            "restraint_atoms must be one of: CA, backbone, heavy"
+        )
+        result["code"] = "minimization_restraint_atoms_invalid"
+        return _fail_node_if_running(job_dir, node_id, result)
+
+    from mdclaw.research_server import COMMON_IONS, WATER_NAMES
+    _NON_SOLUTE_RESNAMES = WATER_NAMES | COMMON_IONS
+
+    def _is_solute_atom(atom) -> bool:
+        return atom.residue.name.upper() not in _NON_SOLUTE_RESNAMES
+
+    try:
+        if _node_mode:
+            from mdclaw._node import begin_node
+            out_dir = (Path(job_dir) / "nodes" / node_id / "artifacts").resolve()
+            out_dir.mkdir(parents=True, exist_ok=True)
+            begin_node(job_dir, node_id)
+        elif output_dir:
+            out_dir = Path(output_dir) / "minimization"
+        else:
+            out_dir = WORKING_DIR / job_id / "minimization"
+        ensure_directory(out_dir)
+        result["output_dir"] = str(out_dir)
+
+        xml_inputs = _load_xml_topology_inputs(
+            system_xml_file=str(system_xml_path),
+            topology_pdb_file=str(topology_pdb_path),
+            state_xml_file=str(state_xml_path) if state_xml_path else None,
+        )
+        if implicit_solvent:
+            _gb_model, gb_err = _resolve_implicit_solvent_model(
+                implicit_solvent, IMPLICIT_MODELS
+            )
+            if gb_err:
+                result["errors"].extend(gb_err["errors"])
+                result["code"] = gb_err["code"]
+                return _fail_node_if_running(job_dir, node_id, result)
+
+        if implicit_solvent:
+            solvent_type = "implicit"
+        elif xml_inputs.is_periodic:
+            solvent_type = "explicit"
+        else:
+            solvent_type = "vacuum"
+            result["warnings"].append(
+                "Minimizing a non-periodic topology without implicit_solvent; "
+                "downstream equilibration will require a GB or explicit system."
+            )
+
+        system_min = _deserialize_xml_system(xml_inputs)
+        _validate_xml_system_contract(
+            system_min, xml_inputs.topology,
+            hmr_request=hmr,
+            implicit_solvent_request=implicit_solvent,
+        )
+
+        allowed_names = RESTRAINT_SELECTIONS[restraint_atoms]
+        positions = xml_inputs.positions
+        restraint = CustomExternalForce(
+            "k*periodicdistance(x, y, z, x0, y0, z0)^2"
+        )
+        restraint.addPerParticleParameter("k")
+        restraint.addPerParticleParameter("x0")
+        restraint.addPerParticleParameter("y0")
+        restraint.addPerParticleParameter("z0")
+        k_value = (
+            restraint_force_constant
+            * kilojoules_per_mole
+            / (nanometer * nanometer)
+        )
+        restraint_count = 0
+        for atom in xml_inputs.topology.atoms():
+            if not _is_solute_atom(atom):
+                continue
+            if allowed_names is None:
+                if atom.element is None or atom.element.symbol == "H":
+                    continue
+            elif atom.name not in allowed_names:
+                continue
+            restraint.addParticle(atom.index, [
+                k_value,
+                positions[atom.index][0],
+                positions[atom.index][1],
+                positions[atom.index][2],
+            ])
+            restraint_count += 1
+        system_min.addForce(restraint)
+        result["restraint_count"] = restraint_count
+
+        integrator = VerletIntegrator(0.001)
+        PLATFORM_MAP = {
+            "cuda": "CUDA", "opencl": "OpenCL",
+            "cpu": "CPU", "reference": "Reference",
+        }
+        platform_obj = None
+        platform_properties = {}
+        if platform.lower() != "auto":
+            plat_key = platform.lower()
+            if plat_key in PLATFORM_MAP:
+                platform_obj = Platform.getPlatformByName(PLATFORM_MAP[plat_key])
+                if device_index and plat_key in ("cuda", "opencl"):
+                    platform_properties["DeviceIndex"] = device_index
+        if platform_obj:
+            simulation = Simulation(
+                xml_inputs.topology, system_min, integrator,
+                platform_obj, platform_properties,
+            )
+        else:
+            simulation = Simulation(xml_inputs.topology, system_min, integrator)
+        result["platform"] = simulation.context.getPlatform().getName()
+        simulation.context.setPositions(positions)
+        if xml_inputs.is_periodic and xml_inputs.box_vectors is not None:
+            simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
+
+        def _finite_energy_check(stage: str) -> dict:
+            state = simulation.context.getState(getEnergy=True, getForces=True)
+            potential = state.getPotentialEnergy().value_in_unit(
+                kilojoules_per_mole
+            )
+            forces = state.getForces(asNumpy=True)
+            force_values = forces.value_in_unit(kilojoules_per_mole / nanometer)
+            max_force = (
+                float(np.max(np.linalg.norm(force_values, axis=1)))
+                if len(force_values) else 0.0
+            )
+            check = {
+                "stage": stage,
+                "potential_energy_kj_per_mol": float(potential),
+                "max_force_kj_per_mol_nm": max_force,
+                "finite": bool(np.isfinite(potential) and np.isfinite(max_force)),
+            }
+            if not check["finite"]:
+                result["nan_failure_diagnostics"] = {
+                    "stage": stage,
+                    "solvent_type": solvent_type,
+                    "implicit_solvent": implicit_solvent,
+                    "potential_energy_kj_per_mol": (
+                        check["potential_energy_kj_per_mol"]
+                    ),
+                    "max_force_kj_per_mol_nm": check["max_force_kj_per_mol_nm"],
+                    "recommended_next_action": (
+                        "inspect/repair the input structure or parameters"
+                    ),
+                }
+                raise RuntimeError(
+                    f"Non-finite energy/force detected during {stage}"
+                )
+            return check
+
+        initial_check = _finite_energy_check("initial")
+        simulation.minimizeEnergy(maxIterations=max_iterations)
+        final_check = _finite_energy_check("minimized")
+
+        pref = f"{name}_" if name else ""
+        state_file = out_dir / f"{pref}minimized.xml"
+        _save_state_atomic(simulation, state_file)
+        result["state_file"] = str(state_file)
+
+        minimized_state = simulation.context.getState(getPositions=True)
+        minimized_structure = out_dir / f"{pref}minimized_structure.pdb"
+        with minimized_structure.open("w") as fh:
+            PDBFile.writeFile(
+                xml_inputs.topology, minimized_state.getPositions(), fh
+            )
+        result["minimized_structure"] = str(minimized_structure)
+
+        report = {
+            "minimization": {
+                "attempted": True,
+                "completed": True,
+                "max_iterations": max_iterations,
+                "restraint_atoms": restraint_atoms,
+                "restraint_force_constant": restraint_force_constant,
+                "restraint_count": restraint_count,
+                "energy_is_finite": final_check["finite"],
+                "positions_are_finite": True,
+                "atom_count_preserved": (
+                    xml_inputs.topology.getNumAtoms()
+                    == len(minimized_state.getPositions())
+                ),
+                "energy_initial_kj_mol": (
+                    initial_check["potential_energy_kj_per_mol"]
+                ),
+                "energy_final_kj_mol": (
+                    final_check["potential_energy_kj_per_mol"]
+                ),
+                "max_force_initial_kj_mol_nm": (
+                    initial_check["max_force_kj_per_mol_nm"]
+                ),
+                "max_force_final_kj_mol_nm": (
+                    final_check["max_force_kj_per_mol_nm"]
+                ),
+            },
+            "checks": [initial_check, final_check],
+            "inputs": {
+                "system_xml_file": str(system_xml_path),
+                "topology_pdb_file": str(topology_pdb_path),
+                "state_xml_file": str(state_xml_path) if state_xml_path else None,
+            },
+            "platform": result["platform"],
+            "solvent_type": solvent_type,
+            "implicit_solvent": implicit_solvent,
+        }
+        report_file = out_dir / f"{pref}minimization_report.json"
+        tmp_report = report_file.with_name(f".{report_file.name}.tmp.{os.getpid()}")
+        tmp_report.write_text(json.dumps(report, indent=2))
+        os.replace(tmp_report, report_file)
+        result["minimization_report"] = str(report_file)
+        result["minimization"] = report["minimization"]
+        result["system_signature"] = _system_signature(
+            xml_inputs,
+            solvent_type=solvent_type,
+            ensemble="minimized",
+            pressure_bar=None,
+            is_membrane=is_membrane,
+            implicit_solvent=implicit_solvent,
+            hmr=hmr,
+        )
+        result["success"] = True
+    except _ModernSystemContractError as exc:
+        logger.error("Minimization aborted by modern-system contract: %s", exc)
+        result["errors"].append(str(exc))
+        result["code"] = exc.code
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Minimization failed: %s", exc)
+        result["errors"].append(f"Minimization failed: {exc}")
+
+    if _node_mode:
+        from mdclaw._node import complete_node, fail_node
+        if result.get("success"):
+            complete_node(
+                job_dir,
+                node_id,
+                artifacts={
+                    "state": _node_artifact_path(result.get("state_file")),
+                    "minimized_structure": _node_artifact_path(
+                        result.get("minimized_structure")
+                    ),
+                    "final_structure": _node_artifact_path(
+                        result.get("minimized_structure")
+                    ),
+                    "minimization_report": _node_artifact_path(
+                        result.get("minimization_report")
+                    ),
+                },
+                metadata={
+                    "platform": result.get("platform"),
+                    "max_iterations": max_iterations,
+                    "restraint_atoms": restraint_atoms,
+                    "restraint_force_constant": restraint_force_constant,
+                    "restraint_count": result.get("restraint_count"),
+                    "is_membrane": is_membrane,
+                    "implicit_solvent": implicit_solvent,
+                    "hmr": hmr,
+                    "final_step": 0,
+                    "system_signature": result.get("system_signature"),
+                    "minimization": result.get("minimization"),
+                },
+            )
+        else:
+            fail_node(job_dir, node_id, errors=result.get("errors", []))
+
+    return result
+
+
 def run_equilibration(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
@@ -1135,9 +1701,10 @@ def run_equilibration(
             positions/velocities/box are loaded via the
             ensemble-agnostic loader (so an NPT-saved state can resume
             into an NVT stage and vice versa). In node mode this is
-            auto-resolved from the nearest ``eq``/``prod`` ancestor's
-            ``state`` artifact, enabling NPT → NVT → NPT chaining
-            across multiple eq nodes.
+            auto-resolved from the nearest ``min``/``eq``/``prod``
+            ancestor's ``state`` artifact. A ``min`` source skips only
+            coordinate minimization; prior ``eq``/``prod`` sources skip
+            the full minimization/warmup prelude for chaining.
 
     Returns:
         dict with:
@@ -1205,6 +1772,9 @@ def run_equilibration(
             code="equilibration_time_step_conflict",
         )
 
+    _restart_from_node_id = None
+    _restart_from_node_type = None
+
     # Auto-resolve inputs from DAG when in node mode
     if job_dir and node_id:
         from mdclaw._node import (
@@ -1255,10 +1825,10 @@ def run_equilibration(
             state_xml_file = _inputs["state_xml_file"]
         if not is_membrane and _inputs.get("is_membrane"):
             is_membrane = True
-        # eq → eq chaining: when an eq/prod ancestor exposes a state
-        # artifact, resume from it instead of running a fresh
-        # minimization + warmup. The first eq node from topo has no
-        # ancestor and runs directly from the topo state.xml.
+        # min → eq and eq → eq chaining: when a min/eq/prod ancestor exposes
+        # a state artifact, resume from it. A min source skips only the
+        # minimization part; prior eq/prod sources skip the full prelude.
+        # Legacy first eq nodes from topo still run from topo state.xml.
         # Explicit ``--restart-from`` always wins over the resolver's
         # auto-pick; we then trust the resolver's
         # ``restart_from_node_id`` only when *we* used the resolver's
@@ -1274,6 +1844,11 @@ def run_equilibration(
             restart_from=restart_from,
             explicit_restart_from=_explicit_restart_from,
             inputs=_inputs,
+        )
+        _restart_from_node_type = (
+            _inputs.get("restart_from_node_type")
+            if not _explicit_restart_from
+            else _restart_node_type_for_run(job_dir, _restart_from_node_id)
         )
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
@@ -1374,6 +1949,8 @@ def run_equilibration(
         "low_temperature_warmup_steps": 0,
         "nan_failure_diagnostics": None,
         "platform": None,
+        "restart_from_node_id": _restart_from_node_id,
+        "restart_from_node_type": _restart_from_node_type,
         "errors": [],
         "warnings": [],
     }
@@ -1665,6 +2242,8 @@ def run_equilibration(
                 if anc_step is not None:
                     sim_nvt.currentStep = anc_step
             result["restarted_from"] = str(restart_path)
+            result["restart_from_node_id"] = _restart_from_node_id
+            result["restart_from_node_type"] = _restart_from_node_type
         else:
             sim_nvt.context.setPositions(positions)
             if is_periodic and xml_inputs.box_vectors is not None:
@@ -1694,9 +2273,13 @@ def run_equilibration(
                 raise RuntimeError(f"Non-finite energy/force detected during {stage}")
             return check
 
-        # Universal pre-NVT relaxation protocol. Skipped on restart —
-        # the ancestor state is already minimized and thermalized, and
-        # re-minimizing would discard the loaded velocities and box.
+        # Universal pre-NVT relaxation protocol. Legacy topo -> eq runs the
+        # full prelude. New min -> eq runs only the low-temperature warmup,
+        # because coordinate minimization already belongs to the min node.
+        # eq/prod restarts skip the prelude to preserve the loaded state.
+        restart_from_min_node = (
+            restart_path is not None and _restart_from_node_type == "min"
+        )
         if restart_path is None:
             logger.info("Running standard staged minimization before NVT...")
             relaxation_checks = []
@@ -1729,6 +2312,33 @@ def run_equilibration(
                 "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
             }
             # Fresh start: reseed velocities at target temperature.
+            sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
+        elif restart_from_min_node:
+            logger.info(
+                "Minimized-state restart: skipping minimization and running "
+                "low-temperature NVT warmup before normal NVT."
+            )
+            relaxation_checks = [_finite_energy_check("min_node_state")]
+            warmup_steps = min(1000, max(0, nvt_steps // 20))
+            low_temperature = max(10.0, min(50.0, temperature_kelvin * 0.2))
+            if warmup_steps > 0:
+                logger.info(
+                    f"Low-temperature NVT warmup: {warmup_steps} steps "
+                    f"at {low_temperature:.1f} K"
+                )
+                integrator_nvt.setTemperature(low_temperature * kelvin)
+                sim_nvt.context.setVelocitiesToTemperature(low_temperature * kelvin)
+                sim_nvt.step(warmup_steps)
+                relaxation_checks.append(_finite_energy_check("low_temperature_warmup"))
+                integrator_nvt.setTemperature(temperature_kelvin * kelvin)
+            result["low_temperature_warmup_steps"] = warmup_steps
+            result["relaxation_protocol"] = {
+                "name": "min_node_low_temperature_warmup",
+                "applies_to": "min_to_eq_equilibration",
+                "stages": relaxation_checks,
+                "low_temperature_kelvin": low_temperature if warmup_steps > 0 else None,
+                "minimization_source_node_id": _restart_from_node_id,
+            }
             sim_nvt.context.setVelocitiesToTemperature(temperature_kelvin * kelvin)
         else:
             logger.info(
@@ -2063,6 +2673,12 @@ def run_equilibration(
                     "restraint_count": result.get("restraint_count"),
                     "temperature_kelvin": temperature_kelvin,
                     "pressure_bar": pressure_bar,
+                    "restart_from_node_id": _restart_from_node_id,
+                    "restart_from_node_type": _restart_from_node_type,
+                    "minimization_source_node_id": (
+                        _restart_from_node_id
+                        if _restart_from_node_type == "min" else None
+                    ),
                     # Final ensemble of the saved state.xml — NPT only when
                     # the NPT stage actually ran. Prod's auto-resolver reads
                     # this so a default-config prod inherits eq's ensemble
@@ -2281,7 +2897,7 @@ def run_production(
         # Catch implicit-solvent model mismatches between the topo node's
         # build-time metadata and the runtime --implicit-solvent flag
         # before any System is built. Mirror of the run_equilibration
-        # guard; both sites must agree because eq/prod share the topo
+        # guard; both sites must agree because min/eq/prod share the topo
         # ancestor's saved system.xml.
         _topo_solvent_mismatch = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=_inputs.get("topology_implicit_solvent"),
@@ -3063,7 +3679,9 @@ def inspect_openmm_platforms(
 # =============================================================================
 
 TOOLS = {
+    "export_state_pdb": export_state_pdb,
     "inspect_openmm_platforms": inspect_openmm_platforms,
+    "run_minimization": run_minimization,
     "run_equilibration": run_equilibration,
     "run_production": run_production,
 }

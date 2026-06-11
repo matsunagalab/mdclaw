@@ -817,7 +817,8 @@ def solvate_structure(
     The output PDB file feeds into ``build_amber_system``, which uses
     ``openmmforcefields.SystemGenerator`` over an OpenFF Pablo–loaded
     topology to emit the ``system.xml`` + ``topology.pdb`` + ``state.xml``
-    triple consumed by ``run_equilibration`` / ``run_production``.
+    triple consumed by ``run_minimization`` / ``run_equilibration`` /
+    ``run_production``.
 
     Args:
         pdb_file: Input PDB file path (e.g., merged.pdb from merge_structures)

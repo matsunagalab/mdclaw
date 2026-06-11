@@ -99,6 +99,7 @@ the formal names from `CONTEXT.md`:
 | `prep` | Preparation Node | Prepared System |
 | `solv` | Solvation Node | Solvated System |
 | `topo` | Topology Node | Topology |
+| `min` | Minimization Node | Minimized state artifacts |
 | `eq` | Equilibration Node | Equilibrated state artifacts |
 | `prod` | Production Node | Production Segment artifacts |
 | `analyze` | Analysis Node | Analysis evidence artifacts |
@@ -113,7 +114,7 @@ single structures, NMR models split out of a multi-model PDB/mmCIF, PDB
 assembly/chain choices, or generated prediction ensemble members from
 Boltz/BioEm-like tools. Generator-specific rank and confidence data live on
 the relevant candidate records and are surfaced through `list_source_candidates`.
-Variants then branch from `prep`, `solv`, `topo`, `eq`, or `prod`.
+Variants then branch from `prep`, `solv`, `topo`, `min`, `eq`, or `prod`.
 
 Preparation nodes select one candidate, choose MD-relevant molecular
 components, clean and standardize them, record chemistry and provenance for
@@ -124,6 +125,12 @@ Topology nodes own force-field, template, and parameter resolution. Preparation
 nodes provide chemistry and provenance materials such as ligand chemistry,
 disulfide records, component disposition, and chain identity; topology nodes
 turn those materials into an MD-ready topology artifact contract.
+
+Minimization nodes own post-topology coordinate relaxation before MD
+equilibration. They consume the topology node's OpenMM XML triple and write a
+portable minimized `state` plus `minimized_structure.pdb` and
+`minimization_report.json`. Equilibration nodes should parent from `min` by
+default; direct `topo -> eq` remains only a compatibility fallback.
 
 Production continuations are represented as new Production Nodes in the same
 Production Chain. The timeline metadata continues from the selected ancestor,
@@ -190,7 +197,8 @@ flowchart LR
   source[source_001<br/>source bundle] --> prep[prep_001<br/>select / clean / merge / params]
   prep --> solv[solv_001<br/>water / membrane]
   solv --> topo[topo_001<br/>OpenMM XML triple]
-  topo --> eq1[eq_001<br/>equilibration]
+  topo --> min1[min_001<br/>standalone minimization]
+  min1 --> eq1[eq_001<br/>equilibration]
   eq1 --> prod1[prod_001<br/>production]
   eq1 --> eq2[eq_002<br/>staged or branched eq]
   eq2 --> prod2[prod_002<br/>production branch]
@@ -207,6 +215,7 @@ Node artifacts are intentionally local to each node:
 | `prep` | `source_selection.json`, cleaned/merged PDB, `chain_identity_map.json`, `ligand_chemistry.json`, `residue_mapping.json`, branch-specific prepared structures. |
 | `solv` | `solvated.pdb`, `box_dimensions.json`, membrane metadata when applicable. |
 | `topo` | `system.system.xml`, `system.topology.pdb`, `system.state.xml`, force-field provenance. |
+| `min` | `minimized_structure.pdb`, `minimized.xml`, `minimization_report.json`. |
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |
 | `prod` | `trajectory.dcd`, `final_structure.pdb`, `state.xml`, `checkpoint.chk`, `energy.dat`. |
 
@@ -239,6 +248,10 @@ job_XXXXXXXX/
       node.json
       node.lock
       artifacts/
+    min_001/
+      node.json
+      node.lock
+      artifacts/
     eq_001/
       node.json
       node.lock
@@ -259,6 +272,8 @@ DAG invariants:
   contract.
 - A completed topology node must provide the full OpenMM XML triple; run-side
   tools do not fall back to legacy Amber `parm7/rst7`.
+- New equilibration DAGs should use `topo -> min -> eq`; `eq` can still accept
+  `topo` directly for legacy records, but skills should not create that shape.
 - Completed node.json records are sealed scientific records. Create a new node
   for changed conditions, parents, artifacts, or scientific metadata.
   Post-completion scheduler observations belong in append-only events.
@@ -319,6 +334,8 @@ serialization -> collect_provenance -> completed
 The `initial_minimization` stage is topology-time minimization: it validates
 the force-field-applied system and writes the initial `state.xml`. It is not an
 Equilibration Node and should not be described as an MD equilibration protocol.
+The schema-v3 `min` node is separate: it is a node-owned post-topology
+minimization step that creates the minimized restart state consumed by `eq`.
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
 Molecules. Topology resolves compatible Amber geostd XMLs first and passes

@@ -76,7 +76,7 @@ def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
                 "walltime_seconds": 0.1,
             },
             {
-                "stage": "minimization",
+                "stage": "min",
                 "command": f"synthetic fixture minimization for {task_id}",
                 "exit_code": 0,
                 "walltime_seconds": 0.1,

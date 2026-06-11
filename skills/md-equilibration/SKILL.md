@@ -1,6 +1,6 @@
 ---
 name: md-equilibration
-description: "Equilibration (standard staged minimization -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates an eq node and writes restart artifacts for production handoff."
+description: "Standalone minimization node plus equilibration (min -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates min and eq DAG nodes and writes restart artifacts for production handoff."
 ---
 
 # MD Equilibration
@@ -31,20 +31,33 @@ will convert durations to steps using the actual `timestep_fs`.
 ## Prerequisites
 
 Run `mdclaw inspect_job --job-dir <job_dir>` and use the JSON result to find a
-completed `topo` node. For a candidate eq node, use
-`mdclaw explain_node --job-dir <job_dir> --node-id <eq_node_id>` and branch on
-`validation.blocking_codes` if it is not ready.
-(`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tool.)
+completed `topo` node. If no completed `min` node exists downstream of that
+topo node, create and run one before creating `eq`. For candidate `min` or `eq`
+nodes, use `mdclaw explain_node --job-dir <job_dir> --node-id <node_id>` and
+branch on `validation.blocking_codes` if it is not ready.
+(`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tools; `eq` also auto-resolves the parent `min` node's `state`.)
 If topology metadata contains ligand charge or clash diagnostics, record them
-for reporting, but do not choose a different equilibration protocol. All NVT
-equilibration runs use the same standard staged minimization and low-temperature
-warmup before normal NVT.
+for reporting, but do not choose a different equilibration protocol. New runs
+use the same standalone minimization node followed by low-temperature warmup
+before normal NVT.
 
 ## Node Setup
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type eq \
+mdclaw create_node --job-dir <job_dir> --node-type min \
   --parent-node-ids topo_001 \
+  --label "minimized" \
+  --conditions '{"max_iterations": 5000,
+                 "restraint_atoms": "CA",
+                 "restraint_force_constant": 100.0}'
+
+mdclaw --job-dir <job_dir> --node-id min_001 run_minimization \
+  --max-iterations 5000 \
+  --restraint-atoms CA \
+  --restraint-force-constant 100.0
+
+mdclaw create_node --job-dir <job_dir> --node-type eq \
+  --parent-node-ids min_001 \
   --label "300K" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
@@ -54,12 +67,12 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 For replicates or different conditions:
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids topo_001 --label "310K" \
+  --parent-node-ids min_001 --label "310K" \
   --conditions '{"temperature_kelvin": 310, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids topo_001 --label "300K_seed42" \
+  --parent-node-ids min_001 --label "300K_seed42" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0,
                  "random_seed": 42}'
@@ -67,11 +80,12 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 
 ## Multi-Stage Chaining (NPT → NVT → NPT etc.)
 
-A single `run_equilibration` call already runs `NVT → optional NPT`. For
+A single `run_minimization` + `run_equilibration` pair already runs
+`min → NVT → optional NPT`. For
 finer control — e.g. an explicit `NPT (compress) → NVT (thermalize) → NPT
 (relax)` protocol — chain multiple `eq` nodes by parenting each onto the
-prior eq. The auto-resolver surfaces the parent's `state.xml` as
-`restart_from`, so the new eq node skips minimization/warmup and inherits
+prior eq after the initial `min -> eq`. The auto-resolver surfaces the parent's
+`state.xml` as `restart_from`, so the new eq node skips minimization/warmup and inherits
 positions, velocities, and box vectors. The loader is ensemble-agnostic
 (uses `XmlSerializer.deserialize`), so an NPT-saved state can resume
 into an NVT stage and vice versa — barostat parameters are dropped or
@@ -80,7 +94,7 @@ introduced as needed.
 ```bash
 # Stage 1: NPT compression with strong heavy-atom restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids topo_001 --label "stage1_npt_compress" \
+  --parent-node-ids min_001 --label "stage1_npt_compress" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 0, "npt_time_ns": 0.2,
                  "restraint_atoms": "heavy", "restraint_force_constant": 500.0}'
@@ -100,8 +114,10 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
                  "restraint_force_constant": 0.0}'
 ```
 
-Each downstream eq node auto-resumes from its parent's `state` artifact;
-no `--restart-from` flag is needed when running in node mode.
+The first eq node auto-resumes from the `min` node's `state` artifact and
+therefore skips coordinate minimization but still runs low-temperature warmup.
+Each downstream eq node auto-resumes from its parent's `state` artifact; no
+`--restart-from` flag is needed when running in node mode.
 
 ## Workflow
 

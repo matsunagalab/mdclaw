@@ -86,8 +86,7 @@ Calling contract:
 - Highly charged ligands and close contacts are recorded as topology
   diagnostics and do not stop the workflow or select a special
   equilibration branch — the equilibration skill uses the same standard
-  staged minimization and low-temperature warmup protocol for all
-  systems.
+  standalone `min` node followed by low-temperature warmup for all systems.
 
 ### Implicit-solvent paths in MDClaw
 

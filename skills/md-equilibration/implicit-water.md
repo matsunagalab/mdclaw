@@ -3,7 +3,8 @@
 Officially supported implicit-water models: **HCT, OBC1, OBC2, GBn, GBn2**.
 
 Standard recipe: `build_amber_system --implicit-solvent <MODEL>` on the
-topo node, then `run_equilibration --implicit-solvent <MODEL>` here.
+topo node, then `run_minimization --implicit-solvent <MODEL>` on a `min` node,
+then `run_equilibration --implicit-solvent <MODEL>` on an `eq` node.
 `build_amber_system` bakes the GB force (matching `implicit/*.xml`)
 into `system.xml`, stamps the canonical model name on
 `metadata.implicit_solvent`, and the run side validates both halves
@@ -34,14 +35,20 @@ run themselves.
 ## Equilibration Protocol
 
 NVT only (no NPT — no periodic box in implicit solvent) with the standard
-equilibration prelude used for every system: restrained staged minimization,
-low-temperature NVT warmup, then normal-temperature NVT with CA positional
-restraints. Uses 4 fs + HMR so the final checkpoint is compatible with
-production settings.
+`min -> eq` prelude used for every system: standalone restrained minimization
+in a `min` node, low-temperature NVT warmup, then normal-temperature NVT with
+CA positional restraints. Uses 4 fs + HMR so the final checkpoint is compatible
+with production settings.
 
 ### Run Equilibration
 
 ```bash
+mdclaw --job-dir <job_dir> --node-id min_001 run_minimization \
+  --implicit-solvent GBn2 \
+  --max-iterations 5000 \
+  --restraint-atoms CA \
+  --restraint-force-constant 100.0
+
 mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
@@ -49,7 +56,9 @@ mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
   --nvt-time-ns <NVT_NS>
 ```
 
-`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor.
+`run_minimization` auto-resolves `system_xml_file`, `topology_pdb_file`, and
+`state_xml_file` from the `topo` ancestor. `run_equilibration` auto-resolves
+the same topology bundle plus the parent `min` node's portable `state`.
 Always pass `--implicit-solvent <model>` so OpenMM builds a GB system rather
 than rejecting the non-periodic topology as vacuum. Pass `--pressure-bar 0`
 to make the declared node conditions and restart signature explicit; implicit
@@ -79,8 +88,10 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   Solute filtering is automatic (water/ions are excluded even under `heavy`,
   though implicit solvent has no explicit waters anyway).
 - All restraints are removed in the production-matching checkpoint
-- Standard staged minimization and low-temperature warmup run automatically
-  before normal NVT heating. This is the same protocol used for explicit water.
+- New DAGs use `topo -> min -> eq`. `run_minimization` writes
+  `minimized_structure.pdb`, `minimized.xml`, and `minimization_report.json`.
+  `run_equilibration` starts from the `min` node's `state`, skips coordinate
+  minimization, then runs low-temperature warmup before normal NVT heating.
 - Ligand charge/clash diagnostics are recorded for interpretation; they do not
   switch to a different equilibration protocol.
 - `equilibrated.xml` is the portable cross-node restart artifact (preferred);
@@ -97,6 +108,9 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 
 Read `nodes/eq_001/node.json`:
 
+- upstream `nodes/min_001/node.json` should be `"completed"` with
+  `artifacts.state`, `artifacts.minimized_structure`, and
+  `artifacts.minimization_report`
 - `status` should be `"completed"`
 - `artifacts.checkpoint` — path to `equilibrated.chk` (for production restart)
 - `metadata` — platform, nvt_steps, restraint info (no npt for implicit)

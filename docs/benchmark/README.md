@@ -136,6 +136,26 @@ JSON list, not a role-keyed object. Amber or GROMACS can still be used upstream,
 but completed prep submissions must export an OpenMM-compatible artifact triple
 for scoring.
 
+For MDClaw DAG runs, the standard post-topology workflow is `topo -> min`; the
+`min` node writes `minimized_structure.pdb`, `minimized.xml`, and
+`minimization_report.json`. For benchmark submissions that are packaging an
+existing topology bundle, `state.xml` is the source of post-build topology-time
+minimized coordinates and `topology.pdb` supplies the topology. Export the
+benchmark PDB artifact explicitly:
+
+```bash
+mdclaw export_state_pdb \
+  --topology-pdb-file topology/topology.pdb \
+  --state-xml-file topology/state.xml \
+  --output-pdb-file minimized_structure.pdb
+```
+
+Record that command in `provenance.command_log`. Do not assume
+`topology.pdb` itself is the minimized structure unless your workflow documents
+that it was written with minimized coordinates. This topology-time minimization
+evidence is separate from the standalone `min` node used before later
+equilibration nodes in ordinary MDClaw DAGs.
+
 The public `submission_contract.json` records the agent-facing metric paths
 that must be populated in `metrics.json`, plus a `submission_blueprint` showing
 the minimum manifest, metrics, minimization report, and provenance shape. For

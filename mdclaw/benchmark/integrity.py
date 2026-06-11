@@ -297,6 +297,13 @@ def read_json_safe(path: str | Path) -> dict[str, Any]:
 # layer cannot see these.
 
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_STAGE_ALIASES = {
+    "minimize": "min",
+    "minimized": "min",
+    "minimisation": "min",
+    "minimization": "min",
+    "run_minimization": "min",
+}
 
 
 def check_artifact_min_bytes(
@@ -604,9 +611,8 @@ def check_provenance_execution_evidence(
     """Require structured evidence that real workflow commands/actions ran.
 
     This does not forbid Python or custom scripts; it rejects the weaker pattern
-    where a submission only includes generated JSON/PDB files and possibly
     script filenames, but no stage-aware execution log tying those artifacts to
-    source/prep/topology/minimization work.
+    source/prep/topology/min work.
     """
     if not isinstance(provenance, dict):
         return ["provenance.json is not a JSON object"]
@@ -636,7 +642,7 @@ def check_provenance_execution_evidence(
 
     stages_seen: set[str] = set()
     for index, entry in enumerate(structured):
-        stage = str(entry.get("stage") or "").strip().lower()
+        stage = _canonical_stage(entry.get("stage"))
         command = _first_nonempty(entry, "command", "action", "tool")
         status = entry.get("exit_code", entry.get("status", entry.get("result")))
         if not stage:
@@ -654,7 +660,7 @@ def check_provenance_execution_evidence(
 
     missing_stages = [
         stage for stage in required_stages
-        if str(stage).strip().lower() not in stages_seen
+        if _canonical_stage(stage) not in stages_seen
     ]
     if missing_stages:
         warnings.append(
@@ -662,6 +668,11 @@ def check_provenance_execution_evidence(
             f"{missing_stages}"
         )
     return warnings
+
+
+def _canonical_stage(stage: Any) -> str:
+    text = str(stage or "").strip().lower()
+    return _STAGE_ALIASES.get(text, text)
 
 
 def run_artifact_integrity(
