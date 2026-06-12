@@ -15,6 +15,18 @@ dependencies:
   # OpenMM 8.5.1 is the floor for openmmforcefields>=0.15.1; 8.6 brings
   # SourceWithCMAP fixes used by the ff19SB and phosaa19SB conversions.
   - openmm>=8.5.1
+  # Cap the CUDA build of OpenMM below the 13.x series. conda-forge bakes the
+  # CUDA toolkit its NVRTC was built against into each OpenMM build, and the
+  # PTX that NVRTC emits at runtime must be JIT-compilable by the *cluster's*
+  # GPU driver. A 13.x build needs driver >=R580; on common HPC drivers it
+  # fails silently with CUDA_ERROR_UNSUPPORTED_PTX_VERSION. Capping at <13
+  # deterministically selects the 12.9 build (driver >=R575) regardless of the
+  # solve-time driver, with no GPU-coverage loss (Volta..Blackwell). NOTE:
+  # conda-forge has no <12.9 CUDA build for OpenMM>=8.5, so drivers older than
+  # R575 (e.g. CUDA 12.8 / driver 570) cannot run ANY conda CUDA build of
+  # OpenMM -- use the container/SIF (source-built against CUDA 11.8, driver
+  # >=R520) or run with `--platform OpenCL`.
+  - cuda-version>=12.0,<13
   - openmmforcefields>=0.16.0
   - openff-toolkit-base>=0.17.1
   # openff-pablo runtime deps (per its README: rustworkx for graph algos,
