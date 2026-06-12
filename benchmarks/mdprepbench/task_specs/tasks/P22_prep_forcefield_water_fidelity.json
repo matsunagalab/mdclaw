@@ -39,6 +39,13 @@
         "weight": 0.2
       },
       {
+        "check_id": "water_model_fingerprint_matches_opc",
+        "check_type": "water_model_fingerprint",
+        "required_water_model": "OPC",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
         "$bundle": "topology_minimization"
       }
     ]

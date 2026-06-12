@@ -56,7 +56,34 @@
         "equals": true,
         "json_file": "metrics.json",
         "json_path": "preparation.net_charge_neutralized",
-        "weight": 0.2
+        "weight": 0.1
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "charge_json_file": "metrics.json",
+        "charge_json_path": "preparation.net_charge",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "check_id": "kcl_molarity_recomputed",
+        "check_type": "ion_concentration_recompute",
+        "cation_residue_names": [
+          "K",
+          "K+"
+        ],
+        "anion_residue_names": [
+          "CL",
+          "CL-",
+          "Cl-"
+        ],
+        "target_molar": 0.3,
+        "molar_tolerance": 0.05,
+        "min_ion_count": 2,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.4
       },
       {
         "$bundle": "topology_minimization"

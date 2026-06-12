@@ -229,26 +229,51 @@ def _set_standard_topology_minimization_metrics(metrics: dict[str, Any],
     }
 
 
-def _write_openmm_fixture_bundle(sub_dir: Path, mode: str) -> list[str]:
+def _bundle_recompute_requirements(task: dict[str, Any] | None) -> dict[str, Any]:
+    """Inspect a task for artifact-as-truth recompute checks so the honest
+    fixture can build a bundle that satisfies them (waters, ions, periodic box).
+    """
+    req: dict[str, Any] = {"water_sites": None, "salt_pairs": 0, "target_molar": None}
+    if not task:
+        return req
+    for check in task.get("scoring", {}).get("deterministic_checks", []):
+        ctype = check.get("check_type")
+        if ctype == "water_model_fingerprint":
+            sites = check.get("sites_per_water")
+            if sites is None:
+                model = str(check.get("required_water_model") or "").upper()
+                sites = 4 if model in {"OPC", "TIP4P", "TIP4PEW", "TIP4P-EW"} else 3
+            req["water_sites"] = int(sites)
+        elif ctype == "ion_concentration_recompute":
+            req["salt_pairs"] = max(int(check.get("min_ion_count") or 2) // 2, 2)
+            if check.get("target_molar") is not None:
+                req["target_molar"] = float(check["target_molar"])
+    return req
+
+
+def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
+                                 task: dict[str, Any] | None = None) -> list[str]:
     topo_dir = sub_dir / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
     system_xml = topo_dir / "system.xml"
     topology_pdb = topo_dir / "topology.pdb"
     state_xml = topo_dir / "state.xml"
+    rels = [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
 
     if mode != "honest":
         system_xml.write_text("<not-a-system/>\n")
         topology_pdb.write_text("END\n")
         state_xml.write_text("<not-a-state/>\n")
-        return [
-            "topology/system.xml",
-            "topology/topology.pdb",
-            "topology/state.xml",
-        ]
+        return rels
 
     try:
         from openmm import (
             Context,
+            NonbondedForce,
             Platform,
             System,
             Vec3,
@@ -260,33 +285,74 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str) -> list[str]:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"OpenMM is required for honest benchmark fixtures: {exc}") from exc
 
+    req = _bundle_recompute_requirements(task)
     topology = Topology()
-    chain = topology.addChain("A")
-    residue = topology.addResidue("ALA", chain, "1")
-    topology.addAtom("CA", Element.getBySymbol("C"), residue)
-    positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
-
     system = System()
-    system.addParticle(12.0)
+    nonbonded = NonbondedForce()
+    positions: list = []
+    grid_step = 0.4  # nm; keep atoms apart so the energy stays finite
+
+    def add_atom(name: str, element_symbol: str, resname: str, residue,
+                 charge: float, mass: float) -> None:
+        topology.addAtom(name, Element.getBySymbol(element_symbol), residue)
+        system.addParticle(mass)
+        nonbonded.addParticle(charge, 0.25, 0.1)
+        index = len(positions)
+        positions.append(
+            Vec3((index % 6) * grid_step,
+                 ((index // 6) % 6) * grid_step,
+                 (index // 36) * grid_step)
+        )
+
+    chain = topology.addChain("A")
+    ala = topology.addResidue("ALA", chain, "1")
+    add_atom("CA", "C", "ALA", ala, 0.0, 12.0)
+
+    resseq = 2
+    if req["water_sites"]:
+        sites = int(req["water_sites"])
+        atom_names = ["O", "H1", "H2", "EPW", "EP2"][:sites]
+        for _ in range(3):
+            water = topology.addResidue("HOH", chain, str(resseq))
+            for atom_name in atom_names:
+                element = "O" if atom_name == "O" else ("H" if atom_name.startswith("H") else "C")
+                mass = 0.0 if atom_name.startswith("EP") else (16.0 if element == "O" else 1.0)
+                add_atom(atom_name, element, "HOH", water, 0.0, mass)
+            resseq += 1
+
+    salt_pairs = int(req["salt_pairs"] or 0)
+    for _ in range(salt_pairs):
+        cation = topology.addResidue("K", chain, str(resseq))
+        add_atom("K", "K", "K", cation, 1.0, 39.0)
+        resseq += 1
+        anion = topology.addResidue("CL", chain, str(resseq))
+        add_atom("CL", "Cl", "CL", anion, -1.0, 35.0)
+        resseq += 1
+
+    system.addForce(nonbonded)
+
+    if salt_pairs and req["target_molar"]:
+        avogadro_per_nm3_to_molar = 1.0 / 0.6022140857
+        volume = salt_pairs * avogadro_per_nm3_to_molar / float(req["target_molar"])
+        side = volume ** (1.0 / 3.0)
+        system.setDefaultPeriodicBoxVectors(
+            Vec3(side, 0, 0) * unit.nanometer,
+            Vec3(0, side, 0) * unit.nanometer,
+            Vec3(0, 0, side) * unit.nanometer,
+        )
+
+    positions_q = positions * unit.nanometer
     integrator = VerletIntegrator(1.0 * unit.femtoseconds)
-    context = Context(
-        system,
-        integrator,
-        Platform.getPlatformByName("Reference"),
-    )
-    context.setPositions(positions)
+    context = Context(system, integrator, Platform.getPlatformByName("Reference"))
+    context.setPositions(positions_q)
     state = context.getState(getPositions=True, getEnergy=True)
 
     system_xml.write_text(XmlSerializer.serialize(system))
     state_xml.write_text(XmlSerializer.serialize(state))
     with topology_pdb.open("w") as handle:
-        PDBFile.writeFile(topology, positions, handle, keepIds=True)
+        PDBFile.writeFile(topology, positions_q, handle, keepIds=True)
 
-    return [
-        "topology/system.xml",
-        "topology/topology.pdb",
-        "topology/state.xml",
-    ]
+    return rels
 
 
 def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
@@ -354,7 +420,7 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     _set_standard_topology_minimization_metrics(metrics, mode)
 
     prepared_structure = _prepared_structure(task_dir, task, mode)
-    topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode)
+    topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode, task)
     minimized_structure = prepared_structure if mode == "honest" else "END\n"
     source_selection = _source_selection_for_task(task, mode)
 

@@ -45,10 +45,37 @@ mdclaw export_benchmark_public_package \
 
 For MDPrepBench, the exported contract includes a `submission_blueprint` and
 checklist so agents can build a complete `submission/` directory without seeing
-scorer-only checks. Completed prep submissions are scored with strict artifact
-integrity: unsafe manifest paths, missing OpenMM topology/min outputs, template
-placeholders, or missing provenance execution evidence are hard
-failures.
+scorer-only checks.
+
+## Artifact-as-truth scoring (fairness redesign)
+
+MDPrepBench is agent-neutral: it scores submitted artifacts, not the tools used
+to make them, and the same MDClaw scorer judges every entrant. Key properties:
+
+- **Artifact is the source of truth.** OpenMM is detected by deserializing the
+  `system.xml` + `topology.pdb` + `state.xml` triple, not by a declared backend
+  label. Force-field application, net charge, water-model fingerprint, and ion
+  molarity are recomputed from the artifact; `metrics.json` is a cross-checked
+  declaration and a mismatch is an integrity warning.
+- **Graded scoring.** A small physical-validity gate (loads + finite energy +
+  force field applied + required minimized structure) must pass or the task
+  scores zero. Identity / fidelity / provenance checks then give weighted
+  partial credit and roll up into a per-capability profile.
+- **Slim required set.** `manifest.json`, `metrics.json`, `provenance.json`,
+  `prepared_structure.pdb`, `minimized_structure.pdb`,
+  `minimization_report.json`, and the OpenMM triple. `evidence_report.json` is
+  optional unless a task's contract lists it. Unsafe manifest paths, fabricated
+  or undersized required artifacts, and missing execution evidence remain hard
+  failures.
+- **Comparison conditions.** Each run records a `tooling_condition`
+  (`mdclaw-skills+cli` / `mdclaw-cli-only` / `mdclaw-free` / `unknown`), a
+  machine-readable `attestation.json`, and a `verified` flag. MDClaw-free
+  entrants (MDCrow, plain OpenMM scripts) package their own OpenMM System with
+  `mdclaw package_openmm_submission` or the standalone
+  `benchmarks/tools/package_submission.py`.
+
+See `docs/benchmark/fairness-protocol.md`, `docs/benchmark/capability-coverage.md`,
+`docs/benchmark/mdcrow-runner.md`, and `benchmarks/baselines/README.md`.
 
 For MDStudyBench, the same public-contract helpers are used without prep-only
 topology requirements. S01/S02 require trajectory-backed comparative evidence;

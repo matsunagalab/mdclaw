@@ -235,15 +235,61 @@ Internal submission rules for this skill:
 - Scoring is always separate: evaluated agents stop after writing
   `submission/`; the harness runs scorer commands.
 
-## MDCrow Agent
+## Artifact-As-Truth Contract
 
-Placeholder: run MDCrow from the task prompt, then export the standard
-`submission/` contract. Keep the scorer unchanged.
+The scorer treats the submitted artifact as the source of truth. It detects
+OpenMM by deserializing the `system.xml` + `topology.pdb` + `state.xml` triple
+(not by trusting `metrics.topology.backend`) and recomputes physical properties
+directly from the system: force field applied to every atom, net charge, the
+water-model fingerprint, and ion molarity from the box volume. Declared
+`metrics.json` values are downgraded to cross-checked declarations — a mismatch
+between declared and recomputed becomes an integrity warning, and the recomputed
+value is what scores. Do not rely on writing correct metrics over a wrong
+topology; build the right system.
 
-## Generic Agent
+Scoring is a small physical-validity gate plus graded per-capability partial
+credit. A completed submission that fails to load, has non-finite energy, has no
+force field applied, or is missing the required minimized structure scores zero.
+Otherwise identity / fidelity / provenance checks contribute weighted partial
+credit and roll up into a per-capability profile (`identity`,
+`physical_validity`, `fidelity`, `provenance`) in the score and run summary.
 
-Placeholder: any agent is valid if it solves the prompt, retrieves public
-sources as needed, and writes the standard `submission/` directory.
+The required submission set is slim: `manifest.json`, `metrics.json`,
+`provenance.json`, `prepared_structure.pdb`, `minimized_structure.pdb`,
+`minimization_report.json`, and the OpenMM triple. `evidence_report.json` is
+optional unless a specific task's contract lists it.
+
+## MDCrow / MDClaw-Free Agents
+
+Any agent is valid if it solves the public prompt, retrieves public sources as
+needed, and writes the standard `submission/`. Agents that use no MDClaw code on
+the solver side (MDCrow, a plain OpenMM/pdbfixer script, an LLM writing its own
+OpenMM code) are first-class entrants; the shared MDClaw scorer is the neutral
+judge for everyone.
+
+1. Init the run with `mdclaw init_benchmark_run --tooling-condition mdclaw-free`
+   (and `--harness-name`, `--backend-name`, `--model-name` for the actual
+   toolchain). `prepare_benchmark_run` defaults to `mdclaw-skills+cli`; use it
+   only for MDClaw skill-driven runs. Use `mdclaw-cli-only` when the solver used
+   MDClaw CLI tools without the skills.
+2. Hand the agent only the public `prompt.md` (and `submission_contract.json`).
+   Do not inject task-specific options absent from the prompt.
+3. After the agent builds its OpenMM system, package it into a scorer-valid
+   `submission/`:
+   - MDClaw convenience packager (allowed for `mdclaw-free` — it only reshapes
+     files): `mdclaw package_openmm_submission --submission-dir ... --task-id ...
+     --system-xml-file ... --topology-pdb-file ... --state-xml-file ...
+     --command-log-file ...`.
+   - Standalone no-MDClaw packager (stdlib + OpenMM only):
+     `python benchmarks/tools/package_submission.py --submission-dir ...
+     --task-id ... --system-xml ... --topology-pdb ... --state-xml ...`.
+   Neither packager invents force field, water model, chains, ions, or
+   mutations; undeclared values are recorded as `unspecified` and recomputed
+   from the artifact. Supply the agent's real steps via the command-log option.
+
+See `docs/benchmark/mdcrow-runner.md` for the full MDCrow recipe and
+`docs/benchmark/fairness-protocol.md` for comparison conditions, attestation,
+and the `verified` flag.
 
 ## Scorer
 

@@ -19,6 +19,7 @@ from typing import Any, Optional
 
 from mdclaw.benchmark import integrity
 from mdclaw.benchmark.models import (
+    DEFAULT_CHECK_CAPABILITY,
     SCORE_AXES,
     CheckResult,
     DeterministicCheck,
@@ -29,18 +30,18 @@ from mdclaw.benchmark.models import (
     Task,
 )
 
+# Capability axes used for the per-task capability profile rollup.
+_CAPABILITY_AXES = ("identity", "physical_validity", "fidelity", "provenance")
 
-_CRITICAL_PREP_CHECK_TYPES = {
-    "structure_component_rescan",
-    "pdb_residue_state",
-    "pdb_no_deuterium_atoms",
-    "assembly_identity_check",
-    "candidate_selection_check",
-    "topology_artifact_bundle",
+# The physical-validity gate. If a completed submission fails any of these, the
+# system is not a valid MD system and correctness is clamped to 0 regardless of
+# how many identity/fidelity checks pass. Everything else is graded partial
+# credit. ``minimized_structure_required`` is a contract gate (the required
+# minimized structure artifact must exist).
+_HARD_FAIL_CHECK_TYPES = {
     "openmm_system_load",
     "openmm_energy_rescan",
-    "minimization_report_check",
-    "minimized_structure_component_rescan",
+    "forcefield_applied_rescan",
     "minimized_structure_required",
 }
 
@@ -137,12 +138,19 @@ def score_submission(
     if minimized_required is not None:
         deterministic_results.append(minimized_required)
 
-    critical_failures = [
+    # Artifact-as-truth: the backend label declared in metrics.json is not a
+    # gate. If the agent declared a non-OpenMM backend but the submitted triple
+    # deserializes as OpenMM (or vice versa), record an integrity warning; the
+    # recomputed checks score on the artifact regardless of the label.
+    integrity_warnings.extend(
+        _backend_label_mismatch_warnings(submission_dir, manifest, metrics)
+    )
+
+    # Physical-validity gate: a completed submission that fails to load, has a
+    # non-finite energy, or has no force field applied is not a valid MD system.
+    hard_failures = [
         result for result in deterministic_results
-        if (
-            result.check_type in _CRITICAL_PREP_CHECK_TYPES
-            or result.check_id.startswith("minimized_")
-        ) and not result.passed
+        if result.check_type in _HARD_FAIL_CHECK_TYPES and not result.passed
     ]
 
     # 4. ground-truth checks
@@ -156,6 +164,7 @@ def score_submission(
         task, deterministic_results, ground_truth_results,
         llm_judge_payload=llm_judge_payload,
     )
+    capability_scores = _assemble_capability_scores(deterministic_results)
 
     # 6. apply manifest.status semantics
     weighted_total = _weighted_total(task, axis_scores)
@@ -176,6 +185,10 @@ def score_submission(
             axis: (0.0 if value is not None else None)
             for axis, value in axis_scores.items()
         }
+        capability_scores = {
+            axis: (0.0 if value is not None else None)
+            for axis, value in capability_scores.items()
+        }
 
     # 7b. warn-phase penalty (per-warning -0.05, capped at -0.2). Applies under
     # both policies; under "reject" it just turns 0 into 0.
@@ -183,7 +196,11 @@ def score_submission(
         penalty = min(0.05 * len(integrity_warnings), 0.2)
         weighted_total = max(0.0, weighted_total - penalty)
 
-    if manifest_status == "completed" and critical_failures:
+    # 7c. physical-validity gate. A completed submission that fails the gate is
+    # not a valid MD system; correctness is 0. Identity/fidelity/provenance
+    # failures are graded partial credit (handled by the weighted means above),
+    # not a blanket zero.
+    if manifest_status == "completed" and hard_failures:
         weighted_total = 0.0
         axis_scores = {
             axis: (0.0 if value is not None else None)
@@ -194,7 +211,7 @@ def score_submission(
                                  ground_truth_results)
     if manifest_status == "blocked":
         score_status = "failed"
-    if manifest_status == "completed" and critical_failures:
+    if manifest_status == "completed" and hard_failures:
         score_status = "failed"
     if integrity_rejected:
         # Reject overrides the "any check passed → partial" rule: if the
@@ -214,6 +231,8 @@ def score_submission(
         weighted_total=round(weighted_total, 4),
         scores={k: (round(v, 4) if v is not None else None)
                 for k, v in axis_scores.items()},
+        capability_scores={k: (round(v, 4) if v is not None else None)
+                           for k, v in capability_scores.items()},
         deterministic_checks=deterministic_results,
         ground_truth_checks=ground_truth_results,
         llm_judge=_build_llm_judge_record(task, llm_judge_payload),
@@ -495,42 +514,10 @@ def _check_topology_solvent_rescan(check: DeterministicCheck,
     )
 
 
-def _topology_backend(check: DeterministicCheck,
-                      submission_dir: Path,
-                      metrics: dict,
-                      manifest: Optional[dict] = None) -> str:
-    backend_file = check.topology_backend_json_file or "metrics.json"
-    backend_path = check.topology_backend_json_path or "topology.backend"
-    value = _read_submission_json_path(
-        submission_dir,
-        backend_file,
-        backend_path,
-        metrics_default=metrics,
-        manifest=manifest,
-    )
-    return str(value or "").strip().lower()
-
-
 def _check_topology_artifact_bundle(check: DeterministicCheck,
                                     submission_dir: Path,
                                     manifest: dict,
                                     metrics: dict, **_):
-    backend = _topology_backend(check, submission_dir, metrics, manifest)
-    required_backend = (check.required_topology_backend or "").strip().lower()
-    if required_backend and backend != required_backend:
-        return (
-            False,
-            0.0,
-            f"topology.backend={backend!r} expected {required_backend!r}",
-        )
-    if not required_backend and backend != "openmm":
-        return (
-            False,
-            0.0,
-            "prep battery requires OpenMM topology bundle; "
-            f"topology.backend={backend or 'unspecified'!r}",
-        )
-
     topology_rels = _manifest_artifact_paths(
         manifest, check.topology_manifest_path, "outputs.topology",
     )
@@ -549,41 +536,45 @@ def _check_topology_artifact_bundle(check: DeterministicCheck,
     if missing_files:
         return False, 0.0, f"topology artifacts missing: {missing_files}"
 
-    if backend == "openmm":
-        artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
-        if issues:
-            return False, 0.0, "; ".join(issues)
-        required = set(check.required_topology_artifacts or [
-            "system_xml", "topology_pdb", "state_xml",
-        ])
-        missing_roles = sorted(role for role in required if artifacts.get(role) is None)
-        if missing_roles:
-            return False, 0.0, f"OpenMM topology bundle missing roles: {missing_roles}"
-        return True, 1.0, "OpenMM topology bundle contains system/topology/state artifacts"
+    # Artifact-as-truth: do not trust a declared backend label. Detect OpenMM
+    # by resolving the system/topology/state roles and deserializing them.
+    artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    if issues:
+        return (
+            False,
+            0.0,
+            "prep battery requires a loadable OpenMM topology bundle "
+            f"(system.xml + topology.pdb + state.xml): {'; '.join(issues)}",
+        )
+    required = set(check.required_topology_artifacts or [
+        "system_xml", "topology_pdb", "state_xml",
+    ])
+    missing_roles = sorted(role for role in required if artifacts.get(role) is None)
+    if missing_roles:
+        return False, 0.0, f"OpenMM topology bundle missing roles: {missing_roles}"
 
-    return (
-        True,
-        1.0,
-        f"{backend or 'unspecified'} topology bundle has {len(topology_rels)} artifact(s)",
-    )
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return (
+            False,
+            0.0,
+            f"OpenMM topology bundle does not deserialize: {loaded['message']}",
+        )
+    return True, 1.0, "OpenMM topology bundle contains system/topology/state artifacts"
 
 
 def _check_openmm_system_load(check: DeterministicCheck,
                               submission_dir: Path,
                               manifest: dict,
                               metrics: dict, **_):
-    backend = _topology_backend(check, submission_dir, metrics, manifest)
-    if backend != "openmm":
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
         return (
             False,
             0.0,
-            "prep battery requires OpenMM topology bundle; "
-            f"topology.backend={backend or 'unspecified'!r}",
+            "prep battery requires a loadable OpenMM topology bundle: "
+            f"{loaded['message']}",
         )
-
-    loaded = _load_openmm_bundle(check, submission_dir, manifest)
-    if not loaded["success"]:
-        return False, 0.0, loaded["message"]
     return True, 1.0, loaded["message"]
 
 
@@ -591,18 +582,14 @@ def _check_openmm_energy_rescan(check: DeterministicCheck,
                                 submission_dir: Path,
                                 manifest: dict,
                                 metrics: dict, **_):
-    backend = _topology_backend(check, submission_dir, metrics, manifest)
-    if backend != "openmm":
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
         return (
             False,
             0.0,
-            "prep battery requires OpenMM topology bundle; "
-            f"topology.backend={backend or 'unspecified'!r}",
+            "prep battery requires a loadable OpenMM topology bundle: "
+            f"{loaded['message']}",
         )
-
-    loaded = _load_openmm_bundle(check, submission_dir, manifest)
-    if not loaded["success"]:
-        return False, 0.0, loaded["message"]
 
     try:
         from openmm import LangevinIntegrator, Platform, unit
@@ -718,6 +705,311 @@ def _check_minimization_report(check: DeterministicCheck,
     if issues:
         return False, 0.0, f"minimization report failed required fields: {issues}"
     return True, 1.0, "minimization report confirms completed finite-energy minimization"
+
+
+_DEFAULT_WATER_RESIDUE_NAMES = (
+    "HOH", "WAT", "TIP", "TIP3", "TIP4", "TIP5", "TP3", "TP4", "TP5",
+    "T3P", "T4P", "SPC", "SPCE", "OPC", "OPC3", "SOL",
+)
+_DEFAULT_CATION_RESIDUE_NAMES = ("NA", "NA+", "K", "K+", "LI", "LI+",
+                                 "MG", "MG2+", "CA", "CA2+", "ZN", "ZN2+",
+                                 "CS", "CS+", "RB", "RB+")
+_DEFAULT_ANION_RESIDUE_NAMES = ("CL", "CL-", "BR", "BR-", "I", "I-",
+                                "F", "F-")
+_AVOGADRO_PER_NM3_TO_MOLAR = 1.0 / 0.6022140857  # ions per nm^3 -> mol/L
+
+
+def _nonbonded_force(system: Any) -> Any:
+    try:
+        from openmm import NonbondedForce
+    except Exception:  # noqa: BLE001
+        return None
+    for i in range(system.getNumForces()):
+        force = system.getForce(i)
+        if isinstance(force, NonbondedForce):
+            return force
+    return None
+
+
+def _particle_charges(system: Any) -> Optional[list[float]]:
+    nonbonded = _nonbonded_force(system)
+    if nonbonded is None:
+        return None
+    try:
+        from openmm import unit
+    except Exception:  # noqa: BLE001
+        return None
+    charges: list[float] = []
+    for i in range(nonbonded.getNumParticles()):
+        charge, _sigma, _eps = nonbonded.getParticleParameters(i)
+        charges.append(float(charge.value_in_unit(unit.elementary_charge)))
+    return charges
+
+
+def _check_forcefield_applied_rescan(check: DeterministicCheck,
+                                     submission_dir: Path,
+                                     manifest: dict, **_):
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return (
+            False,
+            0.0,
+            "force-field rescan requires a loadable OpenMM bundle: "
+            f"{loaded['message']}",
+        )
+    system = loaded["system"]
+    n_particles = system.getNumParticles()
+    n_forces = system.getNumForces()
+    min_forces = int(check.min_force_count or 1)
+    if n_forces < min_forces:
+        return (
+            False,
+            0.0,
+            f"system has {n_forces} force(s); a force field applies >= {min_forces}",
+        )
+    nonbonded = _nonbonded_force(system)
+    if nonbonded is None:
+        return (
+            False,
+            0.0,
+            "no NonbondedForce found; force field not applied to the system",
+        )
+    if nonbonded.getNumParticles() != n_particles:
+        return (
+            False,
+            0.0,
+            "NonbondedForce covers "
+            f"{nonbonded.getNumParticles()} of {n_particles} particles",
+        )
+    try:
+        from openmm import unit
+    except Exception as exc:  # noqa: BLE001
+        return False, 0.0, f"OpenMM import failed: {type(exc).__name__}: {exc}"
+    for i in range(n_particles):
+        charge, sigma, epsilon = nonbonded.getParticleParameters(i)
+        for value, name in (
+            (charge.value_in_unit(unit.elementary_charge), "charge"),
+            (sigma.value_in_unit(unit.nanometer), "sigma"),
+            (epsilon.value_in_unit(unit.kilojoule_per_mole), "epsilon"),
+        ):
+            if not math.isfinite(float(value)):
+                return (
+                    False,
+                    0.0,
+                    f"particle {i} has non-finite {name} parameter",
+                )
+    return (
+        True,
+        1.0,
+        f"force field applied: {n_forces} forces, NonbondedForce covers "
+        f"all {n_particles} particles with finite parameters",
+    )
+
+
+def _check_net_charge(check: DeterministicCheck,
+                      submission_dir: Path,
+                      manifest: dict,
+                      metrics: dict, **_):
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return (
+            False,
+            0.0,
+            f"net charge recompute requires a loadable OpenMM bundle: {loaded['message']}",
+        )
+    charges = _particle_charges(loaded["system"])
+    if charges is None:
+        return False, 0.0, "no NonbondedForce charges to sum"
+    total = sum(charges)
+    tol = float(check.charge_tolerance)
+    nearest_int = round(total)
+    if abs(total - nearest_int) > tol:
+        return (
+            False,
+            0.0,
+            f"net charge {total:.4f} e is not near-integer (tol {tol})",
+        )
+    if check.require_neutral and abs(total) > tol:
+        return (
+            False,
+            0.0,
+            f"net charge {total:.4f} e is not neutral (tol {tol})",
+        )
+    if check.target_net_charge is not None and (
+        abs(total - float(check.target_net_charge)) > tol
+    ):
+        return (
+            False,
+            0.0,
+            f"net charge {total:.4f} e != expected {check.target_net_charge} (tol {tol})",
+        )
+    declared = _read_submission_json_path(
+        submission_dir,
+        check.charge_json_file or "metrics.json",
+        check.charge_json_path,
+        metrics_default=metrics,
+        manifest=manifest,
+    ) if check.charge_json_path else None
+    note = ""
+    if declared is not None:
+        try:
+            if abs(float(declared) - total) > max(tol, 0.5):
+                note = (
+                    f" (declared {declared} differs from recomputed {total:.4f})"
+                )
+        except (TypeError, ValueError):
+            note = f" (declared net charge {declared!r} not numeric)"
+    return True, 1.0, f"recomputed net charge {total:.4f} e (rounds to {nearest_int}){note}"
+
+
+def _water_residue_keys(path: Path, water_names: set[str]) -> dict[tuple, int]:
+    """Map each water residue key to its atom count."""
+    counts: dict[tuple, int] = {}
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:20].strip().upper()
+            if resname not in water_names:
+                continue
+            key = (line[21:22].strip(), line[22:26].strip(), line[26:27].strip())
+            counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _check_water_model_fingerprint(check: DeterministicCheck,
+                                   submission_dir: Path,
+                                   manifest: dict, **_):
+    artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    if issues or artifacts.get("topology_pdb") is None:
+        return (
+            False,
+            0.0,
+            f"water fingerprint requires the OpenMM topology.pdb: {'; '.join(issues)}",
+        )
+    topology_pdb = artifacts["topology_pdb"]
+    water_names = {
+        str(n).strip().upper()
+        for n in (check.water_residue_names or _DEFAULT_WATER_RESIDUE_NAMES)
+    }
+    try:
+        residue_atoms = _water_residue_keys(topology_pdb, water_names)
+    except OSError as exc:
+        return False, 0.0, f"could not read topology.pdb: {exc}"
+    if not residue_atoms:
+        return False, 0.0, "no water residues found in topology.pdb"
+    sites = max(residue_atoms.values())
+    family = "3-site" if sites <= 3 else f"{sites}-site"
+    if check.sites_per_water is not None:
+        expected = int(check.sites_per_water)
+        ok = sites == expected
+        return ok, (1.0 if ok else 0.0), (
+            f"water fingerprint {sites} sites/water (expected {expected})"
+        )
+    if check.required_water_model:
+        expected_sites = _water_model_site_count(check.required_water_model)
+        if expected_sites is not None:
+            ok = sites == expected_sites
+            return ok, (1.0 if ok else 0.0), (
+                f"water fingerprint {sites} sites/water; {check.required_water_model} "
+                f"expects {expected_sites} ({'match' if ok else 'mismatch'})"
+            )
+    return True, 1.0, f"water fingerprint: {len(residue_atoms)} waters, {family}"
+
+
+def _water_model_site_count(model: str) -> Optional[int]:
+    name = str(model).strip().upper()
+    three = {"TIP3P", "TIP3", "SPC", "SPC/E", "SPCE", "OPC3", "TIP3P-FB"}
+    four = {"TIP4P", "TIP4PEW", "TIP4P-EW", "TIP4P/2005", "OPC", "TIP4P-FB",
+            "TIP4P-D"}
+    five = {"TIP5P", "TIP5P-EW"}
+    if name in three:
+        return 3
+    if name in four:
+        return 4
+    if name in five:
+        return 5
+    return None
+
+
+def _check_ion_concentration_recompute(check: DeterministicCheck,
+                                       submission_dir: Path,
+                                       manifest: dict,
+                                       metrics: dict, **_):
+    artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    if issues or artifacts.get("topology_pdb") is None:
+        return (
+            False,
+            0.0,
+            f"ion concentration recompute requires topology.pdb: {'; '.join(issues)}",
+        )
+    cation_names = {
+        str(n).strip().upper()
+        for n in (check.cation_residue_names or _DEFAULT_CATION_RESIDUE_NAMES)
+    }
+    anion_names = {
+        str(n).strip().upper()
+        for n in (check.anion_residue_names or _DEFAULT_ANION_RESIDUE_NAMES)
+    }
+    try:
+        counts = _residue_counts_from_pdb(artifacts["topology_pdb"])
+    except OSError as exc:
+        return False, 0.0, f"could not read topology.pdb: {exc}"
+    n_cation = sum(counts.get(n, 0) for n in cation_names)
+    n_anion = sum(counts.get(n, 0) for n in anion_names)
+    n_pairs = min(n_cation, n_anion)
+    if check.min_ion_count is not None and (n_cation + n_anion) < int(check.min_ion_count):
+        return (
+            False,
+            0.0,
+            f"found {n_cation} cations + {n_anion} anions < min {check.min_ion_count}",
+        )
+    volume_nm3 = _state_box_volume_nm3(artifacts.get("state_xml"))
+    if volume_nm3 is None or volume_nm3 <= 0.0:
+        return (
+            False,
+            0.0,
+            "state.xml has no periodic box vectors; cannot recompute molarity",
+        )
+    molar = (n_pairs * _AVOGADRO_PER_NM3_TO_MOLAR) / volume_nm3
+    if check.target_molar is not None:
+        tol = float(check.molar_tolerance)
+        ok = abs(molar - float(check.target_molar)) <= tol
+        return ok, (1.0 if ok else 0.0), (
+            f"recomputed {molar:.3f} M from {n_pairs} ion pairs / {volume_nm3:.2f} nm^3 "
+            f"(expected {check.target_molar} +/- {tol})"
+        )
+    return True, 1.0, (
+        f"recomputed {molar:.3f} M from {n_pairs} ion pairs / {volume_nm3:.2f} nm^3"
+    )
+
+
+def _state_box_volume_nm3(state_xml: Optional[Path]) -> Optional[float]:
+    if state_xml is None or not state_xml.is_file():
+        return None
+    try:
+        from openmm import XmlSerializer, unit
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        state = XmlSerializer.deserialize(state_xml.read_text())
+        vectors = state.getPeriodicBoxVectors()
+    except Exception:  # noqa: BLE001
+        return None
+    if vectors is None:
+        return None
+    try:
+        a, b, c = [v.value_in_unit(unit.nanometer) for v in vectors]
+    except Exception:  # noqa: BLE001
+        return None
+    # Volume of the parallelepiped = a . (b x c).
+    bxc = (
+        b[1] * c[2] - b[2] * c[1],
+        b[2] * c[0] - b[0] * c[2],
+        b[0] * c[1] - b[1] * c[0],
+    )
+    volume = abs(a[0] * bxc[0] + a[1] * bxc[1] + a[2] * bxc[2])
+    return float(volume)
 
 
 def _resolve_openmm_artifacts(check: DeterministicCheck,
@@ -1512,6 +1804,10 @@ _DETERMINISTIC_DISPATCH = {
     "topology_artifact_bundle": _check_topology_artifact_bundle,
     "openmm_system_load": _check_openmm_system_load,
     "openmm_energy_rescan": _check_openmm_energy_rescan,
+    "forcefield_applied_rescan": _check_forcefield_applied_rescan,
+    "net_charge_check": _check_net_charge,
+    "water_model_fingerprint": _check_water_model_fingerprint,
+    "ion_concentration_recompute": _check_ion_concentration_recompute,
     "minimization_report_check": _check_minimization_report,
     "minimized_structure_component_rescan": _check_minimized_structure_component_rescan,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
@@ -1588,6 +1884,56 @@ def _assemble_axis_scores(
                 axes[axis] = max(0.0, min(1.0, float(v)))
     # task.secondary_scores axes without a judge value remain None.
     return axes
+
+
+def _assemble_capability_scores(
+    deterministic: list[CheckResult],
+) -> dict[str, Optional[float]]:
+    """Roll up deterministic checks into a per-capability profile.
+
+    Each check contributes to one capability axis (its ``capability`` field, or
+    the default for its check_type). The capability score is the weighted mean
+    of its checks; axes with no checks are ``None`` (not exercised).
+    """
+    buckets: dict[str, list[CheckResult]] = {axis: [] for axis in _CAPABILITY_AXES}
+    for result in deterministic:
+        axis = DEFAULT_CHECK_CAPABILITY.get(result.check_type or "", "identity")
+        buckets.setdefault(axis, []).append(result)
+    profile: dict[str, Optional[float]] = {axis: None for axis in _CAPABILITY_AXES}
+    for axis, results in buckets.items():
+        if not results:
+            continue
+        profile[axis] = _weighted_mean(results, [])
+    return profile
+
+
+def _backend_label_mismatch_warnings(
+    submission_dir: Path, manifest: dict, metrics: dict,
+) -> list[str]:
+    """Warn when the declared topology backend disagrees with the artifact.
+
+    The label never gates scoring (artifact-as-truth), but a declared/detected
+    mismatch is recorded so auditors can see when an agent mislabeled a bundle.
+    """
+    declared = str(
+        integrity._safe_path(metrics, "topology.backend") or ""
+    ).strip().lower()
+    if not declared:
+        return []
+    loadable = _openmm_bundle_is_loadable(submission_dir, manifest)
+    if declared != "openmm" and loadable:
+        return [
+            f"metrics.topology.backend declared {declared!r} but the submitted "
+            "topology bundle deserializes as OpenMM (scored as OpenMM)"
+        ]
+    return []
+
+
+def _openmm_bundle_is_loadable(submission_dir: Path, manifest: dict) -> bool:
+    probe = DeterministicCheck(
+        check_id="_backend_probe", check_type="openmm_system_load",
+    )
+    return _load_openmm_bundle(probe, submission_dir, manifest)["success"]
 
 
 def _weighted_total(task: Task, axes: dict[str, Optional[float]]) -> float:
@@ -1700,6 +2046,21 @@ def aggregate_run_scores(scores: list[dict[str, Any]],
                 relevant.append(float(v))
         by_axis[axis] = round(statistics.fmean(relevant), 4) if relevant else None
 
+    capability_profile: dict[str, Optional[float]] = {
+        axis: None for axis in _CAPABILITY_AXES
+    }
+    for axis in _CAPABILITY_AXES:
+        relevant = [
+            float(v)
+            for s in scores
+            if isinstance(
+                (v := (s.get("capability_scores") or {}).get(axis)), (int, float)
+            )
+        ]
+        capability_profile[axis] = (
+            round(statistics.fmean(relevant), 4) if relevant else None
+        )
+
     totals = [float(s.get("weighted_total", 0.0) or 0.0) for s in scores]
     overall = round(statistics.fmean(totals), 4) if totals else 0.0
     n_failed = sum(1 for s in scores if s.get("status") != "passed")
@@ -1726,6 +2087,7 @@ def aggregate_run_scores(scores: list[dict[str, Any]],
             "status": s.get("status"),
             "weighted_total": s.get("weighted_total", 0.0),
             "scores": s.get("scores", {}),
+            "capability_scores": s.get("capability_scores", {}),
             "passed_check_ids": passed_ids,
             "failed_check_ids": failed_ids,
             "integrity_warnings": s.get("integrity_warnings", []),
@@ -1736,6 +2098,7 @@ def aggregate_run_scores(scores: list[dict[str, Any]],
         "n_failed_tasks": n_failed,
         "overall_score": overall,
         "scores": by_axis,
+        "capability_scores": capability_profile,
         "task_scores": task_score_records,
         "runtime": runtime,
     }

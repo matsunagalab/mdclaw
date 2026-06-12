@@ -52,15 +52,23 @@ until backend adapters are added.
 
 ### Current Prep Contract
 
-Every P01-P25 task requires these files in the submission directory:
+Every P01-P25 task requires these files in the submission directory (slim
+contract — `evidence_report.json` is optional unless a specific task lists it):
 
 - `manifest.json`
 - `metrics.json`
 - `provenance.json`
-- `evidence_report.json`
 - `prepared_structure.pdb`
 - `minimization_report.json`
 - `minimized_structure.pdb`
+
+Scoring is artifact-as-truth and graded: OpenMM is detected by deserializing the
+triple (not a declared backend label), physical properties (force-field applied,
+net charge, water-model fingerprint, ion molarity) are recomputed from the
+artifact, and a small physical-validity gate plus per-capability partial credit
+replaces blanket pass/fail. Each run records a `tooling_condition`, an
+`attestation.json`, and a `verified` flag. See `docs/benchmark/fairness-protocol.md`
+and `docs/benchmark/capability-coverage.md`.
 
 Every completed prep submission must also set these manifest outputs:
 

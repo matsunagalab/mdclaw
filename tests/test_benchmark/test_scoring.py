@@ -92,6 +92,7 @@ def _write_openmm_bundle(
         Context,
         Platform,
         CustomExternalForce,
+        NonbondedForce,
         System,
         Vec3,
         VerletIntegrator,
@@ -109,6 +110,9 @@ def _write_openmm_bundle(
     pdb_positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
     system = System()
     system.addParticle(12.0)
+    nonbonded = NonbondedForce()
+    nonbonded.addParticle(0.0, 0.1, 0.0)
+    system.addForce(nonbonded)
     if huge_energy:
         force = CustomExternalForce("2000000")
         force.addParticle(0, [])
@@ -713,8 +717,11 @@ def test_candidate_selection_check_requires_structured_source_selection(tmp_path
 
     score = scoring.score_submission(task, tmp_path)
 
-    assert score.status == "failed"
-    assert score.weighted_total == 0.0
+    # Graded scoring: a fidelity/identity miss like a wrong candidate selection
+    # is not a physical-validity gate failure, so it reduces the score
+    # proportionally instead of zeroing the whole task.
+    assert score.status != "passed"
+    assert 0.0 < score.weighted_total < 1.0
     failed = {
         result.check_id: result
         for result in score.deterministic_checks
@@ -1036,7 +1043,7 @@ def test_non_openmm_backend_cannot_skip_openmm_verification(tmp_path: Path):
     assert score.weighted_total == 0.0
     assert all(not result.passed for result in score.deterministic_checks)
     assert all(
-        "requires OpenMM topology bundle" in result.message
+        "loadable OpenMM topology bundle" in result.message
         for result in score.deterministic_checks
     )
 
@@ -1069,7 +1076,7 @@ def test_unspecified_backend_without_openmm_bundle_fails_openmm_verification(
 
     assert score.status == "failed"
     assert score.weighted_total == 0.0
-    assert "requires OpenMM topology bundle" in score.deterministic_checks[0].message
+    assert "loadable OpenMM topology bundle" in score.deterministic_checks[0].message
 
 
 def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):

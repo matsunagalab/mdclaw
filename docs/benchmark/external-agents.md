@@ -106,9 +106,12 @@ Required files vary by task. Evaluator or harness code can read
   artifacts.
 - `metrics.json`: deterministic values such as topology backend, force-field,
   minimization completion, finite energy / coordinate checks, ligand RMSD, or
-  analysis summary values.
-- `evidence_report.json`: preparation decisions, evidence, limitations, and
-  any non-default chemistry choices.
+  analysis summary values. These are declarations the scorer cross-checks
+  against values recomputed from the artifact; the recomputed value is what
+  scores.
+- `evidence_report.json` (optional under the slim contract): preparation
+  decisions, evidence, limitations, and any non-default chemistry choices.
+  Required only when a specific task's contract lists it.
 - `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
   md5 records when available. Completed prep submissions must include a
   structured `command_log` or equivalent execution log covering `source`,
@@ -178,12 +181,27 @@ files, and your `submission/` files.
   topology artifact completeness, and minimization evidence. Completed prep
   submissions must provide an OpenMM topology bundle, which is reloaded for
   finite-energy rescans.
-- MDPrepBench v0.1 treats artifact integrity warnings as hard failures for
-  completed submissions: unsafe manifest paths, template placeholder outputs,
-  missing topology/minimization artifacts, and missing execution evidence clamp
-  the score to zero.
+- Artifact-as-truth: OpenMM is detected by deserializing the
+  `system.xml` + `topology.pdb` + `state.xml` triple, not by trusting a declared
+  `topology.backend` label. Force-field application, net charge, water-model
+  fingerprint, and ion molarity are recomputed from the artifact; `metrics.json`
+  is a cross-checked declaration and a declared-vs-recomputed mismatch is an
+  integrity warning (the recomputed value scores). A declared non-OpenMM backend
+  whose bundle still deserializes as OpenMM is scored as OpenMM with a warning.
+- Graded scoring: a small physical-validity gate (system loads, finite energy,
+  force field applied to every atom, required minimized structure present) must
+  pass or the task scores zero. Identity/fidelity/provenance checks then give
+  weighted partial credit, rolled up into a per-capability profile.
+- Integrity rejection stays hard: unsafe manifest paths, fabricated or
+  undersized required artifacts, and missing execution evidence clamp the score
+  to zero.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
+- The contract never requires any MDClaw-specific field, so MDClaw-free agents
+  (MDCrow, plain OpenMM/pdbfixer scripts) are scored identically. Package an
+  agent's own OpenMM System with `mdclaw package_openmm_submission` or the
+  standalone `benchmarks/tools/package_submission.py`; see
+  `docs/benchmark/mdcrow-runner.md` and `docs/benchmark/fairness-protocol.md`.
 
 For leaderboard-style runs, JSON claims are never enough when a task asks for
 MD preparation artifacts. The manifest must point at the real prepared

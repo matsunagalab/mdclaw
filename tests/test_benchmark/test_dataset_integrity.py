@@ -134,11 +134,13 @@ def test_prep_tasks_require_topology_and_minimization_contract():
         "topology_artifact_bundle",
         "openmm_system_load",
         "openmm_energy_rescan",
+        "forcefield_applied_rescan",
         "minimization_report_check",
     }
+    # Slim contract: evidence_report.json is no longer a required core artifact,
+    # so the evidence-report byte-floor / template-marker integrity checks are
+    # gone. The structural integrity floor + execution-evidence checks stay.
     required_integrity_check_types = {
-        "artifact_min_bytes",
-        "template_markers",
         "status_artifact_floor",
         "provenance_execution_evidence",
     }

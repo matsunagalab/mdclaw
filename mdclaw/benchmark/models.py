@@ -40,6 +40,18 @@ TaskCategory = Literal[
 ExecutionMode = Literal["lite", "dry_run", "plan_only"]
 JudgeMode = Literal["deterministic", "llm_judge"]
 
+# How much MDClaw tooling the *solver* used. The shared MDClaw scorer judges
+# every entrant regardless of condition; this only describes the solve side.
+# - mdclaw-skills+cli: full MDClaw (skills + CLI tools).
+# - mdclaw-cli-only:   MDClaw CLI tools, no skills.
+# - mdclaw-free:       the solver imports/calls no MDClaw at all.
+ToolingCondition = Literal[
+    "mdclaw-skills+cli",
+    "mdclaw-cli-only",
+    "mdclaw-free",
+    "unknown",
+]
+
 SubmissionStatus = Literal["completed", "partial", "failed", "blocked"]
 ScoreStatus = Literal["passed", "partial", "failed"]
 
@@ -63,10 +75,58 @@ DeterministicCheckType = Literal[
     "topology_artifact_bundle",
     "openmm_system_load",
     "openmm_energy_rescan",
+    "forcefield_applied_rescan",
+    "net_charge_check",
+    "water_model_fingerprint",
+    "ion_concentration_recompute",
     "minimization_report_check",
     "minimized_structure_component_rescan",
     "metrics_caption_consistency",
 ]
+
+# Capability axis a deterministic check contributes to. The scorer groups
+# per-check results by capability to produce a capability profile, and the
+# physical-validity subset acts as a hard gate (see scoring._HARD_FAIL_CHECK_TYPES).
+CheckCapability = Literal[
+    "identity",
+    "physical_validity",
+    "fidelity",
+    "provenance",
+]
+
+# Default capability for each deterministic check_type when a task does not set
+# one explicitly. "identity" = right components built; "physical_validity" =
+# the system is a sane MD system; "fidelity" = honored an explicit request;
+# "provenance" = self-reported rationale/trace.
+DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
+    "required_files": "provenance",
+    "forbidden_files": "identity",
+    "json_equals": "fidelity",
+    "json_max": "fidelity",
+    "json_min": "fidelity",
+    "json_min_length": "provenance",
+    "json_allowed_values": "fidelity",
+    "trajectory_rescan": "physical_validity",
+    "topology_solvent_rescan": "identity",
+    "structure_component_rescan": "identity",
+    "pdb_no_deuterium_atoms": "identity",
+    "pdb_residue_state": "identity",
+    "rmsd_recompute": "fidelity",
+    "assembly_identity_check": "identity",
+    "candidate_selection_check": "fidelity",
+    "artifact_provenance_text": "provenance",
+    "topology_artifact_bundle": "physical_validity",
+    "openmm_system_load": "physical_validity",
+    "openmm_energy_rescan": "physical_validity",
+    "forcefield_applied_rescan": "physical_validity",
+    "net_charge_check": "physical_validity",
+    "water_model_fingerprint": "fidelity",
+    "ion_concentration_recompute": "fidelity",
+    "minimization_report_check": "physical_validity",
+    "minimized_structure_component_rescan": "identity",
+    "metrics_caption_consistency": "provenance",
+    "minimized_structure_required": "physical_validity",
+}
 
 # Artifact-integrity checks run before deterministic checks and produce
 # warnings (and optionally a reject-phase clamp). They look at the bytes of
@@ -118,6 +178,10 @@ class DeterministicCheck(BaseModel):
     check_id: str
     check_type: DeterministicCheckType
     weight: float = Field(ge=0.0, le=1.0, default=1.0)
+
+    # Capability axis this check contributes to in the capability profile.
+    # When None, the scorer falls back to DEFAULT_CHECK_CAPABILITY[check_type].
+    capability: Optional[CheckCapability] = None
 
     # Common: which submission file to read
     json_file: Optional[str] = None
@@ -215,6 +279,38 @@ class DeterministicCheck(BaseModel):
 
     # metrics_caption_consistency: numeric tolerance (relative)
     relative_tolerance: float = 0.01
+
+    # ----- artifact-as-truth recompute checks (v1.1) -----
+    # These re-derive physical properties from the OpenMM artifact triple and
+    # treat metrics.json as a declaration to cross-check, not as truth.
+
+    # forcefield_applied_rescan: require every particle to carry NonbondedForce
+    # parameters (charge/sigma/epsilon) and the system to have >= this many forces.
+    min_force_count: Optional[int] = None
+
+    # net_charge_check: sum NonbondedForce particle charges and assert the total
+    # is near-integer; if require_neutral, assert near-zero. Optional declared
+    # cross-check via charge_json_file/charge_json_path.
+    require_neutral: bool = False
+    target_net_charge: Optional[float] = None
+    charge_tolerance: float = 0.05
+    charge_json_file: Optional[str] = None
+    charge_json_path: Optional[str] = None
+
+    # water_model_fingerprint: classify water by particles-per-water and
+    # virtual-site presence (3-site vs 4/5-site), then cross-check against the
+    # requested family. sites_per_water is the requested particles-per-water.
+    required_water_model: Optional[str] = None
+    sites_per_water: Optional[int] = None
+
+    # ion_concentration_recompute: count cation/anion residues in the topology
+    # and read box vectors from state.xml to compute molarity, comparing to the
+    # requested value within molar_tolerance and (optionally) asserting neutrality.
+    cation_residue_names: Optional[list[str]] = None
+    anion_residue_names: Optional[list[str]] = None
+    target_molar: Optional[float] = None
+    molar_tolerance: float = 0.05
+    min_ion_count: Optional[int] = None
 
 
 class GroundTruthCheck(BaseModel):
@@ -410,6 +506,10 @@ class Score(BaseModel):
     status: ScoreStatus
     weighted_total: float = Field(ge=0.0, le=1.0)
     scores: dict[str, Optional[float]] = Field(default_factory=dict)
+    # Per-capability profile (identity / physical_validity / fidelity /
+    # provenance) derived from the weighted mean of checks tagged with each
+    # capability. None means the capability was not exercised by this task.
+    capability_scores: dict[str, Optional[float]] = Field(default_factory=dict)
     deterministic_checks: list[CheckResult] = Field(default_factory=list)
     ground_truth_checks: list[CheckResult] = Field(default_factory=list)
     llm_judge: LLMJudgeResult = Field(default_factory=LLMJudgeResult)
@@ -472,8 +572,31 @@ class RunConfig(BaseModel):
     harness: HarnessInfo = Field(default_factory=HarnessInfo)
     model: ModelInfo = Field(default_factory=ModelInfo)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
+    tooling_condition: ToolingCondition = "unknown"
     task_ids: list[str] = Field(default_factory=list)
     dataset_dir: Optional[str] = None
+
+
+class Attestation(BaseModel):
+    """Machine-readable declaration of the conditions a run executed under.
+
+    Written next to the run config so any third party can audit that two runs
+    used the same public package + scorer and that no task-specific hints were
+    injected into the solver. The scorer records its presence/consistency and
+    marks runs without it ``verified=false``.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    schema_version: SchemaVersion = "1.0"
+    run_id: str = ""
+    benchmark_version: str = DEFAULT_BENCHMARK_VERSION
+    scorer: str = "mdclaw"
+    scorer_version: str = ""
+    public_package_sha256: str = ""
+    tooling_condition: ToolingCondition = "unknown"
+    no_task_specific_hints_injected: bool = True
+    created_at: str = ""
 
 
 class RunSummary(BaseModel):
@@ -486,9 +609,13 @@ class RunSummary(BaseModel):
     backend: BackendInfo = Field(default_factory=BackendInfo)
     harness: HarnessInfo = Field(default_factory=HarnessInfo)
     model: ModelInfo = Field(default_factory=ModelInfo)
+    tooling_condition: ToolingCondition = "unknown"
+    verified: bool = False
+    attestation: Optional[Attestation] = None
     n_tasks: int = 0
     n_failed_tasks: int = 0
     overall_score: float = 0.0
     scores: dict[str, Optional[float]] = Field(default_factory=dict)
+    capability_scores: dict[str, Optional[float]] = Field(default_factory=dict)
     task_scores: list[dict] = Field(default_factory=list)
     runtime: dict = Field(default_factory=dict)

@@ -7,6 +7,7 @@ re-running summarize does not stack duplicate rows.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
@@ -29,6 +30,7 @@ from mdclaw.benchmark.datasets import (
     resolve_dataset_dir,
 )
 from mdclaw.benchmark.models import (
+    Attestation,
     BackendInfo,
     BudgetSpec,
     HarnessInfo,
@@ -49,6 +51,49 @@ _list_task_ids = list_task_ids
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _directory_sha256(root: Path) -> str:
+    """Order-independent content hash of every file under ``root``.
+
+    Used to fingerprint the exported public task package so auditors can
+    confirm two runs solved the identical public prompts/contracts.
+    """
+    if not root.is_dir():
+        return ""
+    digest = hashlib.sha256()
+    for path in sorted(p for p in root.rglob("*") if p.is_file()):
+        rel = path.relative_to(root).as_posix()
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _write_attestation(
+    run_dir: Path,
+    *,
+    run_id: str,
+    benchmark_version: str,
+    tooling_condition: str,
+    public_package_sha256: str = "",
+    no_task_specific_hints_injected: bool = True,
+) -> dict[str, Any]:
+    """Write ``attestation.json`` and return its payload."""
+    attestation = Attestation(
+        run_id=run_id,
+        benchmark_version=benchmark_version,
+        scorer="mdclaw",
+        scorer_version=MDCLAW_VERSION,
+        public_package_sha256=public_package_sha256,
+        tooling_condition=tooling_condition,
+        no_task_specific_hints_injected=no_task_specific_hints_injected,
+        created_at=_now_utc(),
+    )
+    payload = attestation.model_dump()
+    _write_json(run_dir / "attestation.json", payload)
+    return payload
 
 
 def _environment_record() -> dict[str, Any]:
@@ -178,12 +223,16 @@ def init_benchmark_run(
     max_simulation_ns: float = 0.0,
     task_ids: Optional[list[str]] = None,
     dataset_dir: str = _DEFAULT_DATASET_DIR,
+    tooling_condition: str = "unknown",
 ) -> dict[str, Any]:
     """Create a benchmark run skeleton on disk and append a row to runs.jsonl.
 
     ``backend_*`` describes the MD engine/toolchain under test, ``harness_*``
     describes the agent runner, and ``model_*`` describes the LLM or model when
     applicable. The scorer itself is recorded separately in ``environment.json``.
+    ``tooling_condition`` records how much MDClaw tooling the *solver* used
+    (``mdclaw-skills+cli`` / ``mdclaw-cli-only`` / ``mdclaw-free`` /
+    ``unknown``); it never changes the scoring, only the comparison grouping.
 
     Returns a JSON-serializable dict (preserving the v0.1 CLI contract).
     """
@@ -217,6 +266,7 @@ def init_benchmark_run(
             max_tokens_per_task=max_tokens_per_task,
             max_simulation_ns=max_simulation_ns,
         ),
+        tooling_condition=tooling_condition,
         task_ids=task_ids,
         dataset_dir=str(dataset),
     )
@@ -224,6 +274,12 @@ def init_benchmark_run(
     cfg_payload["benchmark_version"] = benchmark_version
     _write_json(run_dir / "run_config.json", cfg_payload)
     _write_json(run_dir / "environment.json", _environment_record())
+    attestation_payload = _write_attestation(
+        run_dir,
+        run_id=run_id,
+        benchmark_version=benchmark_version,
+        tooling_condition=tooling_condition,
+    )
 
     _write_jsonl_dedup(
         Path(output_dir) / "runs.jsonl",
@@ -246,6 +302,8 @@ def init_benchmark_run(
         "run_dir": str(run_dir),
         "run_config": str(run_dir / "run_config.json"),
         "environment": str(run_dir / "environment.json"),
+        "attestation": str(run_dir / "attestation.json"),
+        "attestation_record": attestation_payload,
     }
 
 
@@ -270,12 +328,16 @@ def prepare_benchmark_run(
     max_tokens_per_task: int = 0,
     max_simulation_ns: float = 0.0,
     public_package_dir: Optional[str] = None,
+    tooling_condition: str = "mdclaw-skills+cli",
 ) -> dict[str, Any]:
     """Create a benchmark run workspace plus agent-safe task package.
 
     This is the MDClaw-side convenience entry point. It preserves the
     agent-agnostic benchmark boundary: agents get prompt/contract files and a
     submission directory, while canonical ``task.json`` remains for the scorer.
+    The default ``tooling_condition`` is ``mdclaw-skills+cli`` because this
+    helper hands the solver the MDClaw skill prompts; MDClaw-free entrants
+    should init their run with ``tooling_condition="mdclaw-free"`` instead.
     """
     if task_ids is None:
         task_ids = _list_task_ids(dataset_dir)
@@ -300,6 +362,7 @@ def prepare_benchmark_run(
         max_simulation_ns=max_simulation_ns,
         task_ids=task_ids,
         dataset_dir=dataset_dir,
+        tooling_condition=tooling_condition,
     )
     if not init.get("success"):
         return init
@@ -329,6 +392,17 @@ def prepare_benchmark_run(
             "errors": public_export.get("errors", []),
             "public_export": public_export,
         }
+
+    # Now that the public package exists, fingerprint it into the attestation so
+    # auditors can confirm runs solved the identical public prompts/contracts.
+    benchmark_version = _benchmark_version_for_dataset(str(dataset))
+    _write_attestation(
+        run_dir,
+        run_id=init["run_id"],
+        benchmark_version=benchmark_version,
+        tooling_condition=tooling_condition,
+        public_package_sha256=_directory_sha256(public_dir),
+    )
 
     task_instructions: list[dict[str, Any]] = []
     harness_instructions: list[dict[str, Any]] = []
@@ -481,6 +555,10 @@ def summarize_benchmark_run(
         scores.append(score_payload)
         tasks.append(task_contract)
 
+    attestation_payload, verified, tooling_condition = _resolve_attestation(
+        rd, cfg_payload,
+    )
+
     aggregate = scoring.aggregate_run_scores(scores, tasks)
     summary = RunSummary(
         run_id=cfg_payload.get("run_id", ""),
@@ -490,10 +568,14 @@ def summarize_benchmark_run(
         backend=BackendInfo(**(cfg_payload.get("backend") or {})),
         harness=HarnessInfo(**(cfg_payload.get("harness") or {})),
         model=ModelInfo(**(cfg_payload.get("model") or {})),
+        tooling_condition=tooling_condition,
+        verified=verified,
+        attestation=attestation_payload,
         n_tasks=aggregate["n_tasks"],
         n_failed_tasks=aggregate["n_failed_tasks"],
         overall_score=aggregate["overall_score"],
         scores=aggregate["scores"],
+        capability_scores=aggregate.get("capability_scores", {}),
         task_scores=aggregate["task_scores"],
         runtime=aggregate["runtime"],
         benchmark_version=benchmark_version,
@@ -603,6 +685,46 @@ def score_benchmark_run(
             for item in failed
         ],
     }
+
+
+def _resolve_attestation(
+    run_dir: Path, cfg_payload: dict[str, Any],
+) -> tuple[Optional[Attestation], bool, str]:
+    """Load ``attestation.json`` and decide whether the run is ``verified``.
+
+    A run is ``verified`` only when the attestation is present, names the
+    ``mdclaw`` scorer, carries a public-package hash, and (when the exported
+    ``public_tasks`` directory is still on disk) that hash matches a fresh
+    recompute. The tooling condition falls back to the run config and then to
+    ``unknown``. Verification never alters the capability scores; it only flags
+    auditability for the comparison records.
+    """
+    cfg_condition = str(cfg_payload.get("tooling_condition") or "unknown")
+    att_path = run_dir / "attestation.json"
+    if not att_path.is_file():
+        return None, False, cfg_condition
+
+    try:
+        att_raw = json.loads(att_path.read_text())
+    except json.JSONDecodeError:
+        return None, False, cfg_condition
+
+    try:
+        attestation = Attestation(**att_raw)
+    except Exception:
+        return None, False, cfg_condition
+
+    condition = attestation.tooling_condition or cfg_condition
+    verified = (
+        attestation.scorer == "mdclaw"
+        and bool(attestation.public_package_sha256)
+    )
+    public_dir = run_dir / "public_tasks"
+    if verified and public_dir.is_dir():
+        verified = (
+            _directory_sha256(public_dir) == attestation.public_package_sha256
+        )
+    return attestation, verified, condition
 
 
 def _lookup_task_contract(task_id: str, cfg_payload: dict[str, Any]

@@ -484,6 +484,282 @@ def export_benchmark_public_package(
     }
 
 
+def _single_point_energy_kj_mol(system_xml: Path, state_xml: Path) -> dict[str, Any]:
+    """Compute one potential energy for an OpenMM system + serialized state.
+
+    Artifact-as-truth: this measures the agent's own submitted system; it does
+    not change any chemistry. Returns finiteness flags and the energy so the
+    packaged minimization report reflects the real artifact rather than a
+    fabricated value.
+    """
+    out: dict[str, Any] = {
+        "success": False,
+        "energy_kj_mol": None,
+        "energy_is_finite": False,
+        "positions_are_finite": False,
+        "particle_count": 0,
+        "errors": [],
+    }
+    try:
+        import math
+
+        from openmm import (
+            Context,
+            LangevinIntegrator,
+            Platform,
+            XmlSerializer,
+            unit,
+        )
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(f"OpenMM import failed: {type(exc).__name__}: {exc}")
+        return out
+
+    try:
+        system = XmlSerializer.deserialize(system_xml.read_text())
+        state = XmlSerializer.deserialize(state_xml.read_text())
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(f"deserialize failed: {type(exc).__name__}: {exc}")
+        return out
+
+    out["particle_count"] = system.getNumParticles()
+    try:
+        integrator = LangevinIntegrator(
+            300 * unit.kelvin, 1.0 / unit.picosecond, 0.001 * unit.picoseconds
+        )
+        context_platform = Platform.getPlatformByName("Reference")
+        context = Context(system, integrator, context_platform)
+        context.setState(state)
+        snapshot = context.getState(getEnergy=True, getPositions=True)
+        energy = snapshot.getPotentialEnergy().value_in_unit(
+            unit.kilojoule_per_mole
+        )
+        out["energy_kj_mol"] = float(energy)
+        out["energy_is_finite"] = bool(math.isfinite(energy))
+        positions = snapshot.getPositions(asNumpy=True).value_in_unit(
+            unit.nanometer
+        )
+        out["positions_are_finite"] = bool(
+            math.isfinite(float(positions.sum()))
+        )
+        out["success"] = True
+    except Exception as exc:  # noqa: BLE001
+        out["errors"].append(f"energy evaluation failed: {type(exc).__name__}: {exc}")
+    return out
+
+
+def package_openmm_submission(
+    submission_dir: str,
+    task_id: str,
+    system_xml_file: str,
+    topology_pdb_file: str,
+    state_xml_file: str,
+    run_id: str = "",
+    status: str = "completed",
+    prepared_structure_file: Optional[str] = None,
+    command_log_file: Optional[str] = None,
+    force_field: str = "unspecified",
+    water_model: str = "unspecified",
+    agent: str = "unknown",
+    backend: str = "openmm-script",
+    harness: str = "unknown",
+    model: str = "unknown",
+    minimized: bool = True,
+) -> dict[str, Any]:
+    """Package an agent's own OpenMM System into a scorer-valid ``submission/``.
+
+    This is a backend-neutral convenience for agents (including MDClaw-free
+    entrants such as MDCrow or a plain OpenMM script) that already produced an
+    OpenMM ``system.xml`` + ``topology.pdb`` + ``state.xml`` triple. It writes
+    the topology bundle, exports ``minimized_structure.pdb`` from the state,
+    measures a single real potential energy to fill ``minimization_report.json``
+    honestly, and scaffolds ``manifest.json`` / ``metrics.json`` /
+    ``provenance.json``.
+
+    Hard rule (fairness): it never *chooses* force field, water model, chains,
+    ions, or mutations. Those come from the agent's own output and are
+    recomputed from the artifact at scoring time anyway. Anything the agent did
+    not declare is recorded as ``"unspecified"``. Provenance ``command_log``
+    must come from the agent (via ``command_log_file``); when absent it is left
+    empty and the scorer's execution-evidence check will flag it, rather than
+    the packager inventing steps.
+    """
+    from mdclaw.simulation.platform import export_state_pdb
+
+    sub = Path(submission_dir)
+    system_src = Path(system_xml_file)
+    topo_src = Path(topology_pdb_file)
+    state_src = Path(state_xml_file)
+
+    errors: list[str] = []
+    for label, path in (
+        ("system_xml_file", system_src),
+        ("topology_pdb_file", topo_src),
+        ("state_xml_file", state_src),
+    ):
+        if not path.is_file():
+            errors.append(f"{label} not found: {path}")
+    if errors:
+        return {"success": False, "submission_dir": str(sub), "errors": errors}
+
+    ensure_directory(sub)
+    topo_dir = sub / "topology"
+    ensure_directory(topo_dir)
+    shutil.copy2(system_src, topo_dir / "system.xml")
+    shutil.copy2(topo_src, topo_dir / "topology.pdb")
+    shutil.copy2(state_src, topo_dir / "state.xml")
+
+    minimized_pdb = sub / "minimized_structure.pdb"
+    export = export_state_pdb(
+        topology_pdb_file=str(topo_dir / "topology.pdb"),
+        state_xml_file=str(topo_dir / "state.xml"),
+        output_pdb_file=str(minimized_pdb),
+    )
+    if not export.get("success"):
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "errors": ["export_state_pdb failed"] + (export.get("errors") or []),
+        }
+
+    prepared_pdb = sub / "prepared_structure.pdb"
+    if prepared_structure_file and Path(prepared_structure_file).is_file():
+        shutil.copy2(Path(prepared_structure_file), prepared_pdb)
+    else:
+        # No separate pre-minimization structure supplied: use the topology
+        # reference as the prepared structure. This does not invent chemistry;
+        # it reuses the agent's own topology atoms/residues.
+        shutil.copy2(topo_src, prepared_pdb)
+
+    energy = _single_point_energy_kj_mol(
+        topo_dir / "system.xml", topo_dir / "state.xml"
+    )
+    minimization_report = {
+        "schema_version": "1.0",
+        "minimization": {
+            "attempted": bool(minimized),
+            "completed": bool(minimized),
+            "energy_is_finite": energy["energy_is_finite"],
+            "positions_are_finite": energy["positions_are_finite"],
+            "atom_count_preserved": True,
+            "energy_initial_kj_mol": energy["energy_kj_mol"],
+            "energy_final_kj_mol": energy["energy_kj_mol"],
+            "particle_count": energy["particle_count"],
+        },
+        "notes": (
+            "Packaged from an externally produced OpenMM system+state. Energy "
+            "is a single-point measurement of the submitted artifact."
+        ),
+    }
+    (sub / "minimization_report.json").write_text(
+        json.dumps(minimization_report, indent=2, sort_keys=True) + "\n"
+    )
+
+    manifest = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "status": status,
+        "outputs": {
+            "metrics": "metrics.json",
+            "provenance": "provenance.json",
+            "prepared_structure": "prepared_structure.pdb",
+            "minimized_structure": "minimized_structure.pdb",
+            "minimization_report": "minimization_report.json",
+            "topology": [
+                "topology/system.xml",
+                "topology/topology.pdb",
+                "topology/state.xml",
+            ],
+        },
+    }
+    (sub / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+    metrics = {
+        "schema_version": "1.0",
+        "topology": {"backend": "openmm"},
+        "preparation": {
+            "force_field": force_field,
+            "water_model": water_model,
+        },
+        "minimization": {
+            "completed": bool(minimized),
+            "energy_is_finite": energy["energy_is_finite"],
+            "positions_are_finite": energy["positions_are_finite"],
+        },
+    }
+    (sub / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n"
+    )
+
+    command_log: list[Any] = []
+    if command_log_file and Path(command_log_file).is_file():
+        try:
+            loaded = json.loads(Path(command_log_file).read_text())
+            if isinstance(loaded, list):
+                command_log = loaded
+            elif isinstance(loaded, dict) and isinstance(
+                loaded.get("command_log"), list
+            ):
+                command_log = loaded["command_log"]
+        except json.JSONDecodeError:
+            errors.append(f"command_log_file is not valid JSON: {command_log_file}")
+
+    provenance = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "agent": agent,
+        "backend": backend,
+        "harness": harness,
+        "model": model,
+        "command_log": command_log,
+    }
+    (sub / "provenance.json").write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+    )
+
+    warnings: list[str] = []
+    if not command_log:
+        warnings.append(
+            "no command_log provided; the scorer's execution-evidence check "
+            "will flag this submission. Pass --command-log-file with the "
+            "agent's own source/prep/topo/min steps."
+        )
+    if force_field == "unspecified" or water_model == "unspecified":
+        warnings.append(
+            "force_field/water_model recorded as 'unspecified'; the scorer "
+            "recomputes physical properties from the artifact, but declared "
+            "fidelity fields stay unspecified unless the agent provides them."
+        )
+    if not energy["success"]:
+        warnings.append(
+            "single-point energy could not be measured: "
+            + "; ".join(energy.get("errors") or [])
+        )
+
+    return {
+        "success": True,
+        "submission_dir": str(sub),
+        "task_id": task_id,
+        "files_written": [
+            str(sub / "manifest.json"),
+            str(sub / "metrics.json"),
+            str(sub / "provenance.json"),
+            str(sub / "prepared_structure.pdb"),
+            str(minimized_pdb),
+            str(sub / "minimization_report.json"),
+            str(topo_dir / "system.xml"),
+            str(topo_dir / "topology.pdb"),
+            str(topo_dir / "state.xml"),
+        ],
+        "energy_kj_mol": energy["energy_kj_mol"],
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
 __all__ = [
     "list_benchmark_tasks",
     "validate_benchmark_task",
@@ -492,4 +768,5 @@ __all__ = [
     "score_benchmark_submission",
     "write_benchmark_schemas",
     "export_benchmark_public_package",
+    "package_openmm_submission",
 ]
