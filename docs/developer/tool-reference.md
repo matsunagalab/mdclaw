@@ -195,8 +195,13 @@ skill examples.
 
 - `inspect_cluster(...)`: discover partitions, GPUs, and local policy.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
+  When the run command requests a GPU OpenMM platform (`--platform CUDA`/
+  `OpenCL`) but no `--gpus`/`--gres` is given, it auto-sets `--gpus 1` (warning
+  emitted) so a CUDA run is never scheduled on a CPU-only node.
 - `submit_array_job(...)`: submit one SLURM array where each task maps to a DAG
-  node command.
+  node command. Shares the same `--platform`-driven GPU autodetection as
+  `submit_job`; a single GPU-platform task command flips the whole array to
+  `--gpus 1`.
 - `check_job(...)`: sync SLURM state and reflect failures into linked nodes.
 - `list_jobs(...)`, `cancel_job(...)`, `check_job_log(...)`: operational
   helpers.

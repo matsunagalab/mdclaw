@@ -28,6 +28,13 @@ mdclaw submit_job \
   --time-limit "00:30:00" --memory "32G"
 ```
 
+The `--platform CUDA` in each run command is what makes these GPU jobs: when it
+is present and you pass neither `--gpus` nor `--gres`, `submit_job` auto-adds
+`--gpus 1` (with a warning) and prefers a GPU partition. The `--partition gpu
+--gpus 1` above are therefore explicit-and-recommended, not required — keep them
+for clarity, raise `--gpus N` for multi-GPU, or use `--gres gpu:<type>:1` on
+clusters that require GRES form.
+
 Do not pass `--system-xml-file`, `--topology-pdb-file`, `--state-xml-file`, or `--restart-from` in normal DAG
 commands. The compute-node CLI resolves topology and restart inputs from the DAG.
 

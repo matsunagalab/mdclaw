@@ -41,3 +41,12 @@ its inputs from the DAG.
   running inside the job owns the final `complete_node` call.
 - Use arrays only for homogeneous, low-failure task sets. Use individual jobs
   with dependencies when failure isolation matters.
+- GPU resources stay in sync with the OpenMM platform automatically. When a
+  node's run command uses `--platform CUDA` (or `--platform OpenCL`) and you
+  pass neither `--gpus` nor `--gres`, `submit_job` / `submit_array_job` auto-set
+  `--gpus 1` and emit a warning, so a CUDA run never lands on a CPU-only node.
+  On a GPU cluster, default `min`/`eq`/`prod` to `--platform CUDA` so they
+  request a GPU. Pass `--gpus N` for multi-GPU, or `--gres gpu:<type>:N` on
+  clusters that require GRES form (`--gres` also suppresses the autodetection).
+  `--platform auto` does NOT trigger a GPU request on HPC: without an allocated
+  GPU it falls back to CPU, so make GPU intent explicit with `--platform CUDA`.
