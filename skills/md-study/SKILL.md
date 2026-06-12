@@ -342,7 +342,9 @@ attached to the study and is auditable when results come back.
 13. Handoff:
 
     - **`autonomous`**: Invoke the next-stage skill on the first registered
-      structural-setup job. Choose by current job state:
+      structural-setup job. Determine the current job state with
+      `mdclaw plan_next --job-dir <job_dir>` rather than guessing — its
+      `next_skill` field names the skill that owns the next stage:
         * No prepared system yet → `skills/md-prepare/SKILL.md`
         * Prepared, not equilibrated → `skills/md-equilibration/SKILL.md`
         * Equilibrated, not run → `skills/md-production/SKILL.md`

@@ -1,22 +1,32 @@
 # Node CLI Patterns
 
 Workflow tools mutate DAG state. Create a node first, then run the tool with
-both `--job-dir` and `--node-id`.
+both `--job-dir` and `--node-id`. The full per-step loop is in
+`skills/common/run-loop.md`; this page lists the invariants.
 
 ```bash
 JD=$(realpath job_example)
 
-mdclaw create_node --job-dir "$JD" --node-type prep --parent-node-ids source_001
+# 'mdclaw plan_next --job-dir "$JD"' tells you the next node type, tool, and
+# parent IDs. Then create the node (parent auto-resolves) and run the tool.
+mdclaw create_node --job-dir "$JD" --node-type prep
 
 mdclaw --job-dir "$JD" --node-id prep_001 prepare_complex
 ```
 
 Rules:
 
+- Prefer `mdclaw plan_next --job-dir "$JD"` to decide the next action instead
+  of reasoning about the DAG by hand. Branch on `next_action.action`.
+- When `--parent-node-ids` is omitted, `create_node` auto-attaches the single
+  completed frontier node of the correct parent type and reports it as
+  `auto_resolved_parent`. Pass parents explicitly only to branch or when the
+  frontier is ambiguous.
 - Never pass `--node-id` without `--job-dir`.
 - In schema-v3 mode, create the workflow node first, then run the mutating
   workflow tool with both `--job-dir` and `--node-id`; do not try a bare
-  workflow command and then add node context after it fails.
+  workflow command and then add node context after it fails. A bare workflow
+  command returns structured JSON with `code=node_context_required`.
 - Let workflow tools auto-resolve ancestor artifacts whenever possible.
 - For topology tools, this is mandatory in normal workflows: build from the
   completed `solv` parent for explicit/membrane systems or the completed `prep`

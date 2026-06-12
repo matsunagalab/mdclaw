@@ -34,7 +34,9 @@ retrying.
 
 ## Resume Flow
 
-1. Run `mdclaw inspect_job --job-dir <job_dir>`.
+1. Run `mdclaw plan_next --job-dir <job_dir>` and branch on
+   `next_action.action` (see `skills/common/run-loop.md`). Use
+   `mdclaw inspect_job --job-dir <job_dir>` for a full DAG snapshot when needed.
 2. For any candidate node, run `mdclaw explain_node --job-dir <job_dir> --node-id <node_id>`.
 3. Continue only when `ready_to_run=true` or the reported blockers have been
    resolved.

@@ -137,6 +137,22 @@ _ALLOWED_PARENT_TYPES = {
 }
 
 
+# Preferred forward parent type(s) used when ``create_node`` is called
+# without explicit ``parent_node_ids``. Only the canonical forward edge is
+# auto-resolved; same-type chaining (prep->prep, eq->eq, prod->prod, ...) and
+# multi-parent analyze comparisons are deliberately excluded so that branch
+# and extension intent always stays explicit. ``source`` has no parent.
+_AUTO_PARENT_PREFERENCE = {
+    "prep": ("source",),
+    "solv": ("prep",),
+    "topo": ("solv", "prep"),
+    "min": ("topo",),
+    "eq": ("min", "topo"),
+    "prod": ("eq",),
+    "analyze": ("prod",),
+}
+
+
 _LABEL_SAFE_CHARS = set(
     "abcdefghijklmnopqrstuvwxyz"
     "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

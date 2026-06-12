@@ -87,6 +87,14 @@ Core schema v3 rules:
   Clear single-system requests such as "simulate 1AKE chain A" still flow
   directly through `md-prepare` with a simple `jobs/main` study.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
+- `plan_next` (read-only) is the weak-agent orchestration entry point: it
+ returns the next node type, tool, concrete parent ids, `solvent_regime`, and
+ `next_skill`. Skills follow `skills/common/run-loop.md`:
+ `plan_next -> create_node -> run tool`.
+- `create_node` auto-resolves the canonical forward parent when
+ `--parent-node-ids` is omitted (single completed frontier leaf), and the CLI
+ appends a `workflow_hint` to successful workflow tools. CLI preflight failures
+ return structured `code`s (`node_context_required`, etc.).
 - New scientific work should start with a `study_dir`; a simple one-system MD
   run is a study with one job, usually `jobs/main`.
 - A study may index many `job_dir`s. Each job DAG has one `source` node, and

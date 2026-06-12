@@ -20,7 +20,9 @@ skill examples.
   inspection. In node mode, defaults to the primary source candidate and accepts
   the same source candidate selectors as prep. Writes `inspection.json` and
   emits an event without changing node status.
-- `detect_ptm_sites(...)`: scan PDB/CIF for SEP/TPO/PTR sites.
+- `detect_ptm_sites(...)`: internal helper (not a registered CLI/MCP tool)
+  that scans a PDB/CIF for SEP/TPO/PTR sites. Used by `prepare_complex`; not
+  in any server `TOOLS` dict, so it is not callable as `mdclaw detect_ptm_sites`.
 - `search_structures(...)`, `search_proteins(...)`, `get_protein_info(...)`,
   `analyze_structure_details(...)`: external database helpers.
 
@@ -215,7 +217,24 @@ skill examples.
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
   to production continuation and records explicit extension intent. Analyze nodes
   require `conditions.analysis_data_scope`; comparison analyses also require
-  explicit subjects and mapping.
+  explicit subjects and mapping. When `parent_node_ids` is omitted, the
+  canonical forward parent auto-resolves from the current completed frontier
+  (the single completed leaf of the preferred parent type) and is reported as
+  `auto_resolved_parent`; ambiguous or empty frontiers stay parent-less so
+  branching/sketching is unaffected. Failure returns carry a stable `code`
+  (e.g. `invalid_node_type`, `source_already_exists`, `analyze_parents_mixed`,
+  `referenced_node_missing`).
+- `plan_next(...)`: read-only "what to do next" planner for weak-agent
+  orchestration. Returns `next_action.action` (`create_source`,
+  `create_and_run`, `run_existing`, `wait_running`, `inspect_failure`,
+  `workflow_complete`), the next `node_type`, `suggested_tool`,
+  `suggested_parent_node_ids`, `solvent_regime`, and `next_skill`. Built on the
+  effective pipeline for the job's solvent regime. Advisory only: it does not
+  take or check leases. It surfaces multi-agent coordination state so a
+  recommendation stays lease-aware — a top-level `coordination`
+  (`claims`/`open_needs`, mirroring `inspect_job`), a per-node `next_action.claim`
+  on `run_existing` (with an active-lease warning), and `next_action.claims` on
+  `wait_running`.
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
 - `explain_node(...)`: read-only node details plus execution-context validation

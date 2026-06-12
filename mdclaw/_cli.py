@@ -366,6 +366,33 @@ def _cli_validation_error(
     }
 
 
+def _build_workflow_hint(job_dir: str) -> dict | None:
+    """Return a compact ``plan_next`` recommendation, or ``None`` on failure.
+
+    Best-effort helper so a successful workflow tool can tell the agent what
+    to do next without a separate ``plan_next`` call. Any error is swallowed
+    (the hint is an optimization, not part of the tool contract).
+    """
+    try:
+        from mdclaw._node import plan_next
+
+        plan = plan_next(job_dir)
+    except Exception:
+        return None
+    if not isinstance(plan, dict) or not plan.get("success"):
+        return None
+    action = plan.get("next_action", {}) or {}
+    return {
+        "code": plan.get("code"),
+        "action": action.get("action"),
+        "next_node_type": action.get("node_type"),
+        "suggested_tool": action.get("suggested_tool"),
+        "suggested_parent_node_ids": action.get("suggested_parent_node_ids", []),
+        "existing_node_id": action.get("existing_node_id"),
+        "next_skill": plan.get("next_skill"),
+    }
+
+
 def _json_error_and_exit(error: dict) -> None:
     json.dump(error, sys.stdout, indent=2, default=str)
     print()
@@ -629,7 +656,24 @@ def main(argv: list[str] | None = None) -> None:
             kwargs[pname] = value
 
         if missing:
-            parser.error(f"the following arguments are required: {', '.join(missing)}")
+            _json_error_and_exit({
+                "success": False,
+                "error_type": "ValidationError",
+                "code": "missing_required_arguments",
+                "message": (
+                    f"{tool_name} is missing required arguments: "
+                    f"{', '.join(missing)}"
+                ),
+                "errors": [f"missing required argument: {m}" for m in missing],
+                "warnings": [],
+                "hints": [
+                    f"Run 'mdclaw {tool_name} --help' or 'mdclaw --list-json' "
+                    "to see required parameters.",
+                ],
+                "context": {"tool": tool_name, "missing": missing,
+                            "code": "missing_required_arguments"},
+                "recoverable": True,
+            })
 
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
@@ -641,11 +685,46 @@ def main(argv: list[str] | None = None) -> None:
     effective_node_id = _global_node_id or kwargs.get("node_id")
 
     if effective_node_id and not effective_job_dir:
-        parser.error("--node-id requires --job-dir")
+        _json_error_and_exit({
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "node_id_requires_job_dir",
+            "message": "--node-id requires --job-dir",
+            "errors": ["--node-id was provided without --job-dir"],
+            "warnings": [],
+            "hints": ["Pass both --job-dir and --node-id together."],
+            "context": {"tool": tool_name, "code": "node_id_requires_job_dir"},
+            "recoverable": True,
+        })
     if tool_name in _NODE_REQUIRED_TOOLS and (not effective_job_dir or not effective_node_id):
-        parser.error(
-            f"{tool_name} requires --job-dir and --node-id in schema v3 mode"
-        )
+        _json_error_and_exit({
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "node_context_required",
+            "message": (
+                f"{tool_name} requires both --job-dir and --node-id in "
+                "schema v3 mode"
+            ),
+            "errors": [
+                f"{tool_name} is a workflow tool and must run with node context"
+            ],
+            "warnings": [],
+            "hints": [
+                "Create the node first: mdclaw create_node --job-dir <job_dir> "
+                "--node-type <type> [--parent-node-ids ...]",
+                "Then run the tool: mdclaw --job-dir <job_dir> --node-id "
+                f"<node_id> {tool_name} ...",
+                "Use 'mdclaw plan_next --job-dir <job_dir>' to get the exact "
+                "next node and tool.",
+            ],
+            "context": {
+                "tool": tool_name,
+                "job_dir": effective_job_dir,
+                "node_id": effective_node_id,
+                "code": "node_context_required",
+            },
+            "recoverable": True,
+        })
 
     # Resolve job_dir to absolute path so that external tools (packmol-memgen
     # etc.) and all derived node/artifacts paths are always absolute.
@@ -666,6 +745,18 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
+        # Uniform "what next" envelope for weak agents. After any successful
+        # node-context workflow tool (or create_node), attach the plan_next
+        # recommendation so the agent does not have to re-derive the DAG
+        # frontier by hand. Best-effort: never let it break the real result.
+        if (
+            exit_code == 0
+            and isinstance(result, dict)
+            and effective_job_dir
+            and tool_name in (_NODE_REQUIRED_TOOLS | {"create_node"})
+            and "workflow_hint" not in result
+        ):
+            result["workflow_hint"] = _build_workflow_hint(effective_job_dir)
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)

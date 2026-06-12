@@ -86,11 +86,12 @@ multi-candidate selection and fan-out belong to later workflow phases.
 
 ## Step 4: Handoff To Prepare
 
-Use the selected candidate with the standard preparation skill:
+Use the selected candidate with the standard preparation skill. Create the
+prep node first (its parent auto-resolves to the source node), then run
+`prepare_complex` with the node id `create_node` returns:
 
 ```bash
-mdclaw prepare_complex \
-  --job-dir <job_dir> \
-  --node-id prep_001 \
+mdclaw create_node --job-dir <job_dir> --node-type prep
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --source-candidate-id candidate_001
 ```

@@ -210,9 +210,13 @@ the scientific question needs ensemble comparison.
 
 If they want to continue to MD simulation:
 
-> **"To set up MD simulation with the predicted structure:**
+> **"To set up MD simulation with the predicted structure, create the prep
+> node first (its parent auto-resolves to the source), then run
+> `prepare_complex` with the node id it returns:**
 > ```bash
-> mdclaw prepare_complex --job-dir <job_dir> --node-id prep_001 --source-structure-id candidate_001
+> mdclaw create_node --job-dir <job_dir> --node-type prep
+> mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
+>   --source-structure-id candidate_001
 > ```
 > **If your harness provides slash commands, `/md-prepare` is the
 > interactive shortcut for the same preparation skill."**

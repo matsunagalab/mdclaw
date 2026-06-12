@@ -7,6 +7,10 @@ description: "Standalone minimization node plus equilibration (min -> low-temper
 
 You are a computational biophysics expert running MD equilibration using MDClaw CLI tools.
 
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
+`skills/common/node-cli-patterns.md`, `skills/common/run-loop.md`, and
+`skills/common/guardrail-codes.md` before acting.
+
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 Do not wrap `mdclaw` commands with the external GNU `timeout` command; macOS
@@ -30,11 +34,14 @@ will convert durations to steps using the actual `timestep_fs`.
 
 ## Prerequisites
 
-Run `mdclaw inspect_job --job-dir <job_dir>` and use the JSON result to find a
-completed `topo` node. If no completed `min` node exists downstream of that
-topo node, create and run one before creating `eq`. For candidate `min` or `eq`
-nodes, use `mdclaw explain_node --job-dir <job_dir> --node-id <node_id>` and
-branch on `validation.blocking_codes` if it is not ready.
+Follow `skills/common/run-loop.md`. Start with
+`mdclaw plan_next --job-dir <job_dir>`: it tells you whether to create a `min`
+node, run an existing one, or move on to `eq`, and it returns the concrete
+`suggested_parent_node_ids` and `solvent_regime` so you do not have to infer
+them. Use the node IDs from `plan_next` / `create_node`, never the literal
+example IDs (`topo_001`, `min_001`) below. For a specific candidate node,
+`mdclaw explain_node --job-dir <job_dir> --node-id <node_id>` reports
+`ready_to_run` and `validation.blocking_codes`.
 (`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tools; `eq` also auto-resolves the parent `min` node's `state`.)
 If topology metadata contains ligand charge or clash diagnostics, record them
 for reporting, but do not choose a different equilibration protocol. New runs
@@ -159,13 +166,10 @@ mdclaw update_job_params --job-dir <job_dir> \
    image-capable agent UIs or provide the PNG path, node ID, caption, and source artifact.
    If PyMOL is unavailable (`code=pymol_not_available`), continue the handoff
    without treating it as an equilibration failure.
-3. If the agent/UI can inspect images, perform the Visual QA checklist from
-   `skills/md-analyze/SKILL.md` and register the result with
-   `register_visual_review`. If image inspection is unavailable, register
-   `reviewer_type=not_available`, `severity=not_reviewed`, and
-   `recommendation=manual_review`. Visual QA is only an obvious-accident
-   check; do not infer scientific correctness from the image. If severity is
-   `high`, ask the user before production.
+3. Perform Visual QA per `skills/common/visual-qa.md` and register the result
+   with `register_visual_review`. Visual QA is only an obvious-accident check;
+   do not infer scientific correctness from the image. If severity is `high`,
+   ask the user before production.
 4. Tell the user:
    ```
    Equilibration complete. Next:

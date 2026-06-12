@@ -20,10 +20,51 @@ from mdclaw._lock import file_lock
 
 logger = logging.getLogger(__name__)
 
-from mdclaw.node.constants import IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES  # noqa: E402
+from mdclaw.node.constants import IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES, _AUTO_PARENT_PREFERENCE  # noqa: E402
 from mdclaw.node.io import _atomic_write_json, _parse_iso_datetime, _sha256_path, _values_match, normalize_artifact_paths  # noqa: E402
 from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary, _sync_progress_node_entry  # noqa: E402
 from mdclaw.node.validation import _completed_node_sealed_response, _node_is_completed, _normalize_node_status, _validate_analyze_conditions  # noqa: E402
+
+
+def _seq_of(node_id: str) -> int:
+    """Best-effort sequence number from an id like ``prep_007`` (-> 7)."""
+    _, _, tail = node_id.partition("_")
+    try:
+        return int(tail)
+    except ValueError:
+        return 0
+
+
+def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
+    """Pick the canonical forward parent when none was supplied.
+
+    Returns the resolved parent ``node_id`` only when the choice is
+    *unambiguous* — exactly one completed leaf node of the preferred forward
+    type exists. Returns ``None`` (leaving the node parent-less, the legacy
+    behavior) when there is no candidate or more than one, so that DAG
+    sketching, repair, and branching stay possible and no existing call site
+    changes shape. Only the preferred forward edge is considered, and only
+    completed *leaf* nodes (not already a parent of another node) are
+    eligible so the new node attaches to the current frontier.
+    """
+    referenced: set[str] = set()
+    for info in nodes_index.values():
+        referenced.update(info.get("parents", []))
+
+    for parent_type in _AUTO_PARENT_PREFERENCE.get(node_type, ()):  # priority order
+        completed = [
+            nid for nid, info in nodes_index.items()
+            if info.get("type") == parent_type and info.get("status") == "completed"
+        ]
+        if not completed:
+            continue
+        leaves = [nid for nid in completed if nid not in referenced] or completed
+        if len(leaves) == 1:
+            return leaves[0]
+        # Ambiguous frontier (a branch point): stay parent-less and let the
+        # caller pass --parent-node-ids explicitly. Do not guess.
+        return None
+    return None
 
 
 def create_node(
@@ -56,6 +97,7 @@ def create_node(
     if node_type not in NODE_TYPES:
         return {
             "success": False,
+            "code": "invalid_node_type",
             "error": f"Invalid node_type '{node_type}'. Must be one of: {sorted(NODE_TYPES)}",
         }
 
@@ -65,6 +107,7 @@ def create_node(
         if node_type != "prod":
             return {
                 "success": False,
+                "code": "continue_from_invalid_node_type",
                 "error": (
                     "continue_from is only valid for node_type='prod' "
                     f"(got '{node_type}')"
@@ -73,6 +116,7 @@ def create_node(
         if parent_node_ids:
             return {
                 "success": False,
+                "code": "continue_from_parents_conflict",
                 "error": (
                     "continue_from and parent_node_ids are mutually "
                     "exclusive — pass one or the other"
@@ -92,6 +136,7 @@ def create_node(
         if parents:
             return {
                 "success": False,
+                "code": "source_cannot_have_parents",
                 "error": (
                     "source nodes are DAG roots and cannot have "
                     f"parent_node_ids (got {parents})"
@@ -100,6 +145,7 @@ def create_node(
         if deps:
             return {
                 "success": False,
+                "code": "source_cannot_have_dependencies",
                 "error": (
                     "source nodes are DAG roots and cannot have "
                     f"dependency_node_ids (got {deps})"
@@ -112,11 +158,26 @@ def create_node(
         progress = _load_progress_v3(pj, create_if_missing=True)
         nodes_index = progress.get("nodes", {})
 
+        # Auto-resolve the canonical forward parent when none was supplied.
+        # Removes the most common weak-agent failure: hardcoding a literal
+        # example id (e.g. ``topo_001``) that does not match the real DAG.
+        auto_parent_node_id: Optional[str] = None
+        if (
+            not parents
+            and continue_from is None
+            and node_type in _AUTO_PARENT_PREFERENCE
+        ):
+            resolved = _auto_resolve_parent(node_type, nodes_index)
+            if resolved is not None:
+                parents = [resolved]
+                auto_parent_node_id = resolved
+
         # Validate parent/dependency references
         for ref in parents + deps:
             if ref not in nodes_index:
                 return {
                     "success": False,
+                    "code": "referenced_node_missing",
                     "error": f"Referenced node '{ref}' does not exist in progress.json",
                 }
 
@@ -126,6 +187,7 @@ def create_node(
             if ref_type != "prod":
                 return {
                     "success": False,
+                    "code": "continue_from_not_prod",
                     "error": (
                         f"continue_from='{continue_from}' must reference a "
                         f"prod node (got type='{ref_type}')"
@@ -139,6 +201,7 @@ def create_node(
         if node_type == "source" and existing_source_nodes:
             return {
                 "success": False,
+                "code": "source_already_exists",
                 "error": (
                     "job_dir already has a source root "
                     f"({existing_source_nodes[0]}). Add multiple structures to "
@@ -157,6 +220,7 @@ def create_node(
             if len(parents) < 1:
                 return {
                     "success": False,
+                    "code": "analyze_requires_parent",
                     "error": (
                         "analyze nodes require at least 1 parent. For "
                         "downstream analyses, parent the analyze node "
@@ -170,6 +234,7 @@ def create_node(
                 if parent_entry is None:
                     return {
                         "success": False,
+                        "code": "analyze_parent_missing",
                         "error": (
                             f"analyze parent '{pid}' does not exist in "
                             "this job's progress.json"
@@ -179,6 +244,7 @@ def create_node(
                 if pt not in ("prod", "analyze"):
                     return {
                         "success": False,
+                        "code": "analyze_parent_invalid_type",
                         "error": (
                             f"analyze parent must be a 'prod' or "
                             f"'analyze' node; got '{pid}' of type "
@@ -193,6 +259,7 @@ def create_node(
             if len(set(parent_types)) > 1:
                 return {
                     "success": False,
+                    "code": "analyze_parents_mixed",
                     "error": (
                         "analyze nodes cannot mix prod and analyze "
                         f"parents; got {parent_types}. Decide which "
@@ -206,6 +273,7 @@ def create_node(
             if conditions_error:
                 return {
                     "success": False,
+                    "code": "analyze_conditions_invalid",
                     "error": conditions_error,
                 }
             if (
@@ -215,6 +283,7 @@ def create_node(
             ):
                 return {
                     "success": False,
+                    "code": "comparison_requires_two_analyze",
                     "error": (
                         "comparison analyze nodes require exactly two "
                         "analyze parents. Create one production_chain "
@@ -239,6 +308,7 @@ def create_node(
             if len(source_lineages) > 1:
                 return {
                     "success": False,
+                    "code": "multiple_source_roots",
                     "error": (
                         "prep nodes must descend from at most one source root; "
                         f"got multiple source ancestors {sorted(source_lineages)}. "
@@ -288,12 +358,16 @@ def create_node(
     })
 
     logger.info(f"Node created: {node_id} (type={node_type}, parents={parents})")
-    return {
+    result = {
         "success": True,
         "node_id": node_id,
         "node_dir": str(node_dir),
         "artifacts_dir": str(artifacts_dir),
+        "parent_node_ids": parents,
     }
+    if auto_parent_node_id is not None:
+        result["auto_resolved_parent"] = auto_parent_node_id
+    return result
 
 
 # ── Node JSON helpers ──────────────────────────────────────────────────────

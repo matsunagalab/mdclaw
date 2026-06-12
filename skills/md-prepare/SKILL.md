@@ -9,8 +9,13 @@ You are a computational biophysics expert helping users set up MD simulations us
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
 `skills/common/defaults.md`, `skills/common/node-cli-patterns.md`,
-`skills/common/autonomous-checklist.md`, and
+`skills/common/run-loop.md`, `skills/common/autonomous-checklist.md`, and
 `skills/common/guardrail-codes.md` before acting.
+
+`skills/common/run-loop.md` is the per-step loop: call
+`mdclaw plan_next --job-dir <job_dir>` to learn the next node type, tool, and
+concrete parent IDs; let `create_node` auto-resolve the parent; then run the
+tool with node context. Use the IDs it returns, never literal example IDs.
 
 ## Defaults — Source of Truth
 
@@ -170,29 +175,17 @@ use the HPacker-based `create_mutated_structure` branch in
    `build_amber_system` auto-resolve its input; do not supply a free-standing
    `--pdb-file` or re-enter the workflow from a raw PDB.
 7. After each completed structural node where human inspection is useful
-   (`source`, `prep`, `solv`, `topo`), run a best-effort preview when PyMOL is
-   available:
-   ```bash
-   mdclaw --job-dir <job_dir> --node-id <node_id> \
-     render_structure_preview --style overview --ray
-   ```
-   For ligand complexes use `--style ligand_site`; for membranes use
-   `--style membrane`; for solvation checks use `--style solvent_ions
-   --show-solvent`. If `output_png` / `structure_preview_png` is produced,
-   show it to the user in image-capable agent UIs. Otherwise report the node ID,
-   caption, PNG path, and source structure artifact path. If PyMOL is missing
-   (`code=pymol_not_available`), do not block preparation.
-   When the agent/UI can inspect images, perform the Visual QA checklist from
-   `skills/md-analyze/SKILL.md` and register it with `register_visual_review`.
+   (`source`, `prep`, `solv`, `topo`), perform Visual QA per
+   `skills/common/visual-qa.md` and register it with `register_visual_review`.
    Visual QA is only an obvious-accident check; never infer force-field,
-   protonation, parameter, or chemistry correctness from the image. If image
-   inspection is unavailable, register `reviewer_type=not_available` and show
-   the PNG path to the user. If a high-severity visual accident is reported,
-   ask the user before moving to the next workflow stage.
-8. After `topo_001` completes, hand off to the equilibration skill on the
-   same `job_dir`. In harnesses with slash commands, `/md-equilibration` is
-   the shortcut. This skill does not auto-chain into equilibration — each
-   stage is user-initiated.
+   protonation, parameter, or chemistry correctness from the image. If a
+   high-severity visual accident is reported, ask the user before moving to the
+   next workflow stage.
+8. After the `topo` node completes, hand off to the equilibration skill on the
+   same `job_dir` (use the node id from `create_node`, not a literal
+   `topo_001`). In harnesses with slash commands, `/md-equilibration` is the
+   shortcut. This skill does not auto-chain into equilibration — each stage is
+   user-initiated.
 
 ## Step 0: Parse and Confirm
 

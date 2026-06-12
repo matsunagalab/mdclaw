@@ -7,6 +7,10 @@ description: "Production molecular dynamics simulation using MDClaw CLI tools an
 
 You are a computational biophysics expert running production MD simulations using MDClaw CLI tools.
 
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
+`skills/common/node-cli-patterns.md`, `skills/common/run-loop.md`, and
+`skills/common/guardrail-codes.md` before acting.
+
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
 Do not wrap `mdclaw` commands with the external GNU `timeout` command; macOS
@@ -24,11 +28,15 @@ does not ship it, and MDClaw tools already use internal timeout handling.
 
 ## Prerequisites
 
-Run `mdclaw inspect_job --job-dir <job_dir>` and use the JSON result to find a
-completed `eq` or `prod` node, depending on whether this is a fresh production
-run or an extension. For a candidate prod node, use
-`mdclaw explain_node --job-dir <job_dir> --node-id <prod_node_id>` and branch on
-`validation.blocking_codes` if it is not ready.
+Follow `skills/common/run-loop.md`. Start with
+`mdclaw plan_next --job-dir <job_dir>`: it confirms whether the next step is a
+fresh `prod` from `eq` or further analysis, and returns the concrete
+`suggested_parent_node_ids` plus `solvent_regime`. For an extension, use
+`--continue-from` (below) rather than `plan_next`'s default forward edge. Use
+the IDs from `plan_next` / `create_node`, never the literal example IDs
+(`eq_001`, `prod_001`). For a candidate prod node,
+`mdclaw explain_node --job-dir <job_dir> --node-id <prod_node_id>` reports
+`ready_to_run` and `validation.blocking_codes`.
 (`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool. For convenience, `pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the common eq → prod handoff matches by default. You can override `--pressure-bar` to switch ensembles freely — the saved eq state is reusable across NPT/NVT thanks to the ensemble-agnostic loader. See `skills/md-production/restart.md` "Switching Ensembles Across Nodes" for details.)
 
 If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.md`
@@ -116,13 +124,10 @@ with `mdclaw update_job_params` before creating new prod nodes.
    ID, caption, and source artifact path. If PyMOL is unavailable
    (`code=pymol_not_available`), continue the handoff.
 
-3. If the agent/UI can inspect images, perform the Visual QA checklist from
-   `skills/md-analyze/SKILL.md` and register the result with
-   `register_visual_review`. If image inspection is unavailable, register
-   `reviewer_type=not_available`, `severity=not_reviewed`, and
-   `recommendation=manual_review`. Visual QA is only an obvious-accident
-   check; do not infer scientific correctness from the image. If severity is
-   `high`, ask the user before using the production output downstream.
+3. Perform Visual QA per `skills/common/visual-qa.md` and register the result
+   with `register_visual_review`. Visual QA is only an obvious-accident check;
+   do not infer scientific correctness from the image. If severity is `high`,
+   ask the user before using the production output downstream.
 
 4. Present:
    ```

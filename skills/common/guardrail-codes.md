@@ -19,6 +19,12 @@ human-readable messages.
 | `parent_type_invalid` | Create a new node with a legal parent type for the target stage. |
 | `condition_missing` | Pass actual tool parameters that cover every declared node condition. |
 | `condition_mismatch` | Recreate the node or rerun with parameters matching its conditions. |
+| `node_context_required` | Workflow tool ran without node context. Create the node, then run it with both `--job-dir` and `--node-id`. |
+| `node_id_requires_job_dir` | `--node-id` was passed without `--job-dir`. Pass both together. |
+| `missing_required_arguments` | Add the listed required flags (see `mdclaw --list-json`). |
+| `invalid_node_type` | Use one of: source, prep, solv, topo, min, eq, prod, analyze. |
+| `source_already_exists` | One source per job. Add structures to the existing source bundle or use another job. |
+| `referenced_node_missing` | A parent/dependency id does not exist. Use IDs from `inspect_job` / `plan_next`. |
 
 If a code is unknown, report `code`, `message`, `errors`, `warnings`, and
 `hints` to the user instead of inventing a workaround.
