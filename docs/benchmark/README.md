@@ -35,6 +35,50 @@ to the harness/operator, not to a benchmark-wide solver script inside the
 submission. `run_id` is only a label; do not infer smoke-test shortcuts or task
 subsets from words in it.
 
+## How To Run The Benchmark
+
+There are three operator flows. All are scored by the same neutral MDClaw
+scorer; only the solver differs.
+
+**1. MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
+task, then score:
+
+```bash
+mdclaw prepare_benchmark_run \
+  --output-dir benchmark_runs --run-id 20260613_mdclaw_ref \
+  --dataset-dir benchmarks/mdprepbench
+
+# For each task, hand the evaluated agent only:
+#   benchmark_runs/20260613_mdclaw_ref/tasks/<task_id>/agent_prompt.md
+# The agent writes tasks/<task_id>/submission/, then:
+
+mdclaw score_benchmark_run \
+  --run-dir benchmark_runs/20260613_mdclaw_ref \
+  --dataset-dir benchmarks/mdprepbench
+```
+
+`prepare_benchmark_run` writes `attestation.json` (public-package hash,
+`tooling_condition`) and `score_benchmark_run` produces `summary.json` with the
+per-axis scores, the per-capability profile, `tooling_condition`, and
+`verified`.
+
+**2. MDClaw-free agent (e.g. MDCrow, `mdclaw-free`).** Init with
+`mdclaw init_benchmark_run --tooling-condition mdclaw-free`, hand the agent only
+the exported public `prompt.md`, package its own OpenMM triple with
+`mdclaw package_openmm_submission` or the standalone
+`benchmarks/tools/package_submission.py`, then `score_benchmark_run`. Full
+recipe: `docs/benchmark/mdcrow-runner.md`.
+
+**3. Weak baselines (discrimination check).**
+`benchmarks/baselines/naive_pdbfixer_prep.py` (no-MDClaw floor) and
+`json_only_no_run.py` (fabrication, must score zero). See
+`benchmarks/baselines/README.md`.
+
+Compare runs by grouping `summary.json` records on `tooling_condition` and
+reading the capability profile. See `docs/benchmark/fairness-protocol.md` for
+conditions, attestation, and the `verified` flag, and
+`docs/benchmark/capability-coverage.md` for the task-to-check map.
+
 ## Current Scope
 
 The current task set replaces the former mixed benchmark's preparation tasks.
@@ -116,13 +160,13 @@ and per-task `prompt.md`, `submission_contract.json`, and
 
 ## Submission Contract
 
-Every task requires a `submission/` directory with:
+Every task requires a `submission/` directory with the slim core set
+(`evidence_report.json` is optional unless a specific task's contract lists it):
 
 ```text
 manifest.json
 metrics.json
 provenance.json
-evidence_report.json
 prepared_structure.pdb
 minimized_structure.pdb
 minimization_report.json
@@ -179,7 +223,13 @@ PDB residue state for chain A residue 11.
 
 ## Scoring
 
-Scoring is deterministic by default:
+Scoring is deterministic and artifact-as-truth: the scorer detects OpenMM by
+deserializing the `system.xml` + `topology.pdb` + `state.xml` triple (not by a
+declared `topology.backend` label) and recomputes physical properties from the
+artifact. `metrics.json` is a cross-checked declaration; a declared-vs-recomputed
+mismatch is an integrity warning and the recomputed value scores.
+
+Check types:
 
 - `required_files` / `forbidden_files`
 - `json_equals`, `json_min`, `json_min_length`, `json_allowed_values`
@@ -190,17 +240,26 @@ Scoring is deterministic by default:
 - `candidate_selection_check`
 - `topology_artifact_bundle`
 - `openmm_system_load` and `openmm_energy_rescan`
+- `forcefield_applied_rescan` (force field applied to every atom)
+- `net_charge_check` (recomputed net charge / neutrality)
+- `water_model_fingerprint` (3-site vs 4/5-site classification)
+- `ion_concentration_recompute` (molarity from ion count + box volume)
 - `minimization_report_check`
 - `minimized_structure_component_rescan`
-- artifact integrity checks such as byte floors, template-marker rejection,
-  safe manifest paths, and provenance execution evidence
+- artifact integrity checks such as byte floors, safe manifest paths, and
+  provenance execution evidence
 
-OpenMM topology artifacts are required and strongly rescanned by the scorer.
-Non-OpenMM reload adapters can be added later, but prep battery v0.1 does not
-award completed-submission credit for native-only Amber or GROMACS topology
-placeholders. MDPrepBench v0.1 uses `integrity_policy="reject"`: artifact or
-provenance integrity warnings on a completed submission are treated as hard
-score failures rather than soft notes.
+Scoring uses a small physical-validity gate plus graded per-capability partial
+credit. The gate (system loads, finite energy, force field applied to every
+atom, required minimized structure present) must pass or the task scores zero;
+identity / fidelity / provenance checks then contribute weighted partial credit
+that rolls up into a per-capability profile (`identity`, `physical_validity`,
+`fidelity`, `provenance`). Integrity rejection stays hard: unsafe manifest
+paths, fabricated or undersized required artifacts, and missing execution
+evidence clamp the score to zero. OpenMM topology artifacts are required for
+completed submissions; native-only Amber/GROMACS reload adapters can be added
+later. Each run also records a `tooling_condition`, an `attestation.json`, and a
+`verified` flag (see `docs/benchmark/fairness-protocol.md`).
 
 Modified DNA/RNA is intentionally outside the core prep battery because the
 current standard topology path does not support MD-ready parameterization of
