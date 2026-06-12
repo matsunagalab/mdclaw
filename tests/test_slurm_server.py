@@ -245,6 +245,107 @@ class TestSubmitJob:
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")
+    def test_platform_cuda_auto_sets_gpus(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44444\n")
+
+        result = submit_job(
+            script="mdclaw --job-dir /abs/jd --node-id prod_001 run_production "
+            "--simulation-time-ns 100 --platform CUDA",
+            job_name="cuda_job",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gpus-per-node=1" in content
+        assert any("Auto-set --gpus 1" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_platform_cuda_auto_selects_gpu_partition(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        config = {
+            "partitions": [
+                {"name": "cpu", "gpus_per_node": 0},
+                {"name": "gpu", "gpus_per_node": 4},
+            ],
+            "gpu_types": ["a100"],
+        }
+        (tmp_path / ".mdclaw_cluster.json").write_text(json.dumps(config))
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44455\n")
+
+        # No --gpus passed: autodetection from --platform CUDA must both flip
+        # gpus to 1 and steer partition auto-selection to the GPU partition.
+        result = submit_job(
+            script="mdclaw run_production --platform CUDA",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --partition=gpu" in content
+        assert "#SBATCH --gpus-per-node=1" in content
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_explicit_gpus_preserved_with_platform_cuda(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44466\n")
+
+        result = submit_job(
+            script="mdclaw run_production --platform CUDA",
+            gpus=2,
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gpus-per-node=2" in content
+        assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_gres_suppresses_platform_autodetect(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44477\n")
+
+        result = submit_job(
+            script="mdclaw run_production --platform CUDA",
+            gres="gpu:a100:2",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gres=gpu:a100:2" in content
+        assert "--gpus-per-node" not in content
+        assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_non_gpu_platform_no_auto_gpu(
+        self, mock_run, mock_check, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44488\n")
+
+        # --platform CPU and --platform auto must NOT trigger a GPU allocation.
+        for cmd in (
+            "mdclaw run_minimization --max-iterations 5000 --platform CPU",
+            "mdclaw run_minimization --max-iterations 5000",
+        ):
+            result = submit_job(script=cmd, output_dir=str(tmp_path))
+            assert result["success"] is True
+            content = Path(result["script_file"]).read_text()
+            assert "--gpus-per-node" not in content
+            assert "--gres" not in content
+            assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
     def test_account_qos_extra_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 33333\n")
@@ -1840,6 +1941,36 @@ class TestSubmitArrayJob:
         records = _read_job_records()
         ids = [r["job_id"] for r in records]
         assert ids == ["99999_0", "99999_1", "99999_2"]
+
+    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm_server.run_command")
+    def test_array_platform_cuda_auto_sets_gpus(self, mock_run, mock_check, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        jds = [
+            _make_job_with_nodes(tmp_path, f"job_{i}", ["prod_001"])
+            for i in range(2)
+        ]
+        mock_run.return_value = _mock_run_command(stdout="Submitted batch job 91919\n")
+
+        # No --gpus passed; a --platform CUDA task command must flip the whole
+        # array to --gpus 1.
+        result = submit_array_job(
+            tasks=[
+                {
+                    "job_dir": str(jd),
+                    "node_id": "prod_001",
+                    "command": f"mdclaw --job-dir {jd} --node-id prod_001 "
+                    "run_production --simulation-time-ns 0.1 --platform CUDA",
+                }
+                for jd in jds
+            ],
+            job_name="cuda_batch",
+            output_dir=str(tmp_path),
+        )
+        assert result["success"] is True, result
+        content = Path(result["script_file"]).read_text()
+        assert "#SBATCH --gpus-per-node=1" in content
+        assert any("Auto-set --gpus 1" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
     @patch("mdclaw.slurm_server.run_command")

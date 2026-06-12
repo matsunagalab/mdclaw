@@ -986,6 +986,43 @@ def _build_singularity_command(
     return " ".join(parts)
 
 
+# Matches an OpenMM GPU platform request in a job command, e.g.
+# ``--platform CUDA``, ``--platform=OpenCL``. ``auto`` is intentionally
+# excluded: on a compute node without an allocated GPU it falls back to CPU,
+# so GPU intent on HPC must be expressed explicitly as CUDA/OpenCL.
+_GPU_PLATFORM_RE = re.compile(r"--platform[=\s]+(?:cuda|opencl)\b", re.IGNORECASE)
+
+
+def _command_requests_gpu(command: Optional[str]) -> bool:
+    """Return True if a job command requests a GPU OpenMM platform.
+
+    Used to auto-request a GPU allocation when the caller specified a GPU
+    platform (``--platform CUDA`` / ``OpenCL``) but forgot ``--gpus`` / ``--gres``.
+    """
+    if not command:
+        return False
+    return bool(_GPU_PLATFORM_RE.search(command))
+
+
+def _resolve_job_command(script: str) -> str:
+    """Return the command body for a script path or inline command string.
+
+    If ``script`` is a path to an existing file, its contents are read and any
+    shebang / existing ``#SBATCH`` lines are stripped so generated directives
+    take precedence. Otherwise ``script`` is treated as an inline command
+    string and returned unchanged.
+    """
+    script_path = Path(script)
+    if script_path.is_file():
+        text = script_path.read_text()
+        clean_lines = [
+            line for line in text.splitlines()
+            if not (line.startswith("#!") or line.startswith("#SBATCH"))
+        ]
+        return "\n".join(clean_lines)
+    return script
+
+
 def _generate_sbatch_script(
     command: str,
     job_name: str,
@@ -1328,8 +1365,12 @@ def submit_job(
         ntasks: Number of tasks (default: 1).
         cpus_per_task: CPUs per task (default: 1).
         gpus: GPUs per node via --gpus-per-node (default: 0 = no GPU).
+            If left at 0 (and gres is unset) but the run command requests a GPU
+            OpenMM platform (--platform CUDA/OpenCL), this is auto-set to 1 and
+            a warning is emitted, so a CUDA run never lands on a CPU-only node.
         gres: GRES specification (e.g., "gpu:a100:1", "gpu:2"). Overrides
-            gpus if both are set. Maps to --gres in sbatch.
+            gpus if both are set. Maps to --gres in sbatch. Setting gres
+            suppresses the --platform-driven GPU autodetection.
         time_limit: Wall time in HH:MM:SS or D-HH:MM:SS (default: 24:00:00).
         memory: Memory per node (e.g., "64G"). None = SLURM default.
         nodelist: Specific node(s) to run on (e.g., "gpu01", "gpu[01-03]").
@@ -1428,6 +1469,20 @@ def submit_job(
         qos = defaults["qos"]
         result["warnings"].append(f"Using policy default qos: {qos}")
 
+    # Resolve the command early so GPU-platform autodetection can drive both
+    # partition selection and policy validation below.
+    command = _resolve_job_command(script)
+
+    # Auto-request a GPU when the run command asks for a GPU OpenMM platform
+    # but no GPU resource was specified. Keeps --platform CUDA and --gpus in
+    # sync so a CUDA run never silently lands on a CPU-only node.
+    if gpus == 0 and not gres and _command_requests_gpu(command):
+        gpus = 1
+        result["warnings"].append(
+            "Auto-set --gpus 1 because the run command requests a GPU platform "
+            "(--platform CUDA/OpenCL). Pass --gpus explicitly or --gres to override."
+        )
+
     # Auto-select partition from cluster config (if still not set)
     if not partition:
         if config and config.get("partitions"):
@@ -1498,24 +1553,8 @@ def submit_job(
     if directive_error:
         return {**result, **directive_error}
 
-    # Determine script content
-    script_path = Path(script)
-    if script_path.is_file():
-        # Existing script file: read it and wrap with SBATCH header
-        command = script_path.read_text()
-        # If the script already has a shebang and SBATCH lines, strip them
-        # and rebuild to ensure our parameters take precedence
-        clean_lines = []
-        for line in command.splitlines():
-            if line.startswith("#!") or line.startswith("#SBATCH"):
-                continue
-            clean_lines.append(line)
-        command = "\n".join(clean_lines)
-    else:
-        # Treat as a command string
-        command = script
-
     # Container config — used when environment is not explicitly provided
+    # (``command`` was resolved above, before GPU-platform autodetection).
     container = _get_container_config(config)
 
     sbatch_content = _generate_sbatch_script(
@@ -1832,6 +1871,9 @@ def submit_array_job(
             display names (the array "parent" keeps the base name).
         partition: SLURM partition.
         cpus_per_task, gpus, gres, time_limit, memory: Per-task resources.
+            As in ``submit_job``, if gpus is 0 and gres is unset but any task
+            command requests a GPU OpenMM platform (--platform CUDA/OpenCL),
+            gpus is auto-set to 1 for the whole array with a warning.
         max_concurrent: Upper bound on simultaneously-running array tasks
             (maps to ``--array=0-N%M``). Useful when you want to submit
             many tasks but only let K run at once.
@@ -1930,6 +1972,19 @@ def submit_array_job(
         account = defaults["account"]
     if not qos and defaults.get("qos"):
         qos = defaults["qos"]
+
+    # Auto-request a GPU when any task command asks for a GPU OpenMM platform
+    # but no GPU resource was specified. All array tasks share gpus/gres, so a
+    # single GPU-platform task is enough to flip the whole array to --gpus 1.
+    if gpus == 0 and not gres and any(
+        _command_requests_gpu(t["command"]) for t in normalized_tasks
+    ):
+        gpus = 1
+        result["warnings"].append(
+            "Auto-set --gpus 1 because at least one task command requests a GPU "
+            "platform (--platform CUDA/OpenCL). Pass --gpus explicitly or --gres "
+            "to override."
+        )
 
     if not partition and config and config.get("partitions"):
         available = [
