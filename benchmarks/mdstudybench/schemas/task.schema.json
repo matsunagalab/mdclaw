@@ -943,6 +943,7 @@
             "figures_are_png",
             "status_artifact_floor",
             "manifest_artifact_floor",
+            "trajectory_file_signature",
             "provenance_execution_evidence"
           ],
           "title": "Check Type",

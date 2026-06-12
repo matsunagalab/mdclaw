@@ -306,6 +306,37 @@ def test_manifest_artifact_floor_requires_min_count(tmp_path: Path):
 
 
 # ---------------------------------------------------------------------------
+# trajectory_file_signature
+
+
+def test_trajectory_file_signature_rejects_text_dcd(tmp_path: Path):
+    (tmp_path / "traj.dcd").write_bytes(b"not a dcd\n" * 200)
+    manifest = {"outputs": {"trajectories": ["traj.dcd"]}}
+
+    warnings = integrity.check_trajectory_file_signatures(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+    )
+
+    assert len(warnings) == 1
+    assert "missing DCD CORD header" in warnings[0]
+
+
+def test_trajectory_file_signature_accepts_dcd_header(tmp_path: Path):
+    (tmp_path / "traj.dcd").write_bytes(b"\x54\x00\x00\x00CORD" + b"x" * 1024)
+    manifest = {"outputs": {"trajectories": ["traj.dcd"]}}
+
+    warnings = integrity.check_trajectory_file_signatures(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+    )
+
+    assert warnings == []
+
+
+# ---------------------------------------------------------------------------
 # manifest path safety
 
 

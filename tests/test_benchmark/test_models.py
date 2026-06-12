@@ -193,6 +193,13 @@ def test_integrity_check_supports_manifest_artifact_floor():
     assert check.min_count == 2
     assert check.min_bytes == 1024
 
+    signature = IntegrityCheck.model_validate({
+        "check_id": "trajectory_signatures",
+        "check_type": "trajectory_file_signature",
+        "manifest_path": "outputs.trajectories",
+    })
+    assert signature.manifest_path == "outputs.trajectories"
+
 
 def test_ground_truth_check_requires_paths():
     with pytest.raises(ValidationError):

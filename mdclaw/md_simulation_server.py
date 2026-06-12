@@ -3596,16 +3596,20 @@ def inspect_openmm_platforms(
     atom_count: Optional[int] = None,
     solvent_type: str = "explicit",
 ) -> dict:
-    """Report available OpenMM platforms and local-run feasibility guidance.
+    """Report usable OpenMM platforms and local-run feasibility guidance.
 
     This is a lightweight preflight helper for agents before launching local
-    explicit-water topology/equilibration/production. It does not run MD.
+    explicit-water topology/equilibration/production. Each platform is counted
+    as available only after a tiny Context can be created; plugins that merely
+    register but cannot execute are reported under ``unusable_platforms``.
     """
     result = {
         "success": False,
         "platforms": [],
+        "unusable_platforms": [],
         "gpu_platforms": [],
         "fastest_platform": None,
+        "default_platform": None,
         "atom_count": atom_count,
         "solvent_type": solvent_type,
         "local_feasibility": None,
@@ -3614,7 +3618,7 @@ def inspect_openmm_platforms(
         "errors": [],
     }
     try:
-        from openmm import Platform
+        from openmm import Context, Platform, System, VerletIntegrator, unit
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
             f"OpenMM platform inspection failed: {type(exc).__name__}: {exc}"
@@ -3634,11 +3638,56 @@ def inspect_openmm_platforms(
         result["code"] = "openmm_platform_inspection_failed"
         return result
 
-    gpu_platforms = [p for p in platform_names if p in {"CUDA", "OpenCL"}]
-    result["platforms"] = platform_names
+    usable_platforms: list[str] = []
+    unusable_platforms: list[dict[str, str]] = []
+    platform_speeds: dict[str, float] = {}
+    for platform_name in platform_names:
+        try:
+            platform_obj = Platform.getPlatformByName(platform_name)
+            system = System()
+            system.addParticle(39.948)
+            integrator = VerletIntegrator(1.0 * unit.femtoseconds)
+            context = Context(system, integrator, platform_obj)
+            usable_platforms.append(platform_name)
+            platform_speeds[platform_name] = float(platform_obj.getSpeed())
+            del context, integrator
+        except Exception as exc:  # noqa: BLE001
+            unusable_platforms.append({
+                "platform": platform_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+
+    try:
+        system = System()
+        system.addParticle(39.948)
+        integrator = VerletIntegrator(1.0 * unit.femtoseconds)
+        context = Context(system, integrator)
+        result["default_platform"] = context.getPlatform().getName()
+        del context, integrator
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            f"OpenMM default Context probe failed: {type(exc).__name__}: {exc}"
+        )
+
+    gpu_platforms = [
+        p for p in usable_platforms if p in {"CUDA", "OpenCL", "HIP"}
+    ]
+    result["platforms"] = usable_platforms
+    result["unusable_platforms"] = unusable_platforms
     result["gpu_platforms"] = gpu_platforms
-    result["fastest_platform"] = platform_names[-1] if platform_names else None
+    result["fastest_platform"] = (
+        max(usable_platforms, key=lambda name: platform_speeds.get(name, 0.0))
+        if usable_platforms else None
+    )
     result["success"] = True
+
+    for item in unusable_platforms:
+        name = item["platform"]
+        if name in {"CUDA", "OpenCL", "HIP"}:
+            result["warnings"].append(
+                f"{name} is registered by OpenMM but cannot create a Context "
+                f"in this process ({item['error']})."
+            )
 
     if atom_count is None:
         result["local_feasibility"] = "unknown"
@@ -3657,13 +3706,14 @@ def inspect_openmm_platforms(
             "a smoke test before starting a full local run."
         )
         result["warnings"].append(
-            "No CUDA/OpenCL platform detected for a large explicit-water system."
+            "No usable CUDA/OpenCL/HIP platform detected for a large "
+            "explicit-water system."
         )
     elif explicit and not gpu_platforms and atom_count >= 10000:
         result["local_feasibility"] = "slow_on_cpu"
         result["recommendation"] = (
-            "Local CPU execution may be slow. Prefer a GPU platform or use "
-            "short explicit smoke-test steps before longer runs."
+            "Local CPU execution may be slow. Prefer a usable GPU platform "
+            "or use short explicit smoke-test steps before longer runs."
         )
     else:
         result["local_feasibility"] = "reasonable"

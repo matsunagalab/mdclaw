@@ -366,10 +366,37 @@ def test_studybench_integrity_is_strict_without_prep_topology_requirements():
 
         if task_id in comparative_tasks:
             assert "manifest_artifact_floor" in check_types, task_id
+            assert "trajectory_file_signature" in check_types, task_id
             assert "metrics.json" in task.required_outputs, task_id
         else:
             assert "manifest_artifact_floor" not in check_types, task_id
+            assert "trajectory_file_signature" not in check_types, task_id
             assert "metrics.json" not in task.required_outputs, task_id
+
+
+def test_s01_short_md_contract_requires_calibrated_non_overclaimed_answer():
+    task_id = "S01_stability_t4l_l99a"
+    prompt = (STUDY_DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
+    payload = json.loads(
+        (STUDY_DATASET_DIR / "tasks" / task_id / "task.json").read_text()
+    )
+    reference_pool = json.loads(
+        (
+            STUDY_DATASET_DIR
+            / "tasks"
+            / task_id
+            / "truth"
+            / "reference_pool.json"
+        ).read_text()
+    )
+
+    combined = prompt + "\n" + payload["task_intent"]
+
+    assert "literature-calibrated" in combined
+    assert "short MD alone" in combined
+    assert "delta-delta-G" in combined
+    assert "consistency evidence" in combined
+    assert reference_pool["primary_reference"]["doi"] == "10.1126/science.1553543"
 
 
 def test_list_benchmark_tasks_supports_studybench():

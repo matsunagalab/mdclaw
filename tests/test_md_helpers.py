@@ -5,7 +5,9 @@ non-slow pytest lane. See test_server_smoke.py for the full simulation
 smoke tests.
 """
 
+import sys
 import re
+import types
 from pathlib import Path
 
 import pytest
@@ -19,6 +21,7 @@ from mdclaw.md_simulation_server import (
     _node_previously_failed,
     _resolve_dcd_append_mode,
     _resolve_equilibration_stage_steps,
+    inspect_openmm_platforms,
     run_equilibration,
     run_production,
 )
@@ -29,6 +32,86 @@ from mdclaw._node import (
     init_progress_v3,
 )
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
+
+
+def test_inspect_openmm_platforms_reports_only_context_usable_platforms(monkeypatch):
+    class FakePlatformObj:
+        def __init__(self, name, speed):
+            self._name = name
+            self._speed = speed
+
+        def getName(self):
+            return self._name
+
+        def getSpeed(self):
+            return self._speed
+
+    fake_platforms = [
+        FakePlatformObj("Reference", 1.0),
+        FakePlatformObj("CPU", 10.0),
+        FakePlatformObj("OpenCL", 50.0),
+    ]
+
+    class FakePlatform:
+        @staticmethod
+        def getNumPlatforms():
+            return len(fake_platforms)
+
+        @staticmethod
+        def getPlatform(index):
+            return fake_platforms[index]
+
+        @staticmethod
+        def getPlatformByName(name):
+            for platform in fake_platforms:
+                if platform.getName() == name:
+                    return platform
+            raise ValueError(name)
+
+    class FakeSystem:
+        def addParticle(self, _mass):
+            return None
+
+    class FakeVerletIntegrator:
+        def __init__(self, _timestep):
+            pass
+
+    class FakeContext:
+        def __init__(self, _system, _integrator, platform=None):
+            platform = platform or FakePlatform.getPlatformByName("CPU")
+            if platform.getName() == "OpenCL":
+                raise RuntimeError("No compatible OpenCL platform is available")
+            self._platform = platform
+
+        def getPlatform(self):
+            return self._platform
+
+    fake_openmm = types.SimpleNamespace(
+        Context=FakeContext,
+        Platform=FakePlatform,
+        System=FakeSystem,
+        VerletIntegrator=FakeVerletIntegrator,
+        unit=types.SimpleNamespace(femtoseconds=1.0),
+    )
+    monkeypatch.setitem(sys.modules, "openmm", fake_openmm)
+
+    result = inspect_openmm_platforms(atom_count=10000, solvent_type="explicit")
+
+    assert result["success"] is True
+    assert result["platforms"] == ["Reference", "CPU"]
+    assert result["gpu_platforms"] == []
+    assert result["fastest_platform"] == "CPU"
+    assert result["default_platform"] == "CPU"
+    assert result["local_feasibility"] == "slow_on_cpu"
+    assert result["unusable_platforms"] == [
+        {
+            "platform": "OpenCL",
+            "error": (
+                "RuntimeError: No compatible OpenCL platform is available"
+            ),
+        }
+    ]
+    assert any("OpenCL is registered" in warning for warning in result["warnings"])
 
 
 class TestComputeStepPlan:

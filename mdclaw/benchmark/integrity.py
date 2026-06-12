@@ -18,6 +18,7 @@ from typing import Any, Optional
 _DOI_RE = re.compile(r"\b10\.\d{4,9}/[^\s\"'<>]+", re.IGNORECASE)
 _PMID_RE = re.compile(r"\bPMID\s*:?\s*\d+\b", re.IGNORECASE)
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
+_DCD_MAGIC = b"\x54\x00\x00\x00CORD"
 
 
 def hash_file(path: str | Path, algorithm: str = "md5") -> Optional[str]:
@@ -603,6 +604,58 @@ def check_manifest_artifact_floor(
     return warnings
 
 
+def check_trajectory_file_signatures(
+    manifest: dict[str, Any],
+    submission_dir: Path,
+    manifest_path: str,
+) -> list[str]:
+    """Require trajectory artifacts to have a recognized trajectory signature.
+
+    StudyBench currently publishes DCD examples in its submission blueprint.
+    A DCD must start with the fixed 84-record + ``CORD`` magic; plain text,
+    JSON, or arbitrary padded bytes are not accepted as trajectory artifacts.
+    """
+    value = _safe_path(manifest, manifest_path)
+    if not isinstance(value, list):
+        return [
+            f"manifest {manifest_path}: expected list, got "
+            f"{type(value).__name__ if value is not None else 'missing'}"
+        ]
+
+    warnings: list[str] = []
+    for i, rel in enumerate(value):
+        if not isinstance(rel, str) or not rel.strip():
+            warnings.append(f"manifest {manifest_path}[{i}]: empty trajectory path")
+            continue
+        path = (submission_dir / rel).resolve()
+        if not path.is_file():
+            warnings.append(
+                f"manifest {manifest_path}[{i}]: file not found: {rel}"
+            )
+            continue
+        suffix = path.suffix.lower()
+        if suffix != ".dcd":
+            warnings.append(
+                f"manifest {manifest_path}[{i}]: unsupported trajectory "
+                f"extension {suffix!r}; expected .dcd"
+            )
+            continue
+        try:
+            with path.open("rb") as handle:
+                head = handle.read(len(_DCD_MAGIC))
+        except OSError as exc:
+            warnings.append(
+                f"manifest {manifest_path}[{i}]: could not read {rel}: {exc}"
+            )
+            continue
+        if head != _DCD_MAGIC:
+            warnings.append(
+                f"manifest {manifest_path}[{i}]: {rel} is not a DCD "
+                "trajectory (missing DCD CORD header)"
+            )
+    return warnings
+
+
 def check_provenance_execution_evidence(
     provenance: dict[str, Any],
     required_stages: list[str],
@@ -752,6 +805,13 @@ def run_artifact_integrity(
                     check.manifest_path or "",
                     min_count=int(check.min_count or 1),
                     min_bytes=int(check.min_bytes or 1),
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "trajectory_file_signature":
+                ws = check_trajectory_file_signatures(
+                    manifest,
+                    submission_dir,
+                    check.manifest_path or "outputs.trajectories",
                 )
                 warnings.extend(f"[{check.check_id}] {w}" for w in ws)
             elif ctype == "provenance_execution_evidence":

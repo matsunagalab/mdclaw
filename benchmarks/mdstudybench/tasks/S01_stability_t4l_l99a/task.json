@@ -14,11 +14,11 @@
   "primary_score": "scientific_answer",
   "references": [
     {
-      "note": "FireProtDB curated single-mutation DDG database (scorer-side citation pool).",
+      "note": "FireProtDB curated single-mutation DDG database for calibration, not a substitute for submitted MD artifacts.",
       "source": "FireProtDB"
     },
     {
-      "note": "S669 / Ssym single-mutation DDG benchmark (scorer-side citation pool).",
+      "note": "S669 / Ssym single-mutation DDG benchmark for calibration, not a substitute for submitted MD artifacts.",
       "source": "S669"
     }
   ],
@@ -107,6 +107,11 @@
         "min_bytes": 1024
       },
       {
+        "check_id": "trajectory_file_signatures",
+        "check_type": "trajectory_file_signature",
+        "manifest_path": "outputs.trajectories"
+      },
+      {
         "check_id": "citations_in_allowed_pool",
         "check_type": "citation_pool",
         "allowed_pool_file": "truth/reference_pool.json",
@@ -135,6 +140,6 @@
     "evidence_communication"
   ],
   "task_id": "S01_stability_t4l_l99a",
-  "task_intent": "Scientific-answer test: predict the experimental stability direction for T4 lysozyme L99A relative to WT (PDB 2LZM) from MD-derived evidence. Run short comparative MD of WT and the L99A mutant, populate metrics.md_analysis with quantitative differences (core SASA, cavity volume, packing density, C-alpha RMSF in the mutated region, hydrophobic contact count, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
+  "task_intent": "Scientific-answer calibration test: compare WT T4 lysozyme (PDB 2LZM) with the L99A cavity mutant using short comparative MD, but do not claim that short MD alone proves a folding-stability delta-delta-G. Report the literature-calibrated stability direction in effect.direction, populate metrics.md_analysis with local consistency evidence (core SASA, cavity or packing proxy, C-alpha RMSF near residue 99, hydrophobic contact count, etc.), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from literature-calibrated thermodynamic interpretation.",
   "time_limit_minutes": 120
 }

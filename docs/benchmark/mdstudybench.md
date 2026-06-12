@@ -15,7 +15,7 @@ contract; broad preparation coverage belongs in MDPrepBench.
 
 | Task | Focus | Required Evidence |
 |---|---|---|
-| S01_stability_t4l_l99a | T4 lysozyme L99A stability direction | WT/mutant trajectories, `metrics.md_analysis`, cited evidence, limitations, and `effect.direction`. |
+| S01_stability_t4l_l99a | T4 lysozyme L99A stability calibration | WT/mutant trajectories, local MD consistency metrics, cited calibration evidence, limitations, and non-overclaimed `effect.direction`. |
 | S02_ppi_hotspot_barnase_d39a | Barnase-barstar D39A binding direction | WT/mutant complex trajectories, interface metrics, cited evidence, limitations, and `effect.direction`. |
 | S03_t4l_wt_vs_l99a_methods | Auditable WT vs L99A study bundle | Methods draft, provenance study roles, decision log, evidence report, and calibrated direction. |
 
@@ -46,8 +46,10 @@ The public package contains each task's `prompt.md`,
 `submission_contract.json`, and `submission_checklist.md`. The contract includes
 a task-specific `submission_blueprint`: S01/S02 ask for real trajectory artifacts
 listed in `manifest.outputs.trajectories`, while S03 asks for the methods draft
-and decision log. StudyBench does not inherit MDPrepBench's topology or
-minimization artifact requirements.
+and decision log. S01 uses short MD as local consistency evidence and requires
+agents to separate trajectory-supported observations from literature-calibrated
+thermodynamic interpretation. StudyBench does not inherit MDPrepBench's topology
+or minimization artifact requirements.
 
 For completed submissions, all `manifest.outputs` paths must be relative paths
 under `submission/`. S01/S02 require structured provenance execution evidence

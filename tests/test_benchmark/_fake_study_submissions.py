@@ -169,7 +169,8 @@ def _evidence_report(
 
 def _write_trajectory_pair(sub_dir: Path) -> list[str]:
     payload = (
-        b"SYNTHETIC STUDYBENCH TRAJECTORY FIXTURE - NOT REAL MD\n" * 32
+        b"\x54\x00\x00\x00CORD"
+        + b"SYNTHETIC STUDYBENCH DCD FIXTURE - NOT REAL MD\n" * 32
     )
     rels = [
         "trajectories/wt.dcd",

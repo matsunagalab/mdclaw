@@ -244,7 +244,7 @@ This intentionally makes truth direction important but not the sole gate.
 
 | ID | Question class | Candidate source | What is hidden | Scoring note | Priority |
 |---|---|---|---|---|---:|
-| S01 | Monomer stability mutation | T4L WT vs L99A | Experimental stability direction / ddG source | Split plan, evidence, truth direction, and calibration. | 1 |
+| S01 | Monomer stability calibration | T4L WT vs L99A | Experimental stability direction / ddG source | Real trajectories, local consistency evidence, calibrated direction, and overclaim control. | 1 |
 | S02 | PPI hotspot mutation | Barnase-barstar D39A | Experimental binding direction / ddG source | Require interface observables and uncertainty calibration. | 1 |
 | S03 | Study methods bundle | T4L WT vs L99A | Experimental stability direction / methods rubric | Ask agent to package methods, provenance, decision log, and calibrated evidence. | 1 |
 

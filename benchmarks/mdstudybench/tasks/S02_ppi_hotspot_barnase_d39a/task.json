@@ -107,6 +107,11 @@
         "min_bytes": 1024
       },
       {
+        "check_id": "trajectory_file_signatures",
+        "check_type": "trajectory_file_signature",
+        "manifest_path": "outputs.trajectories"
+      },
+      {
         "check_id": "citations_in_allowed_pool",
         "check_type": "citation_pool",
         "allowed_pool_file": "truth/reference_pool.json",

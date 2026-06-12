@@ -5,5 +5,9 @@
     "Ssym",
     "VariBench"
   ],
-  "note": "Predict effect.direction from MD-derived metrics. Run short comparative MD of WT and the L99A mutant and report quantitative differences (core SASA, cavity volume, packing density, C-alpha RMSF in the mutated region, hydrophobic contact count, etc.) in metrics.md_analysis and evidence_report.evidence.md_metrics. Cite a record from the pools above (e.g. FireProtDB record_id + DOI/PMID of the underlying study) only for confidence calibration; the direction itself must be supported by your MD numbers, not by recalling the literature."
+  "primary_reference": {
+    "doi": "10.1126/science.1553543",
+    "citation": "Eriksson et al. 1992, cavity-creating mutations in T4 lysozyme."
+  },
+  "note": "Report effect.direction as a literature-calibrated direction and use submitted short comparative MD metrics as local consistency evidence. Run WT and L99A trajectories and report quantitative differences (core SASA, cavity volume, packing density, C-alpha RMSF near residue 99, hydrophobic contact count, etc.) in metrics.md_analysis and evidence_report.evidence.md_metrics. Do not claim that short MD alone proves the experimental delta-delta-G."
 }

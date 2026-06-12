@@ -5,5 +5,5 @@
   "ddg_kcal_per_mol_central_estimate": 4.6,
   "magnitude_class": "large",
   "source": "Eriksson et al. 1992 doi:10.1126/science.1553543",
-  "note": "Cavity-creating mutation; benzene rescues a fraction of the destabilization. The direction (destabilizing) is uncontested across FireProtDB, S669, Ssym, and the original Matthews-lab thermodynamic series."
+  "note": "Cavity-creating mutation; benzene rescues a fraction of the destabilization. The direction (destabilizing) is a calibration target from FireProtDB, S669, Ssym, and the original Matthews-lab thermodynamic series. S01 should not require or reward a claim that short MD alone proves the experimental delta-delta-G."
 }
