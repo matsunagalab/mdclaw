@@ -54,6 +54,15 @@ mdclaw = "mdclaw._cli:main"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.hatch.metadata]
+# hpacker is declared as a git (direct) reference in project.dependencies.
+# Recent hatchling versions reject direct references during metadata
+# generation unless this is explicitly enabled, which broke fresh
+# `conda env create -f environment.yml` runs (pip's build isolation pulls
+# the latest hatchling). MDClaw is installed editable / via the container,
+# not published to PyPI, so direct references are acceptable here.
+allow-direct-references = true
+
 [tool.hatch.build.targets.wheel]
 packages = ["mdclaw"]
 
