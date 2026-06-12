@@ -49,7 +49,10 @@ def _short_circuit_heavy_steps(monkeypatch):
     downstream steps are inert. Stubbing clean_protein and merge_structures
     keeps the test insensitive to PDBFixer / propka availability.
     """
+    import importlib
+
     from mdclaw import structure_server as ss
+    _pc = importlib.import_module("mdclaw.structure.prepare_complex")
 
     def fake_split(*args, **kwargs):
         return {
@@ -70,9 +73,9 @@ def _short_circuit_heavy_steps(monkeypatch):
     def fake_merge(*args, **kwargs):
         return {"success": True, "output_file": None, "statistics": {}}
 
-    monkeypatch.setattr(ss, "split_molecules", fake_split)
-    monkeypatch.setattr(ss, "clean_protein", fake_clean)
-    monkeypatch.setattr(ss, "merge_structures", fake_merge)
+    monkeypatch.setattr(_pc, "split_molecules", fake_split)
+    monkeypatch.setattr(_pc, "clean_protein", fake_clean)
+    monkeypatch.setattr(_pc, "merge_structures", fake_merge)
     return ss
 
 
@@ -409,7 +412,7 @@ class TestPrecedence:
     def test_direct_args_win_over_structure_analysis(self, mini_pdb, monkeypatch, tmp_path):
         """Direct --disulfide-pairs must override structure_analysis.disulfide_bonds."""
         ss = _short_circuit_heavy_steps(monkeypatch)
-        with patch.object(ss, "clean_protein") as mock_clean:
+        with patch("mdclaw.structure.prepare_complex.clean_protein") as mock_clean:
             mock_clean.return_value = {"success": True, "output_file": None, "operations": [], "warnings": [], "errors": [], "statistics": {}, "disulfide_bonds": []}
             sa = {
                 "disulfide_bonds": [

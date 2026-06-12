@@ -1454,7 +1454,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         from unittest.mock import patch
         from mdclaw._node import create_node
         from mdclaw.md_simulation_server import run_production
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1507,7 +1507,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         resolver's ``restart_from_node_id`` is trusted."""
         from unittest.mock import patch
         from mdclaw.md_simulation_server import run_production
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1558,7 +1558,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
         from mdclaw.md_simulation_server import run_production
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1669,7 +1669,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         from unittest.mock import MagicMock, patch
         from mdclaw._node import create_node
         from mdclaw.md_simulation_server import run_equilibration
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import equilibrate as md_mod
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1766,7 +1766,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         from unittest.mock import patch
         from mdclaw._node import create_node
         from mdclaw.md_simulation_server import run_equilibration
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import equilibrate as md_mod
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -2090,7 +2090,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2119,7 +2119,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2186,7 +2186,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2242,7 +2242,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2274,7 +2274,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2302,7 +2302,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         )
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2386,7 +2386,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             return original_fake(**kwargs)
 
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=_fake,
         ):
             result = build_amber_system(
@@ -2417,7 +2417,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         )
         _captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2445,7 +2445,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         )
         captured, fake = self._fake_om_build_capturing_kwargs()
         with patch(
-            "mdclaw.amber_server._run_openmmforcefields_build",
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
             side_effect=fake,
         ):
             result = build_amber_system(
@@ -2723,7 +2723,7 @@ class TestRunProductionImplicitSolventLookup:
             state_xml_path=state,
         )
 
-        from mdclaw import md_simulation_server as md_mod
+        from mdclaw.simulation import production as md_mod
 
         with patch.object(
             md_mod, "_load_xml_topology_inputs",

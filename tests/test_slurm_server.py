@@ -57,8 +57,8 @@ def _mock_run_command(stdout="", stderr="", returncode=0):
 class TestInspectCluster:
     """Test inspect_cluster tool."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_json_parse_success(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         sinfo_json = {
@@ -88,14 +88,14 @@ class TestInspectCluster:
         assert result["config_file"] is not None
         assert Path(result["config_file"]).exists()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=False)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_sinfo_not_available(self, mock_check):
         result = inspect_cluster()
         assert result["success"] is False
         assert "sinfo" in str(result.get("errors") or result.get("message", ""))
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_text_fallback(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # First call (--json) fails, second call (text) succeeds
@@ -115,8 +115,8 @@ class TestInspectCluster:
         assert len(result["partitions"]) >= 1
         assert "text fallback" in str(result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_config_file_written(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         sinfo_json = {"sinfo": [{"partition": {"name": "default"}, "nodes": {"total": 1}, "gres": ""}]}
@@ -138,8 +138,8 @@ class TestInspectCluster:
 class TestSubmitJob:
     """Test submit_job tool."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_command_string_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 12345\n")
@@ -163,8 +163,8 @@ class TestSubmitJob:
         assert "#SBATCH --partition=cpu" in content
         assert "echo hello world" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_existing_script_file(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
@@ -189,14 +189,14 @@ class TestSubmitJob:
         assert "#SBATCH --job-name=wrap_test" in content
         assert "#SBATCH --gpus-per-node=1" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=False)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_sbatch_not_available(self, mock_check):
         result = submit_job(script="echo test")
         assert result["success"] is False
         assert "sbatch" in str(result.get("errors") or result.get("message", ""))
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_sbatch_directive_newline_rejected(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = submit_job(
@@ -209,8 +209,8 @@ class TestSubmitJob:
         assert result["code"] == "sbatch_directive_injection"
         mock_run.assert_not_called()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_auto_partition_from_config(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # Write cluster config
@@ -223,8 +223,8 @@ class TestSubmitJob:
         assert result["success"] is True
         assert "Auto-selected partition" in str(result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_gpu_partition_auto_select(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -243,8 +243,8 @@ class TestSubmitJob:
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --partition=gpu" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_platform_cuda_auto_sets_gpus(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 44444\n")
@@ -260,8 +260,8 @@ class TestSubmitJob:
         assert "#SBATCH --gpus-per-node=1" in content
         assert any("Auto-set --gpus 1" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_platform_cuda_auto_selects_gpu_partition(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -287,8 +287,8 @@ class TestSubmitJob:
         assert "#SBATCH --partition=gpu" in content
         assert "#SBATCH --gpus-per-node=1" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_explicit_gpus_preserved_with_platform_cuda(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -305,8 +305,8 @@ class TestSubmitJob:
         assert "#SBATCH --gpus-per-node=2" in content
         assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_gres_suppresses_platform_autodetect(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -324,8 +324,8 @@ class TestSubmitJob:
         assert "--gpus-per-node" not in content
         assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_non_gpu_platform_no_auto_gpu(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -344,8 +344,8 @@ class TestSubmitJob:
             assert "--gres" not in content
             assert not any("Auto-set --gpus 1" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_account_qos_extra_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 33333\n")
@@ -365,8 +365,8 @@ class TestSubmitJob:
         assert "#SBATCH --constraint=a100" in content
         assert "#SBATCH --exclusive" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_module_load_auto_insert(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         monkeypatch.setenv("MDCLAW_MODULE_LOADS", "cuda/12.0 amber/24")
@@ -378,8 +378,8 @@ class TestSubmitJob:
         assert "module load cuda/12.0" in content
         assert "module load amber/24" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_metadata_written(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 55555\n")
@@ -404,8 +404,8 @@ class TestSubmitJob:
 class TestCheckJob:
     """Test check_job tool."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_running_state(self, mock_run, mock_check):
         squeue_json = {
             "jobs": [{
@@ -422,8 +422,8 @@ class TestCheckJob:
         assert result["state"] == "RUNNING"
         assert result["node"] == "node01"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_completed_via_sacct(self, mock_run, mock_check):
         # squeue returns empty (job finished), sacct returns completed
         squeue_json = {"jobs": []}
@@ -446,8 +446,8 @@ class TestCheckJob:
         assert result["state"] == "COMPLETED"
         assert result["exit_code"] == "0"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_failed_with_stderr(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
@@ -476,7 +476,7 @@ class TestCheckJob:
         assert result["state"] == "FAILED"
         assert "Segmentation fault" in result["stderr_tail"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=False)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_squeue_not_available(self, mock_check):
         result = check_job("99999")
         assert result["success"] is False
@@ -490,8 +490,8 @@ class TestCheckJob:
 class TestListJobs:
     """Test list_jobs tool."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_list_jobs(self, mock_run, mock_check):
         squeue_json = {
             "jobs": [
@@ -521,8 +521,8 @@ class TestListJobs:
         assert result["jobs"][0]["name"] == "md_production"
         assert result["jobs"][1]["state"] == "PENDING"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_empty_queue(self, mock_run, mock_check):
         mock_run.return_value = _mock_run_command(stdout=json.dumps({"jobs": []}))
 
@@ -540,8 +540,8 @@ class TestListJobs:
 class TestCancelJob:
     """Test cancel_job tool."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_cancel_success(self, mock_run, mock_check):
         mock_run.return_value = _mock_run_command(stdout="")
 
@@ -549,8 +549,8 @@ class TestCancelJob:
         assert result["success"] is True
         assert "cancelled" in result["message"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_cancel_invalid_id(self, mock_run, mock_check):
         mock_run.side_effect = subprocess.CalledProcessError(
             1, "scancel", stderr="Invalid job id"
@@ -560,7 +560,7 @@ class TestCancelJob:
         assert result["success"] is False
         assert len(result["errors"]) > 0
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=False)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=False)
     def test_scancel_not_available(self, mock_check):
         result = cancel_job("12345")
         assert result["success"] is False
@@ -899,8 +899,8 @@ class TestShowPolicy:
 class TestInspectClusterPolicy:
     """Test inspect_cluster preserves and applies policy."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_preserves_existing_policy(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # Write existing config with policy
@@ -926,8 +926,8 @@ class TestInspectClusterPolicy:
         assert saved["policy"]["max_gpus_per_job"] == 2
         assert saved["policy"]["allowed_partitions"] == ["gpu"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_filters_partitions_by_policy(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         existing = {
@@ -960,8 +960,8 @@ class TestInspectClusterPolicy:
 class TestSubmitJobPolicy:
     """Test submit_job policy validation and defaults."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_policy_rejects_gpu_violation(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -976,8 +976,8 @@ class TestSubmitJobPolicy:
         assert "max_gpus_per_job" in result.get("message", "")
         assert any("Lower --gpus to 2 or less." in hint for hint in result.get("hints", []))
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_policy_rejects_partition_violation(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -991,8 +991,8 @@ class TestSubmitJobPolicy:
         assert result["error_type"] == "ValidationError"
         assert any("allowed partitions" in hint.lower() for hint in result.get("hints", []))
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_policy_applies_defaults(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -1012,8 +1012,8 @@ class TestSubmitJobPolicy:
         assert "#SBATCH --account=proj1" in content
         assert "#SBATCH --qos=normal" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_user_explicit_overrides_defaults(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -1031,8 +1031,8 @@ class TestSubmitJobPolicy:
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --partition=cpu" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_no_policy_no_restriction(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {"partitions": [{"name": "gpu", "gpus_per_node": 4}]}
@@ -1187,8 +1187,8 @@ class TestConfigureContainer:
 class TestContainerExecution:
     """Test that submit_job wraps commands with singularity when configured."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_container_wrap(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         config = {
@@ -1216,8 +1216,8 @@ class TestContainerExecution:
         assert "/opt/containers/mdclaw.sif" in content
         assert "/scratch" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_environment_overrides_container(self, mock_run, mock_check, tmp_path, monkeypatch):
         """When environment is explicitly set, container wrapping is skipped."""
         monkeypatch.chdir(tmp_path)
@@ -1243,8 +1243,8 @@ class TestContainerExecution:
         assert "singularity exec" not in content
         assert "module load cuda/12.0" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_no_container_no_wrap(self, mock_run, mock_check, tmp_path, monkeypatch):
         """Without container config, commands are not wrapped."""
         monkeypatch.chdir(tmp_path)
@@ -1262,8 +1262,8 @@ class TestContainerExecution:
         content = Path(result["script_file"]).read_text()
         assert "singularity" not in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_inspect_preserves_container(self, mock_run, mock_check, tmp_path, monkeypatch):
         """inspect_cluster should preserve existing container config."""
         monkeypatch.chdir(tmp_path)
@@ -1359,13 +1359,13 @@ class TestJobTracker:
         assert result["jobs"][0]["job_id"] == "222"
         assert result["jobs"][1]["job_id"] == "111"
 
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.run_command")
     def test_submit_job_writes_tracker(self, mock_run, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 99999")
 
-        with patch("mdclaw.slurm_server.check_external_tool", return_value=True), \
-             patch("mdclaw.slurm_server._load_cluster_config", return_value=None):
+        with patch("mdclaw.slurm._base.check_external_tool", return_value=True), \
+             patch("mdclaw.slurm.submit._load_cluster_config", return_value=None):
             result = submit_job(script="echo hello", output_dir=str(tmp_path))
 
         assert result["success"] is True
@@ -1420,8 +1420,8 @@ def _make_job_with_nodes(tmp_path, job_name: str, node_ids: list[str]) -> Path:
 class TestSubmitJobNodeIntegration:
     """submit_job: stamps node.json when --job-dir / --node-id are passed."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_stamps_node_metadata(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_x", ["prod_001"])
@@ -1459,9 +1459,9 @@ class TestSubmitJobNodeIntegration:
         assert records[0]["job_dir"] == str(jd.resolve())
         assert records[0]["node_id"] == "prod_001"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.update_node_status")
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm.node_sync.update_node_status")
+    @patch("mdclaw.slurm._base.run_command")
     def test_stamp_status_failure_rolls_back_metadata(
         self, mock_run, mock_update_status, mock_check, tmp_path, monkeypatch
     ):
@@ -1507,7 +1507,7 @@ class TestSubmitJobNodeIntegration:
             assert key not in node["metadata"]
         assert node["status"] == "pending"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     def test_node_id_without_job_dir_is_rejected(self, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = submit_job(
@@ -1519,8 +1519,8 @@ class TestSubmitJobNodeIntegration:
         # Failure comes back as a structured validation error, not a raw string.
         assert "job_dir" in json.dumps(result, default=str)
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_missing_node_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = tmp_path / "empty_job"
@@ -1537,8 +1537,8 @@ class TestSubmitJobNodeIntegration:
         assert result["code"] == "slurm_node_unavailable"
         mock_run.assert_not_called()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_existing_slurm_job_id_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_duplicate", ["prod_001"])
@@ -1558,8 +1558,8 @@ class TestSubmitJobNodeIntegration:
         assert result["code"] == "slurm_node_already_submitted"
         mock_run.assert_not_called()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_in_flight_submission_marker_blocks_second_submitter(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -1596,8 +1596,8 @@ class TestSubmitJobNodeIntegration:
         assert node["metadata"]["slurm_job_id"] == "88888"
         assert "slurm_submission_intent_id" not in node["metadata"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_malformed_sbatch_job_id_rejected(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 12345; touch x\n")
@@ -1628,7 +1628,7 @@ class TestSubmitJobNodeIntegration:
         assert error is None
 
         with patch(
-            "mdclaw.slurm_server.update_node_status",
+            "mdclaw.slurm.node_sync.update_node_status",
             return_value={"success": False, "message": "status update failed"},
         ):
             stamp_err = slurm_mod._stamp_slurm_on_node(
@@ -1658,8 +1658,8 @@ class TestSubmitJobNodeIntegration:
 class TestCheckJobNodeSync:
     """check_job: reflects SLURM state back onto the linked DAG node."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_failed_state_fails_node(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_failed", ["prod_001"])
@@ -1707,8 +1707,8 @@ class TestCheckJobNodeSync:
         assert node["status"] == "failed"
         assert node["metadata"].get("slurm_state") == "FAILED"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_running_state_advances_queued_node(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_running", ["prod_001"])
@@ -1746,8 +1746,8 @@ class TestCheckJobNodeSync:
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "running"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_completed_state_without_node_completion_marks_zombie_failed(
         self, mock_run, mock_check, tmp_path, monkeypatch,
     ):
@@ -1793,8 +1793,8 @@ class TestCheckJobNodeSync:
         assert node["metadata"]["slurm_zombie_detected"] is True
         assert any("marked failed" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_completed_node_keeps_slurm_observation_in_events(
         self, mock_run, mock_check, tmp_path, monkeypatch,
     ):
@@ -1842,8 +1842,8 @@ class TestCheckJobNodeSync:
         assert event["details"]["slurm_state"] == "COMPLETED"
         assert event["details"]["slurm_elapsed"] == "00:05:00"
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_tracker_lookup_can_use_job_dir_not_cwd(
         self, mock_run, mock_check, tmp_path, monkeypatch,
     ):
@@ -1879,8 +1879,8 @@ class TestCheckJobNodeSync:
 class TestSubmitArrayJob:
     """submit_array_job: one sbatch with --array, one node per task."""
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_three_nodes_one_sbatch(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         # Three jobs, each with its own prod_001
@@ -1942,8 +1942,8 @@ class TestSubmitArrayJob:
         ids = [r["job_id"] for r in records]
         assert ids == ["99999_0", "99999_1", "99999_2"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_array_platform_cuda_auto_sets_gpus(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jds = [
@@ -1972,8 +1972,8 @@ class TestSubmitArrayJob:
         assert "#SBATCH --gpus-per-node=1" in content
         assert any("Auto-set --gpus 1" in w for w in result["warnings"])
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_array_banner_quotes_job_and_node_values(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         mock_run.return_value = _mock_run_command(stdout="Submitted batch job 123\n")
@@ -1995,8 +1995,8 @@ class TestSubmitArrayJob:
         assert shlex.quote(f"node_id={injected_node}") in content
         assert "echo [array_task=" not in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_max_concurrent_applied(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jds = [_make_job_with_nodes(tmp_path, f"j{i}", ["prod_001"]) for i in range(5)]
@@ -2015,14 +2015,14 @@ class TestSubmitArrayJob:
         content = Path(result["script_file"]).read_text()
         assert "#SBATCH --array=0-4%2" in content
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     def test_empty_tasks_rejected(self, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = submit_array_job(tasks=[], output_dir=str(tmp_path))
         assert result["success"] is False
         assert "tasks" in json.dumps(result, default=str)
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     def test_missing_field_rejected(self, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         result = submit_array_job(
@@ -2032,8 +2032,8 @@ class TestSubmitArrayJob:
         assert result["success"] is False
         assert "command" in json.dumps(result, default=str)
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_sbatch_directive_newline_rejected_for_array(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_array_injection", ["prod_001"])
@@ -2047,8 +2047,8 @@ class TestSubmitArrayJob:
         assert result["code"] == "sbatch_directive_injection"
         mock_run.assert_not_called()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_array_missing_node_rejected_before_submission(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
 
@@ -2061,9 +2061,9 @@ class TestSubmitArrayJob:
         assert result["code"] == "slurm_node_unavailable"
         mock_run.assert_not_called()
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server._stamp_slurm_on_node", return_value="stamp failed")
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm.submit._stamp_slurm_on_node", return_value="stamp failed")
+    @patch("mdclaw.slurm._base.run_command")
     def test_array_stamp_failure_scancels_parent_and_fails(
         self, mock_run, mock_stamp, mock_check, tmp_path, monkeypatch
     ):
@@ -2094,8 +2094,8 @@ class TestSubmitArrayJob:
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert "slurm_submission_intent_id" not in node["metadata"]
 
-    @patch("mdclaw.slurm_server.check_external_tool", return_value=True)
-    @patch("mdclaw.slurm_server.run_command")
+    @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
+    @patch("mdclaw.slurm._base.run_command")
     def test_array_later_stamp_failure_rolls_back_prior_stamped_node(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
@@ -2125,7 +2125,7 @@ class TestSubmitArrayJob:
             return "stamp failed"
 
         with patch(
-            "mdclaw.slurm_server._stamp_slurm_on_node",
+            "mdclaw.slurm.submit._stamp_slurm_on_node",
             side_effect=stamp_side_effect,
         ):
             result = submit_array_job(

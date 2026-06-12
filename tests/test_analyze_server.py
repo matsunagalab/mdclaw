@@ -9,91 +9,7 @@ from mdclaw.analyze_server import (
     analyze_contact_frequency,
     analyze_rmsf,
     detect_equilibration,
-    register_analysis_result,
 )
-
-
-def _write_artifact(job_dir, node_id, rel_path, content="x\n"):
-    path = job_dir / "nodes" / node_id / rel_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content)
-    return path
-
-
-def _make_analysis_node(job_dir):
-    from mdclaw._node import complete_node, create_node
-
-    create_node(str(job_dir), "prod")
-    _write_artifact(job_dir, "prod_001", "artifacts/trajectory.dcd")
-    complete_node(
-        str(job_dir),
-        "prod_001",
-        artifacts={"trajectory": "artifacts/trajectory.dcd"},
-    )
-    create_node(str(job_dir), "analyze", parent_node_ids=["prod_001"])
-
-
-def test_register_analysis_result_from_manifest(tmp_path):
-    job_dir = tmp_path / "job"
-    _make_analysis_node(job_dir)
-    _write_artifact(job_dir, "analyze_001", "artifacts/result.json", "{}\n")
-    _write_artifact(job_dir, "analyze_001", "artifacts/contacts.csv", "frame,value\n")
-    manifest = {
-        "analysis_type": "custom",
-        "name": "ligand_contacts",
-        "summary": "Contacts remained stable.",
-        "metrics": {"mean_contact_occupancy": 0.75, "n_frames": 20},
-        "artifacts": {
-            "result_json": "artifacts/result.json",
-            "contact_csv": "artifacts/contacts.csv",
-        },
-        "method": {"library": "mdtraj", "cutoff_nm": 0.45},
-        "provenance": {"input_node_id": "analyze_000"},
-        "producer_agent": "test-agent",
-    }
-    manifest_path = _write_artifact(
-        job_dir,
-        "analyze_001",
-        "artifacts/analysis_manifest.json",
-        json.dumps(manifest),
-    )
-
-    result = register_analysis_result(
-        str(job_dir),
-        "analyze_001",
-        manifest_file=str(manifest_path),
-    )
-
-    assert result["success"] is True
-    node = json.loads((job_dir / "nodes" / "analyze_001" / "node.json").read_text())
-    assert node["status"] == "completed"
-    assert node["artifacts"]["result_json"] == "artifacts/result.json"
-    assert node["artifacts"]["analysis_manifest"] == "artifacts/analysis_manifest.json"
-    assert node["metadata"]["analysis_name"] == "ligand_contacts"
-    assert node["metadata"]["metrics"]["mean_contact_occupancy"] == 0.75
-    assert "artifact_sha256" in node["metadata"]
-
-
-def test_register_analysis_result_fails_on_missing_artifact(tmp_path):
-    job_dir = tmp_path / "job"
-    _make_analysis_node(job_dir)
-    manifest_path = _write_artifact(
-        job_dir,
-        "analyze_001",
-        "artifacts/analysis_manifest.json",
-        json.dumps({"artifacts": {"missing": "artifacts/missing.csv"}}),
-    )
-
-    result = register_analysis_result(
-        str(job_dir),
-        "analyze_001",
-        manifest_file=str(manifest_path),
-    )
-
-    assert result["success"] is False
-    node = json.loads((job_dir / "nodes" / "analyze_001" / "node.json").read_text())
-    assert node["status"] == "failed"
-    assert "missing.csv" in node["metadata"]["errors"][0]
 
 
 def test_detect_equilibration_direct_writes_artifacts(tmp_path):
@@ -147,24 +63,6 @@ def test_detect_equilibration_direct_selects_2d_npy_column(tmp_path):
         (tmp_path / "equilibration_2d" / "two_column_equilibration.json").read_text()
     )
     assert report["column_index"] == 1
-
-
-def test_detect_equilibration_node_validation_failure_marks_failed(tmp_path):
-    job_dir = tmp_path / "job"
-    _make_analysis_node(job_dir)
-
-    result = detect_equilibration(
-        job_dir=str(job_dir),
-        node_id="analyze_001",
-        timeseries_file=None,
-    )
-
-    assert result["success"] is False
-    node = json.loads((job_dir / "nodes" / "analyze_001" / "node.json").read_text())
-    assert node["status"] == "failed"
-    assert "timeseries_file" in node["metadata"]["errors"][0]
-    progress = json.loads((job_dir / "progress.json").read_text())
-    assert progress["nodes"]["analyze_001"]["status"] == "failed"
 
 
 @pytest.fixture

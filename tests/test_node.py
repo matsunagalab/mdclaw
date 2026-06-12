@@ -836,7 +836,7 @@ class TestCompleteNodeStrictArtifacts:
         artifact_file.parent.mkdir(parents=True, exist_ok=True)
         artifact_file.write_text("ATOM      1  N   ALA A   1\n")
 
-        with patch("mdclaw._node._sha256_path", return_value=None):
+        with patch("mdclaw.node.lifecycle._sha256_path", return_value=None):
             with pytest.raises(ValueError, match="could not be hashed"):
                 _real_complete_node(
                     str(job_dir),

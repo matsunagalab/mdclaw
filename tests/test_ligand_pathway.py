@@ -569,7 +569,7 @@ class TestPrepareComplexWorkflowStatus:
             "warnings": [],
         }
 
-        with patch("mdclaw.structure_server.clean_ligand", return_value=fake_clean_fail):
+        with patch("mdclaw.structure.prepare_complex.clean_ligand", return_value=fake_clean_fail):
             result = prepare_complex(
                 structure_file=str(pdb_file),
                 output_dir=str(tmp_path / "job"),

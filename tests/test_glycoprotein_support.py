@@ -243,7 +243,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
             )
             return type("ProcResult", (), {"stdout": "prepareforleap ok", "stderr": ""})()
 
-    monkeypatch.setattr(amber_server, "cpptraj_wrapper", FakeCpptraj())
+    monkeypatch.setattr("mdclaw.amber.glycam_topology.cpptraj_wrapper", FakeCpptraj())
 
     captured: dict = {}
 
@@ -299,7 +299,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
     }]
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=_fake_om_build,
     ):
         result = amber_server.build_amber_system(
@@ -724,7 +724,7 @@ def test_glycan_linkage_mapping_failure_stops_before_cpptraj(monkeypatch, tmp_pa
         def run(self, args, cwd=None, timeout=None):  # pragma: no cover - must not be called
             raise AssertionError("cpptraj should not run when glycan LINK mapping fails")
 
-    monkeypatch.setattr(amber_server, "cpptraj_wrapper", FakeCpptraj())
+    monkeypatch.setattr("mdclaw.amber.glycam_topology.cpptraj_wrapper", FakeCpptraj())
     bad_linkages = [{
         "source": "pdb_link",
         "protein": {

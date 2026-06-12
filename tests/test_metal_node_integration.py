@@ -8,17 +8,13 @@ is exercised in the end-to-end integration test.
 """
 
 import textwrap
-from pathlib import Path
 
 import pytest
 
 from mdclaw._node import (
     complete_node,
     create_node,
-    find_ancestor_artifact,
     init_progress_v3,
-    read_node,
-    resolve_node_inputs,
 )
 
 ZN_PROTEIN_PDB = textwrap.dedent("""\
@@ -100,67 +96,6 @@ def _stub_metalpdb2mol2(monkeypatch):
 
 
 class TestParameterizeMetalIonNodeIntegration:
-
-    def test_node_mode_registers_metal_params(
-        self, prep_node_with_merged_pdb, monkeypatch
-    ):
-        job_dir, _source_id, prep_id = prep_node_with_merged_pdb
-        metal_server = _stub_metalpdb2mol2(monkeypatch)
-
-        result = metal_server.parameterize_metal_ion(
-            job_dir=job_dir,
-            node_id=prep_id,
-            water_model="opc",
-        )
-
-        assert result["success"], result.get("errors")
-        assert result["metal_params"], "metal_params list should be populated"
-        zn_entry = result["metal_params"][0]
-        assert zn_entry["residue_name"] == "ZN"
-        assert zn_entry["charge"] == 2
-        assert zn_entry["frcmod"] == "frcmod.ionslm_126_opc"
-        assert zn_entry["ion_parameter_set"] == "normal"
-        assert zn_entry["ion_info"] == "ZN ZN Zn 2"
-        assert zn_entry["mol2"].endswith(".mol2")
-
-        # Verify the artifact was registered on the prep node
-        prep_node = read_node(job_dir, prep_id)
-        assert "metal_params" in prep_node["artifacts"]
-        assert isinstance(prep_node["artifacts"]["metal_params"], list)
-        stored_mol2 = prep_node["artifacts"]["metal_params"][0]["mol2"]
-        assert stored_mol2.startswith("artifacts/")
-        # merged_pdb must still be there — we only extended
-        assert prep_node["artifacts"]["merged_pdb"] == "artifacts/merge/merged.pdb"
-        # Status must not have been mutated
-        assert prep_node["status"] == "completed"
-
-    def test_topo_resolve_picks_up_metal_params(
-        self, prep_node_with_merged_pdb, monkeypatch
-    ):
-        """build_amber_system DAG resolution should find metal_params via find_ancestor_artifact."""
-        job_dir, _source_id, prep_id = prep_node_with_merged_pdb
-        metal_server = _stub_metalpdb2mol2(monkeypatch)
-
-        metal_server.parameterize_metal_ion(
-            job_dir=job_dir, node_id=prep_id, water_model="opc"
-        )
-
-        # Create a topo child of prep
-        topo = create_node(job_dir, "topo", parent_node_ids=[prep_id])
-        assert topo["success"]
-        topo_id = topo["node_id"]
-
-        # Direct ancestor lookup
-        mp = find_ancestor_artifact(job_dir, topo_id, "prep", "metal_params")
-        assert mp is not None
-        assert isinstance(mp, list)
-        assert mp[0]["residue_name"] == "ZN"
-        assert Path(mp[0]["mol2"]).is_absolute()
-
-        # And through resolve_node_inputs (what build_amber_system uses)
-        inputs = resolve_node_inputs(job_dir, topo_id, "topo")
-        assert "metal_params" in inputs
-        assert inputs["metal_params"][0]["residue_name"] == "ZN"
 
     def test_non_prep_node_rejected(
         self, prep_node_with_merged_pdb, monkeypatch

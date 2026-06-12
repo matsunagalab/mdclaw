@@ -175,7 +175,7 @@ def test_build_amber_system_requires_gemmi_for_phospho_detection(tmp_path):
         "END\n"
     )
 
-    with patch("mdclaw.amber_server._gemmi_available", return_value=False):
+    with patch("mdclaw.amber.build_system._gemmi_available", return_value=False):
         result = build_amber_system(
             pdb_file=str(pdb_file),
             forcefield="ff19SB",
@@ -192,7 +192,7 @@ def test_build_amber_system_helper_failure_gets_default_code(tmp_path):
     _write_minimal_pdb(pdb_file)
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         return_value={"success": False, "errors": ["boom"], "warnings": []},
     ):
         result = build_amber_system(
@@ -210,7 +210,7 @@ def test_build_amber_system_timeout_exception_gets_structured_code(tmp_path):
     _write_minimal_pdb(pdb_file)
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=TimeoutError("stage timed out"),
     ):
         result = build_amber_system(
@@ -318,7 +318,7 @@ def test_build_amber_system_marks_water_model_unused_for_vacuum_topology(tmp_pat
         }
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=_fake_om_build,
     ):
         result = build_amber_system(
@@ -837,7 +837,7 @@ def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_pat
         }
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=_fake_om_build,
     ):
         # Matching hmr=True against the declared condition succeeds.
@@ -877,7 +877,7 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
         return {"success": True, "errors": [], "warnings": []}
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=_fake_om_build,
     ):
         result = build_amber_system(

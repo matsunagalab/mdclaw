@@ -1,0 +1,882 @@
+"""Node-based job graph management (schema v3).
+
+Each pipeline step (prep, solv, topo, min, eq, prod) is a *node* with its own
+directory, ``node.json``, lock file, and ``artifacts/`` folder.  Parent-child
+relationships form a DAG.  ``progress.json`` is a thin index of nodes.
+
+Design principle:
+    skill = what to run (orchestration, no state mutation)
+    tool  = run + record (execution + state via this module)
+"""
+
+import json
+import logging
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
+
+from mdclaw._event import write_event
+from mdclaw._lock import file_lock
+
+logger = logging.getLogger(__name__)
+
+from mdclaw.node.constants import IMMUTABLE_NODE_UPDATE_KEYS, NODE_STATUSES, NODE_STATUS_ALIASES, NODE_TYPES, OPERATIONAL_METADATA_KEYS, SCHEMA_VERSION, _ALLOWED_PARENT_TYPES  # noqa: E402
+from mdclaw.node.io import _atomic_write_json, _parse_iso_datetime, _sha256_path, _values_match, normalize_artifact_paths  # noqa: E402
+from mdclaw.node.progress import _load_progress_v3, _next_node_id, _node_progress_summary, _sync_progress_node_entry  # noqa: E402
+from mdclaw.node.validation import _completed_node_sealed_response, _node_is_completed, _normalize_node_status, _validate_analyze_conditions  # noqa: E402
+
+
+def create_node(
+    job_dir: str,
+    node_type: str,
+    parent_node_ids: Optional[list[str]] = None,
+    dependency_node_ids: Optional[list[str]] = None,
+    label: Optional[str] = None,
+    conditions: Optional[dict] = None,
+    continue_from: Optional[str] = None,
+) -> dict:
+    """Create a new node directory and register it in ``progress.json``.
+
+    ``continue_from`` is sugar for ``parent_node_ids=[<prod_id>]`` intended
+    for ``prod`` nodes that extend a previous ``prod`` run. It documents
+    intent in the call site and validates that the named ancestor is an
+    actual ``prod`` node (so ``restart_from`` auto-resolution behaves as
+    expected). It is mutually exclusive with ``parent_node_ids``; mixing
+    the two is rejected to avoid ambiguity.
+
+    Returns::
+
+        {
+            "success": True,
+            "node_id": "eq_001",
+            "node_dir": "<job_dir>/nodes/eq_001",
+            "artifacts_dir": "<job_dir>/nodes/eq_001/artifacts",
+        }
+    """
+    if node_type not in NODE_TYPES:
+        return {
+            "success": False,
+            "error": f"Invalid node_type '{node_type}'. Must be one of: {sorted(NODE_TYPES)}",
+        }
+
+    # continue_from sugar: only for prod nodes, and only one of
+    # continue_from / parent_node_ids may be given.
+    if continue_from is not None:
+        if node_type != "prod":
+            return {
+                "success": False,
+                "error": (
+                    "continue_from is only valid for node_type='prod' "
+                    f"(got '{node_type}')"
+                ),
+            }
+        if parent_node_ids:
+            return {
+                "success": False,
+                "error": (
+                    "continue_from and parent_node_ids are mutually "
+                    "exclusive — pass one or the other"
+                ),
+            }
+        parent_node_ids = [continue_from]
+
+    jd = Path(job_dir).resolve()
+    parents = parent_node_ids or []
+    deps = dependency_node_ids or []
+
+    # Invariant: ``source`` is the DAG root for structure acquisition. It
+    # records a structural source bundle (PDB/AlphaFold/local file/prediction)
+    # and must not depend on any other node. A job_dir is limited to one source
+    # bundle root so prep can select a concrete structure unambiguously.
+    if node_type == "source":
+        if parents:
+            return {
+                "success": False,
+                "error": (
+                    "source nodes are DAG roots and cannot have "
+                    f"parent_node_ids (got {parents})"
+                ),
+            }
+        if deps:
+            return {
+                "success": False,
+                "error": (
+                    "source nodes are DAG roots and cannot have "
+                    f"dependency_node_ids (got {deps})"
+                ),
+            }
+
+    with file_lock(jd / "progress.lock"):
+        # Bootstrap progress.json if needed
+        pj = jd / "progress.json"
+        progress = _load_progress_v3(pj, create_if_missing=True)
+        nodes_index = progress.get("nodes", {})
+
+        # Validate parent/dependency references
+        for ref in parents + deps:
+            if ref not in nodes_index:
+                return {
+                    "success": False,
+                    "error": f"Referenced node '{ref}' does not exist in progress.json",
+                }
+
+        # If continue_from was used, the referenced node must be a prod node.
+        if continue_from is not None:
+            ref_type = nodes_index.get(continue_from, {}).get("type")
+            if ref_type != "prod":
+                return {
+                    "success": False,
+                    "error": (
+                        f"continue_from='{continue_from}' must reference a "
+                        f"prod node (got type='{ref_type}')"
+                    ),
+                }
+
+        existing_source_nodes = [
+            nid for nid, info in nodes_index.items()
+            if info.get("type") == "source"
+        ]
+        if node_type == "source" and existing_source_nodes:
+            return {
+                "success": False,
+                "error": (
+                    "job_dir already has a source root "
+                    f"({existing_source_nodes[0]}). Add multiple structures to "
+                    "that source bundle, or use another study job for a distinct "
+                    "source."
+                ),
+            }
+
+        # Analyze nodes accept N ≥ 1 parents — multiple prods for
+        # comparing replicates/temperatures (Phase 3 multi-branch), or
+        # multiple analyze nodes to compose previously-concatenated
+        # branches downstream. Mixed shapes (one prod + one analyze)
+        # are rejected because the DAG semantics diverge: prods need
+        # chain-walking, analyze already expose a ready trajectory.
+        if node_type == "analyze":
+            if len(parents) < 1:
+                return {
+                    "success": False,
+                    "error": (
+                        "analyze nodes require at least 1 parent. For "
+                        "downstream analyses, parent the analyze node "
+                        "whose trajectory you want to consume; for "
+                        "concatenation, parent one or more prod nodes."
+                    ),
+                }
+            parent_types: list[str] = []
+            for pid in parents:
+                parent_entry = nodes_index.get(pid)
+                if parent_entry is None:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"analyze parent '{pid}' does not exist in "
+                            "this job's progress.json"
+                        ),
+                    }
+                pt = parent_entry.get("type")
+                if pt not in ("prod", "analyze"):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"analyze parent must be a 'prod' or "
+                            f"'analyze' node; got '{pid}' of type "
+                            f"'{pt}'. For DCD concatenation from the "
+                            "prod chain, parent one or more prods. For "
+                            "downstream analyses, parent the analyze "
+                            "node(s) whose combined_trajectory you "
+                            "want to consume."
+                        ),
+                    }
+                parent_types.append(pt)
+            if len(set(parent_types)) > 1:
+                return {
+                    "success": False,
+                    "error": (
+                        "analyze nodes cannot mix prod and analyze "
+                        f"parents; got {parent_types}. Decide which "
+                        "layer you're operating at: either concatenate "
+                        "prod chains (all parents = prod) OR consume "
+                        "already-concatenated analyze outputs (all "
+                        "parents = analyze)."
+                    ),
+                }
+            conditions_error = _validate_analyze_conditions(conditions)
+            if conditions_error:
+                return {
+                    "success": False,
+                    "error": conditions_error,
+                }
+            if (
+                isinstance(conditions, dict)
+                and conditions.get("analysis_data_scope") == "comparison"
+                and (len(parents) != 2 or set(parent_types) != {"analyze"})
+            ):
+                return {
+                    "success": False,
+                    "error": (
+                        "comparison analyze nodes require exactly two "
+                        "analyze parents. Create one production_chain "
+                        "analyze node per branch first, then compare "
+                        "those analyze nodes."
+                    ),
+                }
+
+        if node_type == "prep":
+            source_lineages = set()
+            queue = list(parents)
+            seen = set()
+            while queue:
+                ref = queue.pop(0)
+                if ref in seen:
+                    continue
+                seen.add(ref)
+                info = nodes_index.get(ref, {})
+                if info.get("type") == "source":
+                    source_lineages.add(ref)
+                queue.extend(info.get("parents", []))
+            if len(source_lineages) > 1:
+                return {
+                    "success": False,
+                    "error": (
+                        "prep nodes must descend from at most one source root; "
+                        f"got multiple source ancestors {sorted(source_lineages)}. "
+                        "Use one source bundle per job."
+                    ),
+                }
+
+        # Allocate ID
+        node_id = _next_node_id(nodes_index, node_type)
+        node_dir = jd / "nodes" / node_id
+        artifacts_dir = node_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Write node.json
+        node_metadata: dict = {}
+        if continue_from is not None:
+            node_metadata["continued_from"] = continue_from
+        node_data = {
+            "schema_version": SCHEMA_VERSION,
+            "node_id": node_id,
+            "node_type": node_type,
+            "status": "pending",
+            "parent_node_ids": parents,
+            "dependency_node_ids": deps,
+            "label": label,
+            "created_at": now,
+            "updated_at": now,
+            "conditions": conditions or {},
+            "artifacts": {},
+            "metadata": node_metadata,
+            "warnings": [],
+        }
+        _atomic_write_json(node_dir / "node.json", node_data)
+
+        # Register in progress.json
+        nodes_index[node_id] = _node_progress_summary(node_data)
+        progress["nodes"] = nodes_index
+        _atomic_write_json(pj, progress)
+
+    # Event (outside lock — append-only, no race)
+    write_event(job_dir, node_id, "node_created", details={
+        "node_type": node_type,
+        "parent_node_ids": parents,
+        "label": label,
+    })
+
+    logger.info(f"Node created: {node_id} (type={node_type}, parents={parents})")
+    return {
+        "success": True,
+        "node_id": node_id,
+        "node_dir": str(node_dir),
+        "artifacts_dir": str(artifacts_dir),
+    }
+
+
+# ── Node JSON helpers ──────────────────────────────────────────────────────
+
+
+def update_node(job_dir: str, node_id: str, updates: dict) -> None:
+    """Merge *updates* into ``node.json`` (under node.lock).
+
+    .. important::
+       ``updates`` must NOT include ``status``. Status is the one field
+       that lives in two files (``node.json`` and the ``progress.json``
+       index), so it has a single writer-path — :func:`update_node_status`
+       — that all callers (CLI, :func:`begin_node`, :func:`complete_node`,
+       :func:`fail_node`) route through. Mutating status through this
+       generic merge would bypass the index update and let the two stores
+       drift. A ``status`` key in *updates* raises ``ValueError``.
+    """
+    if "status" in updates:
+        raise ValueError(
+            "update_node() must not set 'status' — use update_node_status() "
+            "so the progress.json index stays in sync."
+        )
+    immutable_keys = sorted(set(updates) & IMMUTABLE_NODE_UPDATE_KEYS)
+    if immutable_keys:
+        raise ValueError(
+            "update_node() must not mutate immutable node identity fields: "
+            f"{immutable_keys}. Create a new node for changed scientific "
+            "identity."
+        )
+
+    node_dir = Path(job_dir) / "nodes" / node_id
+    node_json = node_dir / "node.json"
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            raise ValueError(
+                "completed node.json records are sealed; write a post-completion "
+                "event instead of mutating node.json"
+            )
+        for key, value in updates.items():
+            if isinstance(value, dict) and isinstance(data.get(key), dict):
+                data[key].update(value)
+            elif isinstance(value, list) and key == "warnings":
+                existing = data.get("warnings", [])
+                existing.extend(value)
+                data["warnings"] = existing
+            else:
+                data[key] = value
+        _atomic_write_json(node_json, data)
+
+
+def _apply_status(
+    job_dir: str,
+    node_id: str,
+    status: str,
+    *,
+    payload: Optional[dict] = None,
+    clear_metadata_keys: Optional[list[str]] = None,
+    artifact_paths_for_hash: Optional[dict] = None,
+) -> None:
+    """The sole writer-path for node status.
+
+    1. Optionally drop stale fields from ``metadata`` (caller-controlled
+       via ``clear_metadata_keys``) — used by :func:`begin_node` to wipe
+       a prior failure's ``metadata.errors`` at the start of a fresh
+       attempt so a subsequent ``complete_node`` doesn't leave the
+       successful node carrying old error strings.
+    2. Merge ``status`` + ``updated_at`` (and any caller-supplied
+       ``payload`` — e.g. artifacts / metadata / warnings) into
+       ``node.json`` under ``node.lock``.
+    3. Mirror ``status`` into the ``progress.json`` index under
+       ``progress.lock``.
+
+    :func:`update_node_status` (public/CLI), :func:`begin_node`,
+    :func:`complete_node`, and :func:`fail_node` all delegate here so
+    that status edits *cannot* hit one file without the other, and so
+    the invariant is enforceable from a single function.
+    """
+    canonical_status = _normalize_node_status(status)
+    if canonical_status is None:
+        raise ValueError(
+            f"Invalid node status {status!r}. Must be one of: {sorted(NODE_STATUSES)}"
+        )
+    merged: dict = dict(payload or {})
+    merged["_status_write"] = canonical_status  # sentinel the node.json writer recognises
+    merged["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    node_dir = Path(job_dir) / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            raise ValueError(
+                "completed node.json records are sealed; write a post-completion "
+                "event instead of mutating node.json"
+            )
+        if artifact_paths_for_hash:
+            artifact_hashes = {}
+            for key, rel_path in artifact_paths_for_hash.items():
+                if not isinstance(rel_path, str) or not rel_path:
+                    continue
+                full_path = node_dir / rel_path
+                if not full_path.is_file():
+                    raise ValueError(
+                        f"complete_node: artifact '{key}' file missing: {rel_path} "
+                        f"(expected at {full_path})"
+                    )
+                digest = _sha256_path(full_path)
+                if not digest:
+                    raise ValueError(
+                        f"complete_node: artifact '{key}' could not be hashed: {rel_path}"
+                    )
+                artifact_hashes[key] = digest
+            if artifact_hashes:
+                metadata_payload = dict(merged.get("metadata") or {})
+                metadata_payload["artifact_sha256"] = artifact_hashes
+                merged["metadata"] = metadata_payload
+        if clear_metadata_keys and isinstance(data.get("metadata"), dict):
+            for k in clear_metadata_keys:
+                data["metadata"].pop(k, None)
+        for key, value in merged.items():
+            if key == "_status_write":
+                data["status"] = value
+                continue
+            if isinstance(value, dict) and isinstance(data.get(key), dict):
+                data[key].update(value)
+            elif isinstance(value, list) and key == "warnings":
+                existing = data.get("warnings", [])
+                existing.extend(value)
+                data["warnings"] = existing
+            else:
+                data[key] = value
+        _atomic_write_json(node_json, data)
+
+        jd = Path(job_dir)
+        with file_lock(jd / "progress.lock"):
+            pj = jd / "progress.json"
+            progress = _load_progress_v3(pj, create_if_missing=True)
+            nodes = progress.setdefault("nodes", {})
+            nodes[node_id] = _node_progress_summary(data)
+            _atomic_write_json(pj, progress)
+
+
+def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
+    """CLI-facing status writer.
+
+    Delegates to :func:`_apply_status` so that every status edit in the
+    system flows through the same single path. Returns
+    ``{"success": True, "node_id", "status"}`` so it can be exposed as
+    a CLI tool.
+    """
+    canonical_status = _normalize_node_status(status)
+    if canonical_status is None:
+        return {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "invalid_node_status",
+            "message": (
+                f"Invalid node status {status!r}. Must be one of: "
+                f"{sorted(NODE_STATUSES)}"
+            ),
+            "errors": [
+                f"status: Invalid node status {status!r}. Must be one of: "
+                f"{sorted(NODE_STATUSES)}"
+            ],
+            "warnings": [],
+            "hints": [
+                "Use one of the canonical statuses: pending, queued, running, completed, failed",
+                "The legacy status 'submitted' is accepted as an alias for 'queued'.",
+            ],
+            "context": {
+                "field": "status",
+                "actual": status,
+                "expected": sorted(NODE_STATUSES),
+                "aliases": NODE_STATUS_ALIASES,
+                "code": "invalid_node_status",
+            },
+            "recoverable": True,
+        }
+    try:
+        _apply_status(job_dir, node_id, canonical_status)
+    except ValueError as exc:
+        message = str(exc)
+        if "completed node.json records are sealed" in message:
+            return {
+                "success": False,
+                "error_type": "ValidationError",
+                "code": "completed_node_sealed",
+                "message": message,
+                "errors": [message],
+                "warnings": [],
+                "hints": [
+                    "Create a new node for changed scientific state.",
+                    "Write operational observations as events instead of mutating completed node.json records.",
+                ],
+                "context": {
+                    "node_id": node_id,
+                    "requested_status": canonical_status,
+                    "code": "completed_node_sealed",
+                },
+                "recoverable": True,
+            }
+        raise
+    return {"success": True, "node_id": node_id, "status": canonical_status}
+
+
+def claim_node(
+    job_dir: str,
+    node_id: str,
+    agent_id: str,
+    lease_seconds: int = 3600,
+) -> dict:
+    """Claim a node for one agent with an expiring lease."""
+    if not agent_id:
+        return {
+            "success": False,
+            "code": "agent_id_required",
+            "error": "agent_id is required to claim a node",
+        }
+    if lease_seconds <= 0:
+        return {
+            "success": False,
+            "code": "invalid_lease_seconds",
+            "error": "lease_seconds must be positive",
+        }
+
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(seconds=int(lease_seconds))).isoformat()
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
+        metadata = data.setdefault("metadata", {})
+        claimed_by = metadata.get("claimed_by")
+        claim_expires_at = metadata.get("claim_expires_at")
+        expiry = _parse_iso_datetime(claim_expires_at)
+        if claimed_by and claim_expires_at and expiry is None:
+            return {
+                "success": False,
+                "code": "invalid_claim_expiry",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "claim_expires_at": claim_expires_at,
+                "error": (
+                    f"Node '{node_id}' has an invalid claim_expires_at "
+                    f"value: {claim_expires_at!r}"
+                ),
+            }
+        claim_active = expiry is not None and expiry > now
+        if claimed_by and claimed_by != agent_id and claim_active:
+            return {
+                "success": False,
+                "code": "node_already_claimed",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "claim_expires_at": claim_expires_at,
+                "error": (
+                    f"Node '{node_id}' is already claimed by '{claimed_by}' "
+                    f"until {claim_expires_at}"
+                ),
+            }
+        metadata["claimed_by"] = agent_id
+        metadata["claim_expires_at"] = expires_at
+        data["updated_at"] = now.isoformat()
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_claimed",
+        success=True,
+        details={
+            "agent_id": agent_id,
+            "lease_seconds": int(lease_seconds),
+            "claim_expires_at": expires_at,
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "claimed_by": agent_id,
+        "claim_expires_at": expires_at,
+    }
+
+
+def release_node_claim(
+    job_dir: str,
+    node_id: str,
+    agent_id: Optional[str] = None,
+) -> dict:
+    """Release a node claim, optionally requiring the current claimant."""
+    jd = Path(job_dir)
+    node_dir = jd / "nodes" / node_id
+    node_json = node_dir / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "error": f"Node '{node_id}' does not exist under {job_dir}",
+        }
+
+    with file_lock(node_dir / "node.lock"):
+        data = json.loads(node_json.read_text())
+        if _node_is_completed(data):
+            return _completed_node_sealed_response(node_id)
+        metadata = data.setdefault("metadata", {})
+        claimed_by = metadata.get("claimed_by")
+        if agent_id and claimed_by and claimed_by != agent_id:
+            return {
+                "success": False,
+                "code": "claim_owner_mismatch",
+                "node_id": node_id,
+                "claimed_by": claimed_by,
+                "error": (
+                    f"Node '{node_id}' is claimed by '{claimed_by}', "
+                    f"not '{agent_id}'"
+                ),
+            }
+        metadata.pop("claimed_by", None)
+        metadata.pop("claim_expires_at", None)
+        data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _atomic_write_json(node_json, data)
+
+    _sync_progress_node_entry(job_dir, node_id, data)
+    write_event(
+        job_dir,
+        node_id,
+        "node_claim_released",
+        success=True,
+        details={
+            "agent_id": agent_id,
+            "previous_claimed_by": claimed_by,
+        },
+    )
+    return {
+        "success": True,
+        "node_id": node_id,
+        "released": True,
+        "previous_claimed_by": claimed_by,
+    }
+
+
+def begin_node(job_dir: str, node_id: str) -> None:
+    """Mark a node as ``running``. Called by tools at the start of execution.
+
+    On re-attempts (a node that was previously marked ``failed`` and is
+    now being retried), ``metadata.errors`` from the prior attempt is
+    cleared. Without this the next ``complete_node`` would leave the
+    successful node carrying stale failure strings — anyone reading the
+    completed node's metadata would think it had failed. Authoritative
+    history of every attempt lives in ``events/`` (one file per
+    ``tool_started`` / ``tool_failed`` / ``tool_completed`` event).
+    """
+    _apply_status(
+        job_dir, node_id, "running",
+        clear_metadata_keys=["errors"],
+    )
+    write_event(job_dir, node_id, "tool_started")
+
+
+def complete_node(
+    job_dir: str,
+    node_id: str,
+    artifacts: dict,
+    *,
+    metadata: Optional[dict] = None,
+    warnings: Optional[list[str]] = None,
+) -> None:
+    """Mark a node as ``completed`` and record its outputs.
+
+    *artifacts* maps logical names to paths **relative to the node directory**
+    (e.g. ``{"solvated_pdb": "artifacts/solvated.pdb"}``).
+
+    Each registered str-typed artifact path must exist on disk; a missing
+    file raises ``ValueError`` so artifact registration mistakes surface
+    immediately rather than producing a completed node with broken outputs.
+    """
+    artifacts = normalize_artifact_paths(job_dir, node_id, artifacts)
+    payload: dict = {"artifacts": artifacts}
+    merged_metadata = dict(metadata or {})
+    operational_metadata = sorted(set(merged_metadata) & set(OPERATIONAL_METADATA_KEYS))
+    if operational_metadata:
+        raise ValueError(
+            "complete_node() metadata must not include operational fields "
+            f"{operational_metadata}; completed node.json records are sealed."
+        )
+    if merged_metadata:
+        payload["metadata"] = merged_metadata
+    if warnings:
+        payload["warnings"] = warnings
+
+    _apply_status(
+        job_dir,
+        node_id,
+        "completed",
+        payload=payload,
+        clear_metadata_keys=list(OPERATIONAL_METADATA_KEYS),
+        artifact_paths_for_hash=artifacts,
+    )
+    write_event(job_dir, node_id, "tool_completed", success=True)
+
+
+def fail_node(
+    job_dir: str,
+    node_id: str,
+    *,
+    errors: Optional[list[str]] = None,
+    warnings: Optional[list[str]] = None,
+) -> None:
+    """Mark a node as ``failed`` and record errors."""
+    payload: dict = {}
+    if warnings:
+        payload["warnings"] = warnings
+    # Store errors in metadata (node.json doesn't have a top-level errors key)
+    if errors:
+        payload["metadata"] = {"errors": errors}
+
+    _apply_status(job_dir, node_id, "failed", payload=payload)
+    write_event(job_dir, node_id, "tool_failed", success=False,
+                details={"errors": errors or []})
+
+
+def fail_node_from_result(
+    job_dir: str | None,
+    node_id: str | None,
+    result: dict,
+    *,
+    default_error: str = "tool failed",
+) -> dict:
+    """Mark ``node_id`` failed from a structured tool result and return it."""
+    if job_dir and node_id:
+        errors = result.get("errors") or []
+        if not errors:
+            errors = [result.get("message") or result.get("error") or default_error]
+        fail_node(
+            job_dir,
+            node_id,
+            errors=[str(error) for error in errors],
+            warnings=result.get("warnings") or None,
+        )
+    return result
+
+
+# ── Progress-level cached summaries ────────────────────────────────────────
+
+
+def read_node(job_dir: str, node_id: str) -> dict:
+    """Read and return a node's ``node.json``."""
+    node_json = Path(job_dir) / "nodes" / node_id / "node.json"
+    return json.loads(node_json.read_text())
+
+
+def validate_node_execution_context(
+    job_dir: str,
+    node_id: str,
+    expected_node_type: str,
+    *,
+    actual_conditions: Optional[dict] = None,
+) -> dict:
+    """Validate that a workflow node is ready to run.
+
+    This is a runtime guard rather than a hard create-time restriction:
+    users may sketch or repair DAGs, but tools refuse to execute against
+    incomplete parents, wrong node types, or declared ``conditions`` that
+    disagree with the actual parameters for this run.
+    """
+    errors: list[str] = []
+    blocking_codes: list[str] = []
+
+    def add_error(code: str, message: str) -> None:
+        errors.append(message)
+        if code not in blocking_codes:
+            blocking_codes.append(code)
+
+    jd = Path(job_dir)
+    node_json = jd / "nodes" / node_id / "node.json"
+    if not node_json.exists():
+        return {
+            "success": False,
+            "code": "node_missing",
+            "blocking_codes": ["node_missing"],
+            "errors": [f"Node '{node_id}' does not exist under {job_dir}"],
+        }
+
+    node = read_node(job_dir, node_id)
+    node_type = node.get("node_type")
+    if node_type != expected_node_type:
+        add_error(
+            "node_type_mismatch",
+            f"Node '{node_id}' has type '{node_type}', expected '{expected_node_type}'"
+        )
+
+    progress = _load_progress_v3(jd / "progress.json")
+    index = (progress or {}).get("nodes", {})
+    if node_id not in index:
+        add_error("node_missing_from_progress", f"Node '{node_id}' is missing from progress.json")
+
+    allowed_parent_types = _ALLOWED_PARENT_TYPES.get(expected_node_type, frozenset())
+    for parent_id in node.get("parent_node_ids", []):
+        parent_entry = index.get(parent_id)
+        parent_type = parent_entry.get("type") if parent_entry else None
+        if parent_type not in allowed_parent_types:
+            add_error(
+                "parent_type_invalid",
+                f"Node '{node_id}' cannot run with parent '{parent_id}' "
+                f"of type '{parent_type}'; expected one of {sorted(allowed_parent_types)}"
+            )
+        if parent_entry is None:
+            add_error("parent_missing_from_progress", f"Parent node '{parent_id}' is missing from progress.json")
+            continue
+        if parent_entry.get("status") != "completed":
+            add_error(
+                "parent_not_completed",
+                f"Parent node '{parent_id}' must be completed before running "
+                f"'{node_id}' (status={parent_entry.get('status')!r})"
+            )
+
+    for dep_id in node.get("dependency_node_ids", []):
+        dep_entry = index.get(dep_id)
+        if dep_entry is None:
+            add_error("dependency_missing_from_progress", f"Dependency node '{dep_id}' is missing from progress.json")
+            continue
+        if dep_entry.get("status") != "completed":
+            add_error(
+                "dependency_not_completed",
+                f"Dependency node '{dep_id}' must be completed before running "
+                f"'{node_id}' (status={dep_entry.get('status')!r})"
+            )
+
+    if expected_node_type == "source":
+        if node.get("parent_node_ids") or node.get("dependency_node_ids"):
+            add_error(
+                "source_has_parent_or_dependency",
+                "source nodes are DAG roots and cannot have parents/dependencies",
+            )
+
+    actual_conditions = actual_conditions or {}
+    declared_conditions = node.get("conditions", {}) or {}
+    for key, expected in declared_conditions.items():
+        if key not in actual_conditions:
+            # Strict: a declared condition is a contract the tool must
+            # cross-check. Silently skipping keys absent from
+            # actual_conditions defeats the purpose of declaring them.
+            add_error(
+                "condition_missing",
+                f"Tool did not include declared condition '{key}' in "
+                f"actual_conditions; node declared {key}={expected!r} but "
+                f"the runtime call provided no value to cross-check"
+            )
+            continue
+        actual = actual_conditions[key]
+        if actual is None:
+            # A declared condition is only useful if the runtime call can
+            # verify it. ``None`` means the tool did not have a concrete
+            # value to check against the declared contract.
+            add_error(
+                "condition_unverifiable",
+                f"actual_conditions[{key!r}] is None; node declared "
+                f"{key}={expected!r} but the condition cannot be cross-checked"
+            )
+            continue
+        if not _values_match(expected, actual):
+            add_error(
+                "condition_mismatch",
+                f"Node condition mismatch for '{key}': declared {expected!r}, "
+                f"actual {actual!r}"
+            )
+
+    return {
+        "success": not errors,
+        "code": "node_execution_context_invalid" if errors else "ok",
+        "blocking_codes": blocking_codes,
+        "errors": errors,
+    }

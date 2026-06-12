@@ -738,7 +738,7 @@ def test_build_amber_system_phosaa_autoload_in_xml_bundle(tmp_path):
     captured, fake = _capture_om_bundle(tmp_path)
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=fake,
     ):
         result = build_amber_system(
@@ -768,7 +768,7 @@ def test_build_amber_system_no_phosaa_when_no_ptm(tmp_path):
     captured, fake = _capture_om_bundle(tmp_path)
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=fake,
     ):
         build_amber_system(

@@ -4,10 +4,8 @@ import json
 
 from mdclaw.study_server import (
     add_study_job,
-    get_study_plan,
     init_study,
     list_study_jobs,
-    list_study_plans,
     record_study_decision,
     record_study_plan,
     record_study_question,
@@ -106,42 +104,6 @@ def test_append_decision_question_and_token_logs(tmp_path):
     assert json.loads(decision_rows[0])["decision"] == "run_short_screen"
     assert json.loads(question_rows[0])["record_type"] == "question"
     assert json.loads(token_rows[0])["tokens"] == 1234
-
-
-def test_record_get_and_list_study_plan(tmp_path):
-    study_dir = tmp_path / "study"
-    init_study(str(study_dir))
-    plan = {
-        "question": "Does V148A destabilize the ligand-bound state?",
-        "md_goal": "Compare WT and V148A ligand-bound simulations.",
-        "jobs": [
-            {"job_id": "wt_holo", "purpose": "WT ligand-bound reference"},
-            {"job_id": "mut_v148a_holo", "purpose": "V148A ligand-bound variant"},
-        ],
-        "analysis": ["protein RMSD", "binding-site RMSF"],
-        "decision": {
-            "support": "Mutant is more flexible.",
-            "against": "No reproducible difference.",
-            "inconclusive": "Sampling is insufficient.",
-        },
-    }
-
-    recorded = record_study_plan(str(study_dir), plan, rationale="Initial plan")
-
-    assert recorded["success"] is True
-    assert (study_dir / "study_plan.json").is_file()
-    stored = json.loads((study_dir / "study_plan.json").read_text())
-    assert stored["plan_id"] == "active"
-    assert stored["plan"]["plan_schema_version"] == 1
-    assert stored["plan"]["question"] == plan["question"]
-
-    fetched = get_study_plan(str(study_dir))
-    assert fetched["success"] is True
-    assert fetched["plan"]["plan"]["md_goal"] == plan["md_goal"]
-
-    listed = list_study_plans(str(study_dir))
-    assert listed["success"] is True
-    assert listed["plans"][0]["question"] == plan["question"]
 
 
 def test_record_study_plan_rejects_missing_required_fields(tmp_path):

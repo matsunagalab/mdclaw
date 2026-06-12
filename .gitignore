@@ -87,6 +87,21 @@ equilibration_output/
 rmsd_output/
 rmsf_output/
 
+# MDClaw run artifacts and scratch (study/job state, candidate structures)
+studies/
+jobs/
+annotations/
+evidence/
+cg_coefficients/
+/study.json
+/study.lock
+/181l.cif
+modXNA.pdf
+*.cif
+
+# Curator-authored benchmark structures must be tracked
+!benchmarks/**/*.cif
+
 # Mac
 .DS_Store
 

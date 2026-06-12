@@ -256,7 +256,7 @@ def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path)
         }
 
     with patch(
-        "mdclaw.amber_server._run_openmmforcefields_build",
+        "mdclaw.amber.build_system._run_openmmforcefields_build",
         side_effect=_fake_om_build,
     ):
         result = amber_server.build_amber_system(
