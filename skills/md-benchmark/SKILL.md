@@ -207,6 +207,19 @@ The automated runner defaults to 30 minutes per task. Increase
 `--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
 runs.
 
+To run and score the full MDPrepBench suite for Pi, Claude Code, and Codex
+sequentially, use the operator wrapper:
+
+```bash
+conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
+  --output-dir benchmark_runs \
+  --run-id-prefix <prefix>
+```
+
+It creates one `run_benchmark_agent` run per agent and writes
+`<prefix>_all_agents_operator_summary.json`. Add `--dry-run` to inspect the
+commands or `--task-ids <task_id>` for a smoke subset.
+
 `run_benchmark_agent` is agent-neutral. It does not require the evaluated
 solver to use MDClaw skills, and MDClaw skills must not be used as a scoring
 criterion. `tooling_condition` is only a descriptive run-summary label; use

@@ -445,6 +445,18 @@ mdclaw score_benchmark_run \
 This writes per-task `validation.json` / `score.json` files and a run-level
 `summary.json`.
 
+For repeated full-suite comparisons across the local Pi, Claude Code, and Codex
+CLIs, run the operator wrapper. It launches one scored run per agent:
+
+```bash
+conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
+  --output-dir benchmark_runs \
+  --run-id-prefix 20260613_mdprepbench_all
+```
+
+Use `--dry-run` to inspect the generated commands first, or `--task-ids <id>`
+for a short smoke test.
+
 ### MDStudyBench
 
 MDStudyBench uses the same run/evaluate tools with the study dataset. For the
