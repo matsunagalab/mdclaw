@@ -660,6 +660,9 @@ def check_provenance_execution_evidence(
     provenance: dict[str, Any],
     required_stages: list[str],
     min_command_count: int = 1,
+    *,
+    harness_record: Any = None,
+    require_harness_record: bool = False,
 ) -> list[str]:
     """Require structured evidence that real workflow commands/actions ran.
 
@@ -670,26 +673,74 @@ def check_provenance_execution_evidence(
     if not isinstance(provenance, dict):
         return ["provenance.json is not a JSON object"]
 
-    command_log = _first_list(
-        provenance,
+    command_log = _execution_log_from_payload(provenance)
+    if not command_log:
+        warnings = [
+            "provenance lacks command_log/commands/execution_log entries; "
+            "scripts alone are not execution evidence"
+        ]
+    else:
+        warnings = _check_execution_log_entries(
+            command_log,
+            source_label="provenance execution log",
+            entry_label="provenance command_log",
+            required_stages=required_stages,
+            min_command_count=min_command_count,
+            require_measured_walltime=False,
+        )
+
+    if require_harness_record:
+        harness_log = _execution_log_from_payload(harness_record)
+        if not harness_log:
+            warnings.append(
+                "harness execution record required but missing or empty; "
+                "solver-written provenance.json is not sufficient execution evidence"
+            )
+        else:
+            warnings.extend(
+                _check_execution_log_entries(
+                    harness_log,
+                    source_label="harness execution record",
+                    entry_label="harness execution record",
+                    required_stages=required_stages,
+                    min_command_count=min_command_count,
+                    require_measured_walltime=True,
+                )
+            )
+    return warnings
+
+
+def _execution_log_from_payload(payload: Any) -> list[Any]:
+    if isinstance(payload, list):
+        return payload
+    if not isinstance(payload, dict):
+        return []
+    return _first_list(
+        payload,
         "command_log",
+        "records",
         "commands",
         "execution_log",
         "attempts",
     )
-    if not command_log:
-        return [
-            "provenance lacks command_log/commands/execution_log entries; "
-            "scripts alone are not execution evidence"
-        ]
 
+
+def _check_execution_log_entries(
+    command_log: list[Any],
+    *,
+    source_label: str,
+    entry_label: str,
+    required_stages: list[str],
+    min_command_count: int,
+    require_measured_walltime: bool,
+) -> list[str]:
     structured: list[dict[str, Any]] = [
         entry for entry in command_log if isinstance(entry, dict)
     ]
     warnings: list[str] = []
     if len(structured) < min_command_count:
         warnings.append(
-            f"provenance execution log has {len(structured)} structured "
+            f"{source_label} has {len(structured)} structured "
             f"entry(ies); require >= {min_command_count}"
         )
 
@@ -699,17 +750,26 @@ def check_provenance_execution_evidence(
         command = _first_nonempty(entry, "command", "action", "tool")
         status = entry.get("exit_code", entry.get("status", entry.get("result")))
         if not stage:
-            warnings.append(f"provenance command_log[{index}] missing stage")
+            warnings.append(f"{entry_label}[{index}] missing stage")
         else:
             stages_seen.add(stage)
         if not command:
             warnings.append(
-                f"provenance command_log[{index}] missing command/action/tool"
+                f"{entry_label}[{index}] missing command/action/tool"
             )
         if status is None or status == "":
             warnings.append(
-                f"provenance command_log[{index}] missing exit_code/status/result"
+                f"{entry_label}[{index}] missing exit_code/status/result"
             )
+        if require_measured_walltime:
+            walltime = entry.get(
+                "walltime_seconds",
+                entry.get("duration_seconds", entry.get("elapsed_seconds")),
+            )
+            if not _is_nonnegative_finite_number(walltime):
+                warnings.append(
+                    f"{entry_label}[{index}] missing measured walltime_seconds"
+                )
 
     missing_stages = [
         stage for stage in required_stages
@@ -717,10 +777,15 @@ def check_provenance_execution_evidence(
     ]
     if missing_stages:
         warnings.append(
-            "provenance execution log missing required stage(s): "
-            f"{missing_stages}"
+            f"{source_label} missing required stage(s): {missing_stages}"
         )
     return warnings
+
+
+def _is_nonnegative_finite_number(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(float(value)) and float(value) >= 0.0
 
 
 def _canonical_stage(stage: Any) -> str:
@@ -734,6 +799,7 @@ def run_artifact_integrity(
     manifest: dict[str, Any],
     evidence: dict[str, Any],
     task_dir: Optional[Path] = None,
+    harness_record: Any = None,
 ) -> list[str]:
     """Dispatch every ``IntegrityCheck`` for a task and collect warning strings.
 
@@ -821,6 +887,10 @@ def run_artifact_integrity(
                     provenance,
                     required_stages=check.required_stages or [],
                     min_command_count=int(check.min_command_count or 1),
+                    harness_record=harness_record,
+                    require_harness_record=bool(
+                        getattr(check, "require_harness_record", False)
+                    ),
                 )
                 warnings.extend(f"[{check.check_id}] {w}" for w in ws)
             else:

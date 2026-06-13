@@ -38,7 +38,10 @@ subsets from words in it.
 ## How To Run The Benchmark
 
 There are three operator flows. All are scored by the same neutral MDClaw
-scorer; only the solver differs.
+scorer; only the solver differs. For held-out evaluation, follow the
+public/private workspace split in `docs/benchmark/evaluation-workflow.md`:
+export a public package for the solver, run the agent without evaluator
+material, then score later with the private evaluator package.
 
 **1. MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
 task, then score:
@@ -128,6 +131,23 @@ The exported package contains only `dataset.json`, submission-facing schemas,
 and per-task `prompt.md`, `submission_contract.json`, and
 `submission_checklist.md`. It omits `task.json`, `truth/`, and `scorer/`.
 
+Export the evaluator-only package into a separate repository or scorer
+container mount before scoring held-out runs:
+
+```bash
+mdclaw export_benchmark_private_package \
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_private/mdprepbench
+```
+
+The private package contains `task.json`, held-out `truth/`, scorer-only
+references, and schemas. Do not mount it into the solver workspace. Score
+submissions with this private package as `--dataset-dir` when the solver ran
+against the public package.
+
+See `docs/benchmark/evaluation-workflow.md` for the full step-by-step runbook,
+including where to store solver outputs and `harness_execution.json`.
+
 ## Prep Tasks
 
 | Task | Short Name | Public Anchor | Main Requirement |
@@ -213,6 +233,9 @@ All `manifest.outputs` paths must be relative paths under `submission/`;
 absolute paths and parent-directory escapes are rejected. Completed prep
 submissions must include structured provenance execution evidence, usually
 `provenance.command_log`, covering source, prep, topology, and minimization.
+Strict tasks also require a harness-owned `harness_execution.json` outside
+`submission/`, with measured walltime for each required stage. A solver-written
+`provenance.json` alone is not sufficient execution evidence.
 
 Individual tasks may inspect specific paths inside `metrics.json`, component
 counts in `prepared_structure.pdb` or the minimized structure, or scorer-side
@@ -256,10 +279,13 @@ identity / fidelity / provenance checks then contribute weighted partial credit
 that rolls up into a per-capability profile (`identity`, `physical_validity`,
 `fidelity`, `provenance`). Integrity rejection stays hard: unsafe manifest
 paths, fabricated or undersized required artifacts, and missing execution
-evidence clamp the score to zero. OpenMM topology artifacts are required for
-completed submissions; native-only Amber/GROMACS reload adapters can be added
-later. Each run also records a `tooling_condition`, an `attestation.json`, and a
-`verified` flag (see `docs/benchmark/fairness-protocol.md`).
+evidence clamp the score to zero. Under the strict provenance policy, execution
+evidence means both solver-side `provenance.command_log` and scorer-side
+`harness_execution.json`; the latter must be written outside solver-writable
+`submission/` by the benchmark harness. OpenMM topology artifacts are required
+for completed submissions; native-only Amber/GROMACS reload adapters can be
+added later. Each run also records a `tooling_condition`, an `attestation.json`,
+and a `verified` flag (see `docs/benchmark/fairness-protocol.md`).
 
 Modified DNA/RNA is intentionally outside the core prep battery because the
 current standard topology path does not support MD-ready parameterization of

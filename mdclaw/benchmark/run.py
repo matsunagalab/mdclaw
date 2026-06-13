@@ -410,6 +410,7 @@ def prepare_benchmark_run(
         task_run_dir = run_dir / "tasks" / task_id
         task_instruction_path = task_run_dir / "task_instructions.json"
         agent_prompt_path = task_run_dir / "agent_prompt.md"
+        harness_record_path = task_run_dir / "harness_execution.json"
         ensure_directory(task_run_dir)
         ensure_directory(task_run_dir / "submission")
         instruction = {
@@ -430,13 +431,15 @@ def prepare_benchmark_run(
             "submission_dir": str(task_run_dir / "submission"),
             "validation_output_file": str(task_run_dir / "validation.json"),
             "score_file": str(task_run_dir / "score.json"),
+            "harness_record_file": str(harness_record_path),
             "score_command": (
                 "mdclaw validate_and_score_benchmark_submission "
                 f"--task-file {dataset / 'tasks' / task_id / 'task.json'} "
                 f"--submission-dir {task_run_dir / 'submission'} "
                 f"--run-id {init['run_id']} "
                 f"--validation-output-file {task_run_dir / 'validation.json'} "
-                f"--output-file {task_run_dir / 'score.json'}"
+                f"--output-file {task_run_dir / 'score.json'} "
+                f"--harness-record-file {harness_record_path}"
             ),
         }
         _write_json(task_instruction_path, instruction)
@@ -660,6 +663,7 @@ def score_benchmark_run(
             validation_output_file=str(task_run_dir / "validation.json"),
             llm_judge_file=llm_judge_file,
             require_validation_success=require_validation_success,
+            harness_record_file=str(task_run_dir / "harness_execution.json"),
         )
         task_results.append(result)
 

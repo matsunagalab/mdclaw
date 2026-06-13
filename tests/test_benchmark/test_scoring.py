@@ -544,6 +544,107 @@ def test_score_submission_rejects_missing_execution_evidence_under_reject_policy
     assert any("scripts alone" in w for w in score.integrity_warnings)
 
 
+def test_score_submission_rejects_solver_only_provenance_when_harness_required(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="ok",
+                check_type="json_equals",
+                json_path="preparation.topology_ready",
+                equals=True,
+                weight=1.0,
+            )
+        ],
+    )
+    task.scoring.integrity_policy = "reject"
+    task.scoring.integrity_checks = [
+        IntegrityCheck(
+            check_id="workflow_execution_recorded",
+            check_type="provenance_execution_evidence",
+            required_stages=["source", "prep", "topo", "min"],
+            min_command_count=4,
+            require_harness_record=True,
+        )
+    ]
+    command_log = [
+        {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
+        {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
+        {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
+        {"stage": "min", "command": "mdclaw run_minimization", "exit_code": 0},
+    ]
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"topology_ready": True}},
+        provenance={"command_log": command_log},
+        evidence={},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any("harness execution record required" in w for w in score.integrity_warnings)
+
+
+def test_score_submission_accepts_harness_execution_record_when_required(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="ok",
+                check_type="json_equals",
+                json_path="preparation.topology_ready",
+                equals=True,
+                weight=1.0,
+            )
+        ],
+    )
+    task.scoring.integrity_policy = "reject"
+    task.scoring.integrity_checks = [
+        IntegrityCheck(
+            check_id="workflow_execution_recorded",
+            check_type="provenance_execution_evidence",
+            required_stages=["source", "prep", "topo", "min"],
+            min_command_count=4,
+            require_harness_record=True,
+        )
+    ]
+    command_log = [
+        {
+            "stage": stage,
+            "command": f"mdclaw {stage}",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        }
+        for stage in ["source", "prep", "topo", "min"]
+    ]
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"topology_ready": True}},
+        provenance={"command_log": command_log},
+        evidence={},
+    )
+    (tmp_path.parent / "harness_execution.json").write_text(
+        json.dumps({"records": command_log})
+    )
+
+    score = scoring.score_submission(
+        task,
+        tmp_path,
+        harness_record_file=tmp_path.parent / "harness_execution.json",
+    )
+
+    assert score.status == "passed"
+    assert score.weighted_total == 1.0
+
+
 def test_status_failed_keeps_score_when_allowed_truth_passes(tmp_path: Path):
     """A task may define a scorer-side truth check for an intentional failed
     outcome; if that hidden check passes, failed status can still receive

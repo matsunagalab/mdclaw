@@ -73,6 +73,17 @@ def _common_provenance(
     }
 
 
+def _write_harness_record(sub_dir: Path, provenance: dict[str, Any]) -> None:
+    command_log = provenance.get("command_log") or []
+    _write(sub_dir.parent / "harness_execution.json", {
+        "schema_version": "1.0",
+        "run_id": provenance.get("run_id"),
+        "task_id": provenance.get("task_id"),
+        "recorded_by": "fake_study_submissions.py",
+        "records": command_log,
+    })
+
+
 def _runtime_metrics() -> dict[str, Any]:
     return {
         "runtime": {
@@ -224,6 +235,7 @@ def make_study_submission(
         })
         _write(sub_dir / "metrics.json", metrics)
         _write(sub_dir / "provenance.json", provenance)
+        _write_harness_record(sub_dir, provenance)
         _write(sub_dir / "evidence_report.json", evidence)
         return
 
@@ -273,6 +285,7 @@ def make_study_submission(
         })
         _write(sub_dir / "methods.md", methods)
         _write(sub_dir / "provenance.json", provenance)
+        _write_harness_record(sub_dir, provenance)
         _write(sub_dir / "evidence_report.json", evidence)
         _write(
             sub_dir / "decision_log.jsonl",

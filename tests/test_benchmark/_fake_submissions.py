@@ -87,6 +87,17 @@ def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
     }
 
 
+def _write_harness_record(sub_dir: Path, provenance: dict[str, Any]) -> None:
+    command_log = provenance.get("command_log") or []
+    _write(sub_dir.parent / "harness_execution.json", {
+        "schema_version": "1.0",
+        "run_id": provenance.get("run_id"),
+        "task_id": provenance.get("task_id"),
+        "recorded_by": "fake_submissions.py",
+        "records": command_log,
+    })
+
+
 def _pdb_line(serial: int, atom: str, resname: str, chain: str, resseq: int,
               record: str = "ATOM") -> str:
     element = "".join(ch for ch in atom if ch.isalpha())[:1] or "C"
@@ -516,6 +527,7 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     if source_selection is not None:
         provenance["source_selection"] = source_selection
     _write(sub_dir / "provenance.json", provenance)
+    _write_harness_record(sub_dir, provenance)
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
         "task_id": task_id,

@@ -37,16 +37,20 @@ Agent-facing files:
   `mdclaw export_benchmark_public_package`; give the agent only
   `prompt.md`, `submission_contract.json`, and `submission_checklist.md`.
 
-Canonical harness/scorer metadata:
+Evaluator-facing files:
 
 - `benchmarks/mdprepbench/tasks/<task_id>/task.json`
 - `benchmarks/mdstudybench/tasks/<task_id>/task.json`
+- Prefer an exported private package from
+  `mdclaw export_benchmark_private_package` in a separate repo/container mount
+  that the evaluated agent cannot read.
 
 Never expose:
 
 - canonical `task.json` to the benchmark agent
 - `<task_dir>/truth/`
 - `<task_dir>/scorer/`
+- scorer-side `harness_execution.json` records before the task completes
 
 No fake trajectories, fake metrics, fake citations, or guessed conclusions.
 Treat canonical `task.json` as runner/scorer metadata, not a solution recipe.
@@ -62,6 +66,11 @@ categorize, or hardcode behavior across the benchmark suite, and must not write
 benchmark-wide solver scripts. A task-local helper script is allowed only when
 it executes real workflow steps for the current task and is recorded in
 `provenance.command_log`.
+
+For strict scoring, `provenance.command_log` is not enough by itself. The
+operator or harness must keep a measured `harness_execution.json` outside the
+solver-writable `submission/` directory with stage, command/action, exit status,
+and walltime for each required stage.
 
 `run_id` is an opaque label for the run directory and records. Do not infer task
 subset, smoke-test behavior, execution depth, or expected outcome from words in
@@ -154,6 +163,8 @@ The command writes `<run_dir>/agent_tasks.json` plus one
 `prompt.md`, `submission_contract.json`, and the task's `submission/`
 directory. Scoring metadata is written separately to `harness_tasks.json` and
 `harness_instructions.json`; do not give those files to the evaluated agent.
+`harness_instructions.json` also names the scorer-side `harness_execution.json`
+path used by strict provenance checks.
 Use `--task-ids P01_prep_simple_monomer_t4l P02_prep_1ake_chain_ap5` to run a
 subset.
 
@@ -300,6 +311,7 @@ mdclaw validate_and_score_benchmark_submission \
   --task-file <canonical_task_dir>/task.json \
   --submission-dir <submission_dir> \
   --run-id <run_id> \
+  --harness-record-file <run_task_dir>/harness_execution.json \
   --validation-output-file <run_task_dir>/validation.json \
   --output-file <run_task_dir>/score.json
 ```

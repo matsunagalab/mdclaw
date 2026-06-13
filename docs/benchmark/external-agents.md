@@ -10,6 +10,12 @@ trajectories, analysis metrics, methods drafts, provenance, and decision logs.
 The scorer only compares files under `submission/` against the canonical task
 contract and scorer-only truth files.
 
+For the recommended held-out workflow, see
+`docs/benchmark/evaluation-workflow.md`. In short: give the solver only the
+public package, keep the private evaluator package in a separate workspace, then
+score after the solver has produced `submission/` and the harness has recorded
+runtime evidence.
+
 ## What To Read
 
 Give the agent the prompt as the task. The prompt names the public structures,
@@ -26,6 +32,19 @@ mdclaw export_benchmark_public_package \
 mdclaw export_benchmark_public_package \
   --dataset-dir benchmarks/mdstudybench \
   --output-dir benchmark_public/mdstudybench
+```
+
+Export the private evaluator package separately and keep it out of the solver
+workspace:
+
+```bash
+mdclaw export_benchmark_private_package \
+  --dataset-dir benchmarks/mdprepbench \
+  --output-dir benchmark_private/mdprepbench
+
+mdclaw export_benchmark_private_package \
+  --dataset-dir benchmarks/mdstudybench \
+  --output-dir benchmark_private/mdstudybench
 ```
 
 The evaluated agent should read only files from the selected public package:
@@ -56,6 +75,10 @@ are the files intended for the evaluated agent; `harness_tasks.json` and
 Repository-local development may read the canonical prompt at
 `benchmarks/<suite>/tasks/<task_id>/prompt.md`, but do not hand the whole
 canonical task directory to the evaluated agent.
+
+For real benchmark measurements, prefer separate solver and evaluator
+workspaces. The private evaluator package first appears in the evaluator
+workspace after solving is complete.
 
 Harness or evaluator code may also read:
 
@@ -117,7 +140,9 @@ Required files vary by task. Evaluator or harness code can read
   structured `command_log` or equivalent execution log covering `source`,
   `prep`, `topo`, and `min` stages. The legacy stage name `minimization` is
   accepted as an alias, but new submissions should use `min`. Listing scripts
-  alone is not enough.
+  alone is not enough. Strict scoring also requires a harness-owned
+  `harness_execution.json` outside `submission/` with measured walltime for the
+  required stages; agent-written provenance is not trusted as runtime evidence.
 - Task artifacts: `prepared_structure.pdb`, `minimized_structure.pdb`,
   OpenMM topology files, and `minimization_report.json` for the current prep
   battery.
@@ -194,7 +219,8 @@ files, and your `submission/` files.
   weighted partial credit, rolled up into a per-capability profile.
 - Integrity rejection stays hard: unsafe manifest paths, fabricated or
   undersized required artifacts, and missing execution evidence clamp the score
-  to zero.
+  to zero. For strict tasks, execution evidence means both solver-side
+  `provenance.command_log` and scorer-side `harness_execution.json`.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
 - The contract never requires any MDClaw-specific field, so MDClaw-free agents

@@ -110,6 +110,38 @@ def public_candidate_selection_requirements(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
+def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
+    """Return procedural, non-answer-bearing harness evidence requirements."""
+    requirements: list[dict[str, Any]] = []
+    for check in task.scoring.integrity_checks:
+        if check.check_type != "provenance_execution_evidence":
+            continue
+        if not check.require_harness_record:
+            continue
+        requirements.append({
+            "check_id": check.check_id,
+            "required": True,
+            "record_owner": "benchmark_harness",
+            "record_location": (
+                check.harness_record_path
+                or "scorer-side harness_execution.json outside submission/"
+            ),
+            "required_stages": list(check.required_stages or []),
+            "min_command_count": int(check.min_command_count or 1),
+            "required_fields_per_record": [
+                "stage",
+                "command/action/tool",
+                "exit_code/status/result",
+                "walltime_seconds",
+            ],
+            "note": (
+                "provenance.command_log is still useful, but strict scoring "
+                "also requires a harness-owned measured execution record"
+            ),
+        })
+    return requirements
+
+
 def manifest_contract(task: Task) -> dict[str, Any]:
     """Return the public manifest rules most often missed by agents."""
     contract: dict[str, Any] = {
@@ -223,6 +255,15 @@ def submission_checklist(task: Task) -> list[str]:
             "provenance.json includes command_log entries for: "
             + ", ".join(stages)
         )
+        if any(
+            check.check_type == "provenance_execution_evidence"
+            and check.require_harness_record
+            for check in task.scoring.integrity_checks
+        ):
+            checks.append(
+                "the benchmark harness records measured execution outside submission/ for: "
+                + ", ".join(stages)
+            )
     else:
         checks.append(
             "provenance.json records commands or agent actions attempted"
@@ -321,6 +362,7 @@ def public_submission_contract(
         "requires_tools": list(task.requires_tools),
         "metric_requirements": public_metric_requirements(task),
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
+        "harness_evidence_requirements": public_harness_evidence_requirements(task),
         "manifest_contract": manifest_contract(task),
         "submission_blueprint": submission_blueprint(task),
         "submission_checklist": submission_checklist(task),

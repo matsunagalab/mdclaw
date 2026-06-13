@@ -433,6 +433,85 @@ def test_provenance_execution_evidence_accepts_legacy_minimization_stage():
     assert warnings == []
 
 
+def test_provenance_execution_evidence_requires_harness_record_when_strict():
+    provenance = {
+        "command_log": [
+            {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
+            {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
+            {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
+            {"stage": "min", "command": "mdclaw run_minimization", "exit_code": 0},
+        ],
+    }
+
+    warnings = integrity.check_provenance_execution_evidence(
+        provenance,
+        required_stages=["source", "prep", "topo", "min"],
+        min_command_count=4,
+        require_harness_record=True,
+    )
+
+    assert len(warnings) == 1
+    assert "harness execution record required" in warnings[0]
+
+
+def test_provenance_execution_evidence_accepts_measured_harness_record():
+    command_log = [
+        {
+            "stage": "source",
+            "command": "mdclaw fetch",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        },
+        {
+            "stage": "prep",
+            "command": "mdclaw prepare_complex",
+            "exit_code": 0,
+            "walltime_seconds": 2.0,
+        },
+        {
+            "stage": "topo",
+            "command": "mdclaw build_openmm_system",
+            "exit_code": 0,
+            "walltime_seconds": 3.0,
+        },
+        {
+            "stage": "min",
+            "command": "mdclaw run_minimization",
+            "exit_code": 0,
+            "walltime_seconds": 4.0,
+        },
+    ]
+
+    warnings = integrity.check_provenance_execution_evidence(
+        {"command_log": command_log},
+        required_stages=["source", "prep", "topo", "min"],
+        min_command_count=4,
+        harness_record={"records": command_log},
+        require_harness_record=True,
+    )
+
+    assert warnings == []
+
+
+def test_provenance_execution_evidence_rejects_unmeasured_harness_record():
+    command_log = [
+        {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},
+        {"stage": "prep", "command": "mdclaw prepare_complex", "exit_code": 0},
+        {"stage": "topo", "command": "mdclaw build_openmm_system", "exit_code": 0},
+        {"stage": "min", "command": "mdclaw run_minimization", "exit_code": 0},
+    ]
+
+    warnings = integrity.check_provenance_execution_evidence(
+        {"command_log": command_log},
+        required_stages=["source", "prep", "topo", "min"],
+        min_command_count=4,
+        harness_record={"records": command_log},
+        require_harness_record=True,
+    )
+
+    assert any("missing measured walltime_seconds" in item for item in warnings)
+
+
 # ---------------------------------------------------------------------------
 # run_artifact_integrity dispatch
 

@@ -391,6 +391,12 @@ class IntegrityCheck(BaseModel):
     # proving that a completed submission attempted the relevant workflow stages.
     required_stages: Optional[list[str]] = None
     min_command_count: Optional[int] = None
+    # When true, provenance.command_log remains useful agent-side trace text,
+    # but the integrity check also requires a scorer-side harness execution
+    # record outside submission/ so solvers cannot pass by hand-editing
+    # provenance.json after the fact.
+    require_harness_record: bool = False
+    harness_record_path: Optional[str] = None
 
 
 class TaskScoring(BaseModel):

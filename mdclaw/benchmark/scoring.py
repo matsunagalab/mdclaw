@@ -11,6 +11,7 @@ Public entry points:
 
 from __future__ import annotations
 
+import json
 import math
 import re
 import statistics
@@ -64,6 +65,7 @@ def score_submission(
     run_id: str = "",
     llm_judge_payload: Optional[dict[str, Any]] = None,
     task_dir: Optional[Path] = None,
+    harness_record_file: Optional[str | Path] = None,
 ) -> Score:
     """Run every deterministic and ground-truth check defined by ``task``
     against ``submission_dir`` and return a :class:`Score`.
@@ -78,6 +80,7 @@ def score_submission(
     metrics = integrity.read_json_safe(submission_dir / "metrics.json")
     provenance = integrity.read_json_safe(submission_dir / "provenance.json")
     evidence = integrity.read_json_safe(submission_dir / "evidence_report.json")
+    harness_record = _read_harness_record(submission_dir, harness_record_file)
 
     deterministic_results: list[CheckResult] = []
     ground_truth_results: list[CheckResult] = []
@@ -108,6 +111,7 @@ def score_submission(
         manifest=manifest,
         evidence=evidence,
         task_dir=task_dir,
+        harness_record=harness_record,
     )
     integrity_warnings.extend(artifact_warnings)
 
@@ -240,6 +244,32 @@ def score_submission(
         integrity_warnings=integrity_warnings,
         errors=[],
     )
+
+
+def _read_harness_record(
+    submission_dir: Path,
+    harness_record_file: Optional[str | Path],
+) -> Any:
+    """Read the scorer-side measured execution record when available.
+
+    The default location is one directory above ``submission/`` so a normal
+    prepared run can keep solver-writable files under ``submission/`` while the
+    harness-owned measurement record lives beside it.
+    """
+    candidates: list[Path] = []
+    if harness_record_file:
+        candidates.append(Path(harness_record_file))
+    else:
+        candidates.append(submission_dir.parent / "harness_execution.json")
+
+    for path in candidates:
+        if not path.is_file():
+            continue
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {}
+    return {}
 
 
 # ---------------------------------------------------------------------------

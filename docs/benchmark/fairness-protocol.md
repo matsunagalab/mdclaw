@@ -6,6 +6,9 @@ every entrant, whether the solver is MDClaw, MDCrow, a hand-written OpenMM
 script, or an LLM that emits its own OpenMM code. This document defines what
 makes two runs *comparable* and what makes a run *auditable*.
 
+For the concrete public/private package workflow, including solver and
+evaluator workspace layout, see `docs/benchmark/evaluation-workflow.md`.
+
 ## Principles
 
 1. **Artifact is the source of truth.** Physical properties are recomputed from
@@ -20,15 +23,23 @@ makes two runs *comparable* and what makes a run *auditable*.
    solve the identical public prompts/contracts (one content hash) and are
    scored by the same `mdclaw` scorer version against the same benchmark
    version.
-3. **The condition constrains the solver, not the judge.** Using the MDClaw
+3. **Held-out evaluator material stays private.** Canonical `task.json`,
+   `truth/`, scorer-only references, and scoring commands belong in a private
+   evaluator package or repository that is not mounted into the solver
+   workspace.
+4. **The condition constrains the solver, not the judge.** Using the MDClaw
    scorer to score an `mdclaw-free` run does not make it an MDClaw run. The
    scorer must never require any MDClaw-specific field; this is enforced by the
    slim submission contract and by regression tests.
-4. **No task-specific hints injected.** A runner may hand the solver only the
+5. **No task-specific hints injected.** A runner may hand the solver only the
    public `prompt.md` and `submission_contract.json` (plus a submission
    directory). Injecting chains, ligands, ions, mutations, force-field choices,
    water models, membrane geometry, or model indices that are not stated in the
    public prompt is forbidden and breaks comparability.
+6. **Runtime evidence is measured by the harness.** Solver-written
+   `provenance.command_log` is an audit trail, not a trusted timing source.
+   Strict scoring requires a harness-owned `harness_execution.json` outside
+   `submission/` with stage, command/action, exit status, and walltime.
 
 ## Allowed vs forbidden
 
@@ -41,6 +52,7 @@ makes two runs *comparable* and what makes a run *auditable*.
 | Adding `--select-model 5` or `--salt 0.15` not in the public prompt | Forbidden |
 | Hand-editing artifacts to pass a check without doing the work | Forbidden |
 | Giving the solver `truth/`, `scorer/`, or canonical `task.json` | Forbidden |
+| Writing `provenance.json` after the fact without a harness execution record | Forbidden |
 
 ## Comparison conditions (`tooling_condition`)
 
@@ -117,8 +129,13 @@ A third party auditing a run should be able to:
 
 1. Re-export the public package and confirm its hash matches
    `attestation.public_package_sha256`.
-2. Confirm the scorer name/version and benchmark version match across the runs
+2. Confirm the private evaluator package was not available in the solver
+   workspace and contains the canonical `task.json` / `truth/` files used for
+   scoring.
+3. Confirm the scorer name/version and benchmark version match across the runs
    being compared.
-3. Re-run `score_benchmark_run` on the submitted `submission/` directories and
+4. Re-run `score_benchmark_run` on the submitted `submission/` directories and
    reproduce the per-task `weighted_total`, `capability_scores`, and status.
-4. Confirm the `tooling_condition` matches how the solver was actually run.
+5. Confirm every strict task has a harness-owned `harness_execution.json` beside
+   the task `submission/`, not inside it.
+6. Confirm the `tooling_condition` matches how the solver was actually run.

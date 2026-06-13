@@ -28,17 +28,27 @@ from mdclaw.benchmark.models import (
 
 _PUBLIC_EXPORT_MARKER = ".md-benchmark-public-export.json"
 _PUBLIC_EXPORT_KIND = "md_benchmark_public_export"
+_PRIVATE_EXPORT_MARKER = ".md-benchmark-private-export.json"
+_PRIVATE_EXPORT_KIND = "md_benchmark_private_evaluator_export"
 
 
 def _has_valid_public_export_marker(path: Path) -> bool:
-    marker = path / _PUBLIC_EXPORT_MARKER
+    return _has_valid_export_marker(path, _PUBLIC_EXPORT_MARKER, _PUBLIC_EXPORT_KIND)
+
+
+def _has_valid_private_export_marker(path: Path) -> bool:
+    return _has_valid_export_marker(path, _PRIVATE_EXPORT_MARKER, _PRIVATE_EXPORT_KIND)
+
+
+def _has_valid_export_marker(path: Path, marker_name: str, kind: str) -> bool:
+    marker = path / marker_name
     if not marker.is_file():
         return False
     try:
         payload = json.loads(marker.read_text())
     except json.JSONDecodeError:
         return False
-    return payload.get("kind") == _PUBLIC_EXPORT_KIND
+    return payload.get("kind") == kind
 
 
 def _public_export_destination_error(source: Path, dest: Path) -> Optional[str]:
@@ -50,6 +60,20 @@ def _public_export_destination_error(source: Path, dest: Path) -> Optional[str]:
         return (
             "output_dir exists and was not created by "
             "export_benchmark_public_package; refusing to overwrite: "
+            f"{dest}"
+        )
+    return None
+
+
+def _private_export_destination_error(source: Path, dest: Path) -> Optional[str]:
+    if dest.resolve() == source.resolve():
+        return "output_dir must be different from dataset_dir"
+    if dest.exists() and not dest.is_dir():
+        return f"output_dir exists and is not a directory: {dest}"
+    if dest.exists() and any(dest.iterdir()) and not _has_valid_private_export_marker(dest):
+        return (
+            "output_dir exists and was not created by "
+            "export_benchmark_private_package; refusing to overwrite: "
             f"{dest}"
         )
     return None
@@ -156,6 +180,7 @@ def score_benchmark_submission(
     run_id: str = "",
     output_file: Optional[str] = None,
     llm_judge_file: Optional[str] = None,
+    harness_record_file: Optional[str] = None,
 ) -> dict[str, Any]:
     """Score a submission directory and write ``score.json``.
 
@@ -180,6 +205,7 @@ def score_benchmark_submission(
         run_id=run_id,
         llm_judge_payload=judge_payload,
         task_dir=task_path.parent,
+        harness_record_file=harness_record_file,
     )
     score_payload = score.model_dump()
 
@@ -206,6 +232,7 @@ def validate_and_score_benchmark_submission(
     validation_output_file: Optional[str] = None,
     llm_judge_file: Optional[str] = None,
     require_validation_success: bool = True,
+    harness_record_file: Optional[str] = None,
 ) -> dict[str, Any]:
     """Validate, score, and return normalized status fields.
 
@@ -250,6 +277,7 @@ def validate_and_score_benchmark_submission(
         run_id=run_id,
         output_file=output_file,
         llm_judge_file=llm_judge_file,
+        harness_record_file=harness_record_file,
     )
     if not score_result.get("success"):
         return {
@@ -442,8 +470,10 @@ def export_benchmark_public_package(
             "files from the canonical repository tree. The contract lists required "
             "outputs, metric requirements, and manifest rules such as "
             "`status=\"completed\"`.\n\n"
-            "Score submissions with the MDClaw benchmark scorer from the canonical "
-            "dataset checkout.\n"
+            "Score submissions with the MDClaw benchmark scorer from a held-out "
+            "private evaluator package exported by "
+            "`mdclaw export_benchmark_private_package`, or from a canonical "
+            "dataset checkout that was never mounted into the solver workspace.\n"
         )
 
         marker_path = staging / _PUBLIC_EXPORT_MARKER
@@ -481,6 +511,161 @@ def export_benchmark_public_package(
         + schema_files
         + task_files,
         "omitted_private_material": ["task.json", "truth/", "scorer/"],
+    }
+
+
+def export_benchmark_private_package(
+    dataset_dir: str = DEFAULT_DATASET_DIR,
+    output_dir: Optional[str] = None,
+) -> dict[str, Any]:
+    """Export evaluator-only benchmark material for a held-out scorer package.
+
+    This is the complement of :func:`export_benchmark_public_package`. The
+    public package is safe for solvers; this private package is only for the
+    scorer/harness repo or container. It contains canonical ``task.json`` files,
+    scorer-side ``truth/`` and ``scorer/`` directories when present, schemas,
+    and top-level private references. It deliberately omits task prompts and
+    public submission checklists so it is not mistaken for an agent package.
+    """
+    source = Path(dataset_dir)
+    if output_dir is None:
+        dest = source / "private_evaluator"
+    else:
+        dest = Path(output_dir)
+
+    dataset_path = source / "dataset.json"
+    if not dataset_path.is_file():
+        return {
+            "success": False,
+            "errors": [f"dataset.json not found at {dataset_path}"],
+        }
+    try:
+        dataset = json.loads(dataset_path.read_text())
+    except json.JSONDecodeError as exc:
+        return {
+            "success": False,
+            "errors": [f"dataset.json invalid: {exc}"],
+        }
+
+    destination_error = _private_export_destination_error(source, dest)
+    if destination_error is not None:
+        return {"success": False, "errors": [destination_error]}
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staging: Optional[Path] = Path(
+        tempfile.mkdtemp(prefix=f".{dest.name}.", dir=str(dest.parent))
+    )
+    try:
+        shutil.copy2(dataset_path, staging / "dataset.json")
+
+        files_written = [str(dest / "dataset.json")]
+
+        schemas_src = source / "schemas"
+        if schemas_src.is_dir():
+            schemas_dest = staging / "schemas"
+            shutil.copytree(schemas_src, schemas_dest)
+            files_written.extend(
+                str(dest / path.relative_to(staging))
+                for path in sorted(schemas_dest.rglob("*"))
+                if path.is_file()
+            )
+
+        private_refs_src = source / "private_references"
+        if private_refs_src.is_dir():
+            private_refs_dest = staging / "private_references"
+            shutil.copytree(private_refs_src, private_refs_dest)
+            files_written.extend(
+                str(dest / path.relative_to(staging))
+                for path in sorted(private_refs_dest.rglob("*"))
+                if path.is_file()
+            )
+
+        task_ids = [str(tid) for tid in dataset.get("task_ids", [])]
+        private_material: list[str] = []
+        for task_id in task_ids:
+            task_dir = source / "tasks" / task_id
+            task_src = task_dir / "task.json"
+            try:
+                validation.load_task(task_src)
+            except (ValidationError, json.JSONDecodeError, FileNotFoundError) as exc:
+                return {
+                    "success": False,
+                    "errors": [f"task file invalid for {task_id}: {exc}"],
+                }
+
+            private_task_dir = staging / "tasks" / task_id
+            private_task_dir.mkdir(parents=True)
+            shutil.copy2(task_src, private_task_dir / "task.json")
+            files_written.append(str(dest / "tasks" / task_id / "task.json"))
+            private_material.append(f"tasks/{task_id}/task.json")
+
+            for private_name in ("truth", "scorer"):
+                private_src = task_dir / private_name
+                if not private_src.is_dir():
+                    continue
+                private_dest = private_task_dir / private_name
+                shutil.copytree(private_src, private_dest)
+                for path in sorted(private_dest.rglob("*")):
+                    if path.is_file():
+                        rel = path.relative_to(staging).as_posix()
+                        files_written.append(str(dest / rel))
+                        private_material.append(rel)
+
+        readme = staging / "README.md"
+        readme.write_text(
+            "# MD Benchmark Private Evaluator Package\n\n"
+            "This directory is for the scorer/harness only. Do not mount it "
+            "into the solver workspace. It contains canonical task contracts, "
+            "held-out truth files, and scorer-side references needed to run "
+            "`mdclaw validate_and_score_benchmark_submission` or "
+            "`mdclaw score_benchmark_run`.\n\n"
+            "Solvers should receive a separate public package exported with "
+            "`mdclaw export_benchmark_public_package`.\n\n"
+            "For strict provenance checks, keep harness execution records "
+            "outside each solver-writable `submission/` directory and pass "
+            "`--harness-record-file` when scoring single submissions. Prepared "
+            "run directories use `tasks/<task_id>/harness_execution.json` by "
+            "default.\n"
+        )
+        files_written.append(str(dest / "README.md"))
+
+        marker_path = staging / _PRIVATE_EXPORT_MARKER
+        marker_path.write_text(
+            json.dumps(
+                {
+                    "kind": _PRIVATE_EXPORT_KIND,
+                    "dataset_dir": str(source),
+                    "benchmark_version": dataset.get(
+                        "benchmark_version", DEFAULT_BENCHMARK_VERSION
+                    ),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        files_written.append(str(dest / _PRIVATE_EXPORT_MARKER))
+
+        if dest.exists():
+            shutil.rmtree(dest)
+        staging.rename(dest)
+        staging = None
+    finally:
+        if staging is not None and staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    return {
+        "success": True,
+        "dataset_dir": str(source),
+        "output_dir": str(dest),
+        "task_count": len(task_ids),
+        "files_written": files_written,
+        "included_private_material": sorted(set(private_material)),
+        "omitted_agent_material": [
+            "prompt.md",
+            "submission_contract.json",
+            "submission_checklist.md",
+        ],
     }
 
 
@@ -768,5 +953,6 @@ __all__ = [
     "score_benchmark_submission",
     "write_benchmark_schemas",
     "export_benchmark_public_package",
+    "export_benchmark_private_package",
     "package_openmm_submission",
 ]

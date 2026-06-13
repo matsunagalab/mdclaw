@@ -29,6 +29,21 @@
           "default": null,
           "title": "Allowed Values"
         },
+        "anion_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Anion Residue Names"
+        },
         "assembly_id_json_file": {
           "anyOf": [
             {
@@ -53,6 +68,39 @@
           "default": null,
           "title": "Assembly Id Json Path"
         },
+        "capability": {
+          "anyOf": [
+            {
+              "enum": [
+                "identity",
+                "physical_validity",
+                "fidelity",
+                "provenance"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Capability"
+        },
+        "cation_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cation Residue Names"
+        },
         "chain_identity_json_file": {
           "anyOf": [
             {
@@ -76,6 +124,35 @@
           ],
           "default": null,
           "title": "Chain Identity Json Path"
+        },
+        "charge_json_file": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Charge Json File"
+        },
+        "charge_json_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Charge Json Path"
+        },
+        "charge_tolerance": {
+          "default": 0.05,
+          "title": "Charge Tolerance",
+          "type": "number"
         },
         "check_id": {
           "title": "Check Id",
@@ -102,12 +179,21 @@
             "topology_artifact_bundle",
             "openmm_system_load",
             "openmm_energy_rescan",
+            "forcefield_applied_rescan",
+            "net_charge_check",
+            "water_model_fingerprint",
+            "ion_concentration_recompute",
             "minimization_report_check",
             "minimized_structure_component_rescan",
             "metrics_caption_consistency"
           ],
           "title": "Check Type",
           "type": "string"
+        },
+        "count_polymer_chains_only": {
+          "default": true,
+          "title": "Count Polymer Chains Only",
+          "type": "boolean"
         },
         "equals": {
           "default": null,
@@ -262,6 +348,30 @@
           "default": null,
           "title": "Min Distinct Output Chains"
         },
+        "min_force_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Force Count"
+        },
+        "min_ion_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Ion Count"
+        },
         "min_length": {
           "anyOf": [
             {
@@ -285,6 +395,18 @@
           ],
           "default": null,
           "title": "Min Mapping Entries"
+        },
+        "min_residue_atom_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Residue Atom Count"
         },
         "min_residue_counts": {
           "anyOf": [
@@ -373,6 +495,11 @@
           "default": null,
           "title": "Minimized Structure Manifest Path"
         },
+        "molar_tolerance": {
+          "default": 0.05,
+          "title": "Molar Tolerance",
+          "type": "number"
+        },
         "reference_pdb": {
           "anyOf": [
             {
@@ -401,6 +528,11 @@
           ],
           "default": null,
           "title": "Require Min Frames"
+        },
+        "require_neutral": {
+          "default": false,
+          "title": "Require Neutral",
+          "type": "boolean"
         },
         "require_output_chains_in_structure": {
           "default": false,
@@ -582,6 +714,18 @@
           "default": null,
           "title": "Required Topology Backend"
         },
+        "required_water_model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Water Model"
+        },
         "residue_aliases": {
           "anyOf": [
             {
@@ -635,6 +779,18 @@
           ],
           "default": null,
           "title": "Selection"
+        },
+        "sites_per_water": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sites Per Water"
         },
         "source_selection_manifest_path": {
           "anyOf": [
@@ -707,6 +863,30 @@
           ],
           "default": null,
           "title": "System Xml Manifest Path"
+        },
+        "target_molar": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Molar"
+        },
+        "target_net_charge": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Target Net Charge"
         },
         "text_files": {
           "anyOf": [

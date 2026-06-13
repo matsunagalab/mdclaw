@@ -20,6 +20,7 @@ and submit artifacts under ``submission/`` for validation and scoring.
 """
 
 from mdclaw.benchmark.cli import (
+    export_benchmark_private_package,
     export_benchmark_public_package,
     list_benchmark_tasks,
     package_openmm_submission,
@@ -43,6 +44,7 @@ TOOLS = {
     "score_benchmark_run": score_benchmark_run,
     "summarize_benchmark_run": summarize_benchmark_run,
     "export_benchmark_public_package": export_benchmark_public_package,
+    "export_benchmark_private_package": export_benchmark_private_package,
     "package_openmm_submission": package_openmm_submission,
     "write_benchmark_schemas": write_benchmark_schemas,
     "validate_benchmark_task": validate_benchmark_task,

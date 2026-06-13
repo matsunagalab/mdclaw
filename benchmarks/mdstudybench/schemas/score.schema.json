@@ -144,6 +144,20 @@
     }
   },
   "properties": {
+    "capability_scores": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "number"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "title": "Capability Scores",
+      "type": "object"
+    },
     "deterministic_checks": {
       "items": {
         "$ref": "#/$defs/CheckResult"

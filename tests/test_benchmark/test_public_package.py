@@ -124,6 +124,56 @@ def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
     assert not list(out_dir.glob("tasks/*/task.json"))
 
 
+def test_export_private_package_contains_evaluator_material(tmp_path: Path):
+    out_dir = tmp_path / "private_mdprepbench"
+    result = cli.export_benchmark_private_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    dataset = json.loads((out_dir / "dataset.json").read_text())
+    assert result["task_count"] == dataset["task_count"]
+    assert (out_dir / ".md-benchmark-private-export.json").is_file()
+    assert (out_dir / "schemas" / "task.schema.json").is_file()
+
+    for task_id in dataset["task_ids"]:
+        task_dir = out_dir / "tasks" / task_id
+        assert (task_dir / "task.json").is_file()
+        assert not (task_dir / "prompt.md").exists()
+        assert not (task_dir / "submission_contract.json").exists()
+
+    assert (
+        out_dir
+        / "tasks"
+        / "P03_prep_ligand_pose_t4l_benzene"
+        / "truth"
+        / "ligand_reference.pdb"
+    ).is_file()
+    assert "tasks/P03_prep_ligand_pose_t4l_benzene/truth/ligand_reference.pdb" in (
+        result["included_private_material"]
+    )
+
+
+def test_export_private_package_omits_agent_material_for_studybench(tmp_path: Path):
+    out_dir = tmp_path / "private_mdstudybench"
+    result = cli.export_benchmark_private_package(
+        dataset_dir=str(STUDY_DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    truth_file = (
+        out_dir
+        / "tasks"
+        / "S01_stability_t4l_l99a"
+        / "truth"
+        / "experimental_truth.json"
+    )
+    assert truth_file.is_file()
+    assert not list(out_dir.glob("tasks/*/prompt.md"))
+
+
 def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
     out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(

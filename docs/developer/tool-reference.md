@@ -271,6 +271,11 @@ skill examples.
 - `export_benchmark_public_package(...)`: export prompt/contract-only task
   files for external agents; omits canonical `task.json`, `truth/`, and
   scorer-only material.
+- `export_benchmark_private_package(...)`: export evaluator-only task
+  contracts, held-out `truth/`, scorer-only references, and schemas for a
+  separate scorer repository or container mount; omits agent prompts and public
+  checklists. See `docs/benchmark/evaluation-workflow.md` for the intended
+  public/private package evaluation flow.
 - `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`,
   `validate_and_score_benchmark_submission(...)`,
   `score_benchmark_submission(...)`, `write_benchmark_schemas(...)`: evaluator
