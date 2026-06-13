@@ -37,13 +37,90 @@ subsets from words in it.
 
 ## How To Run The Benchmark
 
-There are three operator flows. All are scored by the same neutral MDClaw
+There are four operator flows. All are scored by the same neutral MDClaw
 scorer; only the solver differs. For held-out evaluation, follow the
 public/private workspace split in `docs/benchmark/evaluation-workflow.md`:
 export a public package for the solver, run the agent without evaluator
 material, then score later with the private evaluator package.
 
-**1. MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
+**1. Automated agent runner.** Use this for repeated Pi / Claude Code / Codex
+measurements. The runner exports public/private packages, creates a solver
+workspace, runs one external agent command per task, records
+`harness_execution.json`, scores with the private package, and writes
+`summary.json`:
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id pi_20260613_p01 \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name pi
+```
+
+The automated runner is agent-neutral by default. It does not require the
+solver to use MDClaw skills, and `tooling_condition` is only a run-summary
+grouping label. Add `--tooling-condition mdclaw-skills+cli`,
+`--tooling-condition mdclaw-cli-only`, or `--tooling-condition mdclaw-free`
+only when that label accurately describes the solver. The label never changes
+the score; direct OpenMM/PDBFixer, MDCrow, MDClaw CLI-only, and MDClaw-skill
+runs are all judged by the same artifact checks.
+
+The automated runner defaults to 30 minutes per task. Increase
+`--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
+runs.
+
+The built-in profiles also set an explicit model unless `--agent-model` is
+provided: Pi uses `deepseek-cloudflare/deepseek-v4-flash`, Claude Code uses
+`sonnet`, and Codex uses `gpt-5.4-mini`. The resolved model is written to
+`run_config.json`, `summary.json`, and each task's `agent_run.json`.
+
+For comparison, the runner also records harness-owned skill context in
+`solver_context`: `none`, `skill-system`, `skill-text-injected`, or `unknown`.
+Read it from `run_config.json`, `attestation.json`, `summary.json`, or each
+task's `agent_run.json`; do not rely on agent-written `submission/provenance.json`
+alone to decide whether skills were visible to the solver.
+By default, `run_benchmark_agent` treats MDClaw CLI use without MDClaw skill
+context as a run-condition violation. Use `--solver-context skill-system` for a
+real skill-system run, `skill-text-injected` when the skill text is injected
+into the prompt, or `--mdclaw-cli-policy allow` only for an intentional
+`mdclaw-cli-only` ablation.
+
+For agents that do not call the MDClaw CLI, the runner provides a neutral
+`record_stage.py` wrapper in each task workspace and exposes it as
+`stage_recording` in `task_instructions.json` and as
+`$MDCLAW_BENCHMARK_STAGE_WRAPPER`. Use it to record measured source, prep,
+topology, and minimization commands for strict provenance.
+
+For Claude Code or Codex, change only `--agent-name`. The built-in profiles
+include the non-interactive approval-bypass flags used for benchmark runs:
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id claude_20260613_p01 \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name claude-code
+```
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id codex_20260613_p01 \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name codex
+```
+
+By default, `pi`, `claude-code`, and `codex` select MDClaw-skill reference
+profiles (`pi-mdclaw-skill`, `claude-code-mdclaw-skill`, and
+`codex-mdclaw-skill`). Use `--agent-profile codex-plain`,
+`--agent-profile claude-code-plain`, or `--agent-profile pi-plain` for
+skill-free checks, add `--agent-model <model>` for a model override, or pass
+`--agent-command` for a fully custom invocation.
+
+**2. Manual MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
 task, then score:
 
 ```bash
@@ -65,14 +142,14 @@ mdclaw score_benchmark_run \
 per-axis scores, the per-capability profile, `tooling_condition`, and
 `verified`.
 
-**2. MDClaw-free agent (e.g. MDCrow, `mdclaw-free`).** Init with
+**3. MDClaw-free agent (e.g. MDCrow, `mdclaw-free`).** Init with
 `mdclaw init_benchmark_run --tooling-condition mdclaw-free`, hand the agent only
 the exported public `prompt.md`, package its own OpenMM triple with
 `mdclaw package_openmm_submission` or the standalone
 `benchmarks/tools/package_submission.py`, then `score_benchmark_run`. Full
 recipe: `docs/benchmark/mdcrow-runner.md`.
 
-**3. Weak baselines (discrimination check).**
+**4. Weak baselines (discrimination check).**
 `benchmarks/baselines/naive_pdbfixer_prep.py` (no-MDClaw floor) and
 `json_only_no_run.py` (fabrication, must score zero). See
 `benchmarks/baselines/README.md`.

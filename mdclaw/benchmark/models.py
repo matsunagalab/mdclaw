@@ -569,6 +569,17 @@ class ModelInfo(BaseModel):
     version: str = ""
 
 
+class SolverContextInfo(BaseModel):
+    """Harness-owned record of solver-visible skill or prompt context."""
+
+    skill_usage: str = "unknown"
+    source: str = "unknown"
+    skill_names: list[str] = Field(default_factory=list)
+    skill_files: list[str] = Field(default_factory=list)
+    prompt_includes_skill_text: bool = False
+    notes: str = ""
+
+
 class BudgetSpec(BaseModel):
     max_walltime_minutes_per_task: int = 180
     max_gpu_hours: float = 0.0
@@ -586,6 +597,7 @@ class RunConfig(BaseModel):
     backend: BackendInfo = Field(default_factory=BackendInfo)
     harness: HarnessInfo = Field(default_factory=HarnessInfo)
     model: ModelInfo = Field(default_factory=ModelInfo)
+    solver_context: SolverContextInfo = Field(default_factory=SolverContextInfo)
     budget: BudgetSpec = Field(default_factory=BudgetSpec)
     tooling_condition: ToolingCondition = "unknown"
     task_ids: list[str] = Field(default_factory=list)
@@ -624,6 +636,7 @@ class RunSummary(BaseModel):
     backend: BackendInfo = Field(default_factory=BackendInfo)
     harness: HarnessInfo = Field(default_factory=HarnessInfo)
     model: ModelInfo = Field(default_factory=ModelInfo)
+    solver_context: SolverContextInfo = Field(default_factory=SolverContextInfo)
     tooling_condition: ToolingCondition = "unknown"
     verified: bool = False
     attestation: Optional[Attestation] = None

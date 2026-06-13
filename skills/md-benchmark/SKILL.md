@@ -146,6 +146,97 @@ For these prompts, prepare the run, execute each task from its generated
 `agent_prompt.md`, then run `score_benchmark_run`. Keep the evaluated task
 agent and the scorer separated as described below.
 
+## Automated Agent Runner
+
+For repeated Pi / Claude Code / Codex measurements, prefer the
+SWE-bench-style wrapper:
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id <run_id> \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name pi
+```
+
+Use the same command with a different `--agent-name` for other agents. Built-in
+profiles include the usual non-interactive approval-bypass flags for benchmark
+runs:
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id <run_id> \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name claude-code
+```
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id <run_id> \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name codex
+```
+
+The runner exports public/private packages, creates a solver workspace, runs
+one task agent at a time, records measured `harness_execution.json`, copies the
+submission into the evaluator run directory, and scores with the private
+package. Supported command-template variables are `{{agent_prompt}}`,
+`{{task_instructions}}`, `{{prompt_file}}`, `{{submission_dir}}`,
+`{{solver_workspace}}`, `{{task_id}}`, `{{run_id}}`, `{{run_dir}}`,
+`{{agent_session_dir}}`, `{{agent_model}}`, `{{repo_root}}`,
+`{{mdclaw_benchmark_skill}}`, and `{{mdclaw_benchmark_skill_md}}`.
+
+By default, `pi`, `claude-code`, and `codex` select the MDClaw-skill reference
+profiles (`pi-mdclaw-skill`, `claude-code-mdclaw-skill`, and
+`codex-mdclaw-skill`). Use `--agent-profile pi-user` to let Pi use normal
+user-wide discovery with an isolated benchmark session directory,
+`--agent-profile *-plain` for skill-free checks, or `--agent-command` for a
+fully custom command template.
+
+The built-in profiles set explicit models unless `--agent-model` is provided:
+Pi uses `deepseek-cloudflare/deepseek-v4-flash`, Claude Code uses `sonnet`, and
+Codex uses `gpt-5.4-mini`. The resolved model is recorded in the run config,
+summary, and per-task `agent_run.json`.
+
+The automated runner defaults to 30 minutes per task. Increase
+`--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
+runs.
+
+`run_benchmark_agent` is agent-neutral. It does not require the evaluated
+solver to use MDClaw skills, and MDClaw skills must not be used as a scoring
+criterion. `tooling_condition` is only a descriptive run-summary label; use
+`mdclaw-free` for direct OpenMM/PDBFixer, MDCrow, or any solver that does not
+call MDClaw, `mdclaw-cli-only` for MDClaw CLI without skills, and
+`mdclaw-skills+cli` only for the MDClaw reference condition.
+
+For comparisons, inspect the harness-owned `solver_context` field in
+`run_config.json`, `attestation.json`, `summary.json`, or per-task
+`agent_run.json`. It records `none`, `skill-system`, `skill-text-injected`, or
+`unknown`. Use `--solver-context ...` when the automatic command-template
+inference is not enough.
+By default, MDClaw CLI use is expected to be paired with MDClaw skill context.
+The runner flags `mdclaw ...` use with `solver_context=none` as a run-condition
+violation. Use `--mdclaw-cli-policy allow` only for an intentional
+`mdclaw-cli-only` ablation.
+
+When the task agent calls `mdclaw`, the runner's opt-in environment hook makes
+the MDClaw CLI append measured stage records to a runner-owned JSONL log that
+is folded into `harness_execution.json`. Agents that never invoke the MDClaw
+CLI need an adapter or packager-specific runner before strict stage-level
+provenance can pass. This is an execution-evidence requirement, not a
+preference for MDClaw skills.
+
+For non-MDClaw commands, `run_benchmark_agent` writes a task-local
+`record_stage.py` wrapper and exposes it in `task_instructions.json` as
+`stage_recording` plus `$MDCLAW_BENCHMARK_STAGE_WRAPPER`. Use it like:
+`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage source -- <command>`, repeating for
+`prep`, `topo`, and `min` as applicable.
+
 ## MDClaw Agent
 
 Prepare an MDClaw benchmark run from the repository root with:

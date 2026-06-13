@@ -15,8 +15,11 @@ import asyncio
 import inspect
 import json
 import logging
+import math
+import os
 import sys
 import types
+import time
 from pathlib import Path
 from typing import Union, get_args, get_origin
 
@@ -339,6 +342,92 @@ def _run_tool(fn, is_async: bool, kwargs: dict):
     if is_async:
         return asyncio.run(fn(**kwargs))
     return fn(**kwargs)
+
+
+def _benchmark_stage_for_tool(tool_name: str, kwargs: dict) -> str:
+    """Best-effort stage label for benchmark harness execution records."""
+    if tool_name == "create_node":
+        node_type = str(kwargs.get("node_type") or "").strip().lower()
+        if node_type in {"source", "prep", "topo", "min", "eq", "prod", "analyze"}:
+            return "analysis" if node_type == "analyze" else node_type
+    mapping = {
+        "fetch_structure": "source",
+        "download_structure": "source",
+        "get_alphafold_structure": "source",
+        "register_local_structure": "source",
+        "list_source_candidates": "source",
+        "prepare_complex": "prep",
+        "create_mutated_structure": "prep",
+        "phosphorylate_residues": "prep",
+        "prepare_modified_nucleic": "prep",
+        "solvate_structure": "prep",
+        "embed_in_membrane": "prep",
+        "build_amber_system": "topo",
+        "build_openmm_system": "topo",
+        "package_openmm_submission": "topo",
+        "run_minimization": "min",
+        "export_state_pdb": "min",
+        "run_equilibration": "eq",
+        "run_production": "prod",
+        "concat_trajectory": "analysis",
+        "fit_trajectory": "analysis",
+        "analyze_rmsd": "analysis",
+        "analyze_distance": "analysis",
+        "analyze_q_value": "analysis",
+        "analyze_rmsf": "analysis",
+        "analyze_contact_frequency": "analysis",
+    }
+    return mapping.get(tool_name, tool_name)
+
+
+def _write_benchmark_harness_record(
+    *,
+    tool_name: str,
+    kwargs: dict,
+    exit_code: int,
+    started_at: float,
+) -> None:
+    """Append a measured CLI invocation record when a benchmark runner asks.
+
+    The hook is opt-in through ``MDCLAW_BENCHMARK_HARNESS_LOG`` so ordinary
+    command-line usage is unchanged. The benchmark runner later folds this
+    JSONL into ``harness_execution.json``.
+    """
+    log_path = os.environ.get("MDCLAW_BENCHMARK_HARNESS_LOG")
+    if not log_path:
+        return
+    elapsed = time.monotonic() - started_at
+    if not math.isfinite(elapsed) or elapsed < 0:
+        elapsed = 0.0
+    argv = [Path(sys.argv[0]).name or "mdclaw", *sys.argv[1:]]
+    record = {
+        "stage": _benchmark_stage_for_tool(tool_name, kwargs),
+        "command": " ".join(str(part) for part in argv),
+        "tool": tool_name,
+        "exit_code": int(exit_code),
+        "walltime_seconds": round(float(elapsed), 6),
+        "recorded_at": datetime_now_utc(),
+    }
+    run_id = os.environ.get("MDCLAW_BENCHMARK_RUN_ID")
+    task_id = os.environ.get("MDCLAW_BENCHMARK_TASK_ID")
+    if run_id:
+        record["run_id"] = run_id
+    if task_id:
+        record["task_id"] = task_id
+    try:
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as f:
+            f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+    except Exception:
+        # Harness logging must never break the underlying CLI command.
+        return
+
+
+def datetime_now_utc() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _cli_validation_error(
@@ -739,6 +828,7 @@ def main(argv: list[str] | None = None) -> None:
         kwargs["node_id"] = effective_node_id
 
     # Execute
+    started_at = time.monotonic()
     try:
         result = _run_tool(fn, is_async, kwargs)
         # Determine exit code
@@ -757,10 +847,22 @@ def main(argv: list[str] | None = None) -> None:
             and "workflow_hint" not in result
         ):
             result["workflow_hint"] = _build_workflow_hint(effective_job_dir)
+        _write_benchmark_harness_record(
+            tool_name=tool_name,
+            kwargs=kwargs,
+            exit_code=exit_code,
+            started_at=started_at,
+        )
         json.dump(result, sys.stdout, indent=2, default=str)
         print()  # trailing newline
         sys.exit(exit_code)
     except Exception as e:
+        _write_benchmark_harness_record(
+            tool_name=tool_name,
+            kwargs=kwargs,
+            exit_code=1,
+            started_at=started_at,
+        )
         error_out = {
             "success": False,
             "error": str(e),

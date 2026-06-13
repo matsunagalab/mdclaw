@@ -3,8 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
+import subprocess
+import sys
+import time
+import inspect
 from pathlib import Path
+
+import pytest
 
 from mdclaw.benchmark import cli
 from mdclaw.benchmark import run as benchmark_run
@@ -114,6 +122,307 @@ def test_prepare_and_score_benchmark_run_convenience_tools(tmp_path: Path):
     assert result["failed_task_count"] == 0
     assert Path(output_dir / "convenience_p11" / "tasks" / TASK_ID / "score.json").is_file()
     assert result["summary"]["summary"]["overall_score"] == 1.0
+
+
+def test_run_benchmark_agent_executes_agent_and_scores_with_harness_records(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent.py"
+    fake_agent.write_text(
+        """
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [
+            sys.executable,
+            stage_wrapper,
+            "--stage",
+            stage,
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        check=True,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_p11",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        agent_model="test-provider/test-model",
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    run_dir = output_dir / "agent_runner_p11"
+    task_run_dir = run_dir / "tasks" / TASK_ID
+    harness = json.loads((task_run_dir / "harness_execution.json").read_text())
+    stages = {record.get("stage") for record in harness["records"]}
+    assert {"source", "prep", "topo", "min", "agent_run"} <= stages
+    assert all("walltime_seconds" in record for record in harness["records"])
+    assert (task_run_dir / "score.json").is_file()
+    assert (run_dir / "summary.json").is_file()
+    assert result["attestation_record"]["tooling_condition"] == "unknown"
+    assert result["agent_model"] == "test-provider/test-model"
+    assert result["agent_model_defaulted"] is False
+    assert result["solver_context"]["skill_usage"] == "none"
+    assert (
+        result["attestation_record"]["solver_context"]["skill_usage"]
+        == "none"
+    )
+    assert result["score"]["summary"]["summary"]["tooling_condition"] == "unknown"
+    assert (
+        result["score"]["summary"]["summary"]["solver_context"]["skill_usage"]
+        == "none"
+    )
+    assert result["score"]["summary"]["summary"]["overall_score"] == 1.0
+
+    agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
+    assert agent_run["agent_model"] == "test-provider/test-model"
+    assert agent_run["solver_context"]["skill_usage"] == "none"
+    run_config = json.loads((run_dir / "run_config.json").read_text())
+    assert run_config["agent_model"] == "test-provider/test-model"
+    assert run_config["model"]["name"] == "test-provider/test-model"
+    assert run_config["model"]["provider"] == "test-provider"
+    solver_instruction = json.loads(
+        (
+            run_dir
+            / "solver_workspace"
+            / "tasks"
+            / TASK_ID
+            / "task_instructions.json"
+        ).read_text()
+    )
+    assert "private_tasks" not in json.dumps(solver_instruction)
+    assert solver_instruction["stage_recording"]["wrapper"].endswith("record_stage.py")
+    assert solver_instruction["mdclaw_cli"]["allowed"] is False
+    assert solver_instruction["submission_dir"].endswith("/submission")
+
+
+def test_run_benchmark_agent_flags_mdclaw_cli_without_skill_context(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent.py"
+    fake_agent.write_text(
+        """
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+job_dir = Path(args.submission_dir).parent / "scratch_job"
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mdclaw._cli",
+            "create_node",
+            "--job-dir",
+            str(job_dir),
+            "--node-type",
+            stage,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_cli_without_skill",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert not result["success"]
+    assert result["tasks"][0]["policy_violations"]
+    assert "MDClaw CLI was used" in result["errors"][0]
+    assert result["score"]["summary"]["summary"]["overall_score"] == 1.0
+
+
+def test_builtin_agent_profiles_include_noninteractive_bypass_flags():
+    signature = inspect.signature(benchmark_run.run_benchmark_agent)
+    assert signature.parameters["max_walltime_minutes_per_task"].default == 30
+    assert signature.parameters["agent_model"].default == "auto"
+
+    codex_command, codex_profile, codex_meta = (
+        benchmark_run._resolve_agent_command_profile(
+            agent_name="codex",
+            agent_command="",
+            agent_profile="auto",
+        )
+    )
+    assert codex_profile == "codex-mdclaw-skill"
+    assert "--model {{agent_model}}" in codex_command
+    assert "--dangerously-bypass-approvals-and-sandbox --" in codex_command
+    assert "{{mdclaw_benchmark_skill_md}}" in codex_command
+    assert codex_meta["default_model"] == "gpt-5.4-mini"
+    assert codex_meta["model_provider"] == "openai"
+    assert codex_meta["solver_context"] == "skill-text-injected"
+    codex_model, codex_model_defaulted, codex_provider = (
+        benchmark_run._resolve_agent_model(
+            agent_name="codex",
+            agent_model="auto",
+            profile_metadata=codex_meta,
+        )
+    )
+    assert codex_model == "gpt-5.4-mini"
+    assert codex_model_defaulted is True
+    assert codex_provider == "openai"
+
+    claude_command, claude_profile, claude_meta = (
+        benchmark_run._resolve_agent_command_profile(
+            agent_name="claude-code",
+            agent_command="",
+            agent_profile="auto",
+        )
+    )
+    assert claude_profile == "claude-code-mdclaw-skill"
+    assert "--permission-mode bypassPermissions" in claude_command
+    assert "--no-session-persistence" in claude_command
+    assert "--model {{agent_model}}" in claude_command
+    assert "{{mdclaw_benchmark_skill_md}}" in claude_command
+    assert claude_meta["default_model"] == "sonnet"
+    assert claude_meta["model_provider"] == "anthropic"
+    assert claude_meta["solver_context"] == "skill-text-injected"
+    claude_model, claude_model_defaulted, claude_provider = (
+        benchmark_run._resolve_agent_model(
+            agent_name="claude-code",
+            agent_model="auto",
+            profile_metadata=claude_meta,
+        )
+    )
+    assert claude_model == "sonnet"
+    assert claude_model_defaulted is True
+    assert claude_provider == "anthropic"
+
+    pi_command, pi_profile, pi_meta = benchmark_run._resolve_agent_command_profile(
+        agent_name="pi",
+        agent_command="",
+        agent_profile="auto",
+    )
+    assert pi_profile == "pi-mdclaw-skill"
+    assert "--model {{agent_model}}" in pi_command
+    assert "--skill {{mdclaw_benchmark_skill}}" in pi_command
+    assert "--session-dir {{agent_session_dir}}" in pi_command
+    assert "--no-session" not in pi_command
+    assert pi_meta["default_model"] == "deepseek-cloudflare/deepseek-v4-flash"
+    assert pi_meta["model_provider"] == "deepseek-cloudflare"
+    assert pi_meta["solver_context"] == "skill-system"
+    pi_model, pi_model_defaulted, pi_provider = benchmark_run._resolve_agent_model(
+        agent_name="pi",
+        agent_model="auto",
+        profile_metadata=pi_meta,
+    )
+    assert pi_model == "deepseek-cloudflare/deepseek-v4-flash"
+    assert pi_model_defaulted is True
+    assert pi_provider == "deepseek-cloudflare"
+
+    override_model, override_defaulted, override_provider = (
+        benchmark_run._resolve_agent_model(
+            agent_name="codex",
+            agent_model="gpt-5.4",
+            profile_metadata=codex_meta,
+        )
+    )
+    assert override_model == "gpt-5.4"
+    assert override_defaulted is False
+    assert override_provider == "openai"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_timeout_cleanup_kills_agent_process_group(tmp_path: Path):
+    marker = tmp_path / "late_write.txt"
+    command = (
+        f"{shlex.quote(sys.executable)} -c "
+        + shlex.quote(
+            "import subprocess, sys, time; "
+            "subprocess.Popen([sys.executable, '-c', "
+            + repr(
+                "import pathlib, time; "
+                "time.sleep(0.8); "
+                f"pathlib.Path({str(marker)!r}).write_text('late')"
+            )
+            + "]); "
+            "time.sleep(60)"
+        )
+    )
+    process = subprocess.Popen(
+        command,
+        shell=True,
+        preexec_fn=os.setsid,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    time.sleep(0.1)
+    benchmark_run._terminate_process_tree(process, grace_seconds=0.1)
+    assert process.poll() is not None
+    time.sleep(1.1)
+    assert not marker.exists()
 
 
 def test_score_run_summary_counts_missing_submission_tasks(tmp_path: Path):
@@ -226,7 +535,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert agent_tasks["tasks"] == [task_instructions]
     assert Path(task_instructions["agent_prompt"]).is_file()
     agent_prompt = Path(task_instructions["agent_prompt"]).read_text()
-    assert "Use the md-benchmark skill." in agent_prompt
+    assert "MDClaw skills are neither required nor rewarded" in agent_prompt
     assert "task_instructions.json" in agent_prompt
     assert "Solve only this task." in agent_prompt
     assert "benchmark-wide solver scripts" in agent_prompt

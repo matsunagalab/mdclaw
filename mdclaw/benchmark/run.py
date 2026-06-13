@@ -11,7 +11,12 @@ import hashlib
 import json
 import os
 import platform
+import signal
+import shlex
+import shutil
+import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +42,7 @@ from mdclaw.benchmark.models import (
     ModelInfo,
     RunConfig,
     RunSummary,
+    SolverContextInfo,
 )
 
 
@@ -47,6 +53,122 @@ _resolve_dataset_dir = resolve_dataset_dir
 _load_dataset_metadata = load_dataset_metadata
 _benchmark_version_for_dataset = benchmark_version_for_dataset
 _list_task_ids = list_task_ids
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_MD_BENCHMARK_SKILL_DIR = _REPO_ROOT / "skills" / "md-benchmark"
+_MD_BENCHMARK_SKILL_FILE = _MD_BENCHMARK_SKILL_DIR / "SKILL.md"
+
+
+_AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
+    "pi-mdclaw-skill": {
+        "command": (
+            "pi --approve --model {{agent_model}} "
+            "--skill {{mdclaw_benchmark_skill}} "
+            "--session-dir {{agent_session_dir}} "
+            "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
+        ),
+        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
+        "model_provider": "deepseek-cloudflare",
+        "solver_context": "skill-system",
+        "tooling_condition": "mdclaw-skills+cli",
+        "description": "Pi with the MD benchmark skill loaded explicitly.",
+    },
+    "pi-user": {
+        "command": (
+            "pi --approve --model {{agent_model}} "
+            "--session-dir {{agent_session_dir}} "
+            "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
+        ),
+        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
+        "model_provider": "deepseek-cloudflare",
+        "solver_context": "unknown",
+        "tooling_condition": "unknown",
+        "description": "Pi with normal user-wide discovery, but isolated sessions.",
+    },
+    "pi-plain": {
+        "command": (
+            "pi --approve --model {{agent_model}} --no-skills "
+            "--session-dir {{agent_session_dir}} "
+            "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
+        ),
+        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
+        "model_provider": "deepseek-cloudflare",
+        "solver_context": "none",
+        "tooling_condition": "mdclaw-free",
+        "description": "Pi with skill discovery disabled.",
+    },
+    "claude-code-mdclaw-skill": {
+        "command": (
+            'claude --no-session-persistence --permission-mode bypassPermissions '
+            "--model {{agent_model}} "
+            '--append-system-prompt "$(cat {{mdclaw_benchmark_skill_md}})" '
+            '-p "$(cat {{agent_prompt}})"'
+        ),
+        "default_model": "sonnet",
+        "model_provider": "anthropic",
+        "solver_context": "skill-text-injected",
+        "tooling_condition": "mdclaw-skills+cli",
+        "description": "Claude Code with approval bypass and MD benchmark skill text.",
+    },
+    "claude-code-plain": {
+        "command": (
+            'claude --no-session-persistence --permission-mode bypassPermissions '
+            "--model {{agent_model}} "
+            '-p "$(cat {{agent_prompt}})"'
+        ),
+        "default_model": "sonnet",
+        "model_provider": "anthropic",
+        "solver_context": "none",
+        "tooling_condition": "unknown",
+        "description": "Claude Code with approval bypass and no injected skill text.",
+    },
+    "codex-mdclaw-skill": {
+        "command": (
+            'codex exec -C {{solver_workspace}} '
+            "--model {{agent_model}} "
+            '--dangerously-bypass-approvals-and-sandbox -- '
+            '"$(cat {{mdclaw_benchmark_skill_md}}; printf "\\n\\n"; '
+            'cat {{agent_prompt}})"'
+        ),
+        "default_model": "gpt-5.4-mini",
+        "model_provider": "openai",
+        "solver_context": "skill-text-injected",
+        "tooling_condition": "mdclaw-skills+cli",
+        "description": "Codex CLI with approval bypass and MD benchmark skill text.",
+    },
+    "codex-plain": {
+        "command": (
+            'codex exec -C {{solver_workspace}} '
+            "--model {{agent_model}} "
+            '--dangerously-bypass-approvals-and-sandbox -- '
+            '"$(cat {{agent_prompt}})"'
+        ),
+        "default_model": "gpt-5.4-mini",
+        "model_provider": "openai",
+        "solver_context": "none",
+        "tooling_condition": "unknown",
+        "description": "Codex CLI with approval bypass and no injected skill text.",
+    },
+}
+
+_AGENT_PROFILE_ALIASES = {
+    "auto": "auto",
+    "pi": "pi-mdclaw-skill",
+    "claude": "claude-code-mdclaw-skill",
+    "claude-code": "claude-code-mdclaw-skill",
+    "claudecode": "claude-code-mdclaw-skill",
+    "codex": "codex-mdclaw-skill",
+}
+
+_AGENT_DEFAULT_MODELS = {
+    "pi": {
+        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
+        "model_provider": "deepseek-cloudflare",
+    },
+    "claude": {"default_model": "sonnet", "model_provider": "anthropic"},
+    "claude-code": {"default_model": "sonnet", "model_provider": "anthropic"},
+    "claudecode": {"default_model": "sonnet", "model_provider": "anthropic"},
+    "codex": {"default_model": "gpt-5.4-mini", "model_provider": "openai"},
+}
 
 
 def _now_utc() -> str:
@@ -77,6 +199,7 @@ def _write_attestation(
     run_id: str,
     benchmark_version: str,
     tooling_condition: str,
+    solver_context: Optional[dict[str, Any]] = None,
     public_package_sha256: str = "",
     no_task_specific_hints_injected: bool = True,
 ) -> dict[str, Any]:
@@ -88,6 +211,7 @@ def _write_attestation(
         scorer_version=MDCLAW_VERSION,
         public_package_sha256=public_package_sha256,
         tooling_condition=tooling_condition,
+        solver_context=solver_context or SolverContextInfo().model_dump(),
         no_task_specific_hints_injected=no_task_specific_hints_injected,
         created_at=_now_utc(),
     )
@@ -124,29 +248,275 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
+def _solver_context_record(
+    *,
+    agent_command: str = "",
+    solver_context: str = "auto",
+) -> dict[str, Any]:
+    """Return a harness-owned skill/prompt context record for comparison."""
+    requested = (solver_context or "auto").strip().lower()
+    usage = requested
+    source = "operator-declared"
+    skill_files: list[str] = []
+    skill_names: list[str] = []
+    prompt_includes_skill_text = False
+    notes = ""
+
+    command = agent_command or ""
+    if requested == "auto":
+        source = "harness-inferred"
+        if "--skill" in command:
+            usage = "skill-system"
+            notes = "agent command contains --skill"
+        elif (
+            "SKILL.md" in command
+            or "mdclaw_benchmark_skill_md" in command
+            or "append-system-prompt" in command
+        ):
+            usage = "skill-text-injected"
+            prompt_includes_skill_text = True
+            notes = "agent command appears to inject skill text"
+        else:
+            usage = "none"
+            notes = "no skill system or skill text injection detected"
+
+    if "SKILL.md" in command or "mdclaw_benchmark_skill_md" in command:
+        prompt_includes_skill_text = True
+    try:
+        parts = shlex.split(command, posix=True)
+    except ValueError:
+        parts = command.split()
+    for index, token in enumerate(parts):
+        if "SKILL.md" in token:
+            skill_files.append(token)
+        if token == "--skill" and index + 1 < len(parts):
+            skill_files.append(parts[index + 1])
+            skill_names.append(Path(parts[index + 1]).name)
+
+    return SolverContextInfo(
+        skill_usage=usage or "unknown",
+        source=source,
+        skill_names=sorted(set(skill_names)),
+        skill_files=sorted(set(skill_files)),
+        prompt_includes_skill_text=prompt_includes_skill_text,
+        notes=notes,
+    ).model_dump()
+
+
+def _normalise_agent_key(value: str) -> str:
+    return (value or "").strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def _resolve_agent_command_profile(
+    *,
+    agent_name: str,
+    agent_command: str,
+    agent_profile: str,
+) -> tuple[str, str, dict[str, str]]:
+    """Resolve a named agent profile into a command template.
+
+    The runner remains scorer-neutral: profiles only choose a convenient local
+    invocation template and comparison metadata. They never change scoring.
+    """
+    if agent_command.strip():
+        profile = _normalise_agent_key(agent_profile or "custom")
+        if profile == "auto":
+            profile = "custom"
+        return agent_command, profile, {}
+
+    requested = _normalise_agent_key(agent_profile or "auto")
+    if requested == "auto":
+        requested = _AGENT_PROFILE_ALIASES.get(
+            _normalise_agent_key(agent_name),
+            _normalise_agent_key(agent_name),
+        )
+    requested = _AGENT_PROFILE_ALIASES.get(requested, requested)
+    profile = _AGENT_COMMAND_PROFILES.get(requested)
+    if profile is None:
+        choices = ", ".join(sorted(_AGENT_COMMAND_PROFILES))
+        raise ValueError(
+            "agent_command is required unless agent_name/agent_profile "
+            f"matches a built-in profile. Available profiles: {choices}"
+        )
+    return profile["command"], requested, profile
+
+
+def _resolve_agent_model(
+    *,
+    agent_name: str,
+    agent_model: str,
+    profile_metadata: dict[str, str],
+) -> tuple[str, bool, str]:
+    """Resolve the agent CLI model and provider metadata for run records."""
+    requested = (agent_model or "auto").strip()
+    if requested and _normalise_agent_key(requested) != "auto":
+        provider = profile_metadata.get("model_provider", "unknown")
+        if "/" in requested and provider == "unknown":
+            provider = requested.split("/", 1)[0]
+        return requested, False, provider
+
+    default_model = profile_metadata.get("default_model", "")
+    provider = profile_metadata.get("model_provider", "unknown")
+    if not default_model:
+        defaults = _AGENT_DEFAULT_MODELS.get(_normalise_agent_key(agent_name), {})
+        default_model = defaults.get("default_model", "")
+        provider = defaults.get("model_provider", provider)
+
+    if not default_model:
+        return "unknown", True, provider
+    return default_model, True, provider
+
+
+def _terminate_process_tree(
+    process: subprocess.Popen,
+    *,
+    grace_seconds: float = 5.0,
+) -> None:
+    """Terminate an agent shell and child commands after a timeout."""
+    if process.poll() is not None:
+        return
+    if os.name == "posix":
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            process.wait(timeout=grace_seconds)
+            return
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            process.wait()
+            return
+    process.terminate()
+    try:
+        process.wait(timeout=grace_seconds)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+
+
+def _skill_context_allows_mdclaw_cli(solver_context: dict[str, Any]) -> bool:
+    return str(solver_context.get("skill_usage") or "").lower() in {
+        "skill-system",
+        "skill-text-injected",
+    }
+
+
+def _record_uses_mdclaw_cli(record: dict[str, Any]) -> bool:
+    if record.get("tool"):
+        return True
+    command = f" {record.get('command', '')} "
+    return (
+        " mdclaw " in command
+        or "/mdclaw " in command
+        or " mdclaw._cli " in command
+        or " -m mdclaw._cli " in command
+    )
+
+
+def _mdclaw_cli_policy_violations(
+    records: list[dict[str, Any]],
+    *,
+    solver_context: dict[str, Any],
+    mdclaw_cli_policy: str,
+) -> list[str]:
+    policy = (mdclaw_cli_policy or "forbid-without-skill").strip().lower()
+    if policy in {"allow", "allowed", "off", "none"}:
+        return []
+    if _skill_context_allows_mdclaw_cli(solver_context):
+        return []
+    used = [record for record in records if _record_uses_mdclaw_cli(record)]
+    if not used:
+        return []
+    return [
+        "MDClaw CLI was used while solver_context.skill_usage="
+        f"{solver_context.get('skill_usage')!r}. Use a skill-system/"
+        "skill-text-injected run for MDClaw CLI, or use a non-MDClaw workflow."
+    ]
+
+
+def _write_stage_wrapper(path: Path) -> None:
+    """Write an agent-safe command wrapper for measured stage records."""
+    wrapper = '''#!/usr/bin/env python3
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+
+
+parser = argparse.ArgumentParser(
+    description="Run a command and append a measured MD benchmark stage record."
+)
+parser.add_argument("--stage", required=True)
+parser.add_argument("command", nargs=argparse.REMAINDER)
+args = parser.parse_args()
+command = list(args.command)
+if command and command[0] == "--":
+    command = command[1:]
+if not command:
+    parser.error("command is required after --")
+
+started = time.monotonic()
+exit_code = 127
+try:
+    completed = subprocess.run(command, check=False)
+    exit_code = int(completed.returncode)
+finally:
+    walltime = round(time.monotonic() - started, 6)
+    record = {
+        "stage": args.stage,
+        "command": " ".join(command),
+        "exit_code": exit_code,
+        "walltime_seconds": walltime,
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    for env_name, key in (
+        ("MDCLAW_BENCHMARK_RUN_ID", "run_id"),
+        ("MDCLAW_BENCHMARK_TASK_ID", "task_id"),
+    ):
+        value = os.environ.get(env_name)
+        if value:
+            record[key] = value
+    log_path = os.environ.get("MDCLAW_BENCHMARK_HARNESS_LOG")
+    if log_path:
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\\n")
+sys.exit(exit_code)
+'''
+    _write_text(path, wrapper)
+    path.chmod(0o755)
+
+
 def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
     """Short prompt intended for the evaluated task agent."""
     return (
         f"# MD Benchmark Task Agent: {task_id}\n\n"
-        "Use the md-benchmark skill.\n\n"
-        "Run the benchmark task described by this agent-safe instruction file:\n\n"
+        "Run the task described by this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
-        "Read only the files named in that JSON: prompt_file, "
-        "submission_contract, submission_checklist, and submission_dir. "
+        "Use any real MD workflow. MDClaw skills are neither required nor "
+        "rewarded; scoring uses artifacts and execution evidence.\n\n"
+        "Read only JSON-named files: prompt_file, contract, checklist, and "
+        "submission_dir. "
         "Write outputs under submission_dir.\n\n"
         "Solve only this task. Do not inspect sibling task directories, "
         "categorize the suite, or write benchmark-wide solver scripts. "
-        "Task-local helpers must run real task workflow steps and be recorded "
-        "in provenance.command_log.\n\n"
-        "Use `conda run -n mdclaw python ...` for Python helpers that need "
-        "OpenMM, gemmi, or MDClaw.\n\n"
-        "Do not remove or hand-edit DAG node directories, progress.json, or "
-        "node.json. Retry with a new node or MDClaw node/need tooling.\n\n"
+        "Record task-local helper steps in provenance.command_log.\n\n"
+        "Use stage_recording for stages; use mdclaw CLI only if "
+        "mdclaw_cli.allowed.\n\n"
+        "Use `conda run -n mdclaw python ...` for OpenMM/gemmi helpers.\n\n"
+        "If using MDClaw DAG tools, do not hand-edit node directories, "
+        "progress.json, or node.json; retry with new nodes/tooling.\n\n"
         "Run IDs and directory names are labels only; do not infer smoke-test "
         "shortcuts, task subsets, or expected outcomes from them.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, canonical "
-        "task.json, truth/, or scorer/. Do not fabricate artifacts or metrics. "
-        "If blocked, record attempted commands and the blocker.\n\n"
+        "task.json, truth/, or scorer/. Do not fabricate artifacts/metrics; "
+        "if blocked, record attempted commands and the blocker.\n\n"
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
 
@@ -224,6 +594,7 @@ def init_benchmark_run(
     task_ids: Optional[list[str]] = None,
     dataset_dir: str = _DEFAULT_DATASET_DIR,
     tooling_condition: str = "unknown",
+    solver_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Create a benchmark run skeleton on disk and append a row to runs.jsonl.
 
@@ -260,6 +631,7 @@ def init_benchmark_run(
                             adapter=harness_adapter),
         model=ModelInfo(name=model_name, provider=model_provider,
                         version=model_version),
+        solver_context=SolverContextInfo(**(solver_context or {})),
         budget=BudgetSpec(
             max_walltime_minutes_per_task=max_walltime_minutes_per_task,
             max_gpu_hours=max_gpu_hours,
@@ -279,6 +651,7 @@ def init_benchmark_run(
         run_id=run_id,
         benchmark_version=benchmark_version,
         tooling_condition=tooling_condition,
+        solver_context=cfg_payload.get("solver_context"),
     )
 
     _write_jsonl_dedup(
@@ -486,6 +859,535 @@ def prepare_benchmark_run(
     }
 
 
+def run_benchmark_agent(
+    output_dir: str = "benchmark_runs",
+    run_id: str = "",
+    dataset_dir: str = _DEFAULT_DATASET_DIR,
+    task_ids: Optional[list[str]] = None,
+    agent_name: str = "agent",
+    agent_command: str = "",
+    agent_profile: str = "auto",
+    agent_model: str = "auto",
+    solver_workspace_dir: Optional[str] = None,
+    public_package_dir: Optional[str] = None,
+    private_package_dir: Optional[str] = None,
+    execution_mode: str = "lite",
+    judge_mode: str = "deterministic",
+    backend_name: str = "mdclaw",
+    backend_version: str = MDCLAW_VERSION,
+    backend_container: str = "",
+    model_name: str = "unknown",
+    model_provider: str = "unknown",
+    model_version: str = "",
+    max_walltime_minutes_per_task: int = 30,
+    require_validation_success: bool = True,
+    summarize: bool = True,
+    tooling_condition: str = "unknown",
+    solver_context: str = "auto",
+    mdclaw_cli_policy: str = "forbid-without-skill",
+    env: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """Run an external benchmark agent and score its submission.
+
+    This is the SWE-bench-style automation entry point. It creates a solver
+    workspace that contains only public task material, runs one shell command
+    per task, records measured CLI/tool execution evidence, then scores with an
+    evaluator-only private package. The default ``tooling_condition`` is
+    ``unknown`` because this runner is agent-neutral; pass
+    ``mdclaw-skills+cli``, ``mdclaw-cli-only``, or ``mdclaw-free`` only as a
+    descriptive comparison label. It does not affect scoring.
+    By default, ``mdclaw_cli_policy`` flags MDClaw CLI use unless the run
+    exposes MDClaw skill context; set it to ``allow`` only for CLI-only
+    ablations. The default automated-agent timeout is 30 minutes per task;
+    raise ``max_walltime_minutes_per_task`` for slow local MD or exploratory
+    debugging runs.
+
+    If ``agent_command`` is omitted, ``agent_profile`` selects a built-in
+    command template. ``auto`` maps common ``agent_name`` values such as
+    ``pi``, ``claude-code``, and ``codex`` to practical non-interactive
+    profiles that include the usual approval-bypass flags for Claude Code and
+    Codex. Use ``*-plain`` profiles for skill-free comparisons.
+
+    ``agent_command`` is a shell template. Supported placeholders are:
+    ``{{agent_prompt}}``, ``{{task_instructions}}``, ``{{prompt_file}}``,
+    ``{{submission_dir}}``, ``{{solver_workspace}}``, ``{{task_id}}``,
+    ``{{run_id}}``, ``{{run_dir}}``, ``{{agent_session_dir}}``,
+    ``{{agent_model}}``, ``{{repo_root}}``, ``{{mdclaw_benchmark_skill}}``, and
+    ``{{mdclaw_benchmark_skill_md}}``. Values are shell-quoted before
+    substitution.
+    """
+    try:
+        agent_command, resolved_agent_profile, profile_metadata = (
+            _resolve_agent_command_profile(
+                agent_name=agent_name,
+                agent_command=agent_command,
+                agent_profile=agent_profile,
+            )
+        )
+    except ValueError as exc:
+        return {
+            "success": False,
+            "errors": [str(exc)],
+            "hints": [
+                "Example: --agent-name pi",
+                "Example: --agent-name claude-code",
+                "Example: --agent-name codex",
+                "Example: --agent-profile codex-plain",
+            ],
+        }
+    resolved_agent_model, agent_model_defaulted, agent_model_provider = (
+        _resolve_agent_model(
+            agent_name=agent_name,
+            agent_model=agent_model,
+            profile_metadata=profile_metadata,
+        )
+    )
+    if solver_context == "auto" and profile_metadata.get("solver_context"):
+        solver_context = profile_metadata["solver_context"]
+    if (
+        tooling_condition == "unknown"
+        and profile_metadata.get("tooling_condition")
+        and profile_metadata["tooling_condition"] != "unknown"
+    ):
+        tooling_condition = profile_metadata["tooling_condition"]
+
+    dataset = _resolve_dataset_dir(dataset_dir)
+    if task_ids is None:
+        task_ids = _list_task_ids(str(dataset))
+    if not run_id:
+        run_id = datetime.now().strftime("%Y%m%d_%H%M%S_agent")
+    if model_name == "unknown" and resolved_agent_model != "unknown":
+        model_name = resolved_agent_model
+    if model_provider == "unknown" and agent_model_provider != "unknown":
+        model_provider = agent_model_provider
+    solver_context_record = _solver_context_record(
+        agent_command=agent_command,
+        solver_context=solver_context,
+    )
+
+    init = init_benchmark_run(
+        output_dir=output_dir,
+        run_id=run_id,
+        execution_mode=execution_mode,
+        judge_mode=judge_mode,
+        backend_name=backend_name,
+        backend_version=backend_version,
+        backend_container=backend_container,
+        harness_name=agent_name,
+        harness_version="",
+        harness_adapter="run_benchmark_agent",
+        model_name=model_name,
+        model_provider=model_provider,
+        model_version=model_version,
+        max_walltime_minutes_per_task=max_walltime_minutes_per_task,
+        task_ids=task_ids,
+        dataset_dir=str(dataset),
+        tooling_condition=tooling_condition,
+        solver_context=solver_context_record,
+    )
+    if not init.get("success"):
+        return init
+
+    run_dir = Path(init["run_dir"])
+    solver_workspace = (
+        Path(solver_workspace_dir)
+        if solver_workspace_dir is not None
+        else run_dir / "solver_workspace"
+    )
+    public_dir = (
+        Path(public_package_dir)
+        if public_package_dir is not None
+        else solver_workspace / "public_tasks"
+    )
+    private_dir = (
+        Path(private_package_dir)
+        if private_package_dir is not None
+        else run_dir / "private_tasks"
+    )
+    ensure_directory(solver_workspace)
+
+    from mdclaw.benchmark import cli as benchmark_cli
+
+    public_export = benchmark_cli.export_benchmark_public_package(
+        dataset_dir=str(dataset),
+        output_dir=str(public_dir),
+    )
+    if not public_export.get("success"):
+        return {
+            "success": False,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "errors": public_export.get("errors", []),
+            "public_export": public_export,
+        }
+
+    private_export = benchmark_cli.export_benchmark_private_package(
+        dataset_dir=str(dataset),
+        output_dir=str(private_dir),
+    )
+    if not private_export.get("success"):
+        return {
+            "success": False,
+            "run_id": run_id,
+            "run_dir": str(run_dir),
+            "errors": private_export.get("errors", []),
+            "public_export": public_export,
+            "private_export": private_export,
+        }
+
+    cfg_path = run_dir / "run_config.json"
+    cfg_payload = json.loads(cfg_path.read_text())
+    cfg_payload["dataset_dir"] = str(private_dir)
+    cfg_payload["solver_context"] = solver_context_record
+    cfg_payload["agent_profile"] = resolved_agent_profile
+    cfg_payload["agent_model"] = resolved_agent_model
+    cfg_payload["agent_model_defaulted"] = agent_model_defaulted
+    cfg_payload["agent_command_template"] = agent_command
+    _write_json(cfg_path, cfg_payload)
+    benchmark_version = _benchmark_version_for_dataset(str(dataset))
+    attestation_payload = _write_attestation(
+        run_dir,
+        run_id=run_id,
+        benchmark_version=benchmark_version,
+        tooling_condition=tooling_condition,
+        solver_context=solver_context_record,
+        public_package_sha256=_directory_sha256(public_dir),
+    )
+
+    task_records: list[dict[str, Any]] = []
+    agent_tasks: list[dict[str, Any]] = []
+    harness_tasks: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        task_result = _run_one_benchmark_agent_task(
+            run_id=run_id,
+            run_dir=run_dir,
+            solver_workspace=solver_workspace,
+            public_dir=public_dir,
+            private_dir=private_dir,
+            task_id=task_id,
+            agent_name=agent_name,
+            agent_command=agent_command,
+            agent_profile=resolved_agent_profile,
+            agent_model=resolved_agent_model,
+            agent_model_defaulted=agent_model_defaulted,
+            max_walltime_minutes_per_task=max_walltime_minutes_per_task,
+            env=env or {},
+            solver_context=solver_context_record,
+            mdclaw_cli_policy=mdclaw_cli_policy,
+        )
+        task_records.append(task_result)
+        agent_tasks.append(task_result["agent_instruction"])
+        harness_tasks.append(task_result["harness_instruction"])
+
+    _write_json(
+        solver_workspace / "agent_tasks.json",
+        {
+            "run_id": run_id,
+            "dataset_dir": str(public_dir),
+            "task_count": len(agent_tasks),
+            "tasks": agent_tasks,
+        },
+    )
+    _write_json(
+        run_dir / "agent_tasks.json",
+        {
+            "run_id": run_id,
+            "dataset_dir": str(public_dir),
+            "solver_workspace": str(solver_workspace),
+            "task_count": len(agent_tasks),
+            "tasks": agent_tasks,
+        },
+    )
+    _write_json(
+        run_dir / "harness_tasks.json",
+        {
+            "run_id": run_id,
+            "dataset_dir": str(private_dir),
+            "task_count": len(harness_tasks),
+            "tasks": harness_tasks,
+        },
+    )
+
+    score_result = score_benchmark_run(
+        run_dir=str(run_dir),
+        dataset_dir=str(private_dir),
+        require_validation_success=require_validation_success,
+        summarize=summarize,
+    )
+    failed_agent_runs = [t for t in task_records if t.get("exit_code") != 0]
+    policy_violations = [
+        violation
+        for t in task_records
+        for violation in t.get("policy_violations", [])
+    ]
+    success = (
+        bool(score_result.get("success"))
+        and not failed_agent_runs
+        and not policy_violations
+    )
+    errors = []
+    if failed_agent_runs:
+        errors.extend(
+            f"{t['task_id']}: agent exited with {t.get('exit_code')}"
+            for t in failed_agent_runs
+        )
+    errors.extend(policy_violations)
+    errors.extend(score_result.get("errors") or [])
+
+    return {
+        "success": success,
+        "run_id": run_id,
+        "run_dir": str(run_dir),
+        "solver_workspace": str(solver_workspace),
+        "public_package_dir": str(public_dir),
+        "private_package_dir": str(private_dir),
+        "attestation": str(run_dir / "attestation.json"),
+        "attestation_record": attestation_payload,
+        "solver_context": solver_context_record,
+        "agent_profile": resolved_agent_profile,
+        "agent_model": resolved_agent_model,
+        "agent_model_defaulted": agent_model_defaulted,
+        "agent_command_template": agent_command,
+        "mdclaw_cli_policy": mdclaw_cli_policy,
+        "task_count": len(task_records),
+        "tasks": task_records,
+        "score": score_result,
+        "public_export": public_export,
+        "private_export": private_export,
+        "errors": errors,
+    }
+
+
+def _run_one_benchmark_agent_task(
+    *,
+    run_id: str,
+    run_dir: Path,
+    solver_workspace: Path,
+    public_dir: Path,
+    private_dir: Path,
+    task_id: str,
+    agent_name: str,
+    agent_command: str,
+    agent_profile: str,
+    agent_model: str,
+    agent_model_defaulted: bool,
+    max_walltime_minutes_per_task: int,
+    env: dict[str, str],
+    solver_context: dict[str, Any],
+    mdclaw_cli_policy: str,
+) -> dict[str, Any]:
+    solver_task_dir = solver_workspace / "tasks" / task_id
+    solver_submission = solver_task_dir / "submission"
+    task_run_dir = run_dir / "tasks" / task_id
+    evaluator_submission = task_run_dir / "submission"
+    ensure_directory(solver_submission)
+    ensure_directory(task_run_dir)
+
+    task_instruction_path = solver_task_dir / "task_instructions.json"
+    agent_prompt_path = solver_task_dir / "agent_prompt.md"
+    harness_jsonl = task_run_dir / "harness_execution.jsonl"
+    harness_record_path = task_run_dir / "harness_execution.json"
+    stdout_path = task_run_dir / "agent.stdout.log"
+    stderr_path = task_run_dir / "agent.stderr.log"
+    stage_wrapper_path = solver_task_dir / "record_stage.py"
+    _write_stage_wrapper(stage_wrapper_path)
+
+    instruction = {
+        "task_id": task_id,
+        "agent_prompt": str(agent_prompt_path),
+        "prompt_file": str(public_dir / "tasks" / task_id / "prompt.md"),
+        "submission_contract": str(
+            public_dir / "tasks" / task_id / "submission_contract.json"
+        ),
+        "submission_checklist": str(
+            public_dir / "tasks" / task_id / "submission_checklist.md"
+        ),
+        "submission_dir": str(solver_submission),
+        "stage_recording": {
+            "wrapper": str(stage_wrapper_path),
+            "usage": (
+                f"{stage_wrapper_path} --stage source -- <command>; "
+                "repeat for prep, topo, and min as applicable"
+            ),
+        },
+        "mdclaw_cli": {
+            "allowed": (
+                mdclaw_cli_policy in {"allow", "allowed", "off", "none"}
+                or _skill_context_allows_mdclaw_cli(solver_context)
+            ),
+            "policy": mdclaw_cli_policy,
+            "reason": (
+                "MDClaw CLI should be paired with MDClaw skill context. "
+                "For skill-free runs, use direct OpenMM/PDBFixer, MDCrow, "
+                "Amber, GROMACS, or another non-MDClaw workflow."
+            ),
+        },
+    }
+    _write_json(task_instruction_path, instruction)
+    _write_text(agent_prompt_path, _task_agent_prompt(task_id, task_instruction_path))
+
+    harness_instruction = {
+        "task_id": task_id,
+        "private_task_file": str(private_dir / "tasks" / task_id / "task.json"),
+        "solver_submission_dir": str(solver_submission),
+        "submission_dir": str(evaluator_submission),
+        "harness_record_file": str(harness_record_path),
+        "validation_output_file": str(task_run_dir / "validation.json"),
+        "score_file": str(task_run_dir / "score.json"),
+    }
+    _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
+
+    template_values = {
+        "agent_prompt": agent_prompt_path,
+        "task_instructions": task_instruction_path,
+        "prompt_file": Path(instruction["prompt_file"]),
+        "submission_dir": solver_submission,
+        "solver_workspace": solver_workspace,
+        "task_id": task_id,
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "agent_session_dir": run_dir / "agent_sessions" / agent_name,
+        "agent_model": agent_model,
+        "repo_root": _REPO_ROOT,
+        "mdclaw_benchmark_skill": _MD_BENCHMARK_SKILL_DIR,
+        "mdclaw_benchmark_skill_md": _MD_BENCHMARK_SKILL_FILE,
+    }
+    ensure_directory(Path(template_values["agent_session_dir"]))
+    rendered_command = _render_agent_command(agent_command, template_values)
+    _write_text(task_run_dir / "agent_command.txt", rendered_command + "\n")
+
+    run_env = os.environ.copy()
+    run_env.update({str(k): str(v) for k, v in env.items()})
+    run_env["MDCLAW_BENCHMARK_HARNESS_LOG"] = str(harness_jsonl)
+    run_env["MDCLAW_BENCHMARK_RUN_ID"] = run_id
+    run_env["MDCLAW_BENCHMARK_TASK_ID"] = task_id
+    run_env["MDCLAW_BENCHMARK_STAGE_WRAPPER"] = str(stage_wrapper_path)
+
+    started_wall = time.monotonic()
+    started_at = _now_utc()
+    timeout_seconds = (
+        max_walltime_minutes_per_task * 60
+        if max_walltime_minutes_per_task and max_walltime_minutes_per_task > 0
+        else None
+    )
+    exit_code = 0
+    timed_out = False
+    with stdout_path.open("w") as stdout_f, stderr_path.open("w") as stderr_f:
+        process_kwargs: dict[str, Any] = {}
+        if os.name == "posix":
+            process_kwargs["preexec_fn"] = os.setsid
+        process = subprocess.Popen(
+            rendered_command,
+            shell=True,
+            cwd=solver_workspace,
+            env=run_env,
+            stdout=stdout_f,
+            stderr=stderr_f,
+            **process_kwargs,
+        )
+        try:
+            exit_code = int(process.wait(timeout=timeout_seconds))
+        except subprocess.TimeoutExpired:
+            exit_code = 124
+            timed_out = True
+            _terminate_process_tree(process)
+            stderr_f.write(
+                "\n[mdclaw benchmark runner] agent command timed out after "
+                f"{timeout_seconds} seconds\n"
+            )
+    walltime = round(float(time.monotonic() - started_wall), 6)
+
+    if evaluator_submission.exists():
+        shutil.rmtree(evaluator_submission)
+    if solver_submission.exists():
+        shutil.copytree(solver_submission, evaluator_submission)
+    else:
+        ensure_directory(evaluator_submission)
+
+    records = _read_jsonl(harness_jsonl)
+    policy_violations = _mdclaw_cli_policy_violations(
+        records,
+        solver_context=solver_context,
+        mdclaw_cli_policy=mdclaw_cli_policy,
+    )
+    agent_record = {
+        "stage": "agent_run",
+        "command": rendered_command,
+        "exit_code": exit_code,
+        "walltime_seconds": walltime,
+        "started_at": started_at,
+        "completed_at": _now_utc(),
+    }
+    if timed_out:
+        agent_record["status"] = "timeout"
+    harness_payload = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "agent_name": agent_name,
+        "agent_profile": agent_profile,
+        "agent_model": agent_model,
+        "agent_model_defaulted": agent_model_defaulted,
+        "solver_context": solver_context,
+        "mdclaw_cli_policy": mdclaw_cli_policy,
+        "policy_violations": policy_violations,
+        "records": [*records, agent_record],
+    }
+    _write_json(harness_record_path, harness_payload)
+    _write_json(
+        task_run_dir / "agent_run.json",
+        {
+            "task_id": task_id,
+            "agent_name": agent_name,
+            "agent_profile": agent_profile,
+            "agent_model": agent_model,
+            "agent_model_defaulted": agent_model_defaulted,
+            "solver_context": solver_context,
+            "mdclaw_cli_policy": mdclaw_cli_policy,
+            "policy_violations": policy_violations,
+            "command": rendered_command,
+            "exit_code": exit_code,
+            "walltime_seconds": walltime,
+            "timed_out": timed_out,
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "harness_record_file": str(harness_record_path),
+            "solver_submission_dir": str(solver_submission),
+            "submission_dir": str(evaluator_submission),
+        },
+    )
+    return {
+        "task_id": task_id,
+        "agent_name": agent_name,
+        "agent_profile": agent_profile,
+        "agent_model": agent_model,
+        "agent_model_defaulted": agent_model_defaulted,
+        "solver_context": solver_context,
+        "mdclaw_cli_policy": mdclaw_cli_policy,
+        "policy_violations": policy_violations,
+        "command": rendered_command,
+        "exit_code": exit_code,
+        "walltime_seconds": walltime,
+        "timed_out": timed_out,
+        "stdout": str(stdout_path),
+        "stderr": str(stderr_path),
+        "solver_task_dir": str(solver_task_dir),
+        "solver_submission_dir": str(solver_submission),
+        "submission_dir": str(evaluator_submission),
+        "harness_record_file": str(harness_record_path),
+        "agent_instruction": instruction,
+        "harness_instruction": harness_instruction,
+    }
+
+
+def _render_agent_command(command: str, values: dict[str, Any]) -> str:
+    rendered = command
+    for key, value in values.items():
+        replacement = shlex.quote(str(value))
+        rendered = rendered.replace("{{" + key + "}}", replacement)
+    return rendered
+
+
 def summarize_benchmark_run(
     run_dir: str,
     output_file: Optional[str] = None,
@@ -571,6 +1473,9 @@ def summarize_benchmark_run(
         backend=BackendInfo(**(cfg_payload.get("backend") or {})),
         harness=HarnessInfo(**(cfg_payload.get("harness") or {})),
         model=ModelInfo(**(cfg_payload.get("model") or {})),
+        solver_context=SolverContextInfo(
+            **(cfg_payload.get("solver_context") or {})
+        ),
         tooling_condition=tooling_condition,
         verified=verified,
         attestation=attestation_payload,

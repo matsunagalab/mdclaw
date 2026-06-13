@@ -264,6 +264,15 @@ skill examples.
 - `prepare_benchmark_run(...)`: create a run directory, export an agent-safe
   public task package, write per-task prompt/submission instructions for the
   evaluated agent, and write separate harness scoring metadata.
+- `run_benchmark_agent(...)`: SWE-bench-style external-agent runner. It
+  creates public/private packages, runs a templated Pi / Claude Code / Codex
+  command per selected task, records measured `harness_execution.json`, then
+  scores and summarizes with the private evaluator package. It also records
+  harness-owned `solver_context` for skill-free / skill-system / skill-text
+  comparisons. Built-in `agent_profile` values provide practical Pi,
+  Claude Code, and Codex command templates, including non-interactive
+  approval-bypass flags for Claude Code / Codex, explicit default model
+  selection via `agent_model`, and process-group cleanup on timeout.
 - `score_benchmark_run(...)`: validate and score every `submission/` under a
   run directory, then summarize the run.
 - `init_benchmark_run(...)` / `summarize_benchmark_run(...)`: lower-level run

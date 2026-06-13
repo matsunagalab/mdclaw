@@ -34,6 +34,99 @@ The solver workspace may contain public prompts and output directories. The
 evaluator workspace contains canonical `task.json`, `truth/`, scorer-only
 references, submitted artifacts, and harness-measured runtime records.
 
+## Automated Runner
+
+For repeated local measurements, prefer the SWE-bench-style runner:
+
+```bash
+mdclaw run_benchmark_agent \
+  --dataset-dir benchmarks/mdprepbench \
+  --run-id pi_p01_001 \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name pi
+```
+
+The runner creates public and private packages, creates a solver workspace,
+runs the agent once per selected task, records measured execution evidence, and
+scores with the private evaluator package. Claude Code and Codex can be run by
+changing only `--agent-name`. Built-in profiles include the usual
+non-interactive approval-bypass flags for benchmark runs:
+
+The automated runner defaults to 30 minutes per task. Increase
+`--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
+runs.
+
+Built-in profiles set explicit model flags by default: Pi uses
+`deepseek-cloudflare/deepseek-v4-flash`, Claude Code uses `sonnet`, and Codex
+uses `gpt-5.4-mini`. Override this with `--agent-model <model>`; the resolved
+model is recorded in `run_config.json`, `summary.json`, and each task's
+`agent_run.json`.
+
+The runner is neutral about the solver workflow. It does not require or reward
+MDClaw skills. `tooling_condition` is only a run-summary grouping label: use
+`mdclaw-free` for direct OpenMM/PDBFixer, MDCrow, or any solver that does not
+call MDClaw, `mdclaw-cli-only` for MDClaw CLI without skills, and
+`mdclaw-skills+cli` only for the MDClaw reference condition.
+
+Skill exposure is tracked separately in `solver_context`. The automated runner
+infers it from the command template by default (`none`, `skill-system`,
+`skill-text-injected`, or `unknown`) and writes it to `run_config.json`,
+`attestation.json`, `summary.json`, and per-task `agent_run.json`. If the
+automatic inference is not accurate for a custom harness, pass
+`--solver-context none`, `skill-system`, `skill-text-injected`, or `unknown`.
+This is a comparison/audit field only; it never affects scoring.
+The default MDClaw CLI policy is `forbid-without-skill`: if the solver uses
+`mdclaw ...` while `solver_context` says no skill context was exposed, the
+runner reports a run-condition violation. This keeps the main comparison as
+`mdclaw-free` versus `mdclaw-skills+cli`; use `--mdclaw-cli-policy allow` only
+for an explicit CLI-only ablation.
+
+```bash
+mdclaw run_benchmark_agent \
+  --dataset-dir benchmarks/mdprepbench \
+  --run-id claude_p01_001 \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name claude-code
+```
+
+```bash
+mdclaw run_benchmark_agent \
+  --dataset-dir benchmarks/mdprepbench \
+  --run-id codex_p01_001 \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name codex
+```
+
+The default profiles are MDClaw-skill reference profiles:
+`pi-mdclaw-skill`, `claude-code-mdclaw-skill`, and `codex-mdclaw-skill`.
+Use `--agent-profile pi-user` to let Pi use normal user-wide discovery with an
+isolated session directory, `--agent-profile *-plain` for skill-free checks, or
+`--agent-command` for a custom command template.
+
+Supported template variables are `{{agent_prompt}}`,
+`{{task_instructions}}`, `{{prompt_file}}`, `{{submission_dir}}`,
+`{{solver_workspace}}`, `{{task_id}}`, `{{run_id}}`, `{{run_dir}}`,
+`{{agent_session_dir}}`, `{{agent_model}}`, `{{repo_root}}`,
+`{{mdclaw_benchmark_skill}}`, and `{{mdclaw_benchmark_skill_md}}`. Template
+values are shell-quoted before execution.
+
+When the agent invokes `mdclaw` commands, the runner sets an opt-in environment
+hook so the MDClaw CLI appends measured stage records to a runner-owned JSONL
+log that is folded into `harness_execution.json`. This replaces hand-written
+harness records. Agents that never call the MDClaw CLI need an adapter or
+packager-specific runner before strict stage-level provenance can pass. The
+runner also writes an agent-safe `record_stage.py` wrapper into each task
+workspace and exposes it in `task_instructions.json` as `stage_recording` and
+in `$MDCLAW_BENCHMARK_STAGE_WRAPPER`; non-MDClaw solvers can run
+`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage source -- <command>` for source,
+prep, topology, and minimization commands. This is an execution-evidence
+requirement, not an MDClaw-skills requirement.
+
+The default runner uses a separate solver workspace but does not create a hard
+OS/container sandbox. For leaderboard-quality held-out results, run the solver
+workspace in a container or account that cannot read the maintainer checkout,
+the private package, or the evaluator run directory.
+
 ## 1. Export Public And Private Packages
 
 From the maintainer checkout, export the solver-facing package:

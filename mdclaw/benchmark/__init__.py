@@ -33,6 +33,7 @@ from mdclaw.benchmark.cli import (
 from mdclaw.benchmark.run import (
     init_benchmark_run,
     prepare_benchmark_run,
+    run_benchmark_agent,
     score_benchmark_run,
     summarize_benchmark_run,
 )
@@ -41,6 +42,7 @@ TOOLS = {
     "list_benchmark_tasks": list_benchmark_tasks,
     "init_benchmark_run": init_benchmark_run,
     "prepare_benchmark_run": prepare_benchmark_run,
+    "run_benchmark_agent": run_benchmark_agent,
     "score_benchmark_run": score_benchmark_run,
     "summarize_benchmark_run": summarize_benchmark_run,
     "export_benchmark_public_package": export_benchmark_public_package,
