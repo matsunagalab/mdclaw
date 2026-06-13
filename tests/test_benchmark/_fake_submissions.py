@@ -106,6 +106,46 @@ def _add_residue(lines: list[str], serial: int, resname: str, chain: str,
     return serial
 
 
+def _component_atom_names(check: dict[str, Any]) -> list[str]:
+    """Atom names for a synthetic component residue.
+
+    Honors ``min_residue_atom_count`` so checks that ignore small residues
+    (e.g. lipid checks rejecting water/ions) still count the fixture residues.
+    """
+    n = max(1, int(check.get("min_residue_atom_count") or 1))
+    return [f"C{i + 1}" for i in range(n)]
+
+
+def _topology_component_residues(
+    task: dict[str, Any],
+) -> list[tuple[str, int, int]]:
+    """Component residues a honest fixture must embed in the OpenMM topology.
+
+    Returns ``(resname, n_atoms, count)`` for ``structure_component_rescan``
+    checks whose structure target is the OpenMM topology bundle (rather than
+    ``prepared_structure.pdb``), so retargeted checks such as P18's
+    ``lipid_species_present`` find their residues in ``topology/topology.pdb``.
+    """
+    residues: list[tuple[str, int, int]] = []
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "structure_component_rescan":
+            continue
+        target = str(
+            check.get("structure_manifest_path")
+            or check.get("structure_path")
+            or ""
+        )
+        if not (target.startswith("outputs.topology")
+                or target.startswith("topology/")):
+            continue
+        n_atoms = max(1, int(check.get("min_residue_atom_count") or 1))
+        for resname, count in (check.get("min_residue_counts") or {}).items():
+            residues.append((str(resname), n_atoms, int(count)))
+        for resname, count in (check.get("exact_residue_counts") or {}).items():
+            residues.append((str(resname), n_atoms, int(count)))
+    return residues
+
+
 def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
                             mode: str) -> None:
     check_type = check.get("check_type")
@@ -329,6 +369,16 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
         add_atom("CL", "Cl", "CL", anion, -1.0, 35.0)
         resseq += 1
 
+    # Embed component residues (e.g. lipids) for checks that read the OpenMM
+    # topology bundle, with enough atoms to clear any per-residue atom floor.
+    if task is not None:
+        for resname, n_atoms, count in _topology_component_residues(task):
+            for _ in range(count):
+                residue = topology.addResidue(resname, chain, str(resseq))
+                for atom_i in range(n_atoms):
+                    add_atom(f"C{atom_i + 1}", "C", resname, residue, 0.0, 12.0)
+                resseq += 1
+
     system.addForce(nonbonded)
 
     if salt_pairs and req["target_molar"]:
@@ -349,8 +399,14 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
 
     system_xml.write_text(XmlSerializer.serialize(system))
     state_xml.write_text(XmlSerializer.serialize(state))
-    with topology_pdb.open("w") as handle:
-        PDBFile.writeFile(topology, positions_q, handle, keepIds=True)
+    import io as _io
+
+    from mdclaw.structure.pdb_utils import preserve_long_resnames_in_pdb_text
+    pdb_buffer = _io.StringIO()
+    PDBFile.writeFile(topology, positions_q, pdb_buffer, keepIds=True)
+    topology_pdb.write_text(
+        preserve_long_resnames_in_pdb_text(pdb_buffer.getvalue(), topology)
+    )
 
     return rels
 
@@ -370,15 +426,16 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
         check_type = check.get("check_type")
         if check_type == "structure_component_rescan":
             if mode == "honest":
+                atom_names = _component_atom_names(check)
                 for resname, count in (check.get("min_residue_counts") or {}).items():
                     for _ in range(int(count)):
                         serial = _add_residue(lines, serial, resname, "B", residue_index,
-                                              ["C1"], record="HETATM")
+                                              atom_names, record="HETATM")
                         residue_index += 1
                 for resname, count in (check.get("exact_residue_counts") or {}).items():
                     for _ in range(int(count)):
                         serial = _add_residue(lines, serial, resname, "B", residue_index,
-                                              ["C1"], record="HETATM")
+                                              atom_names, record="HETATM")
                         residue_index += 1
             else:
                 for resname in (check.get("max_residue_counts") or {}):

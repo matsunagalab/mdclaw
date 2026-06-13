@@ -366,10 +366,20 @@ def run_minimization(
 
         minimized_state = simulation.context.getState(getPositions=True)
         minimized_structure = out_dir / f"{pref}minimized_structure.pdb"
-        with minimized_structure.open("w") as fh:
-            PDBFile.writeFile(
-                xml_inputs.topology, minimized_state.getPositions(), fh
+        import io as _io
+
+        from mdclaw.structure.pdb_utils import (
+            preserve_long_resnames_in_pdb_text,
+        )
+        _min_buffer = _io.StringIO()
+        PDBFile.writeFile(
+            xml_inputs.topology, minimized_state.getPositions(), _min_buffer
+        )
+        minimized_structure.write_text(
+            preserve_long_resnames_in_pdb_text(
+                _min_buffer.getvalue(), xml_inputs.topology
             )
+        )
         result["minimized_structure"] = str(minimized_structure)
 
         report = {

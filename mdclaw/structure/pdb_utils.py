@@ -70,6 +70,37 @@ def _path_lookup_keys(path: str | Path | None) -> set[str]:
     return keys
 
 
+def preserve_long_resnames_in_pdb_text(pdb_text: str, topology: Any) -> str:
+    """Rewrite 4-character residue names so they survive a PDB round-trip.
+
+    ``openmm.app.PDBFile.writeFile`` truncates residue names longer than three
+    characters to their first three characters (``POPC`` -> ``POP``), which both
+    collapses distinct lipids (``POPC``/``POPE`` -> ``POP``) and prevents any
+    downstream reader from recovering the canonical name. PDB readers (including
+    OpenMM's own) accept a 4-character residue name written into columns 18-21,
+    so we left-justify the full (<=4 char) name into that field. Names of three
+    characters or fewer are untouched, so this is a no-op for proteins, water,
+    and ions.
+
+    The residue name for each ``ATOM``/``HETATM`` record is taken from
+    ``topology.atoms()`` in order, matching the order ``writeFile`` emits.
+    """
+    names = [atom.residue.name for atom in topology.atoms()]
+    out_lines: list[str] = []
+    atom_index = 0
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM  ", "HETATM")):
+            if atom_index < len(names):
+                resname = names[atom_index]
+                atom_index += 1
+                if resname and len(resname) >= 4:
+                    padded = line.ljust(80)
+                    line = (padded[:17] + f"{resname[:4]:<4}" + padded[21:]).rstrip()
+        out_lines.append(line)
+    trailing = "\n" if pdb_text.endswith("\n") else ""
+    return "\n".join(out_lines) + trailing
+
+
 def _pdb_atom_descriptor(line: str) -> dict[str, Any]:
     """Return a compact, serializable descriptor for a PDB atom record."""
     chain = line[21].strip() if len(line) > 21 else ""

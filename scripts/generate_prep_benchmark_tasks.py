@@ -780,7 +780,11 @@ TASK_DEFS: list[dict] = [
             "`source_pdb_id`, `assembly_id`, `source_auth_asym_id`, "
             "`source_label_asym_id` or `source_subchain_id`, `operator_id`, "
             "`output_chain_id`, and `naming_policy`. The submitted structure "
-            "should represent assembly 1 rather than the asymmetric unit alone."
+            "should represent assembly 1 rather than the asymmetric unit alone. "
+            "The expected assembly chain count refers to the polymer "
+            "(protein/nucleic) chains of the biological assembly; bound cofactors "
+            "or ligands may be assigned their own chain IDs and are not counted "
+            "toward that total. Tag each map entry with `molecule_type`."
         ),
     ),
     _task(

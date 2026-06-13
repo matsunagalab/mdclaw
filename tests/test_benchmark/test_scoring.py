@@ -1641,6 +1641,38 @@ def test_json_allowed_values_accepts_lipid_ratio_synonym(tmp_path: Path):
     assert "PC:PE:CHL=2:1:1" in failed.message
 
 
+def _lipid_pdb_line(serial: int, atom: str, resname: str, chain: str,
+                    resseq: int) -> str:
+    """A PDB ATOM record with the residue name in columns 18-21 (index 17:21).
+
+    Mirrors the long-residue-name placement MDClaw writes for 4-character
+    CHARMM lipid names so the scorer's fixed-column reader recovers them.
+    """
+    return (
+        f"HETATM{serial:>5} {atom:<4}{'':1}{resname[:4]:<4}{chain:1}"
+        f"{resseq:>4}{'':1}   "
+        f"{0.0:>8.3f}{0.0:>8.3f}{0.0:>8.3f}{1.0:>6.2f}{0.0:>6.2f}\n"
+    )
+
+
+def _lipid_structure(residues: list[tuple[str, int]], atoms_per_res: int,
+                     chain: str = "B", start_resseq: int = 1) -> str:
+    """Build a PDB string. ``residues`` = list of (resname, count)."""
+    lines: list[str] = []
+    serial = 1
+    resseq = start_resseq
+    for resname, count in residues:
+        for _ in range(count):
+            for a in range(atoms_per_res):
+                lines.append(
+                    _lipid_pdb_line(serial, f"C{a + 1}", resname, chain, resseq)
+                )
+                serial += 1
+            resseq += 1
+    lines.append("END\n")
+    return "".join(lines)
+
+
 def test_p18_lipid_aliases_count_species_but_not_tail_fragments(tmp_path: Path):
     task = _make_task(
         primary="preparation",
@@ -1648,11 +1680,12 @@ def test_p18_lipid_aliases_count_species_but_not_tail_fragments(tmp_path: Path):
             check_id="lipids",
             check_type="structure_component_rescan",
             structure_manifest_path="outputs.prepared_structure",
+            min_residue_atom_count=20,
             min_residue_counts={"POPC": 2, "POPE": 1, "CHL1": 1},
             residue_aliases={
-                "POPC": ["PC"],
-                "POPE": ["PE"],
-                "CHL1": ["CHL", "CHOL"],
+                "POPC": ["PC", "OPC"],
+                "POPE": ["PE", "OPE"],
+                "CHL1": ["CHL", "CHOL", "HL1"],
             },
             weight=1.0,
         )],
@@ -1665,22 +1698,19 @@ def test_p18_lipid_aliases_count_species_but_not_tail_fragments(tmp_path: Path):
             "outputs": {"prepared_structure": "prepared_structure.pdb"},
         },
     )
+    # Whole lipids (with the last-3-character truncations some agents emit) plus
+    # OPC water that must NOT be miscounted as POPC because it is too small.
     (tmp_path / "prepared_structure.pdb").write_text(
-        "HETATM    1  C1   PC A   1       0.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    2  C1   PC A   2       1.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    3  C1   PE A   3       2.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    4  C1 CHOL A   4       3.000   0.000   0.000  1.00  0.00           C\n"
-        "END\n"
+        _lipid_structure([("OPC", 2), ("OPE", 1), ("HL1", 1)], atoms_per_res=25)
+        + _lipid_structure([("OPC", 50)], atoms_per_res=4,
+                           chain="W", start_resseq=100)
     )
     passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
-    assert passed.passed is True
+    assert passed.passed is True, passed.message
 
+    # Acyl-tail fragment residues (PA/OL) must not be counted as whole lipids.
     (tmp_path / "prepared_structure.pdb").write_text(
-        "HETATM    1  C1   PA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    2  C1   PA A   2       1.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    3  C1   OL A   3       2.000   0.000   0.000  1.00  0.00           C\n"
-        "HETATM    4  C1   OL A   4       3.000   0.000   0.000  1.00  0.00           C\n"
-        "END\n"
+        _lipid_structure([("PA", 2), ("OL", 2)], atoms_per_res=25)
     )
     failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
     assert failed.passed is False

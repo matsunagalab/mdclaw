@@ -681,6 +681,10 @@ def _check_minimization_report(check: DeterministicCheck,
         "atom_count_preserved",
     ]
     issues = [name for name in required_true if value(name) is not True]
+    # The pre-minimization energy of a freshly built/solvated system (membranes
+    # especially) is legitimately enormous because of packing clashes, so only
+    # require it to be finite. The magnitude plausibility ceiling applies to the
+    # post-minimization energy, which is what must be physically sane.
     for energy_field in ("energy_initial_kj_mol", "energy_final_kj_mol"):
         raw = value(energy_field)
         try:
@@ -690,7 +694,10 @@ def _check_minimization_report(check: DeterministicCheck,
             continue
         if not math.isfinite(numeric):
             issues.append(energy_field)
-        elif abs(numeric) > _MAX_ABS_PREP_TOTAL_ENERGY_KJ_MOL:
+            continue
+        if energy_field == "energy_initial_kj_mol":
+            continue
+        if abs(numeric) > _MAX_ABS_PREP_TOTAL_ENERGY_KJ_MOL:
             atom_count_raw = value("atom_count") or value("particle_count")
             try:
                 atom_count = max(1, int(atom_count_raw))
@@ -1123,27 +1130,42 @@ def _positions_are_finite(array: Any) -> bool:
     return True
 
 
-def _residue_counts_from_pdb(path: Path) -> dict[str, int]:
-    """Count unique residues by residue name in a PDB-like coordinate file."""
-    residues: set[tuple[str, str, str, str]] = set()
+def _residue_counts_from_pdb(path: Path, min_atoms: int = 0) -> dict[str, int]:
+    """Count unique residues by residue name in a PDB-like coordinate file.
+
+    Residue names are read from the fixed-width residue-name field
+    (columns 18-21), which captures 4-character names such as the CHARMM lipid
+    codes ``POPC``/``POPE``/``CHL1`` written into the spill-over column. The
+    whitespace-split fallback is only used when the fixed columns are empty so
+    that a 4-character name written immediately before the chain ID (``POPCA``)
+    is not mis-parsed as a single token.
+
+    When ``min_atoms`` is positive, only residues with at least that many atoms
+    are counted. This lets lipid checks ignore small residues (water/ions) whose
+    names can collide with truncated lipid aliases (e.g. ``OPC`` water vs a
+    ``POPC`` lipid aliased to ``OPC``).
+    """
+    residue_atom_counts: dict[tuple[str, str, str, str], int] = {}
     with path.open() as handle:
         for line in handle:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
             resname = line[17:21].strip().upper()
-            parts = line.split()
-            if len(parts) >= 4 and len(parts[3].strip()) > len(resname):
-                resname = parts[3].strip().upper()
-            if not resname and len(parts) >= 4:
-                resname = parts[3].strip().upper()
+            if not resname:
+                parts = line.split()
+                if len(parts) >= 4:
+                    resname = parts[3].strip().upper()
             if not resname:
                 continue
             chain_id = line[21:22].strip()
             resseq = line[22:26].strip()
             icode = line[26:27].strip()
-            residues.add((chain_id, resseq, icode, resname))
+            key = (chain_id, resseq, icode, resname)
+            residue_atom_counts[key] = residue_atom_counts.get(key, 0) + 1
     counts: dict[str, int] = {}
-    for *_site, resname in residues:
+    for (*_site, resname), atom_count in residue_atom_counts.items():
+        if min_atoms and atom_count < min_atoms:
+            continue
         counts[resname] = counts.get(resname, 0) + 1
     return counts
 
@@ -1246,7 +1268,9 @@ def _check_component_counts_for_structure(check: DeterministicCheck,
         return False, 0.0, f"structure file not found: {structure_path}"
 
     try:
-        counts = _residue_counts_from_pdb(structure_path)
+        counts = _residue_counts_from_pdb(
+            structure_path, min_atoms=check.min_residue_atom_count or 0
+        )
     except OSError as exc:
         return False, 0.0, f"could not read structure file: {exc}"
 
@@ -1448,9 +1472,35 @@ def _check_assembly_identity(check: DeterministicCheck,
         if str(entry.get("output_chain_id", "")).strip()
     ]
     mapped_output_chain_ids = set(output_chain_ids)
-    if mapped_output_chain_ids:
-        chain_count = len(mapped_output_chain_ids)
-        chain_count_label = "mapped output chain count"
+
+    # Distinguish polymer chains (protein/nucleic) from cofactor/ligand chains so
+    # that splitting ligands into their own chains does not inflate the assembly
+    # chain count. Only applies when at least one entry tags ``molecule_type``;
+    # otherwise every mapped chain counts.
+    _POLYMER_MOLECULE_TYPES = {
+        "protein", "peptide", "polypeptide", "nucleic", "nucleic_acid",
+        "dna", "rna", "polymer", "polynucleotide",
+    }
+    has_molecule_type = any(
+        str(entry.get("molecule_type", "")).strip() for entry in mapping_entries
+    )
+    if check.count_polymer_chains_only and has_molecule_type:
+        polymer_chain_ids = {
+            str(entry.get("output_chain_id", "")).strip()
+            for entry in mapping_entries
+            if str(entry.get("output_chain_id", "")).strip()
+            and str(entry.get("molecule_type", "")).strip().lower()
+            in _POLYMER_MOLECULE_TYPES
+        }
+        counted_chain_ids = polymer_chain_ids
+        count_label_qualifier = "mapped polymer output chain count"
+    else:
+        counted_chain_ids = mapped_output_chain_ids
+        count_label_qualifier = "mapped output chain count"
+
+    if counted_chain_ids:
+        chain_count = len(counted_chain_ids)
+        chain_count_label = count_label_qualifier
     else:
         chain_count = len(chain_ids)
         chain_count_label = "structure chain count"

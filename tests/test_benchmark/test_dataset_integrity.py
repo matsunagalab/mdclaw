@@ -254,12 +254,31 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
         "PC:PE:CHL=2:1:1",
     ]
 
+    # lipid_species_present reads the built OpenMM topology bundle (MDClaw's
+    # prepared_structure.pdb is protein-only), while the minimized check reads
+    # the minimized structure.
+    assert (
+        checks["lipid_species_present"]["structure_manifest_path"]
+        == "outputs.topology"
+    )
+    assert (
+        checks["minimized_lipid_species_present"]["minimized_structure_manifest_path"]
+        == "outputs.minimized_structure"
+    )
+
     prepared_aliases = checks["lipid_species_present"]["residue_aliases"]
     minimized_aliases = checks["minimized_lipid_species_present"]["residue_aliases"]
+    for check_id in ("lipid_species_present", "minimized_lipid_species_present"):
+        # Small water/ion residues must be ignored so the OPC water model name
+        # does not collide with a POPC lipid aliased to its OPC truncation.
+        assert checks[check_id]["min_residue_atom_count"] == 20
     for aliases in (prepared_aliases, minimized_aliases):
-        assert aliases["POPC"] == ["PC"]
-        assert aliases["POPE"] == ["PE"]
-        assert aliases["CHL1"] == ["CHL", "CHOL"]
+        # Canonical short names plus the last-3-character truncations some agents
+        # emit (POPC -> OPC, POPE -> OPE, CHL1 -> HL1).
+        assert aliases["POPC"] == ["PC", "OPC"]
+        assert aliases["POPE"] == ["PE", "OPE"]
+        assert aliases["CHL1"] == ["CHL", "CHOL", "HL1"]
+        # Acyl-tail fragment residue names must never be aliased to whole lipids.
         assert "PA" not in aliases["POPC"]
         assert "OL" not in aliases["POPC"]
         assert "PA" not in aliases["POPE"]

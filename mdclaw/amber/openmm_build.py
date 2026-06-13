@@ -1212,10 +1212,16 @@ def _run_openmmforcefields_build(
             topology_buffer,
             keepIds=True,
         )
+        from mdclaw.structure.pdb_utils import (
+            preserve_long_resnames_in_pdb_text,
+        )
+        topology_pdb_text = preserve_long_resnames_in_pdb_text(
+            topology_buffer.getvalue(), modeller.topology
+        )
         atomic_write_text_group([
             (system_xml_file, XmlSerializer.serialize(system)),
             (state_xml_file, XmlSerializer.serialize(state)),
-            (topology_pdb_file, topology_buffer.getvalue()),
+            (topology_pdb_file, topology_pdb_text),
             (minimization_report_file, json.dumps(minimization_report, indent=2)),
         ])
     except Exception as exc:  # noqa: BLE001

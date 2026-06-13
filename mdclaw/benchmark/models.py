@@ -234,6 +234,10 @@ class DeterministicCheck(BaseModel):
     max_residue_counts: Optional[dict[str, int]] = None
     exact_residue_counts: Optional[dict[str, int]] = None
     residue_aliases: Optional[dict[str, list[str]]] = None
+    # Ignore residues with fewer than this many atoms when counting components.
+    # Lets lipid checks reject small residues (water/ions) whose names can
+    # collide with truncated lipid aliases.
+    min_residue_atom_count: Optional[int] = None
 
     # pdb_residue_state
     structure_path: Optional[str] = None
@@ -265,6 +269,11 @@ class DeterministicCheck(BaseModel):
     required_operator_ids: Optional[list[str]] = None
     require_output_chains_in_structure: bool = False
     require_unique_output_chains: bool = False
+    # When the chain identity map tags entries with ``molecule_type``, count only
+    # polymer chains (protein/peptide/nucleic/dna/rna) toward chain-count checks
+    # so that cofactor/ligand chains carrying their own IDs are not penalized.
+    # Falls back to counting every mapped chain when no entry is tagged.
+    count_polymer_chains_only: bool = True
 
     # candidate_selection_check
     source_selection_manifest_path: Optional[str] = None

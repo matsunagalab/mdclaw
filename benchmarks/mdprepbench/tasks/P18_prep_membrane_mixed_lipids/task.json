@@ -62,6 +62,7 @@
       {
         "check_id": "lipid_species_present",
         "check_type": "structure_component_rescan",
+        "min_residue_atom_count": 20,
         "min_residue_counts": {
           "CHL1": 1,
           "POPC": 2,
@@ -70,17 +71,20 @@
         "residue_aliases": {
           "CHL1": [
             "CHL",
-            "CHOL"
+            "CHOL",
+            "HL1"
           ],
           "POPC": [
-            "PC"
+            "PC",
+            "OPC"
           ],
           "POPE": [
-            "PE"
+            "PE",
+            "OPE"
           ]
         },
-        "structure_manifest_path": "outputs.prepared_structure",
-        "structure_path": "prepared_structure.pdb",
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
         "weight": 0.5
       },
       {
@@ -131,6 +135,7 @@
       {
         "check_id": "minimized_lipid_species_present",
         "check_type": "minimized_structure_component_rescan",
+        "min_residue_atom_count": 20,
         "min_residue_counts": {
           "CHL1": 1,
           "POPC": 2,
@@ -140,13 +145,16 @@
         "residue_aliases": {
           "CHL1": [
             "CHL",
-            "CHOL"
+            "CHOL",
+            "HL1"
           ],
           "POPC": [
-            "PC"
+            "PC",
+            "OPC"
           ],
           "POPE": [
-            "PE"
+            "PE",
+            "OPE"
           ]
         },
         "structure_manifest_path": "outputs.prepared_structure",

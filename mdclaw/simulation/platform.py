@@ -130,8 +130,16 @@ def export_state_pdb(
             )
 
         ensure_directory(output_path.parent)
-        with output_path.open("w") as fh:
-            PDBFile.writeFile(topology, positions, fh, keepIds=keep_ids)
+        import io as _io
+
+        from mdclaw.structure.pdb_utils import (
+            preserve_long_resnames_in_pdb_text,
+        )
+        pdb_buffer = _io.StringIO()
+        PDBFile.writeFile(topology, positions, pdb_buffer, keepIds=keep_ids)
+        output_path.write_text(
+            preserve_long_resnames_in_pdb_text(pdb_buffer.getvalue(), topology)
+        )
 
         result["success"] = True
         result["output_pdb"] = str(output_path)
