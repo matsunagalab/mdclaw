@@ -248,6 +248,66 @@ def _write_text(path: Path, text: str) -> None:
     path.write_text(text)
 
 
+def _snapshot_agent_session_files(root: Path) -> dict[Path, tuple[int, int]]:
+    """Return file mtimes/sizes under an agent session directory."""
+    if not root.is_dir():
+        return {}
+    snapshot: dict[Path, tuple[int, int]] = {}
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        snapshot[path] = (stat.st_mtime_ns, stat.st_size)
+    return snapshot
+
+
+def _copy_agent_session_files(
+    *,
+    session_dir: Path,
+    task_run_dir: Path,
+    before: dict[Path, tuple[int, int]],
+    run_id: str,
+    task_id: str,
+) -> list[dict[str, Any]]:
+    """Copy task-related agent session files into the task run directory."""
+    if not session_dir.is_dir():
+        return []
+    copied: list[dict[str, Any]] = []
+    dest_root = task_run_dir / "agent_session_transcripts"
+    for path in sorted(p for p in session_dir.rglob("*") if p.is_file()):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        current = (stat.st_mtime_ns, stat.st_size)
+        previous = before.get(path)
+        filename = path.name
+        task_related = run_id in filename or task_id in filename
+        if previous == current and not task_related:
+            continue
+        try:
+            relative = path.relative_to(session_dir)
+        except ValueError:
+            relative = Path(filename)
+        dest = dest_root / relative
+        ensure_directory(dest.parent)
+        try:
+            shutil.copy2(path, dest)
+        except OSError:
+            continue
+        copied.append(
+            {
+                "source": str(path),
+                "copy": str(dest),
+                "size_bytes": stat.st_size,
+            }
+        )
+    return copied
+
+
 def _solver_context_record(
     *,
     agent_command: str = "",
@@ -499,24 +559,25 @@ def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
         f"# MD Benchmark Task Agent: {task_id}\n\n"
         "Run the task described by this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
-        "Use any real MD workflow. MDClaw skills are neither required nor "
-        "rewarded; scoring uses artifacts and execution evidence.\n\n"
-        "Read only JSON-named files: prompt_file, contract, checklist, and "
-        "submission_dir. "
-        "Write outputs under submission_dir.\n\n"
+        "Use an MD workflow. MDClaw skills are neither required nor "
+        "rewarded; artifacts and execution evidence are scored.\n\n"
+        "Read only JSON-named prompt_file, contract, checklist, and "
+        "submission_dir. Write outputs under submission_dir.\n\n"
         "Solve only this task. Do not inspect sibling task directories, "
         "categorize the suite, or write benchmark-wide solver scripts. "
         "Record task-local helper steps in provenance.command_log.\n\n"
-        "Use stage_recording for stages; use mdclaw CLI only if "
-        "mdclaw_cli.allowed.\n\n"
+        "Run stages with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage source -- "
+        "<command>`; repeat for source/prep/topo/min. Do not create/edit "
+        "harness_execution.json/.jsonl.\n\n"
+        "Use mdclaw CLI only if mdclaw_cli.allowed.\n\n"
         "Use `conda run -n mdclaw python ...` for OpenMM/gemmi helpers.\n\n"
-        "If using MDClaw DAG tools, do not hand-edit node directories, "
-        "progress.json, or node.json; retry with new nodes/tooling.\n\n"
-        "Run IDs and directory names are labels only; do not infer smoke-test "
-        "shortcuts, task subsets, or expected outcomes from them.\n\n"
-        "Do not read harness_instructions.json, harness_tasks.json, canonical "
-        "task.json, truth/, or scorer/. Do not fabricate artifacts/metrics; "
-        "if blocked, record attempted commands and the blocker.\n\n"
+        "With MDClaw DAG tools, do not edit node dirs, progress.json, or "
+        "node.json; retry with new nodes/tooling.\n\n"
+        "Run IDs and directory names are labels only; infer no shortcuts/"
+        "outcomes.\n\n"
+        "Do not read harness_instructions.json, harness_tasks.json, task.json, "
+        "truth/, or scorer/. Do not fabricate; if blocked, record "
+        "commands/blocker.\n\n"
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
 
@@ -988,22 +1049,22 @@ def run_benchmark_agent(
     if not init.get("success"):
         return init
 
-    run_dir = Path(init["run_dir"])
+    run_dir = Path(init["run_dir"]).resolve()
     solver_workspace = (
         Path(solver_workspace_dir)
         if solver_workspace_dir is not None
         else run_dir / "solver_workspace"
-    )
+    ).resolve()
     public_dir = (
         Path(public_package_dir)
         if public_package_dir is not None
         else solver_workspace / "public_tasks"
-    )
+    ).resolve()
     private_dir = (
         Path(private_package_dir)
         if private_package_dir is not None
         else run_dir / "private_tasks"
-    )
+    ).resolve()
     ensure_directory(solver_workspace)
 
     from mdclaw.benchmark import cli as benchmark_cli
@@ -1252,7 +1313,9 @@ def _run_one_benchmark_agent_task(
         "mdclaw_benchmark_skill": _MD_BENCHMARK_SKILL_DIR,
         "mdclaw_benchmark_skill_md": _MD_BENCHMARK_SKILL_FILE,
     }
-    ensure_directory(Path(template_values["agent_session_dir"]))
+    agent_session_dir = Path(template_values["agent_session_dir"])
+    ensure_directory(agent_session_dir)
+    agent_session_before = _snapshot_agent_session_files(agent_session_dir)
     rendered_command = _render_agent_command(agent_command, template_values)
     _write_text(task_run_dir / "agent_command.txt", rendered_command + "\n")
 
@@ -1296,6 +1359,13 @@ def _run_one_benchmark_agent_task(
                 f"{timeout_seconds} seconds\n"
             )
     walltime = round(float(time.monotonic() - started_wall), 6)
+    agent_session_transcripts = _copy_agent_session_files(
+        session_dir=agent_session_dir,
+        task_run_dir=task_run_dir,
+        before=agent_session_before,
+        run_id=run_id,
+        task_id=task_id,
+    )
 
     if evaluator_submission.exists():
         shutil.rmtree(evaluator_submission)
@@ -1320,6 +1390,8 @@ def _run_one_benchmark_agent_task(
     }
     if timed_out:
         agent_record["status"] = "timeout"
+    if agent_session_transcripts:
+        agent_record["agent_session_transcripts"] = agent_session_transcripts
     harness_payload = {
         "schema_version": "1.0",
         "run_id": run_id,
@@ -1349,6 +1421,8 @@ def _run_one_benchmark_agent_task(
             "exit_code": exit_code,
             "walltime_seconds": walltime,
             "timed_out": timed_out,
+            "agent_session_dir": str(agent_session_dir),
+            "agent_session_transcripts": agent_session_transcripts,
             "stdout": str(stdout_path),
             "stderr": str(stderr_path),
             "harness_record_file": str(harness_record_path),
@@ -1369,6 +1443,8 @@ def _run_one_benchmark_agent_task(
         "exit_code": exit_code,
         "walltime_seconds": walltime,
         "timed_out": timed_out,
+        "agent_session_dir": str(agent_session_dir),
+        "agent_session_transcripts": agent_session_transcripts,
         "stdout": str(stdout_path),
         "stderr": str(stderr_path),
         "solver_task_dir": str(solver_task_dir),

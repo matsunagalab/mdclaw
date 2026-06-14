@@ -143,7 +143,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--submission-dir", required=True)
 parser.add_argument("--run-id", required=True)
 parser.add_argument("--task-id", required=True)
+parser.add_argument("--session-dir", required=True)
 args = parser.parse_args()
+
+session_file = Path(args.session_dir) / f"{args.run_id}-{args.task_id}.jsonl"
+session_file.parent.mkdir(parents=True, exist_ok=True)
+session_file.write_text('{"event":"fake-agent-started"}\\n')
 
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
 for stage in ("source", "prep", "topo", "min"):
@@ -173,7 +178,8 @@ _fake_submissions.GENERATORS[args.task_id](
         f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
         "--submission-dir {{submission_dir}} "
         "--run-id {{run_id}} "
-        "--task-id {{task_id}}"
+        "--task-id {{task_id}} "
+        "--session-dir {{agent_session_dir}}"
     )
 
     result = benchmark_run.run_benchmark_agent(
@@ -215,6 +221,10 @@ _fake_submissions.GENERATORS[args.task_id](
     agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
     assert agent_run["agent_model"] == "test-provider/test-model"
     assert agent_run["solver_context"]["skill_usage"] == "none"
+    assert agent_run["agent_session_transcripts"]
+    copied_session = Path(agent_run["agent_session_transcripts"][0]["copy"])
+    assert copied_session.is_file()
+    assert "fake-agent-started" in copied_session.read_text()
     run_config = json.loads((run_dir / "run_config.json").read_text())
     assert run_config["agent_model"] == "test-provider/test-model"
     assert run_config["model"]["name"] == "test-provider/test-model"
@@ -232,6 +242,96 @@ _fake_submissions.GENERATORS[args.task_id](
     assert solver_instruction["stage_recording"]["wrapper"].endswith("record_stage.py")
     assert solver_instruction["mdclaw_cli"]["allowed"] is False
     assert solver_instruction["submission_dir"].endswith("/submission")
+
+
+def test_run_benchmark_agent_renders_paths_valid_from_solver_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    fake_agent = tmp_path / "fake_agent_prompt_paths.py"
+    fake_agent.write_text(
+        """
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--agent-prompt", required=True)
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+agent_prompt = Path(args.agent_prompt)
+prompt_text = agent_prompt.read_text()
+instruction_path = prompt_text.split(
+    "Run the task described by this agent-safe instruction file:\\n\\n", 1
+)[1].split("\\n\\n", 1)[0].strip()
+instruction = json.loads(Path(instruction_path).read_text())
+assert Path(instruction["agent_prompt"]).read_text() == prompt_text
+
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [
+            sys.executable,
+            stage_wrapper,
+            "--stage",
+            stage,
+            "--",
+            sys.executable,
+            "-c",
+            "pass",
+        ],
+        check=True,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    monkeypatch.chdir(tmp_path)
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--agent-prompt {{agent_prompt}} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir="benchmark_runs",
+        run_id="agent_runner_relative_paths",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        agent_model="test-provider/test-model",
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    task_run_dir = (
+        tmp_path
+        / "benchmark_runs"
+        / "agent_runner_relative_paths"
+        / "tasks"
+        / TASK_ID
+    )
+    agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
+    assert str(tmp_path / "benchmark_runs" / "agent_runner_relative_paths") in (
+        agent_run["command"]
+    )
+    assert (task_run_dir / "score.json").is_file()
 
 
 def test_run_benchmark_agent_flags_mdclaw_cli_without_skill_context(
@@ -539,6 +639,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "task_instructions.json" in agent_prompt
     assert "Solve only this task." in agent_prompt
     assert "benchmark-wide solver scripts" in agent_prompt
+    assert "MDCLAW_BENCHMARK_STAGE_WRAPPER" in agent_prompt
+    assert "Do not create/edit harness_execution.json" in agent_prompt
     assert "Run IDs and directory names are labels only" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
     assert len(agent_prompt) < 1400
