@@ -77,11 +77,22 @@ fi
 
 TOOL="${1:-}"
 
-# --- Flags (--list, --version, --help) run natively ---
+# --- Flags (--list, --version, --help) ---
+# These must reflect the runtime that actually executes tools. When a container
+# runtime is selected, run them inside it so the tool list / version match what
+# will run (a host python may be missing science deps, which silently hides
+# tools whose modules fail to import). For conda/native, run them natively.
 case "$TOOL" in
     --list|--version|--help|-h)
-        PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
-            exec python3 -m mdclaw._cli "$@"
+        case "$RUNTIME" in
+            singularity|apptainer|docker)
+                : # fall through to the runtime dispatch below (run in container)
+                ;;
+            *)
+                PYTHONPATH="${PKG_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
+                    exec python3 -m mdclaw._cli "$@"
+                ;;
+        esac
         ;;
 esac
 
