@@ -54,32 +54,17 @@ _load_dataset_metadata = load_dataset_metadata
 _benchmark_version_for_dataset = benchmark_version_for_dataset
 _list_task_ids = list_task_ids
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_MD_BENCHMARK_SKILL_DIR = _REPO_ROOT / "skills" / "md-benchmark"
-_MD_BENCHMARK_SKILL_FILE = _MD_BENCHMARK_SKILL_DIR / "SKILL.md"
 
 
 _AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
-    "pi-mdclaw-skill": {
-        "command": (
-            "pi --approve --model {{agent_model}} "
-            "--skill {{mdclaw_benchmark_skill}} "
-            "--session-dir {{agent_session_dir}} "
-            "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
-        ),
-        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
-        "model_provider": "deepseek-cloudflare",
-        "solver_context": "skill-system",
-        "tooling_condition": "mdclaw-skills+cli",
-        "description": "Pi with the MD benchmark skill loaded explicitly.",
-    },
     "pi-user": {
         "command": (
             "pi --approve --model {{agent_model}} "
             "--session-dir {{agent_session_dir}} "
             "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
         ),
-        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
-        "model_provider": "deepseek-cloudflare",
+        "default_model": "spark1-vllm/deepseek-v4-flash",
+        "model_provider": "spark1-vllm",
         "solver_context": "unknown",
         "tooling_condition": "unknown",
         "description": "Pi with normal user-wide discovery, but isolated sessions.",
@@ -90,24 +75,11 @@ _AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
             "--session-dir {{agent_session_dir}} "
             "--session-id {{run_id}}-{{task_id}} -p @{{agent_prompt}}"
         ),
-        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
-        "model_provider": "deepseek-cloudflare",
+        "default_model": "spark1-vllm/deepseek-v4-flash",
+        "model_provider": "spark1-vllm",
         "solver_context": "none",
         "tooling_condition": "mdclaw-free",
         "description": "Pi with skill discovery disabled.",
-    },
-    "claude-code-mdclaw-skill": {
-        "command": (
-            'claude --no-session-persistence --permission-mode bypassPermissions '
-            "--model {{agent_model}} "
-            '--append-system-prompt "$(cat {{mdclaw_benchmark_skill_md}})" '
-            '-p "$(cat {{agent_prompt}})"'
-        ),
-        "default_model": "sonnet",
-        "model_provider": "anthropic",
-        "solver_context": "skill-text-injected",
-        "tooling_condition": "mdclaw-skills+cli",
-        "description": "Claude Code with approval bypass and MD benchmark skill text.",
     },
     "claude-code-plain": {
         "command": (
@@ -120,20 +92,6 @@ _AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
         "solver_context": "none",
         "tooling_condition": "unknown",
         "description": "Claude Code with approval bypass and no injected skill text.",
-    },
-    "codex-mdclaw-skill": {
-        "command": (
-            'codex exec -C {{solver_workspace}} '
-            "--model {{agent_model}} "
-            '--dangerously-bypass-approvals-and-sandbox -- '
-            '"$(cat {{mdclaw_benchmark_skill_md}}; printf "\\n\\n"; '
-            'cat {{agent_prompt}})"'
-        ),
-        "default_model": "gpt-5.4-mini",
-        "model_provider": "openai",
-        "solver_context": "skill-text-injected",
-        "tooling_condition": "mdclaw-skills+cli",
-        "description": "Codex CLI with approval bypass and MD benchmark skill text.",
     },
     "codex-plain": {
         "command": (
@@ -152,17 +110,17 @@ _AGENT_COMMAND_PROFILES: dict[str, dict[str, str]] = {
 
 _AGENT_PROFILE_ALIASES = {
     "auto": "auto",
-    "pi": "pi-mdclaw-skill",
-    "claude": "claude-code-mdclaw-skill",
-    "claude-code": "claude-code-mdclaw-skill",
-    "claudecode": "claude-code-mdclaw-skill",
-    "codex": "codex-mdclaw-skill",
+    "pi": "pi-plain",
+    "claude": "claude-code-plain",
+    "claude-code": "claude-code-plain",
+    "claudecode": "claude-code-plain",
+    "codex": "codex-plain",
 }
 
 _AGENT_DEFAULT_MODELS = {
     "pi": {
-        "default_model": "deepseek-cloudflare/deepseek-v4-flash",
-        "model_provider": "deepseek-cloudflare",
+        "default_model": "spark1-vllm/deepseek-v4-flash",
+        "model_provider": "spark1-vllm",
     },
     "claude": {"default_model": "sonnet", "model_provider": "anthropic"},
     "claude-code": {"default_model": "sonnet", "model_provider": "anthropic"},
@@ -308,10 +266,156 @@ def _copy_agent_session_files(
     return copied
 
 
+def _skill_source_entries(source: Path) -> list[tuple[str, Path]]:
+    """Return skill directories from a source root or single skill directory."""
+    if (source / "SKILL.md").is_file():
+        return [(source.name, source)]
+    entries: list[tuple[str, Path]] = []
+    if not source.is_dir():
+        return entries
+    for child in sorted(source.iterdir()):
+        if child.is_dir() and (child / "SKILL.md").is_file():
+            entries.append((child.name, child))
+    return entries
+
+
+def _skill_support_entries(
+    source: Path,
+    skill_entries: list[tuple[str, Path]],
+) -> list[tuple[str, Path]]:
+    """Return non-skill support directories that skill files may reference."""
+    roots: list[Path] = []
+    if (source / "SKILL.md").is_file():
+        roots.append(source.parent)
+    elif source.is_dir():
+        roots.append(source)
+
+    skill_names = {name for name, _ in skill_entries}
+    support: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for root in roots:
+        for child in sorted(root.iterdir()):
+            if not child.is_dir():
+                continue
+            if child.name in skill_names or (child / "SKILL.md").is_file():
+                continue
+            if child.name in seen:
+                continue
+            support.append((child.name, child))
+            seen.add(child.name)
+    return support
+
+
+def _copy_skill_entries(
+    entries: list[tuple[str, Path]],
+    dest_root: Path,
+    *,
+    support_entries: Optional[list[tuple[str, Path]]] = None,
+) -> list[str]:
+    """Copy skills into one discovery root and return installed SKILL.md paths."""
+    if dest_root.exists():
+        shutil.rmtree(dest_root)
+    ensure_directory(dest_root)
+    installed: list[str] = []
+    for name, source in support_entries or []:
+        dest = dest_root / name
+        shutil.copytree(
+            source,
+            dest,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+    for name, source in entries:
+        dest = dest_root / name
+        shutil.copytree(
+            source,
+            dest,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
+        installed.append(str(dest / "SKILL.md"))
+    return installed
+
+
+def _install_agent_skills(
+    *,
+    solver_workspace: Path,
+    agent_skills_dir: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """Install explicit skills into the solver workspace for common agents."""
+    if not agent_skills_dir:
+        return None
+    source = Path(agent_skills_dir).expanduser().resolve()
+    entries = _skill_source_entries(source)
+    if not entries:
+        raise ValueError(
+            "agent_skills_dir must be a skills root containing */SKILL.md "
+            f"or a single skill directory with SKILL.md: {source}"
+        )
+    support_entries = _skill_support_entries(source, entries)
+
+    install_roots = {
+        "portable": solver_workspace / "skills",
+        "generic_agents": solver_workspace / ".agents" / "skills",
+        "claude_code": solver_workspace / ".claude" / "skills",
+        "codex": solver_workspace / ".codex" / "skills",
+    }
+    installed_files: list[str] = []
+    for dest_root in install_roots.values():
+        installed_files.extend(
+            _copy_skill_entries(
+                entries,
+                dest_root,
+                support_entries=support_entries,
+            )
+        )
+
+    package_json = solver_workspace / "package.json"
+    package_payload: dict[str, Any] = {}
+    if package_json.is_file():
+        try:
+            parsed = json.loads(package_json.read_text())
+            if isinstance(parsed, dict):
+                package_payload = parsed
+        except json.JSONDecodeError:
+            package_payload = {}
+    package_payload.setdefault("name", "mdclaw-benchmark-agent-workspace")
+    package_payload.setdefault("private", True)
+    pi_payload = package_payload.setdefault("pi", {})
+    if not isinstance(pi_payload, dict):
+        pi_payload = {}
+        package_payload["pi"] = pi_payload
+    pi_skills = pi_payload.setdefault("skills", [])
+    if not isinstance(pi_skills, list):
+        pi_skills = []
+        pi_payload["skills"] = pi_skills
+    if "./skills" not in pi_skills:
+        pi_skills.append("./skills")
+    _write_json(package_json, package_payload)
+
+    return {
+        "source": str(source),
+        "skill_names": [name for name, _ in entries],
+        "support_dirs": [name for name, _ in support_entries],
+        "skill_files": installed_files,
+        "portable_skills_dir": str(install_roots["portable"]),
+        "discovery_dirs": {
+            key: str(value)
+            for key, value in install_roots.items()
+            if key != "portable"
+        },
+        "package_json": str(package_json),
+        "agent_support": {
+            "pi": "package.json pi.skills -> ./skills",
+            "claude_code": ".claude/skills",
+            "codex": ".agents/skills and .codex/skills",
+        },
+    }
+
+
 def _solver_context_record(
     *,
     agent_command: str = "",
     solver_context: str = "auto",
+    agent_skills: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Return a harness-owned skill/prompt context record for comparison."""
     requested = (solver_context or "auto").strip().lower()
@@ -323,16 +427,23 @@ def _solver_context_record(
     notes = ""
 
     command = agent_command or ""
+    if agent_skills:
+        if requested in {"auto", "unknown", "", "none"}:
+            usage = "skill-system"
+            source = "harness-installed"
+        skill_names.extend(str(name) for name in agent_skills.get("skill_names", []))
+        skill_files.extend(str(path) for path in agent_skills.get("skill_files", []))
+        notes = "agent skills installed into solver workspace discovery directories"
+
     if requested == "auto":
         source = "harness-inferred"
-        if "--skill" in command:
+        if agent_skills:
+            usage = "skill-system"
+            source = "harness-installed"
+        elif "--skill" in command:
             usage = "skill-system"
             notes = "agent command contains --skill"
-        elif (
-            "SKILL.md" in command
-            or "mdclaw_benchmark_skill_md" in command
-            or "append-system-prompt" in command
-        ):
+        elif "SKILL.md" in command or "append-system-prompt" in command:
             usage = "skill-text-injected"
             prompt_includes_skill_text = True
             notes = "agent command appears to inject skill text"
@@ -340,7 +451,7 @@ def _solver_context_record(
             usage = "none"
             notes = "no skill system or skill text injection detected"
 
-    if "SKILL.md" in command or "mdclaw_benchmark_skill_md" in command:
+    if "SKILL.md" in command:
         prompt_includes_skill_text = True
     try:
         parts = shlex.split(command, posix=True)
@@ -553,33 +664,182 @@ sys.exit(exit_code)
     path.chmod(0o755)
 
 
-def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
+def _normalize_mdclaw_runtime(mdclaw_runtime: str) -> str:
+    """Normalize the benchmark-pinned MDClaw runtime selector."""
+    value = (mdclaw_runtime or "auto").strip().lower()
+    aliases = {
+        "cond": "conda",
+        "singularity": "sif",
+        "apptainer": "sif",
+        "container": "sif",
+    }
+    value = aliases.get(value, value)
+    valid = {"auto", "conda", "sif", "docker"}
+    if value not in valid:
+        raise ValueError(
+            "mdclaw_runtime must be one of: auto, conda, sif, docker "
+            f"(got {mdclaw_runtime!r})"
+        )
+    return value
+
+
+def _write_mdclaw_runtime_wrapper(path: Path, *, mdclaw_runtime: str) -> None:
+    """Write a task-local ``mdclaw`` wrapper pinned to one runtime family."""
+    runtime = _normalize_mdclaw_runtime(mdclaw_runtime)
+    repo_root = shlex.quote(str(_REPO_ROOT))
+    wrapper = f'''#!/usr/bin/env bash
+set -euo pipefail
+
+RUNTIME={shlex.quote(runtime)}
+REPO_ROOT={repo_root}
+
+if [[ "$RUNTIME" == "auto" ]]; then
+  ENV_NAME="${{MDCLAW_CONDA_ENV:-mdclaw}}"
+  HAS_SIF=0
+  if [[ -n "${{MDCLAW_SIF:-}}" && -f "${{MDCLAW_SIF}}" ]]; then
+    HAS_SIF=1
+  elif [[ -f "$REPO_ROOT/mdclaw.sif" ]]; then
+    HAS_SIF=1
+  fi
+
+  if command -v conda >/dev/null 2>&1 \
+      && conda env list | awk '{{print $1}}' | grep -qx "$ENV_NAME"; then
+    RUNTIME=conda
+  elif [[ "$HAS_SIF" == "1" ]] \
+      && {{ command -v singularity >/dev/null 2>&1 \
+        || command -v apptainer >/dev/null 2>&1; }}; then
+    RUNTIME=sif
+  elif command -v docker >/dev/null 2>&1; then
+    RUNTIME=docker
+  else
+    echo "Could not auto-select MDClaw runtime: conda, SIF, or docker missing." >&2
+    exit 127
+  fi
+fi
+
+case "$RUNTIME" in
+  conda)
+    command -v conda >/dev/null 2>&1 || {{
+      echo "MDClaw runtime conda requested, but conda was not found." >&2
+      exit 127
+    }}
+    ENV_NAME="${{MDCLAW_CONDA_ENV:-mdclaw}}"
+    export PYTHONPATH="$REPO_ROOT${{PYTHONPATH:+:$PYTHONPATH}}"
+    exec conda run --no-capture-output -n "$ENV_NAME" python -m mdclaw._cli "$@"
+    ;;
+  sif)
+    SIF_PATH="${{MDCLAW_SIF:-}}"
+    if [[ -z "$SIF_PATH" ]]; then
+      SIF_PATH="$REPO_ROOT/mdclaw.sif"
+    fi
+    if [[ ! -f "$SIF_PATH" ]]; then
+      echo "MDClaw runtime SIF requested, but no SIF was found." >&2
+      exit 127
+    fi
+    if command -v singularity >/dev/null 2>&1; then
+      RUNNER=singularity
+    elif command -v apptainer >/dev/null 2>&1; then
+      RUNNER=apptainer
+    else
+      echo "MDClaw runtime SIF requested, but singularity/apptainer is missing." >&2
+      exit 127
+    fi
+    NV_FLAG=()
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      NV_FLAG=(--nv)
+    fi
+    exec "$RUNNER" exec "${{NV_FLAG[@]}}" "$SIF_PATH" mdclaw "$@"
+    ;;
+  docker)
+    command -v docker >/dev/null 2>&1 || {{
+      echo "MDClaw runtime docker requested, but docker was not found." >&2
+      exit 127
+    }}
+    IMAGE="${{MDCLAW_DOCKER_IMAGE:-ghcr.io/matsunagalab/mdclaw:latest}}"
+    GPU_FLAGS=()
+    if command -v nvidia-smi >/dev/null 2>&1; then
+      GPU_FLAGS=(--gpus all)
+    fi
+    USER_FLAGS=()
+    if [[ "$(uname -s)" == "Linux" ]]; then
+      USER_FLAGS=(-u "$(id -u):$(id -g)")
+    fi
+    exec docker run --rm "${{GPU_FLAGS[@]}}" "${{USER_FLAGS[@]}}" \
+      -v "$PWD:$PWD" -w "$PWD" "$IMAGE" mdclaw "$@"
+    ;;
+  *)
+    echo "Unsupported MDClaw runtime: $RUNTIME" >&2
+    exit 2
+    ;;
+esac
+'''
+    ensure_directory(path.parent)
+    _write_text(path, wrapper)
+    path.chmod(0o755)
+
+
+def _mdclaw_cli_instruction(
+    *,
+    mdclaw_runtime: str,
+    mdclaw_wrapper_path: Path,
+    allowed: bool,
+    policy: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Agent-visible MDClaw CLI contract for one task."""
+    return {
+        "allowed": allowed,
+        "policy": policy,
+        "reason": reason,
+        "runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
+        "runtime_options": ["conda", "sif", "docker"],
+        "command": "mdclaw",
+        "wrapper": str(mdclaw_wrapper_path),
+        "path_prepend": str(mdclaw_wrapper_path.parent),
+        "usage": (
+            "Use bare `mdclaw ...` via this wrapper. Do not prefix commands "
+            "with conda, singularity, apptainer, or docker."
+        ),
+    }
+
+
+def _task_agent_prompt(
+    task_id: str,
+    instruction_file: Path,
+    *,
+    skills_available: bool = False,
+) -> str:
     """Short prompt intended for the evaluated task agent."""
+    skill_line = (
+        "Agent skills may be available; artifacts and execution evidence are scored."
+        if skills_available
+        else (
+            "MDClaw skills are neither required nor rewarded; artifacts and "
+            "execution evidence count."
+        )
+    )
     return (
         f"# MD Benchmark Task Agent: {task_id}\n\n"
-        "Run the task described by this agent-safe instruction file:\n\n"
+        "Use this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
-        "Use an MD workflow. MDClaw skills are neither required nor "
-        "rewarded; artifacts and execution evidence are scored.\n\n"
-        "Read only JSON-named prompt_file, contract, checklist, and "
-        "submission_dir. Write outputs under submission_dir.\n\n"
+        f"Use MD. {skill_line}\n\n"
+        "Read only JSON-named prompt_file, contract, checklist, submission_dir, "
+        "work_dir, and agent_skills. Use work_dir for study/job/work files; "
+        "write only final outputs under submission_dir.\n\n"
         "Solve only this task. Do not inspect sibling task directories, "
         "categorize the suite, or write benchmark-wide solver scripts. "
         "Record task-local helper steps in provenance.command_log.\n\n"
         "Run stages with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage source -- "
         "<command>`; repeat for source/prep/topo/min. Do not create/edit "
-        "harness_execution.json/.jsonl.\n\n"
-        "Use mdclaw CLI only if mdclaw_cli.allowed.\n\n"
-        "Do not assume a specific Python environment: bare `python3` may lack "
-        "OpenMM/gemmi, and there may be no `conda` env. Run helpers in an "
-        "environment that actually provides the MD libraries you need.\n\n"
-        "With MDClaw DAG tools, do not edit node dirs, progress.json, or "
-        "node.json; retry with new nodes/tooling.\n\n"
+        "harness_execution.json.\n\n"
+        "Use mdclaw CLI only if mdclaw_cli.allowed. Call `mdclaw ...`; "
+        "the harness pins conda/SIF/docker.\n\n"
+        "With MDClaw DAG tools, do not edit node dirs, progress.json, or node.json.\n\n"
         "Run IDs and directory names are labels only; infer no shortcuts/"
         "outcomes.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
-        "truth/, or scorer/. Do not fabricate; if blocked, record "
-        "commands/blocker.\n\n"
+        "truth/, scorer/. Do not fabricate; record commands/blockers.\n\n"
+        "After packaging, do not edit manifest.json or provenance.json. "
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
 
@@ -696,7 +956,6 @@ def _operator_prompt(run_dir: Path, dataset: Path) -> str:
     """Short prompt intended for the benchmark operator, not evaluated agents."""
     return (
         "# MD Benchmark Operator\n\n"
-        "Use the md-benchmark skill.\n\n"
         f"Run every evaluated task listed in `{run_dir / 'agent_tasks.json'}`. "
         "For each task, give the evaluated agent only its `agent_prompt` file "
         "or the agent-safe files referenced from `task_instructions.json`.\n\n"
@@ -861,7 +1120,7 @@ def prepare_benchmark_run(
     backend_name: str = "mdclaw",
     backend_version: str = MDCLAW_VERSION,
     backend_container: str = "",
-    harness_name: str = "manual-mdclaw-skill",
+    harness_name: str = "manual-mdclaw",
     harness_version: str = "",
     harness_adapter: str = "md-benchmark",
     model_name: str = "cursor-agent",
@@ -872,17 +1131,23 @@ def prepare_benchmark_run(
     max_tokens_per_task: int = 0,
     max_simulation_ns: float = 0.0,
     public_package_dir: Optional[str] = None,
-    tooling_condition: str = "mdclaw-skills+cli",
+    tooling_condition: str = "unknown",
+    mdclaw_runtime: str = "auto",
 ) -> dict[str, Any]:
     """Create a benchmark run workspace plus agent-safe task package.
 
     This is the MDClaw-side convenience entry point. It preserves the
     agent-agnostic benchmark boundary: agents get prompt/contract files and a
     submission directory, while canonical ``task.json`` remains for the scorer.
-    The default ``tooling_condition`` is ``mdclaw-skills+cli`` because this
-    helper hands the solver the MDClaw skill prompts; MDClaw-free entrants
-    should init their run with ``tooling_condition="mdclaw-free"`` instead.
+    The default ``tooling_condition`` is ``unknown`` because this helper only
+    creates task packages; declare ``mdclaw-cli-only``, ``mdclaw-skills+cli``,
+    or ``mdclaw-free`` only when that describes the solver run.
     """
+    try:
+        resolved_mdclaw_runtime = _normalize_mdclaw_runtime(mdclaw_runtime)
+    except ValueError as exc:
+        return {"success": False, "errors": [str(exc)], "code": "invalid_mdclaw_runtime"}
+
     if task_ids is None:
         task_ids = _list_task_ids(dataset_dir)
 
@@ -916,6 +1181,7 @@ def prepare_benchmark_run(
     cfg_path = run_dir / "run_config.json"
     cfg_payload = json.loads(cfg_path.read_text())
     cfg_payload["dataset_dir"] = str(dataset)
+    cfg_payload["mdclaw_runtime"] = resolved_mdclaw_runtime
     _write_json(cfg_path, cfg_payload)
     if public_package_dir is None:
         public_dir = run_dir / "public_tasks"
@@ -957,6 +1223,16 @@ def prepare_benchmark_run(
         harness_record_path = task_run_dir / "harness_execution.json"
         ensure_directory(task_run_dir)
         ensure_directory(task_run_dir / "submission")
+        ensure_directory(task_run_dir / "work")
+        mdclaw_wrapper_path = task_run_dir / "bin" / "mdclaw"
+        _write_mdclaw_runtime_wrapper(
+            mdclaw_wrapper_path,
+            mdclaw_runtime=resolved_mdclaw_runtime,
+        )
+        mdclaw_cli_allowed = tooling_condition in {
+            "mdclaw-skills+cli",
+            "mdclaw-cli-only",
+        }
         instruction = {
             "task_id": task_id,
             "agent_prompt": str(agent_prompt_path),
@@ -968,6 +1244,17 @@ def prepare_benchmark_run(
                 public_dir / "tasks" / task_id / "submission_checklist.md"
             ),
             "submission_dir": str(task_run_dir / "submission"),
+            "work_dir": str(task_run_dir / "work"),
+            "mdclaw_cli": _mdclaw_cli_instruction(
+                mdclaw_runtime=resolved_mdclaw_runtime,
+                mdclaw_wrapper_path=mdclaw_wrapper_path,
+                allowed=mdclaw_cli_allowed,
+                policy="manual-run",
+                reason=(
+                    "Manual benchmark preparation may use MDClaw only for "
+                    "MDClaw-enabled tooling conditions."
+                ),
+            ),
         }
         harness_instruction = {
             "task_id": task_id,
@@ -1056,6 +1343,8 @@ def run_benchmark_agent(
     tooling_condition: str = "unknown",
     solver_context: str = "auto",
     mdclaw_cli_policy: str = "forbid-without-skill",
+    mdclaw_runtime: str = "auto",
+    agent_skills_dir: Optional[str] = None,
     env: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Run an external benchmark agent and score its submission.
@@ -1075,18 +1364,27 @@ def run_benchmark_agent(
 
     If ``agent_command`` is omitted, ``agent_profile`` selects a built-in
     command template. ``auto`` maps common ``agent_name`` values such as
-    ``pi``, ``claude-code``, and ``codex`` to practical non-interactive
-    profiles that include the usual approval-bypass flags for Claude Code and
-    Codex. Use ``*-plain`` profiles for skill-free comparisons.
+    ``pi``, ``claude-code``, and ``codex`` to practical plain, non-interactive
+    profiles that read only the generated task prompt.
+
+    If ``agent_skills_dir`` is provided, its skills are copied into the solver
+    workspace under ``skills/``, ``.agents/skills/``, ``.claude/skills/``, and
+    ``.codex/skills/``; a ``package.json`` with ``pi.skills=["./skills"]`` is
+    also written. Use ``--agent-profile pi-user`` for Pi skill-system runs
+    because the default ``pi`` profile intentionally passes ``--no-skills``.
 
     ``agent_command`` is a shell template. Supported placeholders are:
     ``{{agent_prompt}}``, ``{{task_instructions}}``, ``{{prompt_file}}``,
     ``{{submission_dir}}``, ``{{solver_workspace}}``, ``{{task_id}}``,
     ``{{run_id}}``, ``{{run_dir}}``, ``{{agent_session_dir}}``,
-    ``{{agent_model}}``, ``{{repo_root}}``, ``{{mdclaw_benchmark_skill}}``, and
-    ``{{mdclaw_benchmark_skill_md}}``. Values are shell-quoted before
+    ``{{agent_model}}`` and ``{{repo_root}}``. Values are shell-quoted before
     substitution.
     """
+    try:
+        resolved_mdclaw_runtime = _normalize_mdclaw_runtime(mdclaw_runtime)
+    except ValueError as exc:
+        return {"success": False, "errors": [str(exc)], "code": "invalid_mdclaw_runtime"}
+
     try:
         agent_command, resolved_agent_profile, profile_metadata = (
             _resolve_agent_command_profile(
@@ -1176,6 +1474,21 @@ def run_benchmark_agent(
         else run_dir / "private_tasks"
     ).resolve()
     ensure_directory(solver_workspace)
+    try:
+        agent_skills = _install_agent_skills(
+            solver_workspace=solver_workspace,
+            agent_skills_dir=agent_skills_dir,
+        )
+    except ValueError as exc:
+        return {"success": False, "errors": [str(exc)], "code": "invalid_agent_skills_dir"}
+    if agent_skills:
+        solver_context_record = _solver_context_record(
+            agent_command=agent_command,
+            solver_context=solver_context,
+            agent_skills=agent_skills,
+        )
+        if tooling_condition == "unknown":
+            tooling_condition = "mdclaw-skills+cli"
 
     from mdclaw.benchmark import cli as benchmark_cli
 
@@ -1214,6 +1527,8 @@ def run_benchmark_agent(
     cfg_payload["agent_model"] = resolved_agent_model
     cfg_payload["agent_model_defaulted"] = agent_model_defaulted
     cfg_payload["agent_command_template"] = agent_command
+    cfg_payload["mdclaw_runtime"] = resolved_mdclaw_runtime
+    cfg_payload["agent_skills"] = agent_skills
     _write_json(cfg_path, cfg_payload)
     benchmark_version = _benchmark_version_for_dataset(str(dataset))
     attestation_payload = _write_attestation(
@@ -1245,6 +1560,8 @@ def run_benchmark_agent(
             env=env or {},
             solver_context=solver_context_record,
             mdclaw_cli_policy=mdclaw_cli_policy,
+            mdclaw_runtime=resolved_mdclaw_runtime,
+            agent_skills=agent_skills,
         )
         task_records.append(task_result)
         agent_tasks.append(task_result["agent_instruction"])
@@ -1320,6 +1637,7 @@ def run_benchmark_agent(
         "agent_model_defaulted": agent_model_defaulted,
         "agent_command_template": agent_command,
         "mdclaw_cli_policy": mdclaw_cli_policy,
+        "mdclaw_runtime": resolved_mdclaw_runtime,
         "task_count": len(task_records),
         "tasks": task_records,
         "score": score_result,
@@ -1346,12 +1664,16 @@ def _run_one_benchmark_agent_task(
     env: dict[str, str],
     solver_context: dict[str, Any],
     mdclaw_cli_policy: str,
+    mdclaw_runtime: str,
+    agent_skills: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     solver_task_dir = solver_workspace / "tasks" / task_id
     solver_submission = solver_task_dir / "submission"
+    solver_work_dir = solver_task_dir / "work"
     task_run_dir = run_dir / "tasks" / task_id
     evaluator_submission = task_run_dir / "submission"
     ensure_directory(solver_submission)
+    ensure_directory(solver_work_dir)
     ensure_directory(task_run_dir)
 
     task_instruction_path = solver_task_dir / "task_instructions.json"
@@ -1362,6 +1684,20 @@ def _run_one_benchmark_agent_task(
     stderr_path = task_run_dir / "agent.stderr.log"
     stage_wrapper_path = solver_task_dir / "record_stage.py"
     _write_stage_wrapper(stage_wrapper_path)
+    mdclaw_wrapper_path = solver_task_dir / "bin" / "mdclaw"
+    _write_mdclaw_runtime_wrapper(
+        mdclaw_wrapper_path,
+        mdclaw_runtime=mdclaw_runtime,
+    )
+    mdclaw_cli_allowed = (
+        mdclaw_cli_policy in {"allow", "allowed", "off", "none"}
+        or _skill_context_allows_mdclaw_cli(solver_context)
+    )
+    mdclaw_cli_reason = (
+        "MDClaw CLI should be paired with MDClaw skill context. "
+        "For skill-free runs, use direct OpenMM/PDBFixer, MDCrow, "
+        "Amber, GROMACS, or another non-MDClaw workflow."
+    )
 
     instruction = {
         "task_id": task_id,
@@ -1374,6 +1710,7 @@ def _run_one_benchmark_agent_task(
             public_dir / "tasks" / task_id / "submission_checklist.md"
         ),
         "submission_dir": str(solver_submission),
+        "work_dir": str(solver_work_dir),
         "stage_recording": {
             "wrapper": str(stage_wrapper_path),
             "usage": (
@@ -1381,21 +1718,32 @@ def _run_one_benchmark_agent_task(
                 "repeat for prep, topo, and min as applicable"
             ),
         },
-        "mdclaw_cli": {
-            "allowed": (
-                mdclaw_cli_policy in {"allow", "allowed", "off", "none"}
-                or _skill_context_allows_mdclaw_cli(solver_context)
-            ),
-            "policy": mdclaw_cli_policy,
-            "reason": (
-                "MDClaw CLI should be paired with MDClaw skill context. "
-                "For skill-free runs, use direct OpenMM/PDBFixer, MDCrow, "
-                "Amber, GROMACS, or another non-MDClaw workflow."
-            ),
-        },
+        "mdclaw_cli": _mdclaw_cli_instruction(
+            mdclaw_runtime=mdclaw_runtime,
+            mdclaw_wrapper_path=mdclaw_wrapper_path,
+            allowed=mdclaw_cli_allowed,
+            policy=mdclaw_cli_policy,
+            reason=mdclaw_cli_reason,
+        ),
     }
+    if agent_skills:
+        instruction["agent_skills"] = {
+            "portable_skills_dir": agent_skills["portable_skills_dir"],
+            "discovery_dirs": agent_skills["discovery_dirs"],
+            "package_json": agent_skills["package_json"],
+            "skill_names": agent_skills["skill_names"],
+            "support_dirs": agent_skills["support_dirs"],
+            "usage": "Skills are installed for agent discovery; do not treat them as task-specific hints.",
+        }
     _write_json(task_instruction_path, instruction)
-    _write_text(agent_prompt_path, _task_agent_prompt(task_id, task_instruction_path))
+    _write_text(
+        agent_prompt_path,
+        _task_agent_prompt(
+            task_id,
+            task_instruction_path,
+            skills_available=bool(agent_skills),
+        ),
+    )
 
     harness_instruction = {
         "task_id": task_id,
@@ -1413,6 +1761,7 @@ def _run_one_benchmark_agent_task(
         "task_instructions": task_instruction_path,
         "prompt_file": Path(instruction["prompt_file"]),
         "submission_dir": solver_submission,
+        "work_dir": solver_work_dir,
         "solver_workspace": solver_workspace,
         "task_id": task_id,
         "run_id": run_id,
@@ -1420,8 +1769,6 @@ def _run_one_benchmark_agent_task(
         "agent_session_dir": run_dir / "agent_sessions" / agent_name,
         "agent_model": agent_model,
         "repo_root": _REPO_ROOT,
-        "mdclaw_benchmark_skill": _MD_BENCHMARK_SKILL_DIR,
-        "mdclaw_benchmark_skill_md": _MD_BENCHMARK_SKILL_FILE,
     }
     agent_session_dir = Path(template_values["agent_session_dir"])
     ensure_directory(agent_session_dir)
@@ -1435,7 +1782,16 @@ def _run_one_benchmark_agent_task(
     run_env["MDCLAW_BENCHMARK_RUN_ID"] = run_id
     run_env["MDCLAW_BENCHMARK_TASK_ID"] = task_id
     run_env["MDCLAW_BENCHMARK_STAGE_WRAPPER"] = str(stage_wrapper_path)
+    run_env["MDCLAW_BENCHMARK_MDCLAW"] = str(mdclaw_wrapper_path)
+    run_env["MDCLAW_BENCHMARK_MDCLAW_RUNTIME"] = _normalize_mdclaw_runtime(
+        mdclaw_runtime
+    )
     run_env["MDCLAW_PYTHON"] = _resolve_mdclaw_python()
+    run_env["PATH"] = (
+        str(mdclaw_wrapper_path.parent)
+        + os.pathsep
+        + run_env.get("PATH", "")
+    )
 
     started_wall = time.monotonic()
     started_at = _now_utc()
@@ -1513,6 +1869,8 @@ def _run_one_benchmark_agent_task(
         "agent_model_defaulted": agent_model_defaulted,
         "solver_context": solver_context,
         "mdclaw_cli_policy": mdclaw_cli_policy,
+        "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
+        "agent_skills": agent_skills,
         "policy_violations": policy_violations,
         "records": [*records, agent_record],
     }
@@ -1527,6 +1885,8 @@ def _run_one_benchmark_agent_task(
             "agent_model_defaulted": agent_model_defaulted,
             "solver_context": solver_context,
             "mdclaw_cli_policy": mdclaw_cli_policy,
+            "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
+            "agent_skills": agent_skills,
             "policy_violations": policy_violations,
             "command": rendered_command,
             "exit_code": exit_code,
@@ -1549,6 +1909,8 @@ def _run_one_benchmark_agent_task(
         "agent_model_defaulted": agent_model_defaulted,
         "solver_context": solver_context,
         "mdclaw_cli_policy": mdclaw_cli_policy,
+        "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
+        "agent_skills": agent_skills,
         "policy_violations": policy_violations,
         "command": rendered_command,
         "exit_code": exit_code,

@@ -1796,7 +1796,7 @@ def prepare_complex(
         # Write ligand_chemistry.json to the job root for auto-detection by
         # build_amber_system. Prep owns ligand identity, coordinates,
         # protonation, charge, and chemistry provenance; topology owns
-        # geostd/GAFF force-field resolution.
+        # GAFFTemplateGenerator force-field resolution.
         ligand_chemistry = []
         if result.get("ligands"):
             ligand_chemistry = [

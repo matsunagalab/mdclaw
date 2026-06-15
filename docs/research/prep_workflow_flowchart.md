@@ -235,13 +235,9 @@ flowchart TD
   E -->|"no"| F["resolve OpenMM XML bundle"]
   E1 --> F
 
-  F --> G["geostd ligand XML lookup"]
-  G --> G1{"geostd compatible with recorded ligand charge/atom count?"}
-  G1 -->|"yes"| G2["use topology-time amber_geostd XML"]
-  G1 -->|"no or missing"| G3["GAFFTemplateGenerator"]
+  F --> G3["GAFFTemplateGenerator (GAFF2/AM1-BCC)"]
 
-  G2 --> H["Pablo load"]
-  G3 --> H
+  G3 --> H["Pablo load"]
   H --> H1["sanitize ions and Amber protonation variants for Pablo, then restore"]
   H1 --> H2["pass ligand SMILES from OpenFF Molecule records"]
 

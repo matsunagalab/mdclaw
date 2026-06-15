@@ -25,7 +25,8 @@ Usage:
         --run-id <run_id> \\
         [--force-field <name>] [--water-model <name>] \\
         [--prepared-structure prepared.pdb] \\
-        [--command-log command_log.json]
+        [--command-log command_log.json] \\
+        [--evidence-report evidence_report.json]
 """
 
 from __future__ import annotations
@@ -125,6 +126,13 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _copy_if_different(src: Path, dst: Path) -> None:
+    """Copy an artifact unless it is already at the requested destination."""
+    if src.resolve() == dst.resolve():
+        return
+    shutil.copy2(src, dst)
+
+
 def package(args: argparse.Namespace) -> int:
     sub = Path(args.submission_dir)
     system_src = Path(args.system_xml)
@@ -140,6 +148,8 @@ def package(args: argparse.Namespace) -> int:
         )
         if not path.is_file()
     ]
+    if args.evidence_report and not Path(args.evidence_report).is_file():
+        errors.append(f"--evidence-report not found: {args.evidence_report}")
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
@@ -147,9 +157,9 @@ def package(args: argparse.Namespace) -> int:
 
     topo_dir = sub / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(system_src, topo_dir / "system.xml")
-    shutil.copy2(topo_src, topo_dir / "topology.pdb")
-    shutil.copy2(state_src, topo_dir / "state.xml")
+    _copy_if_different(system_src, topo_dir / "system.xml")
+    _copy_if_different(topo_src, topo_dir / "topology.pdb")
+    _copy_if_different(state_src, topo_dir / "state.xml")
 
     minimized_pdb = sub / "minimized_structure.pdb"
     if not _export_state_pdb(topo_dir / "topology.pdb", topo_dir / "state.xml",
@@ -158,9 +168,14 @@ def package(args: argparse.Namespace) -> int:
 
     prepared_pdb = sub / "prepared_structure.pdb"
     if args.prepared_structure and Path(args.prepared_structure).is_file():
-        shutil.copy2(Path(args.prepared_structure), prepared_pdb)
+        _copy_if_different(Path(args.prepared_structure), prepared_pdb)
     else:
-        shutil.copy2(topo_src, prepared_pdb)
+        _copy_if_different(topo_src, prepared_pdb)
+
+    evidence_report_path: Optional[Path] = None
+    if args.evidence_report:
+        evidence_report_path = sub / "evidence_report.json"
+        _copy_if_different(Path(args.evidence_report), evidence_report_path)
 
     energy = _single_point_energy(topo_dir / "system.xml", topo_dir / "state.xml")
     _write_json(sub / "minimization_report.json", {
@@ -182,7 +197,7 @@ def package(args: argparse.Namespace) -> int:
         ),
     })
 
-    _write_json(sub / "manifest.json", {
+    manifest = {
         "schema_version": "1.0",
         "run_id": args.run_id,
         "task_id": args.task_id,
@@ -199,7 +214,10 @@ def package(args: argparse.Namespace) -> int:
                 "topology/state.xml",
             ],
         },
-    })
+    }
+    if evidence_report_path is not None:
+        manifest["outputs"]["evidence_report"] = "evidence_report.json"
+    _write_json(sub / "manifest.json", manifest)
 
     _write_json(sub / "metrics.json", {
         "schema_version": "1.0",
@@ -263,6 +281,7 @@ def main() -> int:
     parser.add_argument("--status", default="completed")
     parser.add_argument("--prepared-structure", default=None)
     parser.add_argument("--command-log", default=None)
+    parser.add_argument("--evidence-report", default=None)
     parser.add_argument("--force-field", default="unspecified")
     parser.add_argument("--water-model", default="unspecified")
     parser.add_argument("--agent", default="unknown")

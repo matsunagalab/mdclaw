@@ -4,16 +4,16 @@ Amber Server — curated Amber → OpenMM System builder.
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
-  ligand templates (geostd XML when available, otherwise
-  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ligand templates (``GAFFTemplateGenerator``), and emit a portable
+  ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
   ``run_equilibration`` / ``run_production``, plus a minimization report for
   benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
-  ``ligand_chemistry`` records; topology resolves geostd templates first and
-  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+  ``ligand_chemistry`` records; topology parameterizes the small molecules
+  with ``GAFFTemplateGenerator``.
 - Handling glycoproteins by converting deposited glycan residues to
   Amber/GLYCAM notation at topology time, preserving the generated bond plan,
   and completing only GLYCAM-specific hydrogens before System creation.
@@ -101,9 +101,8 @@ def _patch_ligand_molecule_internal_bonds(
     omm_topology: Any,
     ligand_records: list[Dict[str, Any]],
     ligand_molecules: list[Any],
-    geostd_residue_names: set[str],
 ) -> int:
-    """Patch non-geostd ligand bonds from OpenFF Molecule atom order."""
+    """Patch ligand bonds from OpenFF Molecule atom order."""
     bonds_added = 0
     existing_internal_bonds = {
         tuple(sorted((bond.atom1.index, bond.atom2.index)))
@@ -117,7 +116,7 @@ def _patch_ligand_molecule_internal_bonds(
     used_residue_indices: set[int] = set()
     for ligand_record, molecule in zip(ligand_records or [], ligand_molecules or []):
         residue_name = str(ligand_record.get("residue_name") or "").upper()
-        if not residue_name or residue_name in geostd_residue_names:
+        if not residue_name:
             continue
         try:
             molecule_atom_count = int(molecule.n_atoms)

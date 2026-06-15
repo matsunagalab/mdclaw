@@ -355,3 +355,24 @@ def test_split_molecules_auto_includes_requested_ligand_chain(
     assert len(r["ligand_files"]) == 1
     assert r["selection_adjustments"][0]["code"] == "ligand_chain_auto_included"
     assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]
+
+
+def test_split_molecules_rejects_bare_ligand_residue_name(
+    cif_protein_a_ligand_c_auth_a,
+    tmp_path,
+):
+    """A residue name is not a stable ligand instance selector."""
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ligand_c_auth_a,
+        output_dir=str(tmp_path / "out_bad_ligand_id"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        include_ligand_ids=["AP5"],
+    )
+    assert r["success"] is False
+    assert r["code"] == "requested_ligand_ids_not_found"
+    assert r["ligand_selection"]["missing_ligand_ids"] == ["AP5"]
+    assert r["ligand_selection"]["available_ligand_ids"] == ["A:AP5:215"]
+    assert "A:AP5:215" in r["hints"][-1]

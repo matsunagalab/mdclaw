@@ -669,6 +669,13 @@ def export_benchmark_private_package(
     }
 
 
+def _copy_if_different(src: Path, dst: Path) -> None:
+    """Copy an artifact unless it is already at the requested destination."""
+    if src.resolve() == dst.resolve():
+        return
+    shutil.copy2(src, dst)
+
+
 def _single_point_energy_kj_mol(system_xml: Path, state_xml: Path) -> dict[str, Any]:
     """Compute one potential energy for an OpenMM system + serialized state.
 
@@ -741,6 +748,7 @@ def package_openmm_submission(
     run_id: str = "",
     status: str = "completed",
     prepared_structure_file: Optional[str] = None,
+    evidence_report_file: Optional[str] = None,
     command_log_file: Optional[str] = None,
     force_field: str = "unspecified",
     water_model: str = "unspecified",
@@ -759,6 +767,11 @@ def package_openmm_submission(
     measures a single real potential energy to fill ``minimization_report.json``
     honestly, and scaffolds ``manifest.json`` / ``metrics.json`` /
     ``provenance.json``.
+
+    If an optional evidence report is desired, pass it via
+    ``evidence_report_file`` so the packager can update ``manifest.json`` in
+    one pass. Do not hand-edit ``manifest.json`` or ``provenance.json`` after
+    this command; provenance hashes are checked by the scorer.
 
     Hard rule (fairness): it never *chooses* force field, water model, chains,
     ions, or mutations. Those come from the agent's own output and are
@@ -783,15 +796,17 @@ def package_openmm_submission(
     ):
         if not path.is_file():
             errors.append(f"{label} not found: {path}")
+    if evidence_report_file and not Path(evidence_report_file).is_file():
+        errors.append(f"evidence_report_file not found: {evidence_report_file}")
     if errors:
         return {"success": False, "submission_dir": str(sub), "errors": errors}
 
     ensure_directory(sub)
     topo_dir = sub / "topology"
     ensure_directory(topo_dir)
-    shutil.copy2(system_src, topo_dir / "system.xml")
-    shutil.copy2(topo_src, topo_dir / "topology.pdb")
-    shutil.copy2(state_src, topo_dir / "state.xml")
+    _copy_if_different(system_src, topo_dir / "system.xml")
+    _copy_if_different(topo_src, topo_dir / "topology.pdb")
+    _copy_if_different(state_src, topo_dir / "state.xml")
 
     minimized_pdb = sub / "minimized_structure.pdb"
     export = export_state_pdb(
@@ -808,12 +823,17 @@ def package_openmm_submission(
 
     prepared_pdb = sub / "prepared_structure.pdb"
     if prepared_structure_file and Path(prepared_structure_file).is_file():
-        shutil.copy2(Path(prepared_structure_file), prepared_pdb)
+        _copy_if_different(Path(prepared_structure_file), prepared_pdb)
     else:
         # No separate pre-minimization structure supplied: use the topology
         # reference as the prepared structure. This does not invent chemistry;
         # it reuses the agent's own topology atoms/residues.
-        shutil.copy2(topo_src, prepared_pdb)
+        _copy_if_different(topo_src, prepared_pdb)
+
+    evidence_report_path: Optional[Path] = None
+    if evidence_report_file:
+        evidence_report_path = sub / "evidence_report.json"
+        _copy_if_different(Path(evidence_report_file), evidence_report_path)
 
     energy = _single_point_energy_kj_mol(
         topo_dir / "system.xml", topo_dir / "state.xml"
@@ -857,6 +877,8 @@ def package_openmm_submission(
             ],
         },
     }
+    if evidence_report_path is not None:
+        manifest["outputs"]["evidence_report"] = "evidence_report.json"
     (sub / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
@@ -938,7 +960,8 @@ def package_openmm_submission(
             str(topo_dir / "system.xml"),
             str(topo_dir / "topology.pdb"),
             str(topo_dir / "state.xml"),
-        ],
+        ]
+        + ([str(evidence_report_path)] if evidence_report_path is not None else []),
         "energy_kj_mol": energy["energy_kj_mol"],
         "warnings": warnings,
         "errors": errors,

@@ -335,8 +335,8 @@ Detailed node layout, artifact names, study directories, and invariants live in
 - Explicit solvent setup, defaulting to OPC, 15 A buffer, and 0.15 M salt.
 - HMR production runs with 4 fs timestep by default.
 - Standard DNA/RNA through OL15/OL3 XMLs.
-- Ligand chemistry preparation with topology-time Amber geostd or
-  OpenMM/openmmforcefields GAFF handling where supported.
+- Ligand chemistry preparation with openmmforcefields
+  `GAFFTemplateGenerator` (GAFF2/AM1-BCC).
 - Branching workflows for mutations, supported PTMs, membrane embedding,
   alternate equilibration protocols, and production variants.
 - SLURM submission and restart/extension workflows through `hpc-run`.
@@ -362,7 +362,7 @@ Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
 submitted artifacts.
 
-With the `md-benchmark` skill, user-facing benchmark prompts should stay short:
+User-facing benchmark requests should stay short:
 
 ```text
 MDPrepBenchを run_id=prep_full_run で実行して評価して
@@ -372,9 +372,9 @@ MDPrepBenchを run_id=prep_full_run で実行して評価して
 MDPrepBenchの P11_prep_site_protonation_t4l_glu11 だけを実行して評価して
 ```
 
-The skill prepares the run, executes each task through the generated
-`agent_prompt.md`, and scores the finished submissions with the canonical
-scorer.
+Use `mdclaw run_benchmark_agent` for automated agents, or
+`mdclaw prepare_benchmark_run` to create agent-safe task packages and score the
+finished submissions separately with the canonical scorer.
 
 ### MDPrepBench
 

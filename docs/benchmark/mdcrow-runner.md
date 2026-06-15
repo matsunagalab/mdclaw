@@ -81,7 +81,8 @@ mdclaw package_openmm_submission \
   --run-id 20260613_mdcrow_prep \
   --force-field <ff-mdcrow-used-or-omit> \
   --water-model <water-model-or-omit> \
-  --command-log-file mdcrow_command_log.json
+  --command-log-file mdcrow_command_log.json \
+  --evidence-report-file evidence_report.json
 ```
 
 - **Standalone no-MDClaw packager** (imports only stdlib + OpenMM, for a fully
@@ -94,7 +95,8 @@ python benchmarks/tools/package_submission.py \
   --system-xml system.xml \
   --topology-pdb topology.pdb \
   --state-xml state.xml \
-  --run-id 20260613_mdcrow_prep
+  --run-id 20260613_mdcrow_prep \
+  --evidence-report evidence_report.json
 ```
 
 Both write `manifest.json`, `metrics.json`, `provenance.json`,
@@ -103,6 +105,9 @@ Both write `manifest.json`, `metrics.json`, `provenance.json`,
 field, water model, chains, ions, or mutations: anything the agent did not
 declare is recorded as `"unspecified"` and recomputed from the artifact at
 scoring time.
+
+If the task needs an `evidence_report.json`, pass it to the packager. Do not
+hand-edit `manifest.json` or `provenance.json` after packaging.
 
 Provide the agent's real execution steps via `--command-log-file` (a JSON list,
 or an object with a `command_log` list). Without it, the scorer's

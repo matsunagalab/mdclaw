@@ -21,10 +21,10 @@ export MDCLAW_DEFAULT_TIMEOUT=300
 export MDCLAW_SOLVATION_TIMEOUT=7200
 export MDCLAW_MEMBRANE_TIMEOUT=7200
 export MDCLAW_AMBER_TIMEOUT=3600
+export MDCLAW_CHARGE_FIT_TIMEOUT=1800
 export MDCLAW_MD_SIMULATION_TIMEOUT=3600
 export MDCLAW_VISUALIZATION_TIMEOUT=300
 export MDCLAW_LOG_LEVEL=WARNING
-export MDCLAW_GEOSTD_DIR="/path/to/amber_geostd"
 export MDCLAW_CACHE_DIR="$HOME/.cache/mdclaw"
 export MDCLAW_SLURM_TIMEOUT=120
 export MDCLAW_MODULE_LOADS="cuda/12.0 amber/24"
@@ -37,9 +37,18 @@ Notes:
 - `MDCLAW_AMBER_TIMEOUT` controls the `build_amber_system` wall-time budget for
   the openmmforcefields `SystemGenerator` build + initial `LocalEnergyMinimizer`
   pass (no tleap is invoked); raise it for very large fusions and glycoproteins.
-- `MDCLAW_GEOSTD_DIR` optionally points to an Amber `amber_geostd` directory.
-  If unset, topology generation checks `$AMBERHOME/dat/amber_geostd`, then
-  `$MDCLAW_CACHE_DIR/amber_geostd`.
+- `MDCLAW_CHARGE_FIT_TIMEOUT` bounds the in-process ligand charge-fitting step
+  (antechamber/sqm AM1-BCC, triggered lazily inside `SystemGenerator`
+  `create_system` when `GAFFTemplateGenerator` parameterizes a small molecule).
+  A large, highly charged ligand such as AP5 can keep sqm busy for many
+  minutes. The value has a hard **floor of 1800 s**: it may be *raised* for an
+  exceptionally large ligand but is silently *clamped up* to the floor if set
+  lower. This is deliberate — an agent driving the CLI cannot shorten the
+  charge-fitting budget and induce a spurious `openmmforcefields_build_timeout`.
+  There is no CLI/function argument for it, only this floored env override. On
+  expiry the build fails with `code: openmmforcefields_build_timeout`; the
+  documented recovery is to re-run the same build node (sqm timing varies) or
+  raise this variable — never to hand-roll a custom build script.
 - `MDCLAW_MODXNA_DIR` is a legacy/experimental modXNA hook only. Modified
   DNA/RNA is not supported by the standard MD-ready topology path.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.

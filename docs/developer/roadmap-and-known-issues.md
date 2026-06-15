@@ -37,9 +37,8 @@ real contract violation.
 ### Ligand Chemistry Handoff
 
 The public ligand contract is `ligand_chemistry`: prep records
-SDF/SMILES/charge/provenance, and `build_amber_system` resolves the actual
-topology-time path. Compatible Amber geostd templates are used when available;
-otherwise OpenFF Molecules are passed to `GAFFTemplateGenerator`.
+SDF/SMILES/charge/provenance, and `build_amber_system` passes OpenFF Molecules
+to `GAFFTemplateGenerator` (GAFF2/AM1-BCC).
 
 ## Source-Bundle DAG Principle
 

@@ -29,10 +29,8 @@ mdclaw run_benchmark_agent \
 
 The same runner works for Claude Code and Codex by changing only
 `--agent-name` to `claude-code` or `codex`. The built-in profiles include the
-usual non-interactive approval-bypass flags, inject the MD benchmark skill for
-the reference condition, and keep Pi sessions isolated under the run directory.
-Use `--agent-profile codex-plain`, `claude-code-plain`, or `pi-plain` for
-skill-free checks, `--agent-profile pi-user` to let Pi use normal user-wide
+usual non-interactive approval-bypass flags and keep Pi sessions isolated under
+the run directory. Use `--agent-profile pi-user` to let Pi use normal user-wide
 discovery, or `--agent-command` for a fully custom template.
 
 The automated runner defaults to 30 minutes per task. Increase
@@ -40,7 +38,7 @@ The automated runner defaults to 30 minutes per task. Increase
 runs.
 
 The built-in profiles pass an explicit model flag by default. The defaults are
-`deepseek-cloudflare/deepseek-v4-flash` for Pi, `sonnet` for Claude Code, and
+`spark1-vllm/deepseek-v4-flash` for Pi, `sonnet` for Claude Code, and
 `gpt-5.4-mini` for Codex. Use `--agent-model <model>` to override the model for
 that run. Custom `--agent-command` templates can include `{{agent_model}}` to
 receive the same resolved value.
@@ -50,10 +48,11 @@ commands become measured `harness_execution.json` records. Agents that never
 invoke the MDClaw CLI need their own adapter or packager step before strict
 stage-level provenance can pass.
 
-The runner does not require MDClaw skills and does not award or deduct points
-based on them. Use `--tooling-condition mdclaw-free`, `mdclaw-cli-only`, or
-`mdclaw-skills+cli` only to describe the solver condition for later comparison;
-scoring is based on artifacts, metrics, and execution evidence.
+The runner does not inject extra solver instructions and does not award or
+deduct points based on skill visibility. Use `--tooling-condition
+mdclaw-free`, `mdclaw-cli-only`, or `mdclaw-skills+cli` only to describe the
+solver condition for later comparison; scoring is based on artifacts, metrics,
+and execution evidence.
 
 To compare skill-assisted and skill-free runs, use the harness-owned
 `solver_context` field in `run_config.json`, `attestation.json`,
@@ -61,6 +60,12 @@ To compare skill-assisted and skill-free runs, use the harness-owned
 runner exposed no skill context, a real agent skill system, or injected skill
 text into the prompt. Submitted `provenance.json` may repeat that declaration,
 but it is not trusted as the source of truth.
+Use `--agent-skills-dir skills` when the automated runner should expose the
+MDClaw skills through the agent's normal discovery mechanism. The runner copies
+the source into `skills/`, `.agents/skills/`, `.claude/skills/`,
+`.codex/skills/`, and writes `package.json` for Pi. For Pi, use
+`--agent-profile pi-user`; the default `pi` profile is intentionally
+skill-free and passes `--no-skills`.
 By default, the runner flags MDClaw CLI use without MDClaw skill context as a
 run-condition violation. That makes the standard comparison clean:
 `mdclaw-free` means no MDClaw CLI, while `mdclaw-skills+cli` means both are
@@ -286,6 +291,8 @@ files, and your `submission/` files.
   agent's own OpenMM System with `mdclaw package_openmm_submission` or the
   standalone `benchmarks/tools/package_submission.py`; see
   `docs/benchmark/mdcrow-runner.md` and `docs/benchmark/fairness-protocol.md`.
+  Pass optional `evidence_report.json` through the packager instead of editing
+  `manifest.json` or `provenance.json` after packaging.
 
 For leaderboard-style runs, JSON claims are never enough when a task asks for
 MD preparation artifacts. The manifest must point at the real prepared
@@ -353,7 +360,7 @@ complete, set `manifest.status` to `completed`; otherwise use `partial`,
 For MDClaw-generated run directories, the shortest safe launch prompt is:
 
 ```text
-Use the md-benchmark skill. Run the task in:
+Run the task in:
 benchmark_runs/<run_id>/tasks/<task_id>/agent_prompt.md
 ```
 

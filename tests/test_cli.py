@@ -181,6 +181,21 @@ class TestArgparseConstruction:
             main(["fetch_structure", "--source", "pdb", "--pdb-id", "1AKE"])
         assert exc_info.value.code != 0
 
+    def test_fetch_structure_infers_pdb_source_before_node_context_gate(self, capsys):
+        """Weak agents often call ``fetch_structure --pdb-id``; infer source=pdb."""
+        from mdclaw._cli import main
+
+        if not _dependency_available("httpx"):
+            pytest.skip("fetch_structure unavailable because research server dependencies are missing")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["fetch_structure", "--pdb-id", "1AKE"])
+        assert exc_info.value.code != 0
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "node_context_required"
+        assert payload["context"]["tool"] == "fetch_structure"
+
     def test_node_required_tool_set_covers_dag_mutators(self):
         """Tools that create or complete workflow nodes must be CLI-gated."""
         from mdclaw._cli import _NODE_REQUIRED_TOOLS
@@ -1093,6 +1108,26 @@ class TestNodeCLIParameters:
                 "--node-id", "source_001",
                 "fetch_structure",
                 "--source", "local",
+                "--file-path", str(src),
+            ])
+        assert exc_info.value.code == 0
+
+    def test_fetch_structure_infers_local_source_from_file_path(self, tmp_path):
+        from mdclaw._cli import main
+        from mdclaw._node import create_node
+
+        if not _dependency_available("httpx"):
+            pytest.skip("fetch_structure unavailable because research server dependencies are missing")
+
+        create_node(str(tmp_path), "source")
+        src = tmp_path / "input.pdb"
+        src.write_text("HEADER    test\nEND\n")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--job-dir", str(tmp_path),
+                "--node-id", "source_001",
+                "fetch_structure",
                 "--file-path", str(src),
             ])
         assert exc_info.value.code == 0

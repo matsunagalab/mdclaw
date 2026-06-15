@@ -142,6 +142,99 @@ def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
+def public_required_components(task: Task) -> list[dict[str, Any]]:
+    """Return public residue/component requirements for submitted structures."""
+    requirements: list[dict[str, Any]] = []
+    for check in task.scoring.deterministic_checks:
+        if check.check_type == "structure_component_rescan":
+            structure_role = "prepared_structure"
+            manifest_path = check.structure_manifest_path or "outputs.prepared_structure"
+            default_path = check.structure_path or "prepared_structure.pdb"
+        elif check.check_type == "minimized_structure_component_rescan":
+            structure_role = "minimized_structure"
+            manifest_path = (
+                check.minimized_structure_manifest_path
+                or check.structure_manifest_path
+                or "outputs.minimized_structure"
+            )
+            default_path = check.structure_path or "minimized_structure.pdb"
+        else:
+            continue
+
+        item: dict[str, Any] = {
+            "check_id": check.check_id,
+            "structure_role": structure_role,
+            "manifest_path": manifest_path,
+            "default_path": default_path,
+        }
+        for field in (
+            "min_residue_counts",
+            "max_residue_counts",
+            "exact_residue_counts",
+            "residue_aliases",
+            "min_residue_atom_count",
+        ):
+            value = getattr(check, field)
+            if value is not None:
+                item[field] = value
+        requirements.append(item)
+    return requirements
+
+
+def packaging_guidance(task: Task) -> dict[str, Any] | None:
+    """Return packager guidance that reduces manual JSON authoring."""
+    if task.primary_score != PREPARATION_SCORE_AXIS:
+        return None
+    return {
+        "preferred_when_openmm_triple_exists": "mdclaw package_openmm_submission",
+        "purpose": (
+            "Package an existing OpenMM system.xml + topology.pdb + state.xml "
+            "triple into the standard submission layout."
+        ),
+        "required_agent_inputs": [
+            "system.xml",
+            "topology.pdb",
+            "state.xml",
+            "prepared_structure.pdb or equivalent pre-minimization structure",
+            "real command log",
+        ],
+        "packager_writes": [
+            "manifest.json",
+            "metrics.json scaffold",
+            "provenance.json scaffold",
+            "optional evidence_report.json when --evidence-report-file is passed",
+            "topology/ bundle",
+            "minimized_structure.pdb",
+            "minimization_report.json",
+        ],
+        "submission_dir_policy": (
+            "submission_dir is output-only; create study_dir/job_dir/work "
+            "directories outside it, e.g. under <task_dir>/work/."
+        ),
+        "post_packaging_rule": (
+            "After package_openmm_submission succeeds, do not hand-edit "
+            "manifest.json or provenance.json. Pass optional evidence via "
+            "--evidence-report-file before packaging."
+        ),
+        "does_not_choose": [
+            "chains",
+            "ligands",
+            "force field",
+            "water model",
+            "scientific answer",
+        ],
+        "command_template": (
+            "mdclaw package_openmm_submission --submission-dir <submission_dir> "
+            "--task-id <task_id> --system-xml-file <system.xml> "
+            "--topology-pdb-file <topology.pdb> --state-xml-file <state.xml> "
+            "--prepared-structure-file <prepared_structure.pdb> "
+            "--command-log-file <command_log.json> "
+            "[--evidence-report-file <evidence_report.json>]"
+        ),
+        "standalone_packager": "benchmarks/tools/package_submission.py",
+    }
+
+
 def manifest_contract(task: Task) -> dict[str, Any]:
     """Return the public manifest rules most often missed by agents."""
     contract: dict[str, Any] = {
@@ -157,6 +250,7 @@ def manifest_contract(task: Task) -> dict[str, Any]:
         "required_topology_backend": "openmm",
         "openmm_topology_example": OPENMM_TOPOLOGY_EXAMPLE,
         "minimized_structure_guidance": MINIMIZED_STRUCTURE_GUIDANCE,
+        "packaging_guidance": packaging_guidance(task),
         "required_output_fields_for_completed_prep": [
             "outputs.topology",
             "outputs.minimized_structure",
@@ -272,6 +366,10 @@ def submission_checklist(task: Task) -> list[str]:
         checks.append(
             "metrics.json contains every metric_requirements json_path from this contract"
         )
+    if public_required_components(task):
+        checks.append(
+            "prepared/minimized structures satisfy every required_components item"
+        )
     if _manifest_list_outputs(task):
         checks.append(
             "manifest.outputs lists real artifact paths for: "
@@ -285,6 +383,9 @@ def submission_checklist(task: Task) -> list[str]:
         )
     if task.primary_score == PREPARATION_SCORE_AXIS:
         checks.extend([
+            "create study_dir/job_dir/work directories outside submission_dir",
+            "if an OpenMM triple exists, prefer package_openmm_submission over hand-written JSON",
+            "after package_openmm_submission, do not hand-edit manifest.json or provenance.json",
             "manifest.outputs.topology is a list containing system.xml, topology.pdb, and state.xml",
             'metrics.json sets topology.backend to "openmm"',
             "manifest.outputs.minimized_structure points to minimized_structure.pdb from a min node or exported from the minimized state",
@@ -316,6 +417,22 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
     ])
     for key, value in contract["submission_blueprint"]["manifest_minimum"]["outputs"].items():
         lines.append(f"- `outputs.{key}`: `{value}`")
+    required_components = contract.get("required_components") or []
+    if required_components:
+        lines.extend([
+            "",
+            "## Required Components",
+            "",
+        ])
+        for item in required_components:
+            counts = item.get("min_residue_counts") or item.get(
+                "exact_residue_counts"
+            )
+            if counts:
+                lines.append(
+                    f"- `{item['structure_role']}` via `{item['manifest_path']}`: "
+                    f"`{counts}`"
+                )
     lines.extend([
         "",
         "## Pre-Submission Checks",
@@ -361,6 +478,7 @@ def public_submission_contract(
         "environment_type": task.environment_type,
         "requires_tools": list(task.requires_tools),
         "metric_requirements": public_metric_requirements(task),
+        "required_components": public_required_components(task),
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
         "harness_evidence_requirements": public_harness_evidence_requirements(task),
         "manifest_contract": manifest_contract(task),

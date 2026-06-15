@@ -640,13 +640,12 @@ def resolve_xml_bundle(
     glycan: Optional[str] = None,
     lipid: Optional[str] = None,
     implicit_solvent: Optional[str] = None,
-    gaff_base: Optional[str] = None,
     extra_xml: Union[tuple[str, ...], list[str]] = (),
 ) -> list[str]:
     """Build the ordered OpenMM XML bundle for ``SystemGenerator(forcefields=...)``.
 
     Order follows Amber25 manual section 14.4.1: protein → phosaa → nucleic →
-    glycan → water → lipid → implicit-solvent → gaff base → user extras.
+    glycan → water → lipid → implicit-solvent → user extras.
     Unknown / specialty force fields must be supplied via ``extra_xml``.
 
     ``implicit_solvent`` (HCT / OBC1 / OBC2 / GBn / GBn2) attaches the matching
@@ -654,10 +653,6 @@ def resolve_xml_bundle(
     force; pairing it with ``water`` is unusual but not blocked here (the
     caller is expected to enforce mutual exclusion at the
     ``box_dimensions`` level).
-
-    ``gaff_base`` (e.g. ``"gaff-2.2.20"``) resolves an openmmforcefields-shipped
-    GAFF base XML and inserts it directly before ``extra_xml``. It supplies
-    the atom-type registry that topology-time geostd ligand XMLs rely on.
     """
     bundle: list[str] = []
 
@@ -687,13 +682,6 @@ def resolve_xml_bundle(
 
     if implicit_solvent and implicit_solvent in IMPLICIT_SOLVENT_XML:
         bundle.append(IMPLICIT_SOLVENT_XML[implicit_solvent])
-
-    if gaff_base:
-        from mdclaw._ligand_xml import get_gaff_base_xml_path
-
-        gaff_path = get_gaff_base_xml_path(gaff_base)
-        if gaff_path:
-            bundle.append(gaff_path)
 
     bundle.extend(extra_xml)
 

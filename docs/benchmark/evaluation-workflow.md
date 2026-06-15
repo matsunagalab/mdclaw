@@ -57,7 +57,7 @@ The automated runner defaults to 30 minutes per task. Increase
 runs.
 
 Built-in profiles set explicit model flags by default: Pi uses
-`deepseek-cloudflare/deepseek-v4-flash`, Claude Code uses `sonnet`, and Codex
+`spark1-vllm/deepseek-v4-flash`, Claude Code uses `sonnet`, and Codex
 uses `gpt-5.4-mini`. Override this with `--agent-model <model>`; the resolved
 model is recorded in `run_config.json`, `summary.json`, and each task's
 `agent_run.json`.
@@ -75,11 +75,16 @@ infers it from the command template by default (`none`, `skill-system`,
 automatic inference is not accurate for a custom harness, pass
 `--solver-context none`, `skill-system`, `skill-text-injected`, or `unknown`.
 This is a comparison/audit field only; it never affects scoring.
+For skill-system runs managed by `run_benchmark_agent`, pass
+`--agent-skills-dir skills`. The runner installs that root into
+`skills/`, `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, and
+`package.json` for Pi. Pi's default profile disables skills, so combine this
+with `--agent-profile pi-user` when benchmarking Pi with skills.
 The default MDClaw CLI policy is `forbid-without-skill`: if the solver uses
 `mdclaw ...` while `solver_context` says no skill context was exposed, the
 runner reports a run-condition violation. This keeps the main comparison as
-`mdclaw-free` versus `mdclaw-skills+cli`; use `--mdclaw-cli-policy allow` only
-for an explicit CLI-only ablation.
+`mdclaw-free` versus a declared MDClaw stage-skill run; use
+`--mdclaw-cli-policy allow` only for an explicit CLI-only ablation.
 
 ```bash
 mdclaw run_benchmark_agent \
@@ -97,18 +102,17 @@ mdclaw run_benchmark_agent \
   --agent-name codex
 ```
 
-The default profiles are MDClaw-skill reference profiles:
-`pi-mdclaw-skill`, `claude-code-mdclaw-skill`, and `codex-mdclaw-skill`.
-Use `--agent-profile pi-user` to let Pi use normal user-wide discovery with an
-isolated session directory, `--agent-profile *-plain` for skill-free checks, or
-`--agent-command` for a custom command template.
+The default profiles are plain non-interactive profiles that read only the
+generated task prompt. Use `--agent-profile pi-user` to let Pi use normal
+user-wide discovery with an isolated session directory, or `--agent-command` for
+a custom command template.
 
 Supported template variables are `{{agent_prompt}}`,
 `{{task_instructions}}`, `{{prompt_file}}`, `{{submission_dir}}`,
-`{{solver_workspace}}`, `{{task_id}}`, `{{run_id}}`, `{{run_dir}}`,
-`{{agent_session_dir}}`, `{{agent_model}}`, `{{repo_root}}`,
-`{{mdclaw_benchmark_skill}}`, and `{{mdclaw_benchmark_skill_md}}`. Template
-values are shell-quoted before execution.
+`{{work_dir}}`, `{{solver_workspace}}`, `{{task_id}}`, `{{run_id}}`,
+`{{run_dir}}`, `{{agent_session_dir}}`, `{{agent_model}}`, and
+`{{repo_root}}`. Template values are shell-quoted before execution.
+`submission_dir` is output-only; use `work_dir` for study/job/scratch files.
 
 When the agent invokes `mdclaw` commands, the runner sets an opt-in environment
 hook so the MDClaw CLI appends measured stage records to a runner-owned JSONL

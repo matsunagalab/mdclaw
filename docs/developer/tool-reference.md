@@ -98,16 +98,15 @@ skill examples.
 ## `amber_server.py`
 
 - `build_amber_system(...)`: openmmforcefields-based topology builder
-  (`SystemGenerator`, topology-time geostd XMLs, and `GAFFTemplateGenerator`,
+  (`SystemGenerator` and `GAFFTemplateGenerator`,
   with OpenFF Pablo for the PDB → topology stage). Handles ligand, metal,
   modXNA, glycan, nucleic acid,
   water-model, and PTM guardrails via
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
   artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
-  prep emits `ligand_chemistry`; topology resolves compatible Amber geostd
-  templates first and uses `GAFFTemplateGenerator` when geostd is missing or
-  incompatible with the recorded ligand charge/atom count. For glycoproteins,
+  prep emits `ligand_chemistry`; ligands are parameterized with
+  `GAFFTemplateGenerator` (GAFF2/AM1-BCC). For glycoproteins,
   `cpptraj prepareforleap` is scoped to Amber/GLYCAM residue conversion and
   bond-plan generation; `build_amber_system` records
   `system.glycam_bond_plan.json` and `system.glycam_normalization.json` while
@@ -269,10 +268,13 @@ skill examples.
   command per selected task, records measured `harness_execution.json`, then
   scores and summarizes with the private evaluator package. It also records
   harness-owned `solver_context` for skill-free / skill-system / skill-text
-  comparisons. Built-in `agent_profile` values provide practical Pi,
-  Claude Code, and Codex command templates, including non-interactive
-  approval-bypass flags for Claude Code / Codex, explicit default model
-  selection via `agent_model`, and process-group cleanup on timeout.
+  comparisons. `agent_skills_dir` installs an explicit skill root into
+  `skills/`, `.agents/skills/`, `.claude/skills/`, `.codex/skills/`, and Pi's
+  `package.json` inside the solver workspace. Built-in `agent_profile` values
+  provide practical Pi, Claude Code, and Codex command templates, including
+  non-interactive approval-bypass flags for Claude Code / Codex, explicit
+  default model selection via `agent_model`, and process-group cleanup on
+  timeout.
 - `score_benchmark_run(...)`: validate and score every `submission/` under a
   run directory, then summarize the run.
 - `init_benchmark_run(...)` / `summarize_benchmark_run(...)`: lower-level run

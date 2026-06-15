@@ -4,16 +4,16 @@ Amber Server — curated Amber → OpenMM System builder.
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
-  ligand templates (geostd XML when available, otherwise
-  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ligand templates (``GAFFTemplateGenerator``), and emit a portable
+  ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
   ``run_equilibration`` / ``run_production``, plus a minimization report for
   benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
-  ``ligand_chemistry`` records; topology resolves geostd templates first and
-  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+  ``ligand_chemistry`` records; topology parameterizes the small molecules
+  with ``GAFFTemplateGenerator``.
 - Handling glycoproteins by converting deposited glycan residues to
   Amber/GLYCAM notation at topology time, preserving the generated bond plan,
   and completing only GLYCAM-specific hydrogens before System creation.

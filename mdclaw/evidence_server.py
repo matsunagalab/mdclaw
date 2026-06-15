@@ -504,7 +504,7 @@ def _topology_description(topo_node: dict | None) -> tuple[str, str, str, str]:
     ligand = "not used"
     if artifacts.get("ligand_chemistry") or metadata.get("ligand_chemistry"):
         ligand = (
-            "OpenMM/openmmforcefields topology-time geostd or "
+            "OpenMM/openmmforcefields topology-time "
             "GAFFTemplateGenerator from ligand chemistry records"
         )
     return forcefield, water_model, additional, ligand

@@ -366,10 +366,9 @@ The schema-v3 `min` node is separate: it is a node-owned post-topology
 minimization step that creates the minimized restart state consumed by `eq`.
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
-Molecules. Topology resolves compatible Amber geostd XMLs first and passes
-ligands with missing or incompatible geostd records to `SystemGenerator` /
-`GAFFTemplateGenerator`. The prep-to-topology ligand handoff is the
-`ligand_chemistry` artifact.
+Molecules. Ligands are parameterized with `SystemGenerator` /
+`GAFFTemplateGenerator` (GAFF2/AM1-BCC). The prep-to-topology ligand handoff is
+the `ligand_chemistry` artifact.
 
 `build_openmm_system` is the research escape hatch for explicit custom OpenMM
 XML. It emits the same XML triple, so downstream `eq` and `prod` nodes consume

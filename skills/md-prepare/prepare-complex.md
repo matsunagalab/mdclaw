@@ -7,18 +7,19 @@ Create a `prep` node after `source` and run `prepare_complex`. The
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids source_001
-mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --solvent-type explicit \
   --select-chains A \
   --include-types protein nucleic glycan ligand
 ```
 
 In node mode, `structure_file` resolves from the source ancestor's normalized
-candidate files. If `source_bundle.json` lists more than one candidate, pass an
-explicit selector:
+candidate files. Do not pass `--source-node-id`; the prep node's parent edge is
+the source selection. If `source_bundle.json` lists more than one candidate,
+pass an explicit selector:
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --source-structure-id candidate_002
 ```
 
@@ -47,7 +48,7 @@ Use `inspect_molecules` output to build ligand selections:
 Ligand-free systems:
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --select-chains A \
   --include-types protein nucleic glycan \
   --no-process-ligands
@@ -57,15 +58,10 @@ Do not express "no ligands" as `--include-ligand-ids []` or as a bare
 `--include-ligand-ids` flag. Omit the flag entirely unless one or more ligand
 IDs are being included.
 
-For "chain A with ligand" in 1AKE-like mmCIF files, AP5 can be
-`author_chain=A`, `chain_id=C`, `unique_id=A:AP5:215`; use:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
-  --select-chains A C \
-  --include-types protein nucleic glycan ligand \
-  --include-ligand-ids A:AP5:215
-```
+If `--include-ligand-ids` is wrong, `split_molecules` fails with
+`requested_ligand_ids_not_found` and lists the available ligand `unique_id`
+values. Rerun a new prep node with one of those IDs; do not retry with a bare
+residue name.
 
 Important outputs:
 
@@ -77,8 +73,8 @@ Important outputs:
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
 `prepare_complex` records ligand chemistry. `build_amber_system` consumes
-`ligand_chemistry`, uses Amber geostd templates when available, and invokes
-`GAFFTemplateGenerator` for ligands without a geostd match.
+`ligand_chemistry` and parameterizes ligands with `GAFFTemplateGenerator`
+(GAFF2/AM1-BCC).
 
 If ligand chemistry preparation returns a blocking structured result, do not
 retry the same command. Follow `workflow_recommendation.options`.

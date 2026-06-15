@@ -503,6 +503,24 @@ def _load_json_cli(value: str, field: str):
         )
 
 
+def _apply_cli_convenience_defaults(tool_name: str, kwargs: dict) -> None:
+    """Apply narrow CLI-only defaults that reduce weak-agent retry loops."""
+    if tool_name != "fetch_structure" or kwargs.get("source"):
+        return
+    source_fields = [
+        ("pdb", "pdb_id"),
+        ("alphafold", "uniprot_id"),
+        ("local", "file_path"),
+    ]
+    matches = [
+        (source, field)
+        for source, field in source_fields
+        if kwargs.get(field) not in {None, ""}
+    ]
+    if len(matches) == 1:
+        kwargs["source"] = matches[0][0]
+
+
 # ---------------------------------------------------------------------------
 # --list output
 # ---------------------------------------------------------------------------
@@ -708,6 +726,7 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             hint = hints.get(pname, sig.parameters[pname].annotation)
             kwargs[pname] = _coerce_value(value, hint)
+        _apply_cli_convenience_defaults(tool_name, kwargs)
     else:
         sig = inspect.signature(fn)
         hints = {}
@@ -743,6 +762,13 @@ def main(argv: list[str] | None = None) -> None:
                 value = _load_json_cli(value, f"--{pname.replace('_', '-')}")
             value = _coerce_value(value, hint)
             kwargs[pname] = value
+
+        _apply_cli_convenience_defaults(tool_name, kwargs)
+        if kwargs.get("source"):
+            missing = [
+                item for item in missing
+                if not (tool_name == "fetch_structure" and item == "--source")
+            ]
 
         if missing:
             _json_error_and_exit({

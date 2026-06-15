@@ -4,16 +4,16 @@ Amber Server — curated Amber → OpenMM System builder.
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
-  ligand templates (geostd XML when available, otherwise
-  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ligand templates (``GAFFTemplateGenerator``), and emit a portable
+  ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
   ``run_equilibration`` / ``run_production``, plus a minimization report for
   benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
-  ``ligand_chemistry`` records; topology resolves geostd templates first and
-  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+  ``ligand_chemistry`` records; topology parameterizes the small molecules
+  with ``GAFFTemplateGenerator``.
 - Handling glycoproteins by converting deposited glycan residues to
   Amber/GLYCAM notation at topology time, preserving the generated bond plan,
   and completing only GLYCAM-specific hydrogens before System creation.
@@ -173,8 +173,8 @@ def build_amber_system(
 
     Internally runs ``openmmforcefields``' ``SystemGenerator`` over an OpenFF
     Pablo-loaded topology, applies the Amber XML bundle resolved through
-    ``forcefield_catalog``, uses topology-time geostd XMLs or
-    ``GAFFTemplateGenerator`` for ligands, optionally bakes in HMR via
+    ``forcefield_catalog``, parameterizes ligands with
+    ``GAFFTemplateGenerator``, optionally bakes in HMR via
     ``hydrogenMass=4 amu``, and serializes the result as the modern
     artifact triple ``system.xml`` + ``topology.pdb`` + ``state.xml``
     (consumed by ``run_minimization`` / ``run_equilibration`` /
@@ -207,10 +207,8 @@ def build_amber_system(
                   solvent use ``solvated.pdb`` from ``solvate_structure``.
         ligand_chemistry: List of ligand chemistry dicts from
                        ``prepare_complex``; each should carry ``sdf`` or
-                       ``smiles`` plus ``residue_name``. Topology resolves
-                       geostd XML first and uses OpenFF ``Molecule`` objects
-                       with ``GAFFTemplateGenerator`` for ligands without a
-                       geostd match.
+                       ``smiles`` plus ``residue_name``. Topology passes the
+                       OpenFF ``Molecule`` objects to ``GAFFTemplateGenerator``.
         modxna_params / metal_params: Currently unsupported under the
                        openmmforcefields path; non-empty lists return
                        structured codes ``modxna_openmm_xml_required`` /
@@ -378,7 +376,7 @@ def build_amber_system(
 
     # Auto-detect ligand_chemistry.json if not provided. This is the standard
     # prepare_complex -> build_amber_system handoff: prep records chemistry,
-    # topology resolves geostd or GAFF.
+    # topology parameterizes ligands with GAFFTemplateGenerator.
     if ligand_chemistry is None:
         for search_dir in [pdb_path.parent, pdb_path.parent.parent]:
             lig_json = search_dir / "ligand_chemistry.json"
@@ -982,7 +980,7 @@ def build_amber_system(
 
     # Validate ligand chemistry. Ligand force-field resolution is intentionally
     # topology-time only: prep records SDF/SMILES/charge provenance, and this
-    # build chooses geostd XML or GAFFTemplateGenerator.
+    # build parameterizes ligands with GAFFTemplateGenerator.
     valid_ligands = []
     if ligand_chemistry:
         valid_ligands, ligand_errors = validate_ligand_chemistry(ligand_chemistry)
@@ -1397,7 +1395,12 @@ def build_amber_system(
         error_msg = f"Error during Amber system building: TimeoutError: {str(e)}"
         result["errors"].append(error_msg)
         result["errors"].append(
-            "Hint: a long-running operation timed out. The structure may be too large or complex."
+            "Hint: ligand charge fitting (antechamber/sqm AM1-BCC) timed out. "
+            "Recovery: re-run this same build tool on a fresh node (sqm timing "
+            "varies between runs), or raise the budget with the "
+            "MDCLAW_CHARGE_FIT_TIMEOUT environment variable (seconds) for an "
+            "exceptionally large ligand. Do NOT hand-roll a custom build "
+            "script or shorten the timeout."
         )
         result["code"] = "openmmforcefields_build_timeout"
         logger.error(error_msg)

@@ -4,16 +4,16 @@ Amber Server — curated Amber → OpenMM System builder.
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
-  ligand templates (geostd XML when available, otherwise
-  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ligand templates (``GAFFTemplateGenerator``), and emit a portable
+  ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
   ``run_equilibration`` / ``run_production``, plus a minimization report for
   benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
-  ``ligand_chemistry`` records; topology resolves geostd templates first and
-  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+  ``ligand_chemistry`` records; topology parameterizes the small molecules
+  with ``GAFFTemplateGenerator``.
 - Handling glycoproteins by converting deposited glycan residues to
   Amber/GLYCAM notation at topology time, preserving the generated bond plan,
   and completing only GLYCAM-specific hydrogens before System creation.
@@ -33,9 +33,12 @@ from mdclaw._common import setup_logger  # noqa: E402
 
 logger = setup_logger(__name__)
 
+import contextlib  # noqa: E402
 import io  # noqa: E402
 import json  # noqa: E402
 import math  # noqa: E402
+import signal  # noqa: E402
+import threading  # noqa: E402
 from datetime import datetime, timezone  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Callable, Optional, Dict, Any, Tuple  # noqa: E402
@@ -51,6 +54,79 @@ from mdclaw import _topology_pablo  # noqa: E402
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
+
+# --- Ligand charge-fitting timeout ------------------------------------------
+# ``SystemGenerator.create_system`` lazily triggers GAFF parameterization for
+# small molecules, which runs antechamber + sqm (AM1-BCC charge fitting). For a
+# large, highly charged ligand (e.g. AP5, the bis-adenosine pentaphosphate in
+# 1AKE) sqm can run for many minutes. The step *does* converge given enough
+# wall time, so the failure mode we guard against is a too-short timeout
+# aborting an otherwise-healthy build, not an unbounded hang.
+#
+# The floor below is the minimum we ever allow. ``MDCLAW_CHARGE_FIT_TIMEOUT``
+# may *raise* the ceiling for exceptionally large ligands but can never lower
+# it below the floor — this is deliberate so an agent (including a weak LLM
+# driving the CLI) cannot shorten the charge-fitting budget and induce the
+# spurious ``SQM_timeout`` failures we have seen in the benchmark. There is no
+# CLI / function argument for this value, only the floored env override.
+_CHARGE_FIT_TIMEOUT_FLOOR_SECONDS = 1800  # 30 min
+
+
+def _resolve_charge_fit_timeout() -> int:
+    """Return the charge-fitting timeout in seconds, never below the floor."""
+    raw = os.environ.get("MDCLAW_CHARGE_FIT_TIMEOUT")
+    if raw is None or str(raw).strip() == "":
+        return _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS
+    try:
+        requested = int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring non-numeric MDCLAW_CHARGE_FIT_TIMEOUT=%r; using floor %ds",
+            raw,
+            _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS,
+        )
+        return _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS
+    if requested < _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS:
+        logger.warning(
+            "MDCLAW_CHARGE_FIT_TIMEOUT=%ds is below the floor; clamping up to "
+            "%ds (the charge-fitting budget can be raised but not shortened)",
+            requested,
+            _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS,
+        )
+        return _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS
+    return requested
+
+
+@contextlib.contextmanager
+def _charge_fit_timeout_guard(seconds: int):
+    """Raise ``TimeoutError`` if the wrapped block runs longer than ``seconds``.
+
+    Uses ``signal.alarm``, which is only available on the main thread; off the
+    main thread (e.g. a threaded server) we skip the alarm rather than crash,
+    accepting that the build can then run unbounded in that uncommon path.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        logger.debug(
+            "charge-fit timeout guard skipped (not main thread); build will "
+            "run without a wall-clock limit"
+        )
+        yield
+        return
+
+    def _on_alarm(signum, frame):  # noqa: ANN001
+        raise TimeoutError(
+            f"ligand charge fitting (antechamber/sqm AM1-BCC) exceeded "
+            f"{seconds}s; raise MDCLAW_CHARGE_FIT_TIMEOUT if the ligand is "
+            f"exceptionally large"
+        )
+
+    previous = signal.signal(signal.SIGALRM, _on_alarm)
+    signal.alarm(int(seconds))
+    try:
+        yield
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
 
 # Initialize tool wrappers.
 # ``tleap`` is no longer used: the curated build path runs through
@@ -69,7 +145,6 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 from mdclaw.amber.content_detection import _canonical_pablo_ion_resname, _normalize_pdb_chain_id, _rewrite_pablo_ion_pdb_line  # noqa: E402
 from mdclaw.amber.forcefield_constants import _GLYCAM_LINKED_ASN_RESNAME  # noqa: E402
 from mdclaw.amber.glycam_topology import _is_glycam_topology_residue, _normalize_glycam_topology  # noqa: E402
-from mdclaw.amber.ligand_validation import _geostd_ligand_incompatibility_reason, _patch_geostd_ligand_hydrogen_names  # noqa: E402
 from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _patch_template_internal_bonds  # noqa: E402
 
 
@@ -219,7 +294,6 @@ def _run_openmmforcefields_build(
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
     minimize_max_iterations: int = 1000,
-    allow_geostd_ligands: bool = True,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -281,80 +355,11 @@ def _run_openmmforcefields_build(
         result["code"] = "implicit_solvent_model_unsupported"
         return result
 
-    geostd_ligand_xml: list[dict[str, Any]] = []
-    geostd_residue_names: set[str] = set()
-    if valid_ligands and allow_geostd_ligands:
-        from mdclaw._geostd import build_geostd_ligand_xml
-
-        geostd_xml_dir = out_dir / "ligand_xml"
-        for ligand_record in valid_ligands:
-            residue_name = str(ligand_record.get("residue_name") or "").upper()
-            if not residue_name or residue_name in geostd_residue_names:
-                continue
-            geostd_result = build_geostd_ligand_xml(residue_name, geostd_xml_dir)
-            if geostd_result.get("success"):
-                matching_records = [
-                    rec for rec in (valid_ligands or [])
-                    if str(rec.get("residue_name") or "").upper() == residue_name
-                ]
-                incompatibilities = [
-                    reason
-                    for rec in matching_records
-                    if (
-                        reason := _geostd_ligand_incompatibility_reason(
-                            rec, geostd_result
-                        )
-                    )
-                ]
-                if incompatibilities:
-                    reason = "; ".join(incompatibilities)
-                    result["warnings"].append(
-                        f"Skipping amber_geostd template for {residue_name}: "
-                        f"{reason}. Falling back to GAFFTemplateGenerator."
-                    )
-                    for rec in matching_records:
-                        rec["topology_parameter_source"] = (
-                            "topology_gaff_template_generator"
-                        )
-                        rec["topology_geostd_skip_reason"] = reason
-                        rec.pop("topology_geostd_xml", None)
-                    continue
-                geostd_residue_names.add(residue_name)
-                geostd_ligand_xml.append({
-                    "residue_name": residue_name,
-                    "xml_path": geostd_result.get("xml_path"),
-                    "mol2": geostd_result.get("mol2"),
-                    "frcmod": geostd_result.get("frcmod"),
-                    "source": "amber_geostd",
-                    "atom_count": geostd_result.get("atom_count"),
-                    "bond_count": geostd_result.get("bond_count"),
-                    "total_charge": geostd_result.get("total_charge"),
-                    "warnings": geostd_result.get("warnings", []),
-                })
-                for rec in valid_ligands:
-                    if str(rec.get("residue_name") or "").upper() == residue_name:
-                        rec["topology_parameter_source"] = "amber_geostd"
-                        rec["topology_geostd_xml"] = geostd_result.get("xml_path")
-                result["warnings"].extend(geostd_result.get("warnings", []))
-            elif geostd_result.get("code") != "geostd_miss":
-                result["warnings"].append(
-                    f"geostd lookup found {residue_name} but XML conversion failed; "
-                    f"falling back to GAFFTemplateGenerator: "
-                    f"{geostd_result.get('errors', [])}"
-                )
+    # All ligands are parameterized at topology time by GAFFTemplateGenerator
+    # (GAFF2 / AM1-BCC) via SystemGenerator below.
     for rec in valid_ligands or []:
-        residue_name = str(rec.get("residue_name") or "").upper()
-        if residue_name and residue_name not in geostd_residue_names:
+        if str(rec.get("residue_name") or "").upper():
             rec["topology_parameter_source"] = "topology_gaff_template_generator"
-            rec.pop("topology_geostd_xml", None)
-
-    geostd_xml_paths = [
-        str(entry["xml_path"])
-        for entry in geostd_ligand_xml
-        if entry.get("xml_path")
-    ]
-    extra_xml_with_geostd = list(extra_xml) + geostd_xml_paths
-    gaff_base = "gaff-2.2.20" if geostd_xml_paths else None
 
     xml_bundle = _ff_catalog.resolve_xml_bundle(
         protein=canon_protein,
@@ -365,8 +370,7 @@ def _run_openmmforcefields_build(
         glycan=glycan_name,
         lipid=lipid_name,
         implicit_solvent=canon_implicit,
-        gaff_base=gaff_base,
-        extra_xml=extra_xml_with_geostd,
+        extra_xml=list(extra_xml),
     )
     if not xml_bundle:
         result["errors"].append(
@@ -384,7 +388,7 @@ def _run_openmmforcefields_build(
     pablo_input = pdb_path
 
     # Load ligand chemistry into OpenFF Molecules early so we can (a) feed
-    # Pablo SMILES for non-CCD ligands like BEN, and (b) hand the non-geostd
+    # Pablo SMILES for non-CCD ligands like BEN, and (b) hand the
     # molecules to ``SystemGenerator`` / ``GAFFTemplateGenerator`` below.
     # Standard prep emits SDF chemistry records; SMILES is the fallback when
     # no coordinate-bearing SDF is available.
@@ -680,11 +684,7 @@ def _run_openmmforcefields_build(
     }
     nonperiodic_kwargs: Dict[str, Any] = {"nonbondedMethod": app.NoCutoff}
 
-    ligand_molecules_for_gaff = [
-        mol
-        for lig, mol in zip(valid_ligands or [], ligand_molecules)
-        if str(lig.get("residue_name") or "").upper() not in geostd_residue_names
-    ]
+    ligand_molecules_for_gaff = list(ligand_molecules)
 
     _stage("system_generator_init")
     try:
@@ -743,29 +743,14 @@ def _run_openmmforcefields_build(
     # PDB round trip. Copy any missing template bond onto the topology so
     # ``SystemGenerator.create_system`` sees the same residue graph as the
     # loaded force field.
-    h_renamed, h_rename_summaries = _patch_geostd_ligand_hydrogen_names(
-        omm_topology,
-        omm_positions,
-        sg.forcefield,
-        geostd_residue_names,
-        unit,
-    )
-    if h_renamed:
-        result["warnings"].append(
-            f"Renamed {h_renamed} geostd ligand hydrogen atom(s) to template "
-            f"names before bond patching: {h_rename_summaries[:5]}"
-            f"{'...' if len(h_rename_summaries) > 5 else ''}"
-        )
-
     ligand_molecule_bonds_added = _patch_ligand_molecule_internal_bonds(
         omm_topology,
         valid_ligands or [],
         ligand_molecules,
-        geostd_residue_names,
     )
     if ligand_molecule_bonds_added:
         result["warnings"].append(
-            f"Patched {ligand_molecule_bonds_added} non-geostd ligand bond(s) "
+            f"Patched {ligand_molecule_bonds_added} ligand bond(s) "
             f"from ligand_chemistry OpenFF Molecule records so "
             f"GAFFTemplateGenerator can match the residue graph."
         )
@@ -1057,65 +1042,15 @@ def _run_openmmforcefields_build(
 
     _stage("system_generator_create_system")
     try:
-        system = sg.create_system(
-            modeller.topology, molecules=ligand_molecules_for_gaff or None
-        )
+        with _charge_fit_timeout_guard(_resolve_charge_fit_timeout()):
+            system = sg.create_system(
+                modeller.topology, molecules=ligand_molecules_for_gaff or None
+            )
+    except TimeoutError:
+        # Propagate to ``build_amber_system``'s handler (code
+        # ``openmmforcefields_build_timeout``).
+        raise
     except Exception as exc:  # noqa: BLE001
-        if allow_geostd_ligands and geostd_ligand_xml and ligand_molecules:
-            fallback_reason = (
-                f"SystemGenerator.create_system failed with geostd ligand XML "
-                f"({type(exc).__name__}: {exc}); retrying topology build with "
-                f"GAFFTemplateGenerator for ligand residues "
-                f"{sorted(geostd_residue_names)}."
-            )
-            fallback_ligands = [dict(lig) for lig in (valid_ligands or [])]
-            for rec in fallback_ligands:
-                if str(rec.get("residue_name") or "").upper() in geostd_residue_names:
-                    rec["topology_parameter_source"] = (
-                        "topology_gaff_template_generator"
-                    )
-                    rec["topology_geostd_fallback_reason"] = str(exc)
-                    rec.pop("topology_geostd_xml", None)
-            fallback = _run_openmmforcefields_build(
-                pdb_path=pdb_path,
-                output_name=output_name,
-                out_dir=out_dir,
-                system_xml_file=system_xml_file,
-                topology_pdb_file=topology_pdb_file,
-                state_xml_file=state_xml_file,
-                minimization_report_file=minimization_report_file,
-                forcefield=forcefield,
-                water_model=water_model,
-                phosaa_library=phosaa_library,
-                nucleic_libraries=nucleic_libraries,
-                glycan_library=glycan_library,
-                is_membrane=is_membrane,
-                box_dimensions=box_dimensions,
-                valid_ligands=fallback_ligands,
-                valid_metal_params=valid_metal_params,
-                valid_modxna_params=valid_modxna_params,
-                disulfide_bonds=disulfide_bonds,
-                glycam_bond_plan=glycam_bond_plan,
-                glycam_normalization_file=glycam_normalization_file,
-                hmr=hmr,
-                implicit_solvent=implicit_solvent,
-                extra_xml=extra_xml,
-                extra_smiles=extra_smiles,
-                stage_callback=stage_callback,
-                minimize_max_iterations=minimize_max_iterations,
-                allow_geostd_ligands=False,
-            )
-            fallback["warnings"] = (
-                result.get("warnings", [])
-                + [fallback_reason]
-                + fallback.get("warnings", [])
-            )
-            if fallback.get("success"):
-                return fallback
-            result["warnings"].extend(
-                [fallback_reason, "GAFFTemplateGenerator fallback also failed."]
-            )
-            result["errors"].extend(fallback.get("errors", []))
         result["errors"].append(
             f"SystemGenerator.create_system failed: {type(exc).__name__}: {exc}"
         )
@@ -1267,8 +1202,6 @@ def _run_openmmforcefields_build(
         "kind": "amber_via_openmmforcefields",
         "openmm_xml": list(xml_bundle),
         "extra_xml": list(extra_xml),
-        "geostd_ligand_xml": geostd_ligand_xml,
-        "gaff_base": gaff_base,
         "small_molecule_forcefield": "gaff-2.11",
         "ligand_molecules": [
             {

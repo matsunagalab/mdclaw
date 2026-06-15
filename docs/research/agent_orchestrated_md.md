@@ -8,8 +8,7 @@
 > **Legacy note (2026-05 update)**: 本メモが書かれた時点では `build_amber_system` が
 > `tleap` を使い `parm7` / `rst7` を出力していた。現在はその経路は
 > openmmforcefields-unification refactor で書き換えられ、
-> `openmmforcefields.SystemGenerator`、topology-time Amber geostd XML
-> conversion / `GAFFTemplateGenerator`、OpenFF Pablo を介して
+> `openmmforcefields.SystemGenerator` / `GAFFTemplateGenerator`、OpenFF Pablo を介して
 > `system.xml` + `topology.pdb` + `state.xml` の modern artifact triple を
 > 出すようになっている。DAG / node 設計、ancestor-based artifact resolution、
 > failure-as-data といったメタな議論は現行設計に概ね引き継がれているが、

@@ -5,14 +5,14 @@
   },
   "metadata": {
     "description": "Skills and CLIs for vibe-MD simulations and autonomous scientific investigation",
-    "version": "0.5.3"
+    "version": "0.5.4"
   },
   "plugins": [
     {
       "name": "mdclaw",
       "source": "./",
       "description": "MDClaw skills and CLI tools for preparing systems, running MD, analyzing trajectories, and packaging atomistic evidence",
-      "version": "0.5.3",
+      "version": "0.5.4",
       "license": "MIT",
       "keywords": ["molecular-dynamics", "amber", "openmm"],
       "category": "science",

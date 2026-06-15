@@ -151,9 +151,9 @@ has failed, completed, or the user explicitly abandons it.
 `build_amber_system` is the curated Amber → OpenMM system builder for completed
 prep/solv DAG artifacts. It runs the resolved prepared/solvated PDB through
 OpenFF Pablo, applies the resolved Amber XML
-bundle via `openmmforcefields.SystemGenerator` (geostd XML for matching
-ligands, otherwise `GAFFTemplateGenerator`, using prep's `ligand_chemistry`
-artifact), and emits the modern artifact triple `system.system.xml` +
+bundle via `openmmforcefields.SystemGenerator` (`GAFFTemplateGenerator` from
+prep's `ligand_chemistry` artifact), and emits the modern artifact triple
+`system.system.xml` +
 `system.topology.pdb` + `system.state.xml` on the topo node, with
 `metadata.system_artifact_kind="openmm_system_xml"` and a
 `metadata.forcefield_provenance` dict (XML names, sha256, OpenMM /

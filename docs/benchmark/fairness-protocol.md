@@ -60,9 +60,11 @@ Each run records a `tooling_condition` describing how much MDClaw tooling the
 **solver** used. It is recorded in `run_config.json`, `attestation.json`, and
 `RunSummary`, and never changes the score.
 
-- `mdclaw-skills+cli`: the solver used the MDClaw skills and CLI tools (the full
-  MDClaw workflow). This is the default for `prepare_benchmark_run`, which hands
-  the solver the MDClaw skill prompts.
+- `mdclaw-skills+cli`: the solver used MDClaw stage skills and CLI tools (the
+  full MDClaw workflow). Declare this only when the solver actually had that
+  context. With `run_benchmark_agent`, expose that context with
+  `--agent-skills-dir skills`; use `--agent-profile pi-user` for Pi because
+  the default Pi profile disables skills.
 - `mdclaw-cli-only`: the solver used MDClaw CLI tools but not the skill prompts.
 - `mdclaw-free`: the solver imported and called no MDClaw code at all — e.g.
   MDCrow, a plain OpenMM/pdbfixer script, or an LLM that writes its own OpenMM

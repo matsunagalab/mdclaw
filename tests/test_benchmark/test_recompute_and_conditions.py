@@ -373,13 +373,13 @@ def test_attestation_verified_and_condition_flow(tmp_path: Path):
     )
     assert prep["success"]
     att = json.loads((Path(prep["run_dir"]) / "attestation.json").read_text())
-    assert att["tooling_condition"] == "mdclaw-skills+cli"
+    assert att["tooling_condition"] == "unknown"
     assert len(att["public_package_sha256"]) == 64
 
     summary = benchmark_run.summarize_benchmark_run(run_dir=prep["run_dir"])
     s = summary["summary"]
     assert s["verified"] is True
-    assert s["tooling_condition"] == "mdclaw-skills+cli"
+    assert s["tooling_condition"] == "unknown"
     assert set(s["capability_scores"]) == {
         "identity", "physical_validity", "fidelity", "provenance",
     }
@@ -471,14 +471,38 @@ def test_package_openmm_submission_builds_scorer_valid_bundle(tmp_path: Path):
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
 
 
+def test_package_openmm_submission_can_include_evidence_report(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    sub = tmp_path / "submission"
+    sub.mkdir()
+    evidence = sub / "evidence_report.json"
+    evidence.write_text('{"schema_version":"1.0","notes":"ok"}\n')
+
+    res = cli.package_openmm_submission(
+        submission_dir=str(sub), task_id="P01_demo",
+        system_xml_file=str(sx), topology_pdb_file=str(tp),
+        state_xml_file=str(st), run_id="pkg",
+        evidence_report_file=str(evidence),
+    )
+
+    assert res["success"]
+    manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
+    assert json.loads((sub / "evidence_report.json").read_text())["notes"] == "ok"
+    assert str(sub / "evidence_report.json") in res["files_written"]
+
+
 def test_standalone_packager_matches_shape(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
     sub = tmp_path / "submission"
+    evidence = tmp_path / "evidence_report.json"
+    evidence.write_text('{"schema_version":"1.0","standalone":true}\n')
     rc = subprocess.run(
         [sys.executable, str(STANDALONE_PACKAGER),
          "--submission-dir", str(sub), "--task-id", "P01_demo",
          "--system-xml", str(sx), "--topology-pdb", str(tp),
-         "--state-xml", str(st), "--run-id", "standalone"],
+         "--state-xml", str(st), "--run-id", "standalone",
+         "--evidence-report", str(evidence)],
         capture_output=True, text=True,
     )
     assert rc.returncode == 0, rc.stderr
@@ -487,6 +511,8 @@ def test_standalone_packager_matches_shape(tmp_path: Path):
                  "minimization_report.json"):
         assert (sub / name).is_file(), name
     manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
+    assert json.loads((sub / "evidence_report.json").read_text())["standalone"]
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
     # MDClaw-free: the packager imports no mdclaw module.
     text = STANDALONE_PACKAGER.read_text()

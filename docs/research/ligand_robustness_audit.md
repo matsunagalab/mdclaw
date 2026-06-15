@@ -8,9 +8,9 @@ Date: 2026-05-01
 > and `ligand_params.json` describe the *legacy* topology path.
 > `build_amber_system` now emits the modern artifact triple
 > `system.xml` + `topology.pdb` + `state.xml` via
-> `openmmforcefields.SystemGenerator`, topology-time Amber geostd XML
-> conversion, and `GAFFTemplateGenerator` fallback (with OpenFF Pablo for
-> topology). The prep-to-topology ligand contract is `ligand_chemistry`; see
+> `openmmforcefields.SystemGenerator` and `GAFFTemplateGenerator` (GAFF2/AM1-BCC,
+> with OpenFF Pablo for topology). The prep-to-topology ligand contract is
+> `ligand_chemistry`; see
 > `AGENTS.md` and `docs/developer/tool-reference.md` for the current contract.
 
 ## Scope

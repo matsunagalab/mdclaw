@@ -4,16 +4,16 @@ Amber Server — curated Amber → OpenMM System builder.
 Provides tools for:
 - ``build_amber_system``: load a prepared PDB through OpenFF Pablo, apply Amber
   protein / nucleic / glycan / lipid / PTM force fields plus topology-time
-  ligand templates (geostd XML when available, otherwise
-  ``GAFFTemplateGenerator``), and emit a portable ``system.xml`` +
+  ligand templates (``GAFFTemplateGenerator``), and emit a portable
+  ``system.xml`` +
   ``topology.pdb`` + ``state.xml`` triple consumed by ``run_minimization`` /
   ``run_equilibration`` / ``run_production``, plus a minimization report for
   benchmark evidence.
 - Supporting both implicit (no PBC) and explicit (with PBC, optionally
   membrane) solvent setups.
 - Handling protein-ligand complexes by consuming prep-stage
-  ``ligand_chemistry`` records; topology resolves geostd templates first and
-  falls back to ``GAFFTemplateGenerator`` for the remaining small molecules.
+  ``ligand_chemistry`` records; topology parameterizes the small molecules
+  with ``GAFFTemplateGenerator``.
 - Handling glycoproteins by converting deposited glycan residues to
   Amber/GLYCAM notation at topology time, preserving the generated bond plan,
   and completing only GLYCAM-specific hydrogens before System creation.
@@ -68,8 +68,8 @@ def validate_ligand_chemistry(ligand_chemistry: List[Dict[str, Any]]) -> tuple:
 
     These records intentionally do not contain GAFF mol2/frcmod files. They
     carry the chemistry graph source (usually SDF plus SMILES provenance);
-    ``build_amber_system`` decides at topology time whether a ligand uses
-    geostd XML or ``GAFFTemplateGenerator``.
+    ``build_amber_system`` parameterizes the ligand at topology time with
+    ``GAFFTemplateGenerator``.
     """
     valid_records = []
     errors = []
@@ -101,185 +101,10 @@ def validate_ligand_chemistry(ligand_chemistry: List[Dict[str, Any]]) -> tuple:
     return valid_records, errors
 
 
-def _coerce_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _ligand_record_charge(record: Dict[str, Any]) -> float | None:
-    for key in ("net_charge", "mol_formal_charge", "formal_charge", "total_charge"):
-        charge = _coerce_float(record.get(key))
-        if charge is not None:
-            return charge
-    return None
-
-
-def _ligand_record_sdf_atom_count(record: Dict[str, Any]) -> int | None:
-    sdf = record.get("sdf") or record.get("sdf_file")
-    if not sdf:
-        return None
-    path = Path(sdf)
-    if path.suffix.lower() != ".sdf" or not path.exists():
-        return None
-    try:
-        lines = path.read_text(errors="ignore").splitlines()
-    except OSError:
-        return None
-    if len(lines) < 4:
-        return None
-    counts = lines[3]
-    try:
-        return int(counts[:3])
-    except ValueError:
-        parts = counts.split()
-        if not parts:
-            return None
-        try:
-            return int(parts[0])
-        except ValueError:
-            return None
-
-
-def _geostd_ligand_incompatibility_reason(
-    ligand_record: Dict[str, Any],
-    geostd_result: Dict[str, Any],
-) -> str | None:
-    residue_name = str(ligand_record.get("residue_name") or "?").upper()
-    expected_charge = _ligand_record_charge(ligand_record)
-    geostd_charge = _coerce_float(geostd_result.get("total_charge"))
-    if expected_charge is not None and geostd_charge is not None:
-        if abs(expected_charge - geostd_charge) > 0.5:
-            return (
-                f"{residue_name} ligand_chemistry charge {expected_charge:g} "
-                f"does not match amber_geostd XML charge {geostd_charge:.3f}"
-            )
-
-    expected_atoms = (
-        _coerce_float(ligand_record.get("atom_count"))
-        or _coerce_float(ligand_record.get("num_atoms"))
-        or _ligand_record_sdf_atom_count(ligand_record)
-    )
-    geostd_atoms = _coerce_float(geostd_result.get("atom_count"))
-    if expected_atoms is not None and geostd_atoms is not None:
-        if int(expected_atoms) != int(geostd_atoms):
-            return (
-                f"{residue_name} ligand_chemistry atom count {int(expected_atoms)} "
-                f"does not match amber_geostd XML atom count {int(geostd_atoms)}"
-            )
-    return None
-
-
 def _is_hydrogen_like_atom(atom: Any) -> bool:
     element = getattr(atom, "element", None)
     symbol = (getattr(element, "symbol", "") or "").upper()
     return symbol == "H" or str(getattr(atom, "name", "")).strip().upper().startswith("H")
-
-
-def _patch_geostd_ligand_hydrogen_names(
-    omm_topology: Any,
-    omm_positions: Any,
-    forcefield: Any,
-    geostd_residue_names: set[str],
-    unit_module: Any,
-) -> tuple[int, list[str]]:
-    """Rename generic ligand H names to geostd template names by local geometry."""
-    if not geostd_residue_names:
-        return 0, []
-
-    try:
-        positions_nm = [p.value_in_unit(unit_module.nanometer) for p in omm_positions]
-    except Exception:  # noqa: BLE001
-        return 0, []
-
-    renamed = 0
-    summaries: list[str] = []
-    for residue in omm_topology.residues():
-        residue_name = str(residue.name or "").upper()
-        if residue_name not in geostd_residue_names:
-            continue
-        template = forcefield._templates.get(residue.name)
-        if template is None:
-            continue
-
-        template_atoms = list(template.atoms)
-        template_names = {atom.name for atom in template_atoms}
-        template_h_indices = {
-            idx for idx, atom in enumerate(template_atoms)
-            if str(getattr(atom, "name", "")).upper().startswith("H")
-        }
-        template_h_by_heavy: dict[str, list[str]] = {}
-        for idx1, idx2 in template.bonds:
-            h_idx = None
-            heavy_idx = None
-            if idx1 in template_h_indices and idx2 not in template_h_indices:
-                h_idx, heavy_idx = idx1, idx2
-            elif idx2 in template_h_indices and idx1 not in template_h_indices:
-                h_idx, heavy_idx = idx2, idx1
-            if h_idx is None or heavy_idx is None:
-                continue
-            heavy_name = template_atoms[heavy_idx].name
-            template_h_by_heavy.setdefault(heavy_name, []).append(
-                template_atoms[h_idx].name
-            )
-
-        actual_atoms = list(residue.atoms())
-        current_names = {atom.name for atom in actual_atoms}
-        unknown_h = [
-            atom for atom in actual_atoms
-            if _is_hydrogen_like_atom(atom) and atom.name not in template_names
-        ]
-        if not unknown_h:
-            continue
-
-        heavy_atoms = [
-            atom for atom in actual_atoms
-            if atom.name in template_names and not _is_hydrogen_like_atom(atom)
-        ]
-        if not heavy_atoms:
-            continue
-
-        actual_h_by_heavy: dict[str, list[tuple[float, Any]]] = {}
-        max_h_bond_nm = 0.14
-        for h_atom in unknown_h:
-            hx, hy, hz = positions_nm[h_atom.index]
-            best: tuple[float, Any] | None = None
-            for heavy in heavy_atoms:
-                x, y, z = positions_nm[heavy.index]
-                d2 = (hx - x) ** 2 + (hy - y) ** 2 + (hz - z) ** 2
-                if d2 > max_h_bond_nm * max_h_bond_nm:
-                    continue
-                if best is None or d2 < best[0]:
-                    best = (d2, heavy)
-            if best is None:
-                continue
-            actual_h_by_heavy.setdefault(best[1].name, []).append((best[0], h_atom))
-
-        residue_renamed = 0
-        assigned_names: set[str] = set()
-        for heavy_name, expected_names in template_h_by_heavy.items():
-            expected = [
-                name for name in expected_names
-                if name not in current_names and name not in assigned_names
-            ]
-            candidates = sorted(
-                actual_h_by_heavy.get(heavy_name, []),
-                key=lambda item: (item[0], item[1].index),
-            )
-            if len(candidates) != len(expected):
-                continue
-            for expected_name, (_dist2, atom) in zip(expected, candidates):
-                atom.name = expected_name
-                assigned_names.add(expected_name)
-                residue_renamed += 1
-
-        if residue_renamed:
-            renamed += residue_renamed
-            summaries.append(f"{residue.name}#{residue.id}:{residue_renamed}")
-    return renamed, summaries
 
 
 def _is_builtin_amber_frcmod(value: str) -> bool:

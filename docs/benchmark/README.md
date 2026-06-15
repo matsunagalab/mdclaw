@@ -22,7 +22,7 @@ that are absent from the public prompt and `submission_contract.json`.
 `harness_instructions.json`; only the agent-facing files should be handed to
 the evaluated agent.
 
-When using the `md-benchmark` skill, a short user instruction is enough:
+Benchmark operator requests can stay short:
 
 ```text
 MDPrepBenchを run_id=prep_full_run で実行して評価して
@@ -71,7 +71,7 @@ The automated runner defaults to 30 minutes per task. Increase
 runs.
 
 The built-in profiles also set an explicit model unless `--agent-model` is
-provided: Pi uses `deepseek-cloudflare/deepseek-v4-flash`, Claude Code uses
+provided: Pi uses `spark1-vllm/deepseek-v4-flash`, Claude Code uses
 `sonnet`, and Codex uses `gpt-5.4-mini`. The resolved model is written to
 `run_config.json`, `summary.json`, and each task's `agent_run.json`.
 
@@ -80,11 +80,17 @@ For comparison, the runner also records harness-owned skill context in
 Read it from `run_config.json`, `attestation.json`, `summary.json`, or each
 task's `agent_run.json`; do not rely on agent-written `submission/provenance.json`
 alone to decide whether skills were visible to the solver.
-By default, `run_benchmark_agent` treats MDClaw CLI use without MDClaw skill
-context as a run-condition violation. Use `--solver-context skill-system` for a
-real skill-system run, `skill-text-injected` when the skill text is injected
-into the prompt, or `--mdclaw-cli-policy allow` only for an intentional
-`mdclaw-cli-only` ablation.
+Pass `--agent-skills-dir skills` to copy a skill root into the solver workspace
+for agent discovery. The runner writes `skills/`, `.agents/skills/`,
+`.claude/skills/`, `.codex/skills/`, and a `package.json` with
+`pi.skills=["./skills"]`, so the same option covers Codex/generic agents,
+Claude Code, and Pi. For Pi, combine it with `--agent-profile pi-user`; the
+default `pi` profile is a skill-free ablation and passes `--no-skills`.
+By default, `run_benchmark_agent` treats MDClaw CLI use without declared MDClaw
+skill context as a run-condition violation. Use `--solver-context
+skill-system` for a real stage-skill run, `skill-text-injected` when external
+harness text is injected into the prompt, or `--mdclaw-cli-policy allow` only
+for an intentional `mdclaw-cli-only` ablation.
 
 For agents that do not call the MDClaw CLI, the runner provides a neutral
 `record_stage.py` wrapper in each task workspace and exposes it as
@@ -92,8 +98,9 @@ For agents that do not call the MDClaw CLI, the runner provides a neutral
 `$MDCLAW_BENCHMARK_STAGE_WRAPPER`. Use it to record measured source, prep,
 topology, and minimization commands for strict provenance.
 
-For Claude Code or Codex, change only `--agent-name`. The built-in profiles
-include the non-interactive approval-bypass flags used for benchmark runs:
+For Claude Code or Codex skill-system runs, set `--agent-name` and expose the
+skills directory. The built-in profiles include the non-interactive
+approval-bypass flags used for benchmark runs:
 
 ```bash
 mdclaw run_benchmark_agent \
@@ -101,7 +108,9 @@ mdclaw run_benchmark_agent \
   --run-id claude_20260613_p01 \
   --dataset-dir benchmarks/mdprepbench \
   --task-ids P01_prep_simple_monomer_t4l \
-  --agent-name claude-code
+  --agent-name claude-code \
+  --agent-skills-dir skills \
+  --tooling-condition mdclaw-skills+cli
 ```
 
 ```bash
@@ -110,15 +119,28 @@ mdclaw run_benchmark_agent \
   --run-id codex_20260613_p01 \
   --dataset-dir benchmarks/mdprepbench \
   --task-ids P01_prep_simple_monomer_t4l \
-  --agent-name codex
+  --agent-name codex \
+  --agent-skills-dir skills \
+  --tooling-condition mdclaw-skills+cli
 ```
 
-By default, `pi`, `claude-code`, and `codex` select MDClaw-skill reference
-profiles (`pi-mdclaw-skill`, `claude-code-mdclaw-skill`, and
-`codex-mdclaw-skill`). Use `--agent-profile codex-plain`,
-`--agent-profile claude-code-plain`, or `--agent-profile pi-plain` for
-skill-free checks, add `--agent-model <model>` for a model override, or pass
-`--agent-command` for a fully custom invocation.
+For Pi with skills enabled:
+
+```bash
+mdclaw run_benchmark_agent \
+  --output-dir benchmark_runs \
+  --run-id pi_skills_20260613_p01 \
+  --dataset-dir benchmarks/mdprepbench \
+  --task-ids P01_prep_simple_monomer_t4l \
+  --agent-name pi \
+  --agent-profile pi-user \
+  --agent-skills-dir skills \
+  --tooling-condition mdclaw-skills+cli
+```
+
+By default, `pi`, `claude-code`, and `codex` select plain non-interactive
+profiles that read only the generated task prompt. Add `--agent-model <model>`
+for a model override, or pass `--agent-command` for a fully custom invocation.
 
 To run the full MDPrepBench suite for Pi, Claude Code, and Codex sequentially
 and score each run, use the operator script:
@@ -163,7 +185,9 @@ per-axis scores, the per-capability profile, `tooling_condition`, and
 `mdclaw init_benchmark_run --tooling-condition mdclaw-free`, hand the agent only
 the exported public `prompt.md`, package its own OpenMM triple with
 `mdclaw package_openmm_submission` or the standalone
-`benchmarks/tools/package_submission.py`, then `score_benchmark_run`. Full
+`benchmarks/tools/package_submission.py`, then `score_benchmark_run`. Optional
+evidence reports should be passed to the packager, not added by hand-editing
+`manifest.json` or `provenance.json` after packaging. Full
 recipe: `docs/benchmark/mdcrow-runner.md`.
 
 **4. Weak baselines (discrimination check).**

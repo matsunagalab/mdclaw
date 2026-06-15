@@ -52,6 +52,16 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "min node writes" in guidance["mdclaw_state_source"]
         assert "run_minimization" in guidance["mdclaw_dag_command_template"]
         assert "export_state_pdb" in guidance["mdclaw_export_command_template"]
+        packaging = contract["manifest_contract"]["packaging_guidance"]
+        assert packaging["preferred_when_openmm_triple_exists"] == (
+            "mdclaw package_openmm_submission"
+        )
+        assert "manifest.json" in packaging["packager_writes"]
+        assert "evidence_report" in " ".join(packaging["packager_writes"])
+        assert "output-only" in packaging["submission_dir_policy"]
+        assert "do not hand-edit" in packaging["post_packaging_rule"]
+        assert "--evidence-report-file" in packaging["command_template"]
+        assert "chains" in packaging["does_not_choose"]
         assert "submission_blueprint" in contract
         assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
             "topology"
@@ -87,6 +97,18 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "minimized_structure.pdb from a min node" in item
             for item in contract["submission_checklist"]
         )
+        assert any(
+            "package_openmm_submission" in item
+            for item in contract["submission_checklist"]
+        )
+        assert any(
+            "outside submission_dir" in item
+            for item in contract["submission_checklist"]
+        )
+        assert any(
+            "do not hand-edit manifest.json or provenance.json" in item
+            for item in contract["submission_checklist"]
+        )
         checklist = (task_dir / "submission_checklist.md").read_text()
         assert "Pre-Submission Checks" in checklist
         assert "outputs.topology" in checklist
@@ -94,6 +116,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "run_minimization" in checklist
         assert "export_state_pdb" in checklist
         assert "metric_requirements" in contract
+        assert "required_components" in contract
         assert contract["submission_manifest_schema"].endswith(
             "submission_manifest.schema.json"
         )
@@ -198,6 +221,33 @@ def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
     assert requirements["preparation.source_pdb_id"] == ("equals", "2LZM")
     assert requirements["preparation.solvent_model"] == ("equals", "explicit")
     assert requirements["preparation.topology_ready"] == ("equals", True)
+
+
+def test_export_public_package_exposes_required_components(tmp_path: Path):
+    out_dir = tmp_path / "public_mdprepbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    task_dir = out_dir / "tasks" / "P02_prep_1ake_chain_ap5"
+    contract = json.loads((task_dir / "submission_contract.json").read_text())
+    components = {
+        (item["structure_role"], item["check_id"]): item
+        for item in contract["required_components"]
+    }
+
+    prepared = components[("prepared_structure", "ap5_retained")]
+    minimized = components[("minimized_structure", "minimized_ap5_retained")]
+    assert prepared["manifest_path"] == "outputs.prepared_structure"
+    assert prepared["min_residue_counts"] == {"AP5": 1}
+    assert minimized["manifest_path"] == "outputs.minimized_structure"
+    assert minimized["min_residue_counts"] == {"AP5": 1}
+
+    checklist = (task_dir / "submission_checklist.md").read_text()
+    assert "Required Components" in checklist
+    assert "AP5" in checklist
 
 
 def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(

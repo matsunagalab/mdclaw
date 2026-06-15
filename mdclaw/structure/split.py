@@ -28,6 +28,7 @@ from typing import List, Optional  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
     classify_glycan_residues,
+    create_validation_error,
     create_unique_subdir,
     generate_job_id,
 )
@@ -692,6 +693,55 @@ def split_molecules(
         return result
     
     result["all_chains"] = analysis["chains"]
+
+    if include_ligand_ids is not None and "ligand" in include_types:
+        requested_ligand_ids = sorted(
+            {str(item).strip() for item in include_ligand_ids if str(item).strip()}
+        )
+        available_ligand_ids = sorted(
+            {
+                str(chain["unique_id"])
+                for chain in analysis["chains"]
+                if chain.get("chain_type") == "ligand" and chain.get("unique_id")
+            }
+        )
+        matched_ligand_ids = sorted(
+            set(requested_ligand_ids) & set(available_ligand_ids)
+        )
+        missing_ligand_ids = sorted(
+            set(requested_ligand_ids) - set(available_ligand_ids)
+        )
+        result["ligand_selection"] = {
+            "requested_ligand_ids": requested_ligand_ids,
+            "available_ligand_ids": available_ligand_ids,
+            "matched_ligand_ids": matched_ligand_ids,
+            "missing_ligand_ids": missing_ligand_ids,
+        }
+        if missing_ligand_ids:
+            result.update(
+                create_validation_error(
+                    "include_ligand_ids",
+                    "requested ligand unique ID(s) were not found",
+                    expected=(
+                        "ligand unique_id values from inspect_molecules, e.g. "
+                        "author_chain:resname:resnum"
+                    ),
+                    actual=", ".join(missing_ligand_ids),
+                    hints=[
+                        "Run inspect_molecules and copy chains[].unique_id exactly.",
+                        "Do not pass only a ligand residue name such as ATP or AP5.",
+                        f"Available ligand unique_id values: {available_ligand_ids}",
+                    ],
+                    context_extra={
+                        "requested_ligand_ids": requested_ligand_ids,
+                        "available_ligand_ids": available_ligand_ids,
+                        "matched_ligand_ids": matched_ligand_ids,
+                        "missing_ligand_ids": missing_ligand_ids,
+                    },
+                    code="requested_ligand_ids_not_found",
+                )
+            )
+            return result
     
     # Check for gemmi dependency (should be available if analysis succeeded)
     try:

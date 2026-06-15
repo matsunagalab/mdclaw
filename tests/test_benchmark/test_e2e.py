@@ -132,6 +132,7 @@ def test_run_benchmark_agent_executes_agent_and_scores_with_harness_records(
         """
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -149,6 +150,9 @@ args = parser.parse_args()
 session_file = Path(args.session_dir) / f"{args.run_id}-{args.task_id}.jsonl"
 session_file.parent.mkdir(parents=True, exist_ok=True)
 session_file.write_text('{"event":"fake-agent-started"}\\n')
+mdclaw_wrapper = Path(os.environ["MDCLAW_BENCHMARK_MDCLAW"])
+assert mdclaw_wrapper.name == "mdclaw"
+assert shutil.which("mdclaw") == str(mdclaw_wrapper)
 
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
 for stage in ("source", "prep", "topo", "min"):
@@ -241,6 +245,16 @@ _fake_submissions.GENERATORS[args.task_id](
     assert "private_tasks" not in json.dumps(solver_instruction)
     assert solver_instruction["stage_recording"]["wrapper"].endswith("record_stage.py")
     assert solver_instruction["mdclaw_cli"]["allowed"] is False
+    assert solver_instruction["mdclaw_cli"]["runtime"] == "auto"
+    assert solver_instruction["mdclaw_cli"]["runtime_options"] == [
+        "conda",
+        "sif",
+        "docker",
+    ]
+    assert solver_instruction["mdclaw_cli"]["command"] == "mdclaw"
+    wrapper = Path(solver_instruction["mdclaw_cli"]["wrapper"])
+    assert wrapper.name == "mdclaw"
+    assert wrapper.is_file()
     assert solver_instruction["submission_dir"].endswith("/submission")
 
 
@@ -270,7 +284,7 @@ args = parser.parse_args()
 agent_prompt = Path(args.agent_prompt)
 prompt_text = agent_prompt.read_text()
 instruction_path = prompt_text.split(
-    "Run the task described by this agent-safe instruction file:\\n\\n", 1
+    "Use this agent-safe instruction file:\\n\\n", 1
 )[1].split("\\n\\n", 1)[0].strip()
 instruction = json.loads(Path(instruction_path).read_text())
 assert Path(instruction["agent_prompt"]).read_text() == prompt_text
@@ -404,6 +418,135 @@ _fake_submissions.GENERATORS[args.task_id](
     assert result["score"]["summary"]["summary"]["overall_score"] == 1.0
 
 
+def test_run_benchmark_agent_installs_explicit_skills_for_agent_discovery(
+    tmp_path: Path,
+):
+    skills_src = tmp_path / "agent_skills"
+    skill_dir = skills_src / "md-prepare"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: mdclaw:md-prepare\n"
+        "description: Prepare MD systems with MDClaw.\n"
+        "---\n"
+        "# md-prepare\n"
+    )
+    common_dir = skills_src / "common"
+    common_dir.mkdir()
+    (common_dir / "run-loop.md").write_text("# Run Loop\n")
+
+    fake_agent = tmp_path / "fake_agent.py"
+    fake_agent.write_text(
+        """
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+parser.add_argument("--solver-workspace", required=True)
+parser.add_argument("--task-instructions", required=True)
+args = parser.parse_args()
+
+workspace = Path(args.solver_workspace)
+expected = [
+    workspace / "skills" / "md-prepare" / "SKILL.md",
+    workspace / "skills" / "common" / "run-loop.md",
+    workspace / ".agents" / "skills" / "md-prepare" / "SKILL.md",
+    workspace / ".agents" / "skills" / "common" / "run-loop.md",
+    workspace / ".claude" / "skills" / "md-prepare" / "SKILL.md",
+    workspace / ".claude" / "skills" / "common" / "run-loop.md",
+    workspace / ".codex" / "skills" / "md-prepare" / "SKILL.md",
+    workspace / ".codex" / "skills" / "common" / "run-loop.md",
+]
+missing = [str(path) for path in expected if not path.is_file()]
+if missing:
+    raise SystemExit("missing installed skill files: " + ", ".join(missing))
+
+package = json.loads((workspace / "package.json").read_text())
+if package.get("pi", {}).get("skills") != ["./skills"]:
+    raise SystemExit("package.json does not expose ./skills for Pi")
+
+instructions = json.loads(Path(args.task_instructions).read_text())
+if instructions.get("agent_skills", {}).get("skill_names") != ["md-prepare"]:
+    raise SystemExit("task instructions did not record installed skills")
+if instructions.get("agent_skills", {}).get("support_dirs") != ["common"]:
+    raise SystemExit("task instructions did not record support directories")
+
+job_dir = Path(args.submission_dir).parent / "scratch_job"
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "mdclaw._cli",
+            "create_node",
+            "--job-dir",
+            str(job_dir),
+            "--node-type",
+            stage,
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}} "
+        "--solver-workspace {{solver_workspace}} "
+        "--task-instructions {{task_instructions}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_with_skills",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        agent_skills_dir=str(skills_src),
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    assert result["solver_context"]["skill_usage"] == "skill-system"
+    assert result["solver_context"]["source"] == "harness-installed"
+    assert result["solver_context"]["skill_names"] == ["md-prepare"]
+    assert result["attestation_record"]["tooling_condition"] == "mdclaw-skills+cli"
+    assert result["tasks"][0]["policy_violations"] == []
+    assert result["tasks"][0]["agent_skills"]["skill_names"] == ["md-prepare"]
+    assert result["tasks"][0]["agent_skills"]["support_dirs"] == ["common"]
+    assert "agent_skills" in result["tasks"][0]["agent_instruction"]
+
+    run_dir = output_dir / "agent_runner_with_skills"
+    task_run_dir = run_dir / "tasks" / TASK_ID
+    agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
+    assert agent_run["solver_context"]["skill_usage"] == "skill-system"
+    assert agent_run["agent_skills"]["skill_names"] == ["md-prepare"]
+    assert agent_run["agent_skills"]["support_dirs"] == ["common"]
+    prompt = Path(result["tasks"][0]["agent_instruction"]["agent_prompt"]).read_text()
+    assert "Agent skills may be available" in prompt
+
+
 def test_builtin_agent_profiles_include_noninteractive_bypass_flags():
     signature = inspect.signature(benchmark_run.run_benchmark_agent)
     assert signature.parameters["max_walltime_minutes_per_task"].default == 30
@@ -416,13 +559,12 @@ def test_builtin_agent_profiles_include_noninteractive_bypass_flags():
             agent_profile="auto",
         )
     )
-    assert codex_profile == "codex-mdclaw-skill"
+    assert codex_profile == "codex-plain"
     assert "--model {{agent_model}}" in codex_command
     assert "--dangerously-bypass-approvals-and-sandbox --" in codex_command
-    assert "{{mdclaw_benchmark_skill_md}}" in codex_command
     assert codex_meta["default_model"] == "gpt-5.4-mini"
     assert codex_meta["model_provider"] == "openai"
-    assert codex_meta["solver_context"] == "skill-text-injected"
+    assert codex_meta["solver_context"] == "none"
     codex_model, codex_model_defaulted, codex_provider = (
         benchmark_run._resolve_agent_model(
             agent_name="codex",
@@ -441,14 +583,13 @@ def test_builtin_agent_profiles_include_noninteractive_bypass_flags():
             agent_profile="auto",
         )
     )
-    assert claude_profile == "claude-code-mdclaw-skill"
+    assert claude_profile == "claude-code-plain"
     assert "--permission-mode bypassPermissions" in claude_command
     assert "--no-session-persistence" in claude_command
     assert "--model {{agent_model}}" in claude_command
-    assert "{{mdclaw_benchmark_skill_md}}" in claude_command
     assert claude_meta["default_model"] == "sonnet"
     assert claude_meta["model_provider"] == "anthropic"
-    assert claude_meta["solver_context"] == "skill-text-injected"
+    assert claude_meta["solver_context"] == "none"
     claude_model, claude_model_defaulted, claude_provider = (
         benchmark_run._resolve_agent_model(
             agent_name="claude-code",
@@ -465,22 +606,21 @@ def test_builtin_agent_profiles_include_noninteractive_bypass_flags():
         agent_command="",
         agent_profile="auto",
     )
-    assert pi_profile == "pi-mdclaw-skill"
+    assert pi_profile == "pi-plain"
     assert "--model {{agent_model}}" in pi_command
-    assert "--skill {{mdclaw_benchmark_skill}}" in pi_command
     assert "--session-dir {{agent_session_dir}}" in pi_command
-    assert "--no-session" not in pi_command
-    assert pi_meta["default_model"] == "deepseek-cloudflare/deepseek-v4-flash"
-    assert pi_meta["model_provider"] == "deepseek-cloudflare"
-    assert pi_meta["solver_context"] == "skill-system"
+    assert "--no-skills" in pi_command
+    assert pi_meta["default_model"] == "spark1-vllm/deepseek-v4-flash"
+    assert pi_meta["model_provider"] == "spark1-vllm"
+    assert pi_meta["solver_context"] == "none"
     pi_model, pi_model_defaulted, pi_provider = benchmark_run._resolve_agent_model(
         agent_name="pi",
         agent_model="auto",
         profile_metadata=pi_meta,
     )
-    assert pi_model == "deepseek-cloudflare/deepseek-v4-flash"
+    assert pi_model == "spark1-vllm/deepseek-v4-flash"
     assert pi_model_defaulted is True
-    assert pi_provider == "deepseek-cloudflare"
+    assert pi_provider == "spark1-vllm"
 
     override_model, override_defaulted, override_provider = (
         benchmark_run._resolve_agent_model(
@@ -631,6 +771,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "submission_contract",
         "submission_checklist",
         "submission_dir",
+        "work_dir",
+        "mdclaw_cli",
     }
     assert agent_tasks["tasks"] == [task_instructions]
     assert Path(task_instructions["agent_prompt"]).is_file()
@@ -641,9 +783,16 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "benchmark-wide solver scripts" in agent_prompt
     assert "MDCLAW_BENCHMARK_STAGE_WRAPPER" in agent_prompt
     assert "Do not create/edit harness_execution.json" in agent_prompt
+    assert "Use work_dir for study/job/work files" in agent_prompt
+    assert "do not edit manifest.json or provenance.json" in agent_prompt
     assert "Run IDs and directory names are labels only" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
     assert len(agent_prompt) < 1400
+    assert task_instructions["work_dir"].endswith("/work")
+    assert Path(task_instructions["work_dir"]).is_dir()
+    assert task_instructions["mdclaw_cli"]["runtime"] == "auto"
+    assert task_instructions["mdclaw_cli"]["command"] == "mdclaw"
+    assert Path(task_instructions["mdclaw_cli"]["wrapper"]).is_file()
     assert Path(prepared["operator_prompt_file"]).is_file()
     operator_prompt = Path(prepared["operator_prompt_file"]).read_text()
     assert "The run_id and directory names are labels only" in operator_prompt
@@ -669,6 +818,32 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert harness_instructions["canonical_task_file"].endswith("task.json")
     assert "score_command" in harness_instructions
     assert harness_tasks["tasks"] == [harness_instructions]
+
+
+def test_prepare_benchmark_run_can_pin_mdclaw_runtime(tmp_path: Path):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="agent_safe_runtime",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        execution_mode="dry_run",
+        mdclaw_runtime="SIF",
+    )
+
+    assert prepared["success"], prepared
+    task_run_dir = output_dir / "agent_safe_runtime" / "tasks" / TASK_ID
+    task_instructions = json.loads(
+        (task_run_dir / "task_instructions.json").read_text()
+    )
+    wrapper = Path(task_instructions["mdclaw_cli"]["wrapper"])
+    run_config = json.loads(
+        (output_dir / "agent_safe_runtime" / "run_config.json").read_text()
+    )
+
+    assert task_instructions["mdclaw_cli"]["runtime"] == "sif"
+    assert run_config["mdclaw_runtime"] == "sif"
+    assert "RUNTIME=sif" in wrapper.read_text()
 
 
 def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):

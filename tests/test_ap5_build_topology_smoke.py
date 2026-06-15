@@ -1,14 +1,14 @@
-"""Smoke test: 1AKE + AP5 build_amber_system completes without hanging.
+"""Smoke test: 1AKE + AP5 build_amber_system completes via GAFFTemplateGenerator.
 
-AP5 (bis(adenosine)-5'-pentaphosphate, 81 atoms, net charge -5) was the
-canary case for the GAFFTemplateGenerator AM1-BCC hang. With topology-time
-Amber geostd XML generation (:mod:`mdclaw._geostd` wired into
-``build_amber_system``), AM1-BCC is never invoked for this ligand and the
-topology build finishes in under a minute.
+AP5 (bis(adenosine)-5'-pentaphosphate, 81 atoms, net charge -5) is the canary
+case for ligand parameterization: ``build_amber_system`` runs it through
+``GAFFTemplateGenerator``, which derives AM1-BCC charges via antechamber/sqm at
+topology time. sqm on this large, highly charged ligand is slow but converges;
+the ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor keeps it from being killed prematurely.
 
 Requires: conda env (rdkit, openmm, ambertools, parmed,
 openmmforcefields), network access for PDB fetch.
-Runtime: ~15-60 s on a recent laptop.
+Runtime: several minutes (AM1-BCC charge fitting on AP5).
 
 Run with: conda run -n mdclaw pytest tests/test_ap5_build_topology_smoke.py -v
 """
@@ -36,13 +36,6 @@ class Test1akeAp5BuildTopology:
     @pytest.fixture(scope="class")
     def job_dir(self, tmp_path_factory):
         return tmp_path_factory.mktemp("job_1ake_ap5_smoke")
-
-    @pytest.fixture(scope="class", autouse=True)
-    def require_ap5_geostd(self):
-        from mdclaw._geostd import lookup_geostd_parameters
-
-        if lookup_geostd_parameters("AP5") is None:
-            pytest.skip("AP5 geostd entry is required for the no-hang smoke test")
 
     def test_step1_source(self, job_dir):
         from mdclaw._node import create_node, read_node
@@ -106,14 +99,13 @@ class Test1akeAp5BuildTopology:
         assert result["success"], result.get("errors")
         assert read_node(str(job_dir), self.solv_id)["status"] == "completed"
 
-    def test_step4_topology_no_hang(self, job_dir):
-        """build_amber_system completes for AP5 within a sane wall-clock budget.
+    def test_step4_topology_via_gaff(self, job_dir):
+        """build_amber_system parameterizes AP5 with GAFFTemplateGenerator.
 
-        Pre-fix this would hang in modeller_prepare while
-        GAFFTemplateGenerator ran AM1-BCC (sqm) on AP5.
+        GAFFTemplateGenerator derives AM1-BCC charges (sqm) for AP5 at topology
+        time. This is slow but converges; the ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor
+        guards against a premature kill.
         """
-        import time
-
         from amber_server import build_amber_system
         from mdclaw._node import create_node, read_node
 
@@ -123,24 +115,20 @@ class Test1akeAp5BuildTopology:
         assert node["success"]
         self.__class__.topo_id = node["node_id"]
 
-        t0 = time.monotonic()
         result = build_amber_system(
             job_dir=str(job_dir),
             node_id=self.topo_id,
             forcefield="ff19SB",
             water_model="opc",
         )
-        elapsed = time.monotonic() - t0
         assert result["success"], result.get("errors")
-        assert elapsed < 180, (
-            f"build_amber_system took {elapsed:.1f}s — AM1-BCC bypass likely "
-            f"broken; pre-fix this regression hung indefinitely."
-        )
 
         provenance = result.get("forcefield_provenance", {})
-        auto = provenance.get("geostd_ligand_xml") or []
-        assert any(entry["residue_name"] == "AP5" for entry in auto), auto
-        assert provenance.get("gaff_base") == "gaff-2.2.20"
+        ligand_sources = {
+            entry["residue_name"]: entry.get("topology_parameter_source")
+            for entry in provenance.get("ligand_molecules", [])
+        }
+        assert ligand_sources.get("AP5") == "topology_gaff_template_generator", ligand_sources
 
         node_data = read_node(str(job_dir), self.topo_id)
         assert node_data["status"] == "completed"

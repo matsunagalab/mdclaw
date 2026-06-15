@@ -221,9 +221,20 @@ class TestPackageInit:
     """Test servers package __init__.py."""
 
     def test_version(self):
+        """``__version__`` must stay in sync with ``pyproject.toml``.
+
+        Derives the expected value from the single source of truth instead of a
+        hardcoded literal, so a release bump (see ``docs/developer/release.md``)
+        cannot leave this test asserting a stale version.
+        """
+        import tomllib
+        from pathlib import Path
+
         from mdclaw import __version__
 
-        assert __version__ == "0.5.2"
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        expected = tomllib.loads(pyproject.read_text())["project"]["version"]
+        assert __version__ == expected
 
 
 if __name__ == "__main__":

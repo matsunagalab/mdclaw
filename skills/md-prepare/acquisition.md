@@ -6,14 +6,16 @@ Common sources:
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type source
-mdclaw --job-dir <job_dir> --node-id source_001 fetch_structure --source pdb --pdb-id 1AKE
-mdclaw --job-dir <job_dir> --node-id source_001 fetch_structure --source pdb --pdb-id 1AKE --assembly-ids 1
-mdclaw --job-dir <job_dir> --node-id source_001 fetch_structure --source alphafold --uniprot-id P12345
-mdclaw --job-dir <job_dir> --node-id source_001 fetch_structure --source local --file-path /abs/input.pdb
+mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE
+mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE --assembly-ids 1
+mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source alphafold --uniprot-id P12345
+mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source local --file-path /abs/input.pdb
 ```
 
 Rules:
 
+- Use the exact `node_id` returned by `create_node`; do not leave `--node-id`
+  empty and do not create a second `source` node for the same job.
 - Copy the target identifier exactly from the user's request.
 - Default PDB/local fetch records the deposited asymmetric unit only. If the
   user asks for a biological assembly, or the PDB/mmCIF entry says a specific
@@ -41,6 +43,6 @@ Rules:
   `--source-structure-id` selector to inspect a specific candidate.
 
 ```bash
-mdclaw list_source_candidates --job-dir <job_dir> --node-id source_001
-mdclaw inspect_molecules --job-dir <job_dir> --node-id source_001 --source-structure-id candidate_002
+mdclaw list_source_candidates --job-dir <job_dir> --node-id <source_node_id>
+mdclaw inspect_molecules --job-dir <job_dir> --node-id <source_node_id> --source-structure-id candidate_002
 ```
