@@ -570,7 +570,9 @@ def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
         "<command>`; repeat for source/prep/topo/min. Do not create/edit "
         "harness_execution.json/.jsonl.\n\n"
         "Use mdclaw CLI only if mdclaw_cli.allowed.\n\n"
-        "Use `conda run -n mdclaw python ...` for OpenMM/gemmi helpers.\n\n"
+        "Do not assume a specific Python environment: bare `python3` may lack "
+        "OpenMM/gemmi, and there may be no `conda` env. Run helpers in an "
+        "environment that actually provides the MD libraries you need.\n\n"
         "With MDClaw DAG tools, do not edit node dirs, progress.json, or "
         "node.json; retry with new nodes/tooling.\n\n"
         "Run IDs and directory names are labels only; infer no shortcuts/"
@@ -580,6 +582,33 @@ def _task_agent_prompt(task_id: str, instruction_file: Path) -> str:
         "commands/blocker.\n\n"
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
+
+
+def _resolve_mdclaw_python() -> str:
+    """Resolve the command that runs Python with the MDClaw science stack.
+
+    Honors an operator-provided ``MDCLAW_PYTHON``. Otherwise prefers a
+    Singularity/Apptainer SIF (``MDCLAW_SIF`` or a repo-root ``mdclaw.sif``),
+    then a conda env named ``mdclaw``, falling back to bare ``python3``. This
+    is what the agent prompt references as ``$MDCLAW_PYTHON`` so agents stop
+    assuming a conda env that may not exist.
+    """
+    explicit = os.environ.get("MDCLAW_PYTHON")
+    if explicit:
+        return explicit
+    sif = os.environ.get("MDCLAW_SIF")
+    if not sif:
+        for base in (os.environ.get("CLAUDE_PLUGIN_ROOT"), os.getcwd()):
+            if base:
+                cand = os.path.join(base, "mdclaw.sif")
+                if os.path.exists(cand):
+                    sif = cand
+                    break
+    if sif:
+        for runner in ("singularity", "apptainer"):
+            if shutil.which(runner):
+                return f"{runner} exec --nv {sif} python"
+    return "conda run -n mdclaw python"
 
 
 def _operator_prompt(run_dir: Path, dataset: Path) -> str:
@@ -1325,6 +1354,7 @@ def _run_one_benchmark_agent_task(
     run_env["MDCLAW_BENCHMARK_RUN_ID"] = run_id
     run_env["MDCLAW_BENCHMARK_TASK_ID"] = task_id
     run_env["MDCLAW_BENCHMARK_STAGE_WRAPPER"] = str(stage_wrapper_path)
+    run_env["MDCLAW_PYTHON"] = _resolve_mdclaw_python()
 
     started_wall = time.monotonic()
     started_at = _now_utc()

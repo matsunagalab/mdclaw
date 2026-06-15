@@ -305,13 +305,28 @@ Internal submission rules for this skill:
   orchestration belongs to the harness/operator, not the evaluated agent.
 - Task-local helper scripts are allowed only if they run real workflow steps
   for the current task and are recorded in `provenance.command_log`.
-- Run Python helpers inside the MDClaw environment, e.g.
-  `conda run -n mdclaw python ...`; system `python3` may not have OpenMM,
-  gemmi, or MDClaw installed.
+- Run all preparation through `mdclaw <tool>` (it is on PATH). Do **not**
+  hand-roll OpenMM/PDBFixer/gemmi scripts — that is the most common failure
+  mode and wastes the time budget. For an unavoidable Python helper, run it as
+  `$MDCLAW_PYTHON ...` (the MDClaw runtime that has OpenMM/gemmi); do not use
+  bare `python3` or assume a `conda` env.
 - Do not delete or hand-edit DAG node directories, `node.json`, or
   `progress.json`. If a step must be retried, create a new node or use the
   MDClaw node/need tools so provenance remains auditable.
-- For MDPrepBench, attempt source, prep, topology export, and the `min` stage.
+- For MDPrepBench, run the full chain **to completion**: source -> prep ->
+  topo -> `min`. **Do not stop after `topo`.** A submission that ends at
+  topology is incomplete and scores as a failure. The `min` stage and the
+  `manifest.json` are mandatory, not optional.
+- Completion checklist before you finish — every required output in
+  `submission_contract.json` must exist under `submission/`. For the typical
+  prep task that means: `manifest.json`, `metrics.json`, `provenance.json`,
+  `prepared_structure.pdb`, `minimized_structure.pdb`, and
+  `minimization_report.json`. **Write `manifest.json` last**, listing the
+  outputs you produced; do not exit until it is on disk.
+- Work efficiently with the time budget: call `explain_node`/`plan_next` once
+  to orient at each stage, then act — do not poll them repeatedly. Never
+  hand-roll OpenMM/PDBFixer/gemmi prep scripts; use `mdclaw <tool>`. For an
+  unavoidable Python helper, run it as `$MDCLAW_PYTHON ...`.
 - For completed prep submissions, use `manifest.outputs.topology` as a list
   containing `system.xml`, `topology.pdb`, and `state.xml`.
 - For ordinary MDClaw DAG runs, use a `min` node after `topo` and record
