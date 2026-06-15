@@ -611,6 +611,87 @@ def _resolve_mdclaw_python() -> str:
     return "conda run -n mdclaw python"
 
 
+def _openmm_available() -> bool:
+    """True if the current interpreter can import OpenMM (needed for scoring)."""
+    try:
+        import openmm  # noqa: F401
+
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _resolve_sif_path() -> Optional[str]:
+    """Locate an MDClaw SIF (``MDCLAW_SIF`` or a repo-root ``mdclaw.sif``)."""
+    sif = os.environ.get("MDCLAW_SIF")
+    if sif and os.path.exists(sif):
+        return sif
+    for base in (os.environ.get("CLAUDE_PLUGIN_ROOT"), os.getcwd()):
+        if base:
+            cand = os.path.join(base, "mdclaw.sif")
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
+def _scorer_delegate_argv() -> Optional[list[str]]:
+    """``mdclaw`` CLI prefix for scoring in an OpenMM-capable runtime.
+
+    Returns ``None`` when scoring can run in-process (OpenMM importable here) or
+    when no suitable runtime is found (caller falls back to in-process). The
+    deterministic prep checks deserialize an OpenMM topology bundle, so scoring
+    in a bare venv would spuriously fail every OpenMM-dependent check.
+    """
+    if _openmm_available():
+        return None
+    sif = _resolve_sif_path()
+    if sif:
+        for runner in ("singularity", "apptainer"):
+            if shutil.which(runner):
+                return [runner, "exec", "--nv", sif, "mdclaw"]
+    if shutil.which("mdclaw"):
+        return ["mdclaw"]
+    return None
+
+
+def _delegate_score_benchmark_run(
+    argv: list[str],
+    *,
+    run_dir: str,
+    dataset_dir: Optional[str],
+    llm_judge_file: Optional[str],
+) -> dict[str, Any]:
+    """Re-run ``score_benchmark_run`` through an OpenMM-capable runtime."""
+    cmd = [*argv, "score_benchmark_run", "--run-dir", str(run_dir)]
+    if dataset_dir:
+        cmd += ["--dataset-dir", str(dataset_dir)]
+    if llm_judge_file:
+        cmd += ["--llm-judge-file", str(llm_judge_file)]
+    sub_env = os.environ.copy()
+    sub_env["MDCLAW_SCORE_INPROCESS"] = "1"  # prevent re-delegation loop
+    proc = subprocess.run(cmd, env=sub_env, capture_output=True, text=True)
+    out = (proc.stdout or "").strip()
+    for candidate in (out, out[out.rfind("{"):] if "{" in out else ""):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            parsed.setdefault("delegated_via", " ".join(argv))
+            return parsed
+    return {
+        "success": proc.returncode == 0,
+        "delegated_via": " ".join(argv),
+        "errors": (
+            []
+            if proc.returncode == 0
+            else [f"delegated scorer exited {proc.returncode}: {(proc.stderr or '')[-500:]}"]
+        ),
+    }
+
+
 def _operator_prompt(run_dir: Path, dataset: Path) -> str:
     """Short prompt intended for the benchmark operator, not evaluated agents."""
     return (
@@ -1625,6 +1706,16 @@ def score_benchmark_run(
     summarize: bool = True,
 ) -> dict[str, Any]:
     """Validate and score every task submission in a benchmark run directory."""
+    if not os.environ.get("MDCLAW_SCORE_INPROCESS"):
+        delegate_argv = _scorer_delegate_argv()
+        if delegate_argv is not None:
+            return _delegate_score_benchmark_run(
+                delegate_argv,
+                run_dir=run_dir,
+                dataset_dir=dataset_dir,
+                llm_judge_file=llm_judge_file,
+            )
+
     rd = Path(run_dir)
     cfg_path = rd / "run_config.json"
     if not cfg_path.is_file():
