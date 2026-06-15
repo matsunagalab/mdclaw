@@ -331,6 +331,30 @@ class TestCliPreflightJson:
         payload = json.loads(capsys.readouterr().out)
         assert payload["success"] is True
         assert "workflow_hint" in payload
-        assert payload["workflow_hint"]["action"] in {
+        hint = payload["workflow_hint"]
+        assert hint["action"] in {
             "run_existing", "create_and_run", "wait_running",
         }
+        assert "next_command" in hint
+
+    def test_inspect_job_emits_workflow_hint(self, tmp_path, capsys):
+        from mdclaw._cli import main
+
+        # Mirror the real stall: a completed solv chain plus a pending topo node
+        # whose build_amber_system has not run yet (the P05 case where a weak
+        # agent looped on inspect_job). Polling inspect_job must now hand back the
+        # ready-to-run build_amber_system command so it cannot loop blind.
+        jd = tmp_path / "job_inspect_hint"
+        jd.mkdir()
+        ids = _explicit_chain_through(jd, "solv")
+        topo = create_node(str(jd), "topo", parent_node_ids=[ids["solv"]])
+        assert topo["success"], topo
+        with pytest.raises(SystemExit):
+            main(["inspect_job", "--job-dir", str(jd)])
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["success"] is True
+        assert "workflow_hint" in payload
+        hint = payload["workflow_hint"]
+        assert hint["suggested_tool"] == "build_amber_system"
+        assert hint["next_command"]
+        assert "build_amber_system" in hint["next_command"]

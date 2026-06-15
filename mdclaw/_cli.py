@@ -478,6 +478,11 @@ def _build_workflow_hint(job_dir: str) -> dict | None:
         "suggested_tool": action.get("suggested_tool"),
         "suggested_parent_node_ids": action.get("suggested_parent_node_ids", []),
         "existing_node_id": action.get("existing_node_id"),
+        # Literal, ready-to-run command so a weak agent does not have to assemble
+        # it (or fall into an inspect_job poll loop). run_command targets an
+        # already-created node; create_command is the concrete first step when
+        # nothing exists yet (the run step arrives in the next hint).
+        "next_command": action.get("run_command") or action.get("create_command"),
         "next_skill": plan.get("next_skill"),
     }
 
@@ -862,14 +867,15 @@ def main(argv: list[str] | None = None) -> None:
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
         # Uniform "what next" envelope for weak agents. After any successful
-        # node-context workflow tool (or create_node), attach the plan_next
-        # recommendation so the agent does not have to re-derive the DAG
-        # frontier by hand. Best-effort: never let it break the real result.
+        # node-context workflow tool, create_node, or an inspect_job poll,
+        # attach the plan_next recommendation (incl. next_command) so the agent
+        # does not have to re-derive the DAG frontier by hand or loop on
+        # inspect_job. Best-effort: never let it break the real result.
         if (
             exit_code == 0
             and isinstance(result, dict)
             and effective_job_dir
-            and tool_name in (_NODE_REQUIRED_TOOLS | {"create_node"})
+            and tool_name in (_NODE_REQUIRED_TOOLS | {"create_node", "inspect_job"})
             and "workflow_hint" not in result
         ):
             result["workflow_hint"] = _build_workflow_hint(effective_job_dir)

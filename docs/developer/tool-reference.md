@@ -236,6 +236,9 @@ skill examples.
   `wait_running`.
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
+  The CLI also appends the same `workflow_hint` (with a ready-to-run
+  `next_command`) it attaches to workflow tools, so an agent that polls
+  `inspect_job` is handed the next step instead of looping on it.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
 - `update_job_params(...)`: merge workflow-level metadata into `progress.json`.

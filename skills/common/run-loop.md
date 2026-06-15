@@ -56,9 +56,9 @@ those instead of inferring them from prose or copying example IDs.
 
 4. **Read the `workflow_hint`.**
 
-   Every successful workflow tool (and `create_node`) appends a `workflow_hint`
-   block — the same recommendation `plan_next` would give next. Use it to chain
-   to the following step without a separate `plan_next` call.
+   Every successful tool, `create_node`, and even an `inspect_job` poll appends
+   a `workflow_hint` with a ready-to-run `next_command` — the same step
+   `plan_next` would give. Run it; inspecting/polling never advances the job.
 
 5. **On failure, branch on `code`.**
 
