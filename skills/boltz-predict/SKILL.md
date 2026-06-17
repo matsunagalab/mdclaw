@@ -7,10 +7,8 @@ description: "AI-driven protein structure prediction using Boltz-2 for single pr
 
 You are a computational biophysics expert helping users predict protein structures using Boltz-2.
 
-Respond in the user's language. Use English for tool parameter values.
-All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
-Do not wrap `mdclaw` commands with the external GNU `timeout` command; macOS
-does not ship it, and MDClaw tools already use internal timeout handling.
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
+`skills/common/node-cli-patterns.md` before acting.
 
 ## Prediction Modes
 
@@ -23,6 +21,11 @@ Boltz-2 supports three prediction scenarios:
 | **Protein-ligand complex** | 1 protein sequence + SMILES | Protein: `MVLSPAD...`, Ligand: `CCO` (ethanol) |
 
 ---
+
+Use this skill when `prepare_complex` or `clean_protein` returns
+`code="pdbfixer_missing_residues_out_of_scope"` and no reliable MODELLER
+template/alignment is available. Regenerate a new source candidate from the
+sequence instead of retrying PDBFixer repair on the same incomplete structure.
 
 ## Step 0: Parse and Confirm
 
@@ -96,16 +99,14 @@ server unless they explicitly want to prepare Boltz YAML by hand.
 
 ```bash
 mdclaw boltz2_protein_from_seq \
-  --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
-  --smiles-list ""
+  --amino-acid-sequence-list "MVLSPADKTNVKAAW..."
 ```
 
 ### Example: Protein-Protein Complex (Dimer)
 
 ```bash
 mdclaw boltz2_protein_from_seq \
-  --amino-acid-sequence-list "MVLSPADKTNV..." "MKVLPAD..." \
-  --smiles-list ""
+  --amino-acid-sequence-list "MVLSPADKTNV..." "MKVLPAD..."
 ```
 
 ### Example: Protein-Ligand Complex with MSA Server
@@ -142,7 +143,7 @@ mdclaw boltz2_protein_from_seq \
   - Multiple sequences = complex (dimer, trimer, etc.)
   - Use exactly as provided by user
 - `--smiles-list`: SMILES strings for ligands
-  - Empty `""` for protein-only predictions
+  - Omit for protein-only predictions
   - Should be pre-validated with `rdkit_validate_smiles`
 - `--msa-path`: Optional custom MSA file path
   - Omit it to use the Boltz MSA server
@@ -202,6 +203,26 @@ List candidates through the tool instead of asking the user to open JSON:
 mdclaw list_source_candidates --job-dir <job_dir> --node-id source_001
 ```
 
+For normal MDClaw DAG work, run Boltz-2 in node mode so the prediction becomes
+the job's source bundle:
+
+```bash
+mdclaw create_node --job-dir <job_dir> --node-type source
+
+mdclaw --job-dir <job_dir> --node-id <source_node_id> boltz2_protein_from_seq \
+  --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
+  --num-models 3
+```
+
+For a protein-ligand prediction:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <source_node_id> boltz2_protein_from_seq \
+  --amino-acid-sequence-list "MVLSPADKTNVKAAW..." \
+  --smiles-list "CCO" \
+  --affinity
+```
+
 ### Next Steps
 
 Present the candidate IDs and confidence scores to the user. Use the default
@@ -229,5 +250,13 @@ If they want to continue to MD simulation:
 |-------|--------|
 | SMILES validation fails | Ask user to check chemical name or provide corrected SMILES |
 | PubChem lookup fails | Ask user to provide SMILES directly |
-| Boltz-2 prediction fails | Check: protein sequences valid, SMILES validated, conda env activated |
-| MSA file not found | Ask user to verify file path or use MSA server (default) |
+| `boltz_sequence_required` | Ask for at least one amino-acid sequence |
+| `boltz_num_models_invalid` | Use `--num-models 1` or a larger positive integer |
+| `boltz_affinity_requires_ligand` | Provide at least one valid ligand SMILES or omit `--affinity` |
+| `boltz_msa_file_missing` | Verify the MSA path or omit `--msa-path` to use the MSA server |
+| `boltz_custom_msa_multimer_unsupported` | Use the MSA server for multimers or prepare Boltz YAML manually |
+| `boltz_chain_count_exceeded` | Split the prediction or reduce the number of protein/ligand chains |
+| `boltz_executable_not_found` | Stop local execution and report that Boltz-2 is unavailable in the runtime |
+| `boltz_execution_failed` | Report the structured error and check sequence/SMILES/MSA inputs |
+| `boltz_no_structure_output` | Treat as a failed prediction; do not continue to prep without a source candidate |
+| `boltz_source_attach_failed` | Preserve the Boltz output directory and repair source-bundle registration before continuing |

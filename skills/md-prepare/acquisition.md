@@ -10,6 +10,7 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source p
 mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE --assembly-ids 1
 mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source alphafold --uniprot-id P12345
 mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source local --file-path /abs/input.pdb
+mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment --template-pdb /abs/template.pdb --target-sequence MVLSPADK...
 ```
 
 Rules:
@@ -38,6 +39,8 @@ Rules:
   source bundle before continuing into preparation; the candidate metadata
   should carry Boltz rank, model index, confidence file, and confidence score
   when available.
+- For MODELLER comparative models, use `skills/modeller-predict/SKILL.md` and
+  register the selected model on the same `source` node before preparation.
 - Run `inspect_molecules` after acquisition when chains, ligands, metals,
   glycans, nucleic acids, or PTMs may affect choices. Pass the same
   `--source-structure-id` selector to inspect a specific candidate.

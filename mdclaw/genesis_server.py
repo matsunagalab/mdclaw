@@ -75,7 +75,7 @@ def _structure_format_from_path(path: Path) -> str:
 
 def boltz2_protein_from_seq(
     amino_acid_sequence_list: list[str],
-    smiles_list: list[str],
+    smiles_list: Optional[list[str]] = None,
     affinity: bool = False,
     num_models: int = 1,
     output_dir: Optional[str] = None,
@@ -95,8 +95,8 @@ def boltz2_protein_from_seq(
     Args:
         amino_acid_sequence_list: List of amino acid sequences in single-letter format.
                                   Multiple sequences will be predicted as a complex.
-        smiles_list: List of SMILES strings for ligands to include in the prediction.
-                     Use empty list [] if no ligands are needed.
+        smiles_list: Optional list of SMILES strings for ligands to include in
+                     the prediction. Omit it or use [] if no ligands are needed.
         affinity: Set to True to predict binding affinity for the first ligand.
                   Default is False.
         num_models: Number of structure models to generate (default: 1).
@@ -164,6 +164,7 @@ def boltz2_protein_from_seq(
         if _node_err:
             return {
                 "success": False,
+                "code": "invalid_source_node",
                 "job_id": job_id,
                 "output_dir": None,
                 "input_yaml_path": None,
@@ -195,9 +196,22 @@ def boltz2_protein_from_seq(
         "warnings": []
     }
 
+    smiles_list = smiles_list or []
+
     # Validate inputs
     if not amino_acid_sequence_list:
         result["errors"].append("At least one amino acid sequence is required")
+        result["code"] = "boltz_sequence_required"
+        return result
+
+    if num_models < 1:
+        result["errors"].append("num_models must be >= 1")
+        result["code"] = "boltz_num_models_invalid"
+        return result
+
+    if msa_path and not Path(msa_path).expanduser().exists():
+        result["errors"].append(f"msa_path does not exist: {msa_path}")
+        result["code"] = "boltz_msa_file_missing"
         return result
 
     if msa_path and len(amino_acid_sequence_list) > 1:
@@ -205,6 +219,7 @@ def boltz2_protein_from_seq(
             "Custom msa_path currently supports only single-protein inputs; "
             "Boltz expects per-chain msa entries for multi-protein complexes"
         )
+        result["code"] = "boltz_custom_msa_multimer_unsupported"
         return result
 
     if _node_mode:
@@ -227,6 +242,7 @@ def boltz2_protein_from_seq(
     for sequence in amino_acid_sequence_list:
         if id_index >= max_chains:
             result["errors"].append(f"Exceeded maximum number of chains ({max_chains})")
+            result["code"] = "boltz_chain_count_exceeded"
             return result
 
         protein_id = chain_ids[id_index]
@@ -248,6 +264,7 @@ def boltz2_protein_from_seq(
             continue
         if id_index >= max_chains:
             result["errors"].append(f"Exceeded maximum number of chains ({max_chains})")
+            result["code"] = "boltz_chain_count_exceeded"
             return result
 
         ligand_id = chain_ids[id_index]
@@ -266,6 +283,7 @@ def boltz2_protein_from_seq(
     if affinity:
         if not ligand_id_start:
             result["errors"].append("Affinity calculation requires at least one valid SMILES string")
+            result["code"] = "boltz_affinity_requires_ligand"
             return result
         yaml_data['properties'] = [{
             'affinity': {
@@ -284,6 +302,7 @@ def boltz2_protein_from_seq(
     if not boltz_executable_path:
         result["errors"].append("Boltz executable not found")
         result["errors"].append("Hint: Install Boltz-2 or activate the mdclaw conda environment")
+        result["code"] = "boltz_executable_not_found"
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
@@ -321,6 +340,7 @@ def boltz2_protein_from_seq(
     except subprocess.CalledProcessError as e:
         logger.error(f"Boltz-2 prediction failed: {e.stderr}")
         result["errors"].append(f"Boltz-2 prediction failed: {e.stderr[:500]}")
+        result["code"] = "boltz_execution_failed"
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
@@ -328,6 +348,7 @@ def boltz2_protein_from_seq(
     except Exception as e:
         logger.error(f"Boltz-2 prediction failed: {e}")
         result["errors"].append(f"Boltz-2 prediction failed: {type(e).__name__}: {str(e)}")
+        result["code"] = "boltz_execution_failed"
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
         return result
@@ -367,6 +388,7 @@ def boltz2_protein_from_seq(
             result["errors"].append(
                 "Boltz-2 produced no PDB/mmCIF files; cannot complete source node"
             )
+            result["code"] = "boltz_no_structure_output"
             fail_node(job_dir, node_id, errors=result["errors"])
             return result
         try:
@@ -474,6 +496,7 @@ def boltz2_protein_from_seq(
             msg = f"Failed to attach Boltz-2 prediction to source node: {type(e).__name__}: {e}"
             logger.error(msg)
             result["errors"].append(msg)
+            result["code"] = "boltz_source_attach_failed"
             fail_node(job_dir, node_id, errors=[msg])
             return result
 

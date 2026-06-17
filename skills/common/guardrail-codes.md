@@ -9,6 +9,17 @@ human-readable messages.
 | `file_not_found` | Verify the path and rerun only after the file exists. |
 | `tool_not_available` | Stop local execution and report the missing external tool. |
 | `missing_pdb_file` | Use DAG auto-resolution or provide a valid PDB/mmCIF path. |
+| `pdbfixer_missing_residues_out_of_scope` | Regenerate the source structure with MODELLER or Boltz-2 instead of retrying PDBFixer repair. |
+| `boltz_sequence_required` | Ask for at least one amino-acid sequence before running Boltz-2. |
+| `boltz_num_models_invalid` | Use a positive integer for `--num-models`. |
+| `boltz_affinity_requires_ligand` | Provide at least one ligand SMILES or omit `--affinity`. |
+| `boltz_msa_file_missing` | Verify the custom MSA file path or omit `--msa-path` to use the MSA server. |
+| `boltz_custom_msa_multimer_unsupported` | Use the MSA server for multimers, or prepare a Boltz YAML manually. |
+| `boltz_chain_count_exceeded` | Reduce the number of protein/ligand chains or split the prediction. |
+| `boltz_executable_not_found` | Stop local execution and report that Boltz-2 is unavailable in the runtime. |
+| `boltz_execution_failed` | Report the structured error and inspect sequence, SMILES, MSA, and runtime availability. |
+| `boltz_no_structure_output` | Treat the prediction as failed; do not continue to prep without a source candidate. |
+| `boltz_source_attach_failed` | Preserve Boltz outputs and repair source-bundle registration before continuing. |
 | `missing_xml_topology_inputs` | Run or repair the topo node that should emit the XML triple. |
 | `forcefield_water_blocked` | Use a supported forcefield/water pair, usually `ff19SB + opc`. |
 | `explicit_solvent_box_dimensions_missing` | Build topology from a completed explicit-solvent `solv` node. |

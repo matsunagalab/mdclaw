@@ -29,6 +29,11 @@ Preparation-specific defaults:
 Guardrail handling:
 
 - Branch on structured `code` values.
+- If `pdbfixer_missing_residues_out_of_scope` appears, do not retry
+  `prepare_complex` with the same source. Restart from `source` and use
+  `skills/modeller-predict/SKILL.md` when a template/alignment exists, or
+  `skills/boltz-predict/SKILL.md` when the sequence should be predicted
+  directly.
 - If `forcefield_water_blocked` appears, change the incompatible pairing rather
   than retrying.
 - If ligand preparation returns `workflow_recommendation.options`, present only

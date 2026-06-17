@@ -215,6 +215,7 @@ class TestBoltz2SourceNodeIntegration:
         )
 
         assert result["success"] is False
+        assert result["code"] == "invalid_source_node"
         assert any("expected 'source'" in e for e in result["errors"])
         assert call_log == []
 
@@ -233,7 +234,48 @@ class TestBoltz2SourceNodeIntegration:
             node_id=node_id,
         )
         assert result["success"] is False
+        assert result["code"] == "boltz_sequence_required"
         assert any("sequence is required" in e for e in result["errors"])
+
+    def test_protein_only_smiles_list_can_be_omitted(self, tmp_path, monkeypatch):
+        _stub_boltz(monkeypatch)
+        from mdclaw import genesis_server as gs
+
+        out = tmp_path / "out"
+        out.mkdir()
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        assert result["predicted_pdb_files"]
+
+    def test_affinity_requires_ligand_has_stable_code(self, tmp_path, monkeypatch):
+        _stub_boltz(monkeypatch)
+        from mdclaw import genesis_server as gs
+
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            affinity=True,
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "boltz_affinity_requires_ligand"
+
+    def test_num_models_must_be_positive(self, tmp_path, monkeypatch):
+        _stub_boltz(monkeypatch)
+        from mdclaw import genesis_server as gs
+
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK"],
+            num_models=0,
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "boltz_num_models_invalid"
 
     def test_non_node_mode_still_works(self, tmp_path, monkeypatch):
         """Without job_dir/node_id, behavior should match the legacy path."""
@@ -259,6 +301,8 @@ class TestBoltz2SourceNodeIntegration:
 
         out = tmp_path / "out"
         out.mkdir()
+        msa = tmp_path / "custom_alignment.a3m"
+        msa.write_text(">query\nMVLSPADK\n")
         monkeypatch.setattr(gs.boltz_wrapper, "executable", "/fake/boltz")
 
         captured = {}
@@ -287,13 +331,13 @@ class TestBoltz2SourceNodeIntegration:
             amino_acid_sequence_list=["MVLSPADK"],
             smiles_list=[],
             num_models=3,
-            msa_path="/tmp/custom_alignment.a3m",
+            msa_path=str(msa),
             output_dir=str(out),
         )
 
         assert result["success"], result["errors"]
         yaml_text = Path(result["input_yaml_path"]).read_text()
-        assert "msa: /tmp/custom_alignment.a3m" in yaml_text
+        assert f"msa: {msa}" in yaml_text
         assert "--msa_path" not in captured["cmd"]
         assert "--use_msa_server" not in captured["cmd"]
         diff_idx = captured["cmd"].index("--diffusion_samples")
@@ -313,6 +357,25 @@ class TestBoltz2SourceNodeIntegration:
         )
 
         assert result["success"] is False
+        assert result["code"] == "boltz_msa_file_missing"
+
+    def test_custom_msa_rejects_multimer_input_after_file_exists(
+        self, tmp_path, monkeypatch
+    ):
+        _stub_boltz(monkeypatch)
+        from mdclaw import genesis_server as gs
+
+        msa = tmp_path / "custom_alignment.csv"
+        msa.write_text("dummy")
+        result = gs.boltz2_protein_from_seq(
+            amino_acid_sequence_list=["MVLSPADK", "MKVLPADQ"],
+            smiles_list=[],
+            msa_path=str(msa),
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "boltz_custom_msa_multimer_unsupported"
         assert any("per-chain msa entries" in err for err in result["errors"])
 
 

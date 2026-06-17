@@ -407,6 +407,88 @@ class TestHistidineOverride:
             assert cn["histidine_states"]["source"] == "user_override"
 
 
+def test_prepare_complex_propagates_large_missing_gap_recommendation(
+    mini_pdb,
+    monkeypatch,
+    tmp_path,
+):
+    import importlib
+
+    from mdclaw import structure_server as ss
+
+    _pc = importlib.import_module("mdclaw.structure.prepare_complex")
+    protein_file = tmp_path / "protein_A.pdb"
+    protein_file.write_text(SSBOND_MINI_PDB)
+    recommendation = {
+        "reason": "internal_missing_residues_exceed_pdbfixer_scope",
+        "recommended_next_action": "regenerate_source_structure",
+        "restart_stage": "source",
+        "options": [
+            {
+                "option": "use_modeller_template_modeling",
+                "next_skill": "skills/modeller-predict/SKILL.md",
+            },
+            {
+                "option": "use_boltz2_structure_prediction",
+                "next_skill": "skills/boltz-predict/SKILL.md",
+            },
+        ],
+    }
+
+    def fake_split(*args, **kwargs):
+        return {
+            "success": True,
+            "output_dir": str(kwargs.get("output_dir", ".")),
+            "protein_files": [str(protein_file)],
+            "nucleic_files": [],
+            "glycan_files": [],
+            "ligand_files": [],
+            "ion_files": [],
+            "water_files": [],
+            "chain_file_info": [
+                {
+                    "chain_id": "A",
+                    "author_chain": "A",
+                    "chain_type": "protein",
+                    "file": str(protein_file),
+                },
+            ],
+            "all_chains": [{"chain_id": "A", "author_chain": "A"}],
+            "errors": [],
+        }
+
+    def fake_clean(*args, **kwargs):
+        return {
+            "success": False,
+            "errors": ["Internal missing residues exceed the PDBFixer repair scope."],
+            "code": "pdbfixer_missing_residues_out_of_scope",
+            "workflow_recommendation": recommendation,
+            "recommended_next_action": "regenerate_source_structure",
+            "recommended_next_skills": [
+                "skills/modeller-predict/SKILL.md",
+                "skills/boltz-predict/SKILL.md",
+            ],
+            "missing_residue_repair": {"status": "out_of_scope"},
+        }
+
+    monkeypatch.setattr(_pc, "split_molecules", fake_split)
+    monkeypatch.setattr(_pc, "clean_protein", fake_clean)
+
+    result = ss.prepare_complex(
+        structure_file=str(mini_pdb),
+        output_dir=str(tmp_path / "out"),
+        select_chains=["A"],
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "pdbfixer_missing_residues_out_of_scope"
+    assert result["recommended_next_action"] == "regenerate_source_structure"
+    assert result["workflow_recommendation"] == recommendation
+    protein = result["proteins"][0]
+    assert protein["code"] == "pdbfixer_missing_residues_out_of_scope"
+    assert protein["missing_residue_repair"]["status"] == "out_of_scope"
+
+
 class TestPrecedence:
 
     def test_direct_args_win_over_structure_analysis(self, mini_pdb, monkeypatch, tmp_path):

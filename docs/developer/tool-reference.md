@@ -48,6 +48,9 @@ skill examples.
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,
   cap-specific H completion runs here; topology builders do not repair them.
+  Heavy internal missing-residue gaps stop with
+  `code="pdbfixer_missing_residues_out_of_scope"` and recommend regenerating
+  the source through MODELLER or Boltz-2.
 - `clean_ligand(...)`: ligand chemistry cleaning; emits SDF/PDB chemistry
   artifacts for topology-time ligand force-field resolution.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
@@ -67,9 +70,19 @@ skill examples.
 ## `genesis_server.py`
 
 - `boltz2_protein_from_seq(...)`: Boltz-2 structure prediction. In node mode,
-  all predicted structures are registered in the source bundle; per-candidate
-  metadata records Boltz rank/model index, original output file, confidence
-  JSON path, and `confidence_score` when Boltz writes confidence output.
+  all predicted structures are registered in the source bundle. Protein-only
+  predictions omit `smiles_list`; ligands are optional and required only when
+  `affinity=True`. Per-candidate metadata records Boltz rank/model index,
+  original output file, confidence JSON path, and `confidence_score` when
+  Boltz writes confidence output. Failure returns carry stable `code` values
+  such as `boltz_sequence_required`, `boltz_affinity_requires_ligand`,
+  `boltz_msa_file_missing`, `boltz_custom_msa_multimer_unsupported`,
+  `boltz_executable_not_found`, `boltz_execution_failed`, and
+  `boltz_no_structure_output`.
+- `modeller_from_alignment(...)`: MODELLER comparative modeling from a template
+  PDB plus either a target sequence or PIR/ALI alignment. In node mode, the
+  selected model is registered as the source bundle candidate with MODELLER
+  metadata and ranking details.
 - `rdkit_validate_smiles(...)`: SMILES validation and canonicalization.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.

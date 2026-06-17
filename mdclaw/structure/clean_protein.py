@@ -47,6 +47,8 @@ SUPPORTED_N_TERMINAL_CAPS = {"ACE"}
 SUPPORTED_C_TERMINAL_CAPS = {"NME"}
 TERMINAL_CAP_RESIDUES = SUPPORTED_N_TERMINAL_CAPS | SUPPORTED_C_TERMINAL_CAPS
 SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
+PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES = 10
+PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH = 5
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -56,6 +58,75 @@ from mdclaw.structure.ligand_chemistry import _estimate_charge_rdkit, _estimate_
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
+
+
+def _internal_missing_residue_records(
+    missing_residues: dict,
+    chains: list,
+) -> list[dict]:
+    records: list[dict] = []
+    for (chain_idx, res_idx), residues in sorted(missing_residues.items()):
+        residue_names = [str(residue) for residue in residues]
+        if residue_names in (["ACE"], ["NME"]):
+            continue
+        chain = chains[chain_idx] if 0 <= chain_idx < len(chains) else None
+        chain_id = str(getattr(chain, "id", chain_idx))
+        records.append({
+            "chain_index": chain_idx,
+            "chain_id": chain_id,
+            "position": res_idx,
+            "residues": residue_names,
+            "residue_count": len(residue_names),
+        })
+    return records
+
+
+def _missing_residue_summary(records: list[dict]) -> dict:
+    total_residues = sum(int(record.get("residue_count") or 0) for record in records)
+    max_segment_length = max(
+        (int(record.get("residue_count") or 0) for record in records),
+        default=0,
+    )
+    return {
+        "segment_count": len(records),
+        "total_residues": total_residues,
+        "max_segment_length": max_segment_length,
+        "segments": records,
+    }
+
+
+def _missing_residue_regeneration_recommendation(summary: dict) -> dict:
+    return {
+        "reason": "internal_missing_residues_exceed_pdbfixer_scope",
+        "recommended_next_action": "regenerate_source_structure",
+        "restart_stage": "source",
+        "options": [
+            {
+                "option": "use_modeller_template_modeling",
+                "next_skill": "skills/modeller-predict/SKILL.md",
+                "tool": "modeller_from_alignment",
+                "when": "A reliable template PDB and target sequence or PIR/ALI alignment are available.",
+                "required_inputs": [
+                    "template_pdb",
+                    "target_sequence or alignment_file",
+                ],
+            },
+            {
+                "option": "use_boltz2_structure_prediction",
+                "next_skill": "skills/boltz-predict/SKILL.md",
+                "tool": "boltz2_protein_from_seq",
+                "when": "No reliable template/alignment is available, or missing segments are too extensive for template repair.",
+                "required_inputs": ["amino_acid_sequence_list"],
+            },
+            {
+                "option": "provide_more_complete_source_structure",
+                "next_skill": "skills/md-prepare/SKILL.md",
+                "tool": "fetch_structure or register_local_structure",
+                "when": "A better experimental structure, biological assembly, or curated local model is available.",
+            },
+        ],
+        "missing_residue_summary": summary,
+    }
 
 
 def clean_protein(
@@ -268,19 +339,55 @@ def clean_protein(
             )
         
         # Report remaining missing residues (excluding caps)
-        internal_missing = []
-        for (chain_idx, res_idx), residues in fixer.missingResidues.items():
-            if residues not in [['ACE'], ['NME']]:
-                internal_missing.append(f"Chain {chain_idx}, position {res_idx}: {residues}")
+        internal_missing_records = _internal_missing_residue_records(
+            fixer.missingResidues,
+            chains,
+        )
+        missing_summary = _missing_residue_summary(internal_missing_records)
+        internal_missing = [
+            f"Chain {record['chain_index']}, position {record['position']}: {record['residues']}"
+            for record in internal_missing_records
+        ]
         
         if internal_missing:
             result["operations"].append({
                 "step": "missing_residues",
                 "status": "will_model",
                 "count": len(internal_missing),
+                "segment_count": missing_summary["segment_count"],
+                "total_residues": missing_summary["total_residues"],
+                "max_segment_length": missing_summary["max_segment_length"],
                 "residues": internal_missing,
+                "segments": internal_missing_records,
                 "details": f"Found {len(internal_missing)} internal missing residue(s) to be modeled"
             })
+            result["missing_residue_repair"] = {
+                "method": "pdbfixer",
+                "status": "within_scope",
+                "max_internal_missing_residues": PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES,
+                "max_missing_residue_segment_length": PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH,
+                **missing_summary,
+            }
+            if (
+                missing_summary["total_residues"] > PDBFIXER_MAX_INTERNAL_MISSING_RESIDUES
+                or missing_summary["max_segment_length"] > PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH
+            ):
+                recommendation = _missing_residue_regeneration_recommendation(missing_summary)
+                result["missing_residue_repair"]["status"] = "out_of_scope"
+                result["missing_residue_repair"]["reason"] = recommendation["reason"]
+                result["workflow_recommendation"] = recommendation
+                result["recommended_next_action"] = recommendation["recommended_next_action"]
+                result["recommended_next_skills"] = [
+                    "skills/modeller-predict/SKILL.md",
+                    "skills/boltz-predict/SKILL.md",
+                ]
+                result["code"] = "pdbfixer_missing_residues_out_of_scope"
+                result["errors"].append(
+                    "Internal missing residues exceed the PDBFixer repair scope: "
+                    f"{missing_summary['total_residues']} residue(s) total, "
+                    f"max segment length {missing_summary['max_segment_length']}."
+                )
+                return result
         elif num_missing_residues == 0 and not terminal_caps_requested:
             result["operations"].append({
                 "step": "missing_residues",

@@ -1108,6 +1108,32 @@ def prepare_complex(
                         logger.info(f"  ✓ Protein {chain_id}: {clean_result['output_file']}")
                     else:
                         protein_result["errors"] = clean_result.get("errors", [])
+                        for key in (
+                            "code",
+                            "workflow_recommendation",
+                            "recommended_next_action",
+                            "recommended_next_skills",
+                            "missing_residue_repair",
+                        ):
+                            if clean_result.get(key) is not None:
+                                protein_result[key] = clean_result[key]
+                        if clean_result.get("code") and not result.get("code"):
+                            result["code"] = clean_result["code"]
+                        if (
+                            clean_result.get("workflow_recommendation")
+                            and not result.get("workflow_recommendation")
+                        ):
+                            result["workflow_recommendation"] = clean_result[
+                                "workflow_recommendation"
+                            ]
+                            result["recommended_next_action"] = clean_result.get(
+                                "recommended_next_action"
+                            )
+                            result["recommended_next_skills"] = clean_result.get(
+                                "recommended_next_skills",
+                                [],
+                            )
+                        result["errors"].extend(protein_result["errors"])
                         result["warnings"].append(f"Protein {chain_id} cleaning failed: {clean_result['errors']}")
                         logger.warning(f"  ✗ Protein {chain_id} failed: {clean_result['errors']}")
 

@@ -221,6 +221,20 @@ class TestArgparseConstruction:
         assert args.pdb_file == "test.pdb"
         assert args.water_model == "opc"  # default
 
+    def test_boltz_smiles_list_is_optional_for_protein_only(self):
+        from mdclaw._cli import _tool_list_json, _discover_tools
+
+        tools = _discover_tools()
+        payload = _tool_list_json(tools)
+        boltz = next(
+            tool
+            for tool in payload["tools"]
+            if tool["name"] == "boltz2_protein_from_seq"
+        )
+        params = {param["name"]: param for param in boltz["parameters"]}
+        assert params["amino_acid_sequence_list"]["required"] is True
+        assert params["smiles_list"]["required"] is False
+
     def test_embed_in_membrane_pdb_file_is_optional_for_autoresolve(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
