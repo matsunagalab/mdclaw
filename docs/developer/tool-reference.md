@@ -80,9 +80,17 @@ skill examples.
   `boltz_executable_not_found`, `boltz_execution_failed`, and
   `boltz_no_structure_output`.
 - `modeller_from_alignment(...)`: MODELLER comparative modeling from a template
-  PDB plus either a target sequence or PIR/ALI alignment. In node mode, the
-  selected model is registered as the source bundle candidate with MODELLER
-  metadata and ranking details.
+  PDB plus one of: a single `target_sequence`, per-chain `target_sequences`
+  (multi-chain complexes such as heterodimers), or a full PIR/ALI
+  `alignment_file`. With `target_sequences` (≥2) the tool builds the complex
+  alignment automatically via MODELLER `align2d` against the template structure
+  (chains joined with `/`); `template_chains` selects/orders the template chains
+  that map to the target chains. In node mode, the selected model is registered
+  as the source bundle candidate with MODELLER metadata and ranking details.
+  Guardrail `code`s: `modeller_target_sequence_conflict`,
+  `modeller_target_sequence_required`, `modeller_chain_count_mismatch`,
+  `modeller_license_env_missing`, `modeller_not_installed`,
+  `modeller_execution_failed`.
 - `rdkit_validate_smiles(...)`: SMILES validation and canonicalization.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.

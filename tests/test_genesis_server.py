@@ -585,6 +585,106 @@ class TestModellerSourceNodeIntegration:
         assert Path(result["output_dir"]).parent == out.resolve()
         assert captured["config"]["auto_align"] is True
 
+    def test_multichain_builds_align2d_config(self, tmp_path, monkeypatch):
+        """Heterodimer input drives the align2d runner path, not auto_align."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequences=["MVLSPADK", "PNWFNNIS"],
+            template_chains=["A", "B"],
+            num_models=2,
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        config = captured["config"]
+        assert config["multichain"] is True
+        assert config["auto_align"] is False
+        assert config["target_sequences"] == ["MVLSPADK", "PNWFNNIS"]
+        assert config["template_segment"] == ["FIRST:A", "LAST:B"]
+        # The runner writes the alignment itself; the seed is not pre-written.
+        assert config["alignment_file"].endswith("_align2d.ali")
+
+    def test_multichain_without_template_chains_uses_all(self, tmp_path, monkeypatch):
+        """Omitting template_chains leaves the segment unset (read all chains)."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequences=["MVLSPADK", "PNWFNNIS"],
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        assert captured["config"]["multichain"] is True
+        assert captured["config"]["template_segment"] is None
+
+    def test_single_target_sequences_entry_stays_single_chain(
+        self, tmp_path, monkeypatch
+    ):
+        """A one-element target_sequences list keeps the auto_align path."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequences=["MVLSPADK"],
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        assert captured["config"]["multichain"] is False
+        assert captured["config"]["auto_align"] is True
+
+    def test_conflicting_target_inputs_rejected(self, tmp_path, monkeypatch):
+        """target_sequence and target_sequences together is a guardrail error."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, _captured = _stub_modeller(monkeypatch)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("subprocess.run must not run on bad input")
+
+        monkeypatch.setattr(genesis_server.subprocess, "run", forbidden)
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequence="MVLSPADK",
+            target_sequences=["MVLSPADK", "PNWFNNIS"],
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "modeller_target_sequence_conflict"
+
+    def test_chain_count_mismatch_rejected(self, tmp_path, monkeypatch):
+        """template_chains must match the number of target_sequences."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, _captured = _stub_modeller(monkeypatch)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("subprocess.run must not run on bad input")
+
+        monkeypatch.setattr(genesis_server.subprocess, "run", forbidden)
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequences=["MVLSPADK", "PNWFNNIS"],
+            template_chains=["A"],
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "modeller_chain_count_mismatch"
+
 
 @pytest.mark.integration
 def test_modeller_from_alignment_real_optional(tmp_path):

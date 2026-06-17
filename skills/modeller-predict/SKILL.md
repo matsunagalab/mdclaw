@@ -46,7 +46,28 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
   --num-models 3
 ```
 
-With an explicit alignment:
+Multi-chain complexes (e.g. a heterodimer) pass one sequence per target chain
+with `--target-sequences`. The tool builds the complex alignment with MODELLER
+`align2d` against the template structure (chains joined with `/`). Use
+`--template-chains` to choose and order the template chains that map to the
+target chains, in the same order as `--target-sequences`:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
+  --template-pdb "/abs/9OPW.pdb" \
+  --template-code "9OPW" \
+  --template-chains A B \
+  --target-sequences "<chainA seq>" "<chainB seq>" \
+  --target-code "complex" \
+  --num-models 3
+```
+
+Provide either `--target-sequence` (single chain) or `--target-sequences`
+(one per chain), never both. `--template-chains` length must match
+`--target-sequences` length. When `--template-chains` is omitted, all template
+chains are used in file order.
+
+With an explicit alignment (any chain count; chains separated by `/`):
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \

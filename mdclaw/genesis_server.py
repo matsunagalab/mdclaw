@@ -652,7 +652,7 @@ if license_key:
         cfg.install_dir = install_dir
     sys.modules["modeller.config"] = cfg
 
-from modeller import Environ, log
+from modeller import Alignment, Environ, Model, log
 from modeller.automodel import AutoModel, assess
 
 
@@ -676,6 +676,30 @@ else:
 
 env.io.atom_files_directory = ["."]
 env.io.hetatm = bool(config.get("hetatm", False))
+
+if config.get("multichain"):
+    # Build the complex alignment from the template structure with align2d.
+    # Target chains are joined with '/'; align2d aligns block-by-block so the
+    # target and template must expose the same number of chains.
+    aln = Alignment(env)
+    segment = config.get("template_segment")
+    if segment:
+        tmpl = Model(
+            env,
+            file=config["template_code"],
+            model_segment=(segment[0], segment[1]),
+        )
+    else:
+        tmpl = Model(env, file=config["template_code"])
+    aln.append_model(
+        tmpl,
+        align_codes=config["template_code"],
+        atom_files=config["template_code"] + ".pdb",
+    )
+    aln.append_sequence("/".join(config["target_sequences"]))
+    aln[-1].code = config["target_code"]
+    aln.align2d()
+    aln.write(file=config["alignment_file"], alignment_format="PIR")
 
 model = AutoModel(
     env,
@@ -736,10 +760,25 @@ def modeller_from_alignment(
     output_dir: Optional[str] = None,
     hetatm: bool = False,
     random_seed: Optional[int] = None,
+    target_sequences: Optional[list[str]] = None,
+    template_chains: Optional[list[str]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
     """Build a comparative model with MODELLER and optionally attach it to a source node.
+
+    Supports single-chain monomers and multi-chain complexes (e.g. heterodimers).
+    Three input modes, in priority order:
+
+    1. ``alignment_file``: a fully specified MODELLER PIR/ALI alignment. Used as
+       is; works for any number of chains (chains separated by ``/``).
+    2. ``target_sequences``: one amino-acid sequence per target chain. When two or
+       more are given the tool builds the complex alignment automatically with
+       MODELLER ``align2d`` against the template structure (chains joined with
+       ``/``). Use ``template_chains`` to pick/order the template chains that map
+       to ``target_sequences``; when omitted, all template chains are used in file
+       order.
+    3. ``target_sequence``: a single chain, aligned with MODELLER ``auto_align``.
 
     MODELLER is an optional dependency. Users install it separately (for example,
     ``conda install salilab::modeller``) and provide their license via a
@@ -794,9 +833,42 @@ def modeller_from_alignment(
         result["errors"].append("num_models must be >= 1")
         return result
 
-    if not alignment_file and not target_sequence:
+    if target_sequence is not None and target_sequences is not None:
         result["errors"].append(
-            "target_sequence is required when alignment_file is not provided"
+            "Provide either target_sequence (single chain) or target_sequences "
+            "(one per chain), not both"
+        )
+        result["code"] = "modeller_target_sequence_conflict"
+        return result
+
+    # Normalize per-chain target sequences and decide single- vs multi-chain mode.
+    chain_sequences = [
+        seq.strip() for seq in (target_sequences or []) if seq and seq.strip()
+    ]
+    if target_sequences is not None and not chain_sequences:
+        result["errors"].append(
+            "target_sequences must contain at least one non-empty sequence"
+        )
+        result["code"] = "modeller_target_sequence_required"
+        return result
+    multichain = len(chain_sequences) > 1
+
+    template_chains_clean = [
+        ch.strip() for ch in (template_chains or []) if ch and ch.strip()
+    ]
+    if template_chains_clean and chain_sequences and not alignment_file:
+        if len(template_chains_clean) != len(chain_sequences):
+            result["errors"].append(
+                "template_chains length "
+                f"({len(template_chains_clean)}) must match target_sequences "
+                f"length ({len(chain_sequences)})"
+            )
+            result["code"] = "modeller_chain_count_mismatch"
+            return result
+
+    if not alignment_file and not target_sequence and not chain_sequences:
+        result["errors"].append(
+            "Provide target_sequence, target_sequences, or alignment_file"
         )
         return result
 
@@ -820,8 +892,18 @@ def modeller_from_alignment(
     template_copy = out_dir / f"{template_code_clean}.pdb"
     shutil.copy2(template_path, template_copy)
 
-    auto_align = alignment_file is None
+    # Resolve the template chain segment used by the multi-chain aligner.
+    template_segment = None
+    if template_chains_clean:
+        template_segment = [
+            f"FIRST:{template_chains_clean[0]}",
+            f"LAST:{template_chains_clean[-1]}",
+        ]
+
+    auto_align = False
+    build_alignment_in_runner = False
     if alignment_file:
+        # Mode 1: user-supplied alignment, used verbatim (any chain count).
         src_alignment = Path(alignment_file).expanduser()
         if not src_alignment.exists():
             result["errors"].append(f"alignment_file does not exist: {alignment_file}")
@@ -836,12 +918,23 @@ def modeller_from_alignment(
             return result
         alignment_path = out_dir / src_alignment.name
         shutil.copy2(src_alignment, alignment_path)
+    elif multichain:
+        # Mode 2: build the complex alignment with align2d inside the runner.
+        build_alignment_in_runner = True
+        alignment_path = (
+            out_dir / f"{target_code_clean}_{template_code_clean}_align2d.ali"
+        )
     else:
+        # Mode 3: single chain via auto_align on a seed alignment.
+        auto_align = True
+        single_sequence = target_sequence or (
+            chain_sequences[0] if chain_sequences else ""
+        )
         alignment_path = out_dir / f"{target_code_clean}_{template_code_clean}_seed.ali"
         _write_modeller_seed_alignment(
             alignment_path,
             target_code=target_code_clean,
-            target_sequence=target_sequence or "",
+            target_sequence=single_sequence,
             template_code=template_code_clean,
         )
 
@@ -861,6 +954,9 @@ def modeller_from_alignment(
         "random_seed": random_seed,
         "auto_align": auto_align,
         "result_json": result_json.name,
+        "multichain": build_alignment_in_runner,
+        "target_sequences": chain_sequences if build_alignment_in_runner else None,
+        "template_segment": template_segment,
     }
     config_path.write_text(json.dumps(config, indent=2))
 
@@ -964,6 +1060,9 @@ def modeller_from_alignment(
                 "template_code": template_code_clean,
                 "target_code": target_code_clean,
                 "target_sequence": target_sequence,
+                "target_sequences": chain_sequences if chain_sequences else None,
+                "template_chains": template_chains_clean or None,
+                "multichain": multichain,
                 "alignment_file": str(Path(alignment_file).expanduser()) if alignment_file else None,
                 "generated_alignment": str(alignment_path),
                 "auto_align": auto_align,
