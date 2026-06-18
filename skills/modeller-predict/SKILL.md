@@ -67,6 +67,26 @@ Provide either `--target-sequence` (single chain) or `--target-sequences`
 `--target-sequences` length. When `--template-chains` is omitted, all template
 chains are used in file order.
 
+To fill and refine the missing residues of a structure (cryo-EM/X-ray gaps),
+pass that structure as the template and its full sequence (e.g. from SEQRES) as
+the target, and add `--loop-refinement`. The base model builds the missing
+residues and MODELLER loop modeling (`LoopModel`) then rebuilds every gap loop.
+`--loop-models` sets how many refined loop models to generate (best by DOPE is
+selected); `--loop-min-length` / `--loop-max-length` bound which gap loops are
+refined (defaults 1..30):
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
+  --template-pdb "/abs/9OPW.pdb" \
+  --template-code "9OPW" \
+  --template-chains A B \
+  --target-sequences "<chainA SEQRES>" "<chainB SEQRES>" \
+  --target-code "9OPW_filled" \
+  --loop-refinement \
+  --num-models 1 \
+  --loop-models 4
+```
+
 With an explicit alignment (any chain count; chains separated by `/`):
 
 ```bash

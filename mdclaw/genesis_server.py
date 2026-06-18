@@ -652,8 +652,34 @@ if license_key:
         cfg.install_dir = install_dir
     sys.modules["modeller.config"] = cfg
 
-from modeller import Alignment, Environ, Model, log
-from modeller.automodel import AutoModel, assess
+from modeller import Alignment, Environ, Model, Selection, log
+from modeller.automodel import AutoModel, LoopModel, assess
+
+
+class _MissingResidueLoopModel(LoopModel):
+    """LoopModel that refines every gap loop (missing residues).
+
+    The stock ``select_loop_atoms`` only refines gaps of length 5..15. For
+    filling missing residues we want every gap loop refined regardless of
+    length, so widen the window via ``loop_min_length`` / ``loop_max_length``
+    from the config.
+    """
+
+    def select_loop_atoms(self):
+        aln = self.read_alignment()
+        loops = self.loops(
+            aln,
+            minlength=self.mdclaw_loop_min_length,
+            maxlength=self.mdclaw_loop_max_length,
+            insertion_ext=2,
+            deletion_ext=1,
+        )
+        sel = Selection(loops).only_std_residues()
+        if len(sel) == 0:
+            raise RuntimeError(
+                "No gap loops detected for refinement; nothing to model"
+            )
+        return sel
 
 
 def _jsonable(value):
@@ -701,23 +727,45 @@ if config.get("multichain"):
     aln.align2d()
     aln.write(file=config["alignment_file"], alignment_format="PIR")
 
-model = AutoModel(
-    env,
-    alnfile=config["alignment_file"],
-    knowns=config["template_code"],
-    sequence=config["target_code"],
-    assess_methods=(assess.DOPE, assess.GA341),
-)
-model.starting_model = 1
-model.ending_model = int(config["num_models"])
+if config.get("loop_refinement"):
+    # Build the base comparative model, then run dedicated loop refinement
+    # over every gap loop (the missing residues).
+    model = _MissingResidueLoopModel(
+        env,
+        alnfile=config["alignment_file"],
+        knowns=config["template_code"],
+        sequence=config["target_code"],
+        assess_methods=(assess.DOPE, assess.GA341),
+    )
+    model.mdclaw_loop_min_length = int(config.get("loop_min_length", 1))
+    model.mdclaw_loop_max_length = int(config.get("loop_max_length", 30))
+    model.starting_model = 1
+    model.ending_model = int(config["num_models"])
+    model.loop.starting_model = 1
+    model.loop.ending_model = int(config.get("loop_models", 2))
+    model.loop.assess_methods = (assess.DOPE, assess.GA341)
+else:
+    model = AutoModel(
+        env,
+        alnfile=config["alignment_file"],
+        knowns=config["template_code"],
+        sequence=config["target_code"],
+        assess_methods=(assess.DOPE, assess.GA341),
+    )
+    model.starting_model = 1
+    model.ending_model = int(config["num_models"])
 
 if config.get("auto_align"):
     model.auto_align()
 
 model.make()
 
+# For loop refinement the deliverable models are the refined loop outputs.
+raw_outputs = (
+    model.loop.outputs if config.get("loop_refinement") else model.outputs
+)
 models = []
-for output in model.outputs:
+for output in raw_outputs:
     item = {
         "name": _jsonable(output.get("name")),
         "failure": _jsonable(output.get("failure")),
@@ -762,6 +810,10 @@ def modeller_from_alignment(
     random_seed: Optional[int] = None,
     target_sequences: Optional[list[str]] = None,
     template_chains: Optional[list[str]] = None,
+    loop_refinement: bool = False,
+    loop_models: int = 2,
+    loop_min_length: int = 1,
+    loop_max_length: int = 30,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
 ) -> dict:
@@ -779,6 +831,16 @@ def modeller_from_alignment(
        to ``target_sequences``; when omitted, all template chains are used in file
        order.
     3. ``target_sequence``: a single chain, aligned with MODELLER ``auto_align``.
+
+    Set ``loop_refinement=True`` to fill and refine missing residues with
+    MODELLER loop modeling (``LoopModel``): the base comparative model builds the
+    full target sequence (including residues absent from the template), then
+    every gap loop is rebuilt by the dedicated loop protocol. ``loop_models`` is
+    the number of refined loop models per base model; ``loop_min_length`` /
+    ``loop_max_length`` bound which gap loops are refined (defaults 1..30 cover
+    typical missing-residue stretches). To model the missing residues of a
+    structure, pass that structure as the template and its full
+    sequence (e.g. from SEQRES) as the target.
 
     MODELLER is an optional dependency. Users install it separately (for example,
     ``conda install salilab::modeller``) and provide their license via a
@@ -831,6 +893,11 @@ def modeller_from_alignment(
 
     if num_models < 1:
         result["errors"].append("num_models must be >= 1")
+        return result
+
+    if loop_refinement and loop_models < 1:
+        result["errors"].append("loop_models must be >= 1 when loop_refinement is set")
+        result["code"] = "modeller_loop_models_invalid"
         return result
 
     if target_sequence is not None and target_sequences is not None:
@@ -957,6 +1024,10 @@ def modeller_from_alignment(
         "multichain": build_alignment_in_runner,
         "target_sequences": chain_sequences if build_alignment_in_runner else None,
         "template_segment": template_segment,
+        "loop_refinement": loop_refinement,
+        "loop_models": loop_models,
+        "loop_min_length": loop_min_length,
+        "loop_max_length": loop_max_length,
     }
     config_path.write_text(json.dumps(config, indent=2))
 
@@ -1063,6 +1134,8 @@ def modeller_from_alignment(
                 "target_sequences": chain_sequences if chain_sequences else None,
                 "template_chains": template_chains_clean or None,
                 "multichain": multichain,
+                "loop_refinement": loop_refinement,
+                "loop_models": loop_models if loop_refinement else None,
                 "alignment_file": str(Path(alignment_file).expanduser()) if alignment_file else None,
                 "generated_alignment": str(alignment_path),
                 "auto_align": auto_align,

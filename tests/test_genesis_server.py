@@ -645,6 +645,52 @@ class TestModellerSourceNodeIntegration:
         assert captured["config"]["multichain"] is False
         assert captured["config"]["auto_align"] is True
 
+    def test_loop_refinement_config(self, tmp_path, monkeypatch):
+        """loop_refinement drives the LoopModel path with loop params in config."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, captured = _stub_modeller(monkeypatch)
+        out = tmp_path / "out"
+        out.mkdir()
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequences=["MVLSPADK", "PNWFNNIS"],
+            template_chains=["A", "B"],
+            loop_refinement=True,
+            loop_models=4,
+            loop_max_length=25,
+            output_dir=str(out),
+        )
+
+        assert result["success"], result["errors"]
+        config = captured["config"]
+        assert config["loop_refinement"] is True
+        assert config["loop_models"] == 4
+        assert config["loop_min_length"] == 1
+        assert config["loop_max_length"] == 25
+        assert config["multichain"] is True
+
+    def test_loop_models_invalid_rejected(self, tmp_path, monkeypatch):
+        """loop_models < 1 with loop_refinement is a guardrail error."""
+        template = _write_template_pdb(tmp_path / "template.pdb")
+        genesis_server, _captured = _stub_modeller(monkeypatch)
+
+        def forbidden(*args, **kwargs):
+            raise AssertionError("subprocess.run must not run on bad input")
+
+        monkeypatch.setattr(genesis_server.subprocess, "run", forbidden)
+
+        result = genesis_server.modeller_from_alignment(
+            template_pdb=str(template),
+            target_sequence="MVLSPADK",
+            loop_refinement=True,
+            loop_models=0,
+            output_dir=str(tmp_path / "out"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "modeller_loop_models_invalid"
+
     def test_conflicting_target_inputs_rejected(self, tmp_path, monkeypatch):
         """target_sequence and target_sequences together is a guardrail error."""
         template = _write_template_pdb(tmp_path / "template.pdb")

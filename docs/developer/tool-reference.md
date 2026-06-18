@@ -85,12 +85,19 @@ skill examples.
   `alignment_file`. With `target_sequences` (≥2) the tool builds the complex
   alignment automatically via MODELLER `align2d` against the template structure
   (chains joined with `/`); `template_chains` selects/orders the template chains
-  that map to the target chains. In node mode, the selected model is registered
-  as the source bundle candidate with MODELLER metadata and ranking details.
-  Guardrail `code`s: `modeller_target_sequence_conflict`,
+  that map to the target chains. Set `loop_refinement=True` to fill and refine
+  missing residues with MODELLER loop modeling (`LoopModel`): the base model
+  builds the full target sequence (including residues absent from the template),
+  then every gap loop is rebuilt by the loop protocol. `loop_models` sets the
+  number of refined loop models per base model; `loop_min_length` /
+  `loop_max_length` bound which gap loops are refined. To model the missing
+  residues of a structure, pass that structure as the template and its full
+  sequence (e.g. from SEQRES) as the target. In node mode, the selected model is
+  registered as the source bundle candidate with MODELLER metadata and ranking
+  details. Guardrail `code`s: `modeller_target_sequence_conflict`,
   `modeller_target_sequence_required`, `modeller_chain_count_mismatch`,
-  `modeller_license_env_missing`, `modeller_not_installed`,
-  `modeller_execution_failed`.
+  `modeller_loop_models_invalid`, `modeller_license_env_missing`,
+  `modeller_not_installed`, `modeller_execution_failed`.
 - `rdkit_validate_smiles(...)`: SMILES validation and canonicalization.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.
