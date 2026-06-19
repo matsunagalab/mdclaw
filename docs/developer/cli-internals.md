@@ -71,6 +71,15 @@ recommendation `plan_next` would return (`action`, `next_node_type`,
 `next_skill`). It is computed via `_build_workflow_hint` and any error is
 swallowed, so the hint never changes a tool's own contract.
 
+The failure counterpart: when a workflow tool fails with
+`code="input_resolution_blocked"` (a parent/dependency node is stuck
+`running`/`failed`/`pending` instead of `completed`), the CLI appends a
+`recovery_hint` block instead. It is computed via `_build_recovery_hint`
+(wrapping `input_resolution_recovery` in `mdclaw/node/inputs.py`) and points the
+agent at `action=create_node` for the *blocking node's stage* with a ready-to-run
+`next_command`, so a weak agent re-creates the stuck ancestor rather than
+re-running the same blocked node. Also best-effort and never contractual.
+
 ## Timeouts
 
 Use `get_timeout()` from `_common.py`:

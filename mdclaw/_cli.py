@@ -487,6 +487,24 @@ def _build_workflow_hint(job_dir: str) -> dict | None:
     }
 
 
+def _build_recovery_hint(job_dir: str, node_id: str) -> dict | None:
+    """Return a recovery suggestion when a tool fails on an unresolved parent.
+
+    Failure counterpart to ``_build_workflow_hint``: when a workflow tool fails
+    with ``input_resolution_blocked`` because a parent node is stuck
+    ``running``/``failed``/``pending``, surface a structured ``create_node``
+    suggestion for the blocking parent's stage so a weak agent re-creates the
+    stuck ancestor instead of re-running the same blocked node. Best-effort;
+    any error is swallowed (the hint is not part of the tool contract).
+    """
+    try:
+        from mdclaw._node import input_resolution_recovery
+
+        return input_resolution_recovery(job_dir, node_id)
+    except Exception:
+        return None
+
+
 def _json_error_and_exit(error: dict) -> None:
     json.dump(error, sys.stdout, indent=2, default=str)
     print()
@@ -879,6 +897,19 @@ def main(argv: list[str] | None = None) -> None:
             and "workflow_hint" not in result
         ):
             result["workflow_hint"] = _build_workflow_hint(effective_job_dir)
+        # Failure counterpart: when a workflow tool is blocked by a non-completed
+        # parent, tell the agent to create a new node of the blocking parent's
+        # stage rather than re-running this same blocked node.
+        if (
+            isinstance(result, dict)
+            and result.get("code") == "input_resolution_blocked"
+            and effective_job_dir
+            and effective_node_id
+            and "recovery_hint" not in result
+        ):
+            recovery = _build_recovery_hint(effective_job_dir, effective_node_id)
+            if recovery:
+                result["recovery_hint"] = recovery
         _write_benchmark_harness_record(
             tool_name=tool_name,
             kwargs=kwargs,

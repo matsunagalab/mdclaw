@@ -129,6 +129,62 @@ def _input_resolution_status_errors(job_dir: str, node_id: str) -> list[str]:
     return errors
 
 
+def input_resolution_recovery(job_dir: str, node_id: str) -> Optional[dict]:
+    """Structured recovery hint when a node is blocked by a non-completed parent.
+
+    When ``node_id`` cannot resolve inputs because a parent/dependency is stuck
+    ``running``/``failed``/``pending`` (not ``completed``), return an
+    ``action=create_node`` suggestion targeting the *blocking node's stage* so a
+    weak agent re-creates the stuck ancestor instead of re-running the blocked
+    child against an unreachable parent. Returns ``None`` when nothing is
+    blocking, or on any read error — this is a best-effort hint, not part of the
+    tool contract (mirrors ``_build_workflow_hint``).
+    """
+    try:
+        progress = _load_progress_v3(Path(job_dir) / "progress.json")
+        if progress is None:
+            return None
+        nodes_index = progress.get("nodes", {})
+        node_entry = nodes_index.get(node_id)
+        if node_entry is None:
+            return None
+        refs = [
+            ("parent", pid) for pid in node_entry.get("parents", [])
+        ] + [
+            ("dependency", did) for did in node_entry.get("dependencies", [])
+        ]
+        for ref_kind, ref_id in refs:
+            ref_entry = nodes_index.get(ref_id)
+            if ref_entry is None or ref_entry.get("status") == "completed":
+                continue
+            status = ref_entry.get("status")
+            ref_type = ref_entry.get("type")
+            grandparents = list(ref_entry.get("parents", []) or [])
+            cmd = f"mdclaw create_node --job-dir {job_dir} --node-type {ref_type}"
+            if grandparents:
+                cmd += f" --parent-node-ids {','.join(grandparents)}"
+            return {
+                "code": "parent_node_not_completed",
+                "blocking_node_id": ref_id,
+                "blocking_node_type": ref_type,
+                "blocking_status": status,
+                "action": "create_node",
+                "node_type": ref_type,
+                "suggested_parent_node_ids": grandparents,
+                "next_command": cmd,
+                "message": (
+                    f"'{node_id}' is blocked because {ref_kind} node '{ref_id}' is "
+                    f"{status!r}, not 'completed'. Re-running '{node_id}' will keep "
+                    f"failing — create a NEW '{ref_type}' node from "
+                    f"{grandparents or 'an earlier completed ancestor'}, run it, "
+                    f"then retry '{node_id}'."
+                ),
+            }
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _record_input_resolution_error(result: dict, error: str) -> None:
     result.setdefault("input_resolution_errors", []).append(error)
     result.setdefault("input_resolution_error", error)
