@@ -513,6 +513,15 @@ def phosphorylate_residues(
         source_001 → prep_001 (prepare_complex) → prep_002 (this tool)
                                                  → solv_001 → ...
 
+    Ordering with other residue edits: when a residue needs both a PTM and a
+    mutation, phosphorylate FIRST, then mutate — the order is
+    ``prepare_complex`` (protonation + PTM detection) -> ``phosphorylate_residues``
+    (branched from the prepare_complex node) -> ``create_mutated_structure``.
+    Phosphorylation requires the residue to still be its standard base (SER/THR/
+    TYR); a prior mutation changes it and this tool then refuses with a mismatch
+    error. Protonation is owned by ``prepare_complex`` and applies to the final
+    residue identities, so it precedes both.
+
     Three input modes (mutually exclusive):
 
     - ``restore_from_detection=True`` — reads

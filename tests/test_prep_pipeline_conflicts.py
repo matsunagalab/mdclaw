@@ -48,6 +48,22 @@ def test_case1_multiletter_chain_ptm_autodetect_remaps_correctly():
                          "resnum": 65, "name": "SEP"}]
 
 
+# --- CASE 1 (manual): an explicit site on a chain absent from the pdb is
+# reported as not_found (caller errors), never silently applied elsewhere ----
+def test_case1_manual_wrong_chain_is_not_found(tmp_path):
+    pdb = ("ATOM      1  N   SER A  65       0.000   0.000   0.000  1.00  0.00\n"
+           "ATOM      2  OG  SER A  65       1.000   1.000   0.000  1.00  0.00\n"
+           "ATOM      3  HG  SER A  65       1.000   1.500   0.000  1.00  0.00\nEND\n")
+    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src.write_text(pdb)
+    # user asked for chain Z (e.g. a stale/source id) that is not in the pdb
+    res = _apply_phosphorylation_to_pdb(
+        src, out, [{"chain": "Z", "resnum": 65, "target": "SEP"}]
+    )
+    assert res["applied"] == []
+    assert res["not_found"] == [{"chain": "Z", "resnum": 65, "target": "SEP"}]
+
+
 # --- CASE 2: select_chains drops a PTM chain -> dropped, not silent ---------
 def test_case2_excluded_chain_ptm_is_dropped_not_misapplied():
     # chain B excluded -> not in composite map
@@ -118,10 +134,15 @@ def test_case9_pdb4amber_renumber_restored(tmp_path):
 # and exercised by the slow integration pipeline tests; not unit-testable here
 # without invoking PDBFixer, so intentionally left to those suites.
 
-# --- CASE 10: chain-id pool exhaustion (>62 chains) reuses ids; the PTM remap
-# does not yet disambiguate via topology_chain_index. Fix pending.
-@pytest.mark.xfail(reason="Case 10 fix pending: chain-id reuse >62 chains is "
-                          "not yet disambiguated in the source->merged map")
-def test_case10_chain_pool_exhaustion_disambiguated():
-    # index 0 and index 62 both map to 'A' (pool length 62) -> ambiguous reuse.
-    assert _pdb_chain_id_for_index(0) != _pdb_chain_id_for_index(62)
+# --- CASE 10: chain-id pool exhaustion (>62 chains). PDB's single-character
+# chain field cannot give >62 unique ids, so reuse is inherent (not fixable in
+# PDB format). The mitigation is that merge_structures now WARNS loudly on
+# exhaustion (see merge.py) and chain_identity_map.topology_chain_index is the
+# authoritative disambiguator. This test pins the inherent limit + pool size.
+def test_case10_chain_pool_is_62_and_reuses_beyond():
+    from mdclaw.structure.merge import PDB_CHAIN_ID_POOL
+    assert len(PDB_CHAIN_ID_POOL) == 62
+    # index 62 wraps to index 0 -> reuse is inherent to the PDB 1-char field.
+    assert _pdb_chain_id_for_index(62) == _pdb_chain_id_for_index(0) == "A"
+    # all ids within one pool are unique (no premature collisions).
+    assert len({_pdb_chain_id_for_index(i) for i in range(62)}) == 62

@@ -185,6 +185,7 @@ def merge_structures(
         total_atoms = 0
         total_residues = 0
         topology_chain_index = 0
+        chain_pool_exhausted_warned = False
         assigned_chain_ids: list[str] = []
         pending_conect_sources: list[dict[str, Any]] = []
         
@@ -217,7 +218,25 @@ def merge_structures(
                 # the finite PDB chain-ID pool is exhausted; the identity map
                 # below is the authoritative source component key.
                 new_chain_id = _pdb_chain_id_for_index(topology_chain_index)
-                
+                if (
+                    topology_chain_index >= len(PDB_CHAIN_ID_POOL)
+                    and not chain_pool_exhausted_warned
+                ):
+                    # PDB's single-character chain field cannot give >62 chains
+                    # unique ids, so they are reused. Site-keyed inputs that key
+                    # only on (chain, resnum) can then land on the wrong chain.
+                    # Warn loudly (the chain_identity_map / topology_chain_index
+                    # is the authoritative disambiguator) instead of failing
+                    # silently.
+                    chain_pool_exhausted_warned = True
+                    result.setdefault("warnings", []).append(
+                        f"More than {len(PDB_CHAIN_ID_POOL)} chains: the PDB "
+                        "single-character chain-id pool is exhausted and ids are "
+                        "reused. Chain-keyed site references (e.g. phosphorylation "
+                        "or mutation by chain:resnum) may be ambiguous; use "
+                        "chain_identity_map (topology_chain_index) to disambiguate."
+                    )
+
                 file_chain_mapping[original_chain_id] = new_chain_id
                 result["chain_mapping_entries"].append({
                     "source_file": str(pdb_path),
