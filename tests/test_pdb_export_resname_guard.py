@@ -49,7 +49,7 @@ EXPECTED = {
     "structure/terminal_caps.py": (1, "restore"),       # cap H completion
     "solvation_server.py": (1, "restore"),              # openmm solvation fallback
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output
-    "structure/protonation.py": (1, "custom"),          # inline variant relabel
+    "structure/protonation.py": (1, "restore"),         # user-state Modeller path
     "structure/clean_protein.py": (2, "source"),        # transient + nucleic_h
 }
 

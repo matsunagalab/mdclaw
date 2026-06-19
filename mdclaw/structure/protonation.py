@@ -405,6 +405,27 @@ def _apply_protonation_states_with_modeller(
         tmp_file = pdb_file.with_suffix(pdb_file.suffix + ".protonation.tmp")
         with tmp_file.open("w") as fh:
             PDBFile.writeFile(modeller.topology, modeller.positions, fh, keepIds=True)
+        # PDBFile's loader normalized EVERY residue's Amber/PTM name on load
+        # (line ~328); only the user-targeted residues were renamed back above.
+        # Residues that pdb2pqr/propka had already named (e.g. a His tautomer
+        # HID/HIE not in the user's list) would otherwise be silently lost ->
+        # restore them from the input by residue key, excluding the targeted
+        # residues whose names legitimately changed. pdb_file still holds the
+        # original (the replace happens below).
+        from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
+        exclude_keys = {
+            (
+                str(record["chain"]).strip()[:1] or " ",
+                f"{str(record['resnum']).strip():>4}"[:4],
+                (str(record.get("icode") or "").strip() or " ")[:1],
+            )
+            for record in matched.values()
+        }
+        _restored = restore_resnames_by_residue_key(
+            tmp_file.read_text(), str(pdb_file), exclude_keys=exclude_keys
+        )
+        if _restored is not None:
+            tmp_file.write_text(_restored)
         variant_names = set(_PROTONATION_STATE_SPECS)
         normalized_lines = []
         for line in tmp_file.read_text().splitlines(keepends=True):
