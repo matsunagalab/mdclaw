@@ -121,6 +121,22 @@ def recompute_ligand_rmsd(
     except Exception as exc:
         return None, f"load failed: {exc}"
 
+    # Re-image molecules before measuring. A ligand that sits near a box face
+    # is commonly written at a periodic image after a PBC minimization /
+    # equilibration export (e.g. one full box length away). That pose is
+    # scientifically correct, but a naive RMSD against the crystal reference
+    # would score it as a large spurious displacement. ``image_molecules``
+    # makes molecules whole and images them onto the largest molecule (the
+    # protein), restoring the true ligand pose. Best-effort: only when the
+    # structure carries a periodic box, and never let it break scoring.
+    reimaged = False
+    if prepared.unitcell_lengths is not None:
+        try:
+            prepared.image_molecules(inplace=True)
+            reimaged = True
+        except Exception:
+            pass
+
     try:
         prep_idx = prepared.topology.select(selection)
         ref_idx = reference.topology.select(selection)
@@ -150,7 +166,8 @@ def recompute_ligand_rmsd(
 
     diff = prepared.xyz[0, prep_idx] - reference.xyz[0, ref_idx]
     rmsd_nm = float(np.sqrt(np.mean(np.sum(diff * diff, axis=-1))))
-    return rmsd_nm * 10.0, f"recomputed rmsd over {len(prep_idx)} atoms"
+    suffix = ", re-imaged" if reimaged else ""
+    return rmsd_nm * 10.0, f"recomputed rmsd over {len(prep_idx)} atoms{suffix}"
 
 
 def metrics_caption_consistency(
