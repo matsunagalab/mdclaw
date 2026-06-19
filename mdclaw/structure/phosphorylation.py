@@ -239,6 +239,54 @@ def _remap_detected_ptm_chains(
     return remapped, dropped
 
 
+def _remap_disulfide_chains(
+    disulfide_bonds: list[dict], composite_chain_map: dict
+) -> list[dict]:
+    """Remap ``cys1``/``cys2`` chain ids of each disulfide pair from source to
+    merged chain ids (via the same map as PTMs). ``_reconcile_cyx_cys_in_pdb``
+    keys on (chain, resnum) against the merged pdb, so without this a chain
+    reassignment makes it promote/demote the wrong CYS. Pairs are returned
+    mutated in place; an unmapped chain is left as-is."""
+    for bond in disulfide_bonds or []:
+        for key in ("cys1", "cys2"):
+            cys = bond.get(key)
+            if isinstance(cys, dict):
+                merged = (composite_chain_map or {}).get(cys.get("chain"))
+                if merged is not None and merged != cys.get("chain"):
+                    cys["original_chain"] = cys.get("chain")
+                    cys["chain"] = merged
+    return disulfide_bonds
+
+
+def _remap_protonation_state_chains(
+    protonation_states: list[dict], composite_chain_map: dict
+) -> list[dict]:
+    """Remap the ``chain`` of each ``{chain,resnum,state}`` entry from source to
+    merged chain ids, so the reported summary matches merged.pdb."""
+    for entry in protonation_states or []:
+        if isinstance(entry, dict):
+            merged = (composite_chain_map or {}).get(entry.get("chain"))
+            if merged is not None and merged != entry.get("chain"):
+                entry["original_chain"] = entry.get("chain")
+                entry["chain"] = merged
+    return protonation_states
+
+
+def _remap_histidine_state_chains(
+    histidine_states: dict, composite_chain_map: dict
+) -> dict:
+    """Remap ``"chain:resnum"`` keys of a histidine-state dict from source to
+    merged chain ids."""
+    if not histidine_states:
+        return histidine_states
+    out: dict = {}
+    for key, state in histidine_states.items():
+        chain, sep, rest = str(key).partition(":")
+        merged = (composite_chain_map or {}).get(chain)
+        out[f"{merged}:{rest}" if (merged and sep) else key] = state
+    return out
+
+
 def _parse_sites_str(sites_str: str) -> list[dict]:
     """Parse "A:65:SEP,A:178:TPO" into a list of site dicts."""
     out: list[dict] = []

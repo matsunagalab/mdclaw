@@ -101,6 +101,76 @@ def preserve_long_resnames_in_pdb_text(pdb_text: str, topology: Any) -> str:
     return "\n".join(out_lines) + trailing
 
 
+def _residue_key(line: str) -> tuple[str, str, str]:
+    """(chainID, resSeq, iCode) from a PDB ATOM/HETATM record."""
+    return (line[21], line[22:26].strip(), line[26])
+
+
+def restore_residue_numbering_from_reference(
+    target_pdb: str | Path, reference_pdb: str | Path
+) -> Optional[str]:
+    """Rewrite each residue's chain/resSeq/iCode in ``target_pdb`` from
+    ``reference_pdb``, matched by residue ORDER.
+
+    ``pdb4amber`` renumbers residues (e.g. it makes numbering continuous across
+    chains, turning chain B 1-99 into 215-430) while preserving residue order
+    and count — it only adds hydrogens *within* residues. Any site-keyed input
+    (``protonation_states`` / ``histidine_states`` keyed by ``chain:resnum``, or
+    a detected PTM resnum) captured against the original numbering then points
+    at the wrong residue. This copies the reference (pre-pdb4amber)
+    chain/resSeq/iCode onto the target, by residue order, leaving every atom,
+    coordinate and hydrogen untouched.
+
+    Returns ``target_pdb`` on success, or ``None`` when the residue counts
+    differ (caller should then leave the file unchanged — fail safe).
+    """
+    target_path, ref_path = Path(target_pdb), Path(reference_pdb)
+    try:
+        ref_lines = ref_path.read_text().splitlines()
+        tgt_lines = target_path.read_text().splitlines()
+    except OSError:
+        return None
+
+    ref_keys: list[tuple[str, str, str]] = []
+    for line in ref_lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            key = _residue_key(line)
+            if not ref_keys or ref_keys[-1] != key:
+                ref_keys.append(key)
+
+    # Count target residues first; bail out on any mismatch.
+    tgt_residue_count = 0
+    last: Optional[tuple[str, str, str]] = None
+    for line in tgt_lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            key = _residue_key(line)
+            if key != last:
+                tgt_residue_count += 1
+                last = key
+    if tgt_residue_count != len(ref_keys) or not ref_keys:
+        return None
+
+    out: list[str] = []
+    res_idx = -1
+    last = None
+    for line in tgt_lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            key = _residue_key(line)
+            if key != last:
+                res_idx += 1
+                last = key
+            chain, resseq, icode = ref_keys[res_idx]
+            padded = line.ljust(80)
+            line = (
+                padded[:21] + f"{chain[:1]:1}" + f"{resseq[:4]:>4}"
+                + f"{icode[:1]:1}" + padded[27:]
+            ).rstrip()
+        out.append(line)
+    trailing = "\n" if target_path.read_text().endswith("\n") else "\n"
+    target_path.write_text("\n".join(out) + trailing)
+    return str(target_path)
+
+
 def restore_resnames_from_source_pdb(
     pdb_text: str, source_pdb: str | Path
 ) -> Optional[str]:

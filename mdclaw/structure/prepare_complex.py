@@ -60,7 +60,7 @@ from mdclaw.structure.clean_protein import _prepare_standard_nucleic, clean_prot
 from mdclaw.structure.disulfide import _merge_disulfide_pairs, _reconcile_cyx_cys_in_pdb  # noqa: E402
 from mdclaw.structure.merge import _build_nucleic_residue_mapping, _build_residue_mapping_for_type, _enrich_chain_identity_map, _index_prepared_component_sources, merge_structures  # noqa: E402
 from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result, _component_disposition_payload, _normalize_prepare_solvent_type  # noqa: E402
-from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _remap_detected_ptm_chains  # noqa: E402
+from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains  # noqa: E402
 from mdclaw.structure.protonation import _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.split import _inspect_molecules_impl, split_molecules  # noqa: E402
 from mdclaw.structure.terminal_caps import _resolve_terminal_cap_settings  # noqa: E402
@@ -1509,12 +1509,19 @@ def prepare_complex(
                     # author chain truncated by split_molecules + reassigned
                     # by merge_structures) or — worse — silently hit the
                     # wrong residue.
+                    # merge_structures reassigns chain ids, so every site-keyed
+                    # list captured against the SOURCE chains must be remapped to
+                    # the merged ids before it is used or reported. Build the
+                    # source->merged map once and apply it to PTMs and disulfides.
+                    composite_map = _build_source_to_merged_chain_map(
+                        chain_file_info=split_result.get("chain_file_info", []),
+                        proteins=result.get("proteins", []),
+                        merge_chain_mapping=merge_result.get("chain_mapping", {}),
+                    )
+                    # Stash for the protonation/histidine summary remap below
+                    # (that code runs in a scope where merge_result may be absent).
+                    result["_chain_remap_source_to_merged"] = composite_map
                     if detected_ptm_residues:
-                        composite_map = _build_source_to_merged_chain_map(
-                            chain_file_info=split_result.get("chain_file_info", []),
-                            proteins=result.get("proteins", []),
-                            merge_chain_mapping=merge_result.get("chain_mapping", {}),
-                        )
                         remapped, dropped = _remap_detected_ptm_chains(
                             detected_ptm_residues,
                             composite_map,
@@ -1528,6 +1535,15 @@ def prepare_complex(
                                 "--restore-from-detection`."
                             )
                         detected_ptm_residues = remapped
+
+                    # Disulfide pairs: _reconcile_cyx_cys_in_pdb below keys on
+                    # (chain, resnum) against the MERGED pdb, so the pair chain
+                    # ids must be merged ids (else a chain reassignment makes it
+                    # promote/demote the wrong CYS).
+                    if result.get("disulfide_bonds"):
+                        _remap_disulfide_chains(
+                            result["disulfide_bonds"], composite_map
+                        )
 
                     # Reconcile CYS/CYX residue names against the
                     # authoritative disulfide_bonds list. pdb2pqr does its
@@ -1654,6 +1670,23 @@ def prepare_complex(
                             preparation_summary.get("missing_residues_count", 0) + val
                     elif key not in preparation_summary:
                         preparation_summary[key] = val
+        # Remap the aggregated protonation/histidine summaries from SOURCE chain
+        # ids to MERGED ids. The states were correctly APPLIED per-chain before
+        # merge, but reporting them under source chains makes the keys point at
+        # the wrong residue in merged.pdb for any consumer that re-applies them.
+        _cmap = result.get("_chain_remap_source_to_merged") or {}
+        if _cmap:
+            if isinstance(preparation_summary.get("protonation_states"), list):
+                _remap_protonation_state_chains(
+                    preparation_summary["protonation_states"], _cmap
+                )
+            if isinstance(preparation_summary.get("histidine_states"), dict):
+                preparation_summary["histidine_states"] = (
+                    _remap_histidine_state_chains(
+                        preparation_summary["histidine_states"], _cmap
+                    )
+                )
+        result.pop("_chain_remap_source_to_merged", None)
         successful_proteins = [p for p in result.get("proteins", []) if p.get("success")]
         n_caps = sorted({
             p.get("n_terminal_cap")

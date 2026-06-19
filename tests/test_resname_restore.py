@@ -12,7 +12,50 @@ Run with: conda run -n mdclaw pytest tests/test_resname_restore.py -v
 
 import pytest
 
-from mdclaw.structure.pdb_utils import restore_resnames_from_source_pdb
+from mdclaw.structure.pdb_utils import (
+    restore_residue_numbering_from_reference,
+    restore_resnames_from_source_pdb,
+)
+
+
+def _atom(serial, name, res, chain, resseq, val=0.0):
+    return (f"ATOM  {serial:>5} {name:<4} {res:<3} {chain}{resseq:>4}    "
+            f"{val:8.3f}{val:8.3f}{val:8.3f}  1.00  0.00")
+
+
+def test_restore_numbering_undoes_pdb4amber_renumber(tmp_path):
+    # reference (PDBFixer output): chain A 1-2, chain B 1-2 (original numbering)
+    ref = "\n".join([
+        _atom(1, "N", "ALA", "A", 1), _atom(2, "CA", "ALA", "A", 1),
+        _atom(3, "N", "GLY", "A", 2),
+        _atom(4, "N", "MET", "B", 1), _atom(5, "N", "LEU", "B", 2),
+    ]) + "\nEND\n"
+    # target (pdb4amber): chain B renumbered to 215-216, an extra H added to A:1
+    tgt = "\n".join([
+        _atom(1, "N", "ALA", "A", 1), _atom(2, "CA", "ALA", "A", 1),
+        _atom(3, "H", "ALA", "A", 1),
+        _atom(4, "N", "GLY", "A", 2),
+        _atom(5, "N", "MET", "B", 215), _atom(6, "N", "LEU", "B", 216),
+    ]) + "\nEND\n"
+    rf = tmp_path / "ref.pdb"; tf = tmp_path / "tgt.pdb"
+    rf.write_text(ref); tf.write_text(tgt)
+    assert restore_residue_numbering_from_reference(tf, rf) is not None
+    keys = [(l[21], l[22:26].strip()) for l in tf.read_text().splitlines()
+            if l.startswith("ATOM  ")]
+    # B residues restored to 1,2; the added H stays in A:1
+    assert keys == [("A", "1"), ("A", "1"), ("A", "1"),
+                    ("A", "2"), ("B", "1"), ("B", "2")]
+
+
+def test_restore_numbering_bails_on_residue_count_mismatch(tmp_path):
+    rf = tmp_path / "ref.pdb"; tf = tmp_path / "tgt.pdb"
+    rf.write_text(_atom(1, "N", "ALA", "A", 1) + "\nEND\n")
+    tf.write_text(_atom(1, "N", "ALA", "A", 9) + "\n"
+                  + _atom(2, "N", "GLY", "A", 10) + "\nEND\n")
+    # 2 target residues vs 1 reference residue -> None, file left unchanged
+    before = tf.read_text()
+    assert restore_residue_numbering_from_reference(tf, rf) is None
+    assert tf.read_text() == before
 
 
 # (canonical source name, OpenMM-normalized export name) the loader collapses.

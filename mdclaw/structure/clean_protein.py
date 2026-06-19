@@ -55,7 +55,7 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 from mdclaw.structure.ligand_chemistry import _estimate_charge_rdkit, _estimate_physiological_charge  # noqa: E402
-from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues  # noqa: E402
+from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
 
@@ -782,6 +782,22 @@ def clean_protein(
                 ])
 
                 if amber_output_file.exists():
+                    # pdb4amber renumbers residues (it makes numbering continuous
+                    # across chains, e.g. chain B 1-99 -> 215-430). That silently
+                    # invalidates every site-keyed input (protonation_states /
+                    # histidine_states keyed by chain:resnum, detected PTM resnum).
+                    # The PDBFixer output (output_file) still carries the original
+                    # numbering and the same residue order, so restore it before
+                    # any site-keyed step runs. Atoms/coords/H are untouched.
+                    restored = restore_residue_numbering_from_reference(
+                        amber_output_file, output_file
+                    )
+                    if restored is None:
+                        result["warnings"].append(
+                            "Could not restore original residue numbering after "
+                            "pdb4amber (residue count changed); site-keyed inputs "
+                            "may not match."
+                        )
                     op = {
                         "step": "protonation",
                         "status": "success",
