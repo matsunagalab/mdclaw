@@ -101,6 +101,55 @@ def preserve_long_resnames_in_pdb_text(pdb_text: str, topology: Any) -> str:
     return "\n".join(out_lines) + trailing
 
 
+def restore_resnames_from_source_pdb(
+    pdb_text: str, source_pdb: str | Path
+) -> Optional[str]:
+    """Overlay residue names from a source PDB onto an exported PDB, by index.
+
+    ``openmm.app.PDBFile`` normalizes Amber protonation-state and water residue
+    names when it *loads* a structure (``GLH``->``GLU``, ``ASH``->``ASP``,
+    ``HID``/``HIE``/``HIP``->``HIS``, ``LYN``->``LYS``, ``CYX``/``CYM``->``CYS``,
+    ``WAT``->``HOH``, ...). A structure written back out from that loaded
+    topology therefore loses the protonation-state name even though the protons
+    (``HE2`` etc.) are still present and the chemistry is unchanged. The source
+    ``topology.pdb`` emitted by the topo build carries the canonical names; this
+    rewrites the residue-name column (cols 18-21) of each ``ATOM``/``HETATM``
+    record from that source, matched by record order (identical atom order,
+    since the export was written from a topology loaded out of the same file).
+
+    This is a pure text relabel of the exported artifact — it does not touch
+    coordinates, the OpenMM ``System``, the restart ``state.xml``, or anything
+    the run side consumes, so it cannot affect the MD result.
+
+    Returns the rewritten text, or ``None`` when the source cannot be read or
+    its ``ATOM``/``HETATM`` count does not match (caller should then fall back).
+    """
+    try:
+        source_names = [
+            line[17:21].strip()
+            for line in Path(source_pdb).read_text().splitlines()
+            if line.startswith(("ATOM  ", "HETATM"))
+        ]
+    except OSError:
+        return None
+    lines = pdb_text.splitlines()
+    n_records = sum(1 for ln in lines if ln.startswith(("ATOM  ", "HETATM")))
+    if n_records != len(source_names) or n_records == 0:
+        return None
+    out_lines: list[str] = []
+    idx = 0
+    for line in lines:
+        if line.startswith(("ATOM  ", "HETATM")):
+            name = source_names[idx]
+            idx += 1
+            if name:
+                padded = line.ljust(80)
+                line = (padded[:17] + f"{name[:4]:<4}" + padded[21:]).rstrip()
+        out_lines.append(line)
+    trailing = "\n" if pdb_text.endswith("\n") else ""
+    return "\n".join(out_lines) + trailing
+
+
 def _pdb_atom_descriptor(line: str) -> dict[str, Any]:
     """Return a compact, serializable descriptor for a PDB atom record."""
     chain = line[21].strip() if len(line) > 21 else ""

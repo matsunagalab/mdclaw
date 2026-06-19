@@ -370,16 +370,28 @@ def run_minimization(
 
         from mdclaw.structure.pdb_utils import (
             preserve_long_resnames_in_pdb_text,
+            restore_resnames_from_source_pdb,
         )
         _min_buffer = _io.StringIO()
         PDBFile.writeFile(
             xml_inputs.topology, minimized_state.getPositions(), _min_buffer
         )
-        minimized_structure.write_text(
-            preserve_long_resnames_in_pdb_text(
+        # OpenMM's PDBFile loader normalized Amber protonation-state / water
+        # residue names (GLH->GLU, HID->HIS, WAT->HOH, ...) when this topology
+        # was loaded from the topo node's topology.pdb. Restore the canonical
+        # names from that source file so the minimized artifact preserves the
+        # prepared protonation labels (the protons themselves were never lost).
+        # Pure text relabel of the exported PDB; the MD result, state.xml, and
+        # downstream nodes are unaffected. Falls back to the long-resname patch
+        # when the source is unavailable or its atom count does not match.
+        _min_text = restore_resnames_from_source_pdb(
+            _min_buffer.getvalue(), topology_pdb_file
+        )
+        if _min_text is None:
+            _min_text = preserve_long_resnames_in_pdb_text(
                 _min_buffer.getvalue(), xml_inputs.topology
             )
-        )
+        minimized_structure.write_text(_min_text)
         result["minimized_structure"] = str(minimized_structure)
 
         report = {
