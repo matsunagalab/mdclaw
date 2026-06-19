@@ -194,9 +194,53 @@ def _build_source_to_merged_chain_map(
     return composite
 
 
+def _build_source_to_topology_index_map(
+    chain_file_info: list[dict],
+    proteins: list[dict],
+    chain_mapping_entries: list[dict],
+) -> dict:
+    """Build ``source_author_chain -> topology_chain_index``.
+
+    Mirrors :func:`_build_source_to_merged_chain_map` but resolves the
+    *topology chain index* (the chain's 0-based position in merge order, which
+    equals its block position in merged.pdb) instead of the 1-char merged id.
+    The merged id is reused once the 62-id PDB pool is exhausted; the topology
+    index never is, so it is the unambiguous chain selector for site-keyed
+    edits on >62-chain assemblies. ``chain_mapping_entries`` comes from
+    ``merge_structures`` and lists ``{source_file, topology_chain_index, ...}``
+    (one entry per cleaned chain file, since split emits one chain per file).
+    """
+    chain_id_to_author: dict[str, str] = {}
+    for info in chain_file_info or []:
+        cid = info.get("chain_id")
+        if cid is not None:
+            chain_id_to_author[cid] = info.get("author_chain", cid)
+
+    file_to_topo: dict[str, int] = {}
+    for entry in chain_mapping_entries or []:
+        sf = entry.get("source_file")
+        ti = entry.get("topology_chain_index")
+        if sf is not None and ti is not None and sf not in file_to_topo:
+            file_to_topo[sf] = int(ti)
+
+    index_map: dict[str, int] = {}
+    for p in proteins or []:
+        if not p.get("success"):
+            continue
+        cleaned_file = p.get("output_file")
+        cid = p.get("chain_id")
+        if not cleaned_file or cid is None:
+            continue
+        topo = file_to_topo.get(cleaned_file)
+        if topo is not None:
+            index_map[chain_id_to_author.get(cid, cid)] = topo
+    return index_map
+
+
 def _remap_detected_ptm_chains(
     detected_ptm_residues: list[dict],
     composite_chain_map: dict,
+    chain_index_map: Optional[dict] = None,
 ) -> tuple[list[dict], list[dict]]:
     """Apply a pre-built ``source_author_chain -> merged_chain`` map to PTM
     detection results.
@@ -212,12 +256,21 @@ def _remap_detected_ptm_chains(
             ``detect_ptm_sites`` — ``chain`` is the **source author chain**
             (full, possibly multi-letter on mmCIF inputs).
         composite_chain_map: ``{source_author_chain: merged_chain}``.
+        chain_index_map: optional ``{source_author_chain: topology_chain_index}``.
+            When supplied, each remapped entry also carries
+            ``topology_chain_index`` so that ``phosphorylate_residues`` can
+            target the correct chain even when >62-chain merges reuse the PDB
+            single-character chain-id pool (two source chains share one merged
+            id). The merged ``chain`` id alone is ambiguous there; the topology
+            index is not.
 
     Returns:
         ``(remapped, dropped)``. Each remapped entry carries:
             - ``chain``: the merged.pdb chain id (what
               ``phosphorylate_residues`` actually looks up).
             - ``original_chain``: the source author chain (provenance).
+            - ``topology_chain_index``: present when ``chain_index_map`` mapped
+              the source chain — the authoritative chain selector.
             - ``resnum`` / ``name``: unchanged.
         ``dropped`` collects entries whose source chain has no entry in
         the composite map (typically excluded by ``select_chains``).
@@ -230,12 +283,16 @@ def _remap_detected_ptm_chains(
         if merged_chain is None:
             dropped.append(dict(ptm))
             continue
-        remapped.append({
+        entry = {
             "chain": merged_chain,
             "original_chain": original,
             "resnum": ptm["resnum"],
             "name": ptm["name"],
-        })
+        }
+        topo_idx = (chain_index_map or {}).get(original)
+        if topo_idx is not None:
+            entry["topology_chain_index"] = int(topo_idx)
+        remapped.append(entry)
     return remapped, dropped
 
 
@@ -327,24 +384,66 @@ def _apply_phosphorylation_to_pdb(
                   expected source residue for the requested target
         not_found: list of sites whose (chain, resnum) was not found in the PDB
     """
-    site_map: dict[tuple, str] = {}
-    for s in sites:
-        site_map[(s["chain"], int(s["resnum"]))] = s["target"]
-
-    # First pass: gather parent_C and ester_O coordinates per target site so
-    # we can synthesise phosphate-atom positions before the residue closes.
-    site_geometry: dict[tuple, dict[str, tuple[float, float, float]]] = {}
+    # Resolve sites to chain-BLOCK indices (0-based position of each chain run
+    # in file order). merge writes chains in topology order as contiguous
+    # blocks, so block index == topology_chain_index — this lets >62-chain
+    # merges, which reuse the PDB single-character chain-id pool, still target
+    # the correct chain. A site may carry an explicit ``topology_chain_index``
+    # (auto-detect path); otherwise it is resolved by chain id, which is
+    # unambiguous unless that id labels more than one block, in which case it is
+    # reported as ``ambiguous`` rather than silently applied to the first match.
+    blocks: list[str] = []
+    _prev_c: Optional[str] = None
     with in_path.open() as fin:
         for line in fin:
             if not line.startswith(("ATOM  ", "HETATM")):
                 continue
-            resname = line[17:20].strip()
+            c = line[21:22].strip()
+            if c != _prev_c:
+                blocks.append(c)
+                _prev_c = c
+
+    site_map: dict[tuple, str] = {}        # (block_index, resnum) -> target
+    site_by_key: dict[tuple, dict] = {}    # (block_index, resnum) -> report dict
+    not_found: list[dict] = []
+    ambiguous: list[dict] = []
+    for s in sites:
+        resnum_s = int(s["resnum"])
+        report = {"chain": s["chain"], "resnum": resnum_s, "target": s["target"]}
+        ti = s.get("topology_chain_index")
+        if ti is not None and 0 <= int(ti) < len(blocks):
+            key = (int(ti), resnum_s)
+        else:
+            idxs = [i for i, c in enumerate(blocks) if c == s["chain"]]
+            if len(idxs) == 1:
+                key = (idxs[0], resnum_s)
+            elif not idxs:
+                not_found.append(report)
+                continue
+            else:
+                ambiguous.append({**report, "block_indices": idxs})
+                continue
+        site_map[key] = s["target"]
+        site_by_key[key] = report
+
+    # First pass: gather parent_C and ester_O coordinates per target site so
+    # we can synthesise phosphate-atom positions before the residue closes.
+    site_geometry: dict[tuple, dict[str, tuple[float, float, float]]] = {}
+    blk = -1
+    _prev_c = None
+    with in_path.open() as fin:
+        for line in fin:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
             chain = line[21:22].strip()
+            if chain != _prev_c:
+                blk += 1
+                _prev_c = chain
             try:
                 resnum = int(line[22:26].strip())
             except ValueError:
                 continue
-            key = (chain, resnum)
+            key = (blk, resnum)
             if key not in site_map:
                 continue
             spec = _PHOSPHO_TARGETS.get(site_map[key])
@@ -403,11 +502,16 @@ def _apply_phosphorylation_to_pdb(
             )
         return out_lines
 
+    blk = -1
+    _prev_c = None
     with in_path.open() as fin, out_path.open("w") as fout:
         for line in fin:
             if line.startswith(("ATOM  ", "HETATM")):
-                resname = line[17:20].strip()
                 chain = line[21:22].strip()
+                if chain != _prev_c:
+                    blk += 1
+                    _prev_c = chain
+                resname = line[17:20].strip()
                 resnum_field = line[22:26].strip()
                 try:
                     resnum = int(resnum_field)
@@ -423,7 +527,7 @@ def _apply_phosphorylation_to_pdb(
                 except ValueError:
                     pass
                 atom_name = line[12:16].strip()
-                key = (chain, resnum)
+                key = (blk, resnum)
 
                 if current_residue_key is not None and current_residue_key != key:
                     for pl in pending_phospho_lines:
@@ -476,22 +580,24 @@ def _apply_phosphorylation_to_pdb(
             for pl in pending_phospho_lines:
                 fout.write(pl)
 
-    applied = [
-        {
-            "chain": chain,
-            "resnum": resnum,
+    applied = []
+    for key, target in seen.items():
+        if target == "mismatch":
+            continue
+        rep = site_by_key.get(key, {})
+        applied.append({
+            "chain": rep.get("chain"),
+            "resnum": rep.get("resnum", key[1]),
             "target": target,
             "source": _PHOSPHO_TARGETS[target]["source"],
-        }
-        for (chain, resnum), target in seen.items()
-        if target != "mismatch"
-    ]
-    not_found = [
-        {"chain": chain, "resnum": resnum, "target": tgt}
-        for (chain, resnum), tgt in site_map.items()
-        if (chain, resnum) not in seen
-    ]
-    return {"applied": applied, "mismatch": mismatch, "not_found": not_found}
+        })
+    for key, tgt in site_map.items():
+        if key not in seen:
+            not_found.append(
+                site_by_key.get(key, {"chain": None, "resnum": key[1], "target": tgt})
+            )
+    return {"applied": applied, "mismatch": mismatch,
+            "not_found": not_found, "ambiguous": ambiguous}
 
 
 def phosphorylate_residues(
@@ -632,11 +738,16 @@ def phosphorylate_residues(
             )
             return result
         for d in detected:
-            resolved_sites.append({
+            site = {
                 "chain": d["chain"],
                 "resnum": int(d["resnum"]),
                 "target": d["name"],
-            })
+            }
+            # topology_chain_index disambiguates reused merged chain ids on
+            # >62-chain assemblies (set by prepare_complex's PTM remap).
+            if d.get("topology_chain_index") is not None:
+                site["topology_chain_index"] = int(d["topology_chain_index"])
+            resolved_sites.append(site)
     elif sites_str:
         try:
             resolved_sites = _parse_sites_str(sites_str)
@@ -646,11 +757,14 @@ def phosphorylate_residues(
     else:
         for s in sites or []:
             try:
-                resolved_sites.append({
+                site = {
                     "chain": s["chain"],
                     "resnum": int(s["resnum"]),
                     "target": s.get("target", s.get("name", "")).upper(),
-                })
+                }
+                if s.get("topology_chain_index") is not None:
+                    site["topology_chain_index"] = int(s["topology_chain_index"])
+                resolved_sites.append(site)
             except (KeyError, TypeError, ValueError) as e:
                 result["errors"].append(
                     f"Invalid site entry {s!r}: {type(e).__name__}: {e}"
@@ -711,6 +825,24 @@ def phosphorylate_residues(
         result["errors"].append(
             "Residue/target mismatch — refusing to write a partial result. "
             f"Details: {edit_result['mismatch']}"
+        )
+        try:
+            output_path.unlink()
+        except FileNotFoundError:
+            pass
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(job_dir, node_id, errors=result["errors"])
+        return result
+
+    if edit_result.get("ambiguous"):
+        result["errors"].append(
+            "Ambiguous chain target — refusing to guess. The following site(s) "
+            "name a chain id that labels more than one chain block in the input "
+            "PDB (a >62-chain merge reused the PDB single-character chain-id "
+            f"pool): {edit_result['ambiguous']}. Re-run prepare_complex so the "
+            "detection carries topology_chain_index, or disambiguate the site "
+            "with an explicit topology_chain_index."
         )
         try:
             output_path.unlink()

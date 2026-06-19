@@ -60,7 +60,7 @@ from mdclaw.structure.clean_protein import _prepare_standard_nucleic, clean_prot
 from mdclaw.structure.disulfide import _merge_disulfide_pairs, _reconcile_cyx_cys_in_pdb  # noqa: E402
 from mdclaw.structure.merge import _build_nucleic_residue_mapping, _build_residue_mapping_for_type, _enrich_chain_identity_map, _index_prepared_component_sources, merge_structures  # noqa: E402
 from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result, _component_disposition_payload, _normalize_prepare_solvent_type  # noqa: E402
-from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains  # noqa: E402
+from mdclaw.structure.phosphorylation import _build_source_to_merged_chain_map, _build_source_to_topology_index_map, _remap_detected_ptm_chains, _remap_disulfide_chains, _remap_histidine_state_chains, _remap_protonation_state_chains  # noqa: E402
 from mdclaw.structure.protonation import _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.split import _inspect_molecules_impl, split_molecules  # noqa: E402
 from mdclaw.structure.terminal_caps import _resolve_terminal_cap_settings  # noqa: E402
@@ -1518,6 +1518,18 @@ def prepare_complex(
                         proteins=result.get("proteins", []),
                         merge_chain_mapping=merge_result.get("chain_mapping", {}),
                     )
+                    # The merged 1-char chain id is reused once the 62-id PDB
+                    # pool is exhausted (>62 chains), so it cannot uniquely
+                    # select a chain for site-keyed PTM edits. The topology
+                    # chain index never collides — carry it alongside so
+                    # phosphorylate_residues targets the right chain block.
+                    chain_index_map = _build_source_to_topology_index_map(
+                        chain_file_info=split_result.get("chain_file_info", []),
+                        proteins=result.get("proteins", []),
+                        chain_mapping_entries=merge_result.get(
+                            "chain_mapping_entries", []
+                        ),
+                    )
                     # Stash for the protonation/histidine summary remap below
                     # (that code runs in a scope where merge_result may be absent).
                     result["_chain_remap_source_to_merged"] = composite_map
@@ -1525,6 +1537,7 @@ def prepare_complex(
                         remapped, dropped = _remap_detected_ptm_chains(
                             detected_ptm_residues,
                             composite_map,
+                            chain_index_map,
                         )
                         if dropped:
                             result["warnings"].append(

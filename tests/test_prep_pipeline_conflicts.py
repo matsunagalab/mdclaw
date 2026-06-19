@@ -135,14 +135,102 @@ def test_case9_pdb4amber_renumber_restored(tmp_path):
 # without invoking PDBFixer, so intentionally left to those suites.
 
 # --- CASE 10: chain-id pool exhaustion (>62 chains). PDB's single-character
-# chain field cannot give >62 unique ids, so reuse is inherent (not fixable in
-# PDB format). The mitigation is that merge_structures now WARNS loudly on
-# exhaustion (see merge.py) and chain_identity_map.topology_chain_index is the
-# authoritative disambiguator. This test pins the inherent limit + pool size.
-def test_case10_chain_pool_is_62_and_reuses_beyond():
+# chain field cannot give >62 unique ids, so two chains can share one merged
+# id. The REAL fix: site-keyed PTM edits resolve the chain by topology_chain
+# index (== chain block position in merged.pdb), not by the ambiguous id, so the
+# correct chain is targeted. A site naming a reused id WITHOUT a topology index
+# is reported as `ambiguous` (fail-clear), never silently applied to the first.
+def test_case10_pool_is_62_and_reuses_beyond():
     from mdclaw.structure.merge import PDB_CHAIN_ID_POOL
     assert len(PDB_CHAIN_ID_POOL) == 62
-    # index 62 wraps to index 0 -> reuse is inherent to the PDB 1-char field.
     assert _pdb_chain_id_for_index(62) == _pdb_chain_id_for_index(0) == "A"
-    # all ids within one pool are unique (no premature collisions).
     assert len({_pdb_chain_id_for_index(i) for i in range(62)}) == 62
+
+
+def _ser(serial, chain, resnum, atom, res="SER"):
+    return (f"ATOM  {serial:>5} {atom:<4} {res:<3} {chain}{resnum:>4}"
+            f"       0.000   0.000   0.000  1.00  0.00\n")
+
+
+def _ser_block(start_serial, chain, resnum):
+    # a minimal SER residue (N/CA/CB/OG) so phospho geometry/rename can run
+    return "".join(
+        _ser(start_serial + i, chain, resnum, a)
+        for i, a in enumerate(("N", "CA", "CB", "OG"))
+    )
+
+
+def _resname_at(text, block_index, resnum):
+    """resName of the residue at (block_index, resnum), block = chain-id run."""
+    blk, prev = -1, None
+    for ln in text.splitlines():
+        if not ln.startswith(("ATOM  ", "HETATM")):
+            continue
+        c = ln[21:22]
+        if c != prev:
+            blk += 1
+            prev = c
+        if blk == block_index and ln[22:26].strip() == str(resnum):
+            return ln[17:20].strip()
+    return None
+
+
+def test_case10_topology_index_targets_correct_reused_chain(tmp_path):
+    # Two chains share id 'A' (block 0 and block 2), as when the 62-id pool is
+    # reused. A PTM on the SECOND 'A' must hit block 2, not block 0.
+    pdb = (_ser_block(1, "A", 65)       # block 0, chain 'A'
+           + _ser_block(5, "B", 10)     # block 1, chain 'B'
+           + _ser_block(9, "A", 65)     # block 2, chain 'A' (reused id)
+           + "END\n")
+    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src.write_text(pdb)
+    res = _apply_phosphorylation_to_pdb(
+        src, out,
+        [{"chain": "A", "resnum": 65, "target": "SEP", "topology_chain_index": 2}],
+    )
+    assert res["ambiguous"] == []
+    assert [a["resnum"] for a in res["applied"]] == [65]
+    text = out.read_text()
+    assert _resname_at(text, 0, 65) == "SER"   # first 'A' untouched
+    assert _resname_at(text, 2, 65) == "SEP"   # the targeted 'A' phosphorylated
+
+
+def test_case10_reused_chain_without_index_is_ambiguous(tmp_path):
+    # Same duplicate-'A' pdb, but the site does NOT carry a topology index ->
+    # must be reported ambiguous (fail-clear), never applied to the first 'A'.
+    pdb = (_ser_block(1, "A", 65) + _ser_block(5, "B", 10)
+           + _ser_block(9, "A", 65) + "END\n")
+    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
+    src.write_text(pdb)
+    res = _apply_phosphorylation_to_pdb(
+        src, out, [{"chain": "A", "resnum": 65, "target": "SEP"}],
+    )
+    assert res["applied"] == []
+    assert res["ambiguous"] and res["ambiguous"][0]["block_indices"] == [0, 2]
+
+
+def test_case10_remap_attaches_topology_chain_index():
+    # The detection remap carries topology_chain_index from the index map so the
+    # restore path can disambiguate downstream.
+    remapped, dropped = _remap_detected_ptm_chains(
+        [{"chain": "X", "resnum": 65, "name": "SEP"}],
+        {"X": "A"}, {"X": 62},
+    )
+    assert dropped == []
+    assert remapped[0]["chain"] == "A"
+    assert remapped[0]["topology_chain_index"] == 62
+
+
+def test_case10_build_topology_index_map_joins_on_file():
+    from mdclaw.structure.phosphorylation import (
+        _build_source_to_topology_index_map,
+    )
+    idx = _build_source_to_topology_index_map(
+        chain_file_info=[{"chain_id": "B", "author_chain": "BBB"}],
+        proteins=[{"success": True, "chain_id": "B", "output_file": "/x/p1.pdb"}],
+        chain_mapping_entries=[
+            {"source_file": "/x/p1.pdb", "topology_chain_index": 62,
+             "md_chain_id": "A"},
+        ],
+    )
+    assert idx == {"BBB": 62}
