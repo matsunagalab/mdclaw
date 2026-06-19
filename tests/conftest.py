@@ -1,5 +1,6 @@
 """Shared test fixtures for MDClaw test suite."""
 
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -9,6 +10,56 @@ import pytest
 # Add servers directory to path for direct imports
 servers_dir = Path(__file__).parent.parent / "mdclaw"
 sys.path.insert(0, str(servers_dir))
+
+
+# --- Ordered pipeline-step guard --------------------------------------------
+# The ``test_pipeline_*_dag.py`` classes are ONE logical DAG pipeline split into
+# ordered ``test_stepN_*`` methods that share class state (step1 builds the DAG
+# that step2+ consume via ``self.__class__.<id>``). They must run in order and
+# as a set. When a ``-k``/``-m`` selection picks a later step without its
+# predecessors, the shared state is missing and the test crashes with a
+# confusing ``AttributeError``. These two hooks turn that into a clean skip:
+# each passing step is recorded on its class, and a step whose predecessors did
+# not pass in this selection is skipped with an explanatory message. Full-file
+# runs are unaffected (step1 passes first, so step2+ proceed normally).
+_STEP_RE = re.compile(r"test_step(\d+)")
+
+
+def _step_num(name: str):
+    m = _STEP_RE.search(name or "")
+    return int(m.group(1)) if m else None
+
+
+def pytest_runtest_setup(item):
+    n = _step_num(item.name)
+    cls = getattr(item, "cls", None)
+    if n is None or cls is None:
+        return
+    passed = getattr(cls, "_steps_passed", set())
+    expected_prior = {
+        _step_num(name)
+        for name in dir(cls)
+        if _step_num(name) is not None and _step_num(name) < n
+    }
+    missing = sorted(expected_prior - passed)
+    if missing:
+        pytest.skip(
+            f"prerequisite pipeline step(s) {missing} did not run/pass in this "
+            "selection; these test_stepN methods share class state and must run "
+            "in order (run the whole class, or include the earlier steps)"
+        )
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    n = _step_num(item.name)
+    cls = getattr(item, "cls", None)
+    if n is not None and cls is not None and report.when == "call" and report.passed:
+        passed = getattr(cls, "_steps_passed", set())
+        passed.add(n)
+        cls._steps_passed = passed
 
 
 # --- Minimal PDB fixtures ---
