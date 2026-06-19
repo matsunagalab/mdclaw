@@ -220,6 +220,36 @@ def restore_resnames_from_source_pdb(
     return "\n".join(out_lines) + trailing
 
 
+def render_simulation_pdb_preserving_resnames(
+    topology: Any, positions: Any, source_topology_pdb: Optional[str | Path]
+) -> str:
+    """Serialize an OpenMM topology+positions to PDB text, preserving the
+    Amber/PTM/water residue names that OpenMM's ``PDBFile`` loader normalized
+    away when the run stage loaded ``topology.pdb``.
+
+    This is the single export path shared by min / eq / prod: write to a buffer,
+    overlay the canonical names from the topo node's ``topology.pdb`` (the
+    authoritative, name-correct topology contract), and fall back to the
+    long-resname patch when that source is missing or its atom count does not
+    match. Pure text relabel — never touches coordinates, ``system.xml``, or
+    ``state.xml``, so the MD result is unaffected.
+    """
+    import io
+
+    from openmm.app import PDBFile
+
+    buffer = io.StringIO()
+    PDBFile.writeFile(topology, positions, buffer)
+    text = None
+    if source_topology_pdb:
+        text = restore_resnames_from_source_pdb(
+            buffer.getvalue(), source_topology_pdb
+        )
+    if text is None:
+        text = preserve_long_resnames_in_pdb_text(buffer.getvalue(), topology)
+    return text
+
+
 def _pdb_atom_descriptor(line: str) -> dict[str, Any]:
     """Return a compact, serializable descriptor for a PDB atom record."""
     chain = line[21].strip() if len(line) > 21 else ""

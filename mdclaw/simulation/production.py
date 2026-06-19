@@ -869,8 +869,17 @@ def run_production(
         # Save final structure
         final_pdb = out_dir / f"{pref}final_structure.pdb"
         positions = state.getPositions()
-        with open(final_pdb, 'w') as f:
-            PDBFile.writeFile(simulation.topology, positions, f)
+        # Restore the Amber/PTM/water residue names OpenMM's PDBFile loader
+        # normalized away when topology.pdb was loaded (same shared exporter as
+        # min/eq; pure text relabel, MD result/state.xml unaffected).
+        from mdclaw.structure.pdb_utils import (
+            render_simulation_pdb_preserving_resnames,
+        )
+        final_pdb.write_text(
+            render_simulation_pdb_preserving_resnames(
+                simulation.topology, positions, topology_pdb_file
+            )
+        )
 
         # Update result with file paths
         result["trajectory_file"] = str(trajectory_file)

@@ -150,3 +150,53 @@ def test_atom_count_mismatch_returns_none(tmp_path):
 
 def test_missing_source_returns_none(tmp_path):
     assert restore_resnames_from_source_pdb(EXPORT, tmp_path / "nope.pdb") is None
+
+
+# --- shared min/eq/prod exporter: real OpenMM load (normalizes) -> restore ----
+def test_render_simulation_pdb_restores_names_after_openmm_load(tmp_path):
+    pytest.importorskip("openmm")
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    # topology.pdb (topo contract) with a canonical Amber name. OpenMM's PDBFile
+    # loader normalizes GLH->GLU in memory; the exporter must restore GLH.
+    src = tmp_path / "topology.pdb"
+    src.write_text(
+        "ATOM      1  N   GLH A  11       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  GLH A  11       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    loaded = PDBFile(str(src))
+    text = render_simulation_pdb_preserving_resnames(
+        loaded.topology, loaded.positions, str(src)
+    )
+    names = [l[17:20].strip() for l in text.splitlines() if l.startswith("ATOM  ")]
+    assert names == ["GLH", "GLH"]          # restored, not the normalized GLU
+    coords = [l[30:54] for l in text.splitlines() if l.startswith("ATOM  ")]
+    assert len(coords) == 2                  # coordinates intact
+
+
+def test_render_simulation_pdb_falls_back_without_source(tmp_path):
+    pytest.importorskip("openmm")
+    from openmm.app import PDBFile
+
+    from mdclaw.structure.pdb_utils import (
+        render_simulation_pdb_preserving_resnames,
+    )
+    src = tmp_path / "topology.pdb"
+    src.write_text(
+        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n"
+        "END\n"
+    )
+    loaded = PDBFile(str(src))
+    # No source -> long-resname fallback; still emits a valid relabelled PDB.
+    text = render_simulation_pdb_preserving_resnames(
+        loaded.topology, loaded.positions, None
+    )
+    assert any(
+        l[17:20].strip() == "ALA"
+        for l in text.splitlines()
+        if l.startswith("ATOM  ")
+    )

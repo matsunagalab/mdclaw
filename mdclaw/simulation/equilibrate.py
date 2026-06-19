@@ -942,8 +942,17 @@ def run_equilibration(
         # Save final structure as PDB
         pref = f"{name}_" if name else ""
         final_pdb = out_dir / f"{pref}equilibrated.pdb"
-        with open(final_pdb, 'w') as f:
-            PDBFile.writeFile(xml_inputs.topology, final_positions, f)
+        # Restore the Amber/PTM/water residue names OpenMM's PDBFile loader
+        # normalized away when topology.pdb was loaded (same shared exporter as
+        # min/prod; pure text relabel, MD result/state.xml unaffected).
+        from mdclaw.structure.pdb_utils import (
+            render_simulation_pdb_preserving_resnames,
+        )
+        final_pdb.write_text(
+            render_simulation_pdb_preserving_resnames(
+                xml_inputs.topology, final_positions, topology_pdb_file
+            )
+        )
         result["final_structure"] = str(final_pdb)
         logger.info(f"Equilibrated structure saved: {final_pdb} (stages: {result['stages_completed']})")
 
