@@ -47,9 +47,26 @@ Singularity/Apptainer SIF, Docker image, or local editable install.
 
 ## Install / Deploy
 
-Choose the path that matches your agent. After installation, run
-`scripts/mdclaw-doctor.sh` when using a repo checkout; it checks the runtime,
-OpenMM, AmberTools, container availability, and skill discovery.
+Deploying MDClaw means setting up two things:
+
+1. **Skill discovery**: how your agent reads the MDClaw instructions in
+   `skills/`.
+2. **MD runtime**: where `mdclaw <tool>` runs AmberTools, OpenMM, Boltz-2, and
+   the other scientific dependencies.
+
+Most confusion comes from mixing those two layers. Pick the agent entrypoint
+first, then make sure one runtime is available.
+
+| You are using | Start here | What still needs to work |
+|---|---|---|
+| Claude Code plugin | `/plugin install mdclaw@mdclaw` | Plugin hook, conda/SIF/Docker runtime |
+| Pi | `pi install git:github.com/matsunagalab/mdclaw@main` | One runtime on the machine |
+| Claude Code, Codex, OpenCode, or another repo-local agent | `scripts/install-agent-skills.sh` | One runtime on the machine |
+| Direct CLI or development checkout | `conda env create -f environment.yml` | `mdclaw --list` in the env |
+
+When using a repo checkout, run `scripts/mdclaw-doctor.sh` after setup. It
+checks version sync, skill discovery, conda, OpenMM, AmberTools, and available
+container commands.
 
 ### Claude Code Plugin
 
@@ -66,12 +83,13 @@ The plugin provides:
 - `.claude-plugin/`: marketplace metadata.
 - `hooks/hooks.json`: SessionStart hook that prepares the packaged MD runtime.
 - `bin/mdclaw`: runtime wrapper that chooses conda, SIF, or Docker.
-- `skills/`: the same MDClaw skills used by other agents.
+- `skills/`: the same MDClaw skills used by every other agent path.
 
-The plugin prepares the container runtime on first session start. On HPC it
-prefers a SIF for Singularity/Apptainer; on desktop it can use Docker. This is
-only the execution environment for `mdclaw <tool>`; skill discovery remains the
-same text files under `skills/`.
+On session start, the hook first reuses an existing `mdclaw` conda env when it
+is available. Otherwise it prepares the packaged runtime: SIF for
+Singularity/Apptainer on HPC, or Docker on desktop. The container is only the
+execution environment for `mdclaw <tool>`; the agent-facing skills remain the
+text files under `skills/`.
 
 ### Pi
 
@@ -83,7 +101,7 @@ pi install git:github.com/matsunagalab/mdclaw@main
 
 `package.json` points Pi at `./skills`. You still need one MD runtime:
 the `mdclaw` conda env, a SIF through `MDCLAW_SIF`, Docker through
-`MDCLAW_DOCKER_IMAGE`, or the plugin/container wrapper.
+`MDCLAW_DOCKER_IMAGE`, or another `mdclaw` executable on `PATH`.
 
 ### Claude Code, Codex, OpenCode, and Generic Agents
 
@@ -96,19 +114,23 @@ scripts/install-agent-skills.sh
 scripts/mdclaw-doctor.sh
 ```
 
-`scripts/install-agent-skills.sh` creates `.agents/skills/<name>` and
-`.claude/skills/<name>` symlinks to `skills/<name>`. Use
-`scripts/install-agent-skills.sh --copy` if your agent or filesystem does not
-follow symlinks.
+`scripts/install-agent-skills.sh` creates `.agents/skills/<name>`,
+`.claude/skills/<name>`, and `.codex/skills/<name>` mirrors of
+`skills/<name>`, including shared support directories such as `skills/common/`.
+Use `scripts/install-agent-skills.sh --copy` if your agent or filesystem does
+not follow symlinks.
 
 Repo-local Claude Code uses `.claude/skills/` for skill discovery. The older
 repo-local short commands such as `/md-prepare` are intentionally not tracked;
 use the discovered skills directly, or install the Claude plugin when you want
 the plugin command namespace such as `/mdclaw:md-prepare`.
 
-### Local Runtime
+This installs only the skill discovery layer. The scientific runtime is still
+one of the options below.
 
-For development or non-plugin usage, create the conda environment:
+### Runtime Choices
+
+For local development or non-plugin usage, conda is the simplest runtime:
 
 ```bash
 conda env create -f environment.yml
@@ -117,13 +139,38 @@ pip install -e .
 mdclaw --list
 ```
 
+For HPC, use a SIF:
+
+```bash
+export MDCLAW_SIF=/path/to/mdclaw.sif
+bin/mdclaw --list
+```
+
+For desktop packaged execution, use Docker:
+
+```bash
+export MDCLAW_DOCKER_IMAGE=ghcr.io/matsunagalab/mdclaw:latest
+bin/mdclaw --list
+```
+
 `bin/mdclaw` chooses a runtime in this order:
 
 1. `MDCLAW_RUNTIME=conda|singularity|apptainer|docker`, if set.
 2. A conda env named `mdclaw`, if available.
 3. Singularity/Apptainer with `MDCLAW_SIF` or an auto-downloaded SIF.
-4. Docker image `ghcr.io/matsunagalab/mdclaw:<version-or-latest>`.
+4. Docker image `ghcr.io/matsunagalab/mdclaw:<plugin-version>` when known,
+   otherwise `ghcr.io/matsunagalab/mdclaw:latest`.
 5. A local `mdclaw` on `PATH`.
+
+For container runtimes, `bin/mdclaw` binds the current working directory at the
+same absolute path inside the container. Paths under the current project or job
+directory therefore resolve consistently across local, Docker, and
+Singularity/Apptainer execution.
+
+The practical rule for agents is: run `mdclaw` from the project or job
+directory and keep workflow files under that directory. Relative paths and
+absolute paths under the current tree will then refer to the same files across
+host, Docker, and Singularity/Apptainer.
 
 See `docs/agents/deployment.md` for the full deployment matrix and
 `docs/developer/container.md` for container details.

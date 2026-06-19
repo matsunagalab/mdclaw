@@ -1,7 +1,8 @@
 # Release Workflow
 
 Skills and the containerized MD runtime ship through separate channels. Keep
-the plugin metadata, Python package version, and image tags in sync.
+the plugin metadata, Python package version, Pi package version, and image tags
+in sync.
 
 ## Version Locations
 
@@ -11,11 +12,13 @@ the plugin metadata, Python package version, and image tags in sync.
 | `pyproject.toml` | `version` |
 | `.claude-plugin/plugin.json` | `version` |
 | `.claude-plugin/marketplace.json` | `metadata.version` and `plugins[0].version` |
+| `package.json` | `version` |
 
 ## Steps
 
 ```bash
 # 1. Update all version locations to X.Y.Z
+scripts/mdclaw-doctor.sh
 
 # 2. Commit, tag, and push
 git add -A

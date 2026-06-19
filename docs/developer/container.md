@@ -14,8 +14,10 @@ environment behind `mdclaw <tool>`.
 ```bash
 docker build -f container/Dockerfile -t mdclaw:latest .
 docker build -f container/Dockerfile --build-arg BIOEMU_DEVICE=cuda -t mdclaw:latest .
-docker run --rm mdclaw:latest bash container/scripts/test-container.sh
-docker run --rm --gpus all mdclaw:latest bash container/scripts/test-container.sh
+docker run --rm -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
+  mdclaw:latest bash /work/test.sh
+docker run --rm --gpus all -v "$(pwd)/container/scripts/test-container.sh:/work/test.sh:ro" \
+  mdclaw:latest bash /work/test.sh
 ```
 
 ## Publish To GHCR
@@ -37,7 +39,9 @@ The Docker image published to GHCR is also the source for the HPC SIF:
 ```bash
 singularity pull mdclaw.sif docker://ghcr.io/matsunagalab/mdclaw:latest
 singularity exec --nv mdclaw.sif mdclaw --list
-singularity exec --nv mdclaw.sif bash container/scripts/test-container.sh
+singularity exec --nv \
+  --bind "$(pwd)/container/scripts/test-container.sh:/work/test.sh" \
+  mdclaw.sif bash /work/test.sh
 ```
 
 ## Runtime Notes
