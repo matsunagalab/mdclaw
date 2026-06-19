@@ -15,7 +15,6 @@ import pytest
 
 from mdclaw.structure.phosphorylation import (
     _apply_phosphorylation_to_pdb,
-    _build_source_to_merged_chain_map,
     _remap_detected_ptm_chains,
     _remap_disulfide_chains,
     _remap_histidine_state_chains,
@@ -27,42 +26,12 @@ from mdclaw.structure.pdb_utils import (
 )
 
 
-def _composite_bbb_to_a():
-    """source author chain 'BBB' (mmCIF multi-letter) -> merged 'A'."""
-    return _build_source_to_merged_chain_map(
-        chain_file_info=[{"chain_id": "B", "author_chain": "BBB"}],
-        proteins=[{"success": True, "chain_id": "B", "output_file": "/x/p1.pdb"}],
-        merge_chain_mapping={"/x/p1.pdb": {"B": "A"}},
-    )
-
-
-# --- CASE 1: mmCIF multi-letter chain + PTM, auto-detect path ---------------
-def test_case1_multiletter_chain_ptm_autodetect_remaps_correctly():
-    composite = _composite_bbb_to_a()
-    assert composite == {"BBB": "A"}
-    remapped, dropped = _remap_detected_ptm_chains(
-        [{"chain": "BBB", "resnum": 65, "name": "SEP"}], composite
-    )
-    assert dropped == []
-    assert remapped == [{"chain": "A", "original_chain": "BBB",
-                         "resnum": 65, "name": "SEP"}]
-
-
-# --- CASE 1 (manual): an explicit site on a chain absent from the pdb is
-# reported as not_found (caller errors), never silently applied elsewhere ----
-def test_case1_manual_wrong_chain_is_not_found(tmp_path):
-    pdb = ("ATOM      1  N   SER A  65       0.000   0.000   0.000  1.00  0.00\n"
-           "ATOM      2  OG  SER A  65       1.000   1.000   0.000  1.00  0.00\n"
-           "ATOM      3  HG  SER A  65       1.000   1.500   0.000  1.00  0.00\nEND\n")
-    src = tmp_path / "in.pdb"; out = tmp_path / "out.pdb"
-    src.write_text(pdb)
-    # user asked for chain Z (e.g. a stale/source id) that is not in the pdb
-    res = _apply_phosphorylation_to_pdb(
-        src, out, [{"chain": "Z", "resnum": 65, "target": "SEP"}]
-    )
-    assert res["applied"] == []
-    assert res["not_found"] == [{"chain": "Z", "resnum": 65, "target": "SEP"}]
-
+# --- CASE 1: dropped. The mmCIF multi-letter chain remap (BBB->A) and the
+# explicit wrong-chain not_found / mismatch guards are covered by
+# test_phosphorylation.py. The only residual is a user explicitly naming the
+# wrong chain that happens to hold the same resnum AND the expected source
+# residue — indistinguishable from a valid request, so not defensible. Not a
+# pipeline conflict; intentionally not tracked here.
 
 # --- CASE 2: select_chains drops a PTM chain -> dropped, not silent ---------
 def test_case2_excluded_chain_ptm_is_dropped_not_misapplied():
