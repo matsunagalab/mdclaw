@@ -47,7 +47,7 @@ SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.pdb_utils import _pdb_hydrogen_count, _pdb_hydrogen_counts_by_resname, _pdb_noncap_protein_hydrogen_signature, _pdb_residue_names, _read_pdb_unique_residues  # noqa: E402
+from mdclaw.structure.pdb_utils import _pdb_hydrogen_count, _pdb_hydrogen_counts_by_resname, _pdb_noncap_protein_hydrogen_signature, _pdb_residue_names, _read_pdb_unique_residues, restore_resnames_by_residue_key  # noqa: E402
 
 
 def _normalize_terminal_cap_choice(
@@ -207,6 +207,15 @@ def _complete_terminal_cap_hydrogens_with_modeller(
             f"Terminal cap hydrogen completion failed: {type(exc).__name__}: {exc}"
         )
         return result
+
+    # OpenMM's PDBFile loader normalized Amber/PTM residue names (ASH->ASP,
+    # HID->HIS, GLH->GLU, ...) on load; restore them from the pre-cap input by
+    # residue key (cap H were added, so atom counts differ and the atom-index
+    # restore cannot be used). Without this the identity guard below sees the
+    # renamed residues and fails the whole prep on any capped+protonated input.
+    _restored = restore_resnames_by_residue_key(output_file.read_text(), input_path)
+    if _restored is not None:
+        output_file.write_text(_restored)
 
     residues_after = _read_pdb_unique_residues(output_file)
     if residues_after != residues_before:

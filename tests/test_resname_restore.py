@@ -14,6 +14,7 @@ import pytest
 
 from mdclaw.structure.pdb_utils import (
     restore_residue_numbering_from_reference,
+    restore_resnames_by_residue_key,
     restore_resnames_from_source_pdb,
 )
 
@@ -150,6 +151,57 @@ def test_atom_count_mismatch_returns_none(tmp_path):
 
 def test_missing_source_returns_none(tmp_path):
     assert restore_resnames_from_source_pdb(EXPORT, tmp_path / "nope.pdb") is None
+
+
+# --- residue-KEY restore (prep/solv/mutation: atom counts differ) ------------
+def _line(serial, atom, res, chain, resseq):
+    return (f"ATOM  {serial:>5} {atom:<4} {res:<3} {chain}{resseq:>4}    "
+            f"{0.0:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00")
+
+
+def test_restore_by_key_tolerates_added_atoms(tmp_path):
+    # source: ASH residue with 2 atoms; export: same residue normalized to ASP
+    # with an EXTRA hydrogen added (atom count differs -> index restore can't).
+    src = tmp_path / "src.pdb"
+    src.write_text(_line(1, "N", "ASH", "A", 3) + "\n"
+                   + _line(2, "OD2", "ASH", "A", 3) + "\nEND\n")
+    export = (_line(1, "N", "ASP", "A", 3) + "\n"
+              + _line(2, "OD2", "ASP", "A", 3) + "\n"
+              + _line(3, "HD2", "ASP", "A", 3) + "\nEND\n")   # added H
+    out = restore_resnames_by_residue_key(export, src)
+    names = [l[17:20].strip() for l in out.splitlines() if l.startswith("ATOM  ")]
+    assert names == ["ASH", "ASH", "ASH"]      # all 3 records relabelled by key
+
+
+def test_restore_by_key_excludes_mutated_position(tmp_path):
+    # source has GLU at A:5; export mutated it to ALA. With A:5 excluded, the
+    # mutated residue keeps ALA while a non-mutated ASH is restored.
+    src = tmp_path / "src.pdb"
+    src.write_text(_line(1, "N", "ASH", "A", 3) + "\n"
+                   + _line(2, "N", "GLU", "A", 5) + "\nEND\n")
+    export = (_line(1, "N", "ASP", "A", 3) + "\n"
+              + _line(2, "N", "ALA", "A", 5) + "\nEND\n")
+    out = restore_resnames_by_residue_key(
+        export, src, exclude_keys={("A", "   5", " ")}
+    )
+    names = [(l[22:26].strip(), l[17:20].strip())
+             for l in out.splitlines() if l.startswith("ATOM  ")]
+    assert names == [("3", "ASH"), ("5", "ALA")]   # ASH restored, ALA kept
+
+
+def test_restore_by_key_leaves_added_residue_untouched(tmp_path):
+    # added water (HOH) is absent from the source -> keeps its exported name.
+    src = tmp_path / "src.pdb"
+    src.write_text(_line(1, "N", "ASH", "A", 3) + "\nEND\n")
+    export = (_line(1, "N", "ASP", "A", 3) + "\n"
+              + _line(2, "O", "HOH", "B", 1) + "\nEND\n")
+    out = restore_resnames_by_residue_key(export, src)
+    names = [l[17:20].strip() for l in out.splitlines() if l.startswith("ATOM  ")]
+    assert names == ["ASH", "HOH"]
+
+
+def test_restore_by_key_missing_source_returns_none(tmp_path):
+    assert restore_resnames_by_residue_key("X", tmp_path / "nope.pdb") is None
 
 
 # --- shared min/eq/prod exporter: real OpenMM load (normalizes) -> restore ----

@@ -754,6 +754,18 @@ def _solvate_with_openmm(
         with open(output_file, "w") as f:
             PDBFile.writeFile(modeller.topology, modeller.positions, f)
 
+        # OpenMM's PDBFile loader normalized Amber/PTM residue names (ASH->ASP,
+        # HID->HIS, GLH->GLU, ...) when the input was loaded; restore them from
+        # the input by residue key so the solvated artifact — and the topology
+        # built from it — keeps the prepared protonation state. Added water/ions
+        # are absent from the source and keep their OpenMM names.
+        from mdclaw.structure.pdb_utils import restore_resnames_by_residue_key
+        _restored = restore_resnames_by_residue_key(
+            output_file.read_text(), str(pdb_path)
+        )
+        if _restored is not None:
+            output_file.write_text(_restored)
+
         # Extract box size from PDB
         box_dims = extract_box_size_from_cryst1(str(output_file))
 

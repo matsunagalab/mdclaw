@@ -610,6 +610,12 @@ def run_hpacker(
             )
         merged_lines = _split_hpacker_and_nonprotein_lines(hydrogenated_output, original_lines)
         _write_normalized_output(merged_lines, output_path)
+        # _rebuild_protein_hydrogens loads via PDBFixer, which re-normalizes the
+        # Amber/PTM names (ASH->ASP, HID->HIS, ...) the earlier restore at the
+        # HPacker output had fixed. Re-apply the reference+mutation_map restore on
+        # the FINAL artifact so non-mutated residues keep their prepared
+        # protonation names while mutated positions keep their new identity.
+        _restore_reference_resnames(output_path, residues, mutation_map)
 
     validation_errors = _validate_output(original_lines, output_path, mutation_map)
     if validation_errors:

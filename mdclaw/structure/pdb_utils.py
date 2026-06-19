@@ -220,6 +220,54 @@ def restore_resnames_from_source_pdb(
     return "\n".join(out_lines) + trailing
 
 
+def restore_resnames_by_residue_key(
+    pdb_text: str,
+    source_pdb: str | Path,
+    *,
+    exclude_keys: Optional[set] = None,
+) -> Optional[str]:
+    """Overlay residue names from a source PDB by residue KEY, not atom index.
+
+    Unlike :func:`restore_resnames_from_source_pdb` (atom-order match, requires
+    identical atom counts), this matches each output record to the source by
+    ``(chain, resnum, icode)``. It therefore tolerates round-trips that add or
+    drop atoms within residues or add whole residues — exactly the prep / solv /
+    mutation steps where OpenMM's ``PDBFile`` loader normalized Amber/PTM names
+    (``ASH``->``ASP``, ``HID``->``HIS``, ``GLH``->``GLU``, ``WAT``->``HOH`` ...)
+    and then hydrogens, solvent, or repacked side chains changed the atom count.
+
+    Residues absent from the source (e.g. freshly added water/ions) keep their
+    exported name. Residues whose key is in ``exclude_keys`` (e.g. a mutated
+    position whose residue name legitimately changed) are left untouched.
+
+    Pure text relabel of the residue-name column; coordinates and every other
+    field are unchanged. Returns the rewritten text, or ``None`` if the source
+    cannot be read.
+    """
+    try:
+        src_lines = Path(source_pdb).read_text().splitlines()
+    except OSError:
+        return None
+    name_by_key: dict[tuple, str] = {}
+    for line in src_lines:
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+            key = (line[21], line[22:26], line[26])
+            name_by_key.setdefault(key, line[17:21].strip())
+    exclude = exclude_keys or set()
+    out_lines: list[str] = []
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+            key = (line[21], line[22:26], line[26])
+            if key not in exclude:
+                name = name_by_key.get(key)
+                if name:
+                    padded = line.ljust(80)
+                    line = (padded[:17] + f"{name[:4]:<4}" + padded[21:]).rstrip()
+        out_lines.append(line)
+    trailing = "\n" if pdb_text.endswith("\n") else ""
+    return "\n".join(out_lines) + trailing
+
+
 def render_simulation_pdb_preserving_resnames(
     topology: Any, positions: Any, source_topology_pdb: Optional[str | Path]
 ) -> str:
