@@ -37,44 +37,22 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "three_disulfides_recorded",
-        "check_type": "json_min_length",
-        "json_file": "metrics.json",
-        "json_path": "preparation.disulfide_pairs",
-        "min_length": 3,
-        "weight": 0.35
+        "check_id": "three_disulfides_rescanned",
+        "check_type": "disulfide_bond_rescan",
+        "disulfide_distance_cutoff_angstrom": 2.4,
+        "min_disulfide_count": 3,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.55
       },
       {
-        "check_id": "disulfide_method_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.disulfide_detection_recorded",
-        "weight": 0.15
-      },
-      {
-        "check_id": "component_disposition_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.component_disposition_recorded",
-        "weight": 0.15
-      },
-      {
-        "check_id": "experimental_isotopes_excluded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.experimental_isotopes_excluded",
-        "weight": 0.1
-      },
-      {
-        "check_id": "experimental_isotope_atoms_excluded",
-        "check_type": "json_min",
-        "json_file": "metrics.json",
-        "json_path": "preparation.experimental_isotope_atoms_excluded",
-        "min_value": 1,
-        "weight": 0.1
+        "check_id": "component_disposition_artifacts_present",
+        "check_type": "required_files",
+        "required_outputs": [
+          "component_disposition.json",
+          "excluded_components.json"
+        ],
+        "weight": 0.2
       },
       {
         "check_id": "prepared_structure_has_no_deuterium",

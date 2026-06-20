@@ -35,14 +35,6 @@
         "weight": 0.35
       },
       {
-        "check_id": "two_mutations_recorded",
-        "check_type": "json_equals",
-        "equals": 2,
-        "json_file": "metrics.json",
-        "json_path": "preparation.mutation_count",
-        "weight": 0.3
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

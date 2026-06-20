@@ -295,6 +295,10 @@ def _bundle_recompute_requirements(task: dict[str, Any] | None) -> dict[str, Any
                 model = str(check.get("required_water_model") or "").upper()
                 sites = 4 if model in {"OPC", "TIP4P", "TIP4PEW", "TIP4P-EW"} else 3
             req["water_sites"] = int(sites)
+        elif ctype == "solvent_regime_rescan":
+            regime = str(check.get("required_solvent_regime") or "").lower()
+            if regime in {"explicit", "explicit_water"}:
+                req["water_sites"] = req["water_sites"] or 3
         elif ctype == "ion_concentration_recompute":
             req["salt_pairs"] = max(int(check.get("min_ion_count") or 2) // 2, 2)
             if check.get("target_molar") is not None:
@@ -474,6 +478,33 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
                     residue_index, ["CA"],
                 )
                 residue_index += 1
+        elif check_type == "disulfide_bond_rescan" and mode == "honest":
+            required = int(check.get("min_disulfide_count") or 1)
+            for _ in range(required * 2):
+                serial = _add_residue(
+                    lines, serial, "CYS", "A", residue_index, ["SG"],
+                )
+                residue_index += 1
+        elif check_type == "nucleic_content_rescan" and mode == "honest":
+            nucleic_type = str(check.get("required_nucleic_acid_type") or "DNA").upper()
+            chain_count = int(
+                check.get("exact_nucleic_chain_count")
+                or check.get("min_nucleic_chain_count")
+                or 1
+            )
+            residue_names = (
+                ["A", "C", "G", "U"]
+                if nucleic_type == "RNA"
+                else ["DA", "DC", "DG", "DT"]
+            )
+            chain_ids = ["A", "B", "C", "D", "E", "F"]
+            for chain_i in range(chain_count):
+                for resname in residue_names:
+                    serial = _add_residue(
+                        lines, serial, resname, chain_ids[chain_i], residue_index,
+                        ["P", "C1", "N1"],
+                    )
+                    residue_index += 1
 
     lines.append("END\n")
     return "".join(lines)

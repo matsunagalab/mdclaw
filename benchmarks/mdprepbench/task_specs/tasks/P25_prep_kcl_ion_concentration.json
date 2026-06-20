@@ -15,22 +15,6 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "salt_species_reported",
-        "check_type": "json_equals",
-        "equals": "KCl",
-        "json_file": "metrics.json",
-        "json_path": "preparation.salt_species",
-        "weight": 0.25
-      },
-      {
-        "check_id": "salt_concentration_reported",
-        "check_type": "json_equals",
-        "equals": 0.3,
-        "json_file": "metrics.json",
-        "json_path": "preparation.salt_concentration_molar",
-        "weight": 0.25
-      },
-      {
         "check_id": "kcl_ions_present",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
@@ -51,12 +35,12 @@
         "weight": 0.3
       },
       {
-        "check_id": "neutrality_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.net_charge_neutralized",
-        "weight": 0.1
+        "check_id": "explicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "min_water_residues": 1,
+        "required_solvent_regime": "explicit",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.2
       },
       {
         "check_id": "net_charge_neutral_recomputed",

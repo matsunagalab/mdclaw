@@ -181,6 +181,89 @@ def public_required_components(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
+def public_artifact_requirements(task: Task) -> list[dict[str, Any]]:
+    """Return public non-metrics requirements rescanned from submitted artifacts."""
+    requirements: list[dict[str, Any]] = []
+    for check in task.scoring.deterministic_checks:
+        if check.check_type == "disulfide_bond_rescan":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "structure_role": "prepared_structure",
+                "manifest_path": check.structure_manifest_path or "outputs.prepared_structure",
+                "default_path": check.structure_path or "prepared_structure.pdb",
+                "min_disulfide_count": check.min_disulfide_count,
+                "disulfide_distance_cutoff_angstrom": check.disulfide_distance_cutoff_angstrom,
+            })
+        elif check.check_type == "nucleic_content_rescan":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.structure_manifest_path or "outputs.prepared_structure",
+                "default_path": check.structure_path or "prepared_structure.pdb",
+                "required_nucleic_acid_type": check.required_nucleic_acid_type,
+                "min_nucleic_residue_count": check.min_nucleic_residue_count,
+                "min_nucleic_chain_count": check.min_nucleic_chain_count,
+                "exact_nucleic_chain_count": check.exact_nucleic_chain_count,
+            })
+        elif check.check_type == "residue_ratio_rescan":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.structure_manifest_path or "outputs.prepared_structure",
+                "default_path": check.structure_path or "prepared_structure.pdb",
+                "required_residue_ratio": check.required_residue_ratio,
+                "residue_aliases": check.residue_aliases,
+                "min_residue_atom_count": check.min_residue_atom_count,
+            })
+        elif check.check_type == "solvent_regime_rescan":
+            manifest_path = (
+                check.topology_manifest_path
+                or check.structure_manifest_path
+                or "outputs.topology"
+            )
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": manifest_path,
+                "required_solvent_regime": check.required_solvent_regime,
+                "min_water_residues": check.min_water_residues,
+                "max_water_residues": check.max_water_residues,
+                "lipid_residue_names": check.lipid_residue_names,
+                "min_lipid_residues": check.min_lipid_residues,
+            })
+        elif check.check_type == "water_model_fingerprint":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.topology_manifest_path or "outputs.topology",
+                "required_water_model": check.required_water_model,
+                "sites_per_water": check.sites_per_water,
+                "water_residue_names": check.water_residue_names,
+            })
+        elif check.check_type == "net_charge_check":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.topology_manifest_path or "outputs.topology",
+                "require_neutral": check.require_neutral,
+                "target_net_charge": check.target_net_charge,
+                "charge_tolerance": check.charge_tolerance,
+            })
+        elif check.check_type == "ion_concentration_recompute":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.topology_manifest_path or "outputs.topology",
+                "cation_residue_names": check.cation_residue_names,
+                "anion_residue_names": check.anion_residue_names,
+                "target_molar": check.target_molar,
+                "molar_tolerance": check.molar_tolerance,
+                "min_ion_count": check.min_ion_count,
+            })
+    return requirements
+
+
 def packaging_guidance(task: Task) -> dict[str, Any] | None:
     """Return packager guidance that reduces manual JSON authoring."""
     if task.primary_score != PREPARATION_SCORE_AXIS:
@@ -370,6 +453,10 @@ def submission_checklist(task: Task) -> list[str]:
         checks.append(
             "prepared/minimized structures satisfy every required_components item"
         )
+    if public_artifact_requirements(task):
+        checks.append(
+            "submitted artifacts satisfy every artifact_requirements item"
+        )
     if _manifest_list_outputs(task):
         checks.append(
             "manifest.outputs lists real artifact paths for: "
@@ -386,9 +473,11 @@ def submission_checklist(task: Task) -> list[str]:
             "create study_dir/job_dir/work directories outside submission_dir",
             "if an OpenMM triple exists, prefer package_openmm_submission over hand-written JSON",
             "after package_openmm_submission, do not hand-edit manifest.json or provenance.json",
-            "manifest.outputs.topology is a list containing system.xml, topology.pdb, and state.xml",
+            "manifest.outputs.topology is a list containing system.xml, "
+            "topology.pdb, and state.xml",
             'metrics.json sets topology.backend to "openmm"',
-            "manifest.outputs.minimized_structure points to minimized_structure.pdb from a min node or exported from the minimized state",
+            "manifest.outputs.minimized_structure points to minimized_structure.pdb "
+            "from a min node or exported from the minimized state",
             "minimization_report.json confirms attempted/completed finite-energy minimization",
         ])
     if _has_candidate_selection(task):
@@ -433,6 +522,18 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
                     f"- `{item['structure_role']}` via `{item['manifest_path']}`: "
                     f"`{counts}`"
                 )
+    artifact_requirements = contract.get("artifact_requirements") or []
+    if artifact_requirements:
+        lines.extend([
+            "",
+            "## Artifact Requirements",
+            "",
+        ])
+        for item in artifact_requirements:
+            lines.append(
+                f"- `{item['check_id']}`: `{item['check_type']}` via "
+                f"`{item.get('manifest_path')}`"
+            )
     lines.extend([
         "",
         "## Pre-Submission Checks",
@@ -479,6 +580,7 @@ def public_submission_contract(
         "requires_tools": list(task.requires_tools),
         "metric_requirements": public_metric_requirements(task),
         "required_components": public_required_components(task),
+        "artifact_requirements": public_artifact_requirements(task),
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
         "harness_evidence_requirements": public_harness_evidence_requirements(task),
         "manifest_contract": manifest_contract(task),

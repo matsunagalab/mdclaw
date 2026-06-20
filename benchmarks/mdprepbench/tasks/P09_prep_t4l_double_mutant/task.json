@@ -55,14 +55,6 @@
         "weight": 0.35
       },
       {
-        "check_id": "two_mutations_recorded",
-        "check_type": "json_equals",
-        "equals": 2,
-        "json_file": "metrics.json",
-        "json_path": "preparation.mutation_count",
-        "weight": 0.3
-      },
-      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,

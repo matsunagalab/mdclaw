@@ -944,5 +944,5 @@ def test_fake_submission_with_wrong_prep_artifact_fails(tmp_path: Path):
         for item in score["score"]["deterministic_checks"]
         if not item["passed"]
     ]
-    assert "requested_state_reported" in failed
     assert "glu11_is_glh_with_he2" in failed
+    assert "minimized_glu11_is_glh_with_he2" in failed

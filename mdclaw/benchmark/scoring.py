@@ -1200,6 +1200,23 @@ def _residue_counts_from_pdb(path: Path, min_atoms: int = 0) -> dict[str, int]:
     return counts
 
 
+def _structure_path_for_check(
+    check: DeterministicCheck,
+    submission_dir: Path,
+    manifest: dict,
+    *,
+    default_manifest_path: str = "outputs.prepared_structure",
+    default_path: str = "prepared_structure.pdb",
+) -> Path:
+    rels = _manifest_artifact_paths(
+        manifest, check.structure_manifest_path, default_manifest_path,
+    )
+    rel = next((item for item in rels if item.lower().endswith(".pdb")), None)
+    if rel is None:
+        rel = rels[0] if rels else check.structure_path or default_path
+    return _resolve_relative(submission_dir, rel)
+
+
 def _chain_ids_from_pdb(path: Path) -> set[str]:
     """Collect non-empty chain IDs from ATOM/HETATM records."""
     chain_ids: set[str] = set()
@@ -1215,6 +1232,294 @@ def _chain_ids_from_pdb(path: Path) -> set[str]:
             if chain_id:
                 chain_ids.add(chain_id)
     return chain_ids
+
+
+def _observed_residue_count(
+    counts: dict[str, int],
+    resname: str,
+    aliases_by_residue: dict[str, list[str]] | None,
+) -> int:
+    canonical = str(resname).strip().upper()
+    aliases = {
+        str(alias).strip().upper()
+        for alias in (aliases_by_residue or {}).get(str(resname), [])
+        if str(alias).strip()
+    }
+    aliases.add(canonical)
+    return sum(counts.get(alias, 0) for alias in aliases)
+
+
+def _check_residue_ratio_rescan(check: DeterministicCheck,
+                                submission_dir: Path,
+                                manifest: dict, **_):
+    structure_path = _structure_path_for_check(check, submission_dir, manifest)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+    expected = check.required_residue_ratio or {}
+    if not expected:
+        return False, 0.0, "required_residue_ratio is required"
+    try:
+        counts = _residue_counts_from_pdb(
+            structure_path, min_atoms=check.min_residue_atom_count or 0,
+        )
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+
+    observed = {
+        str(resname): _observed_residue_count(counts, resname, check.residue_aliases)
+        for resname in expected
+    }
+    missing = [
+        f"{resname}: observed {count}"
+        for resname, count in observed.items()
+        if count <= 0
+    ]
+    if missing:
+        return False, 0.0, "ratio residues missing: " + "; ".join(missing)
+
+    expected_values = [int(value) for value in expected.values()]
+    if any(value <= 0 for value in expected_values):
+        return False, 0.0, f"required_residue_ratio must be positive: {expected}"
+    observed_values = [int(observed[resname]) for resname in expected]
+
+    expected_gcd = math.gcd(*expected_values)
+    observed_gcd = math.gcd(*observed_values)
+    expected_reduced = [value // expected_gcd for value in expected_values]
+    observed_reduced = [value // observed_gcd for value in observed_values]
+    ok = observed_reduced == expected_reduced
+    return ok, (1.0 if ok else 0.0), (
+        f"observed residue ratio {observed} -> {observed_reduced}; "
+        f"expected {expected} -> {expected_reduced}"
+    )
+
+
+def _pdb_atom_records(path: Path) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            atom_name = line[12:16].strip().upper()
+            resname = line[17:21].strip().upper()
+            chain_id = line[21:22].strip()
+            resseq = line[22:26].strip()
+            icode = line[26:27].strip()
+            coord = None
+            try:
+                coord = (
+                    float(line[30:38]),
+                    float(line[38:46]),
+                    float(line[46:54]),
+                )
+            except ValueError:
+                parts = line.split()
+                if len(parts) >= 9:
+                    atom_name = parts[2].strip().upper()
+                    resname = parts[3].strip().upper()
+                    chain_id = parts[4].strip()
+                    resseq = parts[5].strip()
+                    icode = ""
+                    try:
+                        coord = (float(parts[6]), float(parts[7]), float(parts[8]))
+                    except ValueError:
+                        coord = None
+            if not atom_name or not resname:
+                continue
+            records.append({
+                "atom_name": atom_name,
+                "resname": resname,
+                "chain_id": chain_id,
+                "resseq": resseq,
+                "icode": icode,
+                "coord": coord,
+            })
+    return records
+
+
+def _check_disulfide_bond_rescan(check: DeterministicCheck,
+                                 submission_dir: Path,
+                                 manifest: dict, **_):
+    structure_path = _structure_path_for_check(check, submission_dir, manifest)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+    try:
+        records = _pdb_atom_records(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+    sulfur_atoms = [
+        record for record in records
+        if record["atom_name"] == "SG"
+        and record["resname"] in {"CYS", "CYX", "CYSS", "CYM"}
+        and record["coord"] is not None
+    ]
+    cutoff = float(check.disulfide_distance_cutoff_angstrom)
+    candidate_pairs: list[tuple[float, int, int]] = []
+    for i, left in enumerate(sulfur_atoms):
+        lx, ly, lz = left["coord"]
+        for j in range(i + 1, len(sulfur_atoms)):
+            rx, ry, rz = sulfur_atoms[j]["coord"]
+            distance = math.sqrt((lx - rx) ** 2 + (ly - ry) ** 2 + (lz - rz) ** 2)
+            if distance <= cutoff:
+                candidate_pairs.append((distance, i, j))
+    used: set[int] = set()
+    selected: list[tuple[float, int, int]] = []
+    for distance, i, j in sorted(candidate_pairs):
+        if i in used or j in used:
+            continue
+        selected.append((distance, i, j))
+        used.update({i, j})
+
+    required = int(check.min_disulfide_count or 1)
+    if len(selected) < required:
+        return (
+            False,
+            0.0,
+            f"found {len(selected)} disulfide-like SG pair(s) <= {cutoff:.2f} A; "
+            f"require >= {required}",
+        )
+    return (
+        True,
+        1.0,
+        f"found {len(selected)} disulfide-like SG pair(s) <= {cutoff:.2f} A",
+    )
+
+
+_DNA_RESIDUE_NAMES = {"DA", "DC", "DG", "DT", "DI", "T"}
+_RNA_RESIDUE_NAMES = {"RA", "RC", "RG", "RU", "A", "C", "G", "U", "I"}
+_AMBIGUOUS_NUCLEIC_RESIDUE_NAMES = {"A", "C", "G", "I"}
+
+
+def _nucleic_residue_matches(resname: str, required_type: str, all_names: set[str]) -> bool:
+    name = resname.strip().upper()
+    required = required_type.strip().upper()
+    has_dna_marker = bool(all_names & _DNA_RESIDUE_NAMES)
+    has_rna_marker = bool(all_names & {"RA", "RC", "RG", "RU", "U"})
+    if required == "DNA":
+        if name in _DNA_RESIDUE_NAMES:
+            return True
+        return name in _AMBIGUOUS_NUCLEIC_RESIDUE_NAMES and has_dna_marker and not has_rna_marker
+    if required == "RNA":
+        if name in {"RA", "RC", "RG", "RU", "U"}:
+            return True
+        return name in _AMBIGUOUS_NUCLEIC_RESIDUE_NAMES and has_rna_marker and not has_dna_marker
+    return name in (_DNA_RESIDUE_NAMES | _RNA_RESIDUE_NAMES)
+
+
+def _check_nucleic_content_rescan(check: DeterministicCheck,
+                                  submission_dir: Path,
+                                  manifest: dict, **_):
+    structure_path = _structure_path_for_check(check, submission_dir, manifest)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+    required_type = (check.required_nucleic_acid_type or "").strip().upper()
+    if required_type not in {"DNA", "RNA", "NUCLEIC", "NUCLEIC_ACID"}:
+        return False, 0.0, "required_nucleic_acid_type must be DNA, RNA, or nucleic"
+    try:
+        records = _pdb_atom_records(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+    residue_keys = {
+        (
+            str(record["chain_id"]),
+            str(record["resseq"]),
+            str(record["icode"]),
+            str(record["resname"]).upper(),
+        )
+        for record in records
+    }
+    all_names = {key[3] for key in residue_keys}
+    type_for_match = "NUCLEIC" if required_type in {"NUCLEIC", "NUCLEIC_ACID"} else required_type
+    matching = [
+        key for key in residue_keys
+        if _nucleic_residue_matches(key[3], type_for_match, all_names)
+    ]
+    chains = {key[0] or "?" for key in matching}
+    residue_count = len(matching)
+    chain_count = len(chains)
+
+    issues: list[str] = []
+    if residue_count < int(check.min_nucleic_residue_count or 1):
+        issues.append(
+            f"nucleic residue count {residue_count} < min "
+            f"{int(check.min_nucleic_residue_count or 1)}"
+        )
+    if check.min_nucleic_chain_count is not None and (
+        chain_count < int(check.min_nucleic_chain_count)
+    ):
+        issues.append(
+            f"nucleic chain count {chain_count} < min {check.min_nucleic_chain_count}"
+        )
+    if check.exact_nucleic_chain_count is not None and (
+        chain_count != int(check.exact_nucleic_chain_count)
+    ):
+        issues.append(
+            f"nucleic chain count {chain_count} != expected "
+            f"{check.exact_nucleic_chain_count}"
+        )
+    if issues:
+        return False, 0.0, "; ".join(issues)
+    return (
+        True,
+        1.0,
+        f"{required_type} content found: residues={residue_count}, chains={sorted(chains)}",
+    )
+
+
+_DEFAULT_LIPID_RESIDUE_NAMES = {
+    "POPC", "POPE", "POPS", "POPG", "DOPC", "DOPE", "DPPC", "DMPC",
+    "CHL", "CHL1", "CHOL", "POPA", "POPI", "CARD", "CDL", "DLPC",
+}
+
+
+def _check_solvent_regime_rescan(check: DeterministicCheck,
+                                 submission_dir: Path,
+                                 manifest: dict, **_):
+    regime = (check.required_solvent_regime or "").strip().lower()
+    if regime not in {"explicit", "explicit_water", "implicit", "membrane"}:
+        return False, 0.0, "required_solvent_regime must be explicit, implicit, or membrane"
+
+    artifacts, _issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    structure_path = artifacts.get("topology_pdb")
+    if structure_path is None:
+        structure_path = _structure_path_for_check(check, submission_dir, manifest)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+
+    water_names = {
+        str(name).strip().upper()
+        for name in (check.water_residue_names or _DEFAULT_WATER_RESIDUE_NAMES)
+    }
+    lipid_names = {
+        str(name).strip().upper()
+        for name in (check.lipid_residue_names or _DEFAULT_LIPID_RESIDUE_NAMES)
+    }
+    try:
+        counts = _residue_counts_from_pdb(structure_path)
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+    water_count = sum(counts.get(name, 0) for name in water_names)
+    lipid_count = sum(counts.get(name, 0) for name in lipid_names)
+
+    if regime in {"explicit", "explicit_water"}:
+        min_water = int(check.min_water_residues or 1)
+        ok = water_count >= min_water
+        return ok, (1.0 if ok else 0.0), (
+            f"explicit solvent rescan: water_residues={water_count}, "
+            f"required >= {min_water}"
+        )
+    if regime == "implicit":
+        max_water = int(check.max_water_residues if check.max_water_residues is not None else 0)
+        ok = water_count <= max_water
+        return ok, (1.0 if ok else 0.0), (
+            f"implicit solvent rescan: water_residues={water_count}, "
+            f"required <= {max_water}"
+        )
+
+    min_lipid = int(check.min_lipid_residues or 1)
+    ok = lipid_count >= min_lipid
+    return ok, (1.0 if ok else 0.0), (
+        f"membrane rescan: lipid_residues={lipid_count}, required >= {min_lipid}"
+    )
 
 
 def _check_structure_component_rescan(check: DeterministicCheck,
@@ -1875,6 +2180,10 @@ _DETERMINISTIC_DISPATCH = {
     "trajectory_rescan": _check_trajectory_rescan,
     "topology_solvent_rescan": _check_topology_solvent_rescan,
     "structure_component_rescan": _check_structure_component_rescan,
+    "disulfide_bond_rescan": _check_disulfide_bond_rescan,
+    "nucleic_content_rescan": _check_nucleic_content_rescan,
+    "residue_ratio_rescan": _check_residue_ratio_rescan,
+    "solvent_regime_rescan": _check_solvent_regime_rescan,
     "pdb_no_deuterium_atoms": _check_pdb_no_deuterium_atoms,
     "pdb_residue_state": _check_pdb_residue_state,
     "rmsd_recompute": _check_rmsd_recompute,

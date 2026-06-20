@@ -25,14 +25,6 @@
         "weight": 0.65
       },
       {
-        "check_id": "ion_parameter_source_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.ion_parameter_source_recorded",
-        "weight": 0.35
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

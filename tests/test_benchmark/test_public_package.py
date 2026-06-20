@@ -213,14 +213,15 @@ def test_export_public_package_exposes_p01_metric_contract(tmp_path: Path):
             / "submission_contract.json"
         ).read_text()
     )
-    requirements = {
-        item["json_path"]: (item["operator"], item["value"])
-        for item in contract["metric_requirements"]
+    assert contract["metric_requirements"] == []
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
     }
-
-    assert requirements["preparation.source_pdb_id"] == ("equals", "2LZM")
-    assert requirements["preparation.solvent_model"] == ("equals", "explicit")
-    assert requirements["preparation.topology_ready"] == ("equals", True)
+    solvent = artifact_requirements["explicit_solvent_rescanned"]
+    assert solvent["check_type"] == "solvent_regime_rescan"
+    assert solvent["required_solvent_regime"] == "explicit"
+    assert solvent["min_water_residues"] == 1
 
 
 def test_export_public_package_exposes_required_components(tmp_path: Path):
@@ -268,17 +269,18 @@ def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
             / "submission_contract.json"
         ).read_text()
     )
-    requirements = {
-        item["json_path"]: item
-        for item in contract["metric_requirements"]
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
     }
 
-    lipid_ratio = requirements["preparation.lipid_ratio"]
-    assert lipid_ratio["operator"] == "allowed_values"
-    assert lipid_ratio["value"] == [
-        "POPC:POPE:CHL1=2:1:1",
-        "PC:PE:CHL=2:1:1",
-    ]
+    lipid_ratio = artifact_requirements["lipid_ratio_rescanned"]
+    assert lipid_ratio["check_type"] == "residue_ratio_rescan"
+    assert lipid_ratio["required_residue_ratio"] == {
+        "POPC": 2,
+        "POPE": 1,
+        "CHL1": 1,
+    }
     candidate_requirements = contract["candidate_selection_requirements"]
     assert len(candidate_requirements) == 1
     candidate_requirement = candidate_requirements[0]
@@ -312,18 +314,7 @@ def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
     assert "selection reason" in prompt
 
     contract = json.loads((task_dir / "submission_contract.json").read_text())
-    requirements = {
-        item["json_path"]: (item["operator"], item["value"])
-        for item in contract["metric_requirements"]
-    }
-    assert requirements["preparation.selected_candidate_id"] == (
-        "equals",
-        "candidate_005",
-    )
-    assert requirements["preparation.selected_model_rank"] == (
-        "equals",
-        5,
-    )
+    assert contract["metric_requirements"] == []
     assert "outputs.source_selection" in contract["manifest_contract"][
         "recommended_optional_outputs"
     ]
@@ -370,17 +361,17 @@ def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
             / "submission_contract.json"
         ).read_text()
     )
-    requirements = {
-        item["json_path"]: (item["operator"], item["value"])
-        for item in contract["metric_requirements"]
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
     }
 
     assert "component_disposition.json" in contract["required_outputs"]
     assert "excluded_components.json" in contract["required_outputs"]
-    assert requirements["preparation.disulfide_pairs"] == ("min_length", 3)
-    assert requirements["preparation.component_disposition_recorded"] == ("equals", True)
-    assert requirements["preparation.experimental_isotopes_excluded"] == ("equals", True)
-    assert requirements["preparation.experimental_isotope_atoms_excluded"] == ("min", 1)
+    disulfides = artifact_requirements["three_disulfides_rescanned"]
+    assert disulfides["check_type"] == "disulfide_bond_rescan"
+    assert disulfides["min_disulfide_count"] == 3
+    assert disulfides["disulfide_distance_cutoff_angstrom"] == 2.4
 
 
 def test_export_public_package_exposes_p25_net_neutrality_contract(
@@ -401,12 +392,16 @@ def test_export_public_package_exposes_p25_net_neutrality_contract(
             / "submission_contract.json"
         ).read_text()
     )
-    requirements = {
-        item["json_path"]: (item["operator"], item["value"])
-        for item in contract["metric_requirements"]
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
     }
 
-    assert requirements["preparation.net_charge_neutralized"] == ("equals", True)
+    assert artifact_requirements["net_charge_neutral_recomputed"]["require_neutral"] is True
+    molarity = artifact_requirements["kcl_molarity_recomputed"]
+    assert molarity["check_type"] == "ion_concentration_recompute"
+    assert molarity["target_molar"] == 0.3
+    assert molarity["cation_residue_names"] == ["K", "K+"]
 
 
 def test_export_public_package_refuses_to_overwrite_unmarked_directory(

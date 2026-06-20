@@ -49,14 +49,6 @@
         "weight": 0.75
       },
       {
-        "check_id": "ligand_filter_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.heterogen_filter_recorded",
-        "weight": 0.25
-      },
-      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,

@@ -247,12 +247,13 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
         for check in task["scoring"]["deterministic_checks"]
     }
 
-    lipid_ratio = checks["lipid_ratio_recorded"]
-    assert lipid_ratio["check_type"] == "json_allowed_values"
-    assert lipid_ratio["allowed_values"] == [
-        "POPC:POPE:CHL1=2:1:1",
-        "PC:PE:CHL=2:1:1",
-    ]
+    lipid_ratio = checks["lipid_ratio_rescanned"]
+    assert lipid_ratio["check_type"] == "residue_ratio_rescan"
+    assert lipid_ratio["required_residue_ratio"] == {
+        "POPC": 2,
+        "POPE": 1,
+        "CHL1": 1,
+    }
 
     # lipid_species_present reads the built OpenMM topology bundle (MDClaw's
     # prepared_structure.pdb is protein-only), while the minimized check reads
@@ -456,8 +457,8 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
         check["check_id"]: check
         for check in task["scoring"]["deterministic_checks"]
     }
-    assert checks["candidate_selected"]["equals"] == "candidate_005"
-    assert checks["selected_model_rank_recorded"]["equals"] == 5
+    assert "candidate_selected" not in checks
+    assert "selected_model_rank_recorded" not in checks
     assert checks["source_selection_model_5"]["check_type"] == "candidate_selection_check"
     assert checks["source_selection_model_5"]["required_candidate_id"] == "candidate_005"
     assert checks["source_selection_model_5"]["required_model_rank"] == 5
@@ -475,7 +476,7 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
         check["check_id"]: check
         for check in p18_task["scoring"]["deterministic_checks"]
     }
-    assert p18_checks["selected_model_rank_recorded"]["equals"] == 1
+    assert "selected_model_rank_recorded" not in p18_checks
     assert p18_checks["source_selection_model_1"]["required_model_rank"] == 1
 
 

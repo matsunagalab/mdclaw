@@ -15,19 +15,11 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_pdb_reported",
-        "check_type": "json_equals",
-        "equals": "2LZM",
-        "json_file": "metrics.json",
-        "json_path": "preparation.source_pdb_id",
-        "weight": 0.25
-      },
-      {
-        "check_id": "explicit_solvent_reported",
-        "check_type": "json_equals",
-        "equals": "explicit",
-        "json_file": "metrics.json",
-        "json_path": "preparation.solvent_model",
+        "check_id": "explicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "min_water_residues": 1,
+        "required_solvent_regime": "explicit",
+        "topology_manifest_path": "outputs.topology",
         "weight": 0.25
       },
       {
@@ -39,14 +31,6 @@
         },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
-        "weight": 0.25
-      },
-      {
-        "check_id": "topology_ready_reported",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.topology_ready",
         "weight": 0.25
       },
       {

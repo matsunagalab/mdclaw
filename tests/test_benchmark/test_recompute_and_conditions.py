@@ -212,6 +212,128 @@ def test_ion_concentration_recompute_from_box_volume(tmp_path: Path):
     assert passed and score == 1.0, msg
 
 
+def _pdb_atom_line(
+    serial: int,
+    atom: str,
+    resname: str,
+    chain: str,
+    resseq: int,
+    x: float,
+    y: float = 0.0,
+    z: float = 0.0,
+) -> str:
+    element = "".join(ch for ch in atom if ch.isalpha())[:1] or "C"
+    return (
+        f"ATOM  {serial:5d} {atom:<4} {resname:>4} {chain:1}{resseq:4d}    "
+        f"{x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00           {element:>2}\n"
+    )
+
+
+def _write_structure_submission(sub: Path, pdb_text: str) -> dict:
+    sub.mkdir(parents=True, exist_ok=True)
+    (sub / "prepared_structure.pdb").write_text(pdb_text)
+    manifest = {
+        "schema_version": "1.0",
+        "task_id": "t",
+        "status": "completed",
+        "outputs": {"prepared_structure": "prepared_structure.pdb"},
+    }
+    (sub / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
+def test_disulfide_bond_rescan_counts_sg_pairs(tmp_path: Path):
+    pdb_text = "".join([
+        _pdb_atom_line(1, "SG", "CYS", "A", 1, 0.0),
+        _pdb_atom_line(2, "SG", "CYS", "A", 2, 2.0),
+        _pdb_atom_line(3, "SG", "CYS", "A", 3, 8.0),
+        _pdb_atom_line(4, "SG", "CYS", "A", 4, 10.0),
+        "END\n",
+    ])
+    manifest = _write_structure_submission(tmp_path, pdb_text)
+    check = DeterministicCheck(
+        check_id="ss", check_type="disulfide_bond_rescan",
+        min_disulfide_count=2,
+    )
+    passed, score, msg = scoring._check_disulfide_bond_rescan(
+        check, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+
+
+def test_nucleic_content_rescan_checks_type_and_chain_count(tmp_path: Path):
+    pdb_text = "".join([
+        _pdb_atom_line(1, "P", "DA", "A", 1, 0.0),
+        _pdb_atom_line(2, "P", "DC", "A", 2, 1.0),
+        _pdb_atom_line(3, "P", "DG", "B", 1, 2.0),
+        _pdb_atom_line(4, "P", "DT", "B", 2, 3.0),
+        "END\n",
+    ])
+    manifest = _write_structure_submission(tmp_path, pdb_text)
+    check = DeterministicCheck(
+        check_id="dna", check_type="nucleic_content_rescan",
+        required_nucleic_acid_type="DNA",
+        exact_nucleic_chain_count=2,
+        min_nucleic_residue_count=4,
+    )
+    passed, score, msg = scoring._check_nucleic_content_rescan(
+        check, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+
+
+def test_residue_ratio_rescan_uses_aliases_and_atom_floor(tmp_path: Path):
+    lines = []
+    serial = 1
+    residues = [("OPC", 1), ("OPC", 2), ("OPE", 3), ("HL1", 4)]
+    for resname, resseq in residues:
+        for atom_i in range(20):
+            lines.append(
+                _pdb_atom_line(serial, f"C{atom_i}", resname, "A", resseq, float(serial))
+            )
+            serial += 1
+    manifest = _write_structure_submission(tmp_path, "".join(lines) + "END\n")
+    check = DeterministicCheck(
+        check_id="ratio", check_type="residue_ratio_rescan",
+        required_residue_ratio={"POPC": 2, "POPE": 1, "CHL1": 1},
+        residue_aliases={
+            "POPC": ["OPC"],
+            "POPE": ["OPE"],
+            "CHL1": ["HL1"],
+        },
+        min_residue_atom_count=20,
+    )
+    passed, score, msg = scoring._check_residue_ratio_rescan(
+        check, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+
+
+def test_solvent_regime_rescan_detects_explicit_and_membrane(tmp_path: Path):
+    manifest = _write_bundle(
+        tmp_path,
+        charges=[0.0, 0.0, 0.0, 0.0],
+        residues=[("HOH", 3), ("CHL", 1)],
+    )
+    explicit = DeterministicCheck(
+        check_id="explicit", check_type="solvent_regime_rescan",
+        required_solvent_regime="explicit",
+    )
+    membrane = DeterministicCheck(
+        check_id="membrane", check_type="solvent_regime_rescan",
+        required_solvent_regime="membrane",
+        lipid_residue_names=["CHL"],
+    )
+    passed, score, msg = scoring._check_solvent_regime_rescan(
+        explicit, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+    passed, score, msg = scoring._check_solvent_regime_rescan(
+        membrane, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+
+
 # ---------------------------------------------------------------------------
 # Artifact-as-truth backend detection
 

@@ -29,14 +29,6 @@
         "weight": 0.75
       },
       {
-        "check_id": "ligand_filter_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.heterogen_filter_recorded",
-        "weight": 0.25
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

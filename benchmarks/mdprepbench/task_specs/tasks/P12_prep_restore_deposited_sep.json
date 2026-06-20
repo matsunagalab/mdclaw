@@ -28,14 +28,6 @@
         "weight": 0.55
       },
       {
-        "check_id": "phosaa_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.phosphorylation_library_recorded",
-        "weight": 0.45
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

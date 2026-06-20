@@ -13,6 +13,14 @@ so the scorer can reload the system and rescan finite energy. The scorer reads
 the submitted artifacts and private task metadata; it does not inspect chat
 transcripts or MDClaw-internal state.
 
+Prefer artifact-derived checks over self-report whenever a property is visible
+in the submitted files. Current prep tasks rescan the OpenMM artifact triple and
+PDB structures for water/ion content, solvent regime, residue identities,
+lipid ratios, nucleic-acid content, disulfide-like SG pairs, net charge, ion
+concentration, and minimization sanity. `metrics.json` remains useful for
+declared metadata and backward-compatible packaging, but it should not be the
+source of truth for scoreable physical properties.
+
 The runner is not a hidden solution script. It may create run directories,
 launch agents, enforce time limits, and call validation/scoring, but it must not
 inject task-specific MDClaw command-line arguments or preparation parameters

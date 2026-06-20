@@ -15,35 +15,19 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "forcefield_honored",
-        "check_type": "json_equals",
-        "equals": "ff19SB",
-        "json_file": "metrics.json",
-        "json_path": "preparation.forcefield",
-        "weight": 0.4
-      },
-      {
-        "check_id": "water_model_honored",
-        "check_type": "json_equals",
-        "equals": "OPC",
-        "json_file": "metrics.json",
-        "json_path": "preparation.water_model",
-        "weight": 0.4
-      },
-      {
-        "check_id": "explicit_solvent_reported",
-        "check_type": "json_equals",
-        "equals": "explicit",
-        "json_file": "metrics.json",
-        "json_path": "preparation.solvent_model",
-        "weight": 0.2
+        "check_id": "explicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "min_water_residues": 1,
+        "required_solvent_regime": "explicit",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
       },
       {
         "check_id": "water_model_fingerprint_matches_opc",
         "check_type": "water_model_fingerprint",
         "required_water_model": "OPC",
         "topology_manifest_path": "outputs.topology",
-        "weight": 0.3
+        "weight": 0.7
       },
       {
         "$bundle": "topology_minimization"

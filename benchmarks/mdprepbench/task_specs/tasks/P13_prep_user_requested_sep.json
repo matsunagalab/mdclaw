@@ -28,14 +28,6 @@
         "weight": 0.55
       },
       {
-        "check_id": "requested_phosphorylation_recorded",
-        "check_type": "json_equals",
-        "equals": "A:20:SEP",
-        "json_file": "metrics.json",
-        "json_path": "preparation.requested_phosphorylation",
-        "weight": 0.45
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

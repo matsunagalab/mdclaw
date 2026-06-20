@@ -35,20 +35,24 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "membrane_flag_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.membrane",
+        "check_id": "membrane_regime_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "lipid_residue_names": [
+          "POPC",
+          "POPE",
+          "CHL1",
+          "PC",
+          "PE",
+          "CHL",
+          "CHOL",
+          "OPC",
+          "OPE",
+          "HL1"
+        ],
+        "min_lipid_residues": 4,
+        "required_solvent_regime": "membrane",
+        "topology_manifest_path": "outputs.topology",
         "weight": 0.2
-      },
-      {
-        "check_id": "selected_model_rank_recorded",
-        "check_type": "json_equals",
-        "equals": 1,
-        "json_file": "metrics.json",
-        "json_path": "preparation.selected_model_rank",
-        "weight": 0.1
       },
       {
         "check_id": "source_selection_model_1",
@@ -88,14 +92,31 @@
         "weight": 0.5
       },
       {
-        "allowed_values": [
-          "POPC:POPE:CHL1=2:1:1",
-          "PC:PE:CHL=2:1:1"
-        ],
-        "check_id": "lipid_ratio_recorded",
-        "check_type": "json_allowed_values",
-        "json_file": "metrics.json",
-        "json_path": "preparation.lipid_ratio",
+        "check_id": "lipid_ratio_rescanned",
+        "check_type": "residue_ratio_rescan",
+        "required_residue_ratio": {
+          "POPC": 2,
+          "POPE": 1,
+          "CHL1": 1
+        },
+        "min_residue_atom_count": 20,
+        "residue_aliases": {
+          "CHL1": [
+            "CHL",
+            "CHOL",
+            "HL1"
+          ],
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPE": [
+            "PE",
+            "OPE"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
         "weight": 0.3
       },
       {

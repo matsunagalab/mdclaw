@@ -66,6 +66,10 @@ DeterministicCheckType = Literal[
     "trajectory_rescan",
     "topology_solvent_rescan",
     "structure_component_rescan",
+    "disulfide_bond_rescan",
+    "nucleic_content_rescan",
+    "residue_ratio_rescan",
+    "solvent_regime_rescan",
     "pdb_no_deuterium_atoms",
     "pdb_residue_state",
     "rmsd_recompute",
@@ -109,6 +113,10 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "trajectory_rescan": "physical_validity",
     "topology_solvent_rescan": "identity",
     "structure_component_rescan": "identity",
+    "disulfide_bond_rescan": "identity",
+    "nucleic_content_rescan": "identity",
+    "residue_ratio_rescan": "fidelity",
+    "solvent_regime_rescan": "fidelity",
     "pdb_no_deuterium_atoms": "identity",
     "pdb_residue_state": "identity",
     "rmsd_recompute": "fidelity",
@@ -238,6 +246,25 @@ class DeterministicCheck(BaseModel):
     # Lets lipid checks reject small residues (water/ions) whose names can
     # collide with truncated lipid aliases.
     min_residue_atom_count: Optional[int] = None
+
+    # residue_ratio_rescan
+    required_residue_ratio: Optional[dict[str, int]] = None
+
+    # disulfide_bond_rescan
+    min_disulfide_count: Optional[int] = None
+    disulfide_distance_cutoff_angstrom: float = 2.4
+
+    # nucleic_content_rescan
+    required_nucleic_acid_type: Optional[str] = None
+    min_nucleic_residue_count: Optional[int] = None
+    min_nucleic_chain_count: Optional[int] = None
+    exact_nucleic_chain_count: Optional[int] = None
+
+    # solvent_regime_rescan
+    required_solvent_regime: Optional[str] = None
+    max_water_residues: Optional[int] = None
+    lipid_residue_names: Optional[list[str]] = None
+    min_lipid_residues: Optional[int] = None
 
     # pdb_residue_state
     structure_path: Optional[str] = None

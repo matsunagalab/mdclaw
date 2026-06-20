@@ -35,14 +35,6 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_pdb_reported",
-        "check_type": "json_equals",
-        "equals": "5AWL",
-        "json_file": "metrics.json",
-        "json_path": "preparation.source_pdb_id",
-        "weight": 0.15
-      },
-      {
         "check_id": "terminal_caps_present",
         "check_type": "structure_component_rescan",
         "exact_residue_counts": {
@@ -52,30 +44,6 @@
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.45
-      },
-      {
-        "check_id": "n_terminal_cap_recorded",
-        "check_type": "json_equals",
-        "equals": "ACE",
-        "json_file": "metrics.json",
-        "json_path": "preparation.n_terminal_cap",
-        "weight": 0.15
-      },
-      {
-        "check_id": "c_terminal_cap_recorded",
-        "check_type": "json_equals",
-        "equals": "NME",
-        "json_file": "metrics.json",
-        "json_path": "preparation.c_terminal_cap",
-        "weight": 0.15
-      },
-      {
-        "check_id": "terminal_capping_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.terminal_capping_recorded",
-        "weight": 0.1
       },
       {
         "check_id": "topology_artifact_bundle_present",
@@ -158,6 +126,6 @@
     "evidence_communication"
   ],
   "task_id": "P20_prep_terminal_capping",
-  "task_intent": "Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices.",
+  "task_intent": "Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME).",
   "time_limit_minutes": 60
 }

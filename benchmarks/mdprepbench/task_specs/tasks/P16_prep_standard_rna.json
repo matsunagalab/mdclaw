@@ -15,19 +15,23 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "rna_library_reported",
-        "check_type": "json_equals",
-        "equals": "RNA",
-        "json_file": "metrics.json",
-        "json_path": "preparation.nucleic_acid_type",
+        "check_id": "rna_content_rescanned",
+        "check_type": "nucleic_content_rescan",
+        "min_nucleic_chain_count": 1,
+        "min_nucleic_residue_count": 4,
+        "required_nucleic_acid_type": "RNA",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
         "weight": 0.5
       },
       {
-        "check_id": "rna_forcefield_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.nucleic_library_recorded",
+        "check_id": "minimized_rna_content_rescanned",
+        "check_type": "nucleic_content_rescan",
+        "min_nucleic_chain_count": 1,
+        "min_nucleic_residue_count": 4,
+        "required_nucleic_acid_type": "RNA",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
         "weight": 0.5
       },
       {

@@ -15,14 +15,6 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "requested_state_reported",
-        "check_type": "json_equals",
-        "equals": "GLH",
-        "json_file": "metrics.json",
-        "json_path": "preparation.requested_protonation_state",
-        "weight": 0.3
-      },
-      {
         "check_id": "glu11_is_glh_with_he2",
         "check_type": "pdb_residue_state",
         "required_atom_names": [

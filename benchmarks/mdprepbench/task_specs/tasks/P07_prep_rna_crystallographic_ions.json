@@ -35,35 +35,6 @@
         "weight": 0.45
       },
       {
-        "check_id": "crystallographic_ion_triage_documented",
-        "check_type": "artifact_provenance_text",
-        "required_text_groups": [
-          [
-            "crystallographic"
-          ],
-          [
-            "K+",
-            "potassium"
-          ],
-          [
-            "water",
-            "waters",
-            "HOH"
-          ],
-          [
-            "exclude",
-            "excluded",
-            "removed",
-            "not retain"
-          ]
-        ],
-        "text_files": [
-          "provenance.json",
-          "evidence_report.json"
-        ],
-        "weight": 0.25
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

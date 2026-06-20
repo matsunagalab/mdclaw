@@ -15,22 +15,6 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "candidate_selected",
-        "check_type": "json_equals",
-        "equals": "candidate_005",
-        "json_file": "metrics.json",
-        "json_path": "preparation.selected_candidate_id",
-        "weight": 0.15
-      },
-      {
-        "check_id": "selected_model_rank_recorded",
-        "check_type": "json_equals",
-        "equals": 5,
-        "json_file": "metrics.json",
-        "json_path": "preparation.selected_model_rank",
-        "weight": 0.15
-      },
-      {
         "check_id": "source_selection_model_5",
         "check_type": "candidate_selection_check",
         "require_selection_reason": true,
@@ -38,23 +22,7 @@
         "required_model_rank": 5,
         "source_selection_manifest_path": "outputs.source_selection",
         "source_selection_path": "source_selection.json",
-        "weight": 0.45
-      },
-      {
-        "check_id": "selection_reason_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.candidate_selection_reason_recorded",
-        "weight": 0.15
-      },
-      {
-        "check_id": "single_structure_used",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.single_concrete_structure_used",
-        "weight": 0.1
+        "weight": 1.0
       },
       {
         "$bundle": "topology_minimization"

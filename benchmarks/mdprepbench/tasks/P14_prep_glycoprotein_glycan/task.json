@@ -52,30 +52,6 @@
         "weight": 0.5
       },
       {
-        "check_id": "glycan_linkage_provenance_recorded",
-        "check_type": "artifact_provenance_text",
-        "required_text_groups": [
-          [
-            "glycan"
-          ],
-          [
-            "NAG"
-          ],
-          [
-            "N-linked",
-            "N linked",
-            "glycosylation",
-            "linkage"
-          ]
-        ],
-        "text_files": [
-          "provenance.json",
-          "evidence_report.json",
-          "manifest.json"
-        ],
-        "weight": 0.5
-      },
-      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,

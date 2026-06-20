@@ -15,11 +15,11 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "implicit_solvent_reported",
-        "check_type": "json_equals",
-        "equals": "implicit",
-        "json_file": "metrics.json",
-        "json_path": "preparation.solvent_model",
+        "check_id": "implicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "max_water_residues": 0,
+        "required_solvent_regime": "implicit",
+        "topology_manifest_path": "outputs.topology",
         "weight": 0.5
       },
       {
@@ -32,14 +32,6 @@
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.3
-      },
-      {
-        "check_id": "implicit_model_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.implicit_model_recorded",
-        "weight": 0.2
       },
       {
         "$bundle": "topology_minimization"
