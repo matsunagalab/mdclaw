@@ -752,6 +752,8 @@ def package_openmm_submission(
     command_log_file: Optional[str] = None,
     force_field: str = "unspecified",
     water_model: str = "unspecified",
+    solvent_model: str = "unspecified",
+    preparation_summary_file: Optional[str] = None,
     agent: str = "unknown",
     backend: str = "openmm-script",
     harness: str = "unknown",
@@ -773,6 +775,14 @@ def package_openmm_submission(
     one pass. Do not hand-edit ``manifest.json`` or ``provenance.json`` after
     this command; provenance hashes are checked by the scorer.
 
+    Pass ``preparation_summary_file`` (the prep node's ``preparation_summary``
+    metadata, e.g. from ``prepare_complex``) to fill ``metrics.preparation``
+    with the task-specific fields canonically and with the right types
+    (``disulfide_pairs`` as a list, the ``*_recorded`` flags, etc.), so the
+    agent never hand-authors them. ``force_field`` / ``water_model`` /
+    ``solvent_model`` are layered on top under the scorer's canonical keys
+    (``preparation.forcefield`` — note: not ``force_field``).
+
     Hard rule (fairness): it never *chooses* force field, water model, chains,
     ions, or mutations. Those come from the agent's own output and are
     recomputed from the artifact at scoring time anyway. Anything the agent did
@@ -789,6 +799,7 @@ def package_openmm_submission(
     state_src = Path(state_xml_file)
 
     errors: list[str] = []
+    warnings: list[str] = []
     for label, path in (
         ("system_xml_file", system_src),
         ("topology_pdb_file", topo_src),
@@ -883,13 +894,45 @@ def package_openmm_submission(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
 
+    # Build metrics.preparation from the agent's own prep summary (when given)
+    # so task-specific fields land canonically and with the right TYPES — e.g.
+    # disulfide_pairs stays a list, the *_recorded flags carry through — instead
+    # of the agent hand-authoring them (and writing a count where a list is
+    # expected). The prepare_complex preparation_summary keys are designed to
+    # match the scorer's preparation.* json_paths.
+    preparation: dict[str, Any] = {}
+    if preparation_summary_file and Path(preparation_summary_file).is_file():
+        try:
+            loaded = json.loads(Path(preparation_summary_file).read_text())
+        except json.JSONDecodeError:
+            warnings.append(
+                f"preparation_summary_file is not valid JSON: "
+                f"{preparation_summary_file}"
+            )
+        else:
+            if isinstance(loaded, dict):
+                # Accept a bare preparation block, a wrapper carrying one, or a
+                # full prepare_complex result nesting preparation_summary.
+                block = (
+                    loaded.get("preparation_summary")
+                    or loaded.get("preparation")
+                    or loaded
+                )
+                if isinstance(block, dict):
+                    preparation.update(block)
+    # Topology/solvent fidelity fields the prep summary does not carry (they are
+    # set at build/solvate time). Canonical key names match the scorer's
+    # json_paths: preparation.forcefield (NOT force_field), water_model,
+    # solvent_model.
+    preparation["forcefield"] = force_field
+    preparation["water_model"] = water_model
+    if solvent_model != "unspecified":
+        preparation["solvent_model"] = solvent_model
+
     metrics = {
         "schema_version": "1.0",
         "topology": {"backend": "openmm"},
-        "preparation": {
-            "force_field": force_field,
-            "water_model": water_model,
-        },
+        "preparation": preparation,
         "minimization": {
             "completed": bool(minimized),
             "energy_is_finite": energy["energy_is_finite"],
@@ -927,7 +970,6 @@ def package_openmm_submission(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n"
     )
 
-    warnings: list[str] = []
     if not command_log:
         warnings.append(
             "no command_log provided; the scorer's execution-evidence check "

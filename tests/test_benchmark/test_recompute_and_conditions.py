@@ -462,9 +462,10 @@ def test_package_openmm_submission_builds_scorer_valid_bundle(tmp_path: Path):
         state_xml_file=str(st), run_id="pkg",
     )
     assert res["success"]
-    # Does not invent FF/water.
+    # Does not invent FF/water. Canonical scorer key is `forcefield`.
     metrics = json.loads((sub / "metrics.json").read_text())
-    assert metrics["preparation"]["force_field"] == "unspecified"
+    assert metrics["preparation"]["forcefield"] == "unspecified"
+    assert "force_field" not in metrics["preparation"]
     assert metrics["preparation"]["water_model"] == "unspecified"
     # Topology bundle is loadable by the scorer.
     manifest = json.loads((sub / "manifest.json").read_text())
