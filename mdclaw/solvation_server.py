@@ -21,8 +21,11 @@ logger = setup_logger(__name__)
 import json  # noqa: E402
 import logging  # noqa: E402
 import shutil  # noqa: E402
+import signal  # noqa: E402
 import subprocess  # noqa: E402
-from concurrent.futures import ThreadPoolExecutor  # noqa: E402
+import threading  # noqa: E402
+import time  # noqa: E402
+from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_completed  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
@@ -604,6 +607,10 @@ def _effective_packmol_race_lanes(requested_lanes: int) -> int:
     return max(1, min(lanes, 4))
 
 
+class _PackmolRaceCancelled(RuntimeError):
+    """Raised inside a race lane when another lane already supplied an output."""
+
+
 def _membrane_packmol_race_plan(
     attempt_plan: list[dict],
     lanes: int,
@@ -663,6 +670,104 @@ def _build_membrane_attempt_args(
     return attempt_args
 
 
+def _packmol_memgen_command(args: list[str]) -> list[str]:
+    """Build the concrete packmol-memgen command for cancellable race lanes."""
+    if not packmol_memgen_wrapper.is_available():
+        raise RuntimeError(f"{packmol_memgen_wrapper.tool_name} is not available")
+    if packmol_memgen_wrapper.conda_env:
+        return [
+            "conda",
+            "run",
+            "-n",
+            packmol_memgen_wrapper.conda_env,
+            str(packmol_memgen_wrapper.executable),
+            *args,
+        ]
+    return [str(packmol_memgen_wrapper.executable), *args]
+
+
+def _packmol_memgen_wrapper_run_is_default() -> bool:
+    """Return True when the wrapper run method has not been monkeypatched."""
+    return getattr(packmol_memgen_wrapper.run, "__func__", None) is BaseToolWrapper.run
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    """Terminate a subprocess and children started in its own process group."""
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        proc.terminate()
+
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return
+        except OSError:
+            proc.kill()
+        proc.wait()
+
+
+def _run_packmol_memgen_cancellable(
+    args: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    cancel_event: threading.Event,
+) -> subprocess.CompletedProcess:
+    """Run packmol-memgen while allowing race cancellation to stop child tools."""
+    if cancel_event.is_set():
+        raise _PackmolRaceCancelled("packmol-memgen lane was cancelled before start")
+
+    if not _packmol_memgen_wrapper_run_is_default():
+        return packmol_memgen_wrapper.run(args, cwd=cwd, timeout=timeout)
+
+    cmd = _packmol_memgen_command(args)
+    logger.debug("Running cancellable packmol-memgen lane: %s", " ".join(cmd))
+    proc = subprocess.Popen(
+        cmd,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+    )
+    deadline = time.monotonic() + timeout if timeout else None
+
+    while True:
+        if cancel_event.is_set():
+            _terminate_process_group(proc)
+            raise _PackmolRaceCancelled("packmol-memgen lane cancelled after selection")
+
+        wait_timeout = 0.25
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _terminate_process_group(proc)
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            wait_timeout = min(wait_timeout, remaining)
+
+        try:
+            stdout, stderr = proc.communicate(timeout=wait_timeout)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+
+    completed = subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    if proc.returncode != 0:
+        raise subprocess.CalledProcessError(
+            proc.returncode,
+            cmd,
+            output=stdout,
+            stderr=stderr,
+        )
+    return completed
+
+
 def _public_packmol_lane_record(lane_result: dict) -> dict:
     """Return JSON-safe lane metadata for result reporting."""
     record = {
@@ -686,6 +791,7 @@ def _run_membrane_packmol_lane(
     packmol_path: Optional[str],
     salt_override_active: bool,
     race_round: int,
+    cancel_event: threading.Event,
 ) -> dict:
     """Run one packmol-memgen membrane attempt in an isolated lane directory."""
     lane_index = int(attempt["lane"])
@@ -712,18 +818,23 @@ def _run_membrane_packmol_lane(
 
     proc_result = None
     exc_for_diagnostics = None
+    cancelled = False
     try:
-        proc_result = packmol_memgen_wrapper.run(
+        proc_result = _run_packmol_memgen_cancellable(
             attempt_args,
             cwd=lane_dir,
             timeout=membrane_timeout,
+            cancel_event=cancel_event,
         )
+    except _PackmolRaceCancelled as exc:
+        cancelled = True
+        exc_for_diagnostics = exc
     except subprocess.CalledProcessError as exc:
         proc_result = exc
         exc_for_diagnostics = exc
 
     lane_errors: list[str] = []
-    if proc_result is not None and exc_for_diagnostics is None:
+    if proc_result is not None and exc_for_diagnostics is None and not cancel_event.is_set():
         _run_packmol_if_needed(
             output_file=lane_output_file,
             packmol_inp_file=lane_packmol_inp,
@@ -743,7 +854,10 @@ def _run_membrane_packmol_lane(
     failure_reasons = _packmol_quality_failure_reasons(diagnostics)
     forced_output = lane_output_file.with_name(f"{lane_output_file.name}_FORCED")
 
-    if failure_reasons:
+    if cancelled:
+        status = "cancelled_after_selection"
+        failure_reasons = ["cancelled_after_selection"]
+    elif failure_reasons:
         status = "failed"
     elif exc_for_diagnostics is not None:
         status = "failed_exception"
@@ -781,6 +895,8 @@ def _run_membrane_packmol_lane(
         "proc_result": proc_result,
         "exception": exc_for_diagnostics,
     }
+    if cancelled:
+        lane_result["cancelled"] = True
     if "duplicate_of" in attempt:
         lane_result["duplicate_of"] = attempt["duplicate_of"]
     return lane_result
@@ -824,6 +940,36 @@ def _select_packmol_race_candidate(
             -int(lane["lane"]),
         ),
     )
+
+
+def _best_packmol_race_quality_key(race_plan: list[dict]) -> tuple[float, int, int]:
+    """Return the best quality tier represented in the active race plan."""
+    return max(
+        (
+            (float(attempt["dist"]), int(attempt["nloop_all"]), int(attempt["nloop"]))
+            for attempt in race_plan
+        ),
+        default=(0.0, 0, 0),
+    )
+
+
+def _is_packmol_race_early_acceptance_candidate(
+    lane: dict,
+    *,
+    best_quality_key: tuple[float, int, int],
+    allow_imperfect_primary_output: bool,
+) -> bool:
+    """Decide whether one completed lane is good enough to stop the race."""
+    if lane.get("salt_override_required"):
+        return True
+    if lane["status"] == "success" and not lane["failure_reasons"] and lane.get("output_file"):
+        return True
+    if not allow_imperfect_primary_output:
+        return False
+    if not (lane["failure_reasons"] and lane.get("output_file")):
+        return False
+    lane_quality_key = (float(lane["dist"]), int(lane["nloop_all"]), int(lane["nloop"]))
+    return lane_quality_key == best_quality_key
 
 
 def _copy_packmol_lane_to_canonical(
@@ -887,11 +1033,15 @@ def _run_membrane_packmol_race(
     packmol_path: Optional[str],
     salt_override_active: bool,
     race_round: int,
+    allow_imperfect_primary_output: bool,
 ) -> list[dict]:
     """Run parallel Packmol membrane attempts and return lane metadata."""
     race_plan = _membrane_packmol_race_plan(attempt_plan, lanes)
+    best_quality_key = _best_packmol_race_quality_key(race_plan)
+    cancel_event = threading.Event()
+    lane_results: list[dict] = []
     with ThreadPoolExecutor(max_workers=len(race_plan)) as executor:
-        futures = [
+        futures: dict[Future, dict] = {
             executor.submit(
                 _run_membrane_packmol_lane,
                 base_args=base_args,
@@ -903,10 +1053,61 @@ def _run_membrane_packmol_race(
                 packmol_path=packmol_path,
                 salt_override_active=salt_override_active,
                 race_round=race_round,
-            )
+                cancel_event=cancel_event,
+            ): attempt
             for attempt in race_plan
-        ]
-        return [future.result() for future in futures]
+        }
+        recorded_futures: set[Future] = set()
+        for future in as_completed(futures):
+            lane = future.result()
+            lane_results.append(lane)
+            recorded_futures.add(future)
+            if not _is_packmol_race_early_acceptance_candidate(
+                lane,
+                best_quality_key=best_quality_key,
+                allow_imperfect_primary_output=allow_imperfect_primary_output,
+            ):
+                continue
+
+            cancel_event.set()
+            for pending in futures:
+                if pending is not future:
+                    pending.cancel()
+            break
+
+        for future in futures:
+            if future in recorded_futures:
+                continue
+            attempt = futures[future]
+            try:
+                lane_results.append(future.result())
+            except CancelledError:
+                lane_results.append({
+                    "attempt": int(attempt["lane"]),
+                    "lane": int(attempt["lane"]),
+                    "label": attempt["label"],
+                    "dist": attempt["dist"],
+                    "nloop": attempt["nloop"],
+                    "nloop_all": attempt["nloop_all"],
+                    "random_seed": attempt["random_seed"],
+                    "status": "cancelled_after_selection",
+                    "failure_reasons": ["cancelled_after_selection"],
+                    "salt_override_required": False,
+                    "output_dir": str(_packmol_race_lane_dir(
+                        out_dir=out_dir,
+                        race_round=race_round,
+                        lane_index=int(attempt["lane"]),
+                    )),
+                    "output_file": None,
+                    "forced_output_file": None,
+                    "packmol_input": None,
+                    "packmol_log": None,
+                    "packmol_memgen_log": None,
+                    "manual_packmol_errors": [],
+                    "cancelled": True,
+                })
+
+    return lane_results
 
 
 def _record_packmol_quality_failure(
@@ -2088,6 +2289,7 @@ def embed_in_membrane(
                     packmol_path=packmol_path,
                     salt_override_active=salt_override_active,
                     race_round=race_round,
+                    allow_imperfect_primary_output=allow_imperfect_primary_output,
                 )
 
                 public_records = [

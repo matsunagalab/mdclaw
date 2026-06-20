@@ -611,6 +611,7 @@ def test_embed_in_membrane_applies_salt_override_fallback_with_warning(tmp_path)
             saltcon=0.15,
             salt_override=False,
             water_model="opc",
+            packmol_race_lanes=1,
         )
 
     assert result["success"] is True

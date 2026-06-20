@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import mdclaw.solvation_server as solvation_server
 from mdclaw.solvation_server import (
     _record_packmol_memgen_output,
     embed_in_membrane,
@@ -451,7 +453,7 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
     )
     calls = []
 
-    def fake_run(args, cwd, timeout):
+    def fake_run(args, *, cwd, timeout, cancel_event):
         calls.append((list(args), Path(cwd)))
         output_path = Path(args[args.index("-o") + 1])
         output_path.write_text(
@@ -486,7 +488,7 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        "mdclaw.solvation_server._run_packmol_memgen_cancellable",
         fake_run,
     )
 
@@ -516,3 +518,85 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
     output_text = Path(result["output_file"]).read_text()
     assert "ALA X   7" in output_text
     assert "GLY Z 999" not in output_text
+
+
+def test_embed_in_membrane_cancels_pending_parallel_race_lanes(tmp_path, monkeypatch):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    calls = []
+    cancelled_lanes = []
+
+    def write_imperfect_lane(args, cwd):
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+            "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        output_path.with_name(f"{output_path.name}_FORCED").write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "HETATM  103  C1  POPC M   1       2.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        (Path(cwd) / "membrane_packmol.log").write_text(
+            "STOP: Maximum number of GENCAN loops achieved.\n"
+            "Packmol was not able to find a solution\n"
+            "The forced point was writen to the output file: membrane.pdb_FORCED\n"
+            "ENDED WITHOUT PERFECT PACKING:\n"
+        )
+
+    def fake_run(args, *, cwd, timeout, cancel_event):
+        lane = int(Path(cwd).name.rsplit("lane", 1)[1])
+        calls.append((lane, list(args), Path(cwd)))
+        if lane == 4:
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                if cancel_event.is_set():
+                    cancelled_lanes.append(lane)
+                    raise solvation_server._PackmolRaceCancelled("lane cancelled")
+                time.sleep(0.01)
+            raise AssertionError("slow lane was not cancelled")
+
+        if lane == 3:
+            time.sleep(0.05)
+        write_imperfect_lane(args, cwd)
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server._run_packmol_memgen_cancellable",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 4
+    assert cancelled_lanes == [4]
+    retry = result["adaptive_packmol_retry"]
+    selected = [attempt for attempt in retry["attempts"] if attempt.get("selected")]
+    cancelled = [
+        attempt
+        for attempt in retry["attempts"]
+        if attempt["status"] == "cancelled_after_selection"
+    ]
+    assert len(selected) == 1
+    assert selected[0]["lane"] == 3
+    assert selected[0]["status"] == "accepted_imperfect_primary"
+    assert len(cancelled) == 1
+    assert cancelled[0]["lane"] == 4
