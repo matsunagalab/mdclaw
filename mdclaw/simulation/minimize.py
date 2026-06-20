@@ -189,7 +189,7 @@ def run_minimization(
         return _fail_node_if_running(job_dir, node_id, result)
 
     try:
-        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2, PDBFile, Simulation
+        from openmm.app import HCT, OBC1, OBC2, GBn, GBn2, Simulation
         from openmm import CustomExternalForce, Platform, VerletIntegrator
         from openmm.unit import kilojoules_per_mole, nanometer
     except ImportError:

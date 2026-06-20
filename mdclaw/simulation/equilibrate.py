@@ -417,7 +417,7 @@ def run_equilibration(
 
     try:
         from openmm.app import (
-            PDBFile, Simulation, StateDataReporter,
+            Simulation, StateDataReporter,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
         from openmm import (

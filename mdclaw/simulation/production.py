@@ -350,7 +350,7 @@ def run_production(
 
     try:
         from openmm.app import (
-            PDBFile, DCDReporter, StateDataReporter, CheckpointReporter,
+            DCDReporter, StateDataReporter, CheckpointReporter,
             Simulation,
             HCT, OBC1, OBC2, GBn, GBn2,
         )
