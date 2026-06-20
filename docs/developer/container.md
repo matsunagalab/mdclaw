@@ -58,3 +58,6 @@ singularity exec --nv \
   conda-packed `/opt/mdclaw` environment. Use `BIOEMU_DEVICE=cuda` at build time
   to install `bioemu[cuda]`; the default installs CPU BioEmu for import and
   metadata checks.
+- `ruff` is installed in the conda-packed `/opt/mdclaw` environment so
+  Singularity/Apptainer SIF workflows can run repository lint checks without a
+  separate host conda environment.

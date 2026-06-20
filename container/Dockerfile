@@ -66,8 +66,10 @@ RUN sed '/- -e \./d' environment.yml > environment-docker.yml && \
 RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu118 && \
     mamba run -n mdclaw pip cache purge
 
-# Install mdclaw package into the environment
-RUN mamba run -n mdclaw pip install . && \
+# Install mdclaw package into the environment. Include ruff in the packaged
+# runtime so SIF-based development/test workflows can run the repository lint
+# command without requiring a separate host conda environment.
+RUN mamba run -n mdclaw pip install . "ruff>=0.1.0" && \
     mamba run -n mdclaw pip cache purge
 
 # Apply packmol-memgen numpy compatibility patch

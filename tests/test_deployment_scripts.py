@@ -31,6 +31,14 @@ def test_release_versions_stay_in_sync():
     assert len(set(versions.values())) == 1, versions
 
 
+def test_container_definition_includes_ruff_for_sif_lint_workflows():
+    dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
+    test_script = (REPO_ROOT / "container" / "scripts" / "test-container.sh").read_text()
+
+    assert '"ruff>=0.1.0"' in dockerfile
+    assert "python -m ruff --version" in test_script
+
+
 def test_tracked_skill_mirrors_have_common_and_no_broken_symlinks():
     for root_name in (".agents/skills", ".claude/skills"):
         root = REPO_ROOT / root_name

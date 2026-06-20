@@ -54,6 +54,7 @@ test_4ake_n5_10ns/
 
 # MDClaw specific
 *.sif
+.mdclaw-version
 output/
 outputs/
 .mdclaw_cache/
