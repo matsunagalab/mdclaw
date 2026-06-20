@@ -25,6 +25,10 @@ from mdclaw.benchmark.models import (
     SubmissionManifest,
     Task,
 )
+from mdclaw.benchmark.preparation_metrics import (
+    derive_preparation_metrics,
+    ignored_preparation_metric_keys,
+)
 
 _PUBLIC_EXPORT_MARKER = ".md-benchmark-public-export.json"
 _PUBLIC_EXPORT_KIND = "md_benchmark_public_export"
@@ -775,21 +779,20 @@ def package_openmm_submission(
     one pass. Do not hand-edit ``manifest.json`` or ``provenance.json`` after
     this command; provenance hashes are checked by the scorer.
 
-    Pass ``preparation_summary_file`` (the prep node's ``preparation_summary``
-    metadata, e.g. from ``prepare_complex``) to fill ``metrics.preparation``
-    with the task-specific fields canonically and with the right types
-    (``disulfide_pairs`` as a list, the ``*_recorded`` flags, etc.), so the
-    agent never hand-authors them. ``force_field`` / ``water_model`` /
-    ``solvent_model`` are layered on top under the scorer's canonical keys
-    (``preparation.forcefield`` — note: not ``force_field``).
+    Pass ``preparation_summary_file`` (the prep node's natural scientific
+    summary, e.g. from ``prepare_complex``) to let the benchmark layer derive
+    the small set of structured ``metrics.preparation`` fields the scorer still
+    consumes. Benchmark-only attestation flags and unknown keys are ignored:
+    correctness is rescanned from artifacts whenever possible.
 
     Hard rule (fairness): it never *chooses* force field, water model, chains,
     ions, or mutations. Those come from the agent's own output and are
-    recomputed from the artifact at scoring time anyway. Anything the agent did
-    not declare is recorded as ``"unspecified"``. Provenance ``command_log``
-    must come from the agent (via ``command_log_file``); when absent it is left
-    empty and the scorer's execution-evidence check will flag it, rather than
-    the packager inventing steps.
+    recomputed from the artifact at scoring time whenever possible. Declared
+    force-field / water / solvent choices are stored as provenance declarations,
+    not as scored truth. Provenance ``command_log`` must come from the agent
+    (via ``command_log_file``); when absent it is left empty and the scorer's
+    execution-evidence check will flag it, rather than the packager inventing
+    steps.
     """
     from mdclaw.simulation.platform import export_state_pdb
 
@@ -894,40 +897,48 @@ def package_openmm_submission(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
 
-    # Build metrics.preparation from the agent's own prep summary (when given)
-    # so task-specific fields land canonically and with the right TYPES — e.g.
-    # disulfide_pairs stays a list, the *_recorded flags carry through — instead
-    # of the agent hand-authoring them (and writing a count where a list is
-    # expected). The prepare_complex preparation_summary keys are designed to
-    # match the scorer's preparation.* json_paths.
-    preparation: dict[str, Any] = {}
+    # Derive only the structured preparation fields that the current scorer
+    # actually reads.  Most chemistry/fidelity checks below are artifact rescans,
+    # so copying prep-summary attestation fields into metrics.json would just
+    # reintroduce self-reporting.
+    preparation_summary_payload: dict[str, Any] = {}
     if preparation_summary_file and Path(preparation_summary_file).is_file():
         try:
-            loaded = json.loads(Path(preparation_summary_file).read_text())
+            preparation_summary_payload = json.loads(
+                Path(preparation_summary_file).read_text()
+            )
         except json.JSONDecodeError:
             warnings.append(
                 f"preparation_summary_file is not valid JSON: "
                 f"{preparation_summary_file}"
             )
-        else:
-            if isinstance(loaded, dict):
-                # Accept a bare preparation block, a wrapper carrying one, or a
-                # full prepare_complex result nesting preparation_summary.
-                block = (
-                    loaded.get("preparation_summary")
-                    or loaded.get("preparation")
-                    or loaded
-                )
-                if isinstance(block, dict):
-                    preparation.update(block)
-    # Topology/solvent fidelity fields the prep summary does not carry (they are
-    # set at build/solvate time). Canonical key names match the scorer's
-    # json_paths: preparation.forcefield (NOT force_field), water_model,
-    # solvent_model.
-    preparation["forcefield"] = force_field
-    preparation["water_model"] = water_model
-    if solvent_model != "unspecified":
-        preparation["solvent_model"] = solvent_model
+    declarations = {
+        "force_field": force_field,
+        "water_model": water_model,
+        "solvent_model": solvent_model,
+    }
+    preparation = derive_preparation_metrics(
+        prep_summary=preparation_summary_payload,
+        declared={
+            key: value
+            for key, value in declarations.items()
+            if value not in (None, "unspecified")
+        },
+    )
+    ignored_keys = ignored_preparation_metric_keys(
+        preparation_summary_payload,
+        {
+            key: value
+            for key, value in declarations.items()
+            if value not in (None, "unspecified")
+        },
+    )
+    if ignored_keys:
+        warnings.append(
+            "ignored non-scored preparation_summary/declaration key(s): "
+            + ", ".join(ignored_keys[:12])
+            + (" ..." if len(ignored_keys) > 12 else "")
+        )
 
     metrics = {
         "schema_version": "1.0",
@@ -964,6 +975,7 @@ def package_openmm_submission(
         "backend": backend,
         "harness": harness,
         "model": model,
+        "declared_preparation": declarations,
         "command_log": command_log,
     }
     (sub / "provenance.json").write_text(
@@ -975,12 +987,6 @@ def package_openmm_submission(
             "no command_log provided; the scorer's execution-evidence check "
             "will flag this submission. Pass --command-log-file with the "
             "agent's own source/prep/topo/min steps."
-        )
-    if force_field == "unspecified" or water_model == "unspecified":
-        warnings.append(
-            "force_field/water_model recorded as 'unspecified'; the scorer "
-            "recomputes physical properties from the artifact, but declared "
-            "fidelity fields stay unspecified unless the agent provides them."
         )
     if not energy["success"]:
         warnings.append(

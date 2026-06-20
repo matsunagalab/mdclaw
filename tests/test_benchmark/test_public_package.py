@@ -61,7 +61,11 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "output-only" in packaging["submission_dir_policy"]
         assert "do not hand-edit" in packaging["post_packaging_rule"]
         assert "--evidence-report-file" in packaging["command_template"]
+        assert "--preparation-summary-file" in packaging["command_template"]
+        assert "--force-field" in packaging["command_template"]
+        assert "--water-model" in packaging["command_template"]
         assert "chains" in packaging["does_not_choose"]
+        assert "provenance_text_requirements" in contract
         assert "submission_blueprint" in contract
         assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
             "topology"

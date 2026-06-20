@@ -35,6 +35,7 @@ def _write_bundle(
     residues: list[tuple[str, int]] | None = None,
     box_nm: float | None = None,
     with_nonbonded: bool = True,
+    opc_water: bool = False,
 ) -> dict:
     """Build a tiny OpenMM triple under ``sub/topology`` and return a manifest.
 
@@ -45,6 +46,7 @@ def _write_bundle(
         Context,
         NonbondedForce,
         System,
+        ThreeParticleAverageSite,
         Vec3,
         VerletIntegrator,
         XmlSerializer,
@@ -61,7 +63,13 @@ def _write_bundle(
     for res_name, n_atoms in residues:
         residue = topology.addResidue(res_name, chain, str(idx + 1))
         for a in range(n_atoms):
-            topology.addAtom(f"X{a}", Element.getBySymbol("C"), residue)
+            if opc_water and res_name.upper() in {"HOH", "WAT"} and n_atoms == 4:
+                atom_name = ["O", "H1", "H2", "EPW"][a]
+                element = "O" if a == 0 else ("H" if a in {1, 2} else "C")
+            else:
+                atom_name = f"X{a}"
+                element = "C"
+            topology.addAtom(atom_name, Element.getBySymbol(element), residue)
             positions.append(Vec3(grid, 0.0, 0.0))
             grid += 0.3
             idx += 1
@@ -72,9 +80,20 @@ def _write_bundle(
         system.addParticle(12.0)
     if with_nonbonded:
         nb = NonbondedForce()
-        for q in charges:
-            nb.addParticle(q, 0.1, 0.0)
+        for i, q in enumerate(charges):
+            if opc_water and len(charges) == 4:
+                sigma = 0.3166 if i == 0 else 0.1
+                epsilon = 0.890 if i == 0 else 0.0
+            else:
+                sigma = 0.1
+                epsilon = 0.0
+            nb.addParticle(q, sigma, epsilon)
         system.addForce(nb)
+    if opc_water and residues == [("HOH", 4)]:
+        system.setParticleMass(3, 0.0)
+        system.setVirtualSite(
+            3, ThreeParticleAverageSite(0, 1, 2, 0.1477, 0.42615, 0.42615)
+        )
     if box_nm is not None:
         system.setDefaultPeriodicBoxVectors(
             Vec3(box_nm, 0, 0) * unit.nanometer,
@@ -193,6 +212,41 @@ def test_water_model_fingerprint_detects_site_count_mismatch(tmp_path: Path):
         check, tmp_path, manifest,
     )
     assert not passed and score == 0.0, msg
+
+
+def test_water_model_fingerprint_rejects_generic_four_site_for_opc(tmp_path: Path):
+    manifest = _write_bundle(
+        tmp_path,
+        charges=[0.0, 0.0, 0.0, 0.0],
+        residues=[("HOH", 4)],
+    )
+    check = DeterministicCheck(
+        check_id="w", check_type="water_model_fingerprint",
+        required_water_model="OPC", sites_per_water=4,
+    )
+    passed, score, msg = scoring._check_water_model_fingerprint(
+        check, tmp_path, manifest,
+    )
+    assert not passed and score == 0.0, msg
+    assert "OPC parameter fingerprint mismatch" in msg
+
+
+def test_water_model_fingerprint_matches_opc_parameters(tmp_path: Path):
+    manifest = _write_bundle(
+        tmp_path,
+        charges=[0.0, 0.679142, 0.679142, -1.358284],
+        residues=[("HOH", 4)],
+        opc_water=True,
+    )
+    check = DeterministicCheck(
+        check_id="w", check_type="water_model_fingerprint",
+        required_water_model="OPC", sites_per_water=4,
+    )
+    passed, score, msg = scoring._check_water_model_fingerprint(
+        check, tmp_path, manifest,
+    )
+    assert passed and score == 1.0, msg
+    assert "OPC-like fingerprint" in msg
 
 
 def test_ion_concentration_recompute_from_box_volume(tmp_path: Path):
@@ -584,11 +638,13 @@ def test_package_openmm_submission_builds_scorer_valid_bundle(tmp_path: Path):
         state_xml_file=str(st), run_id="pkg",
     )
     assert res["success"]
-    # Does not invent FF/water. Canonical scorer key is `forcefield`.
+    # Does not invent scored FF/water declarations.
     metrics = json.loads((sub / "metrics.json").read_text())
-    assert metrics["preparation"]["forcefield"] == "unspecified"
+    assert metrics["preparation"] == {}
     assert "force_field" not in metrics["preparation"]
-    assert metrics["preparation"]["water_model"] == "unspecified"
+    provenance = json.loads((sub / "provenance.json").read_text())
+    assert provenance["declared_preparation"]["force_field"] == "unspecified"
+    assert provenance["declared_preparation"]["water_model"] == "unspecified"
     # Topology bundle is loadable by the scorer.
     manifest = json.loads((sub / "manifest.json").read_text())
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
@@ -636,6 +692,10 @@ def test_standalone_packager_matches_shape(tmp_path: Path):
     manifest = json.loads((sub / "manifest.json").read_text())
     assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
     assert json.loads((sub / "evidence_report.json").read_text())["standalone"]
+    metrics = json.loads((sub / "metrics.json").read_text())
+    assert "force_field" not in metrics["preparation"]
+    provenance = json.loads((sub / "provenance.json").read_text())
+    assert provenance["declared_preparation"]["force_field"] == "unspecified"
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
     # MDClaw-free: the packager imports no mdclaw module.
     text = STANDALONE_PACKAGER.read_text()

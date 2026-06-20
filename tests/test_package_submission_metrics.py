@@ -1,12 +1,9 @@
 """Guard the package_openmm_submission metrics contract.
 
 The packager is the intended one-command path to a scorer-valid submission, so
-its metrics.json must match the scorer's canonical preparation.* json_paths:
-
-- the key is ``preparation.forcefield`` (NOT ``force_field``); writing the
-  wrong key silently failed P22-type fidelity checks, and
-- task-specific fields ingested from the prep summary keep their TYPE
-  (``disulfide_pairs`` must stay a list, not collapse to a count).
+its metrics.json must match the scorer's canonical preparation.* json_paths.
+Force-field/water choices are now provenance declarations plus artifact
+rescans, not scored ``metrics.preparation`` self-report.
 
 These tests build a minimal real OpenMM triple, run the packager, and assert the
 emitted metrics. Run with: pytest tests/test_package_submission_metrics.py -v
@@ -69,43 +66,59 @@ def _package(tmp_path, **kwargs):
         **kwargs,
     )
     assert res["success"], res
-    return json.loads((sub / "metrics.json").read_text())
+    return {
+        "metrics": json.loads((sub / "metrics.json").read_text()),
+        "provenance": json.loads((sub / "provenance.json").read_text()),
+        "result": res,
+    }
 
 
-def test_packager_uses_canonical_forcefield_key(tmp_path):
-    metrics = _package(tmp_path, force_field="ff19SB", water_model="opc")
-    prep = metrics["preparation"]
-    assert prep.get("forcefield") == "ff19SB"   # canonical scorer json_path
-    assert "force_field" not in prep            # the old wrong key is gone
-    assert prep.get("water_model") == "opc"
+def test_packager_keeps_forcefield_declarations_out_of_scored_metrics(tmp_path):
+    packaged = _package(tmp_path, force_field="ff19SB", water_model="opc")
+    prep = packaged["metrics"]["preparation"]
+    assert "forcefield" not in prep
+    assert "force_field" not in prep
+    assert "water_model" not in prep
+    assert packaged["provenance"]["declared_preparation"] == {
+        "force_field": "ff19SB",
+        "solvent_model": "unspecified",
+        "water_model": "opc",
+    }
 
 
-def test_packager_ingests_prep_summary_preserving_types(tmp_path):
-    # the prep summary carries disulfide_pairs as a LIST and the recorded flags
+def test_packager_derives_only_scorer_consumed_preparation_keys(tmp_path):
     summary = tmp_path / "prep_summary.json"
     summary.write_text(json.dumps({
         "preparation_summary": {
-            "disulfide_pairs": [
-                {"cys1": {"chain": "A", "resnum": 5},
-                 "cys2": {"chain": "A", "resnum": 55}},
-                {"cys1": {"chain": "A", "resnum": 14},
-                 "cys2": {"chain": "A", "resnum": 38}},
+            "assembly_id": "1",
+            "assembly_chain_identity_map": [
+                {
+                    "source_pdb_id": "1STP",
+                    "assembly_id": "1",
+                    "source_auth_asym_id": "A",
+                    "source_label_asym_id": "A",
+                    "operator_id": "1",
+                    "output_chain_id": "A",
+                    "naming_policy": "preserved",
+                },
             ],
-            "disulfide_detection_recorded": True,
+            "disulfide_pairs": [{"cys1": 5, "cys2": 55}],
             "component_disposition_recorded": True,
         }
     }))
-    metrics = _package(
+    packaged = _package(
         tmp_path, force_field="ff19SB", water_model="opc",
         solvent_model="explicit", preparation_summary_file=str(summary),
     )
-    prep = metrics["preparation"]
-    assert isinstance(prep["disulfide_pairs"], list)          # stays a list
-    assert len(prep["disulfide_pairs"]) == 2
-    assert prep["disulfide_detection_recorded"] is True
-    assert prep["component_disposition_recorded"] is True
-    assert prep["forcefield"] == "ff19SB"                     # layered on top
-    assert prep["solvent_model"] == "explicit"
+    prep = packaged["metrics"]["preparation"]
+    assert prep["assembly_id"] == "1"
+    assert isinstance(prep["assembly_chain_identity_map"], list)
+    assert "disulfide_pairs" not in prep
+    assert "component_disposition_recorded" not in prep
+    assert any(
+        "ignored non-scored preparation_summary" in warning
+        for warning in packaged["result"]["warnings"]
+    )
 
 
 def test_packager_metrics_keys_are_scorer_canonical(tmp_path):
@@ -122,9 +135,20 @@ def test_packager_metrics_keys_are_scorer_canonical(tmp_path):
     canonical = set()
     for f in specs.glob("*.json"):
         canonical |= set(re.findall(r"preparation\.([A-Za-z_]+)", f.read_text()))
-    metrics = _package(tmp_path, force_field="ff19SB", water_model="opc")
+    summary = tmp_path / "prep_summary.json"
+    summary.write_text(json.dumps({
+        "preparation_summary": {
+            "net_charge": 0.0,
+            "unknown_benchmark_flag": True,
+        }
+    }))
+    metrics = _package(
+        tmp_path, force_field="ff19SB", water_model="opc",
+        preparation_summary_file=str(summary),
+    )["metrics"]
+    assert metrics["preparation"] == {"net_charge": 0.0}
     for key in metrics["preparation"]:
         assert key in canonical, (
             f"packager emits preparation.{key!r} which is not a scorer "
-            f"json_path key — fix the key name or the scorer contract"
+            "json_path key - fix the key name or the scorer contract"
         )

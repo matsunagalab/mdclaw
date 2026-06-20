@@ -46,8 +46,25 @@
         "check_id": "water_model_fingerprint_matches_opc",
         "check_type": "water_model_fingerprint",
         "required_water_model": "OPC",
+        "sites_per_water": 4,
         "topology_manifest_path": "outputs.topology",
         "weight": 0.7
+      },
+      {
+        "check_id": "forcefield_choice_documented",
+        "check_type": "artifact_provenance_text",
+        "capability": "provenance",
+        "required_text_groups": [
+          [
+            "ff19SB",
+            "amber19/protein.ff19SB.xml"
+          ],
+          [
+            "OPC",
+            "amber19/opc.xml"
+          ]
+        ],
+        "weight": 0.2
       },
       {
         "check_id": "topology_artifact_bundle_present",

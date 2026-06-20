@@ -110,6 +110,28 @@ def public_candidate_selection_requirements(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
+def public_provenance_text_requirements(task: Task) -> list[dict[str, Any]]:
+    """Return provenance/evidence text anchors required by deterministic checks."""
+
+    requirements: list[dict[str, Any]] = []
+    for check in task.scoring.deterministic_checks:
+        if check.check_type != "artifact_provenance_text":
+            continue
+        requirements.append({
+            "check_id": check.check_id,
+            "capability": check.capability or "provenance",
+            "accepted_locations": list(check.text_files or [
+                "provenance.json",
+                "evidence_report.json",
+            ]),
+            "required_text_groups": [
+                [str(term) for term in group]
+                for group in (check.required_text_groups or [])
+            ],
+        })
+    return requirements
+
+
 def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
     """Return procedural, non-answer-bearing harness evidence requirements."""
     requirements: list[dict[str, Any]] = []
@@ -312,6 +334,9 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "--topology-pdb-file <topology.pdb> --state-xml-file <state.xml> "
             "--prepared-structure-file <prepared_structure.pdb> "
             "--command-log-file <command_log.json> "
+            "[--preparation-summary-file <prepare_summary.json>] "
+            "[--force-field <forcefield>] [--water-model <water_model>] "
+            "[--solvent-model <solvent_model>] "
             "[--evidence-report-file <evidence_report.json>]"
         ),
         "standalone_packager": "benchmarks/tools/package_submission.py",
@@ -449,6 +474,10 @@ def submission_checklist(task: Task) -> list[str]:
         checks.append(
             "metrics.json contains every metric_requirements json_path from this contract"
         )
+    if public_provenance_text_requirements(task):
+        checks.append(
+            "provenance.json or evidence_report.json includes every provenance_text_requirements group"
+        )
     if public_required_components(task):
         checks.append(
             "prepared/minimized structures satisfy every required_components item"
@@ -534,6 +563,18 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
                 f"- `{item['check_id']}`: `{item['check_type']}` via "
                 f"`{item.get('manifest_path')}`"
             )
+    provenance_requirements = contract.get("provenance_text_requirements") or []
+    if provenance_requirements:
+        lines.extend([
+            "",
+            "## Provenance Text Requirements",
+            "",
+        ])
+        for item in provenance_requirements:
+            lines.append(
+                f"- `{item['check_id']}`: include one term from each group "
+                f"`{item['required_text_groups']}`"
+            )
     lines.extend([
         "",
         "## Pre-Submission Checks",
@@ -582,6 +623,7 @@ def public_submission_contract(
         "required_components": public_required_components(task),
         "artifact_requirements": public_artifact_requirements(task),
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
+        "provenance_text_requirements": public_provenance_text_requirements(task),
         "harness_evidence_requirements": public_harness_evidence_requirements(task),
         "manifest_contract": manifest_contract(task),
         "submission_blueprint": submission_blueprint(task),

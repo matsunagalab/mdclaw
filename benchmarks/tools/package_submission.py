@@ -10,8 +10,8 @@ MDClaw scorer expects, so the neutral scorer can judge the run.
 Fairness rule (see docs/benchmark/fairness-protocol.md): this tool reshapes the
 agent's own OpenMM ``system.xml`` + ``topology.pdb`` + ``state.xml`` triple into
 a submission. It never chooses force field, water model, chains, ions, or
-mutations; anything the agent does not declare is recorded as ``"unspecified"``
-and recomputed from the artifact at scoring time. Provenance ``command_log``
+mutations. Declarations are stored in provenance; scored preparation values are
+limited to structured fields the scorer still reads. Provenance ``command_log``
 must be supplied by the agent; it is never fabricated here.
 
 Usage:
@@ -24,6 +24,7 @@ Usage:
         --state-xml state.xml \\
         --run-id <run_id> \\
         [--force-field <name>] [--water-model <name>] \\
+        [--solvent-model <name>] [--preparation-summary prepare_summary.json] \\
         [--prepared-structure prepared.pdb] \\
         [--command-log command_log.json] \\
         [--evidence-report evidence_report.json]
@@ -120,6 +121,40 @@ def _load_command_log(path: Optional[Path]) -> list[Any]:
     if isinstance(loaded, dict) and isinstance(loaded.get("command_log"), list):
         return loaded["command_log"]
     return []
+
+
+_SCORED_PREPARATION_KEYS = {
+    "assembly_id",
+    "assembly_chain_identity_map",
+    "net_charge",
+}
+
+
+def _unwrap_preparation_summary(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    for key in ("preparation_summary", "preparation", "summary", "parameters"):
+        nested = payload.get(key)
+        if isinstance(nested, dict):
+            return nested
+    return payload
+
+
+def _load_preparation_summary(path: Optional[Path]) -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    try:
+        return _unwrap_preparation_summary(json.loads(path.read_text()))
+    except json.JSONDecodeError:
+        return {}
+
+
+def _derive_preparation_metrics(summary: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in summary.items()
+        if key in _SCORED_PREPARATION_KEYS and value is not None
+    }
 
 
 def _write_json(path: Path, payload: Any) -> None:
@@ -219,13 +254,13 @@ def package(args: argparse.Namespace) -> int:
         manifest["outputs"]["evidence_report"] = "evidence_report.json"
     _write_json(sub / "manifest.json", manifest)
 
+    preparation_summary = _load_preparation_summary(
+        Path(args.preparation_summary) if args.preparation_summary else None
+    )
     _write_json(sub / "metrics.json", {
         "schema_version": "1.0",
         "topology": {"backend": "openmm"},
-        "preparation": {
-            "force_field": args.force_field,
-            "water_model": args.water_model,
-        },
+        "preparation": _derive_preparation_metrics(preparation_summary),
         "minimization": {
             "completed": True,
             "energy_is_finite": energy["energy_is_finite"],
@@ -244,6 +279,11 @@ def package(args: argparse.Namespace) -> int:
         "backend": args.backend,
         "harness": args.harness,
         "model": args.model,
+        "declared_preparation": {
+            "force_field": args.force_field,
+            "water_model": args.water_model,
+            "solvent_model": args.solvent_model,
+        },
         "command_log": command_log,
     })
 
@@ -253,12 +293,6 @@ def package(args: argparse.Namespace) -> int:
             "WARNING: no command_log provided; the scorer's execution-evidence "
             "check will flag this submission. Pass --command-log with the "
             "agent's own source/prep/topo/min steps.",
-            file=sys.stderr,
-        )
-    if args.force_field == "unspecified" or args.water_model == "unspecified":
-        print(
-            "WARNING: force_field/water_model recorded as 'unspecified'; the "
-            "scorer recomputes physical properties from the artifact regardless.",
             file=sys.stderr,
         )
     if not energy["success"]:
@@ -282,8 +316,10 @@ def main() -> int:
     parser.add_argument("--prepared-structure", default=None)
     parser.add_argument("--command-log", default=None)
     parser.add_argument("--evidence-report", default=None)
+    parser.add_argument("--preparation-summary", default=None)
     parser.add_argument("--force-field", default="unspecified")
     parser.add_argument("--water-model", default="unspecified")
+    parser.add_argument("--solvent-model", default="unspecified")
     parser.add_argument("--agent", default="unknown")
     parser.add_argument("--backend", default="openmm-script")
     parser.add_argument("--harness", default="unknown")

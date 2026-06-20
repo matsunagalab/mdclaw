@@ -39,11 +39,19 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_pdb_reported",
-        "check_type": "json_equals",
-        "equals": "1STP",
-        "json_file": "metrics.json",
-        "json_path": "preparation.source_pdb_id",
+        "check_id": "source_pdb_documented",
+        "check_type": "artifact_provenance_text",
+        "capability": "provenance",
+        "required_text_groups": [
+          [
+            "1STP"
+          ],
+          [
+            "assembly 1",
+            "assembly_id",
+            "biological assembly"
+          ]
+        ],
         "weight": 0.15
       },
       {
@@ -77,11 +85,21 @@
         "weight": 0.75
       },
       {
-        "check_id": "many_chain_policy_recorded",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.many_chain_policy_recorded",
+        "check_id": "many_chain_policy_documented",
+        "check_type": "artifact_provenance_text",
+        "capability": "provenance",
+        "required_text_groups": [
+          [
+            "chain",
+            "multi-chain",
+            "many-chain"
+          ],
+          [
+            "identity map",
+            "mapping",
+            "policy"
+          ]
+        ],
         "weight": 0.1
       },
       {

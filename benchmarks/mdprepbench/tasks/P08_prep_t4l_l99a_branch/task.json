@@ -45,19 +45,42 @@
         "weight": 0.45
       },
       {
-        "check_id": "branch_parent_recorded",
-        "check_type": "json_equals",
-        "equals": "WT",
-        "json_file": "metrics.json",
-        "json_path": "preparation.branch_parent",
+        "check_id": "branch_parent_documented",
+        "check_type": "artifact_provenance_text",
+        "capability": "provenance",
+        "required_text_groups": [
+          [
+            "WT",
+            "wild type"
+          ],
+          [
+            "L99A"
+          ],
+          [
+            "branch",
+            "parent"
+          ]
+        ],
         "weight": 0.25
       },
       {
-        "check_id": "wt_mutant_separated",
-        "check_type": "json_equals",
-        "equals": true,
-        "json_file": "metrics.json",
-        "json_path": "preparation.wt_mutant_artifacts_separated",
+        "check_id": "wt_mutant_separation_documented",
+        "check_type": "artifact_provenance_text",
+        "capability": "provenance",
+        "required_text_groups": [
+          [
+            "WT",
+            "wild type"
+          ],
+          [
+            "L99A"
+          ],
+          [
+            "separate",
+            "separated",
+            "branch"
+          ]
+        ],
         "weight": 0.3
       },
       {

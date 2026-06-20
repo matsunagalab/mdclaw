@@ -480,6 +480,21 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     assert p18_checks["source_selection_model_1"]["required_model_rank"] == 1
 
 
+def test_prep_tasks_do_not_score_preparation_self_report_booleans():
+    dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
+
+    for task_id in dataset["task_ids"]:
+        task = json.loads((DATASET_DIR / "tasks" / task_id / "task.json").read_text())
+        for check in task["scoring"]["deterministic_checks"]:
+            json_path = str(check.get("json_path") or "")
+            if check.get("check_type") == "json_equals" and json_path.startswith(
+                "preparation."
+            ):
+                raise AssertionError(
+                    f"{task_id} scores self-reported {json_path} via json_equals"
+                )
+
+
 def test_task_contracts_do_not_expose_input_directory():
     dataset = json.loads((DATASET_DIR / "dataset.json").read_text())
 

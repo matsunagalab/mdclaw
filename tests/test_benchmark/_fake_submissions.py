@@ -331,6 +331,7 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
             NonbondedForce,
             Platform,
             System,
+            ThreeParticleAverageSite,
             Vec3,
             VerletIntegrator,
             XmlSerializer,
@@ -348,16 +349,18 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
     grid_step = 0.4  # nm; keep atoms apart so the energy stays finite
 
     def add_atom(name: str, element_symbol: str, resname: str, residue,
-                 charge: float, mass: float) -> None:
+                 charge: float, mass: float, sigma: float = 0.25,
+                 epsilon: float = 0.1) -> int:
         topology.addAtom(name, Element.getBySymbol(element_symbol), residue)
         system.addParticle(mass)
-        nonbonded.addParticle(charge, 0.25, 0.1)
+        nonbonded.addParticle(charge, sigma, epsilon)
         index = len(positions)
         positions.append(
             Vec3((index % 6) * grid_step,
                  ((index // 6) % 6) * grid_step,
                  (index // 36) * grid_step)
         )
+        return index
 
     chain = topology.addChain("A")
     ala = topology.addResidue("ALA", chain, "1")
@@ -369,10 +372,44 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
         atom_names = ["O", "H1", "H2", "EPW", "EP2"][:sites]
         for _ in range(3):
             water = topology.addResidue("HOH", chain, str(resseq))
+            water_indices: dict[str, int] = {}
             for atom_name in atom_names:
-                element = "O" if atom_name == "O" else ("H" if atom_name.startswith("H") else "C")
+                element = (
+                    "O" if atom_name == "O"
+                    else ("H" if atom_name.startswith("H") else "C")
+                )
                 mass = 0.0 if atom_name.startswith("EP") else (16.0 if element == "O" else 1.0)
-                add_atom(atom_name, element, "HOH", water, 0.0, mass)
+                if sites == 4 and atom_name == "O":
+                    water_indices[atom_name] = add_atom(
+                        atom_name, element, "HOH", water, 0.0, mass,
+                        sigma=0.3166, epsilon=0.890,
+                    )
+                elif sites == 4 and atom_name.startswith("H"):
+                    water_indices[atom_name] = add_atom(
+                        atom_name, element, "HOH", water, 0.679142, mass,
+                        sigma=0.1, epsilon=0.0,
+                    )
+                elif sites == 4 and atom_name.startswith("EP"):
+                    water_indices[atom_name] = add_atom(
+                        atom_name, element, "HOH", water, -1.358284, mass,
+                        sigma=0.1, epsilon=0.0,
+                    )
+                else:
+                    water_indices[atom_name] = add_atom(
+                        atom_name, element, "HOH", water, 0.0, mass,
+                    )
+            if sites == 4 and {"O", "H1", "H2", "EPW"}.issubset(water_indices):
+                system.setVirtualSite(
+                    water_indices["EPW"],
+                    ThreeParticleAverageSite(
+                        water_indices["O"],
+                        water_indices["H1"],
+                        water_indices["H2"],
+                        0.1477,
+                        0.42615,
+                        0.42615,
+                    ),
+                )
             resseq += 1
 
     salt_pairs = int(req["salt_pairs"] or 0)

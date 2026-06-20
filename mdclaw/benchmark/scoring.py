@@ -914,6 +914,118 @@ def _water_residue_keys(path: Path, water_names: set[str]) -> dict[tuple, int]:
     return counts
 
 
+def _water_residue_particle_groups(
+    path: Path,
+    water_names: set[str],
+) -> list[dict[str, Any]]:
+    """Return water residue particle indices in topology/PDB order."""
+
+    groups: dict[tuple, dict[str, Any]] = {}
+    particle_index = 0
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:20].strip().upper()
+            key = (line[21:22].strip(), line[22:26].strip(), line[26:27].strip())
+            atom_name = line[12:16].strip().upper()
+            if resname in water_names:
+                group = groups.setdefault(
+                    key,
+                    {"key": key, "resname": resname, "particles": [], "atoms": []},
+                )
+                group["particles"].append(particle_index)
+                group["atoms"].append(atom_name)
+            particle_index += 1
+    return list(groups.values())
+
+
+def _particle_parameter_rows(system: Any) -> Optional[list[dict[str, float | bool]]]:
+    nonbonded = _nonbonded_force(system)
+    if nonbonded is None:
+        return None
+    try:
+        from openmm import unit
+    except Exception:  # noqa: BLE001
+        return None
+    rows: list[dict[str, float | bool]] = []
+    for i in range(system.getNumParticles()):
+        if i >= nonbonded.getNumParticles():
+            return None
+        charge, sigma, epsilon = nonbonded.getParticleParameters(i)
+        try:
+            is_virtual = bool(system.isVirtualSite(i))
+        except Exception:  # noqa: BLE001
+            is_virtual = False
+        rows.append({
+            "charge": float(charge.value_in_unit(unit.elementary_charge)),
+            "sigma": float(sigma.value_in_unit(unit.nanometer)),
+            "epsilon": float(epsilon.value_in_unit(unit.kilojoule_per_mole)),
+            "mass": float(system.getParticleMass(i).value_in_unit(unit.dalton)),
+            "is_virtual": is_virtual,
+        })
+    return rows
+
+
+def _count_close(values: list[float], target: float, tol: float) -> int:
+    return sum(1 for value in values if abs(value - target) <= tol)
+
+
+def _opc_water_parameter_fingerprint(system: Any, groups: list[dict[str, Any]]):
+    """Validate an OPC-like 4-site water nonbonded/virtual-site fingerprint."""
+
+    rows = _particle_parameter_rows(system)
+    if rows is None:
+        return False, "NonbondedForce particle parameters are unavailable"
+
+    checked = 0
+    mismatches: list[str] = []
+    for group in groups:
+        particles = [int(i) for i in group.get("particles", [])]
+        if len(particles) != 4:
+            continue
+        checked += 1
+        try:
+            params = [rows[i] for i in particles]
+        except IndexError:
+            mismatches.append(f"{group.get('key')}: particle index outside system")
+            continue
+
+        charges = [float(p["charge"]) for p in params]
+        oxygen_like = [
+            p for p in params
+            if (
+                abs(float(p["charge"])) <= 0.05
+                and float(p["mass"]) > 8.0
+                and abs(float(p["sigma"]) - 0.3166) <= 0.025
+                and abs(float(p["epsilon"]) - 0.890) <= 0.20
+            )
+        ]
+        virtual_like = [
+            p for p in params
+            if (
+                (bool(p["is_virtual"]) or float(p["mass"]) <= 1.0e-6)
+                and abs(float(p["charge"]) + 1.358) <= 0.08
+            )
+        ]
+        h_like = _count_close(charges, 0.679, 0.08)
+        if oxygen_like and virtual_like and h_like >= 2:
+            return True, (
+                "OPC-like fingerprint found: 4-site waters with oxygen LJ "
+                "and +/-0.679/-1.358 e charge pattern"
+            )
+        mismatches.append(
+            f"{group.get('key')}: charges={charges}, "
+            f"oxygen_like={len(oxygen_like)}, virtual_like={len(virtual_like)}"
+        )
+
+    if checked == 0:
+        return False, "no 4-site water residue groups available for OPC fingerprint"
+    preview = "; ".join(mismatches[:3])
+    extra = "" if len(mismatches) <= 3 else f"; ... +{len(mismatches) - 3} more"
+    return False, f"OPC parameter fingerprint mismatch: {preview}{extra}"
+
+
 def _check_water_model_fingerprint(check: DeterministicCheck,
                                    submission_dir: Path,
                                    manifest: dict, **_):
@@ -930,27 +1042,49 @@ def _check_water_model_fingerprint(check: DeterministicCheck,
         for n in (check.water_residue_names or _DEFAULT_WATER_RESIDUE_NAMES)
     }
     try:
-        residue_atoms = _water_residue_keys(topology_pdb, water_names)
+        residue_groups = _water_residue_particle_groups(topology_pdb, water_names)
     except OSError as exc:
         return False, 0.0, f"could not read topology.pdb: {exc}"
+    residue_atoms = {
+        tuple(group["key"]): len(group.get("particles", []))
+        for group in residue_groups
+    }
     if not residue_atoms:
         return False, 0.0, "no water residues found in topology.pdb"
     sites = max(residue_atoms.values())
+    site_message = f"water fingerprint {sites} sites/water"
     family = "3-site" if sites <= 3 else f"{sites}-site"
     if check.sites_per_water is not None:
         expected = int(check.sites_per_water)
-        ok = sites == expected
-        return ok, (1.0 if ok else 0.0), (
-            f"water fingerprint {sites} sites/water (expected {expected})"
-        )
+        if sites != expected:
+            return False, 0.0, f"{site_message} (expected {expected})"
     if check.required_water_model:
         expected_sites = _water_model_site_count(check.required_water_model)
         if expected_sites is not None:
-            ok = sites == expected_sites
-            return ok, (1.0 if ok else 0.0), (
-                f"water fingerprint {sites} sites/water; {check.required_water_model} "
-                f"expects {expected_sites} ({'match' if ok else 'mismatch'})"
+            if sites != expected_sites:
+                return False, 0.0, (
+                    f"{site_message}; {check.required_water_model} expects "
+                    f"{expected_sites} (mismatch)"
+                )
+            if str(check.required_water_model).strip().upper() == "OPC":
+                loaded = _load_openmm_bundle(check, submission_dir, manifest)
+                if not loaded["success"]:
+                    return False, 0.0, (
+                        "OPC fingerprint requires a loadable OpenMM bundle: "
+                        f"{loaded['message']}"
+                    )
+                ok, detail = _opc_water_parameter_fingerprint(
+                    loaded["system"], residue_groups
+                )
+                if not ok:
+                    return False, 0.0, detail
+                return True, 1.0, f"{site_message}; {detail}"
+            return True, 1.0, (
+                f"{site_message}; {check.required_water_model} expects "
+                f"{expected_sites} (match)"
             )
+    if check.sites_per_water is not None:
+        return True, 1.0, f"{site_message} (expected {check.sites_per_water})"
     return True, 1.0, f"water fingerprint: {len(residue_atoms)} waters, {family}"
 
 
