@@ -236,7 +236,7 @@ def test_p14_minimized_glycan_check_accepts_glycam_residue_names():
     )
 
 
-def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
+def test_p18_lipid_contract_checks_mixed_species_without_exact_ratio():
     task = json.loads(
         (
             DATASET_DIR / "tasks" / "P18_prep_membrane_mixed_lipids" / "task.json"
@@ -247,13 +247,7 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
         for check in task["scoring"]["deterministic_checks"]
     }
 
-    lipid_ratio = checks["lipid_ratio_rescanned"]
-    assert lipid_ratio["check_type"] == "residue_ratio_rescan"
-    assert lipid_ratio["required_residue_ratio"] == {
-        "POPC": 2,
-        "POPE": 1,
-        "CHL1": 1,
-    }
+    assert "lipid_ratio_rescanned" not in checks
 
     # lipid_species_present reads the built OpenMM topology bundle (MDClaw's
     # prepared_structure.pdb is protein-only), while the minimized check reads
@@ -269,6 +263,16 @@ def test_p18_lipid_contract_accepts_packmol_memgen_names_without_tail_aliases():
 
     prepared_aliases = checks["lipid_species_present"]["residue_aliases"]
     minimized_aliases = checks["minimized_lipid_species_present"]["residue_aliases"]
+    assert checks["lipid_species_present"]["min_residue_counts"] == {
+        "POPC": 2,
+        "POPE": 1,
+        "CHL1": 1,
+    }
+    assert checks["minimized_lipid_species_present"]["min_residue_counts"] == {
+        "POPC": 2,
+        "POPE": 1,
+        "CHL1": 1,
+    }
     for check_id in ("lipid_species_present", "minimized_lipid_species_present"):
         # Small water/ion residues must be ignored so the OPC water model name
         # does not collide with a POPC lipid aliased to its OPC truncation.

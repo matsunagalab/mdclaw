@@ -671,6 +671,39 @@ def test_package_openmm_submission_can_include_evidence_report(tmp_path: Path):
     assert str(sub / "evidence_report.json") in res["files_written"]
 
 
+def test_package_openmm_submission_can_include_source_selection(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    source_selection = tmp_path / "source_selection.json"
+    payload = {
+        "selected_structure": {
+            "structure_id": "candidate_001",
+            "candidate_id": "candidate_001",
+            "origin": {"model_rank": 1},
+        },
+        "selection": {"reason": "task requested model 1"},
+    }
+    source_selection.write_text(json.dumps(payload))
+    sub = tmp_path / "submission"
+
+    res = cli.package_openmm_submission(
+        submission_dir=str(sub),
+        task_id="P18_prep_membrane_mixed_lipids",
+        system_xml_file=str(sx),
+        topology_pdb_file=str(tp),
+        state_xml_file=str(st),
+        run_id="pkg",
+        source_selection_file=str(source_selection),
+    )
+
+    assert res["success"]
+    manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["outputs"]["source_selection"] == "source_selection.json"
+    assert json.loads((sub / "source_selection.json").read_text()) == payload
+    assert json.loads((sub / "provenance.json").read_text())["source_selection"] == payload
+    assert json.loads((sub / "metrics.json").read_text())["source_selection"] == payload
+    assert str(sub / "source_selection.json") in res["files_written"]
+
+
 def test_standalone_packager_matches_shape(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
     sub = tmp_path / "submission"

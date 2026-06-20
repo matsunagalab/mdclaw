@@ -20,6 +20,7 @@ logger = setup_logger(__name__)
 
 import json  # noqa: E402
 import logging  # noqa: E402
+import shutil  # noqa: E402
 import subprocess  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
@@ -333,6 +334,7 @@ def _record_packmol_memgen_output(
     result: dict,
     success_message: str,
     allow_forced_output: bool = False,
+    allow_imperfect_primary_output: bool = False,
 ) -> None:
     """Record output artifacts and diagnostics for packmol-memgen based tools."""
     diagnostics = _packmol_memgen_diagnostics(
@@ -342,15 +344,14 @@ def _record_packmol_memgen_output(
     )
     packing_failure_reasons = _packmol_quality_failure_reasons(diagnostics)
     forced_output = output_file.with_name(f"{output_file.name}_FORCED")
-    forced_output_accepted = (
-        allow_forced_output
-        and bool(packing_failure_reasons)
-        and forced_output.exists()
-    )
-    recorded_output = forced_output if forced_output_accepted else output_file
+    forced_output_available = bool(packing_failure_reasons) and forced_output.exists()
+    recorded_output = output_file
 
     if not recorded_output.exists():
         if packing_failure_reasons:
+            if forced_output_available:
+                result["forced_output_available"] = True
+                result["forced_output_file"] = str(forced_output)
             _record_packmol_quality_failure(
                 result,
                 packing_failure_reasons,
@@ -366,16 +367,15 @@ def _record_packmol_memgen_output(
         return
 
     result["output_file"] = str(recorded_output)
-    if forced_output_accepted:
-        result["forced_output_accepted"] = True
+    if forced_output_available:
+        result["forced_output_available"] = True
         result["forced_output_file"] = str(forced_output)
-        if output_file.exists():
-            result["packmol_primary_output_file"] = str(output_file)
-        result["code"] = "packmol_forced_output_accepted"
+        result["packmol_primary_output_file"] = str(output_file)
         result["warnings"].append(
-            "Accepted Packmol FORCED output for downstream topology-time "
-            "minimization; packing_quality remains failed and the structure "
-            "must pass minimization/energy checks before MD use."
+            "Packmol wrote a FORCED output, but MDClaw treats it as a raw "
+            "diagnostic artifact because it may not have packmol-memgen's "
+            "AMBER/LIPID postprocessing applied. It is not used as the "
+            "solvated topology input."
         )
 
     try:
@@ -404,16 +404,27 @@ def _record_packmol_memgen_output(
         result["packmol_log"] = str(log_file)
 
     if packing_failure_reasons:
-        if forced_output_accepted:
+        if allow_imperfect_primary_output:
             result["success"] = True
+            result["code"] = "packmol_imperfect_primary_output_candidate"
             result["packing_quality"] = {
                 "passed": False,
                 "failure_reasons": packing_failure_reasons,
-                "forced_output_accepted": True,
+                "primary_output_accepted": True,
             }
+            result["recommended_next_action"] = (
+                "continue_to_topology_and_minimization_validation"
+            )
+            result["warnings"].append(
+                "Packmol reported imperfect packing, but packmol-memgen wrote "
+                "a postprocessed primary output PDB. MDClaw will pass that "
+                "primary output to topology/minimization validation and will "
+                "not use the raw FORCED PDB."
+            )
             logger.warning(
-                "Accepted Packmol FORCED output for %s despite quality failure: %s",
-                forced_output,
+                "Using postprocessed Packmol primary output for downstream "
+                "topology/minimization despite quality failure for %s: %s",
+                output_file,
                 ", ".join(packing_failure_reasons),
             )
             return
@@ -480,6 +491,109 @@ def _packmol_quality_failure_reasons(text: str) -> list[str]:
     return reasons
 
 
+def _replace_cli_arg(args: list[str], option: str, value: object) -> list[str]:
+    """Return a copy of args with an existing option value replaced."""
+    updated = list(args)
+    try:
+        index = updated.index(option)
+    except ValueError:
+        updated.extend([option, str(value)])
+    else:
+        updated[index + 1] = str(value)
+    return updated
+
+
+def _membrane_packmol_attempt_plan(
+    *,
+    dist: float,
+    nloop: int,
+    nloop_all: int,
+) -> list[dict]:
+    """Bounded adaptive retry plan for membrane Packmol convergence."""
+    first_retry_nloop_all = 100 if int(nloop_all) < 100 else 200
+    raw_plan = [
+        {
+            "label": "initial",
+            "dist": float(dist),
+            "nloop": int(nloop),
+            "nloop_all": int(nloop_all),
+            "random_seed": False,
+        },
+        {
+            "label": "increase_packmol_budget",
+            "dist": float(dist),
+            "nloop": max(int(nloop), 30),
+            "nloop_all": first_retry_nloop_all,
+            "random_seed": True,
+        },
+        {
+            "label": "increase_packmol_budget_high",
+            "dist": float(dist),
+            "nloop": max(int(nloop), 50),
+            "nloop_all": max(int(nloop_all), 200),
+            "random_seed": True,
+        },
+        {
+            "label": "increase_lateral_box",
+            "dist": max(float(dist) + 10.0, float(dist) * 1.5),
+            "nloop": max(int(nloop), 50),
+            "nloop_all": max(int(nloop_all), 200),
+            "random_seed": True,
+        },
+    ]
+
+    plan: list[dict] = []
+    seen: set[tuple[float, int]] = set()
+    for attempt in raw_plan:
+        key = (
+            round(float(attempt["dist"]), 6),
+            int(attempt["nloop_all"]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        plan.append(attempt)
+    return plan
+
+
+def _snapshot_packmol_attempt_artifacts(
+    *,
+    out_dir: Path,
+    output_name: str,
+    attempt_index: int,
+) -> dict[str, str]:
+    """Preserve Packmol artifacts before an adaptive retry overwrites them."""
+    suffixes = {
+        "packmol_memgen_log": out_dir / "packmol-memgen.log",
+        "packmol_log": out_dir / f"{output_name}_packmol.log",
+        "packmol_input": out_dir / f"{output_name}_packmol.inp",
+        "primary_pdb": out_dir / f"{output_name}.pdb",
+        "forced_pdb": out_dir / f"{output_name}.pdb_FORCED",
+    }
+    preserved: dict[str, str] = {}
+    for key, source in suffixes.items():
+        if not source.exists():
+            continue
+        destination = out_dir / f"{output_name}_attempt{attempt_index}_{source.name}"
+        shutil.copy2(source, destination)
+        preserved[key] = str(destination)
+    return preserved
+
+
+def _clear_packmol_attempt_outputs(*, out_dir: Path, output_name: str) -> None:
+    """Remove retry-sensitive Packmol outputs after preserving them."""
+    for path in (
+        out_dir / f"{output_name}.pdb",
+        out_dir / f"{output_name}.pdb_FORCED",
+        out_dir / f"{output_name}_packmol.log",
+        out_dir / f"{output_name}_packmol.inp",
+    ):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _record_packmol_quality_failure(
     result: dict,
     failure_reasons: list[str],
@@ -506,11 +620,13 @@ def _attach_membrane_packing_retry_suggestion(
         return
 
     try:
-        current_dist = float(parameters.get("dist", 15.0))
+        current_dist = float(parameters.get("effective_dist", parameters.get("dist", 15.0)))
         current_dist_wat = float(parameters.get("dist_wat", 17.5))
         current_leaflet = float(parameters.get("leaflet", 23.0))
-        current_nloop = int(parameters.get("nloop", 20))
-        current_nloop_all = int(parameters.get("nloop_all", 50))
+        current_nloop = int(parameters.get("effective_nloop", parameters.get("nloop", 20)))
+        current_nloop_all = int(
+            parameters.get("effective_nloop_all", parameters.get("nloop_all", 100))
+        )
     except (TypeError, ValueError):
         return
 
@@ -528,8 +644,8 @@ def _attach_membrane_packing_retry_suggestion(
         "saltcon": parameters.get("saltcon"),
         "salt_override": parameters.get("salt_override"),
         "water_model": parameters.get("water_model"),
-        "nloop": max(current_nloop, 30),
-        "nloop_all": max(current_nloop_all, 80),
+        "nloop": current_nloop,
+        "nloop_all": current_nloop_all,
     }
     result["recommended_next_action"] = "retry_membrane_with_larger_box"
     result["retry_suggestion"] = {
@@ -1290,9 +1406,10 @@ def embed_in_membrane(
     notprotonate: bool = True,
     keepligs: bool = True,
     nloop: int = 20,
-    nloop_all: int = 50,
+    nloop_all: int = 100,
     water_model: str = "opc",
-    allow_forced_output: bool = True,
+    allow_forced_output: bool = False,
+    allow_imperfect_primary_output: bool = True,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -1342,16 +1459,22 @@ def embed_in_membrane(
         keepligs: Keep ligands in the structure (default: True). Important when
                   processing protein-ligand complexes with MEMEMBED.
         nloop: PACKMOL GENCAN loops for individual packing (default: 20)
-        nloop_all: PACKMOL GENCAN loops for final packing (default: 50)
+        nloop_all: PACKMOL GENCAN loops for final packing (default: 100).
+                   MDClaw adaptively retries with a larger bounded budget if
+                   Packmol reports imperfect packing.
         water_model: Water model type (default: "opc").
                      Options: "tip3p", "opc", "opc3", "tip4pew", "spce".
                      Must match the water model used in build_amber_system.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
-        allow_forced_output: Accept packmol-memgen's ``*_FORCED`` PDB as the
-                     solvated artifact when Packmol reports imperfect packing.
-                     Defaults to True for membrane workflows because the
-                     topology build performs an immediate minimization/energy
-                     check; set False to require perfect Packmol packing.
+        allow_forced_output: Deprecated compatibility flag. Packmol's
+                     ``*_FORCED`` PDB is recorded as a raw diagnostic artifact
+                     when present, but is not treated as the MD-ready solvated
+                     artifact because it may bypass packmol-memgen's final
+                     AMBER/LIPID postprocessing.
+        allow_imperfect_primary_output: If Packmol still reports imperfect
+                     packing after bounded adaptive retries, pass the
+                     postprocessed primary output PDB to topology/minimization
+                     validation. The raw ``*_FORCED`` PDB is still never used.
     
     Returns:
         Dict with:
@@ -1463,6 +1586,7 @@ def embed_in_membrane(
                 "saltcon": saltcon,
                 "salt_override": salt_override,
                 "allow_forced_output": allow_forced_output,
+                "allow_imperfect_primary_output": allow_imperfect_primary_output,
             },
         )
         if not _ctx["success"]:
@@ -1604,52 +1728,62 @@ def embed_in_membrane(
         # Run packmol-memgen (membrane building can take longer)
         membrane_timeout = get_timeout("membrane")
         packmol_inp_file = out_dir / f"{output_name}_packmol.inp"
+        attempt_plan = _membrane_packmol_attempt_plan(
+            dist=dist,
+            nloop=nloop,
+            nloop_all=nloop_all,
+        )
+        result["adaptive_packmol_retry"] = {
+            "enabled": True,
+            "attempts": [],
+        }
+        proc_result = None
         packing_failure_recorded = False
-        try:
-            proc_result = packmol_memgen_wrapper.run(args, cwd=out_dir, timeout=membrane_timeout)
-        except subprocess.CalledProcessError as exc:
-            diagnostics = _packmol_memgen_diagnostics(
-                out_dir=out_dir,
-                output_name=output_name,
-                exc=exc,
+        salt_override_active = bool(salt_override)
+
+        for attempt_index, attempt in enumerate(attempt_plan, start=1):
+            attempt_args = _replace_cli_arg(args, "--dist", attempt["dist"])
+            attempt_args = _replace_cli_arg(attempt_args, "--nloop", attempt["nloop"])
+            attempt_args = _replace_cli_arg(
+                attempt_args, "--nloop_all", attempt["nloop_all"]
             )
-            if salt and not salt_override and _diagnostics_require_salt_override(diagnostics):
-                _record_salt_override_fallback(
-                    result=result,
-                    out_dir=out_dir,
-                    output_name=output_name,
-                    saltcon=saltcon,
-                    mode="membrane",
-                )
-                _append_salt_override_arg(args)
+            if salt_override_active:
+                _append_salt_override_arg(attempt_args)
+            if attempt["random_seed"] and "--random" not in attempt_args:
+                attempt_args.append("--random")
+
+            logger.info(
+                "Running packmol-memgen attempt %s/%s (%s): dist=%s, "
+                "nloop=%s, nloop_all=%s",
+                attempt_index,
+                len(attempt_plan),
+                attempt["label"],
+                attempt["dist"],
+                attempt["nloop"],
+                attempt["nloop_all"],
+            )
+
+            exc_for_diagnostics = None
+            try:
                 proc_result = packmol_memgen_wrapper.run(
-                    args, cwd=out_dir, timeout=membrane_timeout
+                    attempt_args,
+                    cwd=out_dir,
+                    timeout=membrane_timeout,
                 )
-            elif failure_reasons := _packmol_quality_failure_reasons(diagnostics):
-                if allow_forced_output:
-                    proc_result = exc
-                else:
-                    _record_packmol_quality_failure(
-                        result,
-                        failure_reasons,
-                        "packmol-memgen failed and Packmol reported imperfect "
-                        "packing or membrane piercing; refusing to treat this "
-                        "structure as MD-ready.",
-                    )
-                    packing_failure_recorded = True
-                    proc_result = exc
-            else:
-                raise
-        else:
+            except subprocess.CalledProcessError as exc:
+                proc_result = exc
+                exc_for_diagnostics = exc
+
             diagnostics = _packmol_memgen_diagnostics(
                 out_dir=out_dir,
                 output_name=output_name,
-                proc_result=proc_result,
+                proc_result=None if exc_for_diagnostics else proc_result,
+                exc=exc_for_diagnostics,
             )
+
             if (
                 salt
-                and not salt_override
-                and not output_file.exists()
+                and not salt_override_active
                 and _diagnostics_require_salt_override(diagnostics)
             ):
                 _record_salt_override_fallback(
@@ -1659,10 +1793,79 @@ def embed_in_membrane(
                     saltcon=saltcon,
                     mode="membrane",
                 )
-                _append_salt_override_arg(args)
-                proc_result = packmol_memgen_wrapper.run(
-                    args, cwd=out_dir, timeout=membrane_timeout
+                salt_override_active = True
+                preserved = _snapshot_packmol_attempt_artifacts(
+                    out_dir=out_dir,
+                    output_name=output_name,
+                    attempt_index=attempt_index,
                 )
+                result["adaptive_packmol_retry"]["attempts"].append({
+                    "attempt": attempt_index,
+                    "label": attempt["label"],
+                    "dist": attempt["dist"],
+                    "nloop": attempt["nloop"],
+                    "nloop_all": attempt["nloop_all"],
+                    "random_seed": attempt["random_seed"],
+                    "status": "retry_salt_override",
+                    "failure_reasons": ["salt_override_required"],
+                    "preserved_artifacts": preserved,
+                })
+                _clear_packmol_attempt_outputs(
+                    out_dir=out_dir,
+                    output_name=output_name,
+                )
+                continue
+
+            failure_reasons = _packmol_quality_failure_reasons(diagnostics)
+            attempt_record = {
+                "attempt": attempt_index,
+                "label": attempt["label"],
+                "dist": attempt["dist"],
+                "nloop": attempt["nloop"],
+                "nloop_all": attempt["nloop_all"],
+                "random_seed": attempt["random_seed"],
+                "failure_reasons": failure_reasons,
+            }
+
+            if failure_reasons and attempt_index < len(attempt_plan):
+                preserved = _snapshot_packmol_attempt_artifacts(
+                    out_dir=out_dir,
+                    output_name=output_name,
+                    attempt_index=attempt_index,
+                )
+                attempt_record["status"] = "retry_packing_quality"
+                attempt_record["preserved_artifacts"] = preserved
+                result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
+                result["warnings"].append(
+                    "packmol-memgen attempt "
+                    f"{attempt_index} did not reach perfect packing "
+                    f"({', '.join(failure_reasons)}); retrying with "
+                    "a bounded adaptive packing budget."
+                )
+                _clear_packmol_attempt_outputs(
+                    out_dir=out_dir,
+                    output_name=output_name,
+                )
+                continue
+
+            if failure_reasons:
+                attempt_record["status"] = "failed"
+            elif exc_for_diagnostics is not None:
+                attempt_record["status"] = "failed_exception"
+            else:
+                attempt_record["status"] = "success"
+            result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
+            result["parameters"]["effective_dist"] = attempt["dist"]
+            result["parameters"]["effective_nloop"] = attempt["nloop"]
+            result["parameters"]["effective_nloop_all"] = attempt["nloop_all"]
+
+            if exc_for_diagnostics is not None and not failure_reasons:
+                raise exc_for_diagnostics
+            break
+
+        if proc_result is None:
+            result["errors"].append("packmol-memgen did not run")
+            packing_failure_recorded = True
 
         if not packing_failure_recorded:
             _run_packmol_if_needed(
@@ -1683,7 +1886,16 @@ def embed_in_membrane(
                 result=result,
                 success_message="Successfully embedded structure in membrane",
                 allow_forced_output=allow_forced_output,
+                allow_imperfect_primary_output=allow_imperfect_primary_output,
             )
+            retry_attempts = result.get("adaptive_packmol_retry", {}).get("attempts", [])
+            if (
+                result.get("code") == "packmol_imperfect_primary_output_candidate"
+                and retry_attempts
+                and retry_attempts[-1].get("status") == "failed"
+            ):
+                retry_attempts[-1]["status"] = "accepted_imperfect_primary"
+                retry_attempts[-1]["accepted_output_file"] = str(output_file)
             if result.get("success") and result.get("output_file"):
                 restored_output = Path(str(result["output_file"]))
                 restore_report = _restore_packmol_solute_identity(
@@ -1727,6 +1939,11 @@ def embed_in_membrane(
                     "packing_quality": result.get("packing_quality"),
                     "forced_output_accepted": bool(
                         result.get("forced_output_accepted")
+                    ),
+                    "imperfect_primary_output_accepted": bool(
+                        result.get("packing_quality", {}).get(
+                            "primary_output_accepted"
+                        )
                     ),
                 })
             update_job_summaries(job_dir, params={

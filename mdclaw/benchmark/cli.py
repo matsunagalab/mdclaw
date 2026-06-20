@@ -758,6 +758,7 @@ def package_openmm_submission(
     water_model: str = "unspecified",
     solvent_model: str = "unspecified",
     preparation_summary_file: Optional[str] = None,
+    source_selection_file: Optional[str] = None,
     agent: str = "unknown",
     backend: str = "openmm-script",
     harness: str = "unknown",
@@ -784,6 +785,11 @@ def package_openmm_submission(
     the small set of structured ``metrics.preparation`` fields the scorer still
     consumes. Benchmark-only attestation flags and unknown keys are ignored:
     correctness is rescanned from artifacts whenever possible.
+
+    Pass ``source_selection_file`` when the task requires NMR/model/candidate
+    selection evidence. The file is copied into the submission and referenced
+    from ``manifest.outputs.source_selection`` so the scorer can validate the
+    structured selection record without hand-editing package outputs.
 
     Hard rule (fairness): it never *chooses* force field, water model, chains,
     ions, or mutations. Those come from the agent's own output and are
@@ -812,6 +818,8 @@ def package_openmm_submission(
             errors.append(f"{label} not found: {path}")
     if evidence_report_file and not Path(evidence_report_file).is_file():
         errors.append(f"evidence_report_file not found: {evidence_report_file}")
+    if source_selection_file and not Path(source_selection_file).is_file():
+        errors.append(f"source_selection_file not found: {source_selection_file}")
     if errors:
         return {"success": False, "submission_dir": str(sub), "errors": errors}
 
@@ -848,6 +856,25 @@ def package_openmm_submission(
     if evidence_report_file:
         evidence_report_path = sub / "evidence_report.json"
         _copy_if_different(Path(evidence_report_file), evidence_report_path)
+
+    source_selection_path: Optional[Path] = None
+    source_selection_payload: dict[str, Any] | None = None
+    if source_selection_file:
+        source_selection_path = sub / "source_selection.json"
+        _copy_if_different(Path(source_selection_file), source_selection_path)
+        try:
+            loaded_source_selection = json.loads(source_selection_path.read_text())
+            if isinstance(loaded_source_selection, dict):
+                source_selection_payload = loaded_source_selection
+            else:
+                warnings.append(
+                    "source_selection_file is not a JSON object: "
+                    f"{source_selection_file}"
+                )
+        except json.JSONDecodeError:
+            warnings.append(
+                f"source_selection_file is not valid JSON: {source_selection_file}"
+            )
 
     energy = _single_point_energy_kj_mol(
         topo_dir / "system.xml", topo_dir / "state.xml"
@@ -893,6 +920,8 @@ def package_openmm_submission(
     }
     if evidence_report_path is not None:
         manifest["outputs"]["evidence_report"] = "evidence_report.json"
+    if source_selection_path is not None:
+        manifest["outputs"]["source_selection"] = "source_selection.json"
     (sub / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
@@ -950,6 +979,8 @@ def package_openmm_submission(
             "positions_are_finite": energy["positions_are_finite"],
         },
     }
+    if source_selection_payload is not None:
+        metrics["source_selection"] = source_selection_payload
     (sub / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n"
     )
@@ -978,6 +1009,8 @@ def package_openmm_submission(
         "declared_preparation": declarations,
         "command_log": command_log,
     }
+    if source_selection_payload is not None:
+        provenance["source_selection"] = source_selection_payload
     (sub / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n"
     )
@@ -1009,7 +1042,8 @@ def package_openmm_submission(
             str(topo_dir / "topology.pdb"),
             str(topo_dir / "state.xml"),
         ]
-        + ([str(evidence_report_path)] if evidence_report_path is not None else []),
+        + ([str(evidence_report_path)] if evidence_report_path is not None else [])
+        + ([str(source_selection_path)] if source_selection_path is not None else []),
         "energy_kj_mol": energy["energy_kj_mol"],
         "warnings": warnings,
         "errors": errors,

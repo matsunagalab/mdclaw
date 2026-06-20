@@ -148,6 +148,61 @@ from mdclaw.amber.glycam_topology import _is_glycam_topology_residue, _normalize
 from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _patch_template_internal_bonds  # noqa: E402
 
 
+_LIPID21_EXTERNAL_PAIR_KEYS = {
+    frozenset((("PC", "C11"), ("PA", "C12"))),
+    frozenset((("PE", "C11"), ("PA", "C12"))),
+    frozenset((("PC", "C21"), ("OL", "C12"))),
+    frozenset((("PE", "C21"), ("OL", "C12"))),
+}
+_LIPID21_EXTERNAL_RESNAMES = {"PC", "PE", "PA", "OL"}
+
+
+def _lipid21_external_key(atom: Any) -> tuple[str, str] | None:
+    """Return the lipid21 modular external key for ``atom``, if any."""
+    residue_name = getattr(getattr(atom, "residue", None), "name", None)
+    atom_name = getattr(atom, "name", None)
+    key = (residue_name, atom_name)
+    if residue_name in _LIPID21_EXTERNAL_RESNAMES:
+        return key
+    return None
+
+
+def _lipid21_external_pair_allowed(atom_a: Any, atom_b: Any) -> bool:
+    """Return whether a pair is chemically valid for lipid21 modular residues.
+
+    Non-lipid pairs remain governed by the generic template-external-bond
+    search. If either side is a lipid21 modular residue, both sides must be a
+    known lipid21 external pair; this avoids random close contacts stealing a
+    lipid head/tail bond budget before the chemically intended partner is seen.
+    """
+    key_a = _lipid21_external_key(atom_a)
+    key_b = _lipid21_external_key(atom_b)
+    if key_a is None and key_b is None:
+        return True
+    if key_a is None or key_b is None:
+        return False
+    return frozenset((key_a, key_b)) in _LIPID21_EXTERNAL_PAIR_KEYS
+
+
+def _same_residue_identity(atom_a: Any, atom_b: Any) -> bool:
+    """Return whether two atoms share chain id and residue id labels."""
+    res_a = getattr(atom_a, "residue", None)
+    res_b = getattr(atom_b, "residue", None)
+    chain_a = getattr(getattr(res_a, "chain", None), "id", None)
+    chain_b = getattr(getattr(res_b, "chain", None), "id", None)
+    return (
+        chain_a == chain_b
+        and getattr(res_a, "id", None) == getattr(res_b, "id", None)
+    )
+
+
+def _external_pair_priority(atom_a: Any, atom_b: Any) -> int:
+    """Lower priority value means a better external-bond match."""
+    if _lipid21_external_key(atom_a) is None and _lipid21_external_key(atom_b) is None:
+        return 0
+    return 0 if _same_residue_identity(atom_a, atom_b) else 1
+
+
 def _resolve_dna_name_from_libraries(nucleic_libraries: list[str]) -> Optional[str]:
     """Map a leaprc-style DNA library list to a forcefield_catalog DNA key."""
     for lib in nucleic_libraries:
@@ -854,52 +909,96 @@ def _run_openmmforcefields_build(
                 ext_budget[atom.index] = remaining
                 ext_candidates.append((atom, atom.residue.index, name))
         positions_nm = [p.value_in_unit(_unit.nanometer) for p in omm_positions]
+        box_lengths_nm: tuple[float, float, float] | None = None
+        if box_dimensions:
+            try:
+                box_lengths_nm = (
+                    float(box_dimensions["box_a"]) * 0.1,
+                    float(box_dimensions["box_b"]) * 0.1,
+                    float(box_dimensions["box_c"]) * 0.1,
+                )
+            except (KeyError, TypeError, ValueError):
+                box_lengths_nm = None
+
+        def _distance_sq_nm(atom_a: Any, atom_b: Any) -> float:
+            xa, ya, za = positions_nm[atom_a.index]
+            xb, yb, zb = positions_nm[atom_b.index]
+            dx = xa - xb
+            dy = ya - yb
+            dz = za - zb
+            # Modular lipid fragments can straddle the periodic boundary in
+            # packmol-memgen output. Use minimum-image distances only for
+            # lipid-lipid external candidates; protein/glycan linkages stay
+            # in ordinary coordinate space to avoid inventing terminal bonds
+            # across the box.
+            if (
+                box_lengths_nm is not None
+                and _lipid21_external_key(atom_a) is not None
+                and _lipid21_external_key(atom_b) is not None
+            ):
+                lx, ly, lz = box_lengths_nm
+                if lx > 0:
+                    dx -= round(dx / lx) * lx
+                if ly > 0:
+                    dy -= round(dy / ly) * ly
+                if lz > 0:
+                    dz -= round(dz / lz) * lz
+            return dx * dx + dy * dy + dz * dz
+
         ext_bonds_added = 0
         seen_pairs: set[tuple[int, int]] = set()
-        # Two-pass greedy: first pass only considers candidates whose
-        # residue names differ, so a chemically meaningful pair like
-        # ``PC.C21 ↔ OL.C12`` (1.52 Å) wins over a packmol-induced
-        # ``PC.C21 ↔ PC.C21`` overlap (1.37 Å) between adjacent
-        # leaflet lipids. Same-name pairings are still permitted on the
-        # second pass for legitimate glycan-glycan polymerisation
-        # (``0YB ↔ 0YB`` etc.).
-        # 2.0 Å heavy-atom cutoff for both passes — covers C-O / C-C
-        # ester linkages in lipid21 and the GLYCAM glycosidic O-C bond.
+        # Two-pass global matching: first pass only considers candidates whose
+        # residue names differ, so chemically meaningful lipid21 pairs like
+        # ``PC.C21 ↔ OL.C12`` win over same-name overlaps between nearby
+        # leaflet lipids. Same-name pairings are still permitted on the second
+        # pass for legitimate glycan-glycan polymerisation (``0YB ↔ 0YB`` etc.).
+        # Build all pair options and sort by a chemistry-aware priority before
+        # consuming budgets; a pure per-atom nearest-neighbour loop can steal a
+        # lipid modular-residue external bond from its same lipid id partner in
+        # dense imperfect Packmol layouts.
+        # 2.0 Å heavy-atom cutoff for both passes — covers C-O / C-C ester
+        # linkages in lipid21 and the GLYCAM glycosidic O-C bond.
         for restrict_cross_name in (True, False):
+            pair_options: list[tuple[int, float, int, int, Any, Any]] = []
             for i, (atom_a, res_a, _name_a) in enumerate(ext_candidates):
-                if ext_budget.get(atom_a.index, 0) <= 0:
-                    continue
-                best_partner = None
-                best_dist = 0.20
-                xa, ya, za = positions_nm[atom_a.index]
-                for j, (atom_b, res_b, _name_b) in enumerate(ext_candidates):
-                    if i == j:
-                        continue
+                for j in range(i + 1, len(ext_candidates)):
+                    atom_b, res_b, _name_b = ext_candidates[j]
                     if res_a == res_b:
-                        continue
-                    if ext_budget.get(atom_b.index, 0) <= 0:
                         continue
                     if restrict_cross_name and atom_a.residue.name == atom_b.residue.name:
                         continue
-                    xb, yb, zb = positions_nm[atom_b.index]
-                    d2 = (xa - xb) ** 2 + (ya - yb) ** 2 + (za - zb) ** 2
-                    if d2 >= best_dist * best_dist:
+                    if not _lipid21_external_pair_allowed(atom_a, atom_b):
                         continue
-                    d = d2 ** 0.5
-                    if d < best_dist:
-                        best_dist = d
-                        best_partner = atom_b
-                if best_partner is not None:
-                    k = tuple(sorted((atom_a.index, best_partner.index)))
+                    k = tuple(sorted((atom_a.index, atom_b.index)))
                     if k in existing_bonds or k in seen_pairs:
                         continue
-                    omm_topology.addBond(atom_a, best_partner)
-                    seen_pairs.add(k)
-                    ext_bonds_added += 1
-                    ext_budget[atom_a.index] -= 1
-                    ext_budget[best_partner.index] = (
-                        ext_budget.get(best_partner.index, 0) - 1
+                    d2 = _distance_sq_nm(atom_a, atom_b)
+                    if d2 >= 0.20 * 0.20:
+                        continue
+                    pair_options.append(
+                        (
+                            _external_pair_priority(atom_a, atom_b),
+                            d2,
+                            atom_a.index,
+                            atom_b.index,
+                            atom_a,
+                            atom_b,
+                        )
                     )
+            pair_options.sort()
+            for _priority, _d2, _idx_a, _idx_b, atom_a, atom_b in pair_options:
+                if ext_budget.get(atom_a.index, 0) <= 0:
+                    continue
+                if ext_budget.get(atom_b.index, 0) <= 0:
+                    continue
+                k = tuple(sorted((atom_a.index, atom_b.index)))
+                if k in existing_bonds or k in seen_pairs:
+                    continue
+                omm_topology.addBond(atom_a, atom_b)
+                seen_pairs.add(k)
+                ext_bonds_added += 1
+                ext_budget[atom_a.index] -= 1
+                ext_budget[atom_b.index] = ext_budget.get(atom_b.index, 0) - 1
         if ext_bonds_added:
             result["warnings"].append(
                 f"Patched {ext_bonds_added} inter-residue bond(s) connecting "
@@ -913,6 +1012,7 @@ def _run_openmmforcefields_build(
         # on (typically a packmol-memgen layout where headgroups are too far
         # apart to bond, or a glycan branch with an unexpected partner).
         unbonded_externals: list[str] = []
+        unbonded_lipid21_externals: list[str] = []
         for atom_idx, remaining in ext_budget.items():
             if remaining > 0:
                 atom = next(
@@ -920,15 +1020,21 @@ def _run_openmmforcefields_build(
                     None,
                 )
                 if atom is not None:
-                    unbonded_externals.append(
-                        f"{atom.residue.name}#{atom.residue.id}.{atom.name}"
-                    )
+                    label = f"{atom.residue.name}#{atom.residue.id}.{atom.name}"
+                    unbonded_externals.append(label)
+                    if atom.residue.name in _LIPID21_EXTERNAL_RESNAMES:
+                        unbonded_lipid21_externals.append(label)
         if unbonded_externals:
             result["warnings"].append(
                 f"External-bond patcher could not pair {len(unbonded_externals)} "
                 f"atom(s) within the 2.0 Å heavy-atom cutoff: "
                 f"{unbonded_externals[:5]}"
                 f"{'...' if len(unbonded_externals) > 5 else ''}"
+            )
+        if unbonded_lipid21_externals:
+            result["code"] = "lipid21_external_bond_patching_failed"
+            result["recommended_next_action"] = (
+                "retry_membrane_embedding_with_new_layout_or_larger_lateral_box"
             )
 
         # Salvage NLN residues whose glycan partner was missing from the

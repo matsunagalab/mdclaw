@@ -262,7 +262,7 @@ def test_export_public_package_exposes_required_components(tmp_path: Path):
     assert "AP5" in checklist
 
 
-def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
+def test_export_public_package_exposes_p18_mixed_lipid_requirements(
     tmp_path: Path,
 ):
     out_dir = tmp_path / "public_mdprepbench"
@@ -285,9 +285,15 @@ def test_export_public_package_exposes_p18_lipid_ratio_allowed_values(
         for item in contract["artifact_requirements"]
     }
 
-    lipid_ratio = artifact_requirements["lipid_ratio_rescanned"]
-    assert lipid_ratio["check_type"] == "residue_ratio_rescan"
-    assert lipid_ratio["required_residue_ratio"] == {
+    assert "lipid_ratio_rescanned" not in artifact_requirements
+    component_requirements = {
+        item["check_id"]: item
+        for item in contract["required_components"]
+    }
+    lipid_species = component_requirements["lipid_species_present"]
+    assert lipid_species["manifest_path"] == "outputs.topology"
+    assert lipid_species["default_path"] == "topology/topology.pdb"
+    assert lipid_species["min_residue_counts"] == {
         "POPC": 2,
         "POPE": 1,
         "CHL1": 1,

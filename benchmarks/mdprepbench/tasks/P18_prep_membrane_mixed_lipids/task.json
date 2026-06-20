@@ -92,34 +92,6 @@
         "weight": 0.5
       },
       {
-        "check_id": "lipid_ratio_rescanned",
-        "check_type": "residue_ratio_rescan",
-        "required_residue_ratio": {
-          "POPC": 2,
-          "POPE": 1,
-          "CHL1": 1
-        },
-        "min_residue_atom_count": 20,
-        "residue_aliases": {
-          "CHL1": [
-            "CHL",
-            "CHOL",
-            "HL1"
-          ],
-          "POPC": [
-            "PC",
-            "OPC"
-          ],
-          "POPE": [
-            "PE",
-            "OPE"
-          ]
-        },
-        "structure_manifest_path": "outputs.topology",
-        "structure_path": "topology/topology.pdb",
-        "weight": 0.3
-      },
-      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,
@@ -217,6 +189,6 @@
     "evidence_communication"
   ],
   "task_id": "P18_prep_membrane_mixed_lipids",
-  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.",
+  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.",
   "time_limit_minutes": 60
 }

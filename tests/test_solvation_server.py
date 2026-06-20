@@ -67,7 +67,7 @@ def test_packmol_imperfect_packing_is_not_success(tmp_path):
             "salt_override": False,
             "water_model": "opc",
             "nloop": 20,
-            "nloop_all": 50,
+            "nloop_all": 100,
         },
     }
 
@@ -94,11 +94,11 @@ def test_packmol_imperfect_packing_is_not_success(tmp_path):
     assert suggestion["dist"] > 15.0
     assert suggestion["leaflet"] == 23.0
     assert suggestion["dist_wat"] == 17.5
-    assert suggestion["nloop"] == 30
-    assert suggestion["nloop_all"] == 80
+    assert suggestion["nloop"] == 20
+    assert suggestion["nloop_all"] == 100
 
 
-def test_packmol_forced_output_can_be_accepted_for_minimization(tmp_path):
+def test_packmol_forced_output_is_recorded_but_not_accepted(tmp_path):
     output = tmp_path / "membrane.pdb"
     output.write_text(
         "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
@@ -138,7 +138,7 @@ def test_packmol_forced_output_can_be_accepted_for_minimization(tmp_path):
             "salt_override": False,
             "water_model": "opc",
             "nloop": 20,
-            "nloop_all": 50,
+            "nloop_all": 100,
             "allow_forced_output": True,
         },
     }
@@ -154,15 +154,59 @@ def test_packmol_forced_output_can_be_accepted_for_minimization(tmp_path):
         allow_forced_output=True,
     )
 
-    assert result["success"] is True
-    assert result["code"] == "packmol_forced_output_accepted"
-    assert result["output_file"] == str(forced)
-    assert result["forced_output_accepted"] is True
+    assert result["success"] is False
+    assert result["code"] == "packmol_packing_quality_failed"
+    assert result["output_file"] == str(output)
+    assert result["forced_output_available"] is True
+    assert result["forced_output_file"] == str(forced)
     assert result["packing_quality"]["passed"] is False
-    assert result["packing_quality"]["forced_output_accepted"] is True
     assert "packmol_imperfect_packing" in result["packing_quality"]["failure_reasons"]
     assert result["box_dimensions"]["box_a"] == 40.0
-    assert result["statistics"]["total_atoms"] == 2
+    assert result["statistics"]["total_atoms"] == 1
+
+
+def test_packmol_imperfect_primary_can_continue_to_objective_validation(tmp_path):
+    output = tmp_path / "membrane.pdb"
+    output.write_text(
+        "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+        "ATOM      1  P   PC  M   1       0.000   0.000   0.000  1.00  0.00           P\n"
+        "END\n"
+    )
+    forced = tmp_path / "membrane.pdb_FORCED"
+    forced.write_text(
+        "ATOM      1  P   POP M   1       0.000   0.000   0.000  1.00  0.00           P\n"
+        "END\n"
+    )
+    (tmp_path / "membrane_packmol.log").write_text(
+        "Packmol was not able to find a solution\n"
+        "Maximum number of GENCAN loops achieved\n"
+        "The forced point was writen to the output file: membrane.pdb_FORCED\n"
+        "ENDED WITHOUT PERFECT PACKING:\n"
+    )
+    result = {"statistics": {}, "warnings": [], "errors": []}
+
+    _record_packmol_memgen_output(
+        output_file=output,
+        packmol_inp_file=tmp_path / "membrane_packmol.inp",
+        out_dir=tmp_path,
+        output_name="membrane",
+        proc_result=SimpleNamespace(stdout="", stderr=""),
+        result=result,
+        success_message="ok",
+        allow_forced_output=False,
+        allow_imperfect_primary_output=True,
+    )
+
+    assert result["success"] is True
+    assert result["code"] == "packmol_imperfect_primary_output_candidate"
+    assert result["output_file"] == str(output)
+    assert result["forced_output_available"] is True
+    assert result["forced_output_file"] == str(forced)
+    assert result["packing_quality"]["passed"] is False
+    assert result["packing_quality"]["primary_output_accepted"] is True
+    assert result["recommended_next_action"] == (
+        "continue_to_topology_and_minimization_validation"
+    )
 
 
 def test_packmol_failure_without_output_still_suggests_membrane_retry(tmp_path):
@@ -190,7 +234,7 @@ def test_packmol_failure_without_output_still_suggests_membrane_retry(tmp_path):
             "salt_override": False,
             "water_model": "opc",
             "nloop": 20,
-            "nloop_all": 50,
+            "nloop_all": 100,
         },
     }
 
@@ -256,15 +300,96 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
     assert "GLY Z 999" not in output_text
 
 
-def test_embed_in_membrane_accepts_forced_output_by_default(tmp_path, monkeypatch):
+def test_embed_in_membrane_retries_before_reporting_packmol_failure(
+    tmp_path,
+    monkeypatch,
+):
     input_pdb = tmp_path / "input.pdb"
     input_pdb.write_text(
         "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
         "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
         "END\n"
     )
+    calls = []
 
     def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        output_path = Path(args[args.index("-o") + 1])
+        if len(calls) == 1:
+            output_path.write_text(
+                "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+                "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+                "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
+                "END\n"
+            )
+            output_path.with_name(f"{output_path.name}_FORCED").write_text(
+                "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+                "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+                "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
+                "HETATM  103  C1  POPC M   1       2.000   0.000   0.000  1.00  0.00           C\n"
+                "END\n"
+            )
+            (Path(cwd) / "membrane_packmol.log").write_text(
+                "STOP: Maximum number of GENCAN loops achieved.\n"
+                "Packmol was not able to find a solution\n"
+                "The forced point was writen to the output file: membrane.pdb_FORCED\n"
+                "ENDED WITHOUT PERFECT PACKING:\n"
+            )
+            return SimpleNamespace(stdout="", stderr="")
+        output_path.write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+            "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        (Path(cwd) / "membrane_packmol.log").write_text("")
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 2
+    assert calls[0][calls[0].index("--nloop_all") + 1] == "100"
+    assert calls[1][calls[1].index("--nloop_all") + 1] == "200"
+    assert "--random" in calls[1]
+    assert result["adaptive_packmol_retry"]["attempts"][0]["status"] == "retry_packing_quality"
+    assert result["adaptive_packmol_retry"]["attempts"][1]["status"] == "success"
+    assert result["packing_quality"]["passed"] is True
+    output_text = Path(result["output_file"]).read_text()
+    assert "ALA X   7" in output_text
+    assert "GLY Z 999" not in output_text
+
+
+def test_embed_in_membrane_marks_final_imperfect_primary_attempt(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
         output_path = Path(args[args.index("-o") + 1])
         output_path.write_text(
             "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
@@ -274,8 +399,6 @@ def test_embed_in_membrane_accepts_forced_output_by_default(tmp_path, monkeypatc
         )
         output_path.with_name(f"{output_path.name}_FORCED").write_text(
             "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
-            "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
-            "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
             "HETATM  103  C1  POPC M   1       2.000   0.000   0.000  1.00  0.00           C\n"
             "END\n"
         )
@@ -306,9 +429,11 @@ def test_embed_in_membrane_accepts_forced_output_by_default(tmp_path, monkeypatc
     )
 
     assert result["success"] is True
-    assert result["forced_output_accepted"] is True
-    assert result["output_file"].endswith("membrane.pdb_FORCED")
-    assert result["packing_quality"]["passed"] is False
-    output_text = Path(result["output_file"]).read_text()
-    assert "ALA X   7" in output_text
-    assert "GLY Z 999" not in output_text
+    assert result["code"] == "packmol_imperfect_primary_output_candidate"
+    assert len(calls) == 3
+    assert result["adaptive_packmol_retry"]["attempts"][0]["status"] == "retry_packing_quality"
+    assert result["adaptive_packmol_retry"]["attempts"][1]["status"] == "retry_packing_quality"
+    final_attempt = result["adaptive_packmol_retry"]["attempts"][2]
+    assert final_attempt["status"] == "accepted_imperfect_primary"
+    assert final_attempt["accepted_output_file"] == result["packmol_primary_output_file"]
+    assert result["packing_quality"]["primary_output_accepted"] is True

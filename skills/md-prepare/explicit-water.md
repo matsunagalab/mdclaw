@@ -101,25 +101,29 @@ automatically reruns packmol-memgen with `--salt_override` without changing the
 explicit-solvent mode, and records a warning plus metadata for provenance.
 If `embed_in_membrane` returns `code="packmol_packing_quality_failed"` and
 `recommended_next_action="retry_membrane_with_larger_box"`, keep the requested
-lipid species and ratio fixed, retry from the same `prep` parent with the
-`retry_suggestion.suggested_parameters`, and record both attempts. The retry
-suggestion increases the lateral xy box via `dist`; keep `leaflet` and
-`dist_wat` unchanged unless the user or prompt explicitly asks for a thicker
-membrane/water slab. Do not increase Packmol loop counts by hand just to make
-the command run longer; the CLI keeps retry loop counts modest and returns a
-structured failure when packing remains unsuitable.
-For membrane embedding, `embed_in_membrane` accepts Packmol's `*_FORCED` PDB
-by default when imperfect packing is reported. Treat that artifact as a
-topology/minimization candidate, not as MD-ready evidence: proceed to
-`build_amber_system`, then require the topology-time minimization and OpenMM
-energy checks to pass before marking the preparation completed.
+lipid species and ratio fixed. The CLI has already retried Packmol with a
+bounded adaptive packing budget before returning this failure. Retry from the
+same `prep` parent only when the `retry_suggestion.suggested_parameters`
+change the lateral xy box via `dist`; keep `leaflet` and `dist_wat` unchanged
+unless the user or prompt explicitly asks for a thicker membrane/water slab.
+Do not manually increase Packmol loop counts after this failure unless you are
+running a deliberate debugging experiment outside the benchmark path.
+Packmol may write both a postprocessed primary PDB and a raw `*_FORCED` PDB
+when it cannot find a perfect packing. MDClaw may continue with the
+postprocessed primary PDB as a topology/minimization candidate, but records
+`packing_quality.passed=false`. Do not treat the raw `*_FORCED` PDB as the
+solvated topology input, because it can bypass packmol-memgen's final
+AMBER/LIPID residue-name postprocessing. Trust downstream objective checks
+(topology load, finite energy, minimization report) before calling the
+preparation usable.
 
 Common structured outcomes:
 
 | `code` / action | What it means | Agent response |
 |---|---|---|
-| `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | Packmol made an output, but packing was imperfect or lipids pierced the membrane. The box/packing is not MD-ready. | Retry with the CLI-provided larger xy/lateral box suggestion and modest loop counts unless geometry was explicitly fixed. |
-| `packmol_forced_output_accepted` | Packmol reported imperfect packing, but wrote a `*_FORCED` PDB that MDClaw accepted for topology-time minimization. | Continue to `build_amber_system`; only trust the structure if minimization and energy rescans pass. |
+| `packmol_imperfect_primary_output_candidate` | Packmol did not reach perfect packing after MDClaw's bounded retry, but packmol-memgen wrote a postprocessed primary PDB. | Continue to `build_amber_system` and `run_minimization`; only trust the candidate if topology load, finite energy, and minimization checks pass. |
+| `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | Packmol could not produce a perfect packing after MDClaw's bounded adaptive retry. The box/packing is not MD-ready. | Retry only with the CLI-provided larger xy/lateral box suggestion unless geometry was explicitly fixed. |
+| `forced_output_available` metadata | Packmol wrote a `*_FORCED` PDB during a failed attempt. | Keep it for debugging/provenance only; do not pass it to topology generation. |
 | `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
 
 ### Domain Knowledge
