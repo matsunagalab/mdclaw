@@ -22,6 +22,7 @@ import json  # noqa: E402
 import logging  # noqa: E402
 import shutil  # noqa: E402
 import subprocess  # noqa: E402
+from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 from pathlib import Path  # noqa: E402
 from typing import Optional  # noqa: E402
 
@@ -592,6 +593,320 @@ def _clear_packmol_attempt_outputs(*, out_dir: Path, output_name: str) -> None:
             path.unlink()
         except FileNotFoundError:
             pass
+
+
+def _effective_packmol_race_lanes(requested_lanes: int) -> int:
+    """Normalize Packmol race lane count to a bounded local-process fanout."""
+    try:
+        lanes = int(requested_lanes)
+    except (TypeError, ValueError):
+        lanes = 1
+    return max(1, min(lanes, 4))
+
+
+def _membrane_packmol_race_plan(
+    attempt_plan: list[dict],
+    lanes: int,
+) -> list[dict]:
+    """Expand the adaptive Packmol plan into parallel race lanes."""
+    race_plan: list[dict] = []
+    for attempt in attempt_plan[:lanes]:
+        race_plan.append(dict(attempt))
+
+    duplicate_index = 2
+    while len(race_plan) < lanes and attempt_plan:
+        attempt = dict(attempt_plan[-1])
+        attempt["label"] = f"{attempt['label']}_seed{duplicate_index}"
+        attempt["random_seed"] = True
+        attempt["duplicate_of"] = attempt_plan[-1]["label"]
+        race_plan.append(attempt)
+        duplicate_index += 1
+
+    for lane_index, attempt in enumerate(race_plan, start=1):
+        attempt["lane"] = lane_index
+    return race_plan
+
+
+def _packmol_race_lane_dir(
+    *,
+    out_dir: Path,
+    race_round: int,
+    lane_index: int,
+) -> Path:
+    return out_dir / f"packmol_race_r{race_round}_lane{lane_index}"
+
+
+def _build_membrane_attempt_args(
+    *,
+    base_args: list[str],
+    attempt: dict,
+    input_copy: Path,
+    output_file: Path,
+    packlog: Path,
+    salt_override_active: bool,
+) -> list[str]:
+    """Build one isolated packmol-memgen command from a base membrane command."""
+    attempt_args = _replace_cli_arg(base_args, "--dist", attempt["dist"])
+    attempt_args = _replace_cli_arg(attempt_args, "--nloop", attempt["nloop"])
+    attempt_args = _replace_cli_arg(
+        attempt_args,
+        "--nloop_all",
+        attempt["nloop_all"],
+    )
+    attempt_args = _replace_cli_arg(attempt_args, "--pdb", input_copy.resolve())
+    attempt_args = _replace_cli_arg(attempt_args, "-o", output_file)
+    attempt_args = _replace_cli_arg(attempt_args, "--packlog", packlog)
+    if salt_override_active:
+        _append_salt_override_arg(attempt_args)
+    if attempt["random_seed"] and "--random" not in attempt_args:
+        attempt_args.append("--random")
+    return attempt_args
+
+
+def _public_packmol_lane_record(lane_result: dict) -> dict:
+    """Return JSON-safe lane metadata for result reporting."""
+    record = {
+        key: value
+        for key, value in lane_result.items()
+        if key not in {"proc_result", "exception"}
+    }
+    if lane_result.get("exception") is not None:
+        record["exception"] = str(lane_result["exception"])
+    return record
+
+
+def _run_membrane_packmol_lane(
+    *,
+    base_args: list[str],
+    attempt: dict,
+    input_copy: Path,
+    out_dir: Path,
+    output_name: str,
+    membrane_timeout: int,
+    packmol_path: Optional[str],
+    salt_override_active: bool,
+    race_round: int,
+) -> dict:
+    """Run one packmol-memgen membrane attempt in an isolated lane directory."""
+    lane_index = int(attempt["lane"])
+    lane_dir = _packmol_race_lane_dir(
+        out_dir=out_dir,
+        race_round=race_round,
+        lane_index=lane_index,
+    )
+    if lane_dir.exists():
+        shutil.rmtree(lane_dir)
+    lane_dir.mkdir(parents=True, exist_ok=True)
+
+    lane_output_file = lane_dir / f"{output_name}.pdb"
+    lane_packlog = lane_dir / f"{output_name}_packmol"
+    lane_packmol_inp = lane_dir / f"{output_name}_packmol.inp"
+    attempt_args = _build_membrane_attempt_args(
+        base_args=base_args,
+        attempt=attempt,
+        input_copy=input_copy,
+        output_file=lane_output_file,
+        packlog=lane_packlog,
+        salt_override_active=salt_override_active,
+    )
+
+    proc_result = None
+    exc_for_diagnostics = None
+    try:
+        proc_result = packmol_memgen_wrapper.run(
+            attempt_args,
+            cwd=lane_dir,
+            timeout=membrane_timeout,
+        )
+    except subprocess.CalledProcessError as exc:
+        proc_result = exc
+        exc_for_diagnostics = exc
+
+    lane_errors: list[str] = []
+    if proc_result is not None and exc_for_diagnostics is None:
+        _run_packmol_if_needed(
+            output_file=lane_output_file,
+            packmol_inp_file=lane_packmol_inp,
+            packmol_path=packmol_path,
+            out_dir=lane_dir,
+            output_name=output_name,
+            timeout=membrane_timeout,
+            result={"errors": lane_errors},
+        )
+
+    diagnostics = _packmol_memgen_diagnostics(
+        out_dir=lane_dir,
+        output_name=output_name,
+        proc_result=None if exc_for_diagnostics else proc_result,
+        exc=exc_for_diagnostics,
+    )
+    failure_reasons = _packmol_quality_failure_reasons(diagnostics)
+    forced_output = lane_output_file.with_name(f"{lane_output_file.name}_FORCED")
+
+    if failure_reasons:
+        status = "failed"
+    elif exc_for_diagnostics is not None:
+        status = "failed_exception"
+    elif lane_errors:
+        status = "failed_manual_packmol"
+    else:
+        status = "success"
+
+    lane_result = {
+        "attempt": lane_index,
+        "lane": lane_index,
+        "label": attempt["label"],
+        "dist": attempt["dist"],
+        "nloop": attempt["nloop"],
+        "nloop_all": attempt["nloop_all"],
+        "random_seed": attempt["random_seed"],
+        "status": status,
+        "failure_reasons": failure_reasons,
+        "salt_override_required": _diagnostics_require_salt_override(diagnostics),
+        "output_dir": str(lane_dir),
+        "output_file": str(lane_output_file) if lane_output_file.exists() else None,
+        "forced_output_file": str(forced_output) if forced_output.exists() else None,
+        "packmol_input": str(lane_packmol_inp) if lane_packmol_inp.exists() else None,
+        "packmol_log": (
+            str(lane_dir / f"{output_name}_packmol.log")
+            if (lane_dir / f"{output_name}_packmol.log").exists()
+            else None
+        ),
+        "packmol_memgen_log": (
+            str(lane_dir / "packmol-memgen.log")
+            if (lane_dir / "packmol-memgen.log").exists()
+            else None
+        ),
+        "manual_packmol_errors": lane_errors,
+        "proc_result": proc_result,
+        "exception": exc_for_diagnostics,
+    }
+    if "duplicate_of" in attempt:
+        lane_result["duplicate_of"] = attempt["duplicate_of"]
+    return lane_result
+
+
+def _select_packmol_race_candidate(
+    lane_results: list[dict],
+    *,
+    allow_imperfect_primary_output: bool,
+) -> Optional[dict]:
+    """Choose the best parallel Packmol lane without using raw FORCED output."""
+    perfect = [
+        lane
+        for lane in lane_results
+        if (
+            lane["status"] == "success"
+            and not lane["failure_reasons"]
+            and lane.get("output_file")
+        )
+    ]
+    if perfect:
+        return sorted(perfect, key=lambda lane: int(lane["lane"]))[0]
+
+    if not allow_imperfect_primary_output:
+        return None
+
+    imperfect = [
+        lane
+        for lane in lane_results
+        if lane["failure_reasons"] and lane.get("output_file")
+    ]
+    if not imperfect:
+        return None
+
+    return max(
+        imperfect,
+        key=lambda lane: (
+            float(lane["dist"]),
+            int(lane["nloop_all"]),
+            int(lane["nloop"]),
+            -int(lane["lane"]),
+        ),
+    )
+
+
+def _copy_packmol_lane_to_canonical(
+    *,
+    lane_result: dict,
+    out_dir: Path,
+    output_name: str,
+) -> None:
+    """Copy a selected lane's artifacts back to the canonical output paths."""
+    _clear_packmol_attempt_outputs(out_dir=out_dir, output_name=output_name)
+    try:
+        (out_dir / "packmol-memgen.log").unlink()
+    except FileNotFoundError:
+        pass
+
+    lane_dir = Path(str(lane_result["output_dir"]))
+    for source, destination in (
+        (Path(str(lane_result["output_file"])), out_dir / f"{output_name}.pdb"),
+        (
+            lane_dir / f"{output_name}.pdb_FORCED",
+            out_dir / f"{output_name}.pdb_FORCED",
+        ),
+        (
+            lane_dir / f"{output_name}_packmol.log",
+            out_dir / f"{output_name}_packmol.log",
+        ),
+        (
+            lane_dir / f"{output_name}_packmol.inp",
+            out_dir / f"{output_name}_packmol.inp",
+        ),
+        (lane_dir / "packmol-memgen.log", out_dir / "packmol-memgen.log"),
+    ):
+        if source.exists():
+            shutil.copy2(source, destination)
+
+
+def _copy_salt_override_diagnostic_to_canonical(
+    *,
+    lane_results: list[dict],
+    out_dir: Path,
+) -> None:
+    """Expose one salt-override diagnostic log to the existing metadata helper."""
+    for lane in lane_results:
+        if not lane.get("salt_override_required"):
+            continue
+        log_path = lane.get("packmol_memgen_log")
+        if log_path and Path(str(log_path)).exists():
+            shutil.copy2(Path(str(log_path)), out_dir / "packmol-memgen.log")
+            return
+
+
+def _run_membrane_packmol_race(
+    *,
+    base_args: list[str],
+    attempt_plan: list[dict],
+    lanes: int,
+    input_copy: Path,
+    out_dir: Path,
+    output_name: str,
+    membrane_timeout: int,
+    packmol_path: Optional[str],
+    salt_override_active: bool,
+    race_round: int,
+) -> list[dict]:
+    """Run parallel Packmol membrane attempts and return lane metadata."""
+    race_plan = _membrane_packmol_race_plan(attempt_plan, lanes)
+    with ThreadPoolExecutor(max_workers=len(race_plan)) as executor:
+        futures = [
+            executor.submit(
+                _run_membrane_packmol_lane,
+                base_args=base_args,
+                attempt=attempt,
+                input_copy=input_copy,
+                out_dir=out_dir,
+                output_name=output_name,
+                membrane_timeout=membrane_timeout,
+                packmol_path=packmol_path,
+                salt_override_active=salt_override_active,
+                race_round=race_round,
+            )
+            for attempt in race_plan
+        ]
+        return [future.result() for future in futures]
 
 
 def _record_packmol_quality_failure(
@@ -1410,6 +1725,7 @@ def embed_in_membrane(
     water_model: str = "opc",
     allow_forced_output: bool = False,
     allow_imperfect_primary_output: bool = True,
+    packmol_race_lanes: int = 4,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -1475,6 +1791,9 @@ def embed_in_membrane(
                      packing after bounded adaptive retries, pass the
                      postprocessed primary output PDB to topology/minimization
                      validation. The raw ``*_FORCED`` PDB is still never used.
+        packmol_race_lanes: Number of adaptive Packmol attempts to run in
+                     parallel (default: 4). Set to 1 for the previous
+                     sequential retry behavior on CPU-constrained hosts.
     
     Returns:
         Dict with:
@@ -1539,6 +1858,8 @@ def embed_in_membrane(
             "nloop": nloop,
             "nloop_all": nloop_all,
             "allow_forced_output": allow_forced_output,
+            "allow_imperfect_primary_output": allow_imperfect_primary_output,
+            "packmol_race_lanes": packmol_race_lanes,
         },
         "packmol_log": None,
         "statistics": {},
@@ -1587,6 +1908,7 @@ def embed_in_membrane(
                 "salt_override": salt_override,
                 "allow_forced_output": allow_forced_output,
                 "allow_imperfect_primary_output": allow_imperfect_primary_output,
+                "packmol_race_lanes": packmol_race_lanes,
             },
         )
         if not _ctx["success"]:
@@ -1733,137 +2055,237 @@ def embed_in_membrane(
             nloop=nloop,
             nloop_all=nloop_all,
         )
+        effective_race_lanes = _effective_packmol_race_lanes(packmol_race_lanes)
         result["adaptive_packmol_retry"] = {
             "enabled": True,
+            "mode": "parallel_race" if effective_race_lanes > 1 else "sequential",
+            "requested_lanes": packmol_race_lanes,
+            "effective_lanes": effective_race_lanes,
             "attempts": [],
         }
+        result["parameters"]["effective_packmol_race_lanes"] = effective_race_lanes
         proc_result = None
         packing_failure_recorded = False
         salt_override_active = bool(salt_override)
 
-        for attempt_index, attempt in enumerate(attempt_plan, start=1):
-            attempt_args = _replace_cli_arg(args, "--dist", attempt["dist"])
-            attempt_args = _replace_cli_arg(attempt_args, "--nloop", attempt["nloop"])
-            attempt_args = _replace_cli_arg(
-                attempt_args, "--nloop_all", attempt["nloop_all"]
-            )
-            if salt_override_active:
-                _append_salt_override_arg(attempt_args)
-            if attempt["random_seed"] and "--random" not in attempt_args:
-                attempt_args.append("--random")
-
-            logger.info(
-                "Running packmol-memgen attempt %s/%s (%s): dist=%s, "
-                "nloop=%s, nloop_all=%s",
-                attempt_index,
-                len(attempt_plan),
-                attempt["label"],
-                attempt["dist"],
-                attempt["nloop"],
-                attempt["nloop_all"],
-            )
-
-            exc_for_diagnostics = None
-            try:
-                proc_result = packmol_memgen_wrapper.run(
-                    attempt_args,
-                    cwd=out_dir,
-                    timeout=membrane_timeout,
+        if effective_race_lanes > 1:
+            selected_lane = None
+            for race_round in (1, 2):
+                logger.info(
+                    "Running %s parallel packmol-memgen membrane lanes "
+                    "(round %s)",
+                    effective_race_lanes,
+                    race_round,
                 )
-            except subprocess.CalledProcessError as exc:
-                proc_result = exc
-                exc_for_diagnostics = exc
-
-            diagnostics = _packmol_memgen_diagnostics(
-                out_dir=out_dir,
-                output_name=output_name,
-                proc_result=None if exc_for_diagnostics else proc_result,
-                exc=exc_for_diagnostics,
-            )
-
-            if (
-                salt
-                and not salt_override_active
-                and _diagnostics_require_salt_override(diagnostics)
-            ):
-                _record_salt_override_fallback(
-                    result=result,
+                lane_results = _run_membrane_packmol_race(
+                    base_args=args,
+                    attempt_plan=attempt_plan,
+                    lanes=effective_race_lanes,
+                    input_copy=input_copy,
                     out_dir=out_dir,
                     output_name=output_name,
-                    saltcon=saltcon,
-                    mode="membrane",
+                    membrane_timeout=membrane_timeout,
+                    packmol_path=packmol_path,
+                    salt_override_active=salt_override_active,
+                    race_round=race_round,
                 )
-                salt_override_active = True
-                preserved = _snapshot_packmol_attempt_artifacts(
+
+                public_records = [
+                    _public_packmol_lane_record(lane)
+                    for lane in sorted(lane_results, key=lambda item: int(item["lane"]))
+                ]
+                if (
+                    salt
+                    and not salt_override_active
+                    and any(lane.get("salt_override_required") for lane in lane_results)
+                ):
+                    _copy_salt_override_diagnostic_to_canonical(
+                        lane_results=lane_results,
+                        out_dir=out_dir,
+                    )
+                    _record_salt_override_fallback(
+                        result=result,
+                        out_dir=out_dir,
+                        output_name=output_name,
+                        saltcon=saltcon,
+                        mode="membrane",
+                    )
+                    for record in public_records:
+                        if record.get("salt_override_required"):
+                            record["status"] = "retry_salt_override"
+                            record["failure_reasons"] = ["salt_override_required"]
+                    result["adaptive_packmol_retry"]["attempts"].extend(public_records)
+                    salt_override_active = True
+                    _clear_packmol_attempt_outputs(
+                        out_dir=out_dir,
+                        output_name=output_name,
+                    )
+                    continue
+
+                selected_lane = _select_packmol_race_candidate(
+                    lane_results,
+                    allow_imperfect_primary_output=allow_imperfect_primary_output,
+                )
+                if selected_lane is not None:
+                    _copy_packmol_lane_to_canonical(
+                        lane_result=selected_lane,
+                        out_dir=out_dir,
+                        output_name=output_name,
+                    )
+                    proc_result = selected_lane.get("proc_result")
+                    for record in public_records:
+                        if int(record["lane"]) != int(selected_lane["lane"]):
+                            continue
+                        record["selected"] = True
+                        record["accepted_output_file"] = str(output_file)
+                        if record.get("failure_reasons"):
+                            record["status"] = "accepted_imperfect_primary"
+                    result["adaptive_packmol_retry"]["attempts"].extend(public_records)
+                    result["parameters"]["effective_dist"] = selected_lane["dist"]
+                    result["parameters"]["effective_nloop"] = selected_lane["nloop"]
+                    result["parameters"]["effective_nloop_all"] = (
+                        selected_lane["nloop_all"]
+                    )
+                    break
+
+                result["adaptive_packmol_retry"]["attempts"].extend(public_records)
+                break
+
+            if selected_lane is None:
+                failure_reasons = sorted({
+                    reason
+                    for lane in lane_results
+                    for reason in lane.get("failure_reasons", [])
+                })
+                _record_packmol_quality_failure(
+                    result,
+                    failure_reasons or ["packmol_no_selectable_output"],
+                    "packmol-memgen did not produce a selectable membrane output",
+                )
+                packing_failure_recorded = True
+        else:
+            for attempt_index, attempt in enumerate(attempt_plan, start=1):
+                attempt_args = _build_membrane_attempt_args(
+                    base_args=args,
+                    attempt={**attempt, "lane": attempt_index},
+                    input_copy=input_copy,
+                    output_file=output_file,
+                    packlog=packlog,
+                    salt_override_active=salt_override_active,
+                )
+
+                logger.info(
+                    "Running packmol-memgen attempt %s/%s (%s): dist=%s, "
+                    "nloop=%s, nloop_all=%s",
+                    attempt_index,
+                    len(attempt_plan),
+                    attempt["label"],
+                    attempt["dist"],
+                    attempt["nloop"],
+                    attempt["nloop_all"],
+                )
+
+                exc_for_diagnostics = None
+                try:
+                    proc_result = packmol_memgen_wrapper.run(
+                        attempt_args,
+                        cwd=out_dir,
+                        timeout=membrane_timeout,
+                    )
+                except subprocess.CalledProcessError as exc:
+                    proc_result = exc
+                    exc_for_diagnostics = exc
+
+                diagnostics = _packmol_memgen_diagnostics(
                     out_dir=out_dir,
                     output_name=output_name,
-                    attempt_index=attempt_index,
+                    proc_result=None if exc_for_diagnostics else proc_result,
+                    exc=exc_for_diagnostics,
                 )
-                result["adaptive_packmol_retry"]["attempts"].append({
+
+                if (
+                    salt
+                    and not salt_override_active
+                    and _diagnostics_require_salt_override(diagnostics)
+                ):
+                    _record_salt_override_fallback(
+                        result=result,
+                        out_dir=out_dir,
+                        output_name=output_name,
+                        saltcon=saltcon,
+                        mode="membrane",
+                    )
+                    salt_override_active = True
+                    preserved = _snapshot_packmol_attempt_artifacts(
+                        out_dir=out_dir,
+                        output_name=output_name,
+                        attempt_index=attempt_index,
+                    )
+                    result["adaptive_packmol_retry"]["attempts"].append({
+                        "attempt": attempt_index,
+                        "label": attempt["label"],
+                        "dist": attempt["dist"],
+                        "nloop": attempt["nloop"],
+                        "nloop_all": attempt["nloop_all"],
+                        "random_seed": attempt["random_seed"],
+                        "status": "retry_salt_override",
+                        "failure_reasons": ["salt_override_required"],
+                        "preserved_artifacts": preserved,
+                    })
+                    _clear_packmol_attempt_outputs(
+                        out_dir=out_dir,
+                        output_name=output_name,
+                    )
+                    continue
+
+                failure_reasons = _packmol_quality_failure_reasons(diagnostics)
+                attempt_record = {
                     "attempt": attempt_index,
                     "label": attempt["label"],
                     "dist": attempt["dist"],
                     "nloop": attempt["nloop"],
                     "nloop_all": attempt["nloop_all"],
                     "random_seed": attempt["random_seed"],
-                    "status": "retry_salt_override",
-                    "failure_reasons": ["salt_override_required"],
-                    "preserved_artifacts": preserved,
-                })
-                _clear_packmol_attempt_outputs(
-                    out_dir=out_dir,
-                    output_name=output_name,
-                )
-                continue
+                    "failure_reasons": failure_reasons,
+                }
 
-            failure_reasons = _packmol_quality_failure_reasons(diagnostics)
-            attempt_record = {
-                "attempt": attempt_index,
-                "label": attempt["label"],
-                "dist": attempt["dist"],
-                "nloop": attempt["nloop"],
-                "nloop_all": attempt["nloop_all"],
-                "random_seed": attempt["random_seed"],
-                "failure_reasons": failure_reasons,
-            }
+                if failure_reasons and attempt_index < len(attempt_plan):
+                    preserved = _snapshot_packmol_attempt_artifacts(
+                        out_dir=out_dir,
+                        output_name=output_name,
+                        attempt_index=attempt_index,
+                    )
+                    attempt_record["status"] = "retry_packing_quality"
+                    attempt_record["preserved_artifacts"] = preserved
+                    result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
+                    result["warnings"].append(
+                        "packmol-memgen attempt "
+                        f"{attempt_index} did not reach perfect packing "
+                        f"({', '.join(failure_reasons)}); retrying with "
+                        "a bounded adaptive packing budget."
+                    )
+                    _clear_packmol_attempt_outputs(
+                        out_dir=out_dir,
+                        output_name=output_name,
+                    )
+                    continue
 
-            if failure_reasons and attempt_index < len(attempt_plan):
-                preserved = _snapshot_packmol_attempt_artifacts(
-                    out_dir=out_dir,
-                    output_name=output_name,
-                    attempt_index=attempt_index,
-                )
-                attempt_record["status"] = "retry_packing_quality"
-                attempt_record["preserved_artifacts"] = preserved
+                if failure_reasons:
+                    attempt_record["status"] = "failed"
+                elif exc_for_diagnostics is not None:
+                    attempt_record["status"] = "failed_exception"
+                else:
+                    attempt_record["status"] = "success"
                 result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
-                result["warnings"].append(
-                    "packmol-memgen attempt "
-                    f"{attempt_index} did not reach perfect packing "
-                    f"({', '.join(failure_reasons)}); retrying with "
-                    "a bounded adaptive packing budget."
-                )
-                _clear_packmol_attempt_outputs(
-                    out_dir=out_dir,
-                    output_name=output_name,
-                )
-                continue
+                result["parameters"]["effective_dist"] = attempt["dist"]
+                result["parameters"]["effective_nloop"] = attempt["nloop"]
+                result["parameters"]["effective_nloop_all"] = attempt["nloop_all"]
 
-            if failure_reasons:
-                attempt_record["status"] = "failed"
-            elif exc_for_diagnostics is not None:
-                attempt_record["status"] = "failed_exception"
-            else:
-                attempt_record["status"] = "success"
-            result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
-            result["parameters"]["effective_dist"] = attempt["dist"]
-            result["parameters"]["effective_nloop"] = attempt["nloop"]
-            result["parameters"]["effective_nloop_all"] = attempt["nloop_all"]
+                if exc_for_diagnostics is not None and not failure_reasons:
+                    raise exc_for_diagnostics
+                break
 
-            if exc_for_diagnostics is not None and not failure_reasons:
-                raise exc_for_diagnostics
-            break
-
-        if proc_result is None:
+        if proc_result is None and not packing_failure_recorded:
             result["errors"].append("packmol-memgen did not run")
             packing_failure_recorded = True
 

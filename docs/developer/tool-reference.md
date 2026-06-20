@@ -121,6 +121,9 @@ skill examples.
   concentration and records a warning if it must rerun packmol-memgen with
   `--salt_override` to satisfy neutralization.
 - `embed_in_membrane(...)`: membrane embedding and solvation.
+  Runs the bounded adaptive Packmol membrane plan as a 4-lane parallel race by
+  default; set `packmol_race_lanes=1` / `--packmol-race-lanes 1` for the
+  previous sequential retry behavior on CPU-constrained hosts.
 - `list_available_lipids(...)`: lipid inventory.
 
 ## `amber_server.py`

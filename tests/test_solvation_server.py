@@ -290,6 +290,7 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
         lipids="POPC",
         ratio="1",
         preoriented=True,
+        packmol_race_lanes=1,
     )
 
     assert result["success"] is True
@@ -361,6 +362,7 @@ def test_embed_in_membrane_retries_before_reporting_packmol_failure(
         lipids="POPC",
         ratio="1",
         preoriented=True,
+        packmol_race_lanes=1,
     )
 
     assert result["success"] is True
@@ -426,6 +428,7 @@ def test_embed_in_membrane_marks_final_imperfect_primary_attempt(
         lipids="POPC",
         ratio="1",
         preoriented=True,
+        packmol_race_lanes=1,
     )
 
     assert result["success"] is True
@@ -437,3 +440,79 @@ def test_embed_in_membrane_marks_final_imperfect_primary_attempt(
     assert final_attempt["status"] == "accepted_imperfect_primary"
     assert final_attempt["accepted_output_file"] == result["packmol_primary_output_file"]
     assert result["packing_quality"]["primary_output_accepted"] is True
+
+
+def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append((list(args), Path(cwd)))
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+            "ATOM    102  C   GLY Z 999       1.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        output_path.with_name(f"{output_path.name}_FORCED").write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "HETATM  103  C1  POPC M   1       2.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        packlog = Path(cwd) / "membrane_packmol.log"
+        if args[args.index("--dist") + 1] == "25.0":
+            packlog.write_text(
+                "STOP: Maximum number of GENCAN loops achieved.\n"
+                "Packmol was not able to find a solution\n"
+                "The forced point was writen to the output file: membrane.pdb_FORCED\n"
+                "ENDED WITHOUT PERFECT PACKING:\n"
+            )
+        else:
+            packlog.write_text(
+                "STOP: Maximum number of GENCAN loops achieved.\n"
+                "Packmol was not able to find a solution\n"
+                "ENDED WITHOUT PERFECT PACKING:\n"
+            )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+    )
+
+    assert result["success"] is True
+    assert result["code"] == "packmol_imperfect_primary_output_candidate"
+    assert len(calls) == 4
+    assert len({cwd for _, cwd in calls}) == 4
+    assert len({args[args.index("-o") + 1] for args, _ in calls}) == 4
+    retry = result["adaptive_packmol_retry"]
+    assert retry["mode"] == "parallel_race"
+    assert retry["effective_lanes"] == 4
+    assert len(retry["attempts"]) == 4
+    selected = [attempt for attempt in retry["attempts"] if attempt.get("selected")]
+    assert len(selected) == 1
+    assert selected[0]["dist"] == 25.0
+    assert selected[0]["status"] == "accepted_imperfect_primary"
+    assert selected[0]["accepted_output_file"] == result["packmol_primary_output_file"]
+    output_text = Path(result["output_file"]).read_text()
+    assert "ALA X   7" in output_text
+    assert "GLY Z 999" not in output_text

@@ -95,6 +95,10 @@ mdclaw --job-dir job_xxx --node-id solv_001 embed_in_membrane \
 Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
 On success, the solv node records `is_membrane=true` for downstream topology,
 equilibration, and production.
+Membrane embedding runs MDClaw's bounded Packmol retry plan as a 4-lane
+parallel race by default (`--packmol-race-lanes 4`). Use
+`--packmol-race-lanes 1` only on CPU-constrained/shared hosts when preserving
+the previous sequential behavior matters more than wall time.
 Explicit solvation and membrane tools first try the requested `--saltcon`
 (default 0.15 M). If neutralization requires a higher ion concentration, MDClaw
 automatically reruns packmol-memgen with `--salt_override` without changing the
