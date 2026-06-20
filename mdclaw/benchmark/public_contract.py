@@ -313,8 +313,11 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "minimization_report.json",
         ],
         "submission_dir_policy": (
-            "submission_dir is output-only; create study_dir/job_dir/work "
-            "directories outside it, e.g. under <task_dir>/work/."
+            "Use the exact submission_dir path from task_instructions.json as "
+            "the output root. It is output-only; do not write final files to "
+            "work_dir/submission or cwd-relative ./submission unless that is "
+            "the exact submission_dir. Create study_dir/job_dir/work "
+            "directories outside it, e.g. under the provided work_dir."
         ),
         "post_packaging_rule": (
             "After package_openmm_submission succeeds, do not hand-edit "
@@ -329,7 +332,7 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "scientific answer",
         ],
         "command_template": (
-            "mdclaw package_openmm_submission --submission-dir <submission_dir> "
+            "mdclaw package_openmm_submission --submission-dir <exact_submission_dir> "
             "--task-id <task_id> --system-xml-file <system.xml> "
             "--topology-pdb-file <topology.pdb> --state-xml-file <state.xml> "
             "--prepared-structure-file <prepared_structure.pdb> "
@@ -499,6 +502,8 @@ def submission_checklist(task: Task) -> list[str]:
         )
     if task.primary_score == PREPARATION_SCORE_AXIS:
         checks.extend([
+            "use the exact submission_dir from task_instructions.json; do not "
+            "write final files to work_dir/submission",
             "create study_dir/job_dir/work directories outside submission_dir",
             "if an OpenMM triple exists, prefer package_openmm_submission over hand-written JSON",
             "after package_openmm_submission, do not hand-edit manifest.json or provenance.json",

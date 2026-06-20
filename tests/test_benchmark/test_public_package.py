@@ -59,9 +59,12 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "manifest.json" in packaging["packager_writes"]
         assert "evidence_report" in " ".join(packaging["packager_writes"])
         assert "output-only" in packaging["submission_dir_policy"]
+        assert "exact submission_dir" in packaging["submission_dir_policy"]
+        assert "work_dir/submission" in packaging["submission_dir_policy"]
         assert "do not hand-edit" in packaging["post_packaging_rule"]
         assert "--evidence-report-file" in packaging["command_template"]
         assert "--preparation-summary-file" in packaging["command_template"]
+        assert "--submission-dir <exact_submission_dir>" in packaging["command_template"]
         assert "--force-field" in packaging["command_template"]
         assert "--water-model" in packaging["command_template"]
         assert "chains" in packaging["does_not_choose"]
@@ -103,6 +106,10 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         )
         assert any(
             "package_openmm_submission" in item
+            for item in contract["submission_checklist"]
+        )
+        assert any(
+            "exact submission_dir" in item and "work_dir/submission" in item
             for item in contract["submission_checklist"]
         )
         assert any(

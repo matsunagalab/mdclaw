@@ -24,6 +24,9 @@ selection, metals, PTMs, mutations, and confirmation policy) live in
 Supported crystallographic ions are part of the explicit-solvent default: keep
 ions requested by the user or detected as supported source ions during
 `prepare_complex`, then solvate with the requested/default salt concentration.
+Do not call `parameterize_metal_ion` for common supported monatomic ions such
+as CA, MG, NA, K, or CL unless a structured tool result reports missing or
+coordination-specific metal parameters.
 Do not relabel an ion-containing non-periodic topology as implicit; explicit
 ions require either the explicit-solvent path or a deliberate vacuum/no-solvent
 topology.

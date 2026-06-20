@@ -23,8 +23,12 @@ Preparation-specific defaults:
   `prepare_complex` so explicit ions are removed during prep. Deliberate
   vacuum/no-solvent topologies may keep explicit ions, but they are not the
   default MD workflow.
-- Metal ions should be detected and parameterized explicitly when needed on
-  explicit-solvent paths.
+- Do not run `parameterize_metal_ion` for standard monatomic ions already
+  supported by the topology path, such as CA, MG, NA, K, or CL, just because
+  they are metals. Keep them as ions on explicit-solvent paths and let
+  `build_amber_system` handle them. Use explicit metal parameterization only
+  when a structured tool result reports unsupported or coordination-specific
+  metal parameters.
 
 Guardrail handling:
 

@@ -784,10 +784,12 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "MDCLAW_BENCHMARK_STAGE_WRAPPER" in agent_prompt
     assert "Do not create/edit harness_execution.json" in agent_prompt
     assert "Use work_dir for study/job/work files" in agent_prompt
+    assert "exact submission_dir path" in agent_prompt
+    assert "work_dir/submission" in agent_prompt
     assert "do not edit manifest.json or provenance.json" in agent_prompt
     assert "Run IDs and directory names are labels only" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
-    assert len(agent_prompt) < 1400
+    assert len(agent_prompt) < 1550
     assert task_instructions["work_dir"].endswith("/work")
     assert Path(task_instructions["work_dir"]).is_dir()
     assert task_instructions["mdclaw_cli"]["runtime"] == "auto"
