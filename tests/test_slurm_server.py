@@ -1663,6 +1663,10 @@ class TestCheckJobNodeSync:
     def test_failed_state_fails_node(self, mock_run, mock_check, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_failed", ["prod_001"])
+        stdout_file = tmp_path / "job_55555.out"
+        stderr_file = tmp_path / "job_55555.err"
+        stdout_file.write_text("starting mdclaw\nlast stdout line\n")
+        stderr_file.write_text("initial stderr\nfatal slurm stderr\n")
 
         # Pre-seed tracker so check_job can find the node linkage
         _append_job_record({
@@ -1671,6 +1675,8 @@ class TestCheckJobNodeSync:
             "status": "RUNNING",
             "job_dir": str(jd),
             "node_id": "prod_001",
+            "stdout_log": str(stdout_file),
+            "stderr_log": str(stderr_file),
         })
 
         # Mark the node queued first (submit_job would have done this)
@@ -1705,7 +1711,16 @@ class TestCheckJobNodeSync:
 
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "failed"
+        assert node["metadata"].get("failure_code") == "slurm_failed"
         assert node["metadata"].get("slurm_state") == "FAILED"
+        manifest = jd / "nodes" / "prod_001" / node["artifacts"]["failure"]
+        manifest_data = json.loads(manifest.read_text())
+        assert manifest_data["tool"] == "slurm"
+        assert manifest_data["code"] == "slurm_failed"
+        tool_result = json.loads((manifest.parent / "tool_result.json").read_text())
+        assert tool_result["context"]["slurm_state"] == "FAILED"
+        assert "last stdout line" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "fatal slurm stderr" in (manifest.parent / "stderr_tail.txt").read_text()
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)
     @patch("mdclaw.slurm._base.run_command")
@@ -1754,12 +1769,18 @@ class TestCheckJobNodeSync:
         """SLURM COMPLETED with a still-running node is a zombie wrapper exit."""
         monkeypatch.chdir(tmp_path)
         jd = _make_job_with_nodes(tmp_path, "job_ok", ["prod_001"])
+        stdout_file = tmp_path / "job_88888.out"
+        stderr_file = tmp_path / "job_88888.err"
+        stdout_file.write_text("wrapper start\nwrapper exited without complete_node\n")
+        stderr_file.write_text("no python traceback, but node stayed running\n")
 
         _append_job_record({
             "job_id": "88888",
             "status": "RUNNING",
             "job_dir": str(jd),
             "node_id": "prod_001",
+            "stdout_log": str(stdout_file),
+            "stderr_log": str(stderr_file),
         })
 
         # Node starts as "running" — but the tool hasn't called complete_node yet
@@ -1789,8 +1810,15 @@ class TestCheckJobNodeSync:
         result = check_job("88888")
         node = json.loads((jd / "nodes" / "prod_001" / "node.json").read_text())
         assert node["status"] == "failed"
+        assert node["metadata"]["failure_code"] == "slurm_completed_without_node_completion"
         assert node["metadata"]["slurm_state"] == "COMPLETED"
         assert node["metadata"]["slurm_zombie_detected"] is True
+        manifest = jd / "nodes" / "prod_001" / node["artifacts"]["failure"]
+        manifest_data = json.loads(manifest.read_text())
+        assert manifest_data["tool"] == "slurm"
+        assert manifest_data["code"] == "slurm_completed_without_node_completion"
+        assert "wrapper exited" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "node stayed running" in (manifest.parent / "stderr_tail.txt").read_text()
         assert any("marked failed" in w for w in result["warnings"])
 
     @patch("mdclaw.slurm._base.check_external_tool", return_value=True)

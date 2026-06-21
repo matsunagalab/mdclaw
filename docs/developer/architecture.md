@@ -331,9 +331,9 @@ and `node.json` + `progress.json` remain the execution source of truth.
 Failed nodes keep the core record small: `node.json.metadata.errors`, optional
 `metadata.failure_code`, and `artifacts.failure` pointing to
 `artifacts/failure/latest/failure_manifest.json`. Full diagnostic evidence
-(`tool_result.json`, stderr/stdout tails when available, and tracebacks for
-unhandled exceptions) belongs under that failure artifact directory, not in
-`progress.json`.
+(`tool_result.json`, stderr/stdout tails when available, SLURM log tails from
+`check_job`, and tracebacks for unhandled exceptions) belongs under that
+failure artifact directory, not in `progress.json`.
 
 ## State Files
 

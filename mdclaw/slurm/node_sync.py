@@ -23,8 +23,8 @@ from mdclaw._lock import file_lock
 from mdclaw._node import (
     _atomic_write_json,
     _sync_progress_node_entry,
-    fail_node,
     read_node,
+    record_node_failure,
     update_node,
     update_node_status,
 )
@@ -38,11 +38,14 @@ def _write_slurm_observation_event(
     node_id: str,
     slurm_state: str,
     *,
+    stdout_tail: Optional[str] = None,
     stderr_tail: Optional[str] = None,
     elapsed: Optional[str] = None,
     exit_code: Optional[str] = None,
 ) -> None:
     details: dict[str, Any] = {"slurm_state": slurm_state}
+    if stdout_tail:
+        details["slurm_stdout_tail"] = stdout_tail
     if stderr_tail:
         details["slurm_stderr_tail"] = stderr_tail
     if exit_code:
@@ -344,6 +347,7 @@ def _sync_slurm_state_to_node(
     node_id: str,
     slurm_state: str,
     *,
+    stdout_tail: Optional[str] = None,
     stderr_tail: Optional[str] = None,
     elapsed: Optional[str] = None,
     exit_code: Optional[str] = None,
@@ -354,7 +358,7 @@ def _sync_slurm_state_to_node(
     - RUNNING → node.status=running (only if currently queued/pending; never
       roll back from a tool-owned completed/failed state).
     - FAILED / TIMEOUT / OUT_OF_MEMORY / CANCELLED → node.status=failed via
-      ``fail_node`` with stderr tail captured in metadata.
+      ``record_node_failure`` with SLURM log tails captured as failure evidence.
     - COMPLETED / success → leave already-completed nodes alone. If the DAG
       node is still queued/running, mark it failed as a zombie: SLURM says the
       wrapper exited, but the tool never recorded ``complete_node``.
@@ -379,12 +383,21 @@ def _sync_slurm_state_to_node(
                 return f"could not set node {node_id} running: {e}"
         return None
 
-    if state in {"FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED", "NODE_FAIL",
-                 "BOOT_FAIL", "DEADLINE"}:
+    if state in {
+        "BOOT_FAIL",
+        "CANCELLED",
+        "DEADLINE",
+        "FAILED",
+        "NODE_FAIL",
+        "OUT_OF_MEMORY",
+        "PREEMPTED",
+        "TIMEOUT",
+    }:
         _write_slurm_observation_event(
             str(job_dir),
             node_id,
             state,
+            stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
             elapsed=elapsed,
             exit_code=exit_code,
@@ -403,20 +416,31 @@ def _sync_slurm_state_to_node(
             if elapsed:
                 errors.append(f"elapsed={elapsed}")
             meta: dict = {"slurm_state": state}
-            if stderr_tail:
-                meta["slurm_stderr_tail"] = stderr_tail
             if exit_code:
                 meta["slurm_exit_code"] = exit_code
             if elapsed:
                 meta["slurm_elapsed"] = elapsed
-            # fail_node wraps update_node_status under the right lock.
-            fail_node(
+            record_node_failure(
                 str(job_dir),
                 node_id,
-                errors=errors,
+                {
+                    "success": False,
+                    "error_type": "SlurmJobFailed",
+                    "code": f"slurm_{state.lower()}",
+                    "message": f"SLURM state: {state}",
+                    "errors": errors,
+                    "warnings": [],
+                    "context": {
+                        "slurm_state": state,
+                        "slurm_exit_code": exit_code,
+                        "slurm_elapsed": elapsed,
+                    },
+                },
+                tool="slurm",
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                exit_code=exit_code,
             )
-            # Attach the stderr tail via generic metadata merge (fail_node
-            # only takes errors). Status is already "failed" at this point.
             update_node(str(job_dir), node_id, {"metadata": meta})
         except Exception as e:
             return f"could not fail node {node_id}: {e}"
@@ -427,6 +451,7 @@ def _sync_slurm_state_to_node(
             str(job_dir),
             node_id,
             state,
+            stdout_tail=stdout_tail,
             stderr_tail=stderr_tail,
             elapsed=elapsed,
             exit_code=exit_code,
@@ -443,16 +468,34 @@ def _sync_slurm_state_to_node(
             return None
 
         try:
-            fail_node(
+            errors = [
+                "SLURM state: COMPLETED",
+                (
+                    "DAG node did not record completion before the SLURM "
+                    f"job exited (node_status={current!r}); treating as a zombie."
+                ),
+            ]
+            record_node_failure(
                 str(job_dir),
                 node_id,
-                errors=[
-                    "SLURM state: COMPLETED",
-                    (
-                        "DAG node did not record completion before the SLURM "
-                        f"job exited (node_status={current!r}); treating as a zombie."
-                    ),
-                ],
+                {
+                    "success": False,
+                    "error_type": "SlurmZombieJob",
+                    "code": "slurm_completed_without_node_completion",
+                    "message": "SLURM completed but the DAG node did not record completion.",
+                    "errors": errors,
+                    "warnings": [],
+                    "context": {
+                        "slurm_state": state,
+                        "slurm_exit_code": exit_code,
+                        "slurm_elapsed": elapsed,
+                        "node_status": current,
+                    },
+                },
+                tool="slurm",
+                stdout_tail=stdout_tail,
+                stderr_tail=stderr_tail,
+                exit_code=exit_code,
             )
             meta["slurm_zombie_detected"] = True
             update_node(str(job_dir), node_id, {

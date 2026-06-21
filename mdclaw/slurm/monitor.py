@@ -27,6 +27,54 @@ from mdclaw.slurm.node_sync import _sync_slurm_state_to_node
 from mdclaw.slurm.tracker import _candidate_job_paths, _find_job_metadata, _find_record_by_job_id, _get_jobs_path, _read_job_records, _update_job_record
 
 
+def _read_tail(path: str | Path | None, *, lines: int = 50) -> Optional[str]:
+    if not path:
+        return None
+    p = Path(path)
+    if not p.exists():
+        return None
+    try:
+        return "\n".join(p.read_text(errors="replace").splitlines()[-lines:])
+    except OSError:
+        return None
+
+
+def _find_log_tail(
+    job_id: str,
+    *,
+    log_type: str,
+    rec: Optional[dict],
+    output_dir: Optional[str | Path] = None,
+) -> Optional[str]:
+    key = "stderr_log" if log_type == "stderr" else "stdout_log"
+    ext = ".err" if log_type == "stderr" else ".out"
+    if rec:
+        tail = _read_tail(rec.get(key))
+        if tail:
+            return tail
+    meta = _find_job_metadata(job_id)
+    if meta:
+        tail = _read_tail(meta.get(key))
+        if tail:
+            return tail
+
+    search_dirs = [Path.cwd()]
+    if output_dir:
+        search_dirs.append(Path(output_dir))
+    if rec and rec.get("output_dir"):
+        search_dirs.append(Path(rec["output_dir"]))
+    for search_dir in search_dirs:
+        if not search_dir.exists():
+            continue
+        for pattern in [f"slurm-{job_id}{ext}", f"*_{job_id}{ext}"]:
+            matches = list(search_dir.glob(pattern))
+            if matches:
+                tail = _read_tail(matches[0])
+                if tail:
+                    return tail
+    return None
+
+
 def check_job(
     job_id: str,
     job_dir: Optional[str] = None,
@@ -35,7 +83,8 @@ def check_job(
     """Check the status of a SLURM job.
 
     Queries squeue for running/pending jobs and sacct for completed jobs.
-    If the job has failed, automatically retrieves the tail of stderr.
+    For terminal jobs, automatically retrieves stdout/stderr log tails when
+    the tracker, metadata, or standard SLURM log names reveal the files.
 
     Args:
         job_id: SLURM job ID to check.
@@ -52,7 +101,8 @@ def check_job(
           - elapsed: str - Elapsed time
           - node: str - Node(s) allocated
           - exit_code: str - Exit code (for completed jobs)
-          - stderr_tail: str - Last 50 lines of stderr (for FAILED/TIMEOUT)
+          - stdout_tail: str - Last 50 lines of stdout for terminal jobs
+          - stderr_tail: str - Last 50 lines of stderr for terminal jobs
           - errors: list[str]
           - warnings: list[str]
     """
@@ -63,6 +113,7 @@ def check_job(
         "elapsed": None,
         "node": None,
         "exit_code": None,
+        "stdout_tail": None,
         "stderr_tail": None,
         "errors": [],
         "warnings": [],
@@ -199,46 +250,32 @@ def _check_job_finalize(
     """
     rec = _find_record_by_job_id(job_id, job_dir=job_dir, output_dir=output_dir)
 
-    # Auto-retrieve stderr tail for failed/timed-out jobs
-    if result.get("state") in ("FAILED", "TIMEOUT", "OUT_OF_MEMORY", "CANCELLED"):
-        if rec:
-            stderr_path = rec.get("stderr_log")
-            if stderr_path and Path(stderr_path).exists():
-                try:
-                    lines = Path(stderr_path).read_text().splitlines()
-                    result["stderr_tail"] = "\n".join(lines[-50:])
-                except OSError:
-                    pass
-        meta = _find_job_metadata(job_id)
-        if meta:
-            stderr_path = meta.get("stderr_log")
-            if stderr_path and Path(stderr_path).exists():
-                try:
-                    lines = Path(stderr_path).read_text().splitlines()
-                    result["stderr_tail"] = "\n".join(lines[-50:])
-                except OSError:
-                    pass
+    terminal_states = {
+        "BOOT_FAIL",
+        "CANCELLED",
+        "COMPLETED",
+        "DEADLINE",
+        "FAILED",
+        "NODE_FAIL",
+        "OUT_OF_MEMORY",
+        "PREEMPTED",
+        "TIMEOUT",
+    }
+    if result.get("state") in terminal_states:
         if not result.get("stderr_tail"):
-            # Try slurm default pattern
-            search_dirs = [Path.cwd()]
-            if output_dir:
-                search_dirs.append(Path(output_dir))
-            if rec and rec.get("output_dir"):
-                search_dirs.append(Path(rec["output_dir"]))
-            for search_dir in search_dirs:
-                if not search_dir.exists():
-                    continue
-                for pattern in [f"slurm-{job_id}.err", f"*_{job_id}.err"]:
-                    matches = list(search_dir.glob(pattern))
-                    if matches:
-                        try:
-                            lines = matches[0].read_text().splitlines()
-                            result["stderr_tail"] = "\n".join(lines[-50:])
-                        except OSError:
-                            pass
-                        break
-                if result.get("stderr_tail"):
-                    break
+            result["stderr_tail"] = _find_log_tail(
+                job_id,
+                log_type="stderr",
+                rec=rec,
+                output_dir=output_dir,
+            )
+        if not result.get("stdout_tail"):
+            result["stdout_tail"] = _find_log_tail(
+                job_id,
+                log_type="stdout",
+                rec=rec,
+                output_dir=output_dir,
+            )
 
     # Update job tracker
     if not (result.get("success") and result.get("state")):
@@ -264,6 +301,7 @@ def _check_job_finalize(
             rec["job_dir"],
             rec["node_id"],
             str(result["state"]),
+            stdout_tail=result.get("stdout_tail"),
             stderr_tail=result.get("stderr_tail"),
             elapsed=result.get("elapsed"),
             exit_code=result.get("exit_code"),

@@ -60,7 +60,7 @@ def record_node_failure(
     stdout_tail: Optional[str] = None,
     stderr_tail: Optional[str] = None,
     traceback_text: Optional[str] = None,
-    exit_code: Optional[int] = None,
+    exit_code: Optional[int | str] = None,
 ) -> dict[str, Any]:
     """Persist the structured failure evidence for ``node_id``.
 

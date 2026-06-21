@@ -22,7 +22,7 @@ import types
 import time
 import traceback
 from pathlib import Path
-from typing import Union, get_args, get_origin
+from typing import TextIO, Union, get_args, get_origin
 
 from mdclaw import __version__
 from mdclaw._registry import SERVER_REGISTRY
@@ -38,6 +38,59 @@ def _configure_logging():
     handler = logging.StreamHandler(sys.stderr)
     handler.setFormatter(logging.Formatter("%(name)s - %(levelname)s - %(message)s"))
     root.addHandler(handler)
+
+
+class _TailCaptureStream:
+    """Capture a bounded text tail while optionally teeing writes onward."""
+
+    def __init__(self, wrapped: TextIO, *, limit: int = 65536, tee: bool = True):
+        self._wrapped = wrapped
+        self._limit = limit
+        self._tail = ""
+        self._tee = tee
+
+    def write(self, text):
+        text = str(text)
+        written = self._wrapped.write(text) if self._tee else len(text)
+        self._tail = (self._tail + text)[-self._limit:]
+        return written
+
+    def flush(self):
+        return self._wrapped.flush()
+
+    def get_tail(self) -> str:
+        return self._tail
+
+    def __getattr__(self, name):
+        return getattr(self._wrapped, name)
+
+
+def _swap_logging_stream(old_stream: TextIO, new_stream: TextIO) -> list[tuple[logging.StreamHandler, TextIO]]:
+    """Point stream handlers at ``new_stream`` while capturing tool output."""
+    swaps: list[tuple[logging.StreamHandler, TextIO]] = []
+    loggers = [logging.getLogger()]
+    loggers.extend(
+        logger
+        for logger in logging.Logger.manager.loggerDict.values()
+        if isinstance(logger, logging.Logger)
+    )
+    for logger in loggers:
+        for handler in logger.handlers:
+            if (
+                isinstance(handler, logging.StreamHandler)
+                and getattr(handler, "stream", None) is old_stream
+            ):
+                handler.setStream(new_stream)
+                swaps.append((handler, old_stream))
+    return swaps
+
+
+def _restore_logging_stream(swaps: list[tuple[logging.StreamHandler, TextIO]]) -> None:
+    for handler, old_stream in reversed(swaps):
+        try:
+            handler.setStream(old_stream)
+        except Exception:
+            continue
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +534,8 @@ def _record_cli_node_failure(
     tool_name: str,
     result: dict,
     exit_code: int,
+    stdout_tail: str | None = None,
+    stderr_tail: str | None = None,
     traceback_text: str | None = None,
 ) -> None:
     """Best-effort CLI-level failure evidence persistence for DAG nodes."""
@@ -496,12 +551,18 @@ def _record_cli_node_failure(
             tool=tool_name,
             argv=cli_argv(),
             exit_code=exit_code,
+            stdout_tail=stdout_tail,
+            stderr_tail=stderr_tail,
             traceback_text=traceback_text,
         )
     except Exception:
         # Failure recording must never mask the tool failure that is already
         # being returned to the caller.
         return
+
+
+def _json_stdout_tail(payload: dict) -> str:
+    return json.dumps(payload, indent=2, default=str) + "\n"
 
 
 def _json_error_and_exit(error: dict) -> None:
@@ -817,6 +878,7 @@ def main(argv: list[str] | None = None) -> None:
                 tool_name=tool_name,
                 result=error,
                 exit_code=1,
+                stdout_tail=_json_stdout_tail(error),
             )
             _json_error_and_exit(error)
 
@@ -886,8 +948,25 @@ def main(argv: list[str] | None = None) -> None:
 
     # Execute
     started_at = time.monotonic()
+    tool_stdout_tail = ""
+    tool_stderr_tail = ""
     try:
-        result = _run_tool(fn, is_async, kwargs)
+        stdout_capture = _TailCaptureStream(sys.stdout, tee=False)
+        stderr_capture = _TailCaptureStream(sys.stderr)
+        old_stdout = sys.stdout
+        old_stderr = sys.stderr
+        logging_swaps: list[tuple[logging.StreamHandler, TextIO]] = []
+        try:
+            sys.stdout = stdout_capture
+            sys.stderr = stderr_capture
+            logging_swaps = _swap_logging_stream(old_stderr, stderr_capture)
+            result = _run_tool(fn, is_async, kwargs)
+        finally:
+            tool_stdout_tail = stdout_capture.get_tail()
+            tool_stderr_tail = stderr_capture.get_tail()
+            _restore_logging_stream(logging_swaps)
+            sys.stdout = old_stdout
+            sys.stderr = old_stderr
         # Determine exit code
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
@@ -912,6 +991,13 @@ def main(argv: list[str] | None = None) -> None:
                 tool_name=tool_name,
                 result=result,
                 exit_code=exit_code,
+                stdout_tail=(
+                    f"{tool_stdout_tail}\n--- mdclaw final JSON ---\n"
+                    f"{_json_stdout_tail(result)}"
+                    if tool_stdout_tail
+                    else _json_stdout_tail(result)
+                ),
+                stderr_tail=tool_stderr_tail or None,
             )
         _write_benchmark_harness_record(
             tool_name=tool_name,
@@ -938,12 +1024,20 @@ def main(argv: list[str] | None = None) -> None:
             "errors": [str(e)],
             "warnings": [],
         }
+        stdout_tail = (
+            f"{tool_stdout_tail}\n--- mdclaw final JSON ---\n"
+            f"{_json_stdout_tail(error_out)}"
+            if tool_stdout_tail
+            else _json_stdout_tail(error_out)
+        )
         _record_cli_node_failure(
             job_dir=effective_job_dir,
             node_id=effective_node_id,
             tool_name=tool_name,
             result=error_out,
             exit_code=1,
+            stdout_tail=stdout_tail,
+            stderr_tail=tool_stderr_tail or None,
             traceback_text=traceback.format_exc(),
         )
         json.dump(error_out, sys.stdout, indent=2, default=str)

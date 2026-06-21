@@ -220,6 +220,8 @@ class TestArgparseConstruction:
         node = create_node(str(job_dir), "eq")
 
         def fake_fail(job_dir: str, node_id: str) -> dict:
+            print("tool stdout line")
+            print("tool stderr line", file=sys.stderr)
             return {
                 "success": False,
                 "code": "fake_failure",
@@ -249,6 +251,9 @@ class TestArgparseConstruction:
         manifest = job_dir / "nodes" / node["node_id"] / latest["artifacts"]["failure"]
         assert manifest.is_file()
         assert (manifest.parent / "tool_result.json").is_file()
+        assert "tool stdout line" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "fake_failure" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "tool stderr line" in (manifest.parent / "stderr_tail.txt").read_text()
 
     def test_cli_unhandled_exception_records_traceback_artifact(self, tmp_path, monkeypatch):
         from mdclaw import _cli
@@ -259,6 +264,8 @@ class TestArgparseConstruction:
         node = create_node(str(job_dir), "eq")
 
         def fake_crash(job_dir: str, node_id: str) -> dict:
+            print("crash stdout line")
+            print("crash stderr line", file=sys.stderr)
             raise RuntimeError(f"crashed {node_id} under {job_dir}")
 
         monkeypatch.setattr(_cli, "_discover_tools", lambda: {
@@ -285,6 +292,9 @@ class TestArgparseConstruction:
         traceback_file = manifest.parent / "traceback.txt"
         assert traceback_file.is_file()
         assert "RuntimeError" in traceback_file.read_text()
+        assert "crash stdout line" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "unhandled_exception" in (manifest.parent / "stdout_tail.txt").read_text()
+        assert "crash stderr line" in (manifest.parent / "stderr_tail.txt").read_text()
 
     def test_optional_params_have_defaults(self):
         from mdclaw._cli import _build_parser, _discover_tools

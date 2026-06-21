@@ -45,8 +45,10 @@ When a command runs with both `--job-dir` and `--node-id`, CLI-level failures
 are also recorded on that node. The node stays small (`metadata.errors`,
 optional `metadata.failure_code`, and `artifacts.failure`); detailed evidence
 is written under `nodes/<node_id>/artifacts/failure/latest/` as
-`failure_manifest.json`, `tool_result.json`, and, for unhandled exceptions,
-`traceback.txt`.
+`failure_manifest.json`, `tool_result.json`, `stdout_tail.txt`,
+`stderr_tail.txt`, and, for unhandled exceptions, `traceback.txt`. Tool writes
+to stdout are captured into the failure artifact without corrupting the final
+JSON stdout response.
 
 ## Node Context Injection
 
@@ -85,6 +87,12 @@ For general failures, use `trace_failure(job_dir, node_id)` or its CLI alias
 failure artifacts, events, and parent/dependency statuses, then returns
 read-only `recovery_options` and `next_commands`. It does not mutate the DAG or
 create retry branches automatically.
+
+SLURM monitoring uses the same failure artifact path. When `check_job` links a
+terminal scheduler state to a DAG node, it records available stdout/stderr log
+tails from the tracker, job metadata, or standard SLURM log-name fallbacks before
+marking failed/zombie nodes. `trace_failure` can therefore explain direct CLI
+failures and SLURM-observed failures through one interface.
 
 ## Timeouts
 
