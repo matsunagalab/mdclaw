@@ -20,6 +20,7 @@ import os
 import sys
 import types
 import time
+import traceback
 from pathlib import Path
 from typing import Union, get_args, get_origin
 
@@ -473,6 +474,36 @@ def _build_recovery_hint(job_dir: str, node_id: str) -> dict | None:
         return None
 
 
+def _record_cli_node_failure(
+    *,
+    job_dir: str | None,
+    node_id: str | None,
+    tool_name: str,
+    result: dict,
+    exit_code: int,
+    traceback_text: str | None = None,
+) -> None:
+    """Best-effort CLI-level failure evidence persistence for DAG nodes."""
+    if not job_dir or not node_id:
+        return
+    try:
+        from mdclaw._node import cli_argv, record_node_failure
+
+        record_node_failure(
+            job_dir,
+            node_id,
+            result,
+            tool=tool_name,
+            argv=cli_argv(),
+            exit_code=exit_code,
+            traceback_text=traceback_text,
+        )
+    except Exception:
+        # Failure recording must never mask the tool failure that is already
+        # being returned to the caller.
+        return
+
+
 def _json_error_and_exit(error: dict) -> None:
     json.dump(error, sys.stdout, indent=2, default=str)
     print()
@@ -762,7 +793,7 @@ def main(argv: list[str] | None = None) -> None:
             ]
 
         if missing:
-            _json_error_and_exit({
+            error = {
                 "success": False,
                 "error_type": "ValidationError",
                 "code": "missing_required_arguments",
@@ -779,7 +810,15 @@ def main(argv: list[str] | None = None) -> None:
                 "context": {"tool": tool_name, "missing": missing,
                             "code": "missing_required_arguments"},
                 "recoverable": True,
-            })
+            }
+            _record_cli_node_failure(
+                job_dir=_global_job_dir or args_dict.get("job_dir"),
+                node_id=_global_node_id or args_dict.get("node_id"),
+                tool_name=tool_name,
+                result=error,
+                exit_code=1,
+            )
+            _json_error_and_exit(error)
 
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
@@ -866,6 +905,14 @@ def main(argv: list[str] | None = None) -> None:
             recovery = _build_recovery_hint(effective_job_dir, effective_node_id)
             if recovery:
                 result["recovery_hint"] = recovery
+        if isinstance(result, dict) and exit_code:
+            _record_cli_node_failure(
+                job_dir=effective_job_dir,
+                node_id=effective_node_id,
+                tool_name=tool_name,
+                result=result,
+                exit_code=exit_code,
+            )
         _write_benchmark_harness_record(
             tool_name=tool_name,
             kwargs=kwargs,
@@ -888,7 +935,17 @@ def main(argv: list[str] | None = None) -> None:
             "message": str(e),
             "error_type": type(e).__name__,
             "code": "unhandled_exception",
+            "errors": [str(e)],
+            "warnings": [],
         }
+        _record_cli_node_failure(
+            job_dir=effective_job_dir,
+            node_id=effective_node_id,
+            tool_name=tool_name,
+            result=error_out,
+            exit_code=1,
+            traceback_text=traceback.format_exc(),
+        )
         json.dump(error_out, sys.stdout, indent=2, default=str)
         print()
         sys.exit(1)

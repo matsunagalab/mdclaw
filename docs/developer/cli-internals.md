@@ -41,6 +41,13 @@ The CLI imports each module and collects its `TOOLS` dict.
 Exit code `0` means success. Exit code `1` means the tool returned
 `success: False` or raised an exception.
 
+When a command runs with both `--job-dir` and `--node-id`, CLI-level failures
+are also recorded on that node. The node stays small (`metadata.errors`,
+optional `metadata.failure_code`, and `artifacts.failure`); detailed evidence
+is written under `nodes/<node_id>/artifacts/failure/latest/` as
+`failure_manifest.json`, `tool_result.json`, and, for unhandled exceptions,
+`traceback.txt`.
+
 ## Node Context Injection
 
 Global `--job-dir` and `--node-id` flags provide schema v3 state tracking.
@@ -72,6 +79,12 @@ When a workflow tool fails with
 agent at `action=create_node` for the *blocking node's stage* with a ready-to-run
 `next_command`, so a weak agent re-creates the stuck ancestor rather than
 re-running the same blocked node. Also best-effort and never contractual.
+
+For general failures, use `trace_failure(job_dir, node_id)` or its CLI alias
+`mdclaw trace_failure --job-dir ... --node-id ...`. It reads the failed node,
+failure artifacts, events, and parent/dependency statuses, then returns
+read-only `recovery_options` and `next_commands`. It does not mutate the DAG or
+create retry branches automatically.
 
 ## Timeouts
 

@@ -211,6 +211,81 @@ class TestArgparseConstruction:
         assert expected <= _NODE_REQUIRED_TOOLS
         assert "render_structure_preview" not in _NODE_REQUIRED_TOOLS
 
+    def test_cli_tool_failure_records_node_failure_artifact(self, tmp_path, monkeypatch):
+        from mdclaw import _cli
+        from mdclaw._node import create_node, read_node
+
+        job_dir = tmp_path / "job_cli_failure"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "eq")
+
+        def fake_fail(job_dir: str, node_id: str) -> dict:
+            return {
+                "success": False,
+                "code": "fake_failure",
+                "errors": [f"failed {node_id} under {job_dir}"],
+                "warnings": [],
+            }
+
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "fake_fail": {
+                "fn": fake_fail,
+                "is_async": False,
+                "server": "fake",
+                "description": "Fake failure tool.",
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "--job-dir", str(job_dir),
+                "--node-id", node["node_id"],
+                "fake_fail",
+            ])
+        assert exc_info.value.code == 1
+
+        latest = read_node(str(job_dir), node["node_id"])
+        assert latest["metadata"]["failure_code"] == "fake_failure"
+        manifest = job_dir / "nodes" / node["node_id"] / latest["artifacts"]["failure"]
+        assert manifest.is_file()
+        assert (manifest.parent / "tool_result.json").is_file()
+
+    def test_cli_unhandled_exception_records_traceback_artifact(self, tmp_path, monkeypatch):
+        from mdclaw import _cli
+        from mdclaw._node import create_node, read_node
+
+        job_dir = tmp_path / "job_cli_exception"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "eq")
+
+        def fake_crash(job_dir: str, node_id: str) -> dict:
+            raise RuntimeError(f"crashed {node_id} under {job_dir}")
+
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "fake_crash": {
+                "fn": fake_crash,
+                "is_async": False,
+                "server": "fake",
+                "description": "Fake crashing tool.",
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "--job-dir", str(job_dir),
+                "--node-id", node["node_id"],
+                "fake_crash",
+            ])
+        assert exc_info.value.code == 1
+
+        latest = read_node(str(job_dir), node["node_id"])
+        assert latest["metadata"]["failure_code"] == "unhandled_exception"
+        manifest = job_dir / "nodes" / node["node_id"] / latest["artifacts"]["failure"]
+        assert manifest.is_file()
+        traceback_file = manifest.parent / "traceback.txt"
+        assert traceback_file.is_file()
+        assert "RuntimeError" in traceback_file.read_text()
+
     def test_optional_params_have_defaults(self):
         from mdclaw._cli import _build_parser, _discover_tools
 

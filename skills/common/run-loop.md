@@ -61,7 +61,15 @@ candidate nodes before running them.
    Use the stable `code` field (see `skills/common/guardrail-codes.md`). Never
    parse stderr or human messages. Do not rerun a completed or partially run
    node with different settings — create a new node/branch so stale artifacts
-   cannot mix with the new result.
+   cannot mix with the new result. If the tool output does not make the next
+   action clear, run:
+
+   ```bash
+   mdclaw trace_failure --job-dir <job_dir> --node-id <failed_node_id>
+   ```
+
+   Follow `recovery_options` / `next_commands` from that read-only trace; it
+   explains which completed ancestor should be used for an explicit branch.
 
 ## Re-entry
 

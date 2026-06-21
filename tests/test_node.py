@@ -29,10 +29,12 @@ from mdclaw._node import (
     inspect_job,
     read_node,
     rebuild_progress_index,
+    record_node_failure,
     record_node_need_attempt,
     release_node_claim,
     resolve_artifact,
     resolve_node_inputs,
+    trace_failure,
     update_job_params,
     update_job_summaries,
     update_node,
@@ -1301,6 +1303,92 @@ class TestStateTransitions:
 
         pj = json.loads((job_dir / "progress.json").read_text())
         assert pj["nodes"]["eq_001"]["status"] == "failed"
+
+    def test_fail_node_records_failure_code_and_artifact_index(self, job_dir):
+        create_node(str(job_dir), "eq")
+        fail_node(
+            str(job_dir),
+            "eq_001",
+            errors=["Simulation diverged"],
+            code="simulation_diverged",
+            failure_artifact="artifacts/failure/latest/failure_manifest.json",
+        )
+
+        node = read_node(str(job_dir), "eq_001")
+        assert node["metadata"]["failure_code"] == "simulation_diverged"
+        assert node["artifacts"]["failure"] == "artifacts/failure/latest/failure_manifest.json"
+
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert pj["nodes"]["eq_001"]["failure_code"] == "simulation_diverged"
+        assert "failure" in pj["nodes"]["eq_001"]["artifact_keys"]
+
+    def test_record_node_failure_writes_latest_failure_bundle(self, job_dir):
+        create_node(str(job_dir), "eq")
+        result = {
+            "success": False,
+            "code": "shake_constraint_failure",
+            "message": "SHAKE failed",
+            "errors": ["SHAKE failed"],
+            "warnings": ["reduce timestep"],
+        }
+
+        record = record_node_failure(
+            str(job_dir),
+            "eq_001",
+            result,
+            tool="run_equilibration",
+            argv=["mdclaw", "run_equilibration"],
+            stderr_tail="constraint error tail",
+            exit_code=1,
+        )
+
+        node = read_node(str(job_dir), "eq_001")
+        assert node["status"] == "failed"
+        assert node["metadata"]["failure_code"] == "shake_constraint_failure"
+        manifest = job_dir / "nodes" / "eq_001" / record["failure_artifact"]
+        assert manifest.is_file()
+        manifest_data = json.loads(manifest.read_text())
+        assert manifest_data["tool"] == "run_equilibration"
+        assert manifest_data["code"] == "shake_constraint_failure"
+        assert (manifest.parent / "tool_result.json").is_file()
+        assert (manifest.parent / "stderr_tail.txt").read_text() == "constraint error tail"
+
+    def test_trace_failure_returns_evidence_and_branch_option(self, job_dir):
+        create_node(str(job_dir), "topo")
+        complete_node(
+            str(job_dir),
+            "topo_001",
+            artifacts={
+                "system_xml": "artifacts/system.xml",
+                "topology_pdb": "artifacts/topology.pdb",
+                "state_xml": "artifacts/state.xml",
+            },
+        )
+        create_node(str(job_dir), "min", parent_node_ids=["topo_001"])
+        record_node_failure(
+            str(job_dir),
+            "min_001",
+            {
+                "success": False,
+                "code": "nan_detected",
+                "errors": ["NaN energy"],
+                "warnings": [],
+            },
+            tool="run_minimization",
+            exit_code=1,
+        )
+
+        trace = trace_failure(str(job_dir), "min_001")
+        assert trace["success"] is True
+        assert trace["failure_code"] == "nan_detected"
+        assert trace["evidence_files"]["tool_result"].endswith("tool_result.json")
+        retry_options = [
+            option for option in trace["recovery_options"]
+            if option["reason"] == "retry_as_new_branch"
+        ]
+        assert retry_options
+        assert retry_options[0]["node_type"] == "min"
+        assert retry_options[0]["parent_node_ids"] == ["topo_001"]
 
     def test_full_lifecycle(self, job_dir):
         """pending -> running -> completed."""

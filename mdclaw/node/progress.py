@@ -56,6 +56,10 @@ def _node_progress_summary(node_data: dict) -> dict:
     if artifacts:
         entry["artifact_keys"] = sorted(artifacts.keys())
 
+    failure_code = metadata.get("failure_code")
+    if node_data.get("status") == "failed" and isinstance(failure_code, str) and failure_code:
+        entry["failure_code"] = failure_code
+
     producer_agent = metadata.get("producer_agent")
     if isinstance(producer_agent, str) and producer_agent:
         entry["producer_agent"] = producer_agent

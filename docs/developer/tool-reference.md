@@ -258,6 +258,10 @@ skill examples.
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
+- `trace_failure(...)` / `explain_failure(...)`: read-only failed-node
+  diagnosis. Reads `metadata.errors`, the latest failure artifact, recent
+  events, and parent/dependency status, then returns `recovery_options` and
+  `next_commands` for explicit branch creation.
 - `update_job_params(...)`: merge workflow-level metadata into `progress.json`.
 - `update_node_status(...)`: synchronized node and progress status update path.
 

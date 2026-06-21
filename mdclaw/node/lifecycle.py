@@ -788,18 +788,31 @@ def fail_node(
     *,
     errors: Optional[list[str]] = None,
     warnings: Optional[list[str]] = None,
+    code: Optional[str] = None,
+    failure_artifact: Optional[str] = None,
 ) -> None:
     """Mark a node as ``failed`` and record errors."""
     payload: dict = {}
     if warnings:
         payload["warnings"] = warnings
-    # Store errors in metadata (node.json doesn't have a top-level errors key)
+    # Store errors in metadata (node.json doesn't have a top-level errors key).
+    metadata: dict = {}
     if errors:
-        payload["metadata"] = {"errors": errors}
+        metadata["errors"] = errors
+    if code:
+        metadata["failure_code"] = str(code)
+    if metadata:
+        payload["metadata"] = metadata
+    if failure_artifact:
+        payload["artifacts"] = {"failure": failure_artifact}
 
     _apply_status(job_dir, node_id, "failed", payload=payload)
     write_event(job_dir, node_id, "tool_failed", success=False,
-                details={"errors": errors or []})
+                details={
+                    "errors": errors or [],
+                    "code": code,
+                    "failure_artifact": failure_artifact,
+                })
 
 
 def fail_node_from_result(
@@ -819,6 +832,7 @@ def fail_node_from_result(
             node_id,
             errors=[str(error) for error in errors],
             warnings=result.get("warnings") or None,
+            code=result.get("code"),
         )
     return result
 

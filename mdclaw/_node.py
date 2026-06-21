@@ -21,6 +21,7 @@ _SUBMODULES = (
     "needs",
     "graph",
     "inputs",
+    "failure",
     "prod_chain",
 )
 for _modname in _SUBMODULES:

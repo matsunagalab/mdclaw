@@ -308,7 +308,7 @@ DAG invariants:
 ## Orchestration For Weak Agents
 
 The DAG is designed so an agent can resume from durable evidence instead of a
-separate next-step planner. Three additive helpers carry that load:
+separate next-step planner. Four additive helpers carry that load:
 
 - `inspect_job(job_dir)` reads `progress.json` and returns node statuses,
   leaves, claims, open needs, warnings, and workflow params such as
@@ -320,9 +320,20 @@ separate next-step planner. Three additive helpers carry that load:
   `parent_node_ids` is omitted (single completed leaf of the preferred parent
   type), so example ids never need to be copied. Ambiguous or empty frontiers
   stay parent-less, preserving branch/sketch/repair flows.
+- `trace_failure(job_dir, node_id)` / `explain_failure(job_dir, node_id)` reads
+  a failed node, failure artifacts, events, parent/dependency status, and
+  existing workflow recommendations. It returns read-only `recovery_options`
+  and `next_commands`; it never creates branches automatically.
 
 These are orchestration aids only; the study plan records scientific intent,
 and `node.json` + `progress.json` remain the execution source of truth.
+
+Failed nodes keep the core record small: `node.json.metadata.errors`, optional
+`metadata.failure_code`, and `artifacts.failure` pointing to
+`artifacts/failure/latest/failure_manifest.json`. Full diagnostic evidence
+(`tool_result.json`, stderr/stdout tails when available, and tracebacks for
+unhandled exceptions) belongs under that failure artifact directory, not in
+`progress.json`.
 
 ## State Files
 

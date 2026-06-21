@@ -121,6 +121,9 @@ Core schema v3 rules:
 - `progress.json` is a thin index plus cached summaries.
 - Events are append-only JSON files in `events/`.
 - Workflow tools require both `--job-dir` and `--node-id`.
+- Failed nodes keep details under `artifacts/failure/latest/`; use
+  `trace_failure` / `explain_failure` to compute read-only recovery options
+  before creating an explicit branch.
 
 See `docs/developer/architecture.md` for the full job and study directory
 contracts.

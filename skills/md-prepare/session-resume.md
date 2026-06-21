@@ -6,8 +6,9 @@ To resume a preparation workflow:
 2. Identify the latest completed node and the next required node type.
 3. Use existing artifacts from completed ancestors; do not recreate completed
    nodes unless the user asks for a new branch.
-4. If a node is `failed`, read its `node.json.errors` and structured tool output
-   before deciding whether to retry or branch.
+4. If a node is `failed`, read `node.json.metadata.errors` or run
+   `mdclaw trace_failure --job-dir <job_dir> --node-id <node_id>` before
+   deciding whether to branch.
 5. Preserve `progress.json.params.execution_mode`.
 
 Do not delete node directories or rerun the same prep/solv/topo node with
