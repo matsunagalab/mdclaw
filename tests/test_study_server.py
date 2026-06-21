@@ -4,6 +4,7 @@ import json
 
 from mdclaw.study_server import (
     add_study_job,
+    bootstrap_md_workflow,
     init_study,
     list_study_jobs,
     record_study_decision,
@@ -26,6 +27,7 @@ def test_init_study_creates_minimal_layout(tmp_path):
     assert result["success"] is True
     assert (study_dir / "study.json").is_file()
     assert (study_dir / "jobs").is_dir()
+    assert (study_dir / "plans").is_dir()
     assert (study_dir / "annotations").is_dir()
     assert (study_dir / "evidence").is_dir()
     data = json.loads((study_dir / "study.json").read_text())
@@ -33,6 +35,66 @@ def test_init_study_creates_minimal_layout(tmp_path):
     assert data["title"] == "WT vs mutant"
     assert data["objective"] == "Compare stability"
     assert data["jobs"] == []
+
+
+def test_bootstrap_md_workflow_creates_canonical_single_job_layout(tmp_path):
+    study_dir = tmp_path / "study"
+
+    result = bootstrap_md_workflow(
+        str(study_dir),
+        question="Simulate 1AKE chain A",
+        md_goal="Prepare and run a single-system MD workflow",
+        solvent_regime="explicit",
+    )
+
+    assert result["success"] is True
+    assert result["job_id"] == "main"
+    assert result["job_dir"] == str((study_dir / "jobs" / "main").resolve())
+    assert (study_dir / "study.json").is_file()
+    assert (study_dir / "study_plan.json").is_file()
+    assert (study_dir / "plans").is_dir()
+    assert (study_dir / "jobs" / "main" / "progress.json").is_file()
+    assert result["canonical_layout"]["job_dir"] == "jobs/main"
+    assert result["next_command"].endswith("jobs/main")
+
+    plan_record = json.loads((study_dir / "study_plan.json").read_text())
+    plan = plan_record["plan"]
+    assert plan["question"] == "Simulate 1AKE chain A"
+    assert plan["solvent_regime"] == "explicit"
+    assert [step["node_type"] for step in plan["workflow_steps"]] == [
+        "source", "prep", "solv", "topo", "min", "eq", "prod", "analyze"
+    ]
+
+    progress = json.loads((study_dir / "jobs" / "main" / "progress.json").read_text())
+    assert progress["params"]["execution_mode"] == "autonomous"
+    assert progress["params"]["solvent_regime"] == "explicit"
+    assert progress["params"]["study_plan_id"] == "active"
+    assert progress["params"]["study_job_id"] == "main"
+
+
+def test_bootstrap_md_workflow_uses_solvent_regime_for_workflow_steps(tmp_path):
+    result = bootstrap_md_workflow(
+        str(tmp_path / "implicit_study"),
+        question="Run implicit-solvent MD",
+        solvent_regime="implicit",
+    )
+
+    assert result["success"] is True
+    plan = json.loads((tmp_path / "implicit_study" / "study_plan.json").read_text())["plan"]
+    assert [step["node_type"] for step in plan["workflow_steps"]] == [
+        "source", "prep", "topo", "min", "eq", "prod", "analyze"
+    ]
+
+
+def test_bootstrap_md_workflow_rejects_pathlike_job_id(tmp_path):
+    result = bootstrap_md_workflow(
+        str(tmp_path / "study"),
+        question="Invalid job",
+        job_id="../bad",
+    )
+
+    assert result["success"] is False
+    assert "job_id must be a single path component" in result["errors"][0]
 
 
 def test_add_and_list_study_job_with_progress(tmp_path):

@@ -82,10 +82,12 @@ md-prepare -> md-equilibration -> md-production -> md-analyze
 Core schema v3 rules:
 
 - `skill = scientific intent and procedure`; skills do not mutate state.
+- Every MD workflow, including clear single-system requests such as "simulate
+  1AKE chain A", starts from a study plan and the canonical
+  `study_dir/jobs/<job_id>` layout. Direct runs use a minimal plan, usually
+  `jobs/main`; broader questions use richer `md-study` planning.
 - `md-study` is the study-planning skill: it translates scientific questions
   into a small MD goal, planned jobs, analysis intent, and decision criteria.
-  Clear single-system requests such as "simulate 1AKE chain A" still flow
-  directly through `md-prepare` with a simple `jobs/main` study.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
 - `plan_next` (read-only) is the weak-agent orchestration entry point: it
  returns the next node type, tool, concrete parent ids, `solvent_regime`, and
@@ -96,7 +98,8 @@ Core schema v3 rules:
  appends a `workflow_hint` to successful workflow tools. CLI preflight failures
  return structured `code`s (`node_context_required`, etc.).
 - New scientific work should start with a `study_dir`; a simple one-system MD
-  run is a study with one job, usually `jobs/main`.
+  run is a study with one job, usually `jobs/main`, and still has
+  `study_plan.json`.
 - A study may index many `job_dir`s. Each job DAG has one `source` node, and
   that source node records a structural source bundle.
 - A source bundle may contain multiple structures, such as NMR models,

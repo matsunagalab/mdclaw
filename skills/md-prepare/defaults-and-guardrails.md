@@ -5,10 +5,10 @@ Read `skills/common/defaults.md` first.
 Preparation-specific defaults:
 
 - Solvent regime is study-level intent. Use the `solvent_regime` recorded by
-  `md-study` when present; on the direct-run fast path default to explicit
-  solvent unless the user explicitly asks for implicit/vacuum/no-solvent or
-  membrane handling, and record the chosen regime with `update_job_params`
-  before running `prepare_complex`.
+  `bootstrap_md_workflow` or richer `md-study` planning. For minimal direct
+  runs, default to explicit solvent unless the user explicitly asks for
+  implicit/vacuum/no-solvent or membrane handling; the bootstrap records the
+  chosen regime before `prepare_complex`.
 - pH-aware protein protonation through `clean_protein`.
 - User-specified residue protonation states use `protonation_states`, e.g.
   `{"A:57": "HIP", "A:25": "ASH"}` or a list of `{chain, resnum, state}`

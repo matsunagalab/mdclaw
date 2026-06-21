@@ -40,7 +40,7 @@ normalization where needed, and serialize the OpenMM artifact triple.
 
 ```mermaid
 flowchart TD
-  S["md-study or direct-run job params"] --> S1["record solvent_regime"]
+  S["study plan (bootstrap_md_workflow or md-study)"] --> S1["record solvent_regime"]
   S1 --> A["source node / raw PDB, mmCIF, AF, local, or prediction"]
   A --> B["source_bundle.json and candidate files"]
   B --> C{"candidate selection needed?"}
@@ -287,7 +287,7 @@ artifact triple for downstream run tools.
 
 - `source` owns raw source normalization and optional Gemmi biological assembly
   generation. `prep` selects one candidate before making a physical MD system.
-- `md-study` or the direct-run bootstrap records `solvent_regime` before
+- `bootstrap_md_workflow` or richer `md-study` planning records `solvent_regime` before
   structure preparation begins.
 - `prepare_complex` owns component selection, component-common disposition
   (including deuterium exclusion for all split components and

@@ -25,18 +25,23 @@ as:
   criteria.
 - Requesting a study/campaign rather than one straightforward MD run.
 
-Do **not** force this skill onto clear single-system MD requests. If the user
-already gives a concrete target and asks to run it, hand off directly to
-`skills/md-prepare/SKILL.md`. Examples of direct-run fast path requests:
+All MD workflows have a study plan and the canonical
+`study_dir/jobs/<job_id>` layout. This skill is the richer planning entry point
+for scientific questions and campaigns. If the user already gives a concrete
+target and asks to run it, create a minimal plan with
+`bootstrap_md_workflow` (or hand off to `skills/md-prepare/SKILL.md`, which
+will do the same bootstrap) instead of performing a heavy campaign-design
+exercise. Examples of minimal-plan requests:
 
 - "Simulate 1AKE chain A."
 - "Run this PDB in explicit water for 100 ns."
 - "Try this protein in implicit solvent."
 
-Direct runs still use a thin `study_dir` with one `jobs/main` job so execution
-state and artifacts live under the same study/job contract, but
-`study_plan.json` is optional; `md-prepare` records the direct-run
-`solvent_regime` on the job params instead.
+Direct runs use a thin `study_dir` with one `jobs/main` job so execution state
+and artifacts live under the same study/job contract. `study_plan.json` is
+mandatory even for those direct runs; the plan can be minimal and simply
+normalize the user's requested target, solvent regime, stop policy, and
+default workflow steps.
 
 ## Step 0: Parse and Confirm
 
@@ -282,16 +287,17 @@ attached to the study and is auditable when results come back.
 
 1. Parse the user's request. Set `execution_mode` per Step 0; default
    `autonomous`.
-2. Decide whether this is a study-planning request or a direct-run fast path.
-   If it is a direct run, hand off immediately to
-   `skills/md-prepare/SKILL.md`.
+2. Decide whether this needs rich campaign planning or only a minimal direct-run
+   plan. If it is a direct run, use `bootstrap_md_workflow` or hand off to
+   `skills/md-prepare/SKILL.md`; either path must create `study_plan.json` and
+   `jobs/main`.
 3. **Ground the design in literature and databases.** Do not pick starting
    structures, comparison cells, or analysis observables from training-data
    memory. Run the lookups described in `## Literature And Database Lookup`
    (`search_structures` / `get_structure_info`, optionally `search_proteins`
    / `get_protein_info`, and `pubmed_search` / `pubmed_fetch`) and record
    what you consulted under `notes.references` in the plan JSON. Skip only
-   on the single-system fast path (step 2).
+   for a minimal single-system plan (step 2).
 4. Restate the scientific question in one clear sentence.
 5. Translate it into an MD goal: what structural, dynamical, or interaction
    behavior MD can measure.
@@ -313,9 +319,19 @@ attached to the study and is auditable when results come back.
 10. **HIL only**: confirm the restated question, solvent regime, jobs, analysis, and decision
    criteria with the user before writing them. In autonomous mode, skip this
    confirmation unless a required value is missing or genuinely ambiguous.
-11. Create or reuse a `study_dir` and record the plan:
+11. Create or reuse a `study_dir` and record the plan. For one-job workflows,
+    prefer `bootstrap_md_workflow`; for richer multi-job plans, use the
+    lower-level commands below so every job can be registered explicitly:
 
     ```bash
+    mdclaw bootstrap_md_workflow \
+      --study-dir <study_dir> \
+      --question "<question>" \
+      --md-goal "<md goal>" \
+      --solvent-regime explicit \
+      --execution-mode autonomous
+
+    # For richer multi-job plans:
     mdclaw init_study --study-dir <study_dir> --title "<short title>" \
       --objective "<one sentence objective>"   # only if the study does not exist
 

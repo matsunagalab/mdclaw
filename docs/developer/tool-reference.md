@@ -277,7 +277,11 @@ skill examples.
 
 ## `study_server.py`
 
-- `init_study(...)`: create an optional campaign directory.
+- `init_study(...)`: create a study directory used by both direct runs and
+  campaigns.
+- `bootstrap_md_workflow(...)`: create or reuse the canonical
+  `study_dir/study.json` + `study_plan.json` + `jobs/<job_id>/progress.json`
+  layout for any MD workflow, including simple one-system direct runs.
 - `add_study_job(...)`: register existing or planned jobs.
 - `list_study_jobs(...)`, `summarize_study(...)`: inspect study state.
 - `record_study_plan(...)`, `get_study_plan(...)`, `list_study_plans(...)`:

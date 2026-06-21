@@ -51,37 +51,37 @@ The required execution order is **read → confirm → execute**. Do not
 present defaults to the user, and do not run any tool, before the
 guidance pages for the relevant solvation mode have been read.
 
-Direct-run fast path: if the user gives a clear single-system MD request, such
-as "simulate 1AKE chain A" or "run this PDB in explicit water", continue with
-this prepare workflow directly. Do not force the request through
-`skills/md-study/SKILL.md`. Still create a thin `study_dir` with one
-`jobs/main` job so the execution uses the same study/job contract;
-`study_plan.json` is optional for these straightforward runs.
-The minimum bootstrap is:
+Every MD workflow starts from a study plan and uses the same folder layout.
+For a clear single-system request such as "simulate 1AKE chain A" or "run this
+PDB in explicit water", create a minimal study plan instead of doing campaign
+planning. The canonical bootstrap is:
 
 ```bash
-mdclaw init_study --study-dir <study_dir> --title "<short title>"
-mdclaw add_study_job --study-dir <study_dir> \
-  --job-id main --job-dir <study_dir>/jobs/main --create-job-dir
-mdclaw update_job_params --job-dir <study_dir>/jobs/main \
-  --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
+mdclaw bootstrap_md_workflow \
+  --study-dir <study_dir> \
+  --question "<user request>" \
+  --md-goal "<one sentence MD goal>" \
+  --solvent-regime explicit \
+  --execution-mode autonomous
 ```
 
 Replace `"explicit"` with `"implicit"`, `"vacuum"`, or `"membrane"` when the
-direct-run request names that regime. This job param is required even when
-`study_plan.json` is omitted.
+request names that regime. The returned `job_dir` is the only directory passed
+to DAG tools. The bootstrap writes `study.json`, `study_plan.json`, and
+`jobs/main/progress.json`; do not create a standalone job directory outside a
+study.
 
-Study-planning handoff: if the user is asking a scientific comparison or
-campaign-level question (mutant vs WT, apo vs holo, controls, replicates,
-analysis criteria, or "what MD should I run?"), use `skills/md-study/SKILL.md`
-first to record the scientific question, MD goal, planned jobs, analysis
-observables, solvent regime, and decision criteria.
+Richer study-planning handoff: if the user is asking a scientific comparison
+or campaign-level question (mutant vs WT, apo vs holo, controls, replicates,
+analysis criteria, or "what MD should I run?"), use
+`skills/md-study/SKILL.md` first to record a richer plan. It still writes the
+same canonical `study_dir/jobs/<job_id>` layout.
 
-`solvent_regime` is decided at study-planning time. `md-prepare` does not
-choose it except on the direct-run fast path, where the default is `explicit`
-unless the user explicitly asks for implicit solvent, vacuum/no-solvent, or a
-membrane workflow. When a study/job already records `solvent_regime`, treat it
-as intent and map it to tool calls:
+`solvent_regime` is decided during study bootstrap/planning. For a minimal
+single-system bootstrap, the default is `explicit` unless the user explicitly
+asks for implicit solvent, vacuum/no-solvent, or a membrane workflow. When a
+study/job records `solvent_regime`, treat it as intent and map it to tool
+calls:
 
 | `solvent_regime` | prep call | next structural step | topology mode |
 |---|---|---|---|
@@ -99,27 +99,27 @@ structure before creating an MD-ready physical system. Use DAG branching after
 use the HPacker-based `create_mutated_structure` branch in
 `skills/md-prepare/branches.md`.
 
-1. Decide `execution_mode` from the user's request:
+1. Ensure the canonical study layout exists with `bootstrap_md_workflow` or a
+   richer `md-study` plan. Use the returned `job_dir` for all DAG commands.
+2. Decide `execution_mode` from the user's request:
    - `execution_mode=autonomous` unless the user explicitly asks for
      checkpoint-by-checkpoint confirmation.
-   - Persistence to `progress.json` happens after the source node is
-     created and after the effective `solvent_regime` has been determined
-     (see setup.md), via:
+   - Persistence to `progress.json` normally happens in
+     `bootstrap_md_workflow`. If you are repairing an older study, write it via:
      ```bash
      mdclaw update_job_params --job-dir <job_dir> \
        --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
      ```
-2. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
+3. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
    setup guidance for acquisition, inspection, cleaning, branches, and resume.
    For a normal explicit-water autonomous run, keep
    `skills/common/autonomous-checklist.md` as the short execution spine and
    open only the task-specific guidance pages tagged by `setup.md`.
-3. Determine the effective `solvent_regime` from the study plan / job params
-   when present; otherwise use the direct-run default above. Then read the
-   matching guidance page. If the current job lacks `solvent_regime`, write the
-   direct-run value to `progress.json` with `update_job_params` before running
-   `prepare_complex`.
-4. **Read the solvation-specific guidance page** — required before stating
+4. Determine the effective `solvent_regime` from the study plan / job params.
+   Then read the matching guidance page. If the current job lacks
+   `solvent_regime`, repair the bootstrap with `update_job_params` before
+   running `prepare_complex`.
+5. **Read the solvation-specific guidance page** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
    - Implicit solvent → `skills/md-prepare/implicit-water.md`
@@ -127,12 +127,12 @@ use the HPacker-based `create_mutated_structure` branch in
      `setup.md`
    - Vacuum/no-solvent → implicit-water guidance for the no-solvation topology
      contract, but do not pass `--implicit-solvent`
-5. **Now present the Step 0 confirmation summary** (see Step 0 below)
+6. **Now present the Step 0 confirmation summary** (see Step 0 below)
    to the user. Only the fields enumerated there belong in the table —
    forcefield, water model, box geometry, etc. are tool-level defaults
    surfaced from the guidance pages read in steps 2–3 and are not part of
    the user-facing summary unless the user explicitly named them.
-6. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
+7. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
    solvation guidance. If the user specifies site-specific residue
    protonation, pass it explicitly through `protonation_states`; do not leave
    it as a free-text note. If the user specifies a biological assembly, request

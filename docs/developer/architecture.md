@@ -85,10 +85,10 @@ Important boundaries:
 
 ## Job DAG
 
-The study layer is the normal outer record for a scientific question. A simple
-one-system request can still be represented as a study with one job, usually
-`jobs/main`; broader investigations register multiple job DAGs under the same
-study.
+The study layer is the normal outer record for every MD workflow. A simple
+one-system request is still represented as a study with one job, usually
+`jobs/main`, and it still has a minimal `study_plan.json`. Broader
+investigations register multiple job DAGs under the same study.
 
 Node type names are short on disk and in the CLI, while design discussions use
 the formal names from `CONTEXT.md`:
@@ -219,10 +219,32 @@ Node artifacts are intentionally local to each node:
 | `eq` | `equilibrated.pdb`, `equilibrated.xml`, `equilibrated.chk`, stage logs. |
 | `prod` | `trajectory.dcd`, `final_structure.pdb`, `state.xml`, `checkpoint.chk`, `energy.dat`. |
 
-The on-disk shape is:
+The canonical study layout is:
 
 ```text
-job_XXXXXXXX/
+study_XXXXXXXX/
+  study.json
+  study_plan.json
+  plans/
+    extension_or_revision.json
+  jobs/
+    main/
+      progress.json
+      nodes/
+      events/
+  annotations/
+  evidence/
+```
+
+Use `mdclaw bootstrap_md_workflow` for the common one-job case. It creates or
+reuses `study.json`, records the active plan, registers `jobs/main`, and writes
+the job-level `progress.json` params that connect the job DAG back to the study
+and plan.
+
+Inside each job, the DAG shape is:
+
+```text
+jobs/main/
   progress.json
   progress.lock
   nodes/
@@ -412,8 +434,8 @@ not execute OpenMM or mutate node DAG semantics. Each registered job owns its
 node DAG and source bundle; the study records cross-job intent, roles,
 decisions, planned analyses, and evidence.
 
-`study_plan.json`, when present, is intentionally small and weak-agent friendly.
-It records the minimum needed to reconnect results to intent:
+`study_plan.json` is intentionally small and weak-agent friendly. It records
+the minimum needed to reconnect results to intent:
 
 ```json
 {
@@ -430,8 +452,8 @@ It records the minimum needed to reconnect results to intent:
 ```
 
 For clear one-system requests such as "simulate 1AKE chain A", the direct path
-through `md-prepare` remains valid. Such runs may still use a study with
-`jobs/main`, but they do not require `study_plan.json`.
+through `md-prepare` remains valid, but it still bootstraps the canonical study
+layout and records a minimal `study_plan.json` before creating DAG nodes.
 
 ## Adding Tools
 
