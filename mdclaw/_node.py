@@ -12,7 +12,17 @@ module object rather than the function.
 
 import importlib
 
-_SUBMODULES = ("constants", "io", "validation", "progress", "lifecycle", "needs", "graph", "inputs", "prod_chain", "planning",)
+_SUBMODULES = (
+    "constants",
+    "io",
+    "validation",
+    "progress",
+    "lifecycle",
+    "needs",
+    "graph",
+    "inputs",
+    "prod_chain",
+)
 for _modname in _SUBMODULES:
     _mod = importlib.import_module(f"mdclaw.node.{_modname}")
     for _name in dir(_mod):

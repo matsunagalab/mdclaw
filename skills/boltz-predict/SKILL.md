@@ -179,9 +179,8 @@ When `job_dir` and `node_id` point to a `source` node, the Boltz output is
 normalized into the standard source bundle:
 
 ```text
-nodes/source_001/artifacts/source_bundle.json
-nodes/source_001/artifacts/candidates/candidate_001.pdb
-nodes/source_001/artifacts/candidates/candidate_002.pdb
+nodes/<source_node_id>/artifacts/source_bundle.json
+nodes/<source_node_id>/artifacts/candidates/<candidate_id>.pdb
 ```
 
 Per-candidate Boltz information belongs in `source_bundle.json`, not only in
@@ -200,7 +199,7 @@ in the source node metadata.
 List candidates through the tool instead of asking the user to open JSON:
 
 ```bash
-mdclaw list_source_candidates --job-dir <job_dir> --node-id source_001
+mdclaw list_source_candidates --job-dir <job_dir> --node-id <source_node_id>
 ```
 
 For normal MDClaw DAG work, run Boltz-2 in node mode so the prediction becomes
@@ -237,7 +236,7 @@ If they want to continue to MD simulation:
 > ```bash
 > mdclaw create_node --job-dir <job_dir> --node-type prep
 > mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
->   --source-structure-id candidate_001
+>   --source-structure-id <candidate_id>
 > ```
 > **If your harness provides slash commands, `/md-prepare` is the
 > interactive shortcut for the same preparation skill."**

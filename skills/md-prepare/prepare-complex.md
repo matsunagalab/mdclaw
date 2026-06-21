@@ -6,7 +6,7 @@ Create a `prep` node after `source` and run `prepare_complex`. The
 `vacuum` for deliberate no-solvent topologies.
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids source_001
+mdclaw create_node --job-dir <job_dir> --node-type prep
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --solvent-type explicit \
   --select-chains A \
@@ -20,7 +20,7 @@ pass an explicit selector:
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-structure-id candidate_002
+  --source-structure-id <candidate_id>
 ```
 
 For NMR-style model numbering, `--source-model-index 2` selects the second

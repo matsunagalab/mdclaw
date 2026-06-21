@@ -22,21 +22,20 @@ does not ship it, and MDClaw tools already use internal timeout handling.
 |-----------|-------|
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
-| Parent eq node | (eq_001, etc.) |
+| Parent eq node | use a completed eq node from `inspect_job`, or an explicit branch parent |
 | Simulation time | user-specified, or `0.1 ns` skill-level sanity check when omitted in autonomous mode |
 | Other | (non-default parameters) |
 
 ## Prerequisites
 
 Follow `skills/common/run-loop.md`. Start with
-`mdclaw plan_next --job-dir <job_dir>`: it confirms whether the next step is a
-fresh `prod` from `eq` or further analysis, and returns the concrete
-`suggested_parent_node_ids` plus `solvent_regime`. For an extension, use
-`--continue-from` (below) rather than `plan_next`'s default forward edge. Use
-the IDs from `plan_next` / `create_node`, never the literal example IDs
-(`eq_001`, `prod_001`). For a candidate prod node,
-`mdclaw explain_node --job-dir <job_dir> --node-id <prod_node_id>` reports
-`ready_to_run` and `validation.blocking_codes`.
+`mdclaw inspect_job --job-dir <job_dir>` to confirm there is a completed `eq`
+node, no conflicting running work, and the intended `solvent_regime`. For an
+extension, use `--continue-from` (below) rather than a default forward edge.
+Use IDs from `inspect_job`, `explain_node`, and `create_node`, never literal
+example IDs from documentation. For a candidate prod node, `mdclaw explain_node
+--job-dir <job_dir> --node-id <prod_node_id>` reports `ready_to_run` and
+`validation.blocking_codes`.
 (`system_xml_file`, `topology_pdb_file`, `state_xml_file`, and `restart_from` are auto-resolved from DAG ancestors by the tool. For convenience, `pressure_bar` defaults to the eq node's `metadata.final_ensemble` so the common eq → prod handoff matches by default. You can override `--pressure-bar` to switch ensembles freely — the saved eq state is reusable across NPT/NVT thanks to the ensemble-agnostic loader. See `skills/md-production/restart.md` "Switching Ensembles Across Nodes" for details.)
 
 If no completed eq node exists, suggest running `skills/md-equilibration/SKILL.md`
@@ -62,7 +61,6 @@ are available).
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prod \
-  --parent-node-ids eq_001 \
   --label "100ns" \
   --conditions '{"simulation_time_ns": 100}'
 ```
@@ -70,14 +68,14 @@ mdclaw create_node --job-dir <job_dir> --node-type prod \
 
 **Branching** (multiple prod from same eq):
 ```bash
-mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids eq_001 \
+mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids <eq_node_id> \
   --label "100ns_seed42" --conditions '{"simulation_time_ns": 100, "random_seed": 42}'
 ```
 
 **Extension** (continue from a completed prod — **preferred** way to extend):
 ```bash
 mdclaw create_node --job-dir <dir> --node-type prod \
-  --continue-from prod_001 \
+  --continue-from <completed_prod_node_id> \
   --label "+50ns" --conditions '{"simulation_time_ns": 50}'
 ```
 

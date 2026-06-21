@@ -138,7 +138,7 @@ def input_resolution_recovery(job_dir: str, node_id: str) -> Optional[dict]:
     weak agent re-creates the stuck ancestor instead of re-running the blocked
     child against an unreachable parent. Returns ``None`` when nothing is
     blocking, or on any read error — this is a best-effort hint, not part of the
-    tool contract (mirrors ``_build_workflow_hint``).
+    tool contract.
     """
     try:
         progress = _load_progress_v3(Path(job_dir) / "progress.json")

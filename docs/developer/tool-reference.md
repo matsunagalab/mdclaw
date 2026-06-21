@@ -254,22 +254,8 @@ skill examples.
   branching/sketching is unaffected. Failure returns carry a stable `code`
   (e.g. `invalid_node_type`, `source_already_exists`, `analyze_parents_mixed`,
   `referenced_node_missing`).
-- `plan_next(...)`: read-only "what to do next" planner for weak-agent
-  orchestration. Returns `next_action.action` (`create_source`,
-  `create_and_run`, `run_existing`, `wait_running`, `inspect_failure`,
-  `workflow_complete`), the next `node_type`, `suggested_tool`,
-  `suggested_parent_node_ids`, `solvent_regime`, and `next_skill`. Built on the
-  effective pipeline for the job's solvent regime. Advisory only: it does not
-  take or check leases. It surfaces multi-agent coordination state so a
-  recommendation stays lease-aware — a top-level `coordination`
-  (`claims`/`open_needs`, mirroring `inspect_job`), a per-node `next_action.claim`
-  on `run_existing` (with an active-lease warning), and `next_action.claims` on
-  `wait_running`.
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
-  The CLI also appends the same `workflow_hint` (with a ready-to-run
-  `next_command`) it attaches to workflow tools, so an agent that polls
-  `inspect_job` is handed the next step instead of looping on it.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
 - `update_job_params(...)`: merge workflow-level metadata into `progress.json`.

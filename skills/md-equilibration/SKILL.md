@@ -35,13 +35,11 @@ will convert durations to steps using the actual `timestep_fs`.
 ## Prerequisites
 
 Follow `skills/common/run-loop.md`. Start with
-`mdclaw plan_next --job-dir <job_dir>`: it tells you whether to create a `min`
-node, run an existing one, or move on to `eq`, and it returns the concrete
-`suggested_parent_node_ids` and `solvent_regime` so you do not have to infer
-them. Use the node IDs from `plan_next` / `create_node`, never the literal
-example IDs (`topo_001`, `min_001`) below. For a specific candidate node,
-`mdclaw explain_node --job-dir <job_dir> --node-id <node_id>` reports
-`ready_to_run` and `validation.blocking_codes`.
+`mdclaw inspect_job --job-dir <job_dir>` to check completed topology/min nodes,
+claims, and failures. Create or reuse the `min`/`eq` node for this stage, then
+run `mdclaw explain_node --job-dir <job_dir> --node-id <node_id>` before
+execution. Use node IDs from `inspect_job`, `explain_node`, and `create_node`,
+never literal example node IDs.
 (`system_xml_file`, `topology_pdb_file`, and `state_xml_file` are auto-resolved from the `topo` ancestor by the tools; `eq` also auto-resolves the parent `min` node's `state`.)
 If topology metadata contains ligand charge or clash diagnostics, record them
 for reporting, but do not choose a different equilibration protocol. New runs
@@ -52,19 +50,17 @@ before normal NVT.
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type min \
-  --parent-node-ids topo_001 \
   --label "minimized" \
   --conditions '{"max_iterations": 5000,
                  "restraint_atoms": "CA",
                  "restraint_force_constant": 100.0}'
 
-mdclaw --job-dir <job_dir> --node-id min_001 run_minimization \
+mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
   --max-iterations 5000 \
   --restraint-atoms CA \
   --restraint-force-constant 100.0
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids min_001 \
   --label "300K" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
@@ -74,12 +70,12 @@ mdclaw create_node --job-dir <job_dir> --node-type eq \
 For replicates or different conditions:
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids min_001 --label "310K" \
+  --parent-node-ids <min_node_id> --label "310K" \
   --conditions '{"temperature_kelvin": 310, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0}'
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids min_001 --label "300K_seed42" \
+  --parent-node-ids <min_node_id> --label "300K_seed42" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 1.0, "npt_time_ns": 1.0,
                  "random_seed": 42}'
@@ -101,21 +97,21 @@ introduced as needed.
 ```bash
 # Stage 1: NPT compression with strong heavy-atom restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids min_001 --label "stage1_npt_compress" \
+  --parent-node-ids <min_node_id> --label "stage1_npt_compress" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 0, "npt_time_ns": 0.2,
                  "restraint_atoms": "heavy", "restraint_force_constant": 500.0}'
 
 # Stage 2: NVT thermalization with weaker CA restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids eq_001 --label "stage2_nvt_thermalize" \
+  --parent-node-ids <stage1_eq_node_id> --label "stage2_nvt_thermalize" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 0,
                  "nvt_time_ns": 0.2, "npt_time_ns": 0,
                  "restraint_atoms": "CA", "restraint_force_constant": 50.0}'
 
 # Stage 3: NPT density relaxation, no restraints
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids eq_002 --label "stage3_npt_relax" \
+  --parent-node-ids <stage2_eq_node_id> --label "stage3_npt_relax" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 1.0,
                  "nvt_time_ns": 0, "npt_time_ns": 0.2,
                  "restraint_force_constant": 0.0}'

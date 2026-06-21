@@ -89,14 +89,13 @@ Core schema v3 rules:
 - `md-study` is the study-planning skill: it translates scientific questions
   into a small MD goal, planned jobs, analysis intent, and decision criteria.
 - `tool = run + record`; tools call `_node.py` helpers to update state.
-- `plan_next` (read-only) is the weak-agent orchestration entry point: it
- returns the next node type, tool, concrete parent ids, `solvent_regime`, and
- `next_skill`. Skills follow `skills/common/run-loop.md`:
- `plan_next -> create_node -> run tool`.
+- `inspect_job` is the read-only re-entry point for existing job DAGs; it
+ returns node statuses, leaves, claims, open needs, and progress params.
+- `explain_node` validates a candidate node before execution and reports
+ `ready_to_run`, resolved inputs, missing inputs, and blocking codes.
 - `create_node` auto-resolves the canonical forward parent when
- `--parent-node-ids` is omitted (single completed frontier leaf), and the CLI
- appends a `workflow_hint` to successful workflow tools. CLI preflight failures
- return structured `code`s (`node_context_required`, etc.).
+ `--parent-node-ids` is omitted (single completed frontier leaf). CLI preflight
+ failures return structured `code`s (`node_context_required`, etc.).
 - New scientific work should start with a `study_dir`; a simple one-system MD
   run is a study with one job, usually `jobs/main`, and still has
   `study_plan.json`.

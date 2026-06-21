@@ -101,8 +101,8 @@ mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
 The tool normalizes the selected model into the source bundle:
 
 ```text
-nodes/source_001/artifacts/source_bundle.json
-nodes/source_001/artifacts/candidates/candidate_001.pdb
+nodes/<source_node_id>/artifacts/source_bundle.json
+nodes/<source_node_id>/artifacts/candidates/<candidate_id>.pdb
 ```
 
 Then list candidates before preparation:
@@ -151,5 +151,5 @@ candidate when needed:
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-structure-id candidate_001
+  --source-structure-id <candidate_id>
 ```

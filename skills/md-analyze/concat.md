@@ -7,9 +7,8 @@ the requested scope explicit in the node label or conditions.
 
 ## Locate The Leaf Production Node
 
-Read `progress.json` and identify the target leaf `prod` node. For
-`prod_001 -> prod_002 -> prod_003` continuation chains, analyze the deepest
-leaf unless the user asks otherwise.
+Read `progress.json` and identify the target leaf `prod` node. For production
+continuation chains, analyze the deepest leaf unless the user asks otherwise.
 
 ## Create The Analyze Node
 
@@ -23,7 +22,7 @@ mdclaw create_node --job-dir <job_dir> --node-type analyze \
 ## Run `concat_trajectory`
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id analyze_001 concat_trajectory \
+mdclaw --job-dir <job_dir> --node-id <analyze_node_id> concat_trajectory \
   --selection "protein" \
   --output-name combined \
   --stride 1 \
@@ -38,5 +37,5 @@ Key parameters:
 - `stride`: keep every Nth frame.
 - `chunk`: frames per streaming read; this controls peak memory.
 
-Outputs under `nodes/analyze_001/artifacts/` include combined DCD, reference
+Outputs under `nodes/<analyze_node_id>/artifacts/` include combined DCD, reference
 PDB, selection JSON, and combined energy CSV when every source has energy data.

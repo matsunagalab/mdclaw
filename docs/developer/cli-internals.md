@@ -62,16 +62,9 @@ stable `code`:
 - `node_context_required`: a workflow tool (`_NODE_REQUIRED_TOOLS`) ran without
   both `--job-dir` and `--node-id`.
 
-## Workflow Hint Envelope
+## Recovery Hint Envelope
 
-After a successful node-context workflow tool (or `create_node`), the CLI
-appends a best-effort `workflow_hint` block to the result — the same
-recommendation `plan_next` would return (`action`, `next_node_type`,
-`suggested_tool`, `suggested_parent_node_ids`, `existing_node_id`,
-`next_skill`). It is computed via `_build_workflow_hint` and any error is
-swallowed, so the hint never changes a tool's own contract.
-
-The failure counterpart: when a workflow tool fails with
+When a workflow tool fails with
 `code="input_resolution_blocked"` (a parent/dependency node is stuck
 `running`/`failed`/`pending` instead of `completed`), the CLI appends a
 `recovery_hint` block instead. It is computed via `_build_recovery_hint`

@@ -7,17 +7,18 @@ both `--job-dir` and `--node-id`. The full per-step loop is in
 ```bash
 JD=$(realpath job_example)
 
-# 'mdclaw plan_next --job-dir "$JD"' tells you the next node type, tool, and
-# parent IDs. Then create the node (parent auto-resolves) and run the tool.
+# 'mdclaw inspect_job --job-dir "$JD"' shows the current DAG state.
+# Then create the node (parent auto-resolves) and run the tool.
 mdclaw create_node --job-dir "$JD" --node-type prep
 
-mdclaw --job-dir "$JD" --node-id prep_001 prepare_complex
+# Use the node_id returned by create_node.
+mdclaw --job-dir "$JD" --node-id <prep_node_id> prepare_complex
 ```
 
 Rules:
 
-- Prefer `mdclaw plan_next --job-dir "$JD"` to decide the next action instead
-  of reasoning about the DAG by hand. Branch on `next_action.action`.
+- Prefer `mdclaw inspect_job --job-dir "$JD"` before acting on an existing job.
+  Use the current stage skill and study plan to decide the next node/tool.
 - When `--parent-node-ids` is omitted, `create_node` auto-attaches the single
   completed frontier node of the correct parent type and reports it as
   `auto_resolved_parent`. Pass parents explicitly only to branch or when the
@@ -40,7 +41,8 @@ Rules:
   with multiple candidate structures normalized under `artifacts/candidates/`.
   Use `list_source_candidates` before asking the user to choose.
   When the bundle has more than one candidate, pass an explicit
-  `prepare_complex` selector such as `--source-structure-id candidate_002`.
+  `prepare_complex` selector using the candidate ID returned by
+  `list_source_candidates`.
 - Treat workflow node artifacts as immutable evidence for one attempted
   parameter set. If the chain/ligand/solvent choice was wrong, create a new
   node or new branch instead of rerunning the same node with changed inputs.

@@ -15,8 +15,8 @@ mdclaw submit_array_job \
   --tasks '[
     {
       "job_dir": "/abs/job_rep1",
-      "node_id": "prod_001",
-      "command": "mdclaw --job-dir /abs/job_rep1 --node-id prod_001 run_production --simulation-time-ns 100 --platform CUDA"
+      "node_id": "<prod_node_id>",
+      "command": "mdclaw --job-dir /abs/job_rep1 --node-id <prod_node_id> run_production --simulation-time-ns 100 --platform CUDA"
     }
   ]'
 ```

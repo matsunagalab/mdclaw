@@ -43,13 +43,13 @@ with production settings.
 ### Run Equilibration
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id min_001 run_minimization \
+mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \
   --implicit-solvent GBn2 \
   --max-iterations 5000 \
   --restraint-atoms CA \
   --restraint-force-constant 100.0
 
-mdclaw --job-dir <job_dir> --node-id eq_001 run_equilibration \
+mdclaw --job-dir <job_dir> --node-id <eq_node_id> run_equilibration \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
   --implicit-solvent GBn2 \
@@ -106,9 +106,9 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
 
 ## Verify Output
 
-Read `nodes/eq_001/node.json`:
+Read `nodes/<eq_node_id>/node.json`:
 
-- upstream `nodes/min_001/node.json` should be `"completed"` with
+- upstream `nodes/<min_node_id>/node.json` should be `"completed"` with
   `artifacts.state`, `artifacts.minimized_structure`, and
   `artifacts.minimization_report`
 - `status` should be `"completed"`

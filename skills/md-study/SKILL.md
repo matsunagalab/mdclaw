@@ -359,8 +359,8 @@ attached to the study and is auditable when results come back.
 
     - **`autonomous`**: Invoke the next-stage skill on the first registered
       structural-setup job. Determine the current job state with
-      `mdclaw plan_next --job-dir <job_dir>` rather than guessing — its
-      `next_skill` field names the skill that owns the next stage:
+      `mdclaw inspect_job --job-dir <job_dir>` and the stage guidance rather
+      than guessing:
         * No prepared system yet → `skills/md-prepare/SKILL.md`
         * Prepared, not equilibrated → `skills/md-equilibration/SKILL.md`
         * Equilibrated, not run → `skills/md-production/SKILL.md`

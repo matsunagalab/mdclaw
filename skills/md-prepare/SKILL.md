@@ -12,10 +12,10 @@ Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
 `skills/common/run-loop.md`, `skills/common/autonomous-checklist.md`, and
 `skills/common/guardrail-codes.md` before acting.
 
-`skills/common/run-loop.md` is the per-step loop: call
-`mdclaw plan_next --job-dir <job_dir>` to learn the next node type, tool, and
-concrete parent IDs; let `create_node` auto-resolve the parent; then run the
-tool with node context. Use the IDs it returns, never literal example IDs.
+`skills/common/run-loop.md` is the per-step loop: inspect the job DAG, create
+the node for the current stage, validate it with `explain_node`, then run the
+tool with node context. Use IDs returned by `inspect_job`, `explain_node`, and
+`create_node`, never literal example IDs.
 
 ## Defaults — Source of Truth
 
@@ -182,8 +182,8 @@ use the HPacker-based `create_mutated_structure` branch in
    high-severity visual accident is reported, ask the user before moving to the
    next workflow stage.
 8. After the `topo` node completes, hand off to the equilibration skill on the
-   same `job_dir` (use the node id from `create_node`, not a literal
-   `topo_001`). In harnesses with slash commands, `/md-equilibration` is the
+   same `job_dir` (use the node id from `create_node`, not a literal copied
+   from an example). In harnesses with slash commands, `/md-equilibration` is the
    shortcut. This skill does not auto-chain into equilibration — each stage is
    user-initiated.
 

@@ -7,8 +7,8 @@ Use branched `prep` nodes for variants after the initial cleaned complex.
 Mutation branches use HPacker side-chain packing.
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids prep_001
-mdclaw --job-dir <job_dir> --node-id prep_002 create_mutated_structure --mutations L99A
+mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids <base_prep_node_id>
+mdclaw --job-dir <job_dir> --node-id <mutant_prep_node_id> create_mutated_structure --mutations L99A
 ```
 
 Use `L99A` for an unambiguous single-chain protein, or `A:L99A` when residue
@@ -18,8 +18,8 @@ numbering is shared across chains. The mutated PDB becomes the downstream
 ## PTM Restoration
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids prep_001
-mdclaw --job-dir <job_dir> --node-id prep_002 phosphorylate_residues --restore-from-detection
+mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids <base_prep_node_id>
+mdclaw --job-dir <job_dir> --node-id <ptm_prep_node_id> phosphorylate_residues --restore-from-detection
 ```
 
 Current PTM scope is SEP, TPO, and PTR. See

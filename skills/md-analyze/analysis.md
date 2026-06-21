@@ -8,19 +8,19 @@ tools resolve trajectory/topology inputs from the DAG.
 
 ```bash
 # Combine a production lineage into one compact trajectory.
-mdclaw --job-dir <job_dir> --node-id analyze_001 concat_trajectory
+mdclaw --job-dir <job_dir> --node-id <concat_analyze_node_id> concat_trajectory
 
 # Align frames for visualization or dimensional-reduction inputs.
-mdclaw --job-dir <job_dir> --node-id analyze_002 fit_trajectory
+mdclaw --job-dir <job_dir> --node-id <fit_analyze_node_id> fit_trajectory
 
 # RMSD on a combined or fitted analyze node.
-mdclaw --job-dir <job_dir> --node-id analyze_003 analyze_rmsd
+mdclaw --job-dir <job_dir> --node-id <rmsd_analyze_node_id> analyze_rmsd
 
 # Atom-pair or group distance time series.
-mdclaw --job-dir <job_dir> --node-id analyze_004 analyze_distance
+mdclaw --job-dir <job_dir> --node-id <distance_analyze_node_id> analyze_distance
 
 # Native contact fraction.
-mdclaw --job-dir <job_dir> --node-id analyze_005 analyze_q_value
+mdclaw --job-dir <job_dir> --node-id <q_value_analyze_node_id> analyze_q_value
 ```
 
 ## Interpretation Hints

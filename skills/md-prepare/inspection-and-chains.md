@@ -3,7 +3,7 @@
 Run inspection before preparation when the input is not trivial:
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id source_001 inspect_molecules
+mdclaw --job-dir <job_dir> --node-id <source_node_id> inspect_molecules
 ```
 
 Use the resulting JSON to decide:
@@ -63,7 +63,7 @@ stored as a separate ligand label chain such as `C`, with
 protein label and the ligand label:
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prep_001 prepare_complex \
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --select-chains A C \
   --include-types protein nucleic glycan ligand \
   --include-ligand-ids A:AP5:215

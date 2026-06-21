@@ -461,7 +461,7 @@ def bootstrap_md_workflow(
                 "extension_plan_dir": "plans/",
                 "job_dir": _store_job_dir(sd, str(job_dir)),
             },
-            "next_command": f"mdclaw plan_next --job-dir {job_dir}",
+            "next_command": f"mdclaw inspect_job --job-dir {job_dir}",
         })
         return result
     except Exception as exc:  # noqa: BLE001

@@ -307,31 +307,22 @@ DAG invariants:
 
 ## Orchestration For Weak Agents
 
-The DAG is designed so an agent never has to derive the next step from prose.
-Three additive helpers carry that load:
+The DAG is designed so an agent can resume from durable evidence instead of a
+separate next-step planner. Three additive helpers carry that load:
 
-- `plan_next(job_dir)` reads the completed frontier and the job's
-  `solvent_regime` and returns the next action (`create_source`,
-  `create_and_run`, `run_existing`, `wait_running`, `inspect_failure`,
-  `workflow_complete`), the next node type/tool, and the concrete parent ids.
-  In a shared job it stays lease-aware without replacing the coordination
-  primitives: it is advisory (no lease taken or checked) but surfaces a
-  job-wide `coordination` block (`claims`/`open_needs`, mirroring `inspect_job`),
-  a per-node `next_action.claim` plus warning on `run_existing`, and
-  `next_action.claims` on `wait_running`. Agents that run concurrently still
-  `claim_node` before working a node.
+- `inspect_job(job_dir)` reads `progress.json` and returns node statuses,
+  leaves, claims, open needs, warnings, and workflow params such as
+  `solvent_regime`.
+- `explain_node(job_dir, node_id)` validates a candidate node before execution
+  and reports `ready_to_run`, resolved inputs, missing inputs, parent status, and
+  blocking codes.
 - `create_node` auto-resolves the canonical forward parent when
   `parent_node_ids` is omitted (single completed leaf of the preferred parent
   type), so example ids never need to be copied. Ambiguous or empty frontiers
   stay parent-less, preserving branch/sketch/repair flows.
-- The CLI appends a `workflow_hint` (a compact `plan_next`) to every successful
-  workflow tool / `create_node`, and emits structured `code`s for preflight
-  failures (`node_context_required`, `missing_required_arguments`,
-  `node_id_requires_job_dir`).
 
-These are orchestration aids only; `node.json` + `progress.json` remain the
-source of truth and none of them mutate state beyond what `create_node` already
-did.
+These are orchestration aids only; the study plan records scientific intent,
+and `node.json` + `progress.json` remain the execution source of truth.
 
 ## State Files
 

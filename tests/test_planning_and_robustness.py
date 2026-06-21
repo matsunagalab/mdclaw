@@ -1,18 +1,27 @@
 """Tests for the weak-agent robustness layer (schema v3).
 
 Covers:
-- ``plan_next`` recommendations across DAG states.
+- ``inspect_job`` and ``explain_node`` re-entry across DAG states.
 - ``create_node`` auto-parent resolution (backward compatible).
 - Stable ``code`` fields on ``create_node`` failures.
 - Structured JSON for CLI preflight failures (node context / missing args).
-- The ``workflow_hint`` envelope appended after successful workflow tools.
+- No hidden next-step planner envelope after successful CLI tools.
 """
 
 import json
 
 import pytest
 
-from mdclaw._node import create_node, plan_next, read_node, update_job_params
+from mdclaw._node import (
+    add_node_need,
+    begin_node,
+    claim_node,
+    create_node,
+    explain_node,
+    inspect_job,
+    read_node,
+    update_job_params,
+)
 from tests.pipeline_helpers import complete_node_with_placeholders as complete_node
 
 
@@ -67,143 +76,74 @@ def _explicit_chain_through(job_dir, last_stage):
     return ids
 
 
-# ── plan_next ───────────────────────────────────────────────────────────────
+# ── inspect_job / explain_node re-entry ─────────────────────────────────────
 
 
-class TestPlanNext:
+class TestDAGReentry:
 
-    def test_empty_job_recommends_source(self, job_dir):
-        plan = plan_next(str(job_dir))
-        assert plan["success"] is True
-        assert plan["code"] == "empty_job"
-        assert plan["next_action"]["action"] == "create_source"
-        assert plan["next_action"]["node_type"] == "source"
-        assert plan["next_skill"] == "skills/md-prepare/SKILL.md"
+    def test_empty_job_reports_missing_progress(self, job_dir):
+        summary = inspect_job(str(job_dir))
+        assert summary["success"] is False
+        assert summary["code"] == "progress_missing_or_invalid"
 
-    def test_after_source_recommends_prep(self, job_dir):
-        _explicit_chain_through(job_dir, "source")
-        plan = plan_next(str(job_dir))
-        action = plan["next_action"]
-        assert action["action"] == "create_and_run"
-        assert action["node_type"] == "prep"
-        assert action["suggested_tool"] == "prepare_complex"
-        assert action["suggested_parent_node_ids"] == ["source_001"]
-        assert str(job_dir) in action["create_command"]
-
-    def test_after_topo_recommends_min(self, job_dir):
-        _explicit_chain_through(job_dir, "topo")
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["node_type"] == "min"
-        assert action["suggested_tool"] == "run_minimization"
-        assert action["suggested_parent_node_ids"] == ["topo_001"]
-
-    def test_after_prod_recommends_analyze(self, job_dir):
-        _explicit_chain_through(job_dir, "prod")
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["node_type"] == "analyze"
-        assert action["suggested_tool"] == "concat_trajectory"
-        assert action["requires_conditions"] is True
-
-    def test_workflow_complete_after_analyze(self, job_dir):
-        ids = _explicit_chain_through(job_dir, "prod")
-        _complete(job_dir, "analyze", {"combined_trajectory": "artifacts/c.dcd"},
-                  parent_node_ids=[ids["prod"]],
-                  conditions={"analysis_data_scope": "production_chain"})
-        plan = plan_next(str(job_dir))
-        assert plan["code"] == "workflow_complete"
-        assert plan["next_action"]["action"] == "workflow_complete"
-
-    def test_run_existing_when_next_node_pending(self, job_dir):
-        ids = _explicit_chain_through(job_dir, "topo")
-        # A pending min node already exists.
-        created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["action"] == "run_existing"
-        assert action["existing_node_id"] == created["node_id"]
-        assert action["ready_to_run"] is True
-
-    def test_wait_running_when_next_node_running(self, job_dir):
+    def test_inspect_job_reports_frontier_and_params(self, job_dir):
         ids = _explicit_chain_through(job_dir, "topo")
         created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
-        from mdclaw._node import begin_node
-        begin_node(str(job_dir), created["node_id"])
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["action"] == "wait_running"
-        assert created["node_id"] in action["running_node_ids"]
+        assert created["success"], created
 
-    def test_inspect_failure_when_next_node_failed(self, job_dir):
+        summary = inspect_job(str(job_dir))
+        assert summary["success"] is True
+        assert summary["params"]["solvent_regime"] == "explicit"
+        assert summary["pending_nodes"] == [created["node_id"]]
+        assert summary["leaf_nodes"] == [created["node_id"]]
+        assert summary["nodes"][created["node_id"]]["parents"] == [ids["topo"]]
+
+    def test_inspect_job_surfaces_claims_open_needs_and_running(self, job_dir):
         ids = _explicit_chain_through(job_dir, "topo")
         created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
-        from mdclaw._node import fail_node
-        fail_node(str(job_dir), created["node_id"], errors=["boom"])
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["action"] == "inspect_failure"
-        assert created["node_id"] in action["failed_node_ids"]
-
-    def test_implicit_regime_skips_solv(self, job_dir):
-        update_job_params(str(job_dir), {"solvent_regime": "implicit"})
-        src = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
-        _complete(job_dir, "prep", {"merged_pdb": "artifacts/m.pdb"},
-                  parent_node_ids=[src])
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["node_type"] == "topo"
-        assert action["suggested_parent_node_ids"] == ["prep_001"]
-
-    def test_membrane_regime_suggests_embed_tool(self, job_dir):
-        update_job_params(str(job_dir), {"solvent_regime": "membrane"})
-        src = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
-        _complete(job_dir, "prep", {"merged_pdb": "artifacts/m.pdb"},
-                  parent_node_ids=[src])
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["node_type"] == "solv"
-        assert action["suggested_tool"] == "embed_in_membrane"
-
-    def test_unknown_regime_warns_and_defaults_explicit(self, job_dir):
-        src = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
-        _complete(job_dir, "prep", {"merged_pdb": "artifacts/m.pdb"},
-                  parent_node_ids=[src])
-        plan = plan_next(str(job_dir))
-        assert plan["next_action"]["node_type"] == "solv"
-        assert plan["warnings"], "expected a solvent_regime warning"
-
-
-# ── plan_next coordination (multi-agent) ──────────────────────────────────
-
-
-class TestPlanNextCoordination:
-
-    def test_coordination_block_always_present(self, job_dir):
-        # Even an empty job carries the (empty) coordination snapshot.
-        plan = plan_next(str(job_dir))
-        assert plan["coordination"] == {"claims": {}, "open_needs": {}}
-
-    def test_run_existing_surfaces_active_claim(self, job_dir):
-        from mdclaw._node import claim_node
-
-        ids = _explicit_chain_through(job_dir, "topo")
-        created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
-        claimed = claim_node(str(job_dir), created["node_id"], agent_id="agent-A")
+        node_id = created["node_id"]
+        claimed = claim_node(str(job_dir), node_id, agent_id="agent-A")
         assert claimed["success"], claimed
+        need = add_node_need(
+            str(job_dir),
+            node_id,
+            {
+                "need_type": "human_decision",
+                "query": "Confirm whether to continue this branch",
+                "rationale": "The branch has alternate conditions",
+            },
+        )
+        assert need["success"], need
+        begin_node(str(job_dir), node_id)
 
-        plan = plan_next(str(job_dir))
-        action = plan["next_action"]
-        assert action["action"] == "run_existing"
-        assert action["claim"]["claimed_by"] == "agent-A"
-        assert action["claim"]["active"] is True
-        assert any("agent-A" in w for w in plan["warnings"])
-        assert created["node_id"] in plan["coordination"]["claims"]
+        summary = inspect_job(str(job_dir))
+        assert summary["running_nodes"] == [node_id]
+        assert summary["claims"][node_id]["claimed_by"] == "agent-A"
+        assert summary["open_needs"][node_id]["open_needs_count"] == 1
 
-    def test_wait_running_surfaces_claim(self, job_dir):
-        from mdclaw._node import begin_node, claim_node
-
+    def test_explain_node_reports_ready_and_resolved_inputs(self, job_dir):
         ids = _explicit_chain_through(job_dir, "topo")
         created = create_node(str(job_dir), "min", parent_node_ids=[ids["topo"]])
-        claim_node(str(job_dir), created["node_id"], agent_id="agent-B")
-        begin_node(str(job_dir), created["node_id"])
+        node_id = created["node_id"]
 
-        action = plan_next(str(job_dir))["next_action"]
-        assert action["action"] == "wait_running"
-        assert action["claims"][created["node_id"]]["claimed_by"] == "agent-B"
+        explanation = explain_node(str(job_dir), node_id)
+        assert explanation["success"] is True
+        assert explanation["ready_to_run"] is True
+        assert explanation["parent_statuses"] == {ids["topo"]: "completed"}
+        assert not explanation["missing_inputs"]
+        assert explanation["resolved_inputs"]["system_xml_file"]
+
+    def test_explain_node_blocks_on_pending_parent(self, job_dir):
+        src = create_node(str(job_dir), "source")
+        assert src["success"], src
+        prep = create_node(str(job_dir), "prep", parent_node_ids=[src["node_id"]])
+        assert prep["success"], prep
+
+        explanation = explain_node(str(job_dir), prep["node_id"])
+        assert explanation["success"] is True
+        assert explanation["ready_to_run"] is False
+        assert explanation["parent_statuses"] == {src["node_id"]: "pending"}
+        assert explanation["validation"]["success"] is False
 
 
 # ── create_node auto-parent ───────────────────────────────────────────────
@@ -315,7 +255,7 @@ class TestCliPreflightJson:
         assert payload["code"] == "missing_required_arguments"
         assert payload["error_type"] == "ValidationError"
 
-    def test_create_node_emits_workflow_hint(self, tmp_path, capsys):
+    def test_create_node_does_not_emit_planner_envelope(self, tmp_path, capsys):
         from mdclaw._cli import main
 
         jd = tmp_path / "job_hint"
@@ -324,26 +264,19 @@ class TestCliPreflightJson:
         with pytest.raises(SystemExit):
             main(["create_node", "--job-dir", str(jd), "--node-type", "source"])
         capsys.readouterr()
-        # plan_next-derived hint should ride along on create_node output
         with pytest.raises(SystemExit):
             main(["create_node", "--job-dir", str(jd), "--node-type", "prep",
                   "--parent-node-ids", "source_001"])
         payload = json.loads(capsys.readouterr().out)
         assert payload["success"] is True
-        assert "workflow_hint" in payload
-        hint = payload["workflow_hint"]
-        assert hint["action"] in {
-            "run_existing", "create_and_run", "wait_running",
-        }
-        assert "next_command" in hint
+        assert "workflow" + "_hint" not in payload
 
-    def test_inspect_job_emits_workflow_hint(self, tmp_path, capsys):
+    def test_inspect_job_does_not_emit_planner_envelope(self, tmp_path, capsys):
         from mdclaw._cli import main
 
         # Mirror the real stall: a completed solv chain plus a pending topo node
-        # whose build_amber_system has not run yet (the P05 case where a weak
-        # agent looped on inspect_job). Polling inspect_job must now hand back the
-        # ready-to-run build_amber_system command so it cannot loop blind.
+        # whose build_amber_system has not run yet. Polling inspect_job must
+        # report DAG facts without inventing a next-step command.
         jd = tmp_path / "job_inspect_hint"
         jd.mkdir()
         ids = _explicit_chain_through(jd, "solv")
@@ -353,8 +286,5 @@ class TestCliPreflightJson:
             main(["inspect_job", "--job-dir", str(jd)])
         payload = json.loads(capsys.readouterr().out)
         assert payload["success"] is True
-        assert "workflow_hint" in payload
-        hint = payload["workflow_hint"]
-        assert hint["suggested_tool"] == "build_amber_system"
-        assert hint["next_command"]
-        assert "build_amber_system" in hint["next_command"]
+        assert "workflow" + "_hint" not in payload
+        assert payload["pending_nodes"] == [topo["node_id"]]

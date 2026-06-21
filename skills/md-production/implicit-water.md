@@ -74,7 +74,7 @@ raises `modern_system_hmr_mismatch`.
 ### Local Execution (node-based)
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --pressure-bar 0 \
@@ -107,29 +107,29 @@ node, and run both equilibration and production with `OBC2`:
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type min \
-  --parent-node-ids topo_001 \
+  --parent-node-ids <topo_node_id> \
   --label "min_OBC2" \
   --conditions '{"max_iterations": 5000, "implicit_solvent": "OBC2"}'
 
-mdclaw --job-dir <job_dir> --node-id min_002 run_minimization \
+mdclaw --job-dir <job_dir> --node-id <obc2_min_node_id> run_minimization \
   --implicit-solvent OBC2
 
 mdclaw create_node --job-dir <job_dir> --node-type eq \
-  --parent-node-ids min_002 \
+  --parent-node-ids <obc2_min_node_id> \
   --label "300K_OBC2" \
   --conditions '{"temperature_kelvin": 300, "pressure_bar": 0, "implicit_solvent": "OBC2"}'
 
-mdclaw --job-dir <job_dir> --node-id eq_002 run_equilibration \
+mdclaw --job-dir <job_dir> --node-id <obc2_eq_node_id> run_equilibration \
   --temperature-kelvin 300 \
   --pressure-bar 0 \
   --implicit-solvent OBC2
 
 mdclaw create_node --job-dir <job_dir> --node-type prod \
-  --parent-node-ids eq_002 \
+  --parent-node-ids <obc2_eq_node_id> \
   --label "1ns_OBC2" \
   --conditions '{"simulation_time_ns": 1.0, "pressure_bar": 0, "implicit_solvent": "OBC2"}'
 
-mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
+mdclaw --job-dir <job_dir> --node-id <obc2_prod_node_id> run_production \
   --simulation-time-ns 1.0 \
   --temperature-kelvin 300 \
   --pressure-bar 0 \
@@ -140,7 +140,7 @@ mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
 
 ```bash
 mdclaw submit_job \
-  --script "mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+  --script "mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
     --simulation-time-ns <user_specified> \
     --temperature-kelvin <T> \
     --pressure-bar 0 \
@@ -172,7 +172,7 @@ compute nodes can find all files without manual `realpath` conversion.
 ### GPU Selection
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --platform CUDA --device-index "0" \
   --simulation-time-ns 100.0 --pressure-bar 0 --implicit-solvent GBn2
 ```
@@ -182,7 +182,7 @@ mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
 HMR and 4 fs timestep are defaults. To disable:
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --no-hmr --timestep-fs 2.0 \
   --simulation-time-ns 100.0 --pressure-bar 0 --implicit-solvent GBn2
 ```
@@ -195,10 +195,10 @@ For planned extensions, create a new prod node with `--continue-from`:
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prod \
-  --continue-from prod_001 --label "+50ns" \
+  --continue-from <completed_prod_node_id> --label "+50ns" \
   --conditions '{"simulation_time_ns": 50}'
 
-mdclaw --job-dir <job_dir> --node-id prod_002 run_production \
+mdclaw --job-dir <job_dir> --node-id <extension_prod_node_id> run_production \
   --simulation-time-ns 50.0 --platform CUDA \
   --pressure-bar 0 --implicit-solvent GBn2
 ```
@@ -238,7 +238,7 @@ handling, read `skills/md-production/restart.md`.
 
 ## Verify Output
 
-Read `nodes/prod_001/node.json`:
+Read `nodes/<prod_node_id>/node.json`:
 
 - `status`: `"completed"`
 - `artifacts`: `trajectory`, `final_structure`, `checkpoint`, `energy`

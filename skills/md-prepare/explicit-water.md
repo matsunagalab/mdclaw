@@ -51,8 +51,8 @@ use `implicit-water.md` instead and do not retain explicit ions.
 ### Bulk Water
 
 ```bash
-mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
-mdclaw --job-dir job_xxx --node-id solv_001 solvate_structure \
+mdclaw create_node --job-dir <job_dir> --node-type solv
+mdclaw --job-dir <job_dir> --node-id <solv_node_id> solvate_structure \
   --dist 15.0 --salt --saltcon 0.15
 ```
 
@@ -85,8 +85,8 @@ that changes the system and should be stated as such.
 Use the same `solv` node type for membrane embedding:
 
 ```bash
-mdclaw create_node --job-dir job_xxx --node-type solv --parent-node-ids prep_001
-mdclaw --job-dir job_xxx --node-id solv_001 embed_in_membrane \
+mdclaw create_node --job-dir <job_dir> --node-type solv
+mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
   --salt --saltcon 0.15
 ```
@@ -140,8 +140,8 @@ Common structured outcomes:
 ## Step 5: Build Topology
 
 ```bash
-mdclaw create_node --job-dir job_xxx --node-type topo --parent-node-ids solv_001
-mdclaw --job-dir job_xxx --node-id topo_001 build_amber_system \
+mdclaw create_node --job-dir <job_dir> --node-type topo
+mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
   --no-is-membrane
 ```
 
@@ -206,7 +206,8 @@ interaction policy.
 
 ## Handoff
 
-1. Read `progress.json` -- verify `topo_001` status is `completed`.
+1. Read `progress.json` -- verify the topology node returned by `create_node`
+   has status `completed`.
 2. Tell the user:
    ```
    Preparation complete. Next:

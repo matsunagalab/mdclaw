@@ -54,8 +54,8 @@ an implicit topology.
 ## Step 5: Build Topology (no box, no water)
 
 ```bash
-mdclaw create_node --job-dir <job_dir> --node-type topo --parent-node-ids prep_001
-mdclaw --job-dir <job_dir> --node-id topo_001 build_amber_system \
+mdclaw create_node --job-dir <job_dir> --node-type topo
+mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
   --forcefield ff14SB \
   --implicit-solvent GBn2 \
   --no-is-membrane
@@ -144,7 +144,8 @@ Failure codes you may see (run side, after the topology resolver):
 
 ## Handoff
 
-1. Read `progress.json` — verify `topo_001` status is `completed`.
+1. Read `progress.json` — verify the topology node returned by `create_node`
+   has status `completed`.
 2. Tell the user:
    ```
    Preparation complete. Next:

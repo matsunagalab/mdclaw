@@ -7,8 +7,9 @@ description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Rou
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
 `skills/common/node-cli-patterns.md`, and `skills/common/run-loop.md` before
-acting. Use `mdclaw plan_next --job-dir <job_dir>` to confirm the job is ready
-for analysis and to get the leaf prod parent.
+acting. Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
+and identify the production or analysis node(s) that answer the analysis
+question.
 
 Analysis is always user-initiated. Production does not chain into analysis;
 the user or harness invokes this skill when ready. In harnesses with slash

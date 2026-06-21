@@ -455,43 +455,11 @@ def _cli_validation_error(
     }
 
 
-def _build_workflow_hint(job_dir: str) -> dict | None:
-    """Return a compact ``plan_next`` recommendation, or ``None`` on failure.
-
-    Best-effort helper so a successful workflow tool can tell the agent what
-    to do next without a separate ``plan_next`` call. Any error is swallowed
-    (the hint is an optimization, not part of the tool contract).
-    """
-    try:
-        from mdclaw._node import plan_next
-
-        plan = plan_next(job_dir)
-    except Exception:
-        return None
-    if not isinstance(plan, dict) or not plan.get("success"):
-        return None
-    action = plan.get("next_action", {}) or {}
-    return {
-        "code": plan.get("code"),
-        "action": action.get("action"),
-        "next_node_type": action.get("node_type"),
-        "suggested_tool": action.get("suggested_tool"),
-        "suggested_parent_node_ids": action.get("suggested_parent_node_ids", []),
-        "existing_node_id": action.get("existing_node_id"),
-        # Literal, ready-to-run command so a weak agent does not have to assemble
-        # it (or fall into an inspect_job poll loop). run_command targets an
-        # already-created node; create_command is the concrete first step when
-        # nothing exists yet (the run step arrives in the next hint).
-        "next_command": action.get("run_command") or action.get("create_command"),
-        "next_skill": plan.get("next_skill"),
-    }
-
-
 def _build_recovery_hint(job_dir: str, node_id: str) -> dict | None:
     """Return a recovery suggestion when a tool fails on an unresolved parent.
 
-    Failure counterpart to ``_build_workflow_hint``: when a workflow tool fails
-    with ``input_resolution_blocked`` because a parent node is stuck
+    When a workflow tool fails with ``input_resolution_blocked`` because a parent
+    node is stuck
     ``running``/``failed``/``pending``, surface a structured ``create_node``
     suggestion for the blocking parent's stage so a weak agent re-creates the
     stuck ancestor instead of re-running the same blocked node. Best-effort;
@@ -852,8 +820,9 @@ def main(argv: list[str] | None = None) -> None:
                 "--node-type <type> [--parent-node-ids ...]",
                 "Then run the tool: mdclaw --job-dir <job_dir> --node-id "
                 f"<node_id> {tool_name} ...",
-                "Use 'mdclaw plan_next --job-dir <job_dir>' to get the exact "
-                "next node and tool.",
+                "Use 'mdclaw inspect_job --job-dir <job_dir>' to inspect the "
+                "DAG, then 'mdclaw explain_node --job-dir <job_dir> "
+                "--node-id <node_id>' before running an existing node.",
             ],
             "context": {
                 "tool": tool_name,
@@ -884,19 +853,6 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
-        # Uniform "what next" envelope for weak agents. After any successful
-        # node-context workflow tool, create_node, or an inspect_job poll,
-        # attach the plan_next recommendation (incl. next_command) so the agent
-        # does not have to re-derive the DAG frontier by hand or loop on
-        # inspect_job. Best-effort: never let it break the real result.
-        if (
-            exit_code == 0
-            and isinstance(result, dict)
-            and effective_job_dir
-            and tool_name in (_NODE_REQUIRED_TOOLS | {"create_node", "inspect_job"})
-            and "workflow_hint" not in result
-        ):
-            result["workflow_hint"] = _build_workflow_hint(effective_job_dir)
         # Failure counterpart: when a workflow tool is blocked by a non-completed
         # parent, tell the agent to create a new node of the blocking parent's
         # stage rather than re-running this same blocked node.

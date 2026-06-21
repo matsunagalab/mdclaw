@@ -35,7 +35,7 @@ human-readable messages.
 | `missing_required_arguments` | Add the listed required flags (see `mdclaw --list-json`). |
 | `invalid_node_type` | Use one of: source, prep, solv, topo, min, eq, prod, analyze. |
 | `source_already_exists` | One source per job. Add structures to the existing source bundle or use another job. |
-| `referenced_node_missing` | A parent/dependency id does not exist. Use IDs from `inspect_job` / `plan_next`. |
+| `referenced_node_missing` | A parent/dependency id does not exist. Use IDs from `inspect_job`, `explain_node`, or `create_node`. |
 
 If a code is unknown, report `code`, `message`, `errors`, `warnings`, and
 `hints` to the user instead of inventing a workaround.

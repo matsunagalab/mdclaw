@@ -56,7 +56,7 @@ mdclaw generate_surrogate_candidates \
   --num-samples 100 \
   --max-candidates 20 \
   --job-dir <job_dir> \
-  --node-id source_001
+  --node-id <source_node_id>
 ```
 
 This creates a `source_bundle.json` with `source_type="surrogate"` and
@@ -73,7 +73,7 @@ guarantee K outputs.
 ```bash
 mdclaw list_source_candidates \
   --job-dir <job_dir> \
-  --node-id source_001
+  --node-id <source_node_id>
 ```
 
 Candidates are written with side-chains already reconstructed (HPacker runs
@@ -93,5 +93,5 @@ prep node first (its parent auto-resolves to the source node), then run
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-candidate-id candidate_001
+  --source-candidate-id <candidate_id>
 ```

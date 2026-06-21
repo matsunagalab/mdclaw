@@ -50,7 +50,7 @@ for CPU-only debugging. Prefer the tool default `--platform auto`; if an
 explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
 
 ```bash
-mdclaw --job-dir <job_dir> --node-id prod_001 run_production \
+mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns <user_specified> \
   --temperature-kelvin <T> \
   --output-frequency-ps 10.0
@@ -133,7 +133,7 @@ read `skills/md-production/restart.md`.
 
 ## Verify Output
 
-Read `nodes/prod_001/node.json`:
+Read `nodes/<prod_node_id>/node.json`:
 - `status`: `"completed"`
 - `artifacts`: trajectory, final_structure, checkpoint, energy
 - `metadata`: simulation_time_ns, platform, hmr, steps
