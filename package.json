@@ -1,6 +1,6 @@
 {
   "name": "@matsunagalab/mdclaw-agent-skills",
-  "version": "0.5.6",
+  "version": "0.6.0",
   "private": false,
   "description": "Skills and runtime packaging helpers for MDClaw vibe-MD simulations and autonomous scientific investigation.",
   "keywords": [
