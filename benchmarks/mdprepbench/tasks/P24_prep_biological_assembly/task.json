@@ -39,68 +39,21 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_pdb_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "1STP"
-          ],
-          [
-            "assembly 1",
-            "assembly_id",
-            "biological assembly"
-          ]
-        ],
-        "weight": 0.15
-      },
-      {
-        "assembly_id_json_file": "metrics.json",
-        "assembly_id_json_path": "preparation.assembly_id",
-        "chain_identity_json_file": "metrics.json",
-        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
-        "check_id": "assembly_generated_and_mapped",
-        "check_type": "assembly_identity_check",
-        "exact_chain_count": 4,
-        "min_distinct_output_chains": 4,
-        "min_mapping_entries": 4,
-        "require_output_chains_in_structure": true,
-        "required_assembly_id": "1",
-        "required_mapping_fields": [
-          "source_pdb_id",
-          "assembly_id",
-          "source_auth_asym_id",
-          "source_label_asym_id|source_subchain_id",
-          "operator_id",
-          "output_chain_id",
-          "naming_policy"
-        ],
-        "required_operator_ids": [
-          "1",
-          "2",
-          "3",
-          "4"
-        ],
-        "structure_manifest_path": "outputs.prepared_structure",
+        "align_selection": "protein and name CA",
+        "check_id": "assembly_1_coordinate_match",
+        "check_type": "rmsd_recompute",
+        "max_value": 2.0,
+        "reference_pdb": "truth/assembly_1_reference.pdb",
+        "selection": "protein and name CA",
+        "tolerance_angstrom": 0.05,
         "weight": 0.75
       },
       {
-        "check_id": "many_chain_policy_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "chain",
-            "multi-chain",
-            "many-chain"
-          ],
-          [
-            "identity map",
-            "mapping",
-            "policy"
-          ]
-        ],
-        "weight": 0.1
+        "check_id": "assembly_four_chains",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 4,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "weight": 0.35
       },
       {
         "check_id": "topology_artifact_bundle_present",
@@ -137,34 +90,11 @@
         "weight": 1.0
       },
       {
-        "assembly_id_json_file": "metrics.json",
-        "assembly_id_json_path": "preparation.assembly_id",
-        "chain_identity_json_file": "metrics.json",
-        "chain_identity_json_path": "preparation.assembly_chain_identity_map",
-        "check_id": "minimized_assembly_generated_and_mapped",
+        "check_id": "minimized_assembly_four_chains",
         "check_type": "assembly_identity_check",
         "exact_chain_count": 4,
-        "min_distinct_output_chains": 4,
-        "min_mapping_entries": 4,
-        "require_output_chains_in_structure": true,
-        "required_assembly_id": "1",
-        "required_mapping_fields": [
-          "source_pdb_id",
-          "assembly_id",
-          "source_auth_asym_id",
-          "source_label_asym_id|source_subchain_id",
-          "operator_id",
-          "output_chain_id",
-          "naming_policy"
-        ],
-        "required_operator_ids": [
-          "1",
-          "2",
-          "3",
-          "4"
-        ],
         "structure_manifest_path": "outputs.minimized_structure",
-        "weight": 0.75
+        "weight": 0.35
       }
     ],
     "ground_truth_checks": [],
@@ -201,6 +131,6 @@
     "evidence_communication"
   ],
   "task_id": "P24_prep_biological_assembly",
-  "task_intent": "Assembly/biological unit choice: generate or select the requested biological assembly by assembly_id while preserving source auth/label/operator provenance and stable chain identity.",
+  "task_intent": "Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. The scorer verifies the submitted coordinates against a fixed assembly-1 reference and checks that the submitted structure contains four protein chains, so assembly identity is not accepted from self-reported JSON alone.",
   "time_limit_minutes": 60
 }

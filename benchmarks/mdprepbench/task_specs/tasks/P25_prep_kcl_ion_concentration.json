@@ -30,8 +30,8 @@
             "K+"
           ]
         },
-        "structure_manifest_path": "outputs.prepared_structure",
-        "structure_path": "prepared_structure.pdb",
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
         "weight": 0.3
       },
       {
@@ -46,8 +46,6 @@
         "check_id": "net_charge_neutral_recomputed",
         "check_type": "net_charge_check",
         "require_neutral": true,
-        "charge_json_file": "metrics.json",
-        "charge_json_path": "preparation.net_charge",
         "topology_manifest_path": "outputs.topology",
         "weight": 0.3
       },

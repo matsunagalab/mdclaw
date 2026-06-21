@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from mdclaw.benchmark import cli
 from mdclaw.benchmark.models import SCORE_AXES, Task
 
@@ -444,17 +446,14 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     ).read_text()
     assert "model 1" in p18_prompt
     assert "PDB 2LOP NMR ensemble" in p18_prompt
-    assert "source_selection.json" in p18_prompt
-    assert "structured provenance" in p18_prompt
+    assert "submitted coordinates" in p18_prompt
+    assert "no self-reported source-selection evidence is required" in p18_prompt
 
     p19_dir = DATASET_DIR / "tasks" / "P19_prep_nmr_model_selection"
     p19_prompt = (p19_dir / "prompt.md").read_text()
     assert "model 5" in p19_prompt
-    assert "candidate_005" in p19_prompt
-    assert "selected model rank as 5" in p19_prompt
-    assert "source_selection.json" in p19_prompt
-    assert "structured provenance" in p19_prompt
-    assert "selection reason" in p19_prompt
+    assert "submitted coordinates" in p19_prompt
+    assert "no self-reported source-selection evidence is required" in p19_prompt
 
     task = json.loads((p19_dir / "task.json").read_text())
     checks = {
@@ -463,10 +462,12 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     }
     assert "candidate_selected" not in checks
     assert "selected_model_rank_recorded" not in checks
-    assert checks["source_selection_model_5"]["check_type"] == "candidate_selection_check"
-    assert checks["source_selection_model_5"]["required_candidate_id"] == "candidate_005"
-    assert checks["source_selection_model_5"]["required_model_rank"] == 5
-    assert checks["source_selection_model_5"]["require_selection_reason"] is True
+    assert "source_selection_model_5" not in checks
+    p19_model_check = checks["nmr_model_5_coordinate_match"]
+    assert p19_model_check["check_type"] == "rmsd_recompute"
+    assert p19_model_check["reference_pdb"] == "truth/model_5_reference.pdb"
+    assert p19_model_check["selection"] == "protein and name CA"
+    assert p19_model_check["align_selection"] == "protein and name CA"
 
     p18_task = json.loads(
         (
@@ -481,7 +482,39 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
         for check in p18_task["scoring"]["deterministic_checks"]
     }
     assert "selected_model_rank_recorded" not in p18_checks
-    assert p18_checks["source_selection_model_1"]["required_model_rank"] == 1
+    assert "source_selection_model_1" not in p18_checks
+    p18_model_check = p18_checks["nmr_model_1_coordinate_match"]
+    assert p18_model_check["check_type"] == "rmsd_recompute"
+    assert p18_model_check["reference_pdb"] == "truth/model_1_reference.pdb"
+    assert p18_model_check["selection"] == "protein and name CA"
+    assert p18_model_check["align_selection"] == "protein and name CA"
+
+
+def test_p08_branching_scores_wt_parent_artifact_not_text_claims():
+    p08_task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P08_prep_t4l_l99a_branch"
+            / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in p08_task["scoring"]["deterministic_checks"]
+    }
+
+    assert "wt_prepared_structure.pdb" in p08_task["required_outputs"]
+    assert all(
+        check["check_type"] != "artifact_provenance_text"
+        for check in checks.values()
+    )
+    parent = checks["wt_parent_l99_preserved"]
+    assert parent["check_type"] == "pdb_residue_state"
+    assert parent["structure_manifest_path"] == "outputs.parent_prepared_structure"
+    assert parent["structure_path"] == "wt_prepared_structure.pdb"
+    assert parent["required_residue_name"] == "LEU"
+    assert parent["residue_number"] == "99"
 
 
 def test_prep_tasks_do_not_score_preparation_self_report_booleans():
@@ -490,6 +523,19 @@ def test_prep_tasks_do_not_score_preparation_self_report_booleans():
     for task_id in dataset["task_ids"]:
         task = json.loads((DATASET_DIR / "tasks" / task_id / "task.json").read_text())
         for check in task["scoring"]["deterministic_checks"]:
+            assert check["check_type"] not in {
+                "artifact_provenance_text",
+                "candidate_selection_check",
+            }, f"{task_id} still scores self-reported text/candidate evidence"
+            assert "charge_json_path" not in check, (
+                f"{task_id} still asks for submitted charge JSON"
+            )
+            assert "assembly_id_json_path" not in check, (
+                f"{task_id} still asks for submitted assembly_id JSON"
+            )
+            assert "chain_identity_json_path" not in check, (
+                f"{task_id} still asks for submitted chain identity JSON"
+            )
             json_path = str(check.get("json_path") or "")
             if check.get("check_type") == "json_equals" and json_path.startswith(
                 "preparation."
@@ -497,6 +543,91 @@ def test_prep_tasks_do_not_score_preparation_self_report_booleans():
                 raise AssertionError(
                     f"{task_id} scores self-reported {json_path} via json_equals"
                 )
+
+
+def test_p25_scores_kcl_and_neutrality_from_topology_artifacts():
+    task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P25_prep_kcl_ion_concentration"
+            / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    kcl = checks["kcl_ions_present"]
+    assert kcl["check_type"] == "structure_component_rescan"
+    assert kcl["structure_manifest_path"] == "outputs.topology"
+    assert kcl["structure_path"] == "topology/topology.pdb"
+
+    net_charge = checks["net_charge_neutral_recomputed"]
+    assert net_charge["check_type"] == "net_charge_check"
+    assert net_charge["topology_manifest_path"] == "outputs.topology"
+    assert "charge_json_path" not in net_charge
+    assert "charge_json_file" not in net_charge
+
+
+def test_p24_scores_assembly_from_coordinates_and_chain_count():
+    task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P24_prep_biological_assembly"
+            / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    coordinate = checks["assembly_1_coordinate_match"]
+    assert coordinate["check_type"] == "rmsd_recompute"
+    assert coordinate["reference_pdb"] == "truth/assembly_1_reference.pdb"
+    assert coordinate["selection"] == "protein and name CA"
+    assert coordinate["align_selection"] == "protein and name CA"
+
+    prepared_chains = checks["assembly_four_chains"]
+    assert prepared_chains["check_type"] == "assembly_identity_check"
+    assert prepared_chains["structure_manifest_path"] == "outputs.prepared_structure"
+    assert prepared_chains["exact_chain_count"] == 4
+    assert "assembly_id_json_path" not in prepared_chains
+    assert "chain_identity_json_path" not in prepared_chains
+
+    minimized_chains = checks["minimized_assembly_four_chains"]
+    assert minimized_chains["structure_manifest_path"] == "outputs.minimized_structure"
+    assert minimized_chains["exact_chain_count"] == 4
+
+
+def test_coordinate_reference_truth_files_are_mdtraj_loadable():
+    md = pytest.importorskip("mdtraj")
+    references = [
+        DATASET_DIR
+        / "tasks"
+        / "P18_prep_membrane_mixed_lipids"
+        / "truth"
+        / "model_1_reference.pdb",
+        DATASET_DIR
+        / "tasks"
+        / "P19_prep_nmr_model_selection"
+        / "truth"
+        / "model_5_reference.pdb",
+        DATASET_DIR
+        / "tasks"
+        / "P24_prep_biological_assembly"
+        / "truth"
+        / "assembly_1_reference.pdb",
+    ]
+
+    for path in references:
+        traj = md.load(str(path))
+        assert traj.n_atoms > 0
+        ca_atoms = traj.topology.select("protein and name CA")
+        assert len(ca_atoms) > 0
 
 
 def test_task_contracts_do_not_expose_input_directory():

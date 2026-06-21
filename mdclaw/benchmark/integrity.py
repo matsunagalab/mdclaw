@@ -105,6 +105,7 @@ def recompute_ligand_rmsd(
     reference_pdb: Path,
     selection: str,
     align_selection: Optional[str] = None,
+    image_molecules: bool = False,
 ) -> tuple[Optional[float], str]:
     """Recompute heavy-atom RMSD of a ligand selection between two PDB-like
     structures. Returns ``(rmsd_angstrom, message)`` with rmsd None on error.
@@ -121,16 +122,12 @@ def recompute_ligand_rmsd(
     except Exception as exc:
         return None, f"load failed: {exc}"
 
-    # Re-image molecules before measuring. A ligand that sits near a box face
-    # is commonly written at a periodic image after a PBC minimization /
-    # equilibration export (e.g. one full box length away). That pose is
-    # scientifically correct, but a naive RMSD against the crystal reference
-    # would score it as a large spurious displacement. ``image_molecules``
-    # makes molecules whole and images them onto the largest molecule (the
-    # protein), restoring the true ligand pose. Best-effort: only when the
-    # structure carries a periodic box, and never let it break scoring.
+    # Re-imaging can be useful for some PBC ligand-pose exports, but mdtraj's
+    # image_molecules path is a compiled routine and has crashed on sparse or
+    # synthetic structures. Keep it opt-in so protein/model/assembly checks stay
+    # robust and deterministic.
     reimaged = False
-    if prepared.unitcell_lengths is not None:
+    if image_molecules and prepared.unitcell_lengths is not None:
         try:
             prepared.image_molecules(inplace=True)
             reimaged = True

@@ -408,6 +408,13 @@ family:
 Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
 submitted artifacts.
+For MDPrepBench, this is deliberately MDClaw-free on the solve side: an agent
+may use MDClaw, direct OpenMM scripts, another MD-prep stack, or a custom
+runner, as long as the submitted artifacts satisfy the public contract. Keep
+submissions slim. The scorer derives properties such as model/assembly choice,
+net charge, ion molarity, water model, and component presence from the submitted
+OpenMM bundle and structures instead of trusting self-reported metrics or
+free-form explanations.
 
 User-facing benchmark requests should stay short:
 
@@ -480,6 +487,23 @@ mdclaw export_state_pdb \
 
 Do not assume `topology.pdb` itself contains minimized coordinates unless that
 workflow explicitly wrote it that way.
+
+For non-MDClaw solvers, package an already-built OpenMM artifact triple with
+the standalone helper instead of importing MDClaw into the solver:
+
+```bash
+python benchmarks/tools/package_submission.py \
+  --submission-dir <submission_dir> \
+  --task-id <task_id> \
+  --run-id <run_id> \
+  --system-xml <system.xml> \
+  --topology-pdb <topology.pdb> \
+  --state-xml <state.xml>
+```
+
+Add task-specific extra artifacts only when the public contract asks for them,
+for example `--extra-output parent_prepared_structure=wt_prepared_structure.pdb`
+for branching tasks.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 

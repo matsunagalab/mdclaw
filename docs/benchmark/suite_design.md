@@ -137,14 +137,14 @@ success.
 | P15 | Standard DNA topology | PDB 5MVQ | Task: Standard DNA topology: prepare a DNA dodecamer without assuming protein or ligand defaults. | DNA type and library metadata, common topology/minimization checks. | 2 |
 | P16 | Standard RNA topology | PDB 4RBQ | Task: Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library. | RNA type and library metadata, common topology/minimization checks. | 2 |
 | P17 | DNA duplex chain retention and neutralization | PDB 1BNA | Task: DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain. | DNA type, two chains, DA/DC/DG/DT retained in prepared/minimized structures, neutralization metadata, common topology/minimization checks. | 2 |
-| P18 | Membrane embedding and lipid composition | PDB 2LOP | Task: Membrane embedding and lipid composition: prepare TMEM14A in a mixed POPC:POPE:CHL1 membrane at a 2:1:1 species ratio. | membrane metadata, POPC/POPE/CHL1 retained in prepared/minimized structures, lipid ratio metadata, common topology/minimization checks. | 1 |
-| P19 | Candidate/model selection | PDB 2K39 | Task: Candidate/model selection: select a specified NMR model/candidate before preparation rather than silently using model 1 or averaging the ensemble. | selected model/candidate metadata, selection reason, common topology/minimization checks. | 2 |
+| P18 | Membrane embedding and lipid composition | PDB 2LOP | Task: Membrane embedding and lipid composition: prepare TMEM14A model 1 in a mixed POPC:POPE:CHL1 membrane with nominal 2:1:1 composition. | membrane regime from topology, model-1 coordinate RMSD, POPC/POPE/CHL1 retained in topology/minimized structure, common topology/minimization checks. | 1 |
+| P19 | Candidate/model selection | PDB 2K39 | Task: Candidate/model selection: select model 5 from the NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. | model-5 coordinate RMSD against scorer-private reference, common topology/minimization checks. | 2 |
 | P20 | Terminal capping | PDB 5AWL | Task: Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices. | ACE/NME retained in prepared/minimized structures, cap choices recorded, common topology/minimization checks. | 1 |
 | P21 | PDB cleanup, missing residues, and numbering | PDB 4Q5T | Task: PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block. | MSE removed, cleanup/altloc/numbering/missing-residue decisions recorded, common topology/minimization checks. | 2 |
 | P22 | Force-field/water model fidelity | PDB 2LZM | Task: Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults. | requested force-field/water pair and explicit solvent metadata, common topology/minimization checks. | 1 |
 | P23 | Implicit vs explicit solvent | PDB 5AWL | Task: Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box. | implicit solvent metadata, no explicit waters/ions in prepared/minimized structures, common topology/minimization checks. | 2 |
-| P24 | Assembly/biological unit choice | PDB 1STP, stress reference PDB 2MS2 | Task: Assembly/biological unit choice: generate or select the requested biological assembly by assembly_id while preserving source auth/label/operator provenance and stable chain identity. | source PDB, assembly_id, assembly chain identity map, operator provenance, chain count, common topology/minimization checks. | 1 |
-| P25 | Specified ion concentration | PDB 5AWL | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | explicit solvent, K/CL retained in prepared/minimized structures, 0.30 M KCl and neutralization metadata, common topology/minimization checks. | 1 |
+| P24 | Assembly/biological unit choice | PDB 1STP, stress reference PDB 2MS2 | Task: Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. | assembly-1 coordinate RMSD, four submitted protein chains, common topology/minimization checks. | 1 |
+| P25 | Specified ion concentration | PDB 5AWL | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | explicit solvent, K/CL retained in topology/minimized structure, 0.30 M KCl recomputed from ion count and box volume, net charge recomputed from OpenMM charges, common topology/minimization checks. | 1 |
 
 Priority now indicates the preferred order for real MDClaw baseline smoke runs
 and further curation. All 25 tasks are part of the active prep battery.
@@ -199,19 +199,19 @@ check types include:
   ions and final box volume.
 - `lipid_composition_check`: count lipid residue/species names and compare the
   submitted membrane composition against the requested ratio within tolerance.
-- `assembly_identity_check`: verify requested `assembly_id`, expected
-  component count, source auth/label/subchain/operator provenance, output chain
-  names, and stable identity mapping for many-chain assemblies. The first
-  implementation is used by P24 and can be strengthened for many-chain stress
-  cases.
+- `assembly_identity_check`: verify expected submitted chain/copy count for
+  biological assemblies. P24 also uses coordinate RMSD against a scorer-private
+  assembly reference, so assembly identity is judged from submitted structure
+  artifacts rather than from a self-reported assembly map.
 - `pdb_cleanup_decision_check`: verify altloc selection, insertion-code /
   author-numbering preservation, MSE/nonstandard-residue handling, missing-loop
   decisions, and termini/capping decisions.
 - `protonation_state_check`: verify user-specified residue protonation states
   where the artifact format makes that possible, including named residue sites
   rather than only global pH defaults.
-- `candidate_selection_check`: verify a selected source-bundle candidate ID and
-  selection reason.
+- `rmsd_recompute`: verify ligand pose, NMR model selection, or assembly choice
+  against scorer-private references when source-selection self-report would be
+  too easy to fabricate.
 
 Do not add a public prep-benchmark scorer primitive that requires MDClaw-local
 codes. Backend-neutral blocked evidence can be validated through the standard
@@ -313,9 +313,9 @@ Implemented:
   part of the core prep battery.
 - P20 is the terminal capping task; homology modeling is not part of the core
   prep battery.
-- P24 uses `assembly_identity_check` and requires `assembly_id`,
-  source auth/label or subchain identifiers, operator IDs, output chain IDs, and
-  naming policy in the chain identity map.
+- P24 uses `rmsd_recompute` against the scorer-private assembly-1 reference plus
+  `assembly_identity_check` on submitted chain count; it no longer accepts
+  `preparation.assembly_id` or chain-identity-map JSON as scoring truth.
 - OpenMM submissions are strongly checked by loading `system.xml`,
   `topology.pdb`, and `state.xml`, then rescanning finite potential energy and
   finite positions.

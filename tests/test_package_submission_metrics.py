@@ -111,8 +111,7 @@ def test_packager_derives_only_scorer_consumed_preparation_keys(tmp_path):
         solvent_model="explicit", preparation_summary_file=str(summary),
     )
     prep = packaged["metrics"]["preparation"]
-    assert prep["assembly_id"] == "1"
-    assert isinstance(prep["assembly_chain_identity_map"], list)
+    assert prep == {}
     assert "disulfide_pairs" not in prep
     assert "component_disposition_recorded" not in prep
     assert any(
@@ -146,7 +145,7 @@ def test_packager_metrics_keys_are_scorer_canonical(tmp_path):
         tmp_path, force_field="ff19SB", water_model="opc",
         preparation_summary_file=str(summary),
     )["metrics"]
-    assert metrics["preparation"] == {"net_charge": 0.0}
+    assert metrics["preparation"] == {}
     for key in metrics["preparation"]:
         assert key in canonical, (
             f"packager emits preparation.{key!r} which is not a scorer "

@@ -18,6 +18,76 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mdclaw.benchmark.datasets import DEFAULT_BENCHMARK_VERSION
 
+
+if not hasattr(BaseModel, "model_validate"):
+    from pydantic import ValidationError
+    from pydantic.error_wrappers import ErrorWrapper
+
+    def _v1_model_config(cls) -> dict[str, Any]:
+        field = getattr(cls, "__fields__", {}).get("model_config")
+        default = getattr(field, "default", None)
+        return default if isinstance(default, dict) else {}
+
+    def _v1_strip_model_config_field(cls, obj: Any) -> Any:
+        if isinstance(obj, dict) and "model_config" in getattr(cls, "__fields__", {}):
+            obj = dict(obj)
+            obj.pop("model_config", None)
+        return obj
+
+    def _v1_forbidden_extras(cls, obj: Any) -> list[str]:
+        if not isinstance(obj, dict):
+            return []
+        if _v1_model_config(cls).get("extra") != "forbid":
+            return []
+        allowed = set(getattr(cls, "__fields__", {})) - {"model_config"}
+        return sorted(set(obj) - allowed)
+
+    def _model_validate(cls, obj: Any, *args: Any, **kwargs: Any) -> BaseModel:
+        del args, kwargs
+        extras = _v1_forbidden_extras(cls, obj)
+        if extras:
+            errors = [
+                ErrorWrapper(ValueError("extra fields not permitted"), loc=field)
+                for field in extras
+            ]
+            raise ValidationError(errors, cls)
+        obj = _v1_strip_model_config_field(cls, obj)
+        return cls.parse_obj(obj)
+
+    def _model_validate_json(cls, json_data: str | bytes,
+                             *args: Any, **kwargs: Any) -> BaseModel:
+        del args, kwargs
+        import json as _json
+
+        return cls.model_validate(_json.loads(json_data))
+
+    def _model_dump(self: BaseModel, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        exclude = kwargs.pop("exclude", None)
+        if "model_config" in getattr(type(self), "__fields__", {}):
+            if exclude is None:
+                exclude = {"model_config"}
+            elif isinstance(exclude, set):
+                exclude = {*exclude, "model_config"}
+            elif isinstance(exclude, dict):
+                exclude = {**exclude, "model_config": True}
+        return self.dict(*args, exclude=exclude, **kwargs)
+
+    def _model_dump_json(self: BaseModel, *args: Any, **kwargs: Any) -> str:
+        exclude = kwargs.pop("exclude", None)
+        if "model_config" in getattr(type(self), "__fields__", {}):
+            if exclude is None:
+                exclude = {"model_config"}
+            elif isinstance(exclude, set):
+                exclude = {*exclude, "model_config"}
+            elif isinstance(exclude, dict):
+                exclude = {**exclude, "model_config": True}
+        return self.json(*args, exclude=exclude, **kwargs)
+
+    BaseModel.model_validate = classmethod(_model_validate)  # type: ignore[attr-defined]
+    BaseModel.model_validate_json = classmethod(_model_validate_json)  # type: ignore[attr-defined]
+    BaseModel.model_dump = _model_dump  # type: ignore[attr-defined]
+    BaseModel.model_dump_json = _model_dump_json  # type: ignore[attr-defined]
+
 # ---------------------------------------------------------------------------
 # Enumerated string types
 
@@ -281,6 +351,7 @@ class DeterministicCheck(BaseModel):
     selection: Optional[str] = None  # mdtraj selection string
     align_selection: Optional[str] = None  # superpose target
     tolerance_angstrom: float = 0.05
+    image_molecules_before_rmsd: bool = False
 
     # assembly_identity_check
     assembly_id_json_file: Optional[str] = None

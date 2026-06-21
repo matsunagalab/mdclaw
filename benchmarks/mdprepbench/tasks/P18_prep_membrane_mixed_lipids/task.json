@@ -55,12 +55,13 @@
         "weight": 0.2
       },
       {
-        "check_id": "source_selection_model_1",
-        "check_type": "candidate_selection_check",
-        "require_selection_reason": false,
-        "required_model_rank": 1,
-        "source_selection_manifest_path": "outputs.source_selection",
-        "source_selection_path": "source_selection.json",
+        "align_selection": "protein and name CA",
+        "check_id": "nmr_model_1_coordinate_match",
+        "check_type": "rmsd_recompute",
+        "max_value": 2.0,
+        "reference_pdb": "truth/model_1_reference.pdb",
+        "selection": "protein and name CA",
+        "tolerance_angstrom": 0.05,
         "weight": 0.2
       },
       {
@@ -189,6 +190,6 @@
     "evidence_communication"
   ],
   "task_id": "P18_prep_membrane_mixed_lipids",
-  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. Record the selected model rank as 1 and source-selection evidence in `source_selection.json` or structured provenance.",
+  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. The scorer verifies model selection from the submitted coordinates against a fixed model-1 reference, so no self-reported source-selection evidence is required.",
   "time_limit_minutes": 60
 }

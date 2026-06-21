@@ -346,15 +346,11 @@ that it was written with minimized coordinates. This topology-time minimization
 evidence is separate from the standalone `min` node used before later
 equilibration nodes in ordinary MDClaw DAGs.
 
-The public `submission_contract.json` records the agent-facing metric paths
-that must be populated in `metrics.json`, plus a `submission_blueprint` showing
-the minimum manifest, metrics, minimization report, and provenance shape. For
-example, P01 requires `preparation.source_pdb_id`,
-`preparation.solvent_model`, and `preparation.topology_ready`.
-When a task requires source/model selection, the public contract also includes
-`candidate_selection_requirements`; satisfy those with `source_selection.json`
-listed from `manifest.outputs.source_selection`, or with equivalent structured
-`source_selection` evidence in provenance, metrics, or the evidence report.
+The public `submission_contract.json` records the artifact requirements plus a
+`submission_blueprint` showing the minimum manifest, metrics, minimization
+report, and provenance shape. MDPrepBench intentionally keeps structured
+submitted metrics small: the scorer should recompute scientific and physical
+facts from artifacts whenever possible instead of accepting self-reported JSON.
 All `manifest.outputs` paths must be relative paths under `submission/`;
 absolute paths and parent-directory escapes are rejected. Completed prep
 submissions must include structured provenance execution evidence, usually
@@ -363,30 +359,33 @@ Strict tasks also require a harness-owned `harness_execution.json` outside
 `submission/`, with measured walltime for each required stage. A solver-written
 `provenance.json` alone is not sufficient execution evidence.
 
-Individual tasks may inspect specific paths inside `metrics.json`, component
-counts in `prepared_structure.pdb` or the minimized structure, or scorer-side
-references under `truth/`.
-For example, P11 checks both
-`metrics.preparation.requested_protonation_state == "GLH"` and the submitted
-PDB residue state for chain A residue 11.
+Individual tasks inspect submitted structures, OpenMM bundle contents, and
+scorer-side references under `truth/`. For example, P11 checks the submitted PDB
+residue state for chain A residue 11; P18/P19 verify NMR model selection by
+coordinate RMSD against scorer-private references; P24 verifies assembly 1 by
+coordinate RMSD plus submitted chain count; P25 recomputes neutrality and KCl
+molarity from the OpenMM bundle.
 
 ## Scoring
 
 Scoring is deterministic and artifact-as-truth: the scorer detects OpenMM by
 deserializing the `system.xml` + `topology.pdb` + `state.xml` triple (not by a
 declared `topology.backend` label) and recomputes physical properties from the
-artifact. `metrics.json` is a cross-checked declaration; a declared-vs-recomputed
-mismatch is an integrity warning and the recomputed value scores.
+artifact. `metrics.json` is auxiliary metadata; current MDPrepBench preparation
+facts are scored from artifacts where possible.
 
 Check types:
 
 - `required_files` / `forbidden_files`
-- `json_equals`, `json_min`, `json_min_length`, `json_allowed_values`
 - `structure_component_rescan`
   (with task-defined residue-name aliases for backend-specific ion/lipid names)
+- `minimized_structure_component_rescan`
 - `pdb_residue_state`
+- `disulfide_bond_rescan`
+- `nucleic_content_rescan`
+- `solvent_regime_rescan`
 - `rmsd_recompute`
-- `candidate_selection_check`
+- `assembly_identity_check`
 - `topology_artifact_bundle`
 - `openmm_system_load` and `openmm_energy_rescan`
 - `forcefield_applied_rescan` (force field applied to every atom)
@@ -394,7 +393,6 @@ Check types:
 - `water_model_fingerprint` (3-site vs 4/5-site classification)
 - `ion_concentration_recompute` (molarity from ion count + box volume)
 - `minimization_report_check`
-- `minimized_structure_component_rescan`
 - artifact integrity checks such as byte floors, safe manifest paths, and
   provenance execution evidence
 

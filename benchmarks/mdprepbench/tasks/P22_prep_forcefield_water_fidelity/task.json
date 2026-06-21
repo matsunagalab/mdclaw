@@ -51,22 +51,6 @@
         "weight": 0.7
       },
       {
-        "check_id": "forcefield_choice_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "ff19SB",
-            "amber19/protein.ff19SB.xml"
-          ],
-          [
-            "OPC",
-            "amber19/opc.xml"
-          ]
-        ],
-        "weight": 0.2
-      },
-      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,

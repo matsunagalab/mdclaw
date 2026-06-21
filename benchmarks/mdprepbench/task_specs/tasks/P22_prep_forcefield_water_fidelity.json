@@ -31,22 +31,6 @@
         "weight": 0.7
       },
       {
-        "check_id": "forcefield_choice_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "ff19SB",
-            "amber19/protein.ff19SB.xml"
-          ],
-          [
-            "OPC",
-            "amber19/opc.xml"
-          ]
-        ],
-        "weight": 0.2
-      },
-      {
         "$bundle": "topology_minimization"
       }
     ]

@@ -53,8 +53,11 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "run_minimization" in guidance["mdclaw_dag_command_template"]
         assert "export_state_pdb" in guidance["mdclaw_export_command_template"]
         packaging = contract["manifest_contract"]["packaging_guidance"]
-        assert packaging["preferred_when_openmm_triple_exists"] == (
-            "mdclaw package_openmm_submission"
+        assert "mdclaw package_openmm_submission" in (
+            packaging["preferred_when_openmm_triple_exists"]
+        )
+        assert "benchmarks/tools/package_submission.py" in (
+            packaging["preferred_when_openmm_triple_exists"]
         )
         assert "manifest.json" in packaging["packager_writes"]
         assert "evidence_report" in " ".join(packaging["packager_writes"])
@@ -298,22 +301,18 @@ def test_export_public_package_exposes_p18_mixed_lipid_requirements(
         "POPE": 1,
         "CHL1": 1,
     }
-    candidate_requirements = contract["candidate_selection_requirements"]
-    assert len(candidate_requirements) == 1
-    candidate_requirement = candidate_requirements[0]
-    assert candidate_requirement["check_id"] == "source_selection_model_1"
-    assert candidate_requirement["required_candidate_id"] is None
-    assert candidate_requirement["required_model_rank"] == 1
-    assert candidate_requirement["require_selection_reason"] is False
-    assert candidate_requirement["required_for_completed_submission"] is True
-    assert "source_selection.json" in candidate_requirement["accepted_locations"]
-    assert "provenance.source_selection" in candidate_requirement["accepted_locations"]
-    assert candidate_requirement["expected_shape"]["selected_structure"]["origin"] == {
-        "model_rank": 1,
-    }
+    assert contract["candidate_selection_requirements"] == []
+    assert "outputs.source_selection" not in contract["manifest_contract"][
+        "recommended_optional_outputs"
+    ]
+    model_check = artifact_requirements["nmr_model_1_coordinate_match"]
+    assert model_check["check_type"] == "rmsd_recompute"
+    assert model_check["selection"] == "protein and name CA"
+    assert model_check["align_selection"] == "protein and name CA"
+    assert model_check["max_value"] == 2.0
 
 
-def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
+def test_export_public_package_exposes_p19_coordinate_model_contract(tmp_path: Path):
     out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
@@ -324,40 +323,24 @@ def test_export_public_package_exposes_p19_candidate_contract(tmp_path: Path):
     task_dir = out_dir / "tasks" / "P19_prep_nmr_model_selection"
     prompt = (task_dir / "prompt.md").read_text()
     assert "model 5" in prompt
-    assert "candidate_005" in prompt
-    assert "selected model rank as 5" in prompt
-    assert "source_selection.json" in prompt
-    assert "structured provenance" in prompt
-    assert "selection reason" in prompt
+    assert "submitted coordinates" in prompt
+    assert "no self-reported source-selection evidence is required" in prompt
 
     contract = json.loads((task_dir / "submission_contract.json").read_text())
     assert contract["metric_requirements"] == []
-    assert "outputs.source_selection" in contract["manifest_contract"][
+    assert "outputs.source_selection" not in contract["manifest_contract"][
         "recommended_optional_outputs"
     ]
-    candidate_requirements = contract["candidate_selection_requirements"]
-    assert len(candidate_requirements) == 1
-    candidate_requirement = candidate_requirements[0]
-    assert candidate_requirement["check_id"] == "source_selection_model_5"
-    assert candidate_requirement["required_candidate_id"] == "candidate_005"
-    assert candidate_requirement["required_model_rank"] == 5
-    assert candidate_requirement["require_selection_reason"] is True
-    assert candidate_requirement["required_for_completed_submission"] is True
-    assert candidate_requirement["accepted_locations"] == [
-        "manifest.outputs.source_selection -> source_selection.json",
-        "source_selection.json",
-        "provenance.source_selection",
-        "metrics.source_selection",
-        "evidence_report.source_selection",
-    ]
-    assert candidate_requirement["expected_shape"] == {
-        "selected_structure": {
-            "structure_id": "candidate_005",
-            "candidate_id": "candidate_005",
-            "origin": {"model_rank": 5},
-        },
-        "selection": {"reason": "..."},
+    assert contract["candidate_selection_requirements"] == []
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
     }
+    model_check = artifact_requirements["nmr_model_5_coordinate_match"]
+    assert model_check["check_type"] == "rmsd_recompute"
+    assert model_check["selection"] == "protein and name CA"
+    assert model_check["align_selection"] == "protein and name CA"
+    assert model_check["max_value"] == 2.0
 
 
 def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
@@ -419,6 +402,102 @@ def test_export_public_package_exposes_p25_net_neutrality_contract(
     assert molarity["check_type"] == "ion_concentration_recompute"
     assert molarity["target_molar"] == 0.3
     assert molarity["cation_residue_names"] == ["K", "K+"]
+
+
+def test_export_public_package_documents_mdclaw_free_packaging(tmp_path: Path):
+    out_dir = tmp_path / "public_mdprepbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P01_prep_simple_monomer_t4l"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    guidance = contract["manifest_contract"]["packaging_guidance"]
+
+    assert "non-MDClaw submissions" in guidance["artifact_contract"]
+    assert guidance["standalone_packager"] == "benchmarks/tools/package_submission.py"
+    assert "python benchmarks/tools/package_submission.py" in (
+        guidance["standalone_command_template"]
+    )
+    assert "finite coordinates/energy" in guidance["purpose"]
+    assert "--extra-output" in guidance["standalone_command_template"]
+
+
+def test_export_public_package_exposes_p08_parent_artifact_contract(
+    tmp_path: Path,
+):
+    out_dir = tmp_path / "public_mdprepbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P08_prep_t4l_l99a_branch"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    assert "wt_prepared_structure.pdb" in contract["required_outputs"]
+    assert (
+        contract["submission_blueprint"]["manifest_minimum"]["outputs"][
+            "parent_prepared_structure"
+        ]
+        == "wt_prepared_structure.pdb"
+    )
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
+    }
+    parent = artifact_requirements["wt_parent_l99_preserved"]
+    assert parent["check_type"] == "pdb_residue_state"
+    assert parent["manifest_path"] == "outputs.parent_prepared_structure"
+    assert parent["default_path"] == "wt_prepared_structure.pdb"
+    assert parent["required_residue_name"] == "LEU"
+
+
+def test_export_public_package_exposes_p24_coordinate_assembly_contract(
+    tmp_path: Path,
+):
+    out_dir = tmp_path / "public_mdprepbench"
+    result = cli.export_benchmark_public_package(
+        dataset_dir=str(DATASET_DIR),
+        output_dir=str(out_dir),
+    )
+    assert result["success"], result
+
+    contract = json.loads(
+        (
+            out_dir
+            / "tasks"
+            / "P24_prep_biological_assembly"
+            / "submission_contract.json"
+        ).read_text()
+    )
+    assert contract["metric_requirements"] == []
+    artifact_requirements = {
+        item["check_id"]: item
+        for item in contract["artifact_requirements"]
+    }
+    coordinate = artifact_requirements["assembly_1_coordinate_match"]
+    assert coordinate["check_type"] == "rmsd_recompute"
+    assert coordinate["selection"] == "protein and name CA"
+    assert coordinate["reference"] == "scorer-private fixed reference structure"
+    chains = artifact_requirements["assembly_four_chains"]
+    assert chains["check_type"] == "assembly_identity_check"
+    assert chains["manifest_path"] == "outputs.prepared_structure"
+    assert chains["exact_chain_count"] == 4
 
 
 def test_export_public_package_refuses_to_overwrite_unmarked_directory(

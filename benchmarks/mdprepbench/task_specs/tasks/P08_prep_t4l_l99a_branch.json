@@ -5,6 +5,9 @@
     "mutation",
     "branching"
   ],
+  "required_outputs_extra": [
+    "wt_prepared_structure.pdb"
+  ],
   "task_intent": "Point mutation branch: prepare WT T4 lysozyme and a branched L99A mutant without overwriting the WT artifacts or shifting residue numbering.",
   "references": [
     {
@@ -25,43 +28,14 @@
         "weight": 0.45
       },
       {
-        "check_id": "branch_parent_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "WT",
-            "wild type"
-          ],
-          [
-            "L99A"
-          ],
-          [
-            "branch",
-            "parent"
-          ]
-        ],
-        "weight": 0.25
-      },
-      {
-        "check_id": "wt_mutant_separation_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "WT",
-            "wild type"
-          ],
-          [
-            "L99A"
-          ],
-          [
-            "separate",
-            "separated",
-            "branch"
-          ]
-        ],
-        "weight": 0.3
+        "check_id": "wt_parent_l99_preserved",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "LEU",
+        "residue_chain": "A",
+        "residue_number": "99",
+        "structure_manifest_path": "outputs.parent_prepared_structure",
+        "structure_path": "wt_prepared_structure.pdb",
+        "weight": 0.55
       },
       {
         "$bundle": "topology_minimization"

@@ -368,12 +368,11 @@ Use `submission_contract.json` for machine-readable requirements. In particular,
 `outputs.topology` is a list of artifact paths. For prep battery v0.1 this must
 be an OpenMM bundle, usually
 `["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
-and task-specific `metric_requirements` list the `metrics.json` paths that must
-be populated. If `candidate_selection_requirements` is non-empty, also submit
-the requested source/model-selection evidence in `source_selection.json` or an
-equivalent structured `source_selection` record in provenance, metrics, or the
-evidence report. Use the exported `submission_checklist.md` as the final
-agent-side self-check before validation.
+and task-specific artifact requirements describe any additional files such as a
+WT parent structure. `metrics.json` is intentionally minimal; the scorer
+recomputes model/assembly choice, component presence, neutrality, water model,
+and ion molarity from submitted artifacts whenever possible. Use the exported
+`submission_checklist.md` as the final agent-side self-check before validation.
 
 Validate and score:
 
@@ -397,7 +396,6 @@ submission must include a prepared structure where chain A residue 11 is named
 minimization evidence. The key deterministic checks are:
 
 ```text
-submission/metrics.json: preparation.requested_protonation_state == "GLH"
 submission/prepared_structure.pdb: residue A:11 is GLH with atom HE2
 submission/manifest.json: outputs.topology points to OpenMM topology artifacts
 submission/manifest.json: outputs.minimized_structure points to the minimized structure

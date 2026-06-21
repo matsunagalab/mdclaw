@@ -743,6 +743,52 @@ def _single_point_energy_kj_mol(system_xml: Path, state_xml: Path) -> dict[str, 
     return out
 
 
+def _openmm_bundle_validation_errors(energy: dict[str, Any]) -> list[str]:
+    """Return packaging-blocking issues from a measured OpenMM bundle."""
+
+    errors: list[str] = []
+    if not energy.get("success"):
+        errors.extend(str(err) for err in (energy.get("errors") or []))
+    if int(energy.get("particle_count") or 0) <= 0:
+        errors.append("OpenMM system has no particles")
+    if not energy.get("energy_is_finite"):
+        errors.append("OpenMM single-point potential energy is not finite")
+    if not energy.get("positions_are_finite"):
+        errors.append("OpenMM state positions are missing or non-finite")
+    return errors
+
+
+def _parse_extra_output_files(
+    specs: Optional[list[str]],
+) -> tuple[list[tuple[str, Path, str]], list[str]]:
+    """Parse ``manifest_key=source_path`` package extras."""
+
+    parsed: list[tuple[str, Path, str]] = []
+    errors: list[str] = []
+    for spec in specs or []:
+        if "=" not in spec:
+            errors.append(
+                "extra_output_files entries must be manifest_key=source_path: "
+                f"{spec}"
+            )
+            continue
+        key, raw_path = spec.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "").isalnum():
+            errors.append(f"invalid extra output manifest key: {key!r}")
+            continue
+        src = Path(raw_path).expanduser()
+        if not src.is_file():
+            errors.append(f"extra output file not found for {key}: {src}")
+            continue
+        rel = src.name
+        if not rel:
+            errors.append(f"extra output file has no filename for {key}: {src}")
+            continue
+        parsed.append((key, src, rel))
+    return parsed, errors
+
+
 def package_openmm_submission(
     submission_dir: str,
     task_id: str,
@@ -759,6 +805,7 @@ def package_openmm_submission(
     solvent_model: str = "unspecified",
     preparation_summary_file: Optional[str] = None,
     source_selection_file: Optional[str] = None,
+    extra_output_files: Optional[list[str]] = None,
     agent: str = "unknown",
     backend: str = "openmm-script",
     harness: str = "unknown",
@@ -791,6 +838,10 @@ def package_openmm_submission(
     from ``manifest.outputs.source_selection`` so the scorer can validate the
     structured selection record without hand-editing package outputs.
 
+    Pass ``extra_output_files`` entries as ``manifest_key=source_path`` for
+    task-specific artifacts that are not part of the base OpenMM bundle, such
+    as a WT parent structure required by a branching task.
+
     Hard rule (fairness): it never *chooses* force field, water model, chains,
     ions, or mutations. Those come from the agent's own output and are
     recomputed from the artifact at scoring time whenever possible. Declared
@@ -820,30 +871,53 @@ def package_openmm_submission(
         errors.append(f"evidence_report_file not found: {evidence_report_file}")
     if source_selection_file and not Path(source_selection_file).is_file():
         errors.append(f"source_selection_file not found: {source_selection_file}")
+    extra_outputs, extra_errors = _parse_extra_output_files(extra_output_files)
+    errors.extend(extra_errors)
     if errors:
         return {"success": False, "submission_dir": str(sub), "errors": errors}
 
-    ensure_directory(sub)
-    topo_dir = sub / "topology"
+    energy = _single_point_energy_kj_mol(system_src, state_src)
+    validation_errors = _openmm_bundle_validation_errors(energy)
+    if validation_errors:
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "code": "invalid_openmm_bundle",
+            "errors": ["OpenMM bundle validation failed"] + validation_errors,
+        }
+
+    if sub.exists() and not sub.is_dir():
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "errors": [f"submission_dir exists and is not a directory: {sub}"],
+        }
+
+    ensure_directory(sub.parent)
+    staging = Path(
+        tempfile.mkdtemp(prefix=f".{sub.name}.", dir=str(sub.parent))
+    )
+    topo_dir = staging / "topology"
     ensure_directory(topo_dir)
     _copy_if_different(system_src, topo_dir / "system.xml")
     _copy_if_different(topo_src, topo_dir / "topology.pdb")
     _copy_if_different(state_src, topo_dir / "state.xml")
 
-    minimized_pdb = sub / "minimized_structure.pdb"
+    minimized_pdb = staging / "minimized_structure.pdb"
     export = export_state_pdb(
         topology_pdb_file=str(topo_dir / "topology.pdb"),
         state_xml_file=str(topo_dir / "state.xml"),
         output_pdb_file=str(minimized_pdb),
     )
     if not export.get("success"):
+        shutil.rmtree(staging, ignore_errors=True)
         return {
             "success": False,
             "submission_dir": str(sub),
             "errors": ["export_state_pdb failed"] + (export.get("errors") or []),
         }
 
-    prepared_pdb = sub / "prepared_structure.pdb"
+    prepared_pdb = staging / "prepared_structure.pdb"
     if prepared_structure_file and Path(prepared_structure_file).is_file():
         _copy_if_different(Path(prepared_structure_file), prepared_pdb)
     else:
@@ -854,13 +928,13 @@ def package_openmm_submission(
 
     evidence_report_path: Optional[Path] = None
     if evidence_report_file:
-        evidence_report_path = sub / "evidence_report.json"
+        evidence_report_path = staging / "evidence_report.json"
         _copy_if_different(Path(evidence_report_file), evidence_report_path)
 
     source_selection_path: Optional[Path] = None
     source_selection_payload: dict[str, Any] | None = None
     if source_selection_file:
-        source_selection_path = sub / "source_selection.json"
+        source_selection_path = staging / "source_selection.json"
         _copy_if_different(Path(source_selection_file), source_selection_path)
         try:
             loaded_source_selection = json.loads(source_selection_path.read_text())
@@ -876,9 +950,6 @@ def package_openmm_submission(
                 f"source_selection_file is not valid JSON: {source_selection_file}"
             )
 
-    energy = _single_point_energy_kj_mol(
-        topo_dir / "system.xml", topo_dir / "state.xml"
-    )
     minimization_report = {
         "schema_version": "1.0",
         "minimization": {
@@ -896,7 +967,7 @@ def package_openmm_submission(
             "is a single-point measurement of the submitted artifact."
         ),
     }
-    (sub / "minimization_report.json").write_text(
+    (staging / "minimization_report.json").write_text(
         json.dumps(minimization_report, indent=2, sort_keys=True) + "\n"
     )
 
@@ -922,7 +993,27 @@ def package_openmm_submission(
         manifest["outputs"]["evidence_report"] = "evidence_report.json"
     if source_selection_path is not None:
         manifest["outputs"]["source_selection"] = "source_selection.json"
-    (sub / "manifest.json").write_text(
+    extra_output_paths: list[Path] = []
+    for key, src, rel in extra_outputs:
+        if key in manifest["outputs"]:
+            shutil.rmtree(staging, ignore_errors=True)
+            return {
+                "success": False,
+                "submission_dir": str(sub),
+                "errors": [f"extra output key duplicates standard output: {key}"],
+            }
+        dst = staging / rel
+        if dst.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+            return {
+                "success": False,
+                "submission_dir": str(sub),
+                "errors": [f"extra output filename duplicates submission file: {rel}"],
+            }
+        _copy_if_different(src, dst)
+        manifest["outputs"][key] = rel
+        extra_output_paths.append(sub / rel)
+    (staging / "manifest.json").write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n"
     )
 
@@ -981,7 +1072,7 @@ def package_openmm_submission(
     }
     if source_selection_payload is not None:
         metrics["source_selection"] = source_selection_payload
-    (sub / "metrics.json").write_text(
+    (staging / "metrics.json").write_text(
         json.dumps(metrics, indent=2, sort_keys=True) + "\n"
     )
 
@@ -1011,7 +1102,7 @@ def package_openmm_submission(
     }
     if source_selection_payload is not None:
         provenance["source_selection"] = source_selection_payload
-    (sub / "provenance.json").write_text(
+    (staging / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n"
     )
 
@@ -1021,11 +1112,9 @@ def package_openmm_submission(
             "will flag this submission. Pass --command-log-file with the "
             "agent's own source/prep/topo/min steps."
         )
-    if not energy["success"]:
-        warnings.append(
-            "single-point energy could not be measured: "
-            + "; ".join(energy.get("errors") or [])
-        )
+    if sub.exists():
+        shutil.rmtree(sub)
+    staging.rename(sub)
 
     return {
         "success": True,
@@ -1036,14 +1125,15 @@ def package_openmm_submission(
             str(sub / "metrics.json"),
             str(sub / "provenance.json"),
             str(sub / "prepared_structure.pdb"),
-            str(minimized_pdb),
+            str(sub / "minimized_structure.pdb"),
             str(sub / "minimization_report.json"),
-            str(topo_dir / "system.xml"),
-            str(topo_dir / "topology.pdb"),
-            str(topo_dir / "state.xml"),
+            str(sub / "topology" / "system.xml"),
+            str(sub / "topology" / "topology.pdb"),
+            str(sub / "topology" / "state.xml"),
         ]
-        + ([str(evidence_report_path)] if evidence_report_path is not None else [])
-        + ([str(source_selection_path)] if source_selection_path is not None else []),
+        + ([str(sub / "evidence_report.json")] if evidence_report_path is not None else [])
+        + ([str(sub / "source_selection.json")] if source_selection_path is not None else [])
+        + [str(path) for path in extra_output_paths],
         "energy_kj_mol": energy["energy_kj_mol"],
         "warnings": warnings,
         "errors": errors,

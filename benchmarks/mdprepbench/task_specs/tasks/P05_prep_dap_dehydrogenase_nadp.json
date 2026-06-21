@@ -25,46 +25,6 @@
         "weight": 0.45
       },
       {
-        "check_id": "cofactor_charge_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "NDP",
-            "NADP",
-            "NADPH"
-          ],
-          [
-            "charge",
-            "formal charge",
-            "net charge"
-          ]
-        ],
-        "weight": 0.25
-      },
-      {
-        "check_id": "ligand_chemistry_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "NDP",
-            "NADP",
-            "NADPH"
-          ],
-          [
-            "cofactor",
-            "ligand"
-          ],
-          [
-            "chemistry",
-            "template",
-            "parameter"
-          ]
-        ],
-        "weight": 0.3
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {

@@ -15,17 +15,6 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_pdb_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "1AKE"
-          ]
-        ],
-        "weight": 0.2
-      },
-      {
         "check_id": "ap5_retained",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
@@ -34,37 +23,6 @@
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.45
-      },
-      {
-        "check_id": "ligand_chemistry_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "AP5"
-          ],
-          [
-            "ligand",
-            "chemistry",
-            "template",
-            "parameter"
-          ]
-        ],
-        "weight": 0.2
-      },
-      {
-        "check_id": "auth_chain_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "chain A",
-            "auth chain A",
-            "selected_auth_chain",
-            "author chain A"
-          ]
-        ],
-        "weight": 0.15
       },
       {
         "$bundle": "topology_minimization"

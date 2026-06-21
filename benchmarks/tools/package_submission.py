@@ -27,7 +27,8 @@ Usage:
         [--solvent-model <name>] [--preparation-summary prepare_summary.json] \\
         [--prepared-structure prepared.pdb] \\
         [--command-log command_log.json] \\
-        [--evidence-report evidence_report.json]
+        [--evidence-report evidence_report.json] \\
+        [--extra-output parent_prepared_structure=wt_prepared_structure.pdb]
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ import json
 import math
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -89,6 +91,45 @@ def _single_point_energy(system_xml: Path, state_xml: Path) -> dict[str, Any]:
     return out
 
 
+def _openmm_bundle_validation_errors(energy: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
+    if not energy.get("success"):
+        errors.extend(str(err) for err in (energy.get("errors") or []))
+    if int(energy.get("particle_count") or 0) <= 0:
+        errors.append("OpenMM system has no particles")
+    if not energy.get("energy_is_finite"):
+        errors.append("OpenMM single-point potential energy is not finite")
+    if not energy.get("positions_are_finite"):
+        errors.append("OpenMM state positions are missing or non-finite")
+    return errors
+
+
+def _parse_extra_outputs(
+    specs: Optional[list[str]],
+) -> tuple[list[tuple[str, Path, str]], list[str]]:
+    parsed: list[tuple[str, Path, str]] = []
+    errors: list[str] = []
+    for spec in specs or []:
+        if "=" not in spec:
+            errors.append(f"--extra-output must be manifest_key=source_path: {spec}")
+            continue
+        key, raw_path = spec.split("=", 1)
+        key = key.strip()
+        if not key or not key.replace("_", "").isalnum():
+            errors.append(f"invalid --extra-output manifest key: {key!r}")
+            continue
+        src = Path(raw_path).expanduser()
+        if not src.is_file():
+            errors.append(f"--extra-output file not found for {key}: {src}")
+            continue
+        rel = src.name
+        if not rel:
+            errors.append(f"--extra-output has no filename for {key}: {src}")
+            continue
+        parsed.append((key, src, rel))
+    return parsed, errors
+
+
 def _export_state_pdb(topology_pdb: Path, state_xml: Path, output_pdb: Path) -> bool:
     """Write a PDB of the state coordinates using the topology atoms."""
     try:
@@ -123,11 +164,7 @@ def _load_command_log(path: Optional[Path]) -> list[Any]:
     return []
 
 
-_SCORED_PREPARATION_KEYS = {
-    "assembly_id",
-    "assembly_chain_identity_map",
-    "net_charge",
-}
+_SCORED_PREPARATION_KEYS: set[str] = set()
 
 
 def _unwrap_preparation_summary(payload: Any) -> dict[str, Any]:
@@ -173,6 +210,7 @@ def package(args: argparse.Namespace) -> int:
     system_src = Path(args.system_xml)
     topo_src = Path(args.topology_pdb)
     state_src = Path(args.state_xml)
+    extra_outputs, extra_errors = _parse_extra_outputs(args.extra_output)
 
     errors = [
         f"{label} not found: {path}"
@@ -185,23 +223,42 @@ def package(args: argparse.Namespace) -> int:
     ]
     if args.evidence_report and not Path(args.evidence_report).is_file():
         errors.append(f"--evidence-report not found: {args.evidence_report}")
+    errors.extend(extra_errors)
     if errors:
         for err in errors:
             print(err, file=sys.stderr)
         return 1
 
-    topo_dir = sub / "topology"
+    energy = _single_point_energy(system_src, state_src)
+    validation_errors = _openmm_bundle_validation_errors(energy)
+    if validation_errors:
+        print("OpenMM bundle validation failed", file=sys.stderr)
+        for err in validation_errors:
+            print(err, file=sys.stderr)
+        return 1
+
+    if sub.exists() and not sub.is_dir():
+        print(
+            f"--submission-dir exists and is not a directory: {sub}",
+            file=sys.stderr,
+        )
+        return 1
+
+    sub.parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{sub.name}.", dir=str(sub.parent)))
+    topo_dir = staging / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
     _copy_if_different(system_src, topo_dir / "system.xml")
     _copy_if_different(topo_src, topo_dir / "topology.pdb")
     _copy_if_different(state_src, topo_dir / "state.xml")
 
-    minimized_pdb = sub / "minimized_structure.pdb"
+    minimized_pdb = staging / "minimized_structure.pdb"
     if not _export_state_pdb(topo_dir / "topology.pdb", topo_dir / "state.xml",
                              minimized_pdb):
+        shutil.rmtree(staging, ignore_errors=True)
         return 1
 
-    prepared_pdb = sub / "prepared_structure.pdb"
+    prepared_pdb = staging / "prepared_structure.pdb"
     if args.prepared_structure and Path(args.prepared_structure).is_file():
         _copy_if_different(Path(args.prepared_structure), prepared_pdb)
     else:
@@ -209,11 +266,10 @@ def package(args: argparse.Namespace) -> int:
 
     evidence_report_path: Optional[Path] = None
     if args.evidence_report:
-        evidence_report_path = sub / "evidence_report.json"
+        evidence_report_path = staging / "evidence_report.json"
         _copy_if_different(Path(args.evidence_report), evidence_report_path)
 
-    energy = _single_point_energy(topo_dir / "system.xml", topo_dir / "state.xml")
-    _write_json(sub / "minimization_report.json", {
+    _write_json(staging / "minimization_report.json", {
         "schema_version": "1.0",
         "minimization": {
             "attempted": True,
@@ -252,12 +308,30 @@ def package(args: argparse.Namespace) -> int:
     }
     if evidence_report_path is not None:
         manifest["outputs"]["evidence_report"] = "evidence_report.json"
-    _write_json(sub / "manifest.json", manifest)
+    for key, src, rel in extra_outputs:
+        if key in manifest["outputs"]:
+            shutil.rmtree(staging, ignore_errors=True)
+            print(
+                f"--extra-output key duplicates standard output: {key}",
+                file=sys.stderr,
+            )
+            return 1
+        dst = staging / rel
+        if dst.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+            print(
+                f"--extra-output filename duplicates submission file: {rel}",
+                file=sys.stderr,
+            )
+            return 1
+        _copy_if_different(src, dst)
+        manifest["outputs"][key] = rel
+    _write_json(staging / "manifest.json", manifest)
 
     preparation_summary = _load_preparation_summary(
         Path(args.preparation_summary) if args.preparation_summary else None
     )
-    _write_json(sub / "metrics.json", {
+    _write_json(staging / "metrics.json", {
         "schema_version": "1.0",
         "topology": {"backend": "openmm"},
         "preparation": _derive_preparation_metrics(preparation_summary),
@@ -271,7 +345,7 @@ def package(args: argparse.Namespace) -> int:
     command_log = _load_command_log(
         Path(args.command_log) if args.command_log else None
     )
-    _write_json(sub / "provenance.json", {
+    _write_json(staging / "provenance.json", {
         "schema_version": "1.0",
         "run_id": args.run_id,
         "task_id": args.task_id,
@@ -287,18 +361,16 @@ def package(args: argparse.Namespace) -> int:
         "command_log": command_log,
     })
 
+    if sub.exists():
+        shutil.rmtree(sub)
+    staging.rename(sub)
+
     print(f"wrote submission to {sub}")
     if not command_log:
         print(
             "WARNING: no command_log provided; the scorer's execution-evidence "
             "check will flag this submission. Pass --command-log with the "
             "agent's own source/prep/topo/min steps.",
-            file=sys.stderr,
-        )
-    if not energy["success"]:
-        print(
-            "WARNING: single-point energy could not be measured: "
-            + "; ".join(energy.get("errors") or []),
             file=sys.stderr,
         )
     return 0
@@ -317,6 +389,15 @@ def main() -> int:
     parser.add_argument("--command-log", default=None)
     parser.add_argument("--evidence-report", default=None)
     parser.add_argument("--preparation-summary", default=None)
+    parser.add_argument(
+        "--extra-output",
+        action="append",
+        default=[],
+        help=(
+            "Additional manifest output as manifest_key=source_path. "
+            "Can be repeated for task-specific artifacts."
+        ),
+    )
     parser.add_argument("--force-field", default="unspecified")
     parser.add_argument("--water-model", default="unspecified")
     parser.add_argument("--solvent-model", default="unspecified")

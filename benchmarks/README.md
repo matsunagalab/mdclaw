@@ -54,9 +54,10 @@ to make them, and the same MDClaw scorer judges every entrant. Key properties:
 
 - **Artifact is the source of truth.** OpenMM is detected by deserializing the
   `system.xml` + `topology.pdb` + `state.xml` triple, not by a declared backend
-  label. Force-field application, net charge, water-model fingerprint, and ion
-  molarity are recomputed from the artifact; `metrics.json` is a cross-checked
-  declaration and a mismatch is an integrity warning.
+  label. Force-field application, model/assembly choice, net charge,
+  water-model fingerprint, ion molarity, and component presence are recomputed
+  from the submitted artifacts whenever possible. `metrics.json` is auxiliary
+  metadata, not a trusted scoring oracle.
 - **Graded scoring.** A small physical-validity gate (loads + finite energy +
   force field applied + required minimized structure) must pass or the task
   scores zero. Identity / fidelity / provenance checks then give weighted
@@ -67,12 +68,16 @@ to make them, and the same MDClaw scorer judges every entrant. Key properties:
   optional unless a task's contract lists it. Unsafe manifest paths, fabricated
   or undersized required artifacts, and missing execution evidence remain hard
   failures.
+- **MDClaw-free solve path.** Solvers do not need to import or call MDClaw.
+  Direct OpenMM, Amber/GROMACS-to-OpenMM exports, MDCrow-style runners, or other
+  MD-prep stacks are valid if they submit the same artifact contract. Use
+  `benchmarks/tools/package_submission.py` to package an existing OpenMM triple
+  without depending on MDClaw.
 - **Comparison conditions.** Each run records a `tooling_condition`
   (`mdclaw-skills+cli` / `mdclaw-cli-only` / `mdclaw-free` / `unknown`), a
   machine-readable `attestation.json`, and a `verified` flag. MDClaw-free
   entrants (MDCrow, plain OpenMM scripts) package their own OpenMM System with
-  `mdclaw package_openmm_submission` or the standalone
-  `benchmarks/tools/package_submission.py`.
+  the standalone helper or, outside the solver, `mdclaw package_openmm_submission`.
 
 See `docs/benchmark/fairness-protocol.md`, `docs/benchmark/capability-coverage.md`,
 `docs/benchmark/mdcrow-runner.md`, and `benchmarks/baselines/README.md`.

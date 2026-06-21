@@ -12,14 +12,10 @@ from collections.abc import Mapping
 from typing import Any
 
 
-# Keep this list intentionally narrow.  Most preparation correctness is rescanned
-# from submitted artifacts; these keys remain structured because specific checks
-# consume them as cross-checks or identity maps.
-SCORED_PREPARATION_METRIC_KEYS = frozenset({
-    "assembly_id",
-    "assembly_chain_identity_map",
-    "net_charge",
-})
+# Keep this list intentionally narrow. Preparation correctness is rescanned from
+# submitted artifacts whenever possible; currently no MDPrepBench task consumes
+# agent-authored ``metrics.preparation`` values.
+SCORED_PREPARATION_METRIC_KEYS = frozenset()
 
 _SUMMARY_WRAPPER_KEYS = (
     "preparation_summary",
@@ -28,11 +24,7 @@ _SUMMARY_WRAPPER_KEYS = (
     "parameters",
 )
 
-_ALIASES = {
-    "assembly": "assembly_id",
-    "chain_identity_map": "assembly_chain_identity_map",
-    "total_charge": "net_charge",
-}
+_ALIASES: dict[str, str] = {}
 
 
 def _as_mapping(payload: Any) -> Mapping[str, Any]:
@@ -86,4 +78,3 @@ def ignored_preparation_metric_keys(*payloads: Any) -> list[str]:
                 continue
             ignored.add(str(key))
     return sorted(ignored)
-

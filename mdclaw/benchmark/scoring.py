@@ -2263,7 +2263,11 @@ def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
         return False, 0.0, f"prepared_structure not found: {prepared}"
     reference = (task_dir / check.reference_pdb).resolve()
     rmsd, msg = integrity.recompute_ligand_rmsd(
-        prepared, reference, check.selection, check.align_selection,
+        prepared,
+        reference,
+        check.selection,
+        check.align_selection,
+        image_molecules=check.image_molecules_before_rmsd,
     )
     if rmsd is None:
         return False, 0.0, msg

@@ -5,7 +5,7 @@
     "candidate_selection",
     "nmr_ensemble"
   ],
-  "task_intent": "Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. Record the selected candidate as candidate_005, the selected model rank as 5, and source-selection evidence with a selection reason in `source_selection.json` or structured provenance.",
+  "task_intent": "Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. The scorer verifies model selection from the submitted coordinates against a fixed model-5 reference, so no self-reported source-selection evidence is required.",
   "references": [
     {
       "source": "PDB 2K39",
@@ -15,13 +15,13 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "source_selection_model_5",
-        "check_type": "candidate_selection_check",
-        "require_selection_reason": true,
-        "required_candidate_id": "candidate_005",
-        "required_model_rank": 5,
-        "source_selection_manifest_path": "outputs.source_selection",
-        "source_selection_path": "source_selection.json",
+        "align_selection": "protein and name CA",
+        "check_id": "nmr_model_5_coordinate_match",
+        "check_type": "rmsd_recompute",
+        "max_value": 2.0,
+        "reference_pdb": "truth/model_5_reference.pdb",
+        "selection": "protein and name CA",
+        "tolerance_angstrom": 0.05,
         "weight": 1.0
       },
       {

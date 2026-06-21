@@ -38,6 +38,48 @@ def test_packmol_box_extraction_uses_union_of_inside_boxes(tmp_path):
     assert box["box_c"] == 66.06
 
 
+def test_openmm_fallback_preserves_requested_salt_species(tmp_path, monkeypatch):
+    pdb = tmp_path / "input.pdb"
+    pdb.write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    captured = {}
+
+    def fake_solvate_with_openmm(**kwargs):
+        captured.update(kwargs)
+        result = kwargs["result"]
+        result["success"] = True
+        result["output_file"] = str(tmp_path / "solvated.pdb")
+        return result
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: False,
+    )
+    monkeypatch.setattr(
+        solvation_server,
+        "_solvate_with_openmm",
+        fake_solvate_with_openmm,
+    )
+
+    result = solvation_server.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        salt=True,
+        salt_c="K+",
+        salt_a="Cl-",
+        saltcon=0.30,
+        water_model="tip3p",
+    )
+
+    assert result["success"]
+    assert captured["salt_c"] == "K+"
+    assert captured["salt_a"] == "Cl-"
+    assert result["parameters"]["salt_c"] == "K+"
+    assert result["parameters"]["salt_a"] == "Cl-"
+
+
 def test_packmol_imperfect_packing_is_not_success(tmp_path):
     output = tmp_path / "membrane.pdb"
     output.write_text(

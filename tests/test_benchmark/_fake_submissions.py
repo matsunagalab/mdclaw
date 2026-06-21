@@ -117,6 +117,38 @@ def _add_residue(lines: list[str], serial: int, resname: str, chain: str,
     return serial
 
 
+def _next_atom_serial(lines: list[str]) -> int:
+    serial = 0
+    for line in lines:
+        if not line.startswith(("ATOM  ", "HETATM")):
+            continue
+        try:
+            serial = max(serial, int(line[6:11]))
+        except ValueError:
+            continue
+    return serial + 1
+
+
+def _reference_structure_lines(task_dir: Path, task: dict[str, Any],
+                               mode: str) -> list[str] | None:
+    if mode != "honest":
+        return None
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "rmsd_recompute":
+            continue
+        reference_pdb = check.get("reference_pdb")
+        if not reference_pdb:
+            continue
+        text = (task_dir / str(reference_pdb)).read_text()
+        lines = [
+            line if line.endswith("\n") else f"{line}\n"
+            for line in text.splitlines()
+            if line and not line.startswith(("END", "MASTER"))
+        ]
+        return lines
+    return None
+
+
 def _component_atom_names(check: dict[str, Any]) -> list[str]:
     """Atom names for a synthetic component residue.
 
@@ -125,6 +157,15 @@ def _component_atom_names(check: dict[str, Any]) -> list[str]:
     """
     n = max(1, int(check.get("min_residue_atom_count") or 1))
     return [f"C{i + 1}" for i in range(n)]
+
+
+def _check_targets_topology(check: dict[str, Any]) -> bool:
+    target = str(
+        check.get("structure_manifest_path")
+        or check.get("structure_path")
+        or ""
+    )
+    return target.startswith("outputs.topology") or target.startswith("topology/")
 
 
 def _topology_component_residues(
@@ -138,21 +179,31 @@ def _topology_component_residues(
     ``lipid_species_present`` find their residues in ``topology/topology.pdb``.
     """
     residues: list[tuple[str, int, int]] = []
+    ion_residue_names: set[str] = set()
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "ion_concentration_recompute":
+            continue
+        ion_residue_names.update(
+            str(name).strip().upper()
+            for name in (check.get("cation_residue_names") or [])
+        )
+        ion_residue_names.update(
+            str(name).strip().upper()
+            for name in (check.get("anion_residue_names") or [])
+        )
     for check in task["scoring"]["deterministic_checks"]:
         if check.get("check_type") != "structure_component_rescan":
             continue
-        target = str(
-            check.get("structure_manifest_path")
-            or check.get("structure_path")
-            or ""
-        )
-        if not (target.startswith("outputs.topology")
-                or target.startswith("topology/")):
+        if not _check_targets_topology(check):
             continue
         n_atoms = max(1, int(check.get("min_residue_atom_count") or 1))
         for resname, count in (check.get("min_residue_counts") or {}).items():
+            if str(resname).strip().upper() in ion_residue_names:
+                continue
             residues.append((str(resname), n_atoms, int(count)))
         for resname, count in (check.get("exact_residue_counts") or {}).items():
+            if str(resname).strip().upper() in ion_residue_names:
+                continue
             residues.append((str(resname), n_atoms, int(count)))
     return residues
 
@@ -206,7 +257,7 @@ def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
                         "output_chain_id": chain_ids[index % len(chain_ids)],
                         "naming_policy": "short",
                     })
-        _set_path(metrics, mapping_path, mapping)
+            _set_path(metrics, mapping_path, mapping)
 
 
 def _source_selection_for_task(task: dict[str, Any], mode: str) -> dict[str, Any] | None:
@@ -463,20 +514,48 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
     return rels
 
 
-def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
+def _prepared_structure(
+    task_dir: Path,
+    task: dict[str, Any],
+    mode: str,
+    *,
+    include_minimized_components: bool = False,
+) -> str:
     if task["task_id"] == "P03_prep_ligand_pose_t4l_benzene" and mode == "honest":
         return (task_dir / "truth" / "ligand_reference.pdb").read_text()
 
-    lines: list[str] = ["REMARK synthetic benchmark fixture\n"]
-    serial = 1
-    serial = _add_residue(lines, serial, "ALA", "A", 1, ["N", "CA", "C", "O"])
+    reference_lines = _reference_structure_lines(task_dir, task, mode)
+    lines: list[str] = (
+        reference_lines
+        if reference_lines is not None
+        else ["REMARK synthetic benchmark fixture\n"]
+    )
+    serial = _next_atom_serial(lines)
+    if reference_lines is None:
+        serial = _add_residue(lines, serial, "ALA", "A", 1, ["N", "CA", "C", "O"])
 
     residue_index = 10
+    has_reference_structure = reference_lines is not None
     for check in task["scoring"]["deterministic_checks"]:
-        if str(check.get("check_id", "")).startswith("minimized_"):
+        if (
+            str(check.get("check_id", "")).startswith("minimized_")
+            and not include_minimized_components
+        ):
             continue
         check_type = check.get("check_type")
-        if check_type == "structure_component_rescan":
+        if check_type in {
+            "structure_component_rescan",
+            "minimized_structure_component_rescan",
+        }:
+            if check_type == "structure_component_rescan" and include_minimized_components:
+                continue
+            if check_type == "structure_component_rescan" and _check_targets_topology(check):
+                continue
+            if (
+                check_type == "minimized_structure_component_rescan"
+                and not include_minimized_components
+            ):
+                continue
             if mode == "honest":
                 atom_names = _component_atom_names(check)
                 for resname, count in (check.get("min_residue_counts") or {}).items():
@@ -503,7 +582,11 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
                 resname = "GLY"
                 atoms = ["N", "CA", "C", "O"]
             serial = _add_residue(lines, serial, resname, chain, number, atoms)
-        elif check_type == "assembly_identity_check" and mode == "honest":
+        elif (
+            check_type == "assembly_identity_check"
+            and mode == "honest"
+            and not has_reference_structure
+        ):
             chain_ids = ["B", "C", "D", "E", "F", "G", "H", "I"]
             count = int(check.get("exact_chain_count")
                         or check.get("min_chain_count")
@@ -547,6 +630,18 @@ def _prepared_structure(task_dir: Path, task: dict[str, Any], mode: str) -> str:
     return "".join(lines)
 
 
+def _parent_prepared_structure(task: dict[str, Any], mode: str) -> str:
+    lines = ["REMARK synthetic WT parent fixture\n"]
+    serial = 1
+    serial = _add_residue(lines, serial, "LEU" if mode == "honest" else "ALA",
+                          "A", 99, ["N", "CA", "C", "O"])
+    for _ in range(60):
+        serial = _add_residue(lines, serial, "ALA", "A", serial,
+                              ["N", "CA", "C", "O"])
+    lines.append("END\n")
+    return "".join(lines)
+
+
 def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) -> None:
     task_dir = DATASET_DIR / "tasks" / task_id
     task = json.loads((task_dir / "task.json").read_text())
@@ -557,7 +652,16 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
 
     prepared_structure = _prepared_structure(task_dir, task, mode)
     topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode, task)
-    minimized_structure = prepared_structure if mode == "honest" else "END\n"
+    minimized_structure = (
+        _prepared_structure(
+            task_dir,
+            task,
+            mode,
+            include_minimized_components=True,
+        )
+        if mode == "honest"
+        else "END\n"
+    )
     source_selection = _source_selection_for_task(task, mode)
 
     status = "completed"
@@ -572,6 +676,8 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     }
     if source_selection is not None:
         outputs["source_selection"] = "source_selection.json"
+    if "wt_prepared_structure.pdb" in (task.get("required_outputs") or []):
+        outputs["parent_prepared_structure"] = "wt_prepared_structure.pdb"
 
     _write(sub_dir / "manifest.json", {
         "schema_version": "1.0",
@@ -620,6 +726,9 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     _write(sub_dir / "minimized_structure.pdb", minimized_structure)
     if source_selection is not None:
         _write(sub_dir / "source_selection.json", source_selection)
+    if "wt_prepared_structure.pdb" in (task.get("required_outputs") or []):
+        _write(sub_dir / "wt_prepared_structure.pdb",
+               _parent_prepared_structure(task, mode))
     if "component_disposition.json" in (task.get("required_outputs") or []):
         excluded_count = int(
             metrics.get("preparation", {}).get("experimental_isotope_atoms_excluded", 0) or 0

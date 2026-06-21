@@ -1328,6 +1328,8 @@ def _solvate_with_openmm(
     dist: float,
     cubic: bool,
     salt: bool,
+    salt_c: str,
+    salt_a: str,
     saltcon: float,
     water_model: str,
     *,
@@ -1378,8 +1380,8 @@ def _solvate_with_openmm(
             model=water_model.lower(),
             padding=padding_nm * unit.nanometer,
             ionicStrength=(saltcon if salt else 0.0) * unit.molar,
-            positiveIon="Na+",
-            negativeIon="Cl-",
+            positiveIon=salt_c,
+            negativeIon=salt_a,
         )
 
         # Write output
@@ -1681,6 +1683,8 @@ def solvate_structure(
             dist=dist,
             cubic=cubic,
             salt=salt,
+            salt_c=salt_c,
+            salt_a=salt_a,
             saltcon=saltcon,
             water_model=water_model,
             subdirectory=not _node_mode,
@@ -1703,6 +1707,8 @@ def solvate_structure(
                         "water_model": water_model,
                         "backend": "openmm_fallback",
                         "buffer_distance_angstrom": dist,
+                        "salt_cation": salt_c,
+                        "salt_anion": salt_a,
                         "salt_concentration_M": saltcon,
                         "total_atoms": fallback_result.get("statistics", {}).get("total_atoms"),
                     },

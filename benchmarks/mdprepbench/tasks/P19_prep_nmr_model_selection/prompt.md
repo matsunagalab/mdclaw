@@ -4,7 +4,7 @@ You are evaluating an MD agent on `P19_prep_nmr_model_selection`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. Record the selected candidate as candidate_005, the selected model rank as 5, and source-selection evidence with a selection reason in `source_selection.json` or structured provenance.
+Task: Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. The scorer verifies model selection from the submitted coordinates against a fixed model-5 reference, so no self-reported source-selection evidence is required.
 
 Public source anchors: PDB 2K39.
 

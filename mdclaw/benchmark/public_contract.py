@@ -283,6 +283,46 @@ def public_artifact_requirements(task: Task) -> list[dict[str, Any]]:
                 "molar_tolerance": check.molar_tolerance,
                 "min_ion_count": check.min_ion_count,
             })
+        elif check.check_type == "pdb_residue_state":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.structure_manifest_path
+                or "outputs.prepared_structure",
+                "default_path": check.structure_path or "prepared_structure.pdb",
+                "required_residue_name": check.required_residue_name,
+                "residue_chain": check.residue_chain,
+                "residue_number": check.residue_number,
+                "insertion_code": check.insertion_code,
+                "required_atom_names": check.required_atom_names,
+                "forbidden_atom_names": check.forbidden_atom_names,
+            })
+        elif check.check_type == "rmsd_recompute":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": "outputs.prepared_structure",
+                "default_path": "prepared_structure.pdb",
+                "selection": check.selection,
+                "align_selection": check.align_selection,
+                "max_value": check.max_value,
+                "tolerance_angstrom": check.tolerance_angstrom,
+                "image_molecules_before_rmsd": check.image_molecules_before_rmsd,
+                "reference": "scorer-private fixed reference structure",
+            })
+        elif check.check_type == "assembly_identity_check":
+            requirements.append({
+                "check_id": check.check_id,
+                "check_type": check.check_type,
+                "manifest_path": check.structure_manifest_path
+                or "outputs.prepared_structure",
+                "exact_chain_count": check.exact_chain_count,
+                "min_chain_count": check.min_chain_count,
+                "min_distinct_output_chains": check.min_distinct_output_chains,
+                "require_output_chains_in_structure": (
+                    check.require_output_chains_in_structure
+                ),
+            })
     return requirements
 
 
@@ -291,10 +331,20 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
     if task.primary_score != PREPARATION_SCORE_AXIS:
         return None
     return {
-        "preferred_when_openmm_triple_exists": "mdclaw package_openmm_submission",
+        "artifact_contract": (
+            "MDPrepBench accepts MDClaw and non-MDClaw submissions through the "
+            "same OpenMM artifact contract: system.xml, topology.pdb, state.xml, "
+            "and a minimized_structure.pdb exported from those coordinates."
+        ),
+        "preferred_when_openmm_triple_exists": (
+            "Use either mdclaw package_openmm_submission or the standalone "
+            "benchmarks/tools/package_submission.py helper."
+        ),
         "purpose": (
             "Package an existing OpenMM system.xml + topology.pdb + state.xml "
-            "triple into the standard submission layout."
+            "triple into the standard submission layout. The packager validates "
+            "that the bundle deserializes and has finite coordinates/energy "
+            "before writing manifest.json."
         ),
         "required_agent_inputs": [
             "system.xml",
@@ -340,9 +390,23 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "[--preparation-summary-file <prepare_summary.json>] "
             "[--force-field <forcefield>] [--water-model <water_model>] "
             "[--solvent-model <solvent_model>] "
-            "[--evidence-report-file <evidence_report.json>]"
+            "[--evidence-report-file <evidence_report.json>] "
+            "[--extra-output-files <manifest_key=artifact_path> ...]"
         ),
         "standalone_packager": "benchmarks/tools/package_submission.py",
+        "standalone_command_template": (
+            "python benchmarks/tools/package_submission.py "
+            "--submission-dir <exact_submission_dir> --task-id <task_id> "
+            "--system-xml <system.xml> --topology-pdb <topology.pdb> "
+            "--state-xml <state.xml> "
+            "[--prepared-structure <prepared_structure.pdb>] "
+            "[--command-log <command_log.json>] "
+            "[--preparation-summary <prepare_summary.json>] "
+            "[--force-field <forcefield>] [--water-model <water_model>] "
+            "[--solvent-model <solvent_model>] "
+            "[--evidence-report <evidence_report.json>] "
+            "[--extra-output <manifest_key=artifact_path>]"
+        ),
     }
 
 
@@ -356,6 +420,10 @@ def manifest_contract(task: Task) -> dict[str, Any]:
     if task.primary_score != PREPARATION_SCORE_AXIS:
         return contract
 
+    recommended_optional_outputs: list[str] = []
+    if _has_candidate_selection(task):
+        recommended_optional_outputs.append("outputs.source_selection")
+
     contract.update({
         "topology_output_shape": "list[str]",
         "required_topology_backend": "openmm",
@@ -367,9 +435,7 @@ def manifest_contract(task: Task) -> dict[str, Any]:
             "outputs.minimized_structure",
             "outputs.minimization_report",
         ],
-        "recommended_optional_outputs": [
-            "outputs.source_selection",
-        ],
+        "recommended_optional_outputs": recommended_optional_outputs,
     })
     return contract
 
@@ -657,6 +723,10 @@ def _manifest_output_blueprint(task: Task) -> dict[str, Any]:
         "minimization_report.json": (
             "minimization_report",
             "minimization_report.json",
+        ),
+        "wt_prepared_structure.pdb": (
+            "parent_prepared_structure",
+            "wt_prepared_structure.pdb",
         ),
     }
     for rel in task.required_outputs:

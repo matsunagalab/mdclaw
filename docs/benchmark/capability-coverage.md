@@ -14,10 +14,11 @@ The scorer treats the submitted artifact as the source of truth:
 
 - OpenMM is detected by **deserializing** the `system.xml` + `topology.pdb` +
   `state.xml` triple, not by trusting a declared `topology.backend` label.
-- Physical properties are **recomputed** from the system: force-field
-  application, net charge, water-model fingerprint, and ion molarity.
-- `metrics.json` values are cross-checked declarations; a mismatch with the
-  recomputed value is an integrity warning and the recomputed value scores.
+- Physical and identity properties are **recomputed** from artifacts whenever
+  possible: force-field application, model/assembly choice, net charge,
+  water-model fingerprint, ion molarity, component presence, and residue state.
+- `metrics.json` is auxiliary metadata. Current MDPrepBench scoring does not
+  rely on submitted `metrics.preparation.*` self-reports.
 
 Every completed preparation task must clear the **physical-validity gate** (it
 appears in every task): the OpenMM system loads (`openmm_system_load`), has
@@ -41,41 +42,41 @@ gate.
 | `structure_component_rescan` | Required residues/components present in prepared structure (identity) |
 | `minimized_structure_component_rescan` | Same, in the minimized structure (identity) |
 | `pdb_residue_state` | Specific residue name/atoms (mutation, PTM, protonation, capping) (identity) |
-| `rmsd_recompute` | Ligand-pose RMSD vs a scorer-side reference (fidelity) |
+| `rmsd_recompute` | Ligand pose, NMR model, or assembly coordinates vs a scorer-side reference (fidelity) |
 | `assembly_identity_check` | Chain/copy count matches the requested biological assembly (identity) |
-| `candidate_selection_check` | A structured source/model candidate was selected (identity) |
-| `json_equals` / `json_allowed_values` / `json_min` / `json_min_length` | Declared metric cross-checks (fidelity/provenance) |
-| `artifact_provenance_text` | Required decision text present in provenance/evidence (provenance) |
 | `pdb_no_deuterium_atoms` | No stray deuterium atoms left in the structure (identity) |
+| `disulfide_bond_rescan` | Required disulfide geometry appears in the submitted structure (identity) |
+| `nucleic_content_rescan` | DNA/RNA chain and residue content appear in the submitted structure (identity) |
+| `solvent_regime_rescan` | Explicit, implicit, or membrane regime is visible in submitted topology/structure (fidelity) |
 
 ## Capability → task → check map
 
 | Capability | Task(s) | Primary verifying check(s) |
 | --- | --- | --- |
 | Simple monomer prep + explicit solvent | P01 | `structure_component_rescan`, full physical-validity gate |
-| Chain selection + ligand retention | P02 | `structure_component_rescan` (chain residues + ligand), `json_equals` |
+| Chain selection + ligand retention | P02 | `structure_component_rescan` (chain residues + ligand) |
 | Ligand pose preservation | P03 | `rmsd_recompute` vs reference pose, `pdb_residue_state`, `structure_component_rescan` |
-| Multi-ligand inclusion/exclusion | P04 | `structure_component_rescan` (kept vs excluded), `json_equals` |
-| Charged cofactor-like ligand | P05 | `structure_component_rescan` (cofactor retained), `json_equals` |
-| Supported metal-ion retention | P06 | `structure_component_rescan` (Ca2+ retained), `json_equals` |
-| Crystallographic ion triage (RNA) | P07 | `structure_component_rescan` (K+ kept, waters excluded), `artifact_provenance_text` |
-| Point mutation (branched) | P08 | `pdb_residue_state` (mutated residue), `json_equals` |
-| Multi-point mutation | P09 | `pdb_residue_state` (both mutations), `json_equals` |
-| Disulfide detection/override | P10 | `json_min` / `json_min_length` (SS bonds), `pdb_no_deuterium_atoms`, `json_equals` |
-| Site-specific protonation override | P11 | `pdb_residue_state` (GLH + HE2), `json_equals` |
-| PTM detect + restore (deposited) | P12 | `pdb_residue_state` (SEP restored), `json_equals` |
-| PTM apply (user-requested) | P13 | `pdb_residue_state` (new SEP), `json_equals` |
-| Glycoprotein / glycan pass-through | P14 | `structure_component_rescan` (glycans kept), `artifact_provenance_text` |
-| Standard DNA topology | P15 | physical-validity gate, `json_equals` (nucleic FF) |
-| Standard RNA topology | P16 | physical-validity gate, `json_equals` (RNA FF) |
-| DNA duplex retention + neutralization | P17 | `structure_component_rescan` (both chains + ions), `json_equals` |
-| Mixed-lipid membrane + model selection | P18 | `candidate_selection_check`, `structure_component_rescan` (lipids), `json_allowed_values` |
-| NMR model selection | P19 | `candidate_selection_check` (model 5), `json_equals` |
-| Terminal capping | P20 | `structure_component_rescan` (ACE/NME caps), `json_equals` |
-| Altloc / MSE / numbering cleanup | P21 | `structure_component_rescan`, `json_equals` |
-| Force-field + water-model fidelity | P22 | `water_model_fingerprint` (requested model), `json_equals` |
-| Implicit vs explicit solvent | P23 | `structure_component_rescan` (no spurious water box), `json_equals` |
-| Biological assembly choice | P24 | `assembly_identity_check` (chain/copy count), `json_equals` |
+| Multi-ligand inclusion/exclusion | P04 | `structure_component_rescan` (kept vs excluded) |
+| Charged cofactor-like ligand | P05 | `structure_component_rescan` (cofactor retained) |
+| Supported metal-ion retention | P06 | `structure_component_rescan` (Ca2+ retained) |
+| Crystallographic ion triage (RNA) | P07 | `structure_component_rescan` (K+ kept, waters excluded) |
+| Point mutation (branched) | P08 | `pdb_residue_state` (mutated residue and WT parent residue artifact) |
+| Multi-point mutation | P09 | `pdb_residue_state` (both mutations) |
+| Disulfide detection/override | P10 | `disulfide_bond_rescan`, `pdb_no_deuterium_atoms`, required component-disposition artifact |
+| Site-specific protonation override | P11 | `pdb_residue_state` (GLH + HE2) |
+| PTM detect + restore (deposited) | P12 | `pdb_residue_state` (SEP restored) |
+| PTM apply (user-requested) | P13 | `pdb_residue_state` (new SEP) |
+| Glycoprotein / glycan pass-through | P14 | `structure_component_rescan` (glycans kept) |
+| Standard DNA topology | P15 | `nucleic_content_rescan`, physical-validity gate |
+| Standard RNA topology | P16 | `nucleic_content_rescan`, physical-validity gate |
+| DNA duplex retention + neutralization | P17 | `nucleic_content_rescan`, `structure_component_rescan` (ions), `net_charge_check` |
+| Mixed-lipid membrane + model selection | P18 | `rmsd_recompute` vs model-1 reference, `solvent_regime_rescan`, `structure_component_rescan` (lipids) |
+| NMR model selection | P19 | `rmsd_recompute` vs model-5 reference |
+| Terminal capping | P20 | `structure_component_rescan` / `minimized_structure_component_rescan` (ACE/NME caps) |
+| Altloc / MSE / numbering cleanup | P21 | `structure_component_rescan` |
+| Force-field + water-model fidelity | P22 | `water_model_fingerprint` (requested model), `solvent_regime_rescan` |
+| Implicit vs explicit solvent | P23 | `solvent_regime_rescan`, `structure_component_rescan` (no spurious water box) |
+| Biological assembly choice | P24 | `rmsd_recompute` vs assembly-1 reference, `assembly_identity_check` (four chains) |
 | Specified ion concentration + neutrality | P25 | `ion_concentration_recompute` (molarity from box), `net_charge_check`, `structure_component_rescan` |
 
 ## Capability axes

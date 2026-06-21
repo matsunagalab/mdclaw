@@ -59,10 +59,30 @@ def _write_submission(tmp: Path, manifest: dict, metrics: dict | None = None,
 
 def _prep_command_log() -> list[dict]:
     return [
-        {"stage": "source", "command": "fixture source retrieval", "exit_code": 0},
-        {"stage": "prep", "command": "fixture prepare_complex", "exit_code": 0},
-        {"stage": "topo", "command": "fixture build_openmm_system", "exit_code": 0},
-        {"stage": "min", "command": "fixture minimization", "exit_code": 0},
+        {
+            "stage": "source",
+            "command": "fixture source retrieval",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        },
+        {
+            "stage": "prep",
+            "command": "fixture prepare_complex",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        },
+        {
+            "stage": "topo",
+            "command": "fixture build_openmm_system",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        },
+        {
+            "stage": "min",
+            "command": "fixture minimization",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        },
     ]
 
 
@@ -71,6 +91,7 @@ def _write_openmm_bundle(
     *,
     broken: str | None = None,
     huge_energy: bool = False,
+    include_water: bool = False,
 ) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
@@ -106,12 +127,21 @@ def _write_openmm_bundle(
     residue = topology.addResidue("ALA", chain, "1")
     topology.addAtom("CA", Element.getBySymbol("C"), residue)
     position_value = float("nan") if broken == "nan_positions" else 0.0
-    positions = [Vec3(position_value, 0.0, 0.0)] * unit.nanometer
-    pdb_positions = [Vec3(0.0, 0.0, 0.0)] * unit.nanometer
+    positions = [Vec3(position_value, 0.0, 0.0)]
+    pdb_positions = [Vec3(0.0, 0.0, 0.0)]
     system = System()
     system.addParticle(12.0)
     nonbonded = NonbondedForce()
     nonbonded.addParticle(0.0, 0.1, 0.0)
+    if include_water:
+        water = topology.addResidue("HOH", chain, "2")
+        topology.addAtom("O", Element.getBySymbol("O"), water)
+        system.addParticle(16.0)
+        nonbonded.addParticle(0.0, 0.1, 0.0)
+        positions.append(Vec3(0.4, 0.0, 0.0))
+        pdb_positions.append(Vec3(0.4, 0.0, 0.0))
+    positions_q = positions * unit.nanometer
+    pdb_positions_q = pdb_positions * unit.nanometer
     system.addForce(nonbonded)
     if huge_energy:
         force = CustomExternalForce("2000000")
@@ -119,13 +149,13 @@ def _write_openmm_bundle(
         system.addForce(force)
     integrator = VerletIntegrator(1.0 * unit.femtoseconds)
     context = Context(system, integrator, Platform.getPlatformByName("Reference"))
-    context.setPositions(positions)
+    context.setPositions(positions_q)
     state = context.getState(getPositions=True, getEnergy=True)
 
     system_xml.write_text(XmlSerializer.serialize(system))
     state_xml.write_text(XmlSerializer.serialize(state))
     with topology_pdb.open("w") as handle:
-        PDBFile.writeFile(topology, pdb_positions, handle, keepIds=True)
+        PDBFile.writeFile(topology, pdb_positions_q, handle, keepIds=True)
 
 
 def _write_minimization_submission(tmp: Path, *, completed: bool = True,
@@ -1183,7 +1213,7 @@ def test_unspecified_backend_without_openmm_bundle_fails_openmm_verification(
 def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
     task_file = DATASET_DIR / "tasks" / "P01_prep_simple_monomer_t4l" / "task.json"
     task = validation.load_task(task_file)
-    _write_openmm_bundle(tmp_path)
+    _write_openmm_bundle(tmp_path, include_water=True)
 
     protein_lines = [
         "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n",
@@ -1261,6 +1291,9 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
             ),
             "evidence": {"topology": "OpenMM artifact triple loaded."},
         },
+    )
+    (tmp_path.parent / "harness_execution.json").write_text(
+        json.dumps({"records": _prep_command_log()})
     )
 
     validation_result = validation.validate_submission(task_file, tmp_path)

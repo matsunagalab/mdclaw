@@ -704,17 +704,51 @@ def test_package_openmm_submission_can_include_source_selection(tmp_path: Path):
     assert str(sub / "source_selection.json") in res["files_written"]
 
 
+def test_package_openmm_submission_can_include_extra_outputs(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    parent = tmp_path / "wt_prepared_structure.pdb"
+    parent.write_text(
+        "ATOM      1  CA  LEU A  99       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    sub = tmp_path / "submission"
+
+    res = cli.package_openmm_submission(
+        submission_dir=str(sub),
+        task_id="P08_prep_t4l_l99a_branch",
+        system_xml_file=str(sx),
+        topology_pdb_file=str(tp),
+        state_xml_file=str(st),
+        run_id="pkg",
+        extra_output_files=[f"parent_prepared_structure={parent}"],
+    )
+
+    assert res["success"]
+    manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["outputs"]["parent_prepared_structure"] == (
+        "wt_prepared_structure.pdb"
+    )
+    assert (sub / "wt_prepared_structure.pdb").read_text() == parent.read_text()
+    assert str(sub / "wt_prepared_structure.pdb") in res["files_written"]
+
+
 def test_standalone_packager_matches_shape(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
     sub = tmp_path / "submission"
     evidence = tmp_path / "evidence_report.json"
     evidence.write_text('{"schema_version":"1.0","standalone":true}\n')
+    parent = tmp_path / "wt_prepared_structure.pdb"
+    parent.write_text(
+        "ATOM      1  CA  LEU A  99       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
     rc = subprocess.run(
         [sys.executable, str(STANDALONE_PACKAGER),
          "--submission-dir", str(sub), "--task-id", "P01_demo",
          "--system-xml", str(sx), "--topology-pdb", str(tp),
          "--state-xml", str(st), "--run-id", "standalone",
-         "--evidence-report", str(evidence)],
+         "--evidence-report", str(evidence),
+         "--extra-output", f"parent_prepared_structure={parent}"],
         capture_output=True, text=True,
     )
     assert rc.returncode == 0, rc.stderr
@@ -724,6 +758,10 @@ def test_standalone_packager_matches_shape(tmp_path: Path):
         assert (sub / name).is_file(), name
     manifest = json.loads((sub / "manifest.json").read_text())
     assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
+    assert manifest["outputs"]["parent_prepared_structure"] == (
+        "wt_prepared_structure.pdb"
+    )
+    assert (sub / "wt_prepared_structure.pdb").read_text() == parent.read_text()
     assert json.loads((sub / "evidence_report.json").read_text())["standalone"]
     metrics = json.loads((sub / "metrics.json").read_text())
     assert "force_field" not in metrics["preparation"]
@@ -753,3 +791,54 @@ def test_package_openmm_submission_reports_missing_inputs(tmp_path: Path,
     )
     assert not res["success"]
     assert res["errors"]
+
+
+def test_package_openmm_submission_rejects_invalid_openmm_bundle(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    sx.write_text("<OpenMMSystem><AtomTypes/></OpenMMSystem>\n")
+
+    sub = tmp_path / "submission"
+    res = cli.package_openmm_submission(
+        submission_dir=str(sub),
+        task_id="P01_demo",
+        system_xml_file=str(sx),
+        topology_pdb_file=str(tp),
+        state_xml_file=str(st),
+        run_id="pkg",
+    )
+
+    assert not res["success"]
+    assert res["code"] == "invalid_openmm_bundle"
+    assert "OpenMM bundle validation failed" in res["errors"][0]
+    assert not (sub / "manifest.json").exists()
+
+
+def test_standalone_packager_rejects_invalid_openmm_bundle(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    sx.write_text("<OpenMMSystem><AtomTypes/></OpenMMSystem>\n")
+    sub = tmp_path / "submission"
+
+    rc = subprocess.run(
+        [
+            sys.executable,
+            str(STANDALONE_PACKAGER),
+            "--submission-dir",
+            str(sub),
+            "--task-id",
+            "P01_demo",
+            "--system-xml",
+            str(sx),
+            "--topology-pdb",
+            str(tp),
+            "--state-xml",
+            str(st),
+            "--run-id",
+            "standalone",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert rc.returncode != 0
+    assert "OpenMM bundle validation failed" in rc.stderr
+    assert not (sub / "manifest.json").exists()

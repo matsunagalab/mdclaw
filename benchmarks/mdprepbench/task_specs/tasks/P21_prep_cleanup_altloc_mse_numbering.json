@@ -29,57 +29,6 @@
         "weight": 0.35
       },
       {
-        "check_id": "altloc_decision_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "altloc",
-            "alternate location"
-          ],
-          [
-            "selected",
-            "resolved",
-            "choice"
-          ]
-        ],
-        "weight": 0.25
-      },
-      {
-        "check_id": "author_numbering_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "author numbering",
-            "numbering"
-          ],
-          [
-            "preserved",
-            "restored"
-          ]
-        ],
-        "weight": 0.25
-      },
-      {
-        "check_id": "missing_residue_decision_documented",
-        "check_type": "artifact_provenance_text",
-        "capability": "provenance",
-        "required_text_groups": [
-          [
-            "missing residue",
-            "missing loop"
-          ],
-          [
-            "modeled",
-            "not modeled",
-            "blocked",
-            "decision"
-          ]
-        ],
-        "weight": 0.15
-      },
-      {
         "$bundle": "topology_minimization"
       },
       {
