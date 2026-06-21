@@ -1,11 +1,9 @@
 {
-  "task_id": "P22_prep_forcefield_water_fidelity",
-  "public_source": "PDB 2LZM",
   "capability_tags_extra": [
     "forcefield_selection",
     "water_model"
   ],
-  "task_intent": "Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults.",
+  "public_source": "PDB 2LZM",
   "references": [
     {
       "source": "PDB 2LZM",
@@ -31,8 +29,26 @@
         "weight": 0.7
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       }
     ]
-  }
+  },
+  "task_id": "P22_prep_forcefield_water_fidelity",
+  "task_intent": "Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults."
 }

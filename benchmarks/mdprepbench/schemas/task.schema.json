@@ -16,6 +16,36 @@
           "default": null,
           "title": "Align Selection"
         },
+        "allow_ion_residues": {
+          "default": true,
+          "title": "Allow Ion Residues",
+          "type": "boolean"
+        },
+        "allow_standard_residues": {
+          "default": true,
+          "title": "Allow Standard Residues",
+          "type": "boolean"
+        },
+        "allow_water_residues": {
+          "default": true,
+          "title": "Allow Water Residues",
+          "type": "boolean"
+        },
+        "allowed_nonstandard_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Nonstandard Residue Names"
+        },
         "allowed_values": {
           "anyOf": [
             {
@@ -170,6 +200,12 @@
             "trajectory_rescan",
             "topology_solvent_rescan",
             "structure_component_rescan",
+            "topology_component_rescan",
+            "unexpected_residue_rescan",
+            "disulfide_bond_rescan",
+            "nucleic_content_rescan",
+            "residue_ratio_rescan",
+            "solvent_regime_rescan",
             "pdb_no_deuterium_atoms",
             "pdb_residue_state",
             "rmsd_recompute",
@@ -195,6 +231,11 @@
           "title": "Count Polymer Chains Only",
           "type": "boolean"
         },
+        "disulfide_distance_cutoff_angstrom": {
+          "default": 2.4,
+          "title": "Disulfide Distance Cutoff Angstrom",
+          "type": "number"
+        },
         "equals": {
           "default": null,
           "title": "Equals"
@@ -210,6 +251,18 @@
           ],
           "default": null,
           "title": "Exact Chain Count"
+        },
+        "exact_nucleic_chain_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exact Nucleic Chain Count"
         },
         "exact_residue_counts": {
           "anyOf": [
@@ -256,6 +309,26 @@
           "default": null,
           "title": "Forbidden Outputs"
         },
+        "ignored_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ignored Residue Names"
+        },
+        "image_molecules_before_rmsd": {
+          "default": false,
+          "title": "Image Molecules Before Rmsd",
+          "type": "boolean"
+        },
         "insertion_code": {
           "default": "",
           "title": "Insertion Code",
@@ -284,6 +357,21 @@
           ],
           "default": null,
           "title": "Json Path"
+        },
+        "lipid_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lipid Residue Names"
         },
         "max_rescan_minimization_steps": {
           "anyOf": [
@@ -324,6 +412,18 @@
           "default": null,
           "title": "Max Value"
         },
+        "max_water_residues": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Water Residues"
+        },
         "min_chain_count": {
           "anyOf": [
             {
@@ -347,6 +447,18 @@
           ],
           "default": null,
           "title": "Min Distinct Output Chains"
+        },
+        "min_disulfide_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Disulfide Count"
         },
         "min_force_count": {
           "anyOf": [
@@ -384,6 +496,18 @@
           "default": null,
           "title": "Min Length"
         },
+        "min_lipid_residues": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Lipid Residues"
+        },
         "min_mapping_entries": {
           "anyOf": [
             {
@@ -395,6 +519,30 @@
           ],
           "default": null,
           "title": "Min Mapping Entries"
+        },
+        "min_nucleic_chain_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Nucleic Chain Count"
+        },
+        "min_nucleic_residue_count": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Nucleic Residue Count"
         },
         "min_residue_atom_count": {
           "anyOf": [
@@ -615,6 +763,18 @@
           "default": null,
           "title": "Required Model Rank"
         },
+        "required_nucleic_acid_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Nucleic Acid Type"
+        },
         "required_operator_ids": {
           "anyOf": [
             {
@@ -656,6 +816,33 @@
           ],
           "default": null,
           "title": "Required Residue Name"
+        },
+        "required_residue_ratio": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "integer"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Residue Ratio"
+        },
+        "required_solvent_regime": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Required Solvent Regime"
         },
         "required_solvent_type": {
           "anyOf": [
@@ -1168,6 +1355,18 @@
           "default": null,
           "title": "Forbid Markers"
         },
+        "harness_record_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Harness Record Path"
+        },
         "manifest_path": {
           "anyOf": [
             {
@@ -1251,6 +1450,11 @@
           ],
           "default": null,
           "title": "Path"
+        },
+        "require_harness_record": {
+          "default": false,
+          "title": "Require Harness Record",
+          "type": "boolean"
         },
         "required_keys": {
           "anyOf": [

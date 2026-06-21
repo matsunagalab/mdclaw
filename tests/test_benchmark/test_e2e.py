@@ -258,6 +258,75 @@ _fake_submissions.GENERATORS[args.task_id](
     assert solver_instruction["submission_dir"].endswith("/submission")
 
 
+def test_run_benchmark_agent_folds_solver_local_harness_jsonl(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent_solver_harness.py"
+    fake_agent.write_text(
+        """
+import argparse
+import json
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+solver_harness = Path("tasks") / args.task_id / "harness_execution.jsonl"
+solver_harness.parent.mkdir(parents=True, exist_ok=True)
+with solver_harness.open("w") as handle:
+    for stage in ("source", "prep", "topo", "min"):
+        handle.write(json.dumps({
+            "stage": stage,
+            "command": f"synthetic {stage}",
+            "exit_code": 0,
+            "walltime_seconds": 0.01,
+        }) + "\\n")
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_solver_harness",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        agent_model="test-provider/test-model",
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    task_run_dir = output_dir / "agent_runner_solver_harness" / "tasks" / TASK_ID
+    harness = json.loads((task_run_dir / "harness_execution.json").read_text())
+    stages = {record.get("stage") for record in harness["records"]}
+    assert {"source", "prep", "topo", "min", "agent_run"} <= stages
+    merged_jsonl = (task_run_dir / "harness_execution.jsonl").read_text()
+    assert "synthetic source" in merged_jsonl
+    score_payload = json.loads((task_run_dir / "score.json").read_text())
+    score = score_payload.get("score", score_payload)
+    assert score["status"] == "passed"
+
+
 def test_run_benchmark_agent_renders_paths_valid_from_solver_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

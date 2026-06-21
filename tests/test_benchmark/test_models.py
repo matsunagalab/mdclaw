@@ -110,6 +110,16 @@ def test_deterministic_check_supports_manifest_paths_and_forbidden_outputs():
     assert components.max_residue_counts == {"SO4": 0}
     assert components.residue_aliases == {"CL": ["Cl-", "CLA"]}
 
+    unexpected = DeterministicCheck.model_validate({
+        "check_id": "no_extra_ligands",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "allowed_nonstandard_residue_names": ["AP5"],
+        "allow_water_residues": True,
+        "allow_ion_residues": True,
+    })
+    assert unexpected.allowed_nonstandard_residue_names == ["AP5"]
+
     residue_state = DeterministicCheck.model_validate({
         "check_id": "glu11_glh",
         "check_type": "pdb_residue_state",

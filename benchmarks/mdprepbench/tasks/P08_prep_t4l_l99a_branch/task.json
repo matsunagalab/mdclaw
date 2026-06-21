@@ -46,6 +46,14 @@
         "weight": 0.45
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "wt_parent_l99_preserved",
         "check_type": "pdb_residue_state",
         "required_residue_name": "LEU",
@@ -88,6 +96,14 @@
         "check_type": "minimization_report_check",
         "minimization_report_manifest_path": "outputs.minimization_report",
         "weight": 1.0
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_l99a_present",

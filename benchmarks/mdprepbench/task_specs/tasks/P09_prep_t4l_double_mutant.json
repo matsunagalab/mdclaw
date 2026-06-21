@@ -1,11 +1,9 @@
 {
-  "task_id": "P09_prep_t4l_double_mutant",
-  "public_source": "PDB 2LZM",
   "capability_tags_extra": [
     "mutation",
     "multi_mutant"
   ],
-  "task_intent": "Multi-mutant branch: apply L99A and M102Q from one prompt on a branched prep node.",
+  "public_source": "PDB 2LZM",
   "references": [
     {
       "source": "PDB 2LZM",
@@ -25,6 +23,14 @@
         "weight": 0.35
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "m102q_present",
         "check_type": "pdb_residue_state",
         "required_residue_name": "GLN",
@@ -36,6 +42,14 @@
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_l99a_present",
@@ -58,5 +72,7 @@
         "weight": 0.35
       }
     ]
-  }
+  },
+  "task_id": "P09_prep_t4l_double_mutant",
+  "task_intent": "Multi-mutant branch: apply L99A and M102Q from one prompt on a branched prep node."
 }

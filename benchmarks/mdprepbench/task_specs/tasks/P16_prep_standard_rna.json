@@ -1,11 +1,9 @@
 {
-  "task_id": "P16_prep_standard_rna",
-  "public_source": "PDB 4RBQ",
   "capability_tags_extra": [
     "rna",
     "nucleic_acid"
   ],
-  "task_intent": "Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library.",
+  "public_source": "PDB 4RBQ",
   "references": [
     {
       "source": "PDB 4RBQ",
@@ -25,6 +23,14 @@
         "weight": 0.5
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "minimized_rna_content_rescanned",
         "check_type": "nucleic_content_rescan",
         "min_nucleic_chain_count": 1,
@@ -36,7 +42,17 @@
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       }
     ]
-  }
+  },
+  "task_id": "P16_prep_standard_rna",
+  "task_intent": "Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library."
 }

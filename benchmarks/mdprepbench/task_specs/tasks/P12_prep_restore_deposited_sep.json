@@ -1,11 +1,9 @@
 {
-  "task_id": "P12_prep_restore_deposited_sep",
-  "public_source": "PDB 5K9P",
   "capability_tags_extra": [
     "phosphorylation",
     "ptm_restore"
   ],
-  "task_intent": "Phosphorylated residue restore: detect deposited SEP, clean the standard protein, restore phosphorylation, and build a topology-ready structure.",
+  "public_source": "PDB 5K9P",
   "references": [
     {
       "source": "PDB 5K9P",
@@ -28,7 +26,27 @@
         "weight": 0.55
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "SEP"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "SEP"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_sep20_present",
@@ -44,5 +62,7 @@
         "weight": 0.55
       }
     ]
-  }
+  },
+  "task_id": "P12_prep_restore_deposited_sep",
+  "task_intent": "Phosphorylated residue restore: detect deposited SEP, clean the standard protein, restore phosphorylation, and build a topology-ready structure."
 }

@@ -1,12 +1,10 @@
 {
-  "task_id": "P21_prep_cleanup_altloc_mse_numbering",
-  "public_source": "PDB 4Q5T",
   "capability_tags_extra": [
     "pdb_cleanup",
     "altloc",
     "numbering"
   ],
-  "task_intent": "PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block.",
+  "public_source": "PDB 4Q5T",
   "references": [
     {
       "source": "PDB 4Q5T",
@@ -29,7 +27,23 @@
         "weight": 0.35
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_mse_removed_met_present",
@@ -46,5 +60,7 @@
         "weight": 0.35
       }
     ]
-  }
+  },
+  "task_id": "P21_prep_cleanup_altloc_mse_numbering",
+  "task_intent": "PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block."
 }

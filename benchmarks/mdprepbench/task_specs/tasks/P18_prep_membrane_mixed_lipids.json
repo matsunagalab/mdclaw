@@ -1,11 +1,9 @@
 {
-  "task_id": "P18_prep_membrane_mixed_lipids",
-  "public_source": "PDB 2LOP",
   "capability_tags_extra": [
     "membrane",
     "lipids"
   ],
-  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. The scorer verifies model selection from the submitted coordinates against a fixed model-1 reference, so no self-reported source-selection evidence is required.",
+  "public_source": "PDB 2LOP",
   "references": [
     {
       "source": "PDB 2LOP",
@@ -33,6 +31,34 @@
         "required_solvent_regime": "membrane",
         "topology_manifest_path": "outputs.topology",
         "weight": 0.2
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "POPC",
+          "POPE",
+          "CHL1"
+        ],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "min_residue_atom_count": 2,
+        "residue_aliases": {
+          "CHL1": [
+            "CHL",
+            "CHOL",
+            "HL1"
+          ],
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPE": [
+            "PE",
+            "OPE"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
       },
       {
         "align_selection": "protein and name CA",
@@ -76,6 +102,34 @@
         "$bundle": "topology_minimization"
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "POPC",
+          "POPE",
+          "CHL1"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "min_residue_atom_count": 2,
+        "residue_aliases": {
+          "CHL1": [
+            "CHL",
+            "CHOL",
+            "HL1"
+          ],
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPE": [
+            "PE",
+            "OPE"
+          ]
+        },
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "minimized_lipid_species_present",
         "check_type": "minimized_structure_component_rescan",
         "min_residue_atom_count": 20,
@@ -105,5 +159,7 @@
         "weight": 0.5
       }
     ]
-  }
+  },
+  "task_id": "P18_prep_membrane_mixed_lipids",
+  "task_intent": "Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. The scorer verifies model selection from the submitted coordinates against a fixed model-1 reference, so no self-reported source-selection evidence is required."
 }

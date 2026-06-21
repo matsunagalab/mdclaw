@@ -1,11 +1,9 @@
 {
-  "task_id": "P03_prep_ligand_pose_t4l_benzene",
-  "public_source": "PDB 181L",
   "capability_tags_extra": [
     "ligand_pose",
     "small_molecule"
   ],
-  "task_intent": "Ligand pose preservation: Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included.",
+  "public_source": "PDB 181L",
   "references": [
     {
       "source": "PDB 181L",
@@ -41,6 +39,16 @@
         "weight": 0.3
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "BNZ"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "benzene_retained",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
@@ -52,6 +60,16 @@
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "BNZ"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_protein_l99a_chain_retained",
@@ -81,5 +99,7 @@
         "weight": 0.2
       }
     ]
-  }
+  },
+  "task_id": "P03_prep_ligand_pose_t4l_benzene",
+  "task_intent": "Ligand pose preservation: Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included."
 }

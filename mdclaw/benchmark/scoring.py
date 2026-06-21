@@ -16,7 +16,7 @@ import math
 import re
 import statistics
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from mdclaw.benchmark import integrity
 from mdclaw.benchmark.models import (
@@ -43,6 +43,7 @@ _HARD_FAIL_CHECK_TYPES = {
     "openmm_system_load",
     "openmm_energy_rescan",
     "forcefield_applied_rescan",
+    "topology_component_rescan",
     "minimized_structure_required",
 }
 
@@ -754,6 +755,15 @@ _DEFAULT_CATION_RESIDUE_NAMES = ("NA", "NA+", "K", "K+", "LI", "LI+",
 _DEFAULT_ANION_RESIDUE_NAMES = ("CL", "CL-", "BR", "BR-", "I", "I-",
                                 "F", "F-")
 _AVOGADRO_PER_NM3_TO_MOLAR = 1.0 / 0.6022140857  # ions per nm^3 -> mol/L
+
+_STANDARD_POLYMER_RESIDUE_NAMES = {
+    "ALA", "ARG", "ASN", "ASP", "ASH", "CYS", "CYM", "CYX", "GLN",
+    "GLU", "GLH", "GLY", "HIS", "HID", "HIE", "HIP", "HSD", "HSE",
+    "HSP", "ILE", "LEU", "LYS", "LYN", "MET", "PHE", "PRO", "SER",
+    "THR", "TRP", "TYR", "VAL",
+    "A", "C", "G", "U", "DA", "DC", "DG", "DT", "RA", "RC", "RG",
+    "RU", "ADE", "CYT", "GUA", "THY", "URA",
+}
 
 
 def _nonbonded_force(system: Any) -> Any:
@@ -1678,6 +1688,18 @@ def _check_minimized_structure_component_rescan(check: DeterministicCheck,
     return _check_component_counts_for_structure(check, structure_path)
 
 
+def _check_topology_component_rescan(check: DeterministicCheck,
+                                     submission_dir: Path,
+                                     manifest: dict, **_):
+    artifacts, issues = _resolve_openmm_artifacts(check, submission_dir, manifest)
+    topology_path = artifacts.get("topology_pdb")
+    if issues or topology_path is None:
+        detail = "; ".join(issues) if issues else "topology.pdb role not found"
+        return False, 0.0, f"topology component rescan requires topology.pdb: {detail}"
+    ok, score, message = _check_component_counts_for_structure(check, topology_path)
+    return ok, score, f"topology {message}"
+
+
 def _pdb_deuterium_records(path: Path) -> list[str]:
     records: list[str] = []
     with path.open() as handle:
@@ -1774,6 +1796,79 @@ def _check_component_counts_for_structure(check: DeterministicCheck,
         "exact": check.exact_residue_counts or {},
     }
     return True, 1.0, f"component counts satisfied: {requested}"
+
+
+def _expand_residue_aliases(
+    names: Iterable[str],
+    residue_aliases: dict[str, list[str]] | None,
+) -> set[str]:
+    expanded: set[str] = set()
+    aliases = residue_aliases or {}
+    for name in names:
+        canonical = str(name).strip().upper()
+        if not canonical:
+            continue
+        expanded.add(canonical)
+        for alias in aliases.get(str(name), []):
+            alias_name = str(alias).strip().upper()
+            if alias_name:
+                expanded.add(alias_name)
+    return expanded
+
+
+def _check_unexpected_residue_rescan(check: DeterministicCheck,
+                                     submission_dir: Path,
+                                     manifest: dict, **_):
+    structure_rel = _manifest_artifact_path(
+        manifest, check.structure_manifest_path, "outputs.prepared_structure",
+    ) or check.structure_path or "prepared_structure.pdb"
+    structure_path = _resolve_relative(submission_dir, structure_rel)
+    if not structure_path.is_file():
+        return False, 0.0, f"structure file not found: {structure_path}"
+
+    try:
+        counts = _residue_counts_from_pdb(
+            structure_path, min_atoms=check.min_residue_atom_count or 0
+        )
+    except OSError as exc:
+        return False, 0.0, f"could not read structure file: {exc}"
+
+    allowed: set[str] = set()
+    if check.allow_standard_residues:
+        allowed.update(_STANDARD_POLYMER_RESIDUE_NAMES)
+    if check.allow_water_residues:
+        allowed.update(str(name).upper() for name in _DEFAULT_WATER_RESIDUE_NAMES)
+    if check.allow_ion_residues:
+        allowed.update(str(name).upper() for name in _DEFAULT_CATION_RESIDUE_NAMES)
+        allowed.update(str(name).upper() for name in _DEFAULT_ANION_RESIDUE_NAMES)
+    allowed.update(
+        _expand_residue_aliases(
+            check.allowed_nonstandard_residue_names or [],
+            check.residue_aliases,
+        )
+    )
+    allowed.update(
+        _expand_residue_aliases(check.ignored_residue_names or [], check.residue_aliases)
+    )
+
+    unexpected = {
+        resname: count
+        for resname, count in sorted(counts.items())
+        if resname.upper() not in allowed
+    }
+    if unexpected:
+        return (
+            False,
+            0.0,
+            f"unexpected residue(s) present in {structure_path.name}: {unexpected}",
+        )
+    allowed_extra = check.allowed_nonstandard_residue_names or []
+    return (
+        True,
+        1.0,
+        f"no unexpected residues in {structure_path.name}; "
+        f"allowed_nonstandard={allowed_extra}",
+    )
 
 
 def _check_pdb_residue_state(check: DeterministicCheck,
@@ -2318,6 +2413,8 @@ _DETERMINISTIC_DISPATCH = {
     "trajectory_rescan": _check_trajectory_rescan,
     "topology_solvent_rescan": _check_topology_solvent_rescan,
     "structure_component_rescan": _check_structure_component_rescan,
+    "topology_component_rescan": _check_topology_component_rescan,
+    "unexpected_residue_rescan": _check_unexpected_residue_rescan,
     "disulfide_bond_rescan": _check_disulfide_bond_rescan,
     "nucleic_content_rescan": _check_nucleic_content_rescan,
     "residue_ratio_rescan": _check_residue_ratio_rescan,

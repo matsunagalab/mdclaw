@@ -1,20 +1,18 @@
 {
-  "task_id": "P10_prep_bpti_disulfides",
-  "public_source": "PDB 5PTI",
   "capability_tags_extra": [
     "disulfide",
     "bond_detection"
   ],
-  "required_outputs_extra": [
-    "component_disposition.json",
-    "excluded_components.json"
-  ],
-  "task_intent": "Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components.",
+  "public_source": "PDB 5PTI",
   "references": [
     {
       "source": "PDB 5PTI",
       "url": "https://www.rcsb.org/structure/5PTI"
     }
+  ],
+  "required_outputs_extra": [
+    "component_disposition.json",
+    "excluded_components.json"
   ],
   "scoring": {
     "deterministic_checks": [
@@ -44,7 +42,23 @@
         "weight": 0.15
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_prepared_structure_has_no_deuterium",
@@ -54,5 +68,7 @@
         "weight": 0.15
       }
     ]
-  }
+  },
+  "task_id": "P10_prep_bpti_disulfides",
+  "task_intent": "Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components."
 }

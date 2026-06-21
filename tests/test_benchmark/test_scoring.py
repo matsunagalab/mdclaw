@@ -92,6 +92,7 @@ def _write_openmm_bundle(
     broken: str | None = None,
     huge_energy: bool = False,
     include_water: bool = False,
+    extra_residues: list[tuple[str, int]] | None = None,
 ) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
@@ -140,6 +141,15 @@ def _write_openmm_bundle(
         nonbonded.addParticle(0.0, 0.1, 0.0)
         positions.append(Vec3(0.4, 0.0, 0.0))
         pdb_positions.append(Vec3(0.4, 0.0, 0.0))
+    for res_index, (resname, atom_count) in enumerate(extra_residues or [], start=3):
+        extra = topology.addResidue(resname, chain, str(res_index))
+        for atom_i in range(atom_count):
+            topology.addAtom(f"C{atom_i + 1}", Element.getBySymbol("C"), extra)
+            system.addParticle(12.0)
+            nonbonded.addParticle(0.0, 0.1, 0.0)
+            x = 0.8 + 0.1 * atom_i
+            positions.append(Vec3(x, 0.0, 0.0))
+            pdb_positions.append(Vec3(x, 0.0, 0.0))
     positions_q = positions * unit.nanometer
     pdb_positions_q = pdb_positions * unit.nanometer
     system.addForce(nonbonded)
@@ -1534,6 +1544,90 @@ def test_prepared_structure_component_loss_is_critical_failure(tmp_path: Path):
     assert score.deterministic_checks[0].passed is False
 
 
+def test_topology_component_rescan_requires_component_in_openmm_topology(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="topology_ap5",
+                check_type="topology_component_rescan",
+                topology_manifest_path="outputs.topology",
+                min_residue_counts={"AP5": 1},
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_openmm_bundle(tmp_path, extra_residues=[("AP5", 1)])
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+        metrics={},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "passed"
+    assert score.weighted_total == 1.0
+    assert score.deterministic_checks[0].passed is True
+
+
+def test_topology_component_loss_is_physical_hard_failure(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="topology_ap5",
+                check_type="topology_component_rescan",
+                topology_manifest_path="outputs.topology",
+                min_residue_counts={"AP5": 1},
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="reported_ok",
+                check_type="json_equals",
+                json_path="preparation.reported_ok",
+                equals=True,
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_openmm_bundle(tmp_path)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+        metrics={"preparation": {"reported_ok": True}},
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert score.deterministic_checks[0].passed is False
+    assert "AP5: observed 0 < min 1" in score.deterministic_checks[0].message
+
+
 def test_pdb_residue_state_check_requires_variant_and_hydrogen(tmp_path: Path):
     task = _make_task(
         primary="preparation",
@@ -1613,6 +1707,49 @@ def test_structure_component_rescan_counts_required_and_forbidden_residues(tmp_p
     assert failed.passed is False
     assert "AP5" in failed.message
     assert "SO4" in failed.message
+
+
+def test_unexpected_residue_rescan_allows_requested_nonstandard_only(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_extra_nonstandard",
+            check_type="unexpected_residue_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            allowed_nonstandard_residue_names=["AP5"],
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1  AP5 B   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  O   HOH C   3       2.000   0.000   0.000  1.00  0.00           O\n"
+        "HETATM    4 NA   NA  D   4       3.000   0.000   0.000  1.00  0.00          NA\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1  AP5 B   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    3  S   SO4 C   3       2.000   0.000   0.000  1.00  0.00           S\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "SO4" in failed.message
+    assert "AP5" not in failed.message
 
 
 def test_pdb_no_deuterium_atoms_check(tmp_path: Path):

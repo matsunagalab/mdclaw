@@ -1,11 +1,9 @@
 {
-  "task_id": "P05_prep_dap_dehydrogenase_nadp",
-  "public_source": "PDB 1DAP",
   "capability_tags_extra": [
     "charged_ligand",
     "cofactor"
   ],
-  "task_intent": "Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance.",
+  "public_source": "PDB 1DAP",
   "references": [
     {
       "source": "PDB 1DAP",
@@ -25,7 +23,27 @@
         "weight": 0.45
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "NDP"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "NDP"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_cofactor_retained",
@@ -39,5 +57,7 @@
         "weight": 0.45
       }
     ]
-  }
+  },
+  "task_id": "P05_prep_dap_dehydrogenase_nadp",
+  "task_intent": "Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance."
 }

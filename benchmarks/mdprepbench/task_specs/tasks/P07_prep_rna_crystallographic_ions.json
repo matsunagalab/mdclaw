@@ -1,11 +1,9 @@
 {
-  "task_id": "P07_prep_rna_crystallographic_ions",
-  "public_source": "PDB 4RBQ",
   "capability_tags_extra": [
     "rna",
     "ion_triage"
   ],
-  "task_intent": "Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system.",
+  "public_source": "PDB 4RBQ",
   "references": [
     {
       "source": "PDB 4RBQ",
@@ -25,6 +23,14 @@
         "weight": 0.3
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "potassium_retained",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
@@ -36,6 +42,14 @@
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_rna_residues_retained",
@@ -60,5 +74,7 @@
         "weight": 0.45
       }
     ]
-  }
+  },
+  "task_id": "P07_prep_rna_crystallographic_ions",
+  "task_intent": "Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system."
 }

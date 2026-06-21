@@ -992,6 +992,42 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return out
 
 
+def _harness_record_identity(record: dict[str, Any]) -> str:
+    """Stable identity for duplicate harness records from mirrored logs."""
+    try:
+        return json.dumps(record, sort_keys=True, default=str)
+    except TypeError:
+        return repr(sorted(record.items()))
+
+
+def _read_harness_jsonl_records(*paths: Path) -> list[dict[str, Any]]:
+    """Read harness JSONL from all known locations without double-counting.
+
+    The benchmark runner sets ``MDCLAW_BENCHMARK_HARNESS_LOG`` to the
+    harness-owned task-run file, but some evaluated agents also mirror or move
+    stage-wrapper output into their solver task directory. Keep the runner
+    tolerant of that layout so a real recorded source/prep/topo/min stage is
+    not lost before scoring.
+    """
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for path in paths:
+        for record in _read_jsonl(path):
+            identity = _harness_record_identity(record)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            out.append(record)
+    return out
+
+
+def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
+    ensure_directory(path.parent)
+    with path.open("w") as f:
+        for record in records:
+            f.write(json.dumps(record, sort_keys=True, default=str) + "\n")
+
+
 def _write_jsonl_dedup(path: Path, record: dict[str, Any], key: str) -> None:
     """Append ``record`` to a JSONL file, replacing any prior row with the
     same value at ``key``. Preserves order; new row goes at the end.
@@ -1843,7 +1879,10 @@ def _run_one_benchmark_agent_task(
     else:
         ensure_directory(evaluator_submission)
 
-    records = _read_jsonl(harness_jsonl)
+    solver_harness_jsonl = solver_task_dir / "harness_execution.jsonl"
+    records = _read_harness_jsonl_records(harness_jsonl, solver_harness_jsonl)
+    if records:
+        _write_jsonl(harness_jsonl, records)
     policy_violations = _mdclaw_cli_policy_violations(
         records,
         solver_context=solver_context,

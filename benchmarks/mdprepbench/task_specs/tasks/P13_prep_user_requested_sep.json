@@ -1,11 +1,9 @@
 {
-  "task_id": "P13_prep_user_requested_sep",
-  "public_source": "PDB 1UBQ",
   "capability_tags_extra": [
     "phosphorylation",
     "ptm_insertion"
   ],
-  "task_intent": "User-requested phosphorylation: apply phosphorylation to unmodified ubiquitin Ser20 and prepare the resulting SEP-containing system.",
+  "public_source": "PDB 1UBQ",
   "references": [
     {
       "source": "PDB 1UBQ",
@@ -28,7 +26,27 @@
         "weight": 0.55
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "SEP"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "SEP"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_ser20_became_sep",
@@ -44,5 +62,7 @@
         "weight": 0.55
       }
     ]
-  }
+  },
+  "task_id": "P13_prep_user_requested_sep",
+  "task_intent": "User-requested phosphorylation: apply phosphorylation to unmodified ubiquitin Ser20 and prepare the resulting SEP-containing system."
 }

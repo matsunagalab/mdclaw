@@ -1,11 +1,9 @@
 {
-  "task_id": "P02_prep_1ake_chain_ap5",
-  "public_source": "PDB 1AKE",
   "capability_tags_extra": [
     "ligand_selection",
     "chain_identity"
   ],
-  "task_intent": "Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain.",
+  "public_source": "PDB 1AKE",
   "references": [
     {
       "source": "PDB 1AKE",
@@ -25,7 +23,46 @@
         "weight": 0.45
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "AP5"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "topology_ap5_retained",
+        "check_type": "topology_component_rescan",
+        "min_residue_counts": {
+          "AP5": 1
+        },
+        "topology_manifest_path": "outputs.topology",
+        "weight": 1.0
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "AP5"
+        ],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "AP5"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_ap5_retained",
@@ -39,5 +76,7 @@
         "weight": 0.45
       }
     ]
-  }
+  },
+  "task_id": "P02_prep_1ake_chain_ap5",
+  "task_intent": "Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain."
 }

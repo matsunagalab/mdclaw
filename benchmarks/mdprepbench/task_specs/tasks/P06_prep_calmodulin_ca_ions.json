@@ -1,11 +1,9 @@
 {
-  "task_id": "P06_prep_calmodulin_ca_ions",
-  "public_source": "PDB 1CLL",
   "capability_tags_extra": [
     "ion_retention",
     "supported_metal_ion"
   ],
-  "task_intent": "Supported metal ion retention: prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands.",
+  "public_source": "PDB 1CLL",
   "references": [
     {
       "source": "PDB 1CLL",
@@ -25,7 +23,23 @@
         "weight": 0.65
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_four_calcium_ions_retained",
@@ -39,5 +53,7 @@
         "weight": 0.65
       }
     ]
-  }
+  },
+  "task_id": "P06_prep_calmodulin_ca_ions",
+  "task_intent": "Supported metal ion retention: prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands."
 }

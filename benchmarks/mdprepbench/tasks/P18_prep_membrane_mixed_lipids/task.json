@@ -55,6 +55,34 @@
         "weight": 0.2
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "POPC",
+          "POPE",
+          "CHL1"
+        ],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "min_residue_atom_count": 2,
+        "residue_aliases": {
+          "CHL1": [
+            "CHL",
+            "CHOL",
+            "HL1"
+          ],
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPE": [
+            "PE",
+            "OPE"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
         "align_selection": "protein and name CA",
         "check_id": "nmr_model_1_coordinate_match",
         "check_type": "rmsd_recompute",
@@ -125,6 +153,34 @@
         "check_type": "minimization_report_check",
         "minimization_report_manifest_path": "outputs.minimization_report",
         "weight": 1.0
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "POPC",
+          "POPE",
+          "CHL1"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "min_residue_atom_count": 2,
+        "residue_aliases": {
+          "CHL1": [
+            "CHL",
+            "CHOL",
+            "HL1"
+          ],
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPE": [
+            "PE",
+            "OPE"
+          ]
+        },
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_lipid_species_present",

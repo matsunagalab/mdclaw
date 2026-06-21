@@ -172,6 +172,10 @@ def public_required_components(task: Task) -> list[dict[str, Any]]:
             structure_role = "prepared_structure"
             manifest_path = check.structure_manifest_path or "outputs.prepared_structure"
             default_path = check.structure_path or "prepared_structure.pdb"
+        elif check.check_type == "topology_component_rescan":
+            structure_role = "topology"
+            manifest_path = check.topology_manifest_path or "outputs.topology"
+            default_path = check.structure_path or "topology/topology.pdb"
         elif check.check_type == "minimized_structure_component_rescan":
             structure_role = "minimized_structure"
             manifest_path = (
@@ -180,6 +184,10 @@ def public_required_components(task: Task) -> list[dict[str, Any]]:
                 or "outputs.minimized_structure"
             )
             default_path = check.structure_path or "minimized_structure.pdb"
+        elif check.check_type == "unexpected_residue_rescan":
+            structure_role = "structure"
+            manifest_path = check.structure_manifest_path or "outputs.prepared_structure"
+            default_path = check.structure_path or "prepared_structure.pdb"
         else:
             continue
 
@@ -199,6 +207,17 @@ def public_required_components(task: Task) -> list[dict[str, Any]]:
             value = getattr(check, field)
             if value is not None:
                 item[field] = value
+        if check.check_type == "unexpected_residue_rescan":
+            for field in (
+                "allowed_nonstandard_residue_names",
+                "ignored_residue_names",
+                "allow_standard_residues",
+                "allow_water_residues",
+                "allow_ion_residues",
+            ):
+                value = getattr(check, field)
+                if value is not None:
+                    item[field] = value
         requirements.append(item)
     return requirements
 

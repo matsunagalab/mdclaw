@@ -173,10 +173,10 @@ def _topology_component_residues(
 ) -> list[tuple[str, int, int]]:
     """Component residues a honest fixture must embed in the OpenMM topology.
 
-    Returns ``(resname, n_atoms, count)`` for ``structure_component_rescan``
-    checks whose structure target is the OpenMM topology bundle (rather than
-    ``prepared_structure.pdb``), so retargeted checks such as P18's
-    ``lipid_species_present`` find their residues in ``topology/topology.pdb``.
+    Returns ``(resname, n_atoms, count)`` for component checks whose target is
+    the OpenMM topology bundle, so checks such as P02's ligand-topology
+    retention and P18's lipid species requirements find their residues in
+    ``topology/topology.pdb``.
     """
     residues: list[tuple[str, int, int]] = []
     ion_residue_names: set[str] = set()
@@ -192,9 +192,11 @@ def _topology_component_residues(
             for name in (check.get("anion_residue_names") or [])
         )
     for check in task["scoring"]["deterministic_checks"]:
-        if check.get("check_type") != "structure_component_rescan":
-            continue
-        if not _check_targets_topology(check):
+        check_type = check.get("check_type")
+        if check_type == "structure_component_rescan":
+            if not _check_targets_topology(check):
+                continue
+        elif check_type != "topology_component_rescan":
             continue
         n_atoms = max(1, int(check.get("min_residue_atom_count") or 1))
         for resname, count in (check.get("min_residue_counts") or {}).items():

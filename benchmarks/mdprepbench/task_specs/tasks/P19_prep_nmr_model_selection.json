@@ -1,11 +1,9 @@
 {
-  "task_id": "P19_prep_nmr_model_selection",
-  "public_source": "PDB 2K39",
   "capability_tags_extra": [
     "candidate_selection",
     "nmr_ensemble"
   ],
-  "task_intent": "Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. The scorer verifies model selection from the submitted coordinates against a fixed model-5 reference, so no self-reported source-selection evidence is required.",
+  "public_source": "PDB 2K39",
   "references": [
     {
       "source": "PDB 2K39",
@@ -25,8 +23,26 @@
         "weight": 1.0
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       }
     ]
-  }
+  },
+  "task_id": "P19_prep_nmr_model_selection",
+  "task_intent": "Candidate/model selection: select model 5 from the PDB 2K39 NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. The scorer verifies model selection from the submitted coordinates against a fixed model-5 reference, so no self-reported source-selection evidence is required."
 }

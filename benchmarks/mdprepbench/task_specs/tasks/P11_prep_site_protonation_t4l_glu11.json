@@ -1,11 +1,9 @@
 {
-  "task_id": "P11_prep_site_protonation_t4l_glu11",
-  "public_source": "PDB 2LZM",
   "capability_tags_extra": [
     "site_specific_protonation",
     "hydrogen_rebuild"
   ],
-  "task_intent": "Specific residue protonation: override the default pH assignment for chain A residue 11 so Glu11 is protonated as GLH.",
+  "public_source": "PDB 2LZM",
   "references": [
     {
       "source": "PDB 2LZM",
@@ -28,7 +26,23 @@
         "weight": 0.7
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_glu11_is_glh_with_he2",
@@ -44,5 +58,7 @@
         "weight": 0.7
       }
     ]
-  }
+  },
+  "task_id": "P11_prep_site_protonation_t4l_glu11",
+  "task_intent": "Specific residue protonation: override the default pH assignment for chain A residue 11 so Glu11 is protonated as GLH."
 }

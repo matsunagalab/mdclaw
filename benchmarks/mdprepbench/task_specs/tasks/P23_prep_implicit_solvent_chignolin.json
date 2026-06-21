@@ -1,11 +1,9 @@
 {
-  "task_id": "P23_prep_implicit_solvent_chignolin",
-  "public_source": "PDB 5AWL",
   "capability_tags_extra": [
     "implicit_solvent",
     "small_protein"
   ],
-  "task_intent": "Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box.",
+  "public_source": "PDB 5AWL",
   "references": [
     {
       "source": "PDB 5AWL",
@@ -34,7 +32,23 @@
         "weight": 0.3
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_no_explicit_water_box",
@@ -49,5 +63,7 @@
         "weight": 0.3
       }
     ]
-  }
+  },
+  "task_id": "P23_prep_implicit_solvent_chignolin",
+  "task_intent": "Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box."
 }

@@ -1,11 +1,9 @@
 {
-  "task_id": "P25_prep_kcl_ion_concentration",
-  "public_source": "PDB 5AWL",
   "capability_tags_extra": [
     "ion_concentration",
     "explicit_solvent"
   ],
-  "task_intent": "Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality.",
+  "public_source": "PDB 5AWL",
   "references": [
     {
       "source": "PDB 5AWL",
@@ -43,6 +41,14 @@
         "weight": 0.2
       },
       {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "net_charge_neutral_recomputed",
         "check_type": "net_charge_check",
         "require_neutral": true,
@@ -50,25 +56,33 @@
         "weight": 0.3
       },
       {
-        "check_id": "kcl_molarity_recomputed",
-        "check_type": "ion_concentration_recompute",
-        "cation_residue_names": [
-          "K",
-          "K+"
-        ],
         "anion_residue_names": [
           "CL",
           "CL-",
           "Cl-"
         ],
-        "target_molar": 0.3,
-        "molar_tolerance": 0.05,
+        "cation_residue_names": [
+          "K",
+          "K+"
+        ],
+        "check_id": "kcl_molarity_recomputed",
+        "check_type": "ion_concentration_recompute",
         "min_ion_count": 2,
+        "molar_tolerance": 0.05,
+        "target_molar": 0.3,
         "topology_manifest_path": "outputs.topology",
         "weight": 0.4
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_kcl_ions_present",
@@ -92,5 +106,7 @@
         "weight": 0.3
       }
     ]
-  }
+  },
+  "task_id": "P25_prep_kcl_ion_concentration",
+  "task_intent": "Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality."
 }

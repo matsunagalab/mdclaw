@@ -254,9 +254,19 @@ def test_export_public_package_exposes_required_components(tmp_path: Path):
     }
 
     prepared = components[("prepared_structure", "ap5_retained")]
+    no_extra = components[("structure", "no_unrequested_nonstandard_residues")]
+    topology = components[("topology", "topology_ap5_retained")]
+    topology_no_extra = components[
+        ("structure", "topology_no_unrequested_nonstandard_residues")
+    ]
     minimized = components[("minimized_structure", "minimized_ap5_retained")]
     assert prepared["manifest_path"] == "outputs.prepared_structure"
     assert prepared["min_residue_counts"] == {"AP5": 1}
+    assert no_extra["allowed_nonstandard_residue_names"] == ["AP5"]
+    assert topology["manifest_path"] == "outputs.topology"
+    assert topology["min_residue_counts"] == {"AP5": 1}
+    assert topology_no_extra["manifest_path"] == "outputs.topology"
+    assert topology_no_extra["allowed_nonstandard_residue_names"] == ["AP5"]
     assert minimized["manifest_path"] == "outputs.minimized_structure"
     assert minimized["min_residue_counts"] == {"AP5": 1}
 

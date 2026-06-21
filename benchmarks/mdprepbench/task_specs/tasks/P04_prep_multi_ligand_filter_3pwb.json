@@ -1,11 +1,9 @@
 {
-  "task_id": "P04_prep_multi_ligand_filter_3pwb",
-  "public_source": "PDB 3PWB",
   "capability_tags_extra": [
     "ligand_filtering",
     "heterogen_triage"
   ],
-  "task_intent": "Multi-ligand inclusion and exclusion: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens.",
+  "public_source": "PDB 3PWB",
   "references": [
     {
       "source": "PDB 3PWB",
@@ -29,7 +27,29 @@
         "weight": 0.75
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "BEN",
+          "GOL"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "BEN",
+          "GOL"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_requested_ligands_present",
@@ -47,5 +67,7 @@
         "weight": 0.75
       }
     ]
-  }
+  },
+  "task_id": "P04_prep_multi_ligand_filter_3pwb",
+  "task_intent": "Multi-ligand inclusion and exclusion: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens."
 }

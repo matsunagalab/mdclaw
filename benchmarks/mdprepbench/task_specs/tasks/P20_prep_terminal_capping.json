@@ -1,11 +1,9 @@
 {
-  "task_id": "P20_prep_terminal_capping",
-  "public_source": "PDB 5AWL",
   "capability_tags_extra": [
     "terminal_capping",
     "protein_termini"
   ],
-  "task_intent": "Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME).",
+  "public_source": "PDB 5AWL",
   "references": [
     {
       "source": "PDB 5AWL",
@@ -26,7 +24,29 @@
         "weight": 0.45
       },
       {
+        "allowed_nonstandard_residue_names": [
+          "ACE",
+          "NME"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "ACE",
+          "NME"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_terminal_caps_present",
@@ -41,5 +61,7 @@
         "weight": 0.45
       }
     ]
-  }
+  },
+  "task_id": "P20_prep_terminal_capping",
+  "task_intent": "Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME)."
 }

@@ -136,6 +136,8 @@ DeterministicCheckType = Literal[
     "trajectory_rescan",
     "topology_solvent_rescan",
     "structure_component_rescan",
+    "topology_component_rescan",
+    "unexpected_residue_rescan",
     "disulfide_bond_rescan",
     "nucleic_content_rescan",
     "residue_ratio_rescan",
@@ -183,6 +185,8 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "trajectory_rescan": "physical_validity",
     "topology_solvent_rescan": "identity",
     "structure_component_rescan": "identity",
+    "topology_component_rescan": "physical_validity",
+    "unexpected_residue_rescan": "identity",
     "disulfide_bond_rescan": "identity",
     "nucleic_content_rescan": "identity",
     "residue_ratio_rescan": "fidelity",
@@ -312,6 +316,13 @@ class DeterministicCheck(BaseModel):
     max_residue_counts: Optional[dict[str, int]] = None
     exact_residue_counts: Optional[dict[str, int]] = None
     residue_aliases: Optional[dict[str, list[str]]] = None
+    # unexpected_residue_rescan: allowlist non-standard residues expected by
+    # the task and reject unrelated HETATM-style components in the artifact.
+    allowed_nonstandard_residue_names: Optional[list[str]] = None
+    ignored_residue_names: Optional[list[str]] = None
+    allow_standard_residues: bool = True
+    allow_water_residues: bool = True
+    allow_ion_residues: bool = True
     # Ignore residues with fewer than this many atoms when counting components.
     # Lets lipid checks reject small residues (water/ions) whose names can
     # collide with truncated lipid aliases.

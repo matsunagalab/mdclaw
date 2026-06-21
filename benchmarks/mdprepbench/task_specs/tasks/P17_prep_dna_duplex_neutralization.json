@@ -1,13 +1,11 @@
 {
-  "task_id": "P17_prep_dna_duplex_neutralization",
-  "public_source": "PDB 1BNA",
   "capability_tags_extra": [
     "dna",
     "nucleic_acid",
     "chain_selection",
     "neutralization"
   ],
-  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain.",
+  "public_source": "PDB 1BNA",
   "references": [
     {
       "source": "PDB 1BNA",
@@ -25,6 +23,14 @@
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.25
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "standard_dna_residues_present",
@@ -48,6 +54,14 @@
       },
       {
         "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
       },
       {
         "check_id": "minimized_dna_duplex_content_rescanned",
@@ -74,5 +88,7 @@
         "weight": 0.25
       }
     ]
-  }
+  },
+  "task_id": "P17_prep_dna_duplex_neutralization",
+  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain."
 }
