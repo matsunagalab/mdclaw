@@ -146,6 +146,7 @@ from mdclaw.amber.content_detection import _canonical_pablo_ion_resname, _normal
 from mdclaw.amber.forcefield_constants import _GLYCAM_LINKED_ASN_RESNAME  # noqa: E402
 from mdclaw.amber.glycam_topology import _is_glycam_topology_residue, _normalize_glycam_topology  # noqa: E402
 from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _patch_template_internal_bonds  # noqa: E402
+from mdclaw.amber.topology_validation import _build_topology_validation_report, _unique_messages  # noqa: E402
 
 
 _LIPID21_EXTERNAL_PAIR_KEYS = {
@@ -362,7 +363,31 @@ def _run_openmmforcefields_build(
     - ``num_atoms`` / ``num_residues`` (int) on success
     - ``forcefield_provenance`` (dict) on success
     """
-    result: Dict[str, Any] = {"success": False, "errors": [], "warnings": []}
+    result: Dict[str, Any] = {
+        "success": False,
+        "errors": [],
+        "warnings": [],
+        "topology_notes": [],
+    }
+    demotable_warnings: list[str] = []
+    patch_summary: Dict[str, Any] = {
+        "ligand_molecule_internal_bonds_added": 0,
+        "template_internal_bonds_added": 0,
+        "external_bonds_added": 0,
+        "unpaired_external_atom_count": 0,
+        "unpaired_lipid21_external_atom_count": 0,
+        "nln_renamed_to_asn_count": 0,
+        "orphan_glycam_residues_dropped_count": 0,
+        "add_extra_particles_completed": None,
+    }
+    manual_disulfide_added_count = 0
+
+    def _record_demotable_warning(message: str) -> None:
+        """Keep context during failures, but demote to notes after validation."""
+        result["warnings"].append(message)
+        demotable_warnings.append(message)
+        result["topology_notes"].append(message)
+
     has_explicit_glycam_plan = bool(glycam_bond_plan and glycam_bond_plan.get("bonds"))
     if glycam_bond_plan:
         result["glycam_bond_plan"] = glycam_bond_plan
@@ -610,7 +635,8 @@ def _run_openmmforcefields_build(
     pablo_result = _topology_pablo.load_topology(
         sanitized_input, extra_smiles=pablo_smiles
     )
-    result["warnings"].extend(pablo_result.warnings)
+    for warning in pablo_result.warnings:
+        _record_demotable_warning(warning)
     omm_topology = pablo_result.topology
     omm_positions = pablo_result.positions
 
@@ -666,12 +692,10 @@ def _run_openmmforcefields_build(
 
     # --- 3. Disulfide bonds (Pablo does not auto-detect) -----------------
     if disulfide_bonds:
-        added = _topology_pablo.add_disulfide_bonds(omm_topology, disulfide_bonds)
-        if added != len(disulfide_bonds):
-            result["warnings"].append(
-                f"Added {added}/{len(disulfide_bonds)} disulfide bonds; the rest "
-                f"could not be resolved against the loaded topology."
-            )
+        manual_disulfide_added_count = _topology_pablo.add_disulfide_bonds(
+            omm_topology,
+            disulfide_bonds,
+        )
 
     # --- 4. Set unit cell for explicit solvent ---------------------------
     if not box_dimensions:
@@ -804,7 +828,10 @@ def _run_openmmforcefields_build(
         ligand_molecules,
     )
     if ligand_molecule_bonds_added:
-        result["warnings"].append(
+        patch_summary["ligand_molecule_internal_bonds_added"] = (
+            ligand_molecule_bonds_added
+        )
+        _record_demotable_warning(
             f"Patched {ligand_molecule_bonds_added} ligand bond(s) "
             f"from ligand_chemistry OpenFF Molecule records so "
             f"GAFFTemplateGenerator can match the residue graph."
@@ -812,7 +839,8 @@ def _run_openmmforcefields_build(
 
     bonds_added = _patch_template_internal_bonds(omm_topology, sg.forcefield)
     if bonds_added:
-        result["warnings"].append(
+        patch_summary["template_internal_bonds_added"] = bonds_added
+        _record_demotable_warning(
             f"Patched {bonds_added} intra-residue bond(s) onto topology "
             f"residues whose Pablo / PDBFile load left under-bonded "
             f"(lipid21 / GLYCAM templates supply the missing bonds)."
@@ -847,7 +875,7 @@ def _run_openmmforcefields_build(
             )
             return result
         result["warnings"].extend(glycam_normalization.get("warnings", []))
-        result["warnings"].append(
+        _record_demotable_warning(
             "Applied GLYCAM topology normalization from cpptraj prepareforleap "
             f"bond plan ({glycam_normalization['glycam_bond_plan']['applied_count']} "
             "bond(s)); glycan hydrogens were completed without generic protein repair."
@@ -1000,7 +1028,8 @@ def _run_openmmforcefields_build(
                 ext_budget[atom_a.index] -= 1
                 ext_budget[atom_b.index] = ext_budget.get(atom_b.index, 0) - 1
         if ext_bonds_added:
-            result["warnings"].append(
+            patch_summary["external_bonds_added"] = ext_bonds_added
+            _record_demotable_warning(
                 f"Patched {ext_bonds_added} inter-residue bond(s) connecting "
                 f"residues whose templates declare external bonds but the "
                 f"loader emitted them unconnected (lipid21 head/tail or "
@@ -1024,6 +1053,10 @@ def _run_openmmforcefields_build(
                     unbonded_externals.append(label)
                     if atom.residue.name in _LIPID21_EXTERNAL_RESNAMES:
                         unbonded_lipid21_externals.append(label)
+        patch_summary["unpaired_external_atom_count"] = len(unbonded_externals)
+        patch_summary["unpaired_lipid21_external_atom_count"] = len(
+            unbonded_lipid21_externals
+        )
         if unbonded_externals:
             result["warnings"].append(
                 f"External-bond patcher could not pair {len(unbonded_externals)} "
@@ -1056,6 +1089,7 @@ def _run_openmmforcefields_build(
                     residue.name = "ASN"
                     nln_renamed += 1
             if nln_renamed:
+                patch_summary["nln_renamed_to_asn_count"] = nln_renamed
                 result["warnings"].append(
                     f"Renamed {nln_renamed} NLN residue(s) without a matched "
                     f"glycan partner back to ASN (addHydrogens fills in HD22 "
@@ -1125,6 +1159,9 @@ def _run_openmmforcefields_build(
                 omm_positions = mod.positions
                 all_dropped.extend(f"{r.name}#{r.id}" for r in this_round)
             if all_dropped:
+                patch_summary["orphan_glycam_residues_dropped_count"] = len(
+                    all_dropped
+                )
                 result["warnings"].append(
                     f"Dropped {len(all_dropped)} orphan GLYCAM residue(s) whose "
                     f"external bond partner was missing from the prep output: "
@@ -1140,7 +1177,9 @@ def _run_openmmforcefields_build(
     # attempting SystemGenerator.create_system.
     try:
         modeller.addExtraParticles(sg.forcefield)
+        patch_summary["add_extra_particles_completed"] = True
     except Exception as exc:  # noqa: BLE001
+        patch_summary["add_extra_particles_completed"] = False
         result["warnings"].append(
             f"addExtraParticles failed (continuing without virtual sites): "
             f"{type(exc).__name__}: {exc}"
@@ -1237,6 +1276,51 @@ def _run_openmmforcefields_build(
             ),
         },
     }
+    topology_validation = _build_topology_validation_report(
+        topology=modeller.topology,
+        system=system,
+        position_count=position_count,
+        minimization=minimization_report["minimization"],
+        box_dimensions=box_dimensions,
+        canon_implicit=canon_implicit,
+        pablo_used=pablo_result.used_pablo,
+        pablo_guardrail_codes=pablo_result.guardrail_codes,
+        patch_summary=patch_summary,
+        disulfide_bonds=disulfide_bonds,
+        manual_disulfide_added_count=manual_disulfide_added_count,
+        non_authoritative_notes=result["topology_notes"],
+    )
+    disulfide_notes = topology_validation["disulfides"].get(
+        "non_authoritative_notes",
+        [],
+    )
+    if disulfide_notes:
+        result["topology_notes"].extend(disulfide_notes)
+        topology_validation["non_authoritative_notes"] = _unique_messages(
+            topology_validation.get("non_authoritative_notes", []) + disulfide_notes
+        )
+    result["topology_validation"] = topology_validation
+    if topology_validation["status"] != "passed":
+        disulfides = topology_validation["disulfides"]
+        result["errors"].append(
+            "Final topology validation failed: "
+            f"core={topology_validation['core']['status']}, "
+            f"disulfides={disulfides['status']} "
+            f"(expected {disulfides['expected_count']}, "
+            f"topology observed "
+            f"{disulfides['observed_topology_sg_sg_bond_count']}, "
+            f"system observed "
+            f"{disulfides['observed_system_harmonic_sg_sg_bond_count']})."
+        )
+        result["code"] = "topology_validation_failed"
+        return result
+    if demotable_warnings:
+        demote_set = set(demotable_warnings)
+        result["warnings"] = [
+            warning for warning in result["warnings"]
+            if warning not in demote_set
+        ]
+    result["topology_notes"] = _unique_messages(result["topology_notes"])
 
     # Coerce Pablo's int residue.id to str so PDBFile.writeFile(keepIds=True)
     # doesn't choke on `len(int_id)`.
@@ -1365,6 +1449,8 @@ def _run_openmmforcefields_build(
         "state_xml": str(state_xml_file),
         "minimization_report": str(minimization_report_file),
         "minimization": minimization_report["minimization"],
+        "topology_validation": topology_validation,
+        "topology_notes": result["topology_notes"],
         "num_atoms": num_atoms,
         "num_residues": num_residues,
         "forcefield_provenance": provenance,

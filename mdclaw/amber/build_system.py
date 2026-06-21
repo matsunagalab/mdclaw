@@ -591,6 +591,7 @@ def build_amber_system(
         "statistics": {},
         "errors": [],
         "warnings": [],
+        "topology_notes": [],
         "pdb_info_added": False,
         "pdb_flags_added": [],
     }
@@ -1035,6 +1036,7 @@ def build_amber_system(
     topology_pdb_file = out_dir / f"{output_name}.topology.pdb"
     state_xml_file = out_dir / f"{output_name}.state.xml"
     minimization_report_file = out_dir / f"{output_name}.minimization_report.json"
+    topology_validation_file = out_dir / f"{output_name}.topology_validation.json"
     
     # Copy and fix PDB file (fix UNL residue names if needed)
     working_pdb = out_dir / f"{output_name}.prepared.pdb"
@@ -1058,6 +1060,8 @@ def build_amber_system(
         result["warnings"].extend(fix_lig_result["replacements"])
 
     # Fix histidine residue name consistency (HID/HIE/HIP vs HD1/HE2)
+    disulfide_plan_warnings: list[str] = []
+
     try:
         his_fix = fix_histidine_protonation_consistency(working_pdb, working_pdb)
         if his_fix.get("changed", 0) > 0:
@@ -1266,7 +1270,7 @@ def build_amber_system(
         if disulfide_bonds:
             ss_plan = _plan_disulfide_topology_bonds(Path(pdb_path), disulfide_bonds)
             if ss_plan["warnings"]:
-                result["warnings"].extend(ss_plan["warnings"])
+                disulfide_plan_warnings.extend(ss_plan["warnings"])
             result["disulfide_bond_plan"] = ss_plan["resolved"]
 
         if glycan_linkages and not glycam_prepare:
@@ -1353,6 +1357,21 @@ def build_amber_system(
             ),
         )
         result["warnings"].extend(om_result.get("warnings", []))
+        result["topology_notes"].extend(om_result.get("topology_notes", []))
+        if om_result.get("topology_validation"):
+            topology_validation = om_result["topology_validation"]
+            disulfide_validation = topology_validation.get("disulfides", {})
+            if disulfide_plan_warnings:
+                if disulfide_validation.get("status") == "passed":
+                    result["topology_notes"].extend(disulfide_plan_warnings)
+                    notes = topology_validation.setdefault(
+                        "non_authoritative_notes",
+                        [],
+                    )
+                    notes.extend(disulfide_plan_warnings)
+                else:
+                    result["warnings"].extend(disulfide_plan_warnings)
+            result["topology_validation"] = topology_validation
         if om_result.get("glycam_bond_plan"):
             result["glycam_bond_plan"] = om_result["glycam_bond_plan"]
         if om_result.get("glycam_normalization"):
@@ -1366,6 +1385,8 @@ def build_amber_system(
                 result["minimization_report"] = om_result["minimization_report"]
             if om_result.get("minimization"):
                 result["minimization"] = om_result["minimization"]
+            if om_result.get("topology_validation"):
+                result["topology_validation"] = om_result["topology_validation"]
             result["statistics"] = {
                 "num_atoms": om_result["num_atoms"],
                 "num_residues": om_result["num_residues"],
@@ -1379,6 +1400,8 @@ def build_amber_system(
             logger.info(f"  Atoms: {om_result['num_atoms']}")
         else:
             result["errors"].extend(om_result.get("errors", []))
+            if om_result.get("topology_validation"):
+                result["topology_validation"] = om_result["topology_validation"]
             # Propagate the helper's structured ``code`` (e.g.
             # ``metal_openmm_xml_required``) so callers can branch on the
             # specific failure mode instead of grepping the error string.
@@ -1415,6 +1438,14 @@ def build_amber_system(
         result["code"] = result.get("code") or "openmmforcefields_build_failed"
         logger.error(error_msg)
     
+    result["topology_notes"] = list(dict.fromkeys(result.get("topology_notes", [])))
+    if result.get("topology_validation"):
+        topology_validation_file.write_text(
+            json.dumps(result["topology_validation"], indent=2, default=str),
+            encoding="utf-8",
+        )
+        result["topology_validation_file"] = str(topology_validation_file)
+
     # Save metadata
     metadata_file = out_dir / "amber_metadata.json"
     with open(metadata_file, 'w') as f:
@@ -1432,6 +1463,10 @@ def build_amber_system(
             if result.get("minimization_report"):
                 artifacts["minimization_report"] = (
                     f"artifacts/{output_name}.minimization_report.json"
+                )
+            if result.get("topology_validation_file"):
+                artifacts["topology_validation"] = (
+                    f"artifacts/{output_name}.topology_validation.json"
                 )
             if glycam_prepare:
                 artifacts.update({
@@ -1459,6 +1494,8 @@ def build_amber_system(
                     "system_artifact_kind": "openmm_system_xml",
                     "forcefield_provenance": result.get("forcefield_provenance"),
                     "minimization": result.get("minimization"),
+                    "topology_validation": result.get("topology_validation"),
+                    "topology_notes": result.get("topology_notes"),
                     "nucleic_libraries": nucleic_libraries or None,
                     "nucleic_content": nucleic_content if nucleic_content.get("has_nucleic") else None,
                     "glycan_library": glycan_library,
