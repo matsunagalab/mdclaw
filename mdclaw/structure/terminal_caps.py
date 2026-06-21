@@ -42,6 +42,7 @@ SUPPORTED_N_TERMINAL_CAPS = {"ACE"}
 SUPPORTED_C_TERMINAL_CAPS = {"NME"}
 TERMINAL_CAP_RESIDUES = SUPPORTED_N_TERMINAL_CAPS | SUPPORTED_C_TERMINAL_CAPS
 SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
+_CYX_ALLOWED_HYDROGEN_NAMES = frozenset({"H", "HA", "HB2", "HB3"})
 
 # Initialize tool wrappers
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
@@ -110,6 +111,43 @@ def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | Non
     return entry.openmm_xml[0], canonical
 
 
+def _classify_terminal_cap_noncap_hydrogen_changes(
+    before: dict[str, tuple[str, ...]],
+    after: dict[str, tuple[str, ...]],
+) -> tuple[list[str], list[str]]:
+    """Return unsafe and accepted non-cap H changes after cap completion.
+
+    ``Modeller.addHydrogens`` operates on the whole topology. For disulfide
+    cysteines, Amber ``CYX`` residues may be heavy-only after pdb4amber
+    (N/CA/CB/SG/C/O) and OpenMM can safely add the ordinary backbone/CB
+    hydrogens while still omitting thiol ``HG``. That specific CYX completion is
+    acceptable; every other non-cap hydrogen change remains a hard guardrail
+    failure.
+    """
+    unsafe: list[str] = []
+    accepted: list[str] = []
+    changed = sorted(
+        key
+        for key in (set(before) | set(after))
+        if before.get(key) != after.get(key)
+    )
+    for key in changed:
+        before_names = set(before.get(key, ()))
+        after_names = set(after.get(key, ()))
+        is_cyx = key.endswith("::CYX")
+        cyx_safe_completion = (
+            is_cyx
+            and before_names.issubset(after_names)
+            and after_names.issubset(_CYX_ALLOWED_HYDROGEN_NAMES)
+            and "HG" not in after_names
+        )
+        if cyx_safe_completion:
+            accepted.append(key)
+        else:
+            unsafe.append(key)
+    return unsafe, accepted
+
+
 def _complete_terminal_cap_hydrogens_with_modeller(
     pdb_file: str | Path,
     *,
@@ -140,6 +178,7 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         "cap_hydrogen_count_after": {},
         "noncap_hydrogen_signature_preserved": None,
         "noncap_hydrogen_signature_changed_residues": [],
+        "accepted_noncap_hydrogen_signature_changes": [],
         "warnings": [],
         "errors": [],
         "operations": [],
@@ -227,26 +266,24 @@ def _complete_terminal_cap_hydrogens_with_modeller(
 
     noncap_h_signature_after = _pdb_noncap_protein_hydrogen_signature(output_file)
     if noncap_h_signature_after != noncap_h_signature_before:
-        changed = sorted(
-            key
-            for key in (
-                set(noncap_h_signature_before)
-                | set(noncap_h_signature_after)
-            )
-            if noncap_h_signature_before.get(key)
-            != noncap_h_signature_after.get(key)
+        changed, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
+            noncap_h_signature_before,
+            noncap_h_signature_after,
         )
+        result["accepted_noncap_hydrogen_signature_changes"] = accepted
         result["code"] = "terminal_cap_hydrogen_completion_changed_noncap_hydrogens"
-        result["noncap_hydrogen_signature_preserved"] = False
-        result["noncap_hydrogen_signature_changed_residues"] = changed
-        preview = ", ".join(changed[:5])
-        if len(changed) > 5:
-            preview += f", ... (+{len(changed) - 5} more)"
-        result["errors"].append(
-            "Terminal cap hydrogen completion changed non-cap protein "
-            f"hydrogens: {preview}"
-        )
-        return result
+        if changed:
+            result["noncap_hydrogen_signature_preserved"] = False
+            result["noncap_hydrogen_signature_changed_residues"] = changed
+            preview = ", ".join(changed[:5])
+            if len(changed) > 5:
+                preview += f", ... (+{len(changed) - 5} more)"
+            result["errors"].append(
+                "Terminal cap hydrogen completion changed non-cap protein "
+                f"hydrogens: {preview}"
+            )
+            return result
+        result.pop("code", None)
     result["noncap_hydrogen_signature_preserved"] = True
 
     cap_h_after = _pdb_hydrogen_counts_by_resname(output_file, present_caps)
@@ -270,6 +307,9 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         "ph": ph,
         "cap_residues_present": sorted(present_caps),
         "cap_hydrogens_added": result["cap_hydrogens_added"],
+        "accepted_noncap_hydrogen_signature_changes": result[
+            "accepted_noncap_hydrogen_signature_changes"
+        ],
     })
     result["success"] = True
     return result

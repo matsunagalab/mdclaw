@@ -317,6 +317,39 @@ class TestTerminalCaps:
 
         assert signature == {"A:7::MSE": ("H1",)}
 
+    def test_terminal_cap_guard_accepts_cyx_without_hg_completion(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {},
+            {"A:34::CYX": ("H", "HA", "HB2", "HB3")},
+        )
+
+        assert unsafe == []
+        assert accepted == ["A:34::CYX"]
+
+    def test_terminal_cap_guard_rejects_cyx_hg_completion(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {},
+            {"A:34::CYX": ("H", "HA", "HB2", "HB3", "HG")},
+        )
+
+        assert unsafe == ["A:34::CYX"]
+        assert accepted == []
+
+    def test_terminal_cap_guard_still_rejects_non_cyx_completion(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {},
+            {"A:2::ALA": ("H", "HA", "HB1", "HB2", "HB3")},
+        )
+
+        assert unsafe == ["A:2::ALA"]
+        assert accepted == []
+
     def test_terminal_cap_hydrogen_completion_adds_cap_hydrogens(self, tmp_path):
         pytest.importorskip("openmmforcefields")
         from mdclaw import structure_server as ss
