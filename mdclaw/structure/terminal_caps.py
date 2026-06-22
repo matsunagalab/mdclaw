@@ -114,6 +114,8 @@ def _terminal_cap_forcefield_xml(forcefield_name: str | None) -> tuple[str | Non
 def _classify_terminal_cap_noncap_hydrogen_changes(
     before: dict[str, tuple[str, ...]],
     after: dict[str, tuple[str, ...]],
+    *,
+    safe_terminal_residue_keys: set[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     """Return unsafe and accepted non-cap H changes after cap completion.
 
@@ -121,11 +123,14 @@ def _classify_terminal_cap_noncap_hydrogen_changes(
     cysteines, Amber ``CYX`` residues may be heavy-only after pdb4amber
     (N/CA/CB/SG/C/O) and OpenMM can safely add the ordinary backbone/CB
     hydrogens while still omitting thiol ``HG``. That specific CYX completion is
-    acceptable; every other non-cap hydrogen change remains a hard guardrail
-    failure.
+    acceptable; for one-sided caps, the uncapped terminal residue may likewise
+    be heavy-only and require ordinary terminal/protein hydrogens.  Existing H
+    changes, internal-residue repairs, and CYX thiol ``HG`` addition remain
+    hard guardrail failures.
     """
     unsafe: list[str] = []
     accepted: list[str] = []
+    safe_terminal_residue_keys = safe_terminal_residue_keys or set()
     changed = sorted(
         key
         for key in (set(before) | set(after))
@@ -135,17 +140,52 @@ def _classify_terminal_cap_noncap_hydrogen_changes(
         before_names = set(before.get(key, ()))
         after_names = set(after.get(key, ()))
         is_cyx = key.endswith("::CYX")
+        if is_cyx and "HG" in after_names:
+            unsafe.append(key)
+            continue
         cyx_safe_completion = (
             is_cyx
             and before_names.issubset(after_names)
             and after_names.issubset(_CYX_ALLOWED_HYDROGEN_NAMES)
-            and "HG" not in after_names
         )
-        if cyx_safe_completion:
+        terminal_heavy_only_completion = (
+            key in safe_terminal_residue_keys
+            and not before_names
+            and bool(after_names)
+            and before_names.issubset(after_names)
+        )
+        if cyx_safe_completion or terminal_heavy_only_completion:
             accepted.append(key)
         else:
             unsafe.append(key)
     return unsafe, accepted
+
+
+def _pdb_residue_signature_key(residue: dict[str, Any]) -> str:
+    chain = str(residue.get("chain") or "")
+    resnum = str(residue.get("resnum_str") or residue.get("resnum") or "")
+    icode = str(residue.get("icode") or "")
+    resname = str(residue.get("resname") or "").upper()
+    return f"{chain}:{resnum}:{icode}:{resname}"
+
+
+def _uncapped_terminal_noncap_residue_keys(residues: list[dict[str, Any]]) -> set[str]:
+    """Return first/last non-cap residue keys only when that terminus is uncapped."""
+    by_chain: dict[str, list[dict[str, Any]]] = {}
+    for residue in residues:
+        by_chain.setdefault(str(residue.get("chain") or ""), []).append(residue)
+
+    keys: set[str] = set()
+    for chain_residues in by_chain.values():
+        if not chain_residues:
+            continue
+        first = chain_residues[0]
+        last = chain_residues[-1]
+        if str(first.get("resname") or "").upper() not in TERMINAL_CAP_RESIDUES:
+            keys.add(_pdb_residue_signature_key(first))
+        if str(last.get("resname") or "").upper() not in TERMINAL_CAP_RESIDUES:
+            keys.add(_pdb_residue_signature_key(last))
+    return keys
 
 
 def _complete_terminal_cap_hydrogens_with_modeller(
@@ -221,6 +261,9 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         return result
 
     residues_before = _read_pdb_unique_residues(input_path)
+    safe_terminal_residue_keys = _uncapped_terminal_noncap_residue_keys(
+        residues_before
+    )
     cap_h_before = _pdb_hydrogen_counts_by_resname(input_path, present_caps)
     noncap_h_signature_before = _pdb_noncap_protein_hydrogen_signature(input_path)
     total_h_before = _pdb_hydrogen_count(input_path)
@@ -269,6 +312,7 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         changed, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             noncap_h_signature_before,
             noncap_h_signature_after,
+            safe_terminal_residue_keys=safe_terminal_residue_keys,
         )
         result["accepted_noncap_hydrogen_signature_changes"] = accepted
         result["code"] = "terminal_cap_hydrogen_completion_changed_noncap_hydrogens"

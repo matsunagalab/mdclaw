@@ -1349,18 +1349,23 @@ def prepare_complex(
         # Determine overall success
         # Success if requested protein/ligand processing succeeded; nucleic
         # chains are pass-through inputs and only fail if split omitted them.
-        proteins_ok = any(p["success"] for p in result["proteins"]) if result["proteins"] else True
+        proteins_ok = all(p["success"] for p in result["proteins"]) if result["proteins"] else True
         nucleics_ok = all(nuc["success"] for nuc in result["nucleics"]) if result["nucleics"] else True
         glycans_ok = all(gly["success"] for gly in result["glycans"]) if result["glycans"] else True
-        ligands_ok = any(lig["success"] for lig in result["ligands"]) if result["ligands"] else True
+        ligands_ok = all(lig["success"] for lig in result["ligands"]) if result["ligands"] else True
         
         if process_proteins and not result["proteins"]:
             proteins_ok = not split_result.get("protein_files")  # OK if no proteins to process
         if process_ligands and not result["ligands"]:
             ligands_ok = not split_result.get("ligand_files")  # OK if no ligands to process
         
-        # Step 6: Merge structures if we have successful outputs
-        if proteins_ok or nucleics_ok or glycans_ok or ligands_ok:
+        critical_components_ok = proteins_ok and nucleics_ok and glycans_ok
+
+        # Step 6: Merge structures if required macromolecular components are
+        # complete. Ligand failures may still yield a protein-only artifact for
+        # the explicit blocking-ligand recovery path, but failed protein/nucleic
+        # or glycan preparation must never silently truncate the merged system.
+        if critical_components_ok:
             logger.info("Step 6: Merging structures...")
             pdb_files_to_merge = []
             
@@ -1593,6 +1598,11 @@ def prepare_complex(
                     logger.warning(f"  ✗ Merge failed: {merge_result.get('errors', [])}")
             else:
                 result["warnings"].append("No files available to merge")
+        else:
+            result["warnings"].append(
+                "Skipping merge because required protein, nucleic, or glycan "
+                "preparation failed"
+            )
         
         result["success"] = proteins_ok and nucleics_ok and glycans_ok and ligands_ok
         result["protein_preparation_success"] = proteins_ok

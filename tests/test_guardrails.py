@@ -441,7 +441,8 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
     node_id = "solv_001"
 
     def _fake_openmm(*, pdb_path, result, output_dir, output_name, dist,
-                     cubic, salt, saltcon, water_model, subdirectory=True):
+                     cubic, salt, saltcon, salt_c, salt_a, water_model,
+                     subdirectory=True):
         # Stand-in for the real OpenMM solvation: honour the same
         # subdirectory contract and persist box_dimensions.json so the
         # caller's complete_node receives matching artifact paths.

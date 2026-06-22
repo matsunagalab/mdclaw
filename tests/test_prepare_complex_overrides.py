@@ -339,15 +339,52 @@ class TestTerminalCaps:
         assert unsafe == ["A:34::CYX"]
         assert accepted == []
 
-    def test_terminal_cap_guard_still_rejects_non_cyx_completion(self):
+    def test_terminal_cap_guard_accepts_uncapped_terminal_heavy_only_completion(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {},
+            {"A:1::THR": ("H1", "H2", "H3", "HA", "HB", "HG1", "HG21", "HG22", "HG23")},
+            safe_terminal_residue_keys={"A:1::THR"},
+        )
+
+        assert unsafe == []
+        assert accepted == ["A:1::THR"]
+
+    def test_terminal_cap_guard_rejects_existing_terminal_h_change(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {"A:1::THR": ("H1",)},
+            {"A:1::THR": ("H1", "H2", "H3", "HA")},
+            safe_terminal_residue_keys={"A:1::THR"},
+        )
+
+        assert unsafe == ["A:1::THR"]
+        assert accepted == []
+
+    def test_terminal_cap_guard_still_rejects_internal_non_cyx_completion(self):
         from mdclaw import structure_server as ss
 
         unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:2::ALA": ("H", "HA", "HB1", "HB2", "HB3")},
+            safe_terminal_residue_keys={"A:1::THR"},
         )
 
         assert unsafe == ["A:2::ALA"]
+        assert accepted == []
+
+    def test_terminal_cap_guard_rejects_terminal_cyx_hg_completion(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {},
+            {"A:1::CYX": ("H", "HA", "HB2", "HB3", "HG")},
+            safe_terminal_residue_keys={"A:1::CYX"},
+        )
+
+        assert unsafe == ["A:1::CYX"]
         assert accepted == []
 
     def test_terminal_cap_hydrogen_completion_adds_cap_hydrogens(self, tmp_path):
@@ -410,6 +447,85 @@ class TestTerminalCaps:
             "A:2::ALA" in item
             for item in result["noncap_hydrogen_signature_changed_residues"]
         )
+
+
+class TestPrepareComplexComponentFailure:
+
+    def test_failed_protein_chain_blocks_overall_success_and_partial_merge(
+        self, mini_pdb, monkeypatch, tmp_path
+    ):
+        import importlib
+
+        from mdclaw import structure_server as ss
+
+        _pc = importlib.import_module("mdclaw.structure.prepare_complex")
+        out_dir = tmp_path / "out"
+        split_dir = out_dir / "split"
+        split_dir.mkdir(parents=True)
+        protein_a = split_dir / "protein_A.pdb"
+        protein_b = split_dir / "protein_B.pdb"
+        protein_a.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")
+        protein_b.write_text("ATOM      1  N   ALA B   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")
+
+        def fake_split(*args, **kwargs):
+            return {
+                "success": True,
+                "output_dir": str(split_dir),
+                "protein_files": [str(protein_a), str(protein_b)],
+                "ligand_files": [],
+                "ion_files": [],
+                "water_files": [],
+                "chain_file_info": [
+                    {"chain_id": "A", "author_chain": "A", "file": str(protein_a)},
+                    {"chain_id": "B", "author_chain": "B", "file": str(protein_b)},
+                ],
+                "all_chains": [
+                    {"chain_id": "A", "author_chain": "A"},
+                    {"chain_id": "B", "author_chain": "B"},
+                ],
+                "errors": [],
+            }
+
+        def fake_clean(pdb_file, **kwargs):
+            if pdb_file == str(protein_a):
+                return {
+                    "success": False,
+                    "errors": ["terminal cap H guard failed"],
+                    "code": "terminal_cap_hydrogen_completion_changed_noncap_hydrogens",
+                    "warnings": [],
+                }
+            return {
+                "success": True,
+                "output_file": str(protein_b.with_suffix(".amber.pdb")),
+                "operations": [],
+                "warnings": [],
+                "errors": [],
+                "statistics": {},
+                "disulfide_bonds": [],
+            }
+
+        merge_calls = []
+
+        def fake_merge(*args, **kwargs):
+            merge_calls.append((args, kwargs))
+            return {"success": True, "output_file": str(out_dir / "merged.pdb"), "statistics": {}}
+
+        monkeypatch.setattr(_pc, "split_molecules", fake_split)
+        monkeypatch.setattr(_pc, "clean_protein", fake_clean)
+        monkeypatch.setattr(_pc, "merge_structures", fake_merge)
+
+        result = ss.prepare_complex(
+            structure_file=str(mini_pdb),
+            output_dir=str(out_dir),
+            select_chains=["A", "B"],
+        )
+
+        assert result["success"] is False
+        assert result["overall_status"] == "failed"
+        assert result["protein_preparation_success"] is False
+        assert result["code"] == "terminal_cap_hydrogen_completion_changed_noncap_hydrogens"
+        assert "merged_pdb" not in result
+        assert merge_calls == []
 
 
 class TestHistidineOverride:
