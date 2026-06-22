@@ -363,6 +363,66 @@ class TestTerminalCaps:
         assert unsafe == ["A:1::THR"]
         assert accepted == []
 
+    def test_terminal_cap_guard_accepts_terminal_h1_h_alias(self):
+        from mdclaw import structure_server as ss
+
+        before = {"A:1::THR": ("H1", "H2", "H3", "HA", "HB")}
+        after = {"A:1::THR": ("H", "H2", "H3", "HA", "HB")}
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            before,
+            after,
+            safe_terminal_residue_keys={"A:1::THR"},
+        )
+
+        assert unsafe == []
+        assert accepted == ["A:1::THR"]
+
+    def test_terminal_cap_restores_terminal_h1_name_alias(self, tmp_path):
+        from mdclaw import structure_server as ss
+
+        input_pdb = tmp_path / "input.pdb"
+        input_pdb.write_text(textwrap.dedent("""\
+            ATOM      1  H1  THR A   1       0.000   0.000   0.000  1.00  0.00           H
+            ATOM      2  H2  THR A   1       0.100   0.000   0.000  1.00  0.00           H
+            ATOM      3  H3  THR A   1       0.200   0.000   0.000  1.00  0.00           H
+            ATOM      4  CA  THR A   1       1.000   0.000   0.000  1.00  0.00           C
+            END
+            """))
+        output_text = textwrap.dedent("""\
+            ATOM      1  H   THR A   1       0.000   0.000   0.000  1.00  0.00           H
+            ATOM      2  H2  THR A   1       0.100   0.000   0.000  1.00  0.00           H
+            ATOM      3  H3  THR A   1       0.200   0.000   0.000  1.00  0.00           H
+            ATOM      4  CA  THR A   1       1.000   0.000   0.000  1.00  0.00           C
+            END
+            """)
+
+        restored, keys = ss._restore_noncap_terminal_h_aliases(
+            output_text,
+            input_pdb,
+            safe_terminal_residue_keys={"A:1::THR"},
+        )
+
+        assert keys == ["A:1::THR"]
+        atom_names = [
+            line[12:16].strip()
+            for line in restored.splitlines()
+            if line.startswith("ATOM")
+        ]
+        assert atom_names[:3] == ["H1", "H2", "H3"]
+
+    def test_terminal_cap_guard_rejects_internal_h1_h_alias(self):
+        from mdclaw import structure_server as ss
+
+        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+            {"A:2::THR": ("H1", "H2", "H3", "HA", "HB")},
+            {"A:2::THR": ("H", "H2", "H3", "HA", "HB")},
+            safe_terminal_residue_keys={"A:1::ALA"},
+        )
+
+        assert unsafe == ["A:2::THR"]
+        assert accepted == []
+
     def test_terminal_cap_guard_still_rejects_internal_non_cyx_completion(self):
         from mdclaw import structure_server as ss
 

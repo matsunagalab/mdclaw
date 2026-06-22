@@ -126,7 +126,9 @@ def _classify_terminal_cap_noncap_hydrogen_changes(
     acceptable; for one-sided caps, the uncapped terminal residue may likewise
     be heavy-only and require ordinary terminal/protein hydrogens.  Existing H
     changes, internal-residue repairs, and CYX thiol ``HG`` addition remain
-    hard guardrail failures.
+    hard guardrail failures.  Amber and OpenMM disagree on one common charged
+    N-terminus name (``H1`` vs ``H``), so that terminal-only naming alias is
+    treated as chemically identical.
     """
     unsafe: list[str] = []
     accepted: list[str] = []
@@ -148,17 +150,103 @@ def _classify_terminal_cap_noncap_hydrogen_changes(
             and before_names.issubset(after_names)
             and after_names.issubset(_CYX_ALLOWED_HYDROGEN_NAMES)
         )
+        terminal_h_name_alias_only = (
+            key in safe_terminal_residue_keys
+            and _normalize_terminal_h_name_aliases(before_names)
+            == _normalize_terminal_h_name_aliases(after_names)
+        )
         terminal_heavy_only_completion = (
             key in safe_terminal_residue_keys
             and not before_names
             and bool(after_names)
             and before_names.issubset(after_names)
         )
-        if cyx_safe_completion or terminal_heavy_only_completion:
+        if (
+            cyx_safe_completion
+            or terminal_h_name_alias_only
+            or terminal_heavy_only_completion
+        ):
             accepted.append(key)
         else:
             unsafe.append(key)
     return unsafe, accepted
+
+
+def _normalize_terminal_h_name_aliases(names: set[str]) -> set[str]:
+    return {"H" if name == "H1" else name for name in names}
+
+
+def _pdb_line_residue_signature_key(line: str) -> str:
+    chain = line[21:22].strip()
+    resnum = line[22:26].strip()
+    icode = line[26:27].strip()
+    resname = line[17:20].strip().upper()
+    return f"{chain}:{resnum}:{icode}:{resname}"
+
+
+def _restore_noncap_terminal_h_aliases(
+    output_text: str,
+    input_pdb: str | Path,
+    *,
+    safe_terminal_residue_keys: set[str],
+) -> tuple[str, list[str]]:
+    """Restore non-cap terminal H names when OpenMM only renamed H1 -> H."""
+    if not safe_terminal_residue_keys:
+        return output_text, []
+
+    try:
+        input_lines = Path(input_pdb).read_text().splitlines()
+    except OSError:
+        return output_text, []
+
+    input_h1_field_by_key: dict[str, str] = {}
+    input_has_h_keys: set[str] = set()
+    for line in input_lines:
+        if not line.startswith(("ATOM  ", "HETATM")) or len(line) < 27:
+            continue
+        key = _pdb_line_residue_signature_key(line)
+        if key not in safe_terminal_residue_keys:
+            continue
+        atom_name = line[12:16].strip().upper()
+        if atom_name == "H1":
+            input_h1_field_by_key.setdefault(key, line[12:16])
+        elif atom_name == "H":
+            input_has_h_keys.add(key)
+
+    candidate_keys = set(input_h1_field_by_key) - input_has_h_keys
+    if not candidate_keys:
+        return output_text, []
+
+    output_lines = output_text.splitlines()
+    output_has_h1_keys = {
+        _pdb_line_residue_signature_key(line)
+        for line in output_lines
+        if line.startswith(("ATOM  ", "HETATM"))
+        and len(line) >= 27
+        and _pdb_line_residue_signature_key(line) in candidate_keys
+        and line[12:16].strip().upper() == "H1"
+    }
+
+    restored: set[str] = set()
+    rewritten: list[str] = []
+    for line in output_lines:
+        if line.startswith(("ATOM  ", "HETATM")) and len(line) >= 27:
+            key = _pdb_line_residue_signature_key(line)
+            atom_name = line[12:16].strip().upper()
+            if (
+                key in candidate_keys
+                and key not in output_has_h1_keys
+                and atom_name == "H"
+            ):
+                padded = line.ljust(80)
+                line = (
+                    padded[:12] + input_h1_field_by_key[key] + padded[16:]
+                ).rstrip()
+                restored.add(key)
+        rewritten.append(line)
+
+    trailing = "\n" if output_text.endswith("\n") else ""
+    return "\n".join(rewritten) + trailing, sorted(restored)
 
 
 def _pdb_residue_signature_key(residue: dict[str, Any]) -> str:
@@ -219,6 +307,7 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         "noncap_hydrogen_signature_preserved": None,
         "noncap_hydrogen_signature_changed_residues": [],
         "accepted_noncap_hydrogen_signature_changes": [],
+        "restored_noncap_terminal_h_aliases": [],
         "warnings": [],
         "errors": [],
         "operations": [],
@@ -299,6 +388,15 @@ def _complete_terminal_cap_hydrogens_with_modeller(
     if _restored is not None:
         output_file.write_text(_restored)
 
+    _restored_alias_text, restored_aliases = _restore_noncap_terminal_h_aliases(
+        output_file.read_text(),
+        input_path,
+        safe_terminal_residue_keys=safe_terminal_residue_keys,
+    )
+    if restored_aliases:
+        output_file.write_text(_restored_alias_text)
+        result["restored_noncap_terminal_h_aliases"] = restored_aliases
+
     residues_after = _read_pdb_unique_residues(output_file)
     if residues_after != residues_before:
         result["code"] = "terminal_cap_hydrogen_completion_failed"
@@ -353,6 +451,9 @@ def _complete_terminal_cap_hydrogens_with_modeller(
         "cap_hydrogens_added": result["cap_hydrogens_added"],
         "accepted_noncap_hydrogen_signature_changes": result[
             "accepted_noncap_hydrogen_signature_changes"
+        ],
+        "restored_noncap_terminal_h_aliases": result[
+            "restored_noncap_terminal_h_aliases"
         ],
     })
     result["success"] = True
