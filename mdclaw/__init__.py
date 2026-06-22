@@ -4,7 +4,7 @@ The package provides tools for MD preparation, simulation, analysis, and
 evidence capture in autonomous scientific investigation.
 """
 
-__version__ = "0.6.0"
+__version__ = "0.6.1"
 
 __all__ = [
     "structure_server",
