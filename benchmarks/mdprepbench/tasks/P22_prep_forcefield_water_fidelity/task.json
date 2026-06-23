@@ -123,6 +123,16 @@
           "topo",
           "min"
         ]
+      },
+      {
+        "check_id": "submitted_artifacts_are_hashed",
+        "check_type": "submission_artifact_hashes",
+        "require_manifest_output_hashes": true
+      },
+      {
+        "check_id": "minimized_structure_matches_submitted_state",
+        "check_type": "openmm_minimized_state_consistency",
+        "coordinate_tolerance_nm": 0.001
       }
     ],
     "integrity_policy": "reject",

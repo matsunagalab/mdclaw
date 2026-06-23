@@ -71,6 +71,155 @@ def verify_provenance_hashes(
     return warnings
 
 
+def required_raw_output_hash_warnings(
+    submission_dir: Path,
+    manifest: dict[str, Any],
+    provenance: dict[str, Any],
+    *,
+    require_manifest_outputs: bool = True,
+) -> list[str]:
+    """Require ``provenance.raw_outputs`` hashes for submitted artifacts.
+
+    The packagers write these hashes immediately before publishing
+    ``submission/``.  The scorer then re-hashes the final bytes, which catches
+    the common failure mode where an agent packages once and then manually
+    replaces ``minimized_structure.pdb`` or ``minimization_report.json``.
+
+    ``provenance.json`` itself is intentionally excluded because it cannot
+    carry a stable hash of itself.
+    """
+    warnings: list[str] = []
+    expected: set[str] = {"manifest.json"}
+    if require_manifest_outputs:
+        outputs = manifest.get("outputs") or {}
+        if isinstance(outputs, dict):
+            for dotted, rel in _manifest_output_paths(outputs):
+                if dotted == "provenance" or rel == "provenance.json":
+                    continue
+                if isinstance(rel, str) and rel.strip():
+                    expected.add(Path(rel).as_posix())
+
+    raw_outputs = provenance.get("raw_outputs")
+    if not isinstance(raw_outputs, list):
+        return [
+            "provenance.raw_outputs is missing or not a list; cannot verify "
+            "submitted artifact hashes"
+        ]
+
+    claims: dict[str, str] = {}
+    for index, entry in enumerate(raw_outputs):
+        if not isinstance(entry, dict):
+            warnings.append(f"provenance.raw_outputs[{index}] is not an object")
+            continue
+        rel = entry.get("path")
+        md5_claim = entry.get("md5")
+        if not isinstance(rel, str) or not rel.strip():
+            warnings.append(f"provenance.raw_outputs[{index}] missing path")
+            continue
+        if not isinstance(md5_claim, str) or not md5_claim.strip():
+            warnings.append(f"provenance.raw_outputs[{index}] missing md5")
+            continue
+        claims[Path(rel).as_posix()] = md5_claim
+
+    missing = sorted(expected - set(claims))
+    if missing:
+        warnings.append(
+            "provenance.raw_outputs missing md5 for submitted artifact(s): "
+            + ", ".join(missing)
+        )
+    return warnings
+
+
+def openmm_minimized_state_consistency_warnings(
+    submission_dir: Path,
+    manifest: dict[str, Any],
+    *,
+    coordinate_tolerance_nm: float = 1.0e-3,
+) -> list[str]:
+    """Check that ``minimized_structure.pdb`` matches topology ``state.xml``.
+
+    MDPrepBench uses the OpenMM ``system.xml`` + ``topology.pdb`` +
+    ``state.xml`` triple as the topology/coordinate contract.  The submitted
+    ``minimized_structure.pdb`` must be a PDB view of the same state
+    coordinates; otherwise an agent can mix a topology-time state with a
+    separate min-node PDB/report.
+    """
+    outputs = manifest.get("outputs") or {}
+    if not isinstance(outputs, dict):
+        return ["manifest.outputs is not an object"]
+
+    minimized_rel = _safe_path(manifest, "outputs.minimized_structure")
+    topology_rels = _safe_path(manifest, "outputs.topology")
+    if not isinstance(minimized_rel, str):
+        return ["outputs.minimized_structure is missing or not a path"]
+    if isinstance(topology_rels, str):
+        topology_rels = [topology_rels]
+    if not isinstance(topology_rels, list):
+        return ["outputs.topology is missing or not a list"]
+
+    state_rel: str | None = None
+    for rel in topology_rels:
+        if not isinstance(rel, str):
+            continue
+        name = Path(rel).name.lower()
+        if name == "state.xml" or name.endswith(".state.xml"):
+            state_rel = rel
+            break
+    if state_rel is None:
+        return ["outputs.topology does not include a state.xml artifact"]
+
+    minimized_path = (submission_dir / minimized_rel).resolve()
+    state_path = (submission_dir / state_rel).resolve()
+    if not minimized_path.is_file():
+        return [f"minimized_structure.pdb not found: {minimized_path}"]
+    if not state_path.is_file():
+        return [f"state.xml not found: {state_path}"]
+
+    try:
+        from openmm import XmlSerializer, unit
+        from openmm.app import PDBFile
+    except Exception as exc:  # noqa: BLE001
+        return [f"OpenMM import failed for state/PDB consistency: {exc}"]
+
+    try:
+        pdb = PDBFile(str(minimized_path))
+        state = XmlSerializer.deserialize(state_path.read_text())
+        state_positions = state.getPositions()
+        if state_positions is None:
+            return ["state.xml does not contain positions"]
+        pdb_positions_nm = pdb.positions.value_in_unit(unit.nanometer)
+        state_positions_nm = state_positions.value_in_unit(unit.nanometer)
+    except Exception as exc:  # noqa: BLE001
+        return [
+            "failed to load minimized_structure.pdb/state.xml for consistency "
+            f"check: {type(exc).__name__}: {exc}"
+        ]
+
+    if len(pdb_positions_nm) != len(state_positions_nm):
+        return [
+            "minimized_structure/state atom count mismatch: "
+            f"pdb={len(pdb_positions_nm)}, state={len(state_positions_nm)}"
+        ]
+
+    max_delta = 0.0
+    for pdb_pos, state_pos in zip(pdb_positions_nm, state_positions_nm):
+        dx = float(pdb_pos[0]) - float(state_pos[0])
+        dy = float(pdb_pos[1]) - float(state_pos[1])
+        dz = float(pdb_pos[2]) - float(state_pos[2])
+        delta = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if not math.isfinite(delta):
+            return ["minimized_structure/state coordinate comparison is non-finite"]
+        if delta > max_delta:
+            max_delta = delta
+    if max_delta > coordinate_tolerance_nm:
+        return [
+            "minimized_structure.pdb is not exported from topology/state.xml: "
+            f"max coordinate delta {max_delta:.6g} nm > "
+            f"{coordinate_tolerance_nm:.6g} nm"
+        ]
+    return []
+
+
 def rescan_trajectory_for_nan(
     trajectory_path: Path, topology_path: Path
 ) -> tuple[Optional[int], bool, str]:
@@ -904,6 +1053,27 @@ def run_artifact_integrity(
                     harness_record=harness_record,
                     require_harness_record=bool(
                         getattr(check, "require_harness_record", False)
+                    ),
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "submission_artifact_hashes":
+                provenance = read_json_safe(submission_dir / "provenance.json")
+                ws = required_raw_output_hash_warnings(
+                    submission_dir,
+                    manifest,
+                    provenance,
+                    require_manifest_outputs=bool(
+                        getattr(check, "require_manifest_output_hashes", True)
+                    ),
+                )
+                warnings.extend(f"[{check.check_id}] {w}" for w in ws)
+            elif ctype == "openmm_minimized_state_consistency":
+                tolerance = getattr(check, "coordinate_tolerance_nm", None)
+                ws = openmm_minimized_state_consistency_warnings(
+                    submission_dir,
+                    manifest,
+                    coordinate_tolerance_nm=(
+                        float(tolerance) if tolerance is not None else 1.0e-3
                     ),
                 )
                 warnings.extend(f"[{check.check_id}] {w}" for w in ws)

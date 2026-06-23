@@ -419,6 +419,7 @@ def _benchmark_stage_for_tool(tool_name: str, kwargs: dict) -> str:
         "build_amber_system": "topo",
         "build_openmm_system": "topo",
         "package_openmm_submission": "topo",
+        "package_mdprep_submission": "min",
         "run_minimization": "min",
         "export_state_pdb": "min",
         "run_equilibration": "eq",

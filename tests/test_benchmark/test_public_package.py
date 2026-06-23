@@ -49,15 +49,19 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         ]
         guidance = contract["manifest_contract"]["minimized_structure_guidance"]
         assert guidance["required_filename"] == "minimized_structure.pdb"
-        assert "min node writes" in guidance["mdclaw_state_source"]
+        assert "MDClaw, plain OpenMM" in guidance["state_source"]
+        assert "package_openmm_submission" in guidance["generic_openmm_command_template"]
         assert "run_minimization" in guidance["mdclaw_dag_command_template"]
-        assert "export_state_pdb" in guidance["mdclaw_export_command_template"]
+        assert "package_mdprep_submission" in guidance["mdclaw_export_command_template"]
         packaging = contract["manifest_contract"]["packaging_guidance"]
         assert "mdclaw package_openmm_submission" in (
-            packaging["preferred_when_openmm_triple_exists"]
+            packaging["preferred_packager"]
         )
         assert "benchmarks/tools/package_submission.py" in (
-            packaging["preferred_when_openmm_triple_exists"]
+            packaging["preferred_packager"]
+        )
+        assert "mdclaw package_mdprep_submission" in (
+            packaging["mdclaw_dag_helper"]
         )
         assert "manifest.json" in packaging["packager_writes"]
         assert "evidence_report" in " ".join(packaging["packager_writes"])
@@ -65,11 +69,15 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "exact submission_dir" in packaging["submission_dir_policy"]
         assert "work_dir/submission" in packaging["submission_dir_policy"]
         assert "do not hand-edit" in packaging["post_packaging_rule"]
-        assert "--evidence-report-file" in packaging["command_template"]
-        assert "--preparation-summary-file" in packaging["command_template"]
-        assert "--submission-dir <exact_submission_dir>" in packaging["command_template"]
-        assert "--force-field" in packaging["command_template"]
-        assert "--water-model" in packaging["command_template"]
+        assert "--evidence-report-file" in packaging["mdclaw_dag_command_template"]
+        assert "--preparation-summary-file" in (
+            packaging["generic_command_template"]
+        )
+        assert "--submission-dir <exact_submission_dir>" in (
+            packaging["generic_command_template"]
+        )
+        assert "--force-field" in packaging["generic_command_template"]
+        assert "--water-model" in packaging["generic_command_template"]
         assert "chains" in packaging["does_not_choose"]
         assert "provenance_text_requirements" in contract
         assert "submission_blueprint" in contract
@@ -81,9 +89,9 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "topology/state.xml",
         ]
         assert (
-            "run_minimization"
-            in contract["submission_blueprint"]["mdclaw_minimized_structure_export"][
-                "preferred_command"
+            "package_openmm_submission"
+            in contract["submission_blueprint"]["minimized_structure_export"][
+                "generic_package_command"
             ]
         )
         command_log = contract["submission_blueprint"]["provenance_minimum"][
@@ -95,16 +103,16 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert min_commands
         assert "run_minimization" in min_commands[0]["command"]
         assert (
-            "export_state_pdb"
-            in contract["submission_blueprint"]["mdclaw_minimized_structure_export"][
-                "command"
+            "package_mdprep_submission"
+            in contract["submission_blueprint"]["minimized_structure_export"][
+                "optional_mdclaw_dag_package_command"
             ]
         )
         assert any(
             "command_log" in item for item in contract["submission_checklist"]
         )
         assert any(
-            "minimized_structure.pdb from a min node" in item
+            "same state.xml submitted in outputs.topology" in item
             for item in contract["submission_checklist"]
         )
         assert any(
@@ -120,7 +128,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             for item in contract["submission_checklist"]
         )
         assert any(
-            "do not hand-edit manifest.json or provenance.json" in item
+            "do not hand-edit package-written files" in item
             for item in contract["submission_checklist"]
         )
         checklist = (task_dir / "submission_checklist.md").read_text()
@@ -128,7 +136,8 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "outputs.topology" in checklist
         assert "Minimized Structure Export" in checklist
         assert "run_minimization" in checklist
-        assert "export_state_pdb" in checklist
+        assert "package_openmm_submission" in checklist
+        assert "package_mdprep_submission" in checklist
         assert "metric_requirements" in contract
         assert "required_components" in contract
         assert contract["submission_manifest_schema"].endswith(

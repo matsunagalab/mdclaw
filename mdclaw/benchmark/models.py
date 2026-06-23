@@ -225,6 +225,8 @@ IntegrityCheckType = Literal[
     "status_artifact_floor",
     "manifest_artifact_floor",
     "trajectory_file_signature",
+    "submission_artifact_hashes",
+    "openmm_minimized_state_consistency",
     "provenance_execution_evidence",
 ]
 
@@ -495,6 +497,15 @@ class IntegrityCheck(BaseModel):
     # each with min_bytes. Used when JSON metrics alone are not sufficient.
     manifest_path: Optional[str] = None
     min_count: Optional[int] = None
+
+    # submission_artifact_hashes: require provenance.raw_outputs md5 entries
+    # for manifest.json and every manifest-declared artifact except
+    # provenance.json, which cannot self-hash.
+    require_manifest_output_hashes: bool = True
+
+    # openmm_minimized_state_consistency: require minimized_structure.pdb to be
+    # a coordinate view of outputs.topology's state.xml.
+    coordinate_tolerance_nm: Optional[float] = None
 
     # provenance_execution_evidence: require structured command/action records
     # proving that a completed submission attempted the relevant workflow stages.

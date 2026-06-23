@@ -87,6 +87,30 @@ def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
     }
 
 
+def _raw_output_hashes(sub_dir: Path, outputs: dict[str, Any]) -> list[dict[str, str]]:
+    import hashlib
+
+    rels: set[str] = {"manifest.json"}
+    for key, value in outputs.items():
+        if key == "provenance" or value == "provenance.json":
+            continue
+        if isinstance(value, str):
+            rels.add(value)
+        elif isinstance(value, list):
+            rels.update(item for item in value if isinstance(item, str))
+    entries: list[dict[str, str]] = []
+    for rel in sorted(rels):
+        path = sub_dir / rel
+        if not path.is_file():
+            continue
+        h = hashlib.new("md5")
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 16), b""):
+                h.update(chunk)
+        entries.append({"path": rel, "md5": h.hexdigest()})
+    return entries
+
+
 def _write_harness_record(sub_dir: Path, provenance: dict[str, Any]) -> None:
     command_log = provenance.get("command_log") or []
     _write(sub_dir.parent / "harness_execution.json", {
@@ -196,7 +220,10 @@ def _topology_component_residues(
         if check_type == "structure_component_rescan":
             if not _check_targets_topology(check):
                 continue
-        elif check_type != "topology_component_rescan":
+        elif check_type not in {
+            "topology_component_rescan",
+            "minimized_structure_component_rescan",
+        }:
             continue
         n_atoms = max(1, int(check.get("min_residue_atom_count") or 1))
         for resname, count in (check.get("min_residue_counts") or {}).items():
@@ -417,7 +444,10 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
 
     chain = topology.addChain("A")
     ala = topology.addResidue("ALA", chain, "1")
+    add_atom("N", "N", "ALA", ala, 0.0, 14.0)
     add_atom("CA", "C", "ALA", ala, 0.0, 12.0)
+    add_atom("C", "C", "ALA", ala, 0.0, 12.0)
+    add_atom("O", "O", "ALA", ala, 0.0, 16.0)
 
     resseq = 2
     if req["water_sites"]:
@@ -477,6 +507,25 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
     # Embed component residues (e.g. lipids) for checks that read the OpenMM
     # topology bundle, with enough atoms to clear any per-residue atom floor.
     if task is not None:
+        for check in task.get("scoring", {}).get("deterministic_checks", []):
+            if check.get("check_type") != "pdb_residue_state":
+                continue
+            chain_id = check.get("residue_chain") or "A"
+            resseq_required = int(
+                str(check.get("residue_number") or "1").strip() or 1
+            )
+            resname = check.get("required_residue_name") or "ALA"
+            atoms = ["N", "CA", "C", "O", *(check.get("required_atom_names") or [])]
+            chain_for_residue = topology.addChain(str(chain_id))
+            residue = topology.addResidue(
+                str(resname),
+                chain_for_residue,
+                str(resseq_required),
+            )
+            for atom_name in atoms:
+                element = "H" if str(atom_name).startswith("H") else "C"
+                mass = 1.0 if element == "H" else 12.0
+                add_atom(str(atom_name), element, str(resname), residue, 0.0, mass)
         for resname, n_atoms, count in _topology_component_residues(task):
             for _ in range(count):
                 residue = topology.addResidue(resname, chain, str(resseq))
@@ -655,12 +704,7 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     prepared_structure = _prepared_structure(task_dir, task, mode)
     topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode, task)
     minimized_structure = (
-        _prepared_structure(
-            task_dir,
-            task,
-            mode,
-            include_minimized_components=True,
-        )
+        (sub_dir / "topology" / "topology.pdb").read_text()
         if mode == "honest"
         else "END\n"
     )
@@ -702,8 +746,6 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
     )
     if source_selection is not None:
         provenance["source_selection"] = source_selection
-    _write(sub_dir / "provenance.json", provenance)
-    _write_harness_record(sub_dir, provenance)
     _write(sub_dir / "evidence_report.json", {
         "schema_version": "1.0",
         "task_id": task_id,
@@ -761,6 +803,9 @@ def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) ->
                 if entry.get("action_taken") == "excluded"
             ],
         })
+    provenance["raw_outputs"] = _raw_output_hashes(sub_dir, outputs)
+    _write(sub_dir / "provenance.json", provenance)
+    _write_harness_record(sub_dir, provenance)
 
 
 def _load_task_ids() -> list[str]:

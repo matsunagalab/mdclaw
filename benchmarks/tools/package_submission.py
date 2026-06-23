@@ -34,6 +34,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import shutil
@@ -198,6 +199,57 @@ def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def _hash_file(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    h = hashlib.new("md5")
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _manifest_output_paths(outputs: dict[str, Any]):
+    for key, value in outputs.items():
+        yield from _walk_manifest_output_value(str(key), value)
+
+
+def _walk_manifest_output_value(prefix: str, value: Any):
+    if value is None:
+        return
+    if isinstance(value, str):
+        yield prefix, value
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            yield from _walk_manifest_output_value(f"{prefix}.{index}", item)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield from _walk_manifest_output_value(f"{prefix}.{key}", item)
+        return
+
+
+def _raw_output_entries(
+    staging: Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, str]]:
+    rels: set[str] = {"manifest.json"}
+    outputs = manifest.get("outputs") or {}
+    if isinstance(outputs, dict):
+        for dotted, rel in _manifest_output_paths(outputs):
+            if dotted == "provenance" or rel == "provenance.json":
+                continue
+            if isinstance(rel, str) and rel.strip():
+                rels.add(Path(rel).as_posix())
+    entries: list[dict[str, str]] = []
+    for rel in sorted(rels):
+        md5 = _hash_file(staging / rel)
+        if md5 is not None:
+            entries.append({"path": rel, "md5": md5})
+    return entries
+
+
 def _copy_if_different(src: Path, dst: Path) -> None:
     """Copy an artifact unless it is already at the requested destination."""
     if src.resolve() == dst.resolve():
@@ -359,6 +411,7 @@ def package(args: argparse.Namespace) -> int:
             "solvent_model": args.solvent_model,
         },
         "command_log": command_log,
+        "raw_outputs": _raw_output_entries(staging, manifest),
     })
 
     if sub.exists():

@@ -16,7 +16,7 @@ from typing import Any, Optional
 from pydantic import ValidationError
 
 from mdclaw._common import ensure_directory
-from mdclaw.benchmark import judge, public_contract, scoring, validation
+from mdclaw.benchmark import integrity, judge, public_contract, scoring, validation
 from mdclaw.benchmark.datasets import (
     DEFAULT_BENCHMARK_VERSION,
     DEFAULT_DATASET_DIR,
@@ -680,6 +680,32 @@ def _copy_if_different(src: Path, dst: Path) -> None:
     shutil.copy2(src, dst)
 
 
+def _submission_raw_output_entries(
+    staging: Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Return md5 entries for final submitted artifacts.
+
+    ``provenance.json`` cannot carry a stable hash of itself, so it is excluded.
+    All other manifest-declared outputs plus ``manifest.json`` are covered.
+    """
+    rels: set[str] = {"manifest.json"}
+    outputs = manifest.get("outputs") or {}
+    if isinstance(outputs, dict):
+        for dotted, rel in integrity._manifest_output_paths(outputs):
+            if dotted == "provenance" or rel == "provenance.json":
+                continue
+            if isinstance(rel, str) and rel.strip():
+                rels.add(Path(rel).as_posix())
+    entries: list[dict[str, str]] = []
+    for rel in sorted(rels):
+        path = staging / rel
+        md5 = integrity.hash_file(path, "md5")
+        if md5 is not None:
+            entries.append({"path": rel, "md5": md5})
+    return entries
+
+
 def _single_point_energy_kj_mol(system_xml: Path, state_xml: Path) -> dict[str, Any]:
     """Compute one potential energy for an OpenMM system + serialized state.
 
@@ -1102,6 +1128,7 @@ def package_openmm_submission(
     }
     if source_selection_payload is not None:
         provenance["source_selection"] = source_selection_payload
+    provenance["raw_outputs"] = _submission_raw_output_entries(staging, manifest)
     (staging / "provenance.json").write_text(
         json.dumps(provenance, indent=2, sort_keys=True) + "\n"
     )
@@ -1131,8 +1158,367 @@ def package_openmm_submission(
             str(sub / "topology" / "topology.pdb"),
             str(sub / "topology" / "state.xml"),
         ]
-        + ([str(sub / "evidence_report.json")] if evidence_report_path is not None else [])
-        + ([str(sub / "source_selection.json")] if source_selection_path is not None else [])
+        + (
+            [str(sub / "evidence_report.json")]
+            if evidence_report_path is not None
+            else []
+        )
+        + (
+            [str(sub / "source_selection.json")]
+            if source_selection_path is not None
+            else []
+        )
+        + [str(path) for path in extra_output_paths],
+        "energy_kj_mol": energy["energy_kj_mol"],
+        "warnings": warnings,
+        "errors": errors,
+    }
+
+
+def package_mdprep_submission(
+    submission_dir: str,
+    task_id: str,
+    job_dir: str,
+    node_id: str,
+    run_id: str = "",
+    status: str = "completed",
+    prepared_structure_file: Optional[str] = None,
+    evidence_report_file: Optional[str] = None,
+    command_log_file: Optional[str] = None,
+    force_field: str = "unspecified",
+    water_model: str = "unspecified",
+    solvent_model: str = "unspecified",
+    preparation_summary_file: Optional[str] = None,
+    source_selection_file: Optional[str] = None,
+    extra_output_files: Optional[list[str]] = None,
+    agent: str = "unknown",
+    backend: str = "mdclaw-dag",
+    harness: str = "unknown",
+    model: str = "unknown",
+) -> dict[str, Any]:
+    """Package a MDPrepBench submission directly from a completed min node.
+
+    This is the preferred MDClaw DAG path.  The agent supplies only
+    ``job_dir`` and the completed minimization ``node_id``; the packager walks
+    the DAG to find the topology parent and writes a self-consistent
+    submission:
+
+    - ``topology/system.xml`` and ``topology/topology.pdb`` from the topo node.
+    - ``topology/state.xml``, ``minimized_structure.pdb``, and
+      ``minimization_report.json`` from the same min node.
+
+    That avoids the fragile pattern of packaging a topology-time state and then
+    hand-replacing minimized artifacts.
+    """
+    from mdclaw.node.graph import find_ancestor_artifact
+    from mdclaw.node.io import _read_artifact_from_node
+
+    sub = Path(submission_dir)
+    jd = Path(job_dir).resolve()
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    def _path(value: Any, label: str) -> Optional[Path]:
+        if not isinstance(value, str) or not value:
+            errors.append(f"{label} not found in DAG artifacts")
+            return None
+        path = Path(value)
+        if not path.is_file():
+            errors.append(f"{label} file not found: {path}")
+            return None
+        return path
+
+    system_src = _path(
+        find_ancestor_artifact(str(jd), node_id, "topo", "system_xml"),
+        "topo.system_xml",
+    )
+    topo_src = _path(
+        find_ancestor_artifact(str(jd), node_id, "topo", "topology_pdb"),
+        "topo.topology_pdb",
+    )
+    state_src = _path(
+        _read_artifact_from_node(str(jd), node_id, "state"),
+        "min.state",
+    )
+    minimized_src = _path(
+        _read_artifact_from_node(str(jd), node_id, "minimized_structure")
+        or _read_artifact_from_node(str(jd), node_id, "final_structure"),
+        "min.minimized_structure",
+    )
+    min_report_src = _path(
+        _read_artifact_from_node(str(jd), node_id, "minimization_report"),
+        "min.minimization_report",
+    )
+    if prepared_structure_file:
+        prepared_src = _path(prepared_structure_file, "prepared_structure_file")
+    else:
+        prepared_src = _path(
+            find_ancestor_artifact(str(jd), node_id, "prep", "merged_pdb")
+            or find_ancestor_artifact(str(jd), node_id, "prep", "prepared_pdb")
+            or find_ancestor_artifact(str(jd), node_id, "topo", "topology_pdb"),
+            "prepared_structure",
+        )
+    if evidence_report_file and not Path(evidence_report_file).is_file():
+        errors.append(f"evidence_report_file not found: {evidence_report_file}")
+    if source_selection_file and not Path(source_selection_file).is_file():
+        errors.append(f"source_selection_file not found: {source_selection_file}")
+
+    extra_outputs, extra_errors = _parse_extra_output_files(extra_output_files)
+    errors.extend(extra_errors)
+    if errors:
+        return {"success": False, "submission_dir": str(sub), "errors": errors}
+
+    assert system_src is not None
+    assert topo_src is not None
+    assert state_src is not None
+    assert minimized_src is not None
+    assert min_report_src is not None
+    assert prepared_src is not None
+
+    energy = _single_point_energy_kj_mol(system_src, state_src)
+    validation_errors = _openmm_bundle_validation_errors(energy)
+    if validation_errors:
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "code": "invalid_openmm_bundle",
+            "errors": ["OpenMM bundle validation failed"] + validation_errors,
+        }
+
+    if sub.exists() and not sub.is_dir():
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "errors": [f"submission_dir exists and is not a directory: {sub}"],
+        }
+
+    ensure_directory(sub.parent)
+    staging = Path(tempfile.mkdtemp(prefix=f".{sub.name}.", dir=str(sub.parent)))
+    topo_dir = staging / "topology"
+    ensure_directory(topo_dir)
+    _copy_if_different(system_src, topo_dir / "system.xml")
+    _copy_if_different(topo_src, topo_dir / "topology.pdb")
+    _copy_if_different(state_src, topo_dir / "state.xml")
+    _copy_if_different(minimized_src, staging / "minimized_structure.pdb")
+    _copy_if_different(prepared_src, staging / "prepared_structure.pdb")
+    _copy_if_different(min_report_src, staging / "minimization_report.json")
+
+    evidence_report_path: Optional[Path] = None
+    if evidence_report_file:
+        evidence_report_path = staging / "evidence_report.json"
+        _copy_if_different(Path(evidence_report_file), evidence_report_path)
+
+    source_selection_path: Optional[Path] = None
+    source_selection_payload: dict[str, Any] | None = None
+    source_selection_input: Optional[Path] = None
+    if source_selection_file:
+        source_selection_input = Path(source_selection_file)
+    else:
+        source_selection_artifact = find_ancestor_artifact(
+            str(jd),
+            node_id,
+            "prep",
+            "source_selection",
+        )
+        if isinstance(source_selection_artifact, str):
+            candidate = Path(source_selection_artifact)
+            if candidate.is_file():
+                source_selection_input = candidate
+    if source_selection_input and source_selection_input.is_file():
+        source_selection_path = staging / "source_selection.json"
+        _copy_if_different(source_selection_input, source_selection_path)
+        try:
+            loaded_source_selection = json.loads(source_selection_path.read_text())
+            if isinstance(loaded_source_selection, dict):
+                source_selection_payload = loaded_source_selection
+        except json.JSONDecodeError:
+            warnings.append(
+                f"source_selection_file is not valid JSON: {source_selection_input}"
+            )
+
+    manifest = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "status": status,
+        "outputs": {
+            "metrics": "metrics.json",
+            "provenance": "provenance.json",
+            "prepared_structure": "prepared_structure.pdb",
+            "minimized_structure": "minimized_structure.pdb",
+            "minimization_report": "minimization_report.json",
+            "topology": [
+                "topology/system.xml",
+                "topology/topology.pdb",
+                "topology/state.xml",
+            ],
+        },
+    }
+    if evidence_report_path is not None:
+        manifest["outputs"]["evidence_report"] = "evidence_report.json"
+    if source_selection_path is not None:
+        manifest["outputs"]["source_selection"] = "source_selection.json"
+    extra_output_paths: list[Path] = []
+    for key, src, rel in extra_outputs:
+        if key in manifest["outputs"]:
+            shutil.rmtree(staging, ignore_errors=True)
+            return {
+                "success": False,
+                "submission_dir": str(sub),
+                "errors": [f"extra output key duplicates standard output: {key}"],
+            }
+        dst = staging / rel
+        if dst.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+            return {
+                "success": False,
+                "submission_dir": str(sub),
+                "errors": [
+                    f"extra output filename duplicates submission file: {rel}"
+                ],
+            }
+        _copy_if_different(src, dst)
+        manifest["outputs"][key] = rel
+        extra_output_paths.append(sub / rel)
+    (staging / "manifest.json").write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+    )
+
+    consistency_warnings = integrity.openmm_minimized_state_consistency_warnings(
+        staging,
+        manifest,
+    )
+    if consistency_warnings:
+        shutil.rmtree(staging, ignore_errors=True)
+        return {
+            "success": False,
+            "submission_dir": str(sub),
+            "code": "inconsistent_minimized_artifacts",
+            "errors": consistency_warnings,
+        }
+
+    preparation_summary_payload: dict[str, Any] = {}
+    if preparation_summary_file and Path(preparation_summary_file).is_file():
+        try:
+            preparation_summary_payload = json.loads(
+                Path(preparation_summary_file).read_text()
+            )
+        except json.JSONDecodeError:
+            warnings.append(
+                "preparation_summary_file is not valid JSON: "
+                f"{preparation_summary_file}"
+            )
+    declarations = {
+        "force_field": force_field,
+        "water_model": water_model,
+        "solvent_model": solvent_model,
+    }
+    preparation = derive_preparation_metrics(
+        prep_summary=preparation_summary_payload,
+        declared={
+            key: value
+            for key, value in declarations.items()
+            if value not in (None, "unspecified")
+        },
+    )
+    minimization_payload = {}
+    try:
+        minimization_payload = json.loads(
+            (staging / "minimization_report.json").read_text()
+        )
+    except json.JSONDecodeError:
+        warnings.append("minimization_report.json is not valid JSON")
+    min_info = (
+        minimization_payload.get("minimization")
+        if isinstance(minimization_payload.get("minimization"), dict)
+        else {}
+    )
+    metrics = {
+        "schema_version": "1.0",
+        "topology": {"backend": "openmm"},
+        "preparation": preparation,
+        "minimization": {
+            "completed": bool(min_info.get("completed")),
+            "energy_is_finite": bool(min_info.get("energy_is_finite")),
+            "positions_are_finite": bool(min_info.get("positions_are_finite")),
+        },
+    }
+    if source_selection_payload is not None:
+        metrics["source_selection"] = source_selection_payload
+    (staging / "metrics.json").write_text(
+        json.dumps(metrics, indent=2, sort_keys=True) + "\n"
+    )
+
+    command_log: list[Any] = []
+    if command_log_file and Path(command_log_file).is_file():
+        try:
+            loaded = json.loads(Path(command_log_file).read_text())
+            if isinstance(loaded, list):
+                command_log = loaded
+            elif isinstance(loaded, dict) and isinstance(
+                loaded.get("command_log"), list
+            ):
+                command_log = loaded["command_log"]
+        except json.JSONDecodeError:
+            errors.append(f"command_log_file is not valid JSON: {command_log_file}")
+
+    provenance = {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": task_id,
+        "agent": agent,
+        "backend": backend,
+        "harness": harness,
+        "model": model,
+        "declared_preparation": declarations,
+        "command_log": command_log,
+        "mdclaw_dag": {
+            "job_dir": str(jd),
+            "min_node_id": node_id,
+        },
+        "raw_outputs": _submission_raw_output_entries(staging, manifest),
+    }
+    if source_selection_payload is not None:
+        provenance["source_selection"] = source_selection_payload
+    (staging / "provenance.json").write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n"
+    )
+
+    if not command_log:
+        warnings.append(
+            "no command_log provided; the scorer's execution-evidence check "
+            "will flag this submission. Pass --command-log-file with the "
+            "agent's own source/prep/topo/min steps."
+        )
+    if sub.exists():
+        shutil.rmtree(sub)
+    staging.rename(sub)
+
+    return {
+        "success": True,
+        "submission_dir": str(sub),
+        "task_id": task_id,
+        "files_written": [
+            str(sub / "manifest.json"),
+            str(sub / "metrics.json"),
+            str(sub / "provenance.json"),
+            str(sub / "prepared_structure.pdb"),
+            str(sub / "minimized_structure.pdb"),
+            str(sub / "minimization_report.json"),
+            str(sub / "topology" / "system.xml"),
+            str(sub / "topology" / "topology.pdb"),
+            str(sub / "topology" / "state.xml"),
+        ]
+        + (
+            [str(sub / "evidence_report.json")]
+            if evidence_report_path is not None
+            else []
+        )
+        + (
+            [str(sub / "source_selection.json")]
+            if source_selection_path is not None
+            else []
+        )
         + [str(path) for path in extra_output_paths],
         "energy_kj_mol": energy["energy_kj_mol"],
         "warnings": warnings,
@@ -1150,4 +1536,5 @@ __all__ = [
     "export_benchmark_public_package",
     "export_benchmark_private_package",
     "package_openmm_submission",
+    "package_mdprep_submission",
 ]

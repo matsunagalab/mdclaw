@@ -19,11 +19,18 @@ MINIMIZED_STRUCTURE_GUIDANCE = {
         "PDB view of the coordinates after the required minimization / "
         "finite-energy check."
     ),
-    "mdclaw_state_source": (
-        "For MDClaw DAG runs, a min node writes minimized_structure.pdb and "
-        "minimized.xml. For topology bundles packaged directly, topology/state.xml "
-        "carries the post-build minimized coordinates and topology/topology.pdb "
-        "supplies the atom and residue topology."
+    "state_source": (
+        "Submit one self-consistent OpenMM state after minimization. "
+        "topology/state.xml and minimized_structure.pdb must represent the "
+        "same minimized coordinates, regardless of whether the workflow used "
+        "MDClaw, plain OpenMM, AmberTools, or another MD agent."
+    ),
+    "generic_openmm_command_template": (
+        "mdclaw package_openmm_submission --submission-dir <exact_submission_dir> "
+        "--task-id <task_id> --system-xml-file <system.xml> "
+        "--topology-pdb-file <topology.pdb> --state-xml-file <minimized_state.xml> "
+        "--prepared-structure-file <prepared_structure.pdb> "
+        "--command-log-file <command_log.json>"
     ),
     "mdclaw_dag_command_template": (
         "mdclaw create_node --job-dir <job_dir> --node-type min "
@@ -31,9 +38,9 @@ MINIMIZED_STRUCTURE_GUIDANCE = {
         "mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization"
     ),
     "mdclaw_export_command_template": (
-        "mdclaw export_state_pdb --topology-pdb-file topology/topology.pdb "
-        "--state-xml-file topology/state.xml "
-        "--output-pdb-file minimized_structure.pdb"
+        "mdclaw package_mdprep_submission --submission-dir <exact_submission_dir> "
+        "--task-id <task_id> --job-dir <job_dir> --node-id <min_node_id> "
+        "--command-log-file <command_log.json>"
     ),
     "topology_pdb_note": (
         "Do not assume topology/topology.pdb is post-minimization coordinates. "
@@ -353,17 +360,25 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
         "artifact_contract": (
             "MDPrepBench accepts MDClaw and non-MDClaw submissions through the "
             "same OpenMM artifact contract: system.xml, topology.pdb, state.xml, "
-            "and a minimized_structure.pdb exported from those coordinates."
+            "and a minimized_structure.pdb exported from those same state "
+            "coordinates."
         ),
-        "preferred_when_openmm_triple_exists": (
-            "Use either mdclaw package_openmm_submission or the standalone "
-            "benchmarks/tools/package_submission.py helper."
+        "preferred_packager": (
+            "For any OpenMM-capable workflow, use mdclaw package_openmm_submission "
+            "or benchmarks/tools/package_submission.py with one self-consistent "
+            "post-minimization system/topology/state triple. This is the "
+            "tool-agnostic submission path."
+        ),
+        "mdclaw_dag_helper": (
+            "If the workflow used MDClaw's DAG, mdclaw package_mdprep_submission "
+            "can collect the same contract from a completed min node. It is a "
+            "convenience helper, not a benchmark requirement."
         ),
         "purpose": (
-            "Package an existing OpenMM system.xml + topology.pdb + state.xml "
-            "triple into the standard submission layout. The packager validates "
-            "that the bundle deserializes and has finite coordinates/energy "
-            "before writing manifest.json."
+            "Package a self-consistent OpenMM system.xml + topology.pdb + "
+            "state.xml triple into the standard submission layout. The packager "
+            "validates that the bundle deserializes and has finite "
+            "coordinates/energy before writing manifest.json."
         ),
         "required_agent_inputs": [
             "system.xml",
@@ -375,7 +390,7 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
         "packager_writes": [
             "manifest.json",
             "metrics.json scaffold",
-            "provenance.json scaffold",
+            "provenance.json scaffold with raw output hashes",
             "optional evidence_report.json when --evidence-report-file is passed",
             "topology/ bundle",
             "minimized_structure.pdb",
@@ -389,9 +404,10 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "directories outside it, e.g. under the provided work_dir."
         ),
         "post_packaging_rule": (
-            "After package_openmm_submission succeeds, do not hand-edit "
-            "manifest.json or provenance.json. Pass optional evidence via "
-            "--evidence-report-file before packaging."
+            "After a package command succeeds, do not hand-edit package-written "
+            "files. If anything is wrong, rerun the packager with corrected "
+            "inputs. The scorer checks provenance.raw_outputs hashes and "
+            "state/minimized_structure coordinate consistency."
         ),
         "does_not_choose": [
             "chains",
@@ -400,10 +416,10 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "water model",
             "scientific answer",
         ],
-        "command_template": (
+        "generic_command_template": (
             "mdclaw package_openmm_submission --submission-dir <exact_submission_dir> "
             "--task-id <task_id> --system-xml-file <system.xml> "
-            "--topology-pdb-file <topology.pdb> --state-xml-file <state.xml> "
+            "--topology-pdb-file <topology.pdb> --state-xml-file <minimized_state.xml> "
             "--prepared-structure-file <prepared_structure.pdb> "
             "--command-log-file <command_log.json> "
             "[--preparation-summary-file <prepare_summary.json>] "
@@ -412,12 +428,19 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "[--evidence-report-file <evidence_report.json>] "
             "[--extra-output-files <manifest_key=artifact_path> ...]"
         ),
+        "mdclaw_dag_command_template": (
+            "mdclaw package_mdprep_submission --submission-dir <exact_submission_dir> "
+            "--task-id <task_id> --job-dir <job_dir> --node-id <min_node_id> "
+            "--command-log-file <command_log.json> "
+            "[--evidence-report-file <evidence_report.json>] "
+            "[--extra-output-files <manifest_key=artifact_path> ...]"
+        ),
         "standalone_packager": "benchmarks/tools/package_submission.py",
         "standalone_command_template": (
             "python benchmarks/tools/package_submission.py "
             "--submission-dir <exact_submission_dir> --task-id <task_id> "
             "--system-xml <system.xml> --topology-pdb <topology.pdb> "
-            "--state-xml <state.xml> "
+            "--state-xml <minimized_state.xml> "
             "[--prepared-structure <prepared_structure.pdb>] "
             "[--command-log <command_log.json>] "
             "[--preparation-summary <prepare_summary.json>] "
@@ -517,16 +540,21 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
             },
         }
     if task.primary_score == PREPARATION_SCORE_AXIS and "minimized_structure" in outputs:
-        blueprint["mdclaw_minimized_structure_export"] = {
+        blueprint["minimized_structure_export"] = {
             "purpose": (
-                "Create submission/minimized_structure.pdb from a min node "
-                "artifact, or from the minimized positions in topology/state.xml "
-                "when packaging a topology bundle directly."
+                "Create a self-consistent submission from one post-minimization "
+                "OpenMM topology/state bundle. MDClaw DAG runs can use the "
+                "optional helper, but the benchmark contract is tool-agnostic."
             ),
-            "preferred_command": (
+            "generic_package_command": (
+                MINIMIZED_STRUCTURE_GUIDANCE["generic_openmm_command_template"]
+            ),
+            "optional_mdclaw_dag_command": (
                 MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_dag_command_template"]
             ),
-            "command": MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_export_command_template"],
+            "optional_mdclaw_dag_package_command": (
+                MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_export_command_template"]
+            ),
             "record_in": "provenance.command_log",
         }
     return blueprint
@@ -589,14 +617,21 @@ def submission_checklist(task: Task) -> list[str]:
         checks.extend([
             "use the exact submission_dir from task_instructions.json; do not "
             "write final files to work_dir/submission",
-            "create study_dir/job_dir/work directories outside submission_dir",
-            "if an OpenMM triple exists, prefer package_openmm_submission over hand-written JSON",
-            "after package_openmm_submission, do not hand-edit manifest.json or provenance.json",
+            "create work directories outside submission_dir",
+            "package one self-consistent post-minimization "
+            "system/topology/state triple with package_openmm_submission or "
+            "benchmarks/tools/package_submission.py",
+            "for MDClaw DAG workflows, package_mdprep_submission is an optional "
+            "helper that gathers the same contract from a completed min node",
+            "after packaging, do not hand-edit package-written files; rerun "
+            "the packager with corrected inputs instead",
+            "provenance.raw_outputs contains md5 entries for manifest.json and "
+            "manifest-declared artifacts",
             "manifest.outputs.topology is a list containing system.xml, "
             "topology.pdb, and state.xml",
             'metrics.json sets topology.backend to "openmm"',
-            "manifest.outputs.minimized_structure points to minimized_structure.pdb "
-            "from a min node or exported from the minimized state",
+            "manifest.outputs.minimized_structure points to a PDB exported "
+            "from the same state.xml submitted in outputs.topology",
             "minimization_report.json confirms attempted/completed finite-energy minimization",
         ])
     if _has_candidate_selection(task):
@@ -680,9 +715,10 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
             "## Minimized Structure Export",
             "",
             f"- `{guidance['required_filename']}`: {guidance['meaning']}",
-            f"- MDClaw source: {guidance['mdclaw_state_source']}",
-            f"- Preferred MDClaw DAG command: `{guidance['mdclaw_dag_command_template']}`",
-            f"- MDClaw command: `{guidance['mdclaw_export_command_template']}`",
+            f"- State source: {guidance['state_source']}",
+            f"- Generic package command: `{guidance['generic_openmm_command_template']}`",
+            f"- Optional MDClaw DAG command: `{guidance['mdclaw_dag_command_template']}`",
+            f"- Optional MDClaw DAG package command: `{guidance['mdclaw_export_command_template']}`",
             f"- Note: {guidance['topology_pdb_note']}",
         ])
     lines.append("")

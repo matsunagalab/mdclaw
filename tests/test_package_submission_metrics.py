@@ -10,6 +10,8 @@ emitted metrics. Run with: pytest tests/test_package_submission_metrics.py -v
 """
 
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
@@ -70,6 +72,7 @@ def _package(tmp_path, **kwargs):
         "metrics": json.loads((sub / "metrics.json").read_text()),
         "provenance": json.loads((sub / "provenance.json").read_text()),
         "result": res,
+        "submission": sub,
     }
 
 
@@ -151,3 +154,150 @@ def test_packager_metrics_keys_are_scorer_canonical(tmp_path):
             f"packager emits preparation.{key!r} which is not a scorer "
             "json_path key - fix the key name or the scorer contract"
         )
+
+
+def test_packager_writes_raw_output_hashes(tmp_path):
+    from mdclaw.benchmark import integrity
+
+    packaged = _package(tmp_path)
+    sub = packaged["submission"]
+    manifest = json.loads((sub / "manifest.json").read_text())
+    provenance = json.loads((sub / "provenance.json").read_text())
+
+    warnings = integrity.required_raw_output_hash_warnings(
+        sub,
+        manifest,
+        provenance,
+    )
+    warnings.extend(integrity.verify_provenance_hashes(sub, provenance))
+
+    assert warnings == []
+    hashed_paths = {entry["path"] for entry in provenance["raw_outputs"]}
+    assert "manifest.json" in hashed_paths
+    assert "topology/state.xml" in hashed_paths
+    assert "minimized_structure.pdb" in hashed_paths
+
+
+def test_hash_integrity_detects_post_package_edits(tmp_path):
+    from mdclaw.benchmark import integrity
+
+    packaged = _package(tmp_path)
+    sub = packaged["submission"]
+    (sub / "minimization_report.json").write_text("{}\n")
+    manifest = json.loads((sub / "manifest.json").read_text())
+    provenance = json.loads((sub / "provenance.json").read_text())
+
+    warnings = integrity.required_raw_output_hash_warnings(
+        sub,
+        manifest,
+        provenance,
+    )
+    warnings.extend(integrity.verify_provenance_hashes(sub, provenance))
+
+    assert any("md5 mismatch" in warning for warning in warnings)
+
+
+def test_state_consistency_detects_mixed_minimized_structure(tmp_path):
+    from mdclaw.benchmark import integrity
+
+    packaged = _package(tmp_path)
+    sub = packaged["submission"]
+    (sub / "minimized_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1      10.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    manifest = json.loads((sub / "manifest.json").read_text())
+
+    warnings = integrity.openmm_minimized_state_consistency_warnings(
+        sub,
+        manifest,
+    )
+
+    assert any("not exported from topology/state.xml" in warning for warning in warnings)
+
+
+def test_package_mdprep_submission_uses_min_node_state(tmp_path):
+    from mdclaw._node import complete_node, create_node
+    from mdclaw.benchmark.cli import package_mdprep_submission
+
+    sys_xml, state_xml, topo_pdb = _make_openmm_triple(tmp_path)
+    job_dir = tmp_path / "study" / "jobs" / "main"
+    prep = create_node(str(job_dir), "prep")
+    assert prep["success"], prep
+    prep_dir = job_dir / "nodes" / prep["node_id"]
+    prep_merged = prep_dir / "artifacts" / "merge" / "merged.pdb"
+    prep_merged.parent.mkdir(parents=True, exist_ok=True)
+    prep_merged.write_text(Path(topo_pdb).read_text())
+    complete_node(
+        str(job_dir),
+        prep["node_id"],
+        artifacts={"merged_pdb": "artifacts/merge/merged.pdb"},
+    )
+
+    topo = create_node(
+        str(job_dir),
+        "topo",
+        parent_node_ids=[prep["node_id"]],
+    )
+    assert topo["success"], topo
+    topo_dir = job_dir / "nodes" / topo["node_id"] / "artifacts"
+    topo_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(sys_xml, topo_dir / "system.xml")
+    shutil.copy2(topo_pdb, topo_dir / "topology.pdb")
+    complete_node(
+        str(job_dir),
+        topo["node_id"],
+        artifacts={
+            "system_xml": "artifacts/system.xml",
+            "topology_pdb": "artifacts/topology.pdb",
+        },
+    )
+
+    min_node = create_node(
+        str(job_dir),
+        "min",
+        parent_node_ids=[topo["node_id"]],
+    )
+    assert min_node["success"], min_node
+    min_dir = job_dir / "nodes" / min_node["node_id"] / "artifacts"
+    min_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(state_xml, min_dir / "minimized.xml")
+    shutil.copy2(topo_pdb, min_dir / "minimized_structure.pdb")
+    (min_dir / "minimization_report.json").write_text(json.dumps({
+        "schema_version": "1.0",
+        "minimization": {
+            "attempted": True,
+            "completed": True,
+            "energy_is_finite": True,
+            "positions_are_finite": True,
+            "atom_count_preserved": True,
+            "energy_initial_kj_mol": 0.0,
+            "energy_final_kj_mol": 0.0,
+        },
+    }))
+    complete_node(
+        str(job_dir),
+        min_node["node_id"],
+        artifacts={
+            "state": "artifacts/minimized.xml",
+            "minimized_structure": "artifacts/minimized_structure.pdb",
+            "minimization_report": "artifacts/minimization_report.json",
+        },
+    )
+
+    command_log = tmp_path / "command_log.json"
+    command_log.write_text(json.dumps({"command_log": []}))
+    sub = tmp_path / "mdprep_submission"
+    res = package_mdprep_submission(
+        submission_dir=str(sub),
+        task_id="P01_demo",
+        job_dir=str(job_dir),
+        node_id=min_node["node_id"],
+        command_log_file=str(command_log),
+    )
+
+    assert res["success"], res
+    assert (sub / "topology" / "state.xml").read_text() == Path(state_xml).read_text()
+    provenance = json.loads((sub / "provenance.json").read_text())
+    assert provenance["mdclaw_dag"]["min_node_id"] == min_node["node_id"]
+    assert provenance["raw_outputs"]
