@@ -41,6 +41,11 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     AMINO_ACIDS,
     WATER_NAMES,
 )
+from mdclaw.selection_utils import (  # noqa: E402
+    associated_ligand_candidates,
+    associated_ligands_by_author_chain,
+    selected_associated_ligand_candidates,
+)
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
@@ -472,6 +477,8 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         water_label_ids   = [c["chain_id"] for c in chains_info if c["chain_type"] == "water"]
         ion_label_ids     = [c["chain_id"] for c in chains_info if c["chain_type"] == "ion"]
         chain_id_map = {c["chain_id"]: c["author_chain"] for c in chains_info}
+        associated_ligands = associated_ligand_candidates(chains_info)
+        result["associated_ligand_candidates"] = associated_ligands
         result["summary"] = {
             "num_protein_chains": len(protein_chain_ids),
             "num_nucleic_chains": len(nucleic_chain_ids),
@@ -495,6 +502,10 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             "water_label_ids": water_label_ids,
             "ion_label_ids": ion_label_ids,
             "chain_id_map": chain_id_map,
+            "associated_ligand_candidates": associated_ligands,
+            "associated_ligands_by_author_chain": associated_ligands_by_author_chain(
+                associated_ligands
+            ),
             "nucleic_subtypes": nucleic_subtypes,
             "modified_nucleic_residues": modified_nucleic_residues,
             "glycan_residues": glycan_residues,
@@ -540,6 +551,7 @@ def split_molecules(
     include_ligand_ids: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
     keep_crystal_waters: bool = False,
+    include_associated_ligands: bool = False,
 ) -> dict:
     """Split an mmCIF or PDB structure file into separate chain files.
 
@@ -622,6 +634,10 @@ def split_molecules(
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). If specified, these ligands are
                            skipped. Takes precedence if a ligand is in both include and exclude.
+        include_associated_ligands: If True, auto-include ligand label chains
+                           associated with selected protein/nucleic/glycan
+                           author chains. If False, this condition blocks
+                           instead of silently dropping associated ligands.
 
     Returns:
         Dict with:
@@ -906,6 +922,121 @@ def split_molecules(
                         f"{sorted(requested)} require ligand label chain(s) "
                         f"{auto_added}, which were added to select_chains."
                     )
+            elif "ligand" in include_types:
+                associated_candidates = selected_associated_ligand_candidates(
+                    analysis["chains"],
+                    selected_chain_ids,
+                    exclude_ligand_ids=exclude_ligand_ids,
+                )
+                if associated_candidates:
+                    if include_associated_ligands:
+                        auto_added = sorted(
+                            {
+                                str(candidate["ligand_chain_id"])
+                                for candidate in associated_candidates
+                            }
+                        )
+                        auto_ids = sorted(
+                            {
+                                str(candidate["unique_id"])
+                                for candidate in associated_candidates
+                            }
+                        )
+                        selected_chain_ids |= set(auto_added)
+                        result["selection_adjustments"].append(
+                            {
+                                "code": "associated_ligand_chain_auto_included",
+                                "message": (
+                                    "Ligand chain(s) associated with selected "
+                                    "polymer author chain(s) were added."
+                                ),
+                                "added_chain_ids": auto_added,
+                                "associated_ligand_ids": auto_ids,
+                                "associated_ligand_candidates": associated_candidates,
+                            }
+                        )
+                        result["ligand_selection"] = {
+                            "mode": "include_associated_ligands",
+                            "associated_ligand_candidates": associated_candidates,
+                            "selected_ligand_ids": auto_ids,
+                            "selected_ligand_label_chains": auto_added,
+                        }
+                        result["warnings"].append(
+                            "associated_ligand_chain_auto_included: selected "
+                            "polymer author chain(s) have associated ligand "
+                            f"candidate(s) {auto_ids}; added label chain(s) "
+                            f"{auto_added}."
+                        )
+                    else:
+                        recommended_ids = sorted(
+                            {
+                                str(candidate["unique_id"])
+                                for candidate in associated_candidates
+                            }
+                        )
+                        recommended_chain_additions = sorted(
+                            {
+                                str(candidate["ligand_chain_id"])
+                                for candidate in associated_candidates
+                            }
+                        )
+                        result["ligand_selection"] = {
+                            "mode": "associated_ligands_require_selection",
+                            "associated_ligand_candidates": associated_candidates,
+                            "recommended_include_ligand_ids": recommended_ids,
+                            "recommended_select_chain_additions": (
+                                recommended_chain_additions
+                            ),
+                            "recommended_flags": {
+                                "include_ligand_ids": recommended_ids,
+                                "select_chains_add": recommended_chain_additions,
+                                "include_associated_ligands": True,
+                            },
+                        }
+                        result.update(
+                            create_validation_error(
+                                "include_ligand_ids",
+                                (
+                                    "selected chain(s) have associated ligand "
+                                    "candidate(s), but no ligand instance was "
+                                    "selected"
+                                ),
+                                expected=(
+                                    "explicit include_ligand_ids, "
+                                    "--include-associated-ligands, or omit "
+                                    "ligand from include_types"
+                                ),
+                                actual="include_ligand_ids omitted",
+                                hints=[
+                                    (
+                                        "Use --include-ligand-ids "
+                                        + " ".join(recommended_ids)
+                                    ),
+                                    (
+                                        "Or use --include-associated-ligands "
+                                        "to include these same-author ligand "
+                                        "candidate(s)."
+                                    ),
+                                    (
+                                        "If the task is ligand-free, omit "
+                                        "ligand from --include-types."
+                                    ),
+                                ],
+                                context_extra={
+                                    "associated_ligand_candidates": (
+                                        associated_candidates
+                                    ),
+                                    "recommended_include_ligand_ids": (
+                                        recommended_ids
+                                    ),
+                                    "recommended_select_chain_additions": (
+                                        recommended_chain_additions
+                                    ),
+                                },
+                                code="associated_ligands_require_selection",
+                            )
+                        )
+                        return result
         else:
             # Default: select all chains (type filtering happens later)
             selected_chain_ids = set(c["chain_id"] for c in analysis["chains"])

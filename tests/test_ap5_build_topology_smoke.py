@@ -1,14 +1,16 @@
-"""Smoke test: 1AKE + AP5 build_amber_system completes via GAFFTemplateGenerator.
+"""Smoke test: 1AKE + AP5 build_amber_system completes via NAGL + GAFF.
 
 AP5 (bis(adenosine)-5'-pentaphosphate, 81 atoms, net charge -5) is the canary
-case for ligand parameterization: ``build_amber_system`` runs it through
-``GAFFTemplateGenerator``, which derives AM1-BCC charges via antechamber/sqm at
-topology time. sqm on this large, highly charged ligand is slow but converges;
-the ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor keeps it from being killed prematurely.
+case for ligand parameterization: ``build_amber_system`` assigns OpenFF NAGL
+partial charges before GAFFTemplateGenerator. If NAGL is unavailable or fails,
+the AM1-BCC fallback can still run through antechamber/sqm; the
+``MDCLAW_CHARGE_FIT_TIMEOUT`` floor keeps that fallback from being killed
+prematurely.
 
 Requires: conda env (rdkit, openmm, ambertools, parmed,
 openmmforcefields), network access for PDB fetch.
-Runtime: several minutes (AM1-BCC charge fitting on AP5).
+Runtime: usually faster with NAGL; fallback AM1-BCC charge fitting may take
+several minutes.
 
 Run with: conda run -n mdclaw pytest tests/test_ap5_build_topology_smoke.py -v
 """
@@ -100,11 +102,11 @@ class Test1akeAp5BuildTopology:
         assert read_node(str(job_dir), self.solv_id)["status"] == "completed"
 
     def test_step4_topology_via_gaff(self, job_dir):
-        """build_amber_system parameterizes AP5 with GAFFTemplateGenerator.
+        """build_amber_system parameterizes AP5 with NAGL + GAFFTemplateGenerator.
 
-        GAFFTemplateGenerator derives AM1-BCC charges (sqm) for AP5 at topology
-        time. This is slow but converges; the ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor
-        guards against a premature kill.
+        NAGL supplies partial charges first. If NAGL is unavailable or fails,
+        GAFFTemplateGenerator derives AM1-BCC charges (sqm); the
+        ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor guards that fallback.
         """
         from amber_server import build_amber_system
         from mdclaw._node import create_node, read_node

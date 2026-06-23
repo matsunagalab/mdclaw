@@ -28,9 +28,9 @@ Primary repository sources checked:
 ### Core MD And Topology
 
 - OpenMM: cite for MD integration, platforms, reporters, barostats, HMR-enabled simulations, OpenMM fallback solvation, and System construction (the openmmforcefields path now drives topology builds).
-- openmmforcefields: cite for `SystemGenerator` + `GAFFTemplateGenerator` (GAFF2/AM1-BCC), which is the topology-build path for ligands under `build_amber_system` / `build_openmm_system` (replaces the legacy `tleap` script generation).
-- OpenFF Toolkit / OpenFF Pablo: cite for chemistry-aware PDB → Topology loading (Pablo) and `Molecule` handling for topology-time ligand template generation.
-- AmberTools: cite for `pdb4amber` and `cpptraj` (`prepareforleap`). `tleap`, `antechamber`, `parmchk2`, and `sqm` are no longer invoked on the ligand path.
+- openmmforcefields: cite for `SystemGenerator` + `GAFFTemplateGenerator`, which is the topology-build path for ligands under `build_amber_system` / `build_openmm_system` (replaces the legacy `tleap` script generation).
+- OpenFF Toolkit / OpenFF Pablo / OpenFF NAGL: cite for chemistry-aware PDB → Topology loading (Pablo), `Molecule` handling, and topology-time NAGL small-molecule partial-charge assignment.
+- AmberTools: cite for `pdb4amber` and `cpptraj` (`prepareforleap`). `tleap`, `antechamber`, `parmchk2`, and `sqm` are not used on the normal NAGL ligand path; cite them only when the build records AM1-BCC fallback.
 - PACKMOL: cite when explicit solvent or mixed systems are assembled through PACKMOL or PACKMOL-Memgen.
 - PACKMOL-Memgen: cite when `embed_in_membrane` or membrane-building workflows use it.
 - MEMEMBED: cite when membrane-protein orientation through `memembed` is used.
@@ -59,7 +59,6 @@ Primary repository sources checked:
 - PROPKA3: cite for empirical pKa/protonation-state assignment.
 - RDKit: cite the RDKit Zenodo concept DOI for cheminformatics operations.
 - Gemmi: cite for mmCIF/PDB parsing and structural biology file handling.
-- Dimorphite-DL: cite when small-molecule ionization state enumeration is used.
 - PubChemPy: normally do not cite in MD Methods; record only in software provenance if needed.
 - HPacker: cite when `create_mutated_structure` or surrogate candidate
   reconstruction uses HPacker side-chain packing.
@@ -388,16 +387,6 @@ Primary repository sources checked:
   number = {73},
   pages = {4200},
   doi = {10.21105/joss.04200}
-}
-
-@article{Ropp2019DimorphiteDL,
-  author = {Ropp, Patrick J. and Kaminsky, Jesse C. and Yablonski, Sara and Durrant, Jacob D.},
-  title = {{Dimorphite-DL}: An Open-Source Program for Enumerating the Ionization States of Drug-Like Small Molecules},
-  journal = {Journal of Cheminformatics},
-  year = {2019},
-  volume = {11},
-  pages = {14},
-  doi = {10.1186/s13321-019-0336-9}
 }
 
 @inproceedings{Visani2024HPacker,

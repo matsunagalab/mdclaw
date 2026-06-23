@@ -33,17 +33,11 @@ when they are part of the requested system by including `ion` in
 record them in `component_disposition.json`. For a deliberate
 vacuum/no-solvent topology, explicit ions may be retained.
 
-`--select-chains` is a chain gate for all included molecular types. If the
-selected protein chain has ligands on separate ligand chains, include those
-ligand label chains too, or omit `--select-chains` and filter with
-`--include-ligand-ids` / `--exclude-ligand-ids`.
-
-Use `inspect_molecules` output to build ligand selections:
-
-- For mmCIF, pass per-chain `chain_id` values (`label_asym_id`) to
-  `--select-chains`.
-- Pass ligand `chains[].unique_id` values to `--include-ligand-ids`; the first
-  field of `unique_id` is `author_chain`, not the label chain.
+For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
+If the tool returns `code="associated_ligands_require_selection"`, rerun with
+the returned `ligand_selection.recommended_include_ligand_ids`, use
+`--include-associated-ligands`, or omit `ligand` from `--include-types` for a
+ligand-free task. Do not retry unchanged.
 
 Ligand-free systems:
 
@@ -67,14 +61,13 @@ Important outputs:
 
 - `merged_pdb`: downstream structure for solvation or topology.
 - `split/`: extracted components.
-- `ligand_chemistry`: ligand SDF/SMILES/charge/provenance records for
-  topology-time ligand force-field resolution.
+- `ligand_chemistry`: ligand SDF/SMILES/provenance. Ligand charge comes from
+  the charged graph, so use `[O-]` / `[NH3+]` in SMILES when needed.
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
-`prepare_complex` records ligand chemistry. `build_amber_system` consumes
-`ligand_chemistry` and parameterizes ligands with `GAFFTemplateGenerator`
-(GAFF2/AM1-BCC).
+`prepare_complex` records ligand chemistry. `build_amber_system` handles
+topology and ligand partial charges.
 
 If ligand chemistry preparation returns a blocking structured result, do not
 retry the same command. Follow `workflow_recommendation.options`.

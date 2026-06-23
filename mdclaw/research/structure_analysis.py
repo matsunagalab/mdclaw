@@ -12,6 +12,7 @@ Provides tools for:
 """
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -432,8 +433,8 @@ def _find_nonstandard_residues(pdb_file: Path) -> list[dict]:
     return nonstandard
 
 
-def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
-    """Analyze ligands in the structure: find SMILES and estimate charges."""
+def _analyze_ligands(structure_path: Path) -> list[dict]:
+    """Analyze ligands in the structure and record graph-derived metadata."""
     ligands = []
 
     try:
@@ -483,45 +484,35 @@ def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
                 contains_metal = bool(ligand_elements & METAL_ELEMENTS)
                 is_gaff_compatible = len(unsupported_elements) == 0
 
-                # Try to get SMILES from CCD
+                # Try to get a chemistry graph. Its formal charge is metadata
+                # for validation; MDClaw does not pH-enumerate ligand charge
+                # during inspection.
                 smiles = None
                 smiles_source = "not_found"
-                estimated_charge = 0
-                ionizable_groups = []
+                net_charge = None
 
                 try:
-                    ccd_url = f"https://files.rcsb.org/ligands/view/{resname}_ideal.sdf"
-                    # Note: This is synchronous, but acceptable for Phase 1 analysis
-                    import urllib.request
-                    try:
-                        with urllib.request.urlopen(ccd_url, timeout=5) as response:
-                            sdf_content = response.read().decode('utf-8')
+                    from rdkit import Chem
+                    from mdclaw.structure.ligand_chemistry import (
+                        KNOWN_LIGAND_SMILES,
+                        _fetch_smiles_from_ccd,
+                    )
 
-                        # Parse SDF to get SMILES
-                        from rdkit import Chem
-                        mol = Chem.MolFromMolBlock(sdf_content)
-                        if mol:
-                            smiles = Chem.MolToSmiles(mol)
+                    known_smiles = KNOWN_LIGAND_SMILES.get(resname.upper())
+                    if known_smiles and re.search(r"\[[^\]]*[+-]", known_smiles):
+                        smiles = known_smiles
+                        smiles_source = "curated_charged_dictionary"
+                    else:
+                        smiles = _fetch_smiles_from_ccd(resname, timeout=5)
+                        if smiles:
                             smiles_source = "ccd"
-
-                            # Estimate charge at pH
-                            try:
-                                from dimorphite_dl import DimorphiteDL
-                                dimorphite = DimorphiteDL(
-                                    min_ph=ph - 0.5,
-                                    max_ph=ph + 0.5,
-                                    max_variants=1,
-                                )
-                                protonated = dimorphite.protonate(smiles)
-                                if protonated:
-                                    prot_mol = Chem.MolFromSmiles(protonated[0])
-                                    if prot_mol:
-                                        estimated_charge = Chem.GetFormalCharge(prot_mol)
-                            except ImportError:
-                                # Dimorphite not available, use formal charge
-                                estimated_charge = Chem.GetFormalCharge(mol)
-                    except Exception:
-                        pass
+                        elif known_smiles:
+                            smiles = known_smiles
+                            smiles_source = "known_dictionary"
+                    if smiles:
+                        mol = Chem.MolFromSmiles(smiles)
+                        if mol is not None:
+                            net_charge = int(Chem.GetFormalCharge(mol))
                 except Exception:
                     pass
 
@@ -547,8 +538,8 @@ def _analyze_ligands(structure_path: Path, ph: float = 7.4) -> list[dict]:
                     "num_atoms": num_atoms,
                     "smiles_source": smiles_source,
                     "smiles": smiles,
-                    "estimated_charge_at_ph": estimated_charge,
-                    "ionizable_groups": ionizable_groups,
+                    "net_charge": net_charge,
+                    "charge_source": "molecule_formal_charge" if net_charge is not None else None,
                     # Metal/element compatibility fields
                     "elements": sorted(ligand_elements),
                     "contains_metal": contains_metal,
@@ -583,7 +574,7 @@ def analyze_structure_details(
     - Estimate histidine pKa values and recommend protonation states
     - Identify missing residues and atoms
     - Detect non-standard residues
-    - Analyze ligands and estimate charges at target pH
+    - Analyze ligands and record SMILES graph formal-charge metadata
 
     Args:
         structure_file: Path to structure file (PDB or mmCIF)
@@ -603,7 +594,7 @@ def analyze_structure_details(
             - missing_residues: list - Missing residue segments
             - missing_atoms: list - Missing heavy atoms
             - nonstandard_residues: list - Non-standard residue modifications
-            - ligand_analysis: list - Ligand SMILES and charge estimates
+            - ligand_analysis: list - Ligand SMILES and graph-derived charge metadata
             - summary: dict - Quick overview for LLM
             - errors: list[str]
             - warnings: list[str]
@@ -672,7 +663,7 @@ def analyze_structure_details(
         # Analyze ligands
         if identify_ligands:
             logger.info("Analyzing ligands")
-            ligand_analysis = _analyze_ligands(structure_path, ph)
+            ligand_analysis = _analyze_ligands(structure_path)
             result["ligand_analysis"] = ligand_analysis
             if ligand_analysis:
                 logger.info(f"Found {len(ligand_analysis)} ligand(s)")

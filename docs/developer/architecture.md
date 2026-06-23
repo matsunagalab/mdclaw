@@ -390,9 +390,11 @@ The schema-v3 `min` node is separate: it is a node-owned post-topology
 minimization step that creates the minimized restart state consumed by `eq`.
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
-Molecules. Ligands are parameterized with `SystemGenerator` /
-`GAFFTemplateGenerator` (GAFF2/AM1-BCC). The prep-to-topology ligand handoff is
-the `ligand_chemistry` artifact.
+Molecules. Ligand formal charge is taken from the charged molecule graph.
+Topology assigns ligand partial charges with OpenFF NAGL first, then passes the
+precharged molecules into `SystemGenerator` / `GAFFTemplateGenerator`; AM1-BCC
+is the fallback when NAGL is unavailable or fails. The prep-to-topology ligand
+handoff is the `ligand_chemistry` artifact.
 
 `build_openmm_system` is the research escape hatch for explicit custom OpenMM
 XML. It emits the same XML triple, so downstream `eq` and `prod` nodes consume

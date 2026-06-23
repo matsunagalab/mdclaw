@@ -222,9 +222,9 @@ rejects mixing them with the legacy water model. Trust the skill guidance,
 not your prior knowledge.
 
 **Common chain/ligand failure mode**: treating "chain A ligandあり" as
-`--select-chains A` only. Ligands often live on separate subchains, even when
-their `author_chain` is A. Inspect first and include the ligand label chain(s)
-plus the ligand `unique_id` in `--include-ligand-ids`.
+`--select-chains A` only. Use `inspect_molecules.associated_ligand_candidates`
+or the `associated_ligands_require_selection` guardrail instead of inferring
+ligand label chains manually.
 
 ## Interaction Mode
 
@@ -242,15 +242,15 @@ Use structured JSON fields from tool output to decide next steps. **Never parse 
 
 Key fields to check:
 - `overall_status` — `success`, `completed_with_blocking_ligand_failure`, or `failed`
-- `ligand_chemistry` — standard prep artifact for ligand SDF/SMILES/charge/provenance; consumed by `build_amber_system`
+- `ligand_chemistry` — ligand SDF/SMILES/provenance for topology
 - `workflow_recommendation` — contains `options` (list of valid next actions)
 - `recommended_next_action` — per-ligand: `provide_smiles_or_exclude_ligand`, `hard_fail`
 - `failure_class` — what went wrong. Common classes include `input_error`,
   `metal_atoms`, `ligand_chemistry_failed`, and `unexpected_error`.
 
 Rules:
-- Prep records `ligand_chemistry`; topology generation consumes those records
-  with `GAFFTemplateGenerator` (GAFF2/AM1-BCC).
+- Ligand charge comes from charged SMILES/SDF, not an integer note. Use
+  explicit formal charges such as `[O-]` or `[NH3+]`.
 - If `recommended_next_action = provide_smiles_or_exclude_ligand`: ask for a
   chemistry source or exclude the ligand; do not continue with an untyped PDB
   ligand.

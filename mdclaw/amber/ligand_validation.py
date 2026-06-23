@@ -430,6 +430,8 @@ def implicit_ligand_diagnostics(ligand_chemistry: List[Dict[str, Any]]) -> dict:
         charge = lig.get("total_charge")
         if charge is None:
             charge = lig.get("charge_used")
+        if charge is None:
+            charge = lig.get("net_charge")
         charge_value = float(charge) if charge is not None else None
         is_polyphosphate = resname in POLYPHOSPHATE_LIGANDS
         is_high_charge = charge_value is not None and abs(charge_value) >= 3.0

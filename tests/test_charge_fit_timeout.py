@@ -1,10 +1,10 @@
-"""Unit tests for the ligand charge-fitting timeout (openmm_build).
+"""Unit tests for fallback ligand charge-fitting and NAGL precharge helpers.
 
-The charge-fitting budget (antechamber/sqm AM1-BCC) must be raisable but never
-shortenable: an agent driving the CLI — including a weak LLM — must not be able
-to set a short timeout and induce spurious ``SQM_timeout`` build failures on
-large ligands such as AP5. These tests pin the floor/clamp behavior and the
-guard's expiry semantics.
+The fallback charge-fitting budget (antechamber/sqm AM1-BCC) must be raisable
+but never shortenable: an agent driving the CLI — including a weak LLM — must
+not be able to set a short timeout and induce spurious ``SQM_timeout`` build
+failures on large ligands such as AP5. These tests pin the floor/clamp
+behavior, guard expiry semantics, and formal-charge validation.
 
 Run with: conda run -n mdclaw pytest tests/test_charge_fit_timeout.py -v
 """
@@ -19,8 +19,10 @@ pytest.importorskip("openmmforcefields")
 
 from mdclaw.amber.openmm_build import (
     _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS,
+    _assign_nagl_partial_charges,
     _charge_fit_timeout_guard,
     _resolve_charge_fit_timeout,
+    _validate_ligand_formal_charges,
 )
 
 FLOOR = _CHARGE_FIT_TIMEOUT_FLOOR_SECONDS
@@ -85,3 +87,42 @@ def test_guard_skips_off_main_thread():
     t.start()
     t.join()
     assert outcome["result"] == "completed"
+
+
+class _FakeMolecule:
+    def __init__(self, total_charge):
+        self.total_charge = total_charge
+        self.partial_charges = None
+
+
+def test_validate_ligand_formal_charges_accepts_graph_charge():
+    records, errors = _validate_ligand_formal_charges(
+        [{"residue_name": "ACE", "net_charge": -1}],
+        [_FakeMolecule(-1.0)],
+    )
+
+    assert errors == []
+    assert records[0]["status"] == "passed"
+    assert records[0]["formal_charge_e"] == -1.0
+
+
+def test_validate_ligand_formal_charges_rejects_metadata_only_override():
+    records, errors = _validate_ligand_formal_charges(
+        [{"residue_name": "ACE", "expected_net_charge": -1}],
+        [_FakeMolecule(0.0)],
+    )
+
+    assert records[0]["status"] == "failed"
+    assert "charged SMILES/SDF" in errors[0]
+
+
+def test_nagl_unavailable_leaves_am1bcc_fallback_records():
+    pytest.importorskip("openmm")
+    records = _assign_nagl_partial_charges(
+        [{"residue_name": "ACE", "ligand_instance_id": "A:ACE:1"}],
+        [_FakeMolecule(0.0)],
+    )
+
+    assert records
+    if records[0]["status"] == "fallback":
+        assert records[0]["method"] == "am1bcc_fallback"

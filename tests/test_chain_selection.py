@@ -357,6 +357,122 @@ def test_split_molecules_auto_includes_requested_ligand_chain(
     assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]
 
 
+def test_inspect_molecules_reports_associated_ligand_candidates(
+    cif_protein_a_ligand_c_auth_a,
+):
+    """Inspection should surface same-author ligand candidates for agents."""
+    from mdclaw.structure_server import _inspect_molecules_impl
+
+    r = _inspect_molecules_impl(cif_protein_a_ligand_c_auth_a)
+
+    assert r["success"], r.get("errors")
+    candidates = r["summary"]["associated_ligand_candidates"]
+    assert candidates == [
+        {
+            "author_chain": "A",
+            "ligand_chain_id": "C",
+            "unique_id": "A:AP5:215",
+            "residue_names": ["AP5"],
+            "resname": "AP5",
+            "resnum": 215,
+            "num_atoms": 2,
+            "num_residues": 1,
+            "associated_chain_ids": ["A"],
+            "associated_chain_types": ["protein"],
+            "recommended_select_chains_add": ["C"],
+            "recommended_include_ligand_ids": ["A:AP5:215"],
+        }
+    ]
+    assert r["summary"]["associated_ligands_by_author_chain"]["A"][0][
+        "unique_id"
+    ] == "A:AP5:215"
+
+
+def test_research_inspect_molecules_reports_associated_ligand_candidates(
+    cif_protein_a_ligand_c_auth_a,
+):
+    """The public inspect_molecules CLI path should expose the same hints."""
+    from mdclaw.research_server import inspect_molecules
+
+    r = inspect_molecules(cif_protein_a_ligand_c_auth_a)
+
+    assert r["success"], r.get("errors")
+    assert r["associated_ligand_candidates"][0]["unique_id"] == "A:AP5:215"
+    assert r["associated_ligand_candidates"][0]["ligand_chain_id"] == "C"
+
+
+def test_split_molecules_blocks_associated_ligand_silent_drop(
+    cif_protein_a_ligand_c_auth_a,
+    tmp_path,
+):
+    """Protein-only chain selection cannot silently drop associated ligands."""
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ligand_c_auth_a,
+        output_dir=str(tmp_path / "out_ligand_block"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+    )
+
+    assert r["success"] is False
+    assert r["code"] == "associated_ligands_require_selection"
+    assert r["ligand_selection"]["recommended_include_ligand_ids"] == [
+        "A:AP5:215"
+    ]
+    assert r["ligand_selection"]["recommended_select_chain_additions"] == ["C"]
+    assert r["ligand_selection"]["associated_ligand_candidates"][0][
+        "unique_id"
+    ] == "A:AP5:215"
+
+
+def test_prepare_complex_surfaces_associated_ligand_selection_block(
+    cif_protein_a_ligand_c_auth_a,
+    tmp_path,
+):
+    """prepare_complex should expose the split guardrail without tool-log parsing."""
+    from mdclaw.structure_server import prepare_complex
+
+    r = prepare_complex(
+        structure_file=cif_protein_a_ligand_c_auth_a,
+        output_dir=str(tmp_path / "prep_ligand_block"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+    )
+
+    assert r["success"] is False
+    assert r["code"] == "associated_ligands_require_selection"
+    assert r["overall_status"] == "failed"
+    assert r["ligand_selection"]["recommended_include_ligand_ids"] == [
+        "A:AP5:215"
+    ]
+
+
+def test_split_molecules_can_auto_include_associated_ligands(
+    cif_protein_a_ligand_c_auth_a,
+    tmp_path,
+):
+    """The explicit convenience flag includes associated ligand candidates."""
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ligand_c_auth_a,
+        output_dir=str(tmp_path / "out_ligand_assoc"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        include_associated_ligands=True,
+    )
+
+    assert r["success"], r.get("errors")
+    assert len(r["protein_files"]) == 1
+    assert len(r["ligand_files"]) == 1
+    assert r["selection_adjustments"][0]["code"] == (
+        "associated_ligand_chain_auto_included"
+    )
+    assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]
+    assert r["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+
+
 def test_split_molecules_rejects_bare_ligand_residue_name(
     cif_protein_a_ligand_c_auth_a,
     tmp_path,

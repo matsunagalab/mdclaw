@@ -46,6 +46,10 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     STANDARD_RNA_RESNAMES,  # noqa: F401
     WATER_NAMES,  # noqa: F401
 )
+from mdclaw.selection_utils import (  # noqa: E402
+    associated_ligand_candidates,
+    associated_ligands_by_author_chain,
+)
 
 logger = setup_logger(__name__)
 
@@ -578,9 +582,10 @@ def inspect_molecules(
                     ligand_author_chains.append(author_chain)
 
             unique_id = None
+            first_res = res_list[0]
+            first_resnum = first_res.seqid.num
             if chain_type in ("ligand", "ion"):
-                first_res = res_list[0]
-                unique_id = f"{author_chain}:{first_res.name.strip()}:{first_res.seqid.num}"
+                unique_id = f"{author_chain}:{first_res.name.strip()}:{first_resnum}"
 
             chain_info = {
                 "chain_id": chain_id,
@@ -603,6 +608,7 @@ def inspect_molecules(
                 "is_water": has_water,
                 "num_residues": len(res_list),
                 "num_atoms": num_atoms,
+                "resnum": first_resnum,
                 "sequence_length": len(sequence_parts) if has_protein else 0,
             }
             chains_info.append(chain_info)
@@ -619,6 +625,8 @@ def inspect_molecules(
         for ptm in ptm_residues:
             sub_id = ptm.pop("_subchain_id")
             ptm["chain"] = chain_id_map.get(sub_id, sub_id)
+        associated_ligands = associated_ligand_candidates(chains_info)
+        result["associated_ligand_candidates"] = associated_ligands
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
             "num_nucleic_chains": len(nucleic_author_chains),
@@ -640,6 +648,10 @@ def inspect_molecules(
             "water_chain_ids": water_chain_ids,
             "ion_chain_ids": ion_chain_ids,
             "chain_id_map": chain_id_map,
+            "associated_ligand_candidates": associated_ligands,
+            "associated_ligands_by_author_chain": associated_ligands_by_author_chain(
+                associated_ligands
+            ),
             "multivalent_metal_residues": multivalent_metal_residues,
             "ptm_residues": ptm_residues,
             "nucleic_subtypes": nucleic_subtypes,

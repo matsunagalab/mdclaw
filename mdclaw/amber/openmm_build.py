@@ -128,6 +128,191 @@ def _charge_fit_timeout_guard(seconds: int):
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous)
 
+
+_NAGL_PARTIAL_CHARGE_METHOD = "openff-gnn-am1bcc-1.0.0.pt"
+
+
+def _quantity_to_elementary_charge(value: Any) -> float:
+    """Convert an OpenFF/OpenMM charge quantity to elementary-charge float."""
+    if value is None:
+        raise ValueError("charge quantity is None")
+    if hasattr(value, "m_as"):
+        try:
+            from openff.units import unit as off_unit
+
+            return float(value.m_as(off_unit.elementary_charge))
+        except Exception:  # noqa: BLE001
+            pass
+    if hasattr(value, "value_in_unit"):
+        try:
+            from openmm import unit as omm_unit
+
+            return float(value.value_in_unit(omm_unit.elementary_charge))
+        except Exception:  # noqa: BLE001
+            pass
+    return float(value)
+
+
+def _molecule_total_charge_e(molecule: Any) -> float:
+    return _quantity_to_elementary_charge(molecule.total_charge)
+
+
+def _molecule_partial_charge_sum_e(molecule: Any) -> float | None:
+    charges = getattr(molecule, "partial_charges", None)
+    if charges is None:
+        return None
+    if hasattr(charges, "m_as"):
+        try:
+            from openff.units import unit as off_unit
+
+            return float(charges.m_as(off_unit.elementary_charge).sum())
+        except Exception:  # noqa: BLE001
+            pass
+    total = 0.0
+    for charge in charges:
+        total += _quantity_to_elementary_charge(charge)
+    return total
+
+
+def _system_net_charge_e(system: Any) -> float | None:
+    try:
+        from openmm import NonbondedForce, unit
+    except Exception:  # noqa: BLE001
+        return None
+    for idx in range(system.getNumForces()):
+        force = system.getForce(idx)
+        if not isinstance(force, NonbondedForce):
+            continue
+        total = 0.0
+        for particle_idx in range(force.getNumParticles()):
+            charge, _sigma, _epsilon = force.getParticleParameters(particle_idx)
+            total += float(charge.value_in_unit(unit.elementary_charge))
+        return total
+    return None
+
+
+def _coerce_expected_charge(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _clear_partial_charges(molecule: Any) -> None:
+    try:
+        molecule.partial_charges = None
+    except Exception:  # noqa: BLE001
+        logger.debug("Could not clear ligand partial charges after NAGL failure", exc_info=True)
+
+
+def _validate_ligand_formal_charges(
+    ligands: list[Dict[str, Any]],
+    molecules: list[Any],
+    tolerance: float = 1.0e-4,
+) -> tuple[list[Dict[str, Any]], list[str]]:
+    """Validate recorded ligand charges against the OpenFF Molecule graph."""
+    records: list[Dict[str, Any]] = []
+    errors: list[str] = []
+    for lig, molecule in zip(ligands, molecules):
+        residue_name = str(lig.get("residue_name") or lig.get("ligand_id") or "LIG")
+        formal_charge = _molecule_total_charge_e(molecule)
+        expected = _coerce_expected_charge(
+            lig.get("expected_net_charge")
+            if lig.get("expected_net_charge") is not None
+            else lig.get("net_charge")
+        )
+        record = {
+            "residue_name": residue_name,
+            "ligand_instance_id": lig.get("ligand_instance_id"),
+            "formal_charge_e": formal_charge,
+            "expected_net_charge_e": expected,
+        }
+        if expected is not None and abs(formal_charge - expected) > tolerance:
+            errors.append(
+                f"Ligand {residue_name} formal charge mismatch: "
+                f"OpenFF Molecule total_charge={formal_charge:.4f} e, "
+                f"expected={expected:.4f} e. Provide a charged SMILES/SDF "
+                f"that encodes the intended protonation state."
+            )
+            record["status"] = "failed"
+        else:
+            record["status"] = "passed"
+        records.append(record)
+    return records, errors
+
+
+def _assign_nagl_partial_charges(
+    ligands: list[Dict[str, Any]],
+    molecules: list[Any],
+    tolerance: float = 1.0e-4,
+) -> list[Dict[str, Any]]:
+    """Assign NAGL charges when available; leave failures for AM1-BCC fallback."""
+    records: list[Dict[str, Any]] = []
+    if not molecules:
+        return records
+
+    try:
+        from openff.toolkit.utils.nagl_wrapper import NAGLToolkitWrapper
+
+        toolkit = NAGLToolkitWrapper()
+    except Exception as exc:  # noqa: BLE001
+        message = (
+            f"OpenFF NAGL unavailable ({type(exc).__name__}: {exc}); "
+            "falling back to GAFFTemplateGenerator AM1-BCC charges."
+        )
+        logger.warning(message)
+        return [
+            {
+                "residue_name": lig.get("residue_name"),
+                "ligand_instance_id": lig.get("ligand_instance_id"),
+                "method": "am1bcc_fallback",
+                "fallback_reason": message,
+                "status": "fallback",
+            }
+            for lig in ligands
+        ]
+
+    for lig, molecule in zip(ligands, molecules):
+        residue_name = str(lig.get("residue_name") or lig.get("ligand_id") or "LIG")
+        record: Dict[str, Any] = {
+            "residue_name": residue_name,
+            "ligand_instance_id": lig.get("ligand_instance_id"),
+            "formal_charge_e": _molecule_total_charge_e(molecule),
+            "method": "nagl",
+            "nagl_model": _NAGL_PARTIAL_CHARGE_METHOD,
+        }
+        try:
+            molecule.assign_partial_charges(
+                partial_charge_method=_NAGL_PARTIAL_CHARGE_METHOD,
+                toolkit_registry=toolkit,
+                normalize_partial_charges=True,
+            )
+            charge_sum = _molecule_partial_charge_sum_e(molecule)
+            record["partial_charge_sum_e"] = charge_sum
+            if charge_sum is None or abs(charge_sum - record["formal_charge_e"]) > tolerance:
+                raise ValueError(
+                    f"NAGL partial charge sum {charge_sum} does not match "
+                    f"formal charge {record['formal_charge_e']}"
+                )
+            record["status"] = "success"
+        except Exception as exc:  # noqa: BLE001
+            _clear_partial_charges(molecule)
+            record.update({
+                "method": "am1bcc_fallback",
+                "status": "fallback",
+                "fallback_reason": f"{type(exc).__name__}: {exc}",
+            })
+            logger.warning(
+                "NAGL charge assignment failed for ligand %s; falling back "
+                "to GAFFTemplateGenerator AM1-BCC: %s",
+                residue_name,
+                record["fallback_reason"],
+            )
+        records.append(record)
+    return records
+
 # Initialize tool wrappers.
 # ``tleap`` is no longer used: the curated build path runs through
 # ``openmmforcefields.SystemGenerator`` and emits the modern
@@ -435,8 +620,10 @@ def _run_openmmforcefields_build(
         result["code"] = "implicit_solvent_model_unsupported"
         return result
 
-    # All ligands are parameterized at topology time by GAFFTemplateGenerator
-    # (GAFF2 / AM1-BCC) via SystemGenerator below.
+    # All ligands are parameterized at topology time. NAGL supplies partial
+    # charges first when available; GAFFTemplateGenerator supplies GAFF atom
+    # types and falls back to AM1-BCC charges for molecules NAGL could not
+    # precharge.
     for rec in valid_ligands or []:
         if str(rec.get("residue_name") or "").upper():
             rec["topology_parameter_source"] = "topology_gaff_template_generator"
@@ -547,6 +734,29 @@ def _run_openmmforcefields_build(
             )
             result["code"] = "ligand_molecule_load_failed"
             return result
+
+    _stage("validate_ligand_formal_charges")
+    ligand_charge_validation, charge_errors = _validate_ligand_formal_charges(
+        list(valid_ligands or []),
+        ligand_molecules,
+    )
+    result["ligand_charge_validation"] = ligand_charge_validation
+    if charge_errors:
+        result["errors"].extend(charge_errors)
+        result["code"] = "ligand_formal_charge_mismatch"
+        return result
+
+    _stage("assign_ligand_partial_charges")
+    ligand_charge_assignment = _assign_nagl_partial_charges(
+        list(valid_ligands or []),
+        ligand_molecules,
+    )
+    result["ligand_charge_assignment"] = ligand_charge_assignment
+    if any(rec.get("status") == "fallback" for rec in ligand_charge_assignment):
+        result["warnings"].append(
+            "One or more ligands fell back from OpenFF NAGL to "
+            "GAFFTemplateGenerator AM1-BCC charge assignment."
+        )
 
     # Hand the loaded ligands to Pablo as ``(residue_name, smiles)`` pairs so
     # its CCD matcher sees the GAFF-typed ligand as a registered
@@ -1359,6 +1569,7 @@ def _run_openmmforcefields_build(
     # --- 7. Statistics + provenance -------------------------------------
     num_atoms = modeller.topology.getNumAtoms()
     num_residues = sum(1 for _ in modeller.topology.residues())
+    system_net_charge_e = _system_net_charge_e(system)
 
     sha256_table: Dict[str, str] = {}
     for xml_path in xml_bundle:
@@ -1401,9 +1612,14 @@ def _run_openmmforcefields_build(
                 "smiles_source": lig.get("smiles_source"),
                 "topology_parameter_source": lig.get("topology_parameter_source"),
                 "residue_name": lig.get("residue_name"),
+                "net_charge": lig.get("net_charge"),
+                "expected_net_charge": lig.get("expected_net_charge"),
             }
             for lig in (valid_ligands or [])
         ],
+        "ligand_charge_validation": ligand_charge_validation,
+        "ligand_charge_assignment": ligand_charge_assignment,
+        "system_net_charge_e": system_net_charge_e,
         "sha256": sha256_table,
         "method": {
             "solvent_type": provenance_solvent_type,
@@ -1453,6 +1669,8 @@ def _run_openmmforcefields_build(
         "topology_notes": result["topology_notes"],
         "num_atoms": num_atoms,
         "num_residues": num_residues,
+        "system_net_charge_e": system_net_charge_e,
+        "ligand_charge_assignment": ligand_charge_assignment,
         "forcefield_provenance": provenance,
     })
     return result

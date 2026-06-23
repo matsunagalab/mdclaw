@@ -402,6 +402,7 @@ def _validate_prepare_node_context(
     include_types: Optional[List[str]],
     include_ligand_ids: Optional[List[str]],
     exclude_ligand_ids: Optional[List[str]],
+    include_associated_ligands: bool,
     keep_crystal_waters: bool,
     solvent_type: Optional[str] = "explicit",
     source_structure_id: Optional[str] = None,
@@ -428,6 +429,7 @@ def _validate_prepare_node_context(
             "include_types": include_types,
             "include_ligand_ids": include_ligand_ids,
             "exclude_ligand_ids": exclude_ligand_ids,
+            "include_associated_ligands": include_associated_ligands,
             "keep_crystal_waters": keep_crystal_waters,
             "solvent_type": solvent_type,
             "source_structure_id": source_structure_id,
@@ -480,6 +482,7 @@ def prepare_complex(
     include_types: Optional[List[str]] = None,
     include_ligand_ids: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
+    include_associated_ligands: bool = False,
     optimize_ligands: bool = False,
     structure_analysis: Optional[dict] = None,
     disulfide_pairs: Optional[List[Dict[str, Any]]] = None,
@@ -539,8 +542,11 @@ def prepare_complex(
         process_proteins: Whether to clean protein chains (default: True)
         process_ligands: Whether to clean ligands and record topology-time
                          chemistry inputs (default: True)
-        ligand_smiles: Dict mapping ligand_id to SMILES (e.g., {"SAH": "Nc1ncnc..."})
-                       If not provided, SMILES will be fetched from PDB CCD
+        ligand_smiles: Dict mapping ligand_id to charged SMILES
+                       (e.g., {"ACE": "CC(=O)[O-]"}). If not provided,
+                       SMILES will be fetched from PDB CCD and used as-is.
+                       Integer charge metadata is validation-only; encode the
+                       intended protonation state in SMILES/SDF.
         include_types: List of molecular types to include: "protein", "nucleic", "glycan", "ligand", "ion", "water".
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
@@ -565,6 +571,10 @@ def prepare_complex(
                            omit them.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). These ligands are skipped.
+        include_associated_ligands: Auto-include ligand label chains associated
+                         with selected protein/nucleic/glycan author chains.
+                         If False, such candidates require explicit selection
+                         instead of being silently dropped.
         optimize_ligands: Run MMFF94 optimization on ligands (default: False).
                           Bound-ligand heavy-atom coordinates are preserved unless
                           this is explicitly enabled.
@@ -623,7 +633,7 @@ def prepare_complex(
                 - input_file: str
                 - sdf_file: str (cleaned SDF)
                 - pdb_file: str (cleaned ligand PDB)
-                - net_charge: int
+                - net_charge: int (formal charge from charged molecule graph)
                 - success: bool
             - merged_pdb: str - Path to merged PDB file (protein + ligands combined)
             - merge_result: dict - Results from merge_structures
@@ -726,6 +736,7 @@ def prepare_complex(
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             exclude_ligand_ids=exclude_ligand_ids,
+            include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
             solvent_type=solvent_type,
             source_structure_id=_resolved_structure.get("source_structure_id"),
@@ -905,6 +916,7 @@ def prepare_complex(
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
             exclude_ligand_ids=exclude_ligand_ids,
+            include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
         )
 
@@ -947,6 +959,17 @@ def prepare_complex(
         
         if not split_result["success"]:
             result["errors"].append(f"Split failed: {split_result['errors']}")
+            result["warnings"].extend(split_result.get("warnings", []))
+            result["code"] = split_result.get("code", "split_failed")
+            result["overall_status"] = "failed"
+            for key in (
+                "hints",
+                "context",
+                "ligand_selection",
+                "selection_adjustments",
+            ):
+                if key in split_result:
+                    result[key] = split_result[key]
             return result
         
         # Build lookup for chain info
@@ -1270,6 +1293,7 @@ def prepare_complex(
                     "net_charge": None,
                     "charge_source": None,
                     "mol_formal_charge": None,
+                    "expected_net_charge": None,
                     "roundtrip_validation": None,
                     "success": False,
                     "errors": []
@@ -1291,7 +1315,7 @@ def prepare_complex(
                 try:
                     # Get SMILES (user-provided or from structure_analysis or fetch)
                     user_smiles = None
-                    user_charge = None
+                    expected_net_charge = None
 
                     # First check direct ligand_smiles parameter
                     if ligand_smiles and ligand_id in ligand_smiles:
@@ -1302,21 +1326,20 @@ def prepare_complex(
                         if sa_ligand_spec.get("smiles"):
                             user_smiles = sa_ligand_spec["smiles"]
                         if sa_ligand_spec.get("net_charge") is not None:
-                            user_charge = sa_ligand_spec["net_charge"]
-                            logger.info(f"  Using user-specified charge {user_charge} for {ligand_id}")
+                            expected_net_charge = sa_ligand_spec["net_charge"]
+                            logger.info(
+                                f"  Validating expected ligand charge "
+                                f"{expected_net_charge} for {ligand_id}"
+                            )
 
                     # Clean ligand
                     clean_result = clean_ligand(
                         ligand_pdb=ligand_file,
                         ligand_id=ligand_id,
                         smiles=user_smiles,
-                        target_ph=ph,
-                        optimize=optimize_ligands
+                        optimize=optimize_ligands,
+                        expected_net_charge=expected_net_charge,
                     )
-
-                    # Override charge if user specified
-                    if user_charge is not None and clean_result["success"]:
-                        clean_result["net_charge"] = user_charge
                     
                     if clean_result["success"]:
                         ligand_result["sdf_file"] = clean_result["sdf_file"]
@@ -1325,10 +1348,14 @@ def prepare_complex(
                         ligand_result["net_charge"] = clean_result["net_charge"]
                         ligand_result["charge_source"] = clean_result.get("charge_source")
                         ligand_result["mol_formal_charge"] = clean_result.get("mol_formal_charge")
+                        ligand_result["expected_net_charge"] = clean_result.get("expected_net_charge")
                         ligand_result["smiles_used"] = clean_result.get("smiles_used")
                         ligand_result["smiles_original"] = clean_result.get("smiles_original")
                         ligand_result["smiles_source"] = clean_result.get("smiles_source")
-                        logger.info(f"  ✓ Ligand {ligand_id} ({chain_id}): cleaned, charge={clean_result['net_charge']}")
+                        logger.info(
+                            f"  ✓ Ligand {ligand_id} ({chain_id}): cleaned, "
+                            f"graph charge={clean_result['net_charge']}"
+                        )
                         ligand_result["success"] = True
                     else:
                         ligand_result["errors"] = clean_result.get("errors", [])
@@ -1877,8 +1904,9 @@ def prepare_complex(
 
         # Write ligand_chemistry.json to the job root for auto-detection by
         # build_amber_system. Prep owns ligand identity, coordinates,
-        # protonation, charge, and chemistry provenance; topology owns
-        # GAFFTemplateGenerator force-field resolution.
+        # chemistry graph and coordinate provenance; topology owns ligand
+        # partial-charge assignment and GAFFTemplateGenerator force-field
+        # resolution.
         ligand_chemistry = []
         if result.get("ligands"):
             ligand_chemistry = [
@@ -1896,10 +1924,10 @@ def prepare_complex(
                     "net_charge": lig.get("net_charge"),
                     "charge_source": lig.get("charge_source"),
                     "mol_formal_charge": lig.get("mol_formal_charge"),
+                    "expected_net_charge": lig.get("expected_net_charge"),
                     "smiles": lig.get("smiles_used"),
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
-                    "target_ph": ph,
                 }
                 for lig in result["ligands"]
                 if lig.get("success") and lig.get("sdf_file")
@@ -1969,10 +1997,10 @@ def prepare_complex(
                     "net_charge": lig.get("net_charge"),
                     "charge_source": lig.get("charge_source"),
                     "mol_formal_charge": lig.get("mol_formal_charge"),
+                    "expected_net_charge": lig.get("expected_net_charge"),
                     "smiles": lig.get("smiles_used"),
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
-                    "target_ph": ph,
                 }
                 for lig in ligands if lig.get("success") and lig.get("sdf_file")
             ]

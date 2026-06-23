@@ -29,6 +29,7 @@ dependencies:
   - cuda-version>=12.0,<13
   - openmmforcefields>=0.16.0
   - openff-toolkit-base>=0.17.1
+  - openff-nagl>=0.5
   # openff-pablo runtime deps (per its README: rustworkx for graph algos,
   # pyxdg for XDG_CACHE_HOME resolution of the CCD download cache).
   - rustworkx>=0.14

@@ -159,7 +159,7 @@ class TestCleanLigand:
         result = clean_ligand(
             ligand_pdb=acetic_acid_pdb,
             ligand_id="ACE",
-            smiles="CC(=O)O",
+            smiles="CC(=O)[O-]",
             output_dir=str(tmp_path),
             optimize=False,
         )
@@ -168,13 +168,44 @@ class TestCleanLigand:
         assert result["sdf_file"]
         assert Path(result["sdf_file"]).exists()
         assert result["smiles_source"] == "user"
-        assert isinstance(result["net_charge"], int)
+        assert result["net_charge"] == -1
+        assert result["charge_source"] == "molecule_formal_charge"
+
+    def test_clean_ligand_expected_charge_mismatch_requires_charged_graph(
+        self, acetic_acid_pdb, tmp_path,
+    ):
+        pytest.importorskip("rdkit")
+        from mdclaw.structure_server import clean_ligand
+
+        result = clean_ligand(
+            ligand_pdb=acetic_acid_pdb,
+            ligand_id="ACE",
+            smiles="CC(=O)O",
+            output_dir=str(tmp_path),
+            optimize=False,
+            expected_net_charge=-1,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "ligand_formal_charge_mismatch"
+        assert any("charged SMILES/SDF" in error for error in result["errors"])
 
     def test_clean_ligand_known_smiles_lookup(self):
         from mdclaw.structure_server import _get_ligand_smiles
 
         smiles = _get_ligand_smiles("ATP", user_smiles=None, fetch_from_ccd=False)
         assert smiles is not None
+
+    def test_ap5_known_smiles_is_curated_charged_graph(self):
+        pytest.importorskip("rdkit")
+        from rdkit import Chem
+        from mdclaw.structure_server import _get_ligand_smiles
+
+        smiles = _get_ligand_smiles("AP5", user_smiles=None, fetch_from_ccd=True)
+        mol = Chem.MolFromSmiles(smiles)
+
+        assert mol is not None
+        assert Chem.GetFormalCharge(mol) == -5
 
     def test_clean_ligand_user_smiles_priority(self):
         from mdclaw.structure_server import _get_ligand_smiles
@@ -216,6 +247,7 @@ class TestPrepareComplexWorkflowStatus:
         assert result["overall_status"] == "success"
         chemistry = result.get("ligand_chemistry")
         assert chemistry and chemistry[0]["residue_name"] == "LIG"
+        assert chemistry[0]["charge_source"] == "molecule_formal_charge"
         assert "parameterization_stage" not in chemistry[0]
         assert Path(chemistry[0]["sdf"]).exists()
         assert (out_dir / "ligand_chemistry.json").exists()

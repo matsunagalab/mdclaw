@@ -22,7 +22,7 @@ logger = setup_logger(__name__)
 
 import re  # noqa: E402
 from pathlib import Path  # noqa: E402
-from typing import Optional, Dict, Any, Tuple  # noqa: E402
+from typing import Optional, Any, Tuple  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
@@ -63,7 +63,7 @@ KNOWN_LIGAND_SMILES = {
     "SAM": "C[S+](CC[C@H](N)C(O)=O)C[C@H]1O[C@@H](n2cnc3c(N)ncnc32)[C@H](O)[C@@H]1O",
     
     # Phosphate derivatives
-    "AP5": "Nc1ncnc2c1ncn2[C@@H]1O[C@H](COP(O)(=O)OP(O)(=O)OP(O)(=O)OP(O)(=O)OP(O)(=O)OC[C@H]2O[C@@H](n3cnc4c(N)ncnc43)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O",
+    "AP5": "Nc1ncnc2c1ncn2[C@@H]1O[C@H](COP([O-])(=O)OP([O-])(=O)OP([O-])(=O)OP([O-])(=O)OP([O-])(=O)OC[C@H]2O[C@@H](n3cnc4c(N)ncnc43)[C@H](O)[C@@H]2O)[C@@H](O)[C@H]1O",
     
     # Common drug-like molecules
     "HEM": "CC1=C(CCC(O)=O)C2=[N+]3C1=Cc1c(C)c(C=C)c4C=C5C(C)=C(C=C)C6=[N+]5[Fe-]3(n14)n1c(=C6)c(C)c(CCC(O)=O)c1=C2",
@@ -152,8 +152,9 @@ def _get_ligand_smiles(ligand_id: str, user_smiles: Optional[str] = None,
     
     Priority order:
     1. User-provided SMILES (if given)
-    2. CCD API lookup (if fetch_from_ccd=True)
-    3. KNOWN_LIGAND_SMILES dictionary
+    2. Curated charged SMILES from KNOWN_LIGAND_SMILES
+    3. CCD API lookup (if fetch_from_ccd=True)
+    4. KNOWN_LIGAND_SMILES dictionary
     
     Args:
         ligand_id: 3-letter ligand residue name
@@ -169,17 +170,22 @@ def _get_ligand_smiles(ligand_id: str, user_smiles: Optional[str] = None,
     if user_smiles:
         logger.info(f"Using user-provided SMILES for {ligand_id}")
         return user_smiles
+
+    known_smiles = KNOWN_LIGAND_SMILES.get(ligand_id)
+    if known_smiles and re.search(r"\[[^\]]*[+-]", known_smiles):
+        logger.info(f"Using curated charged SMILES for {ligand_id} from dictionary")
+        return known_smiles
     
-    # Priority 2: CCD API
+    # Priority 3: CCD API
     if fetch_from_ccd:
         smiles = _fetch_smiles_from_ccd(ligand_id)
         if smiles:
             return smiles
     
-    # Priority 3: Known ligands dictionary
-    if ligand_id in KNOWN_LIGAND_SMILES:
+    # Priority 4: Known ligands dictionary
+    if known_smiles:
         logger.info(f"Using known SMILES for {ligand_id} from dictionary")
-        return KNOWN_LIGAND_SMILES[ligand_id]
+        return known_smiles
     
     logger.warning(f"No SMILES found for ligand {ligand_id}")
     return None
@@ -288,214 +294,3 @@ def _optimize_ligand_rdkit(mol, max_iters: int = 200, force_field: str = "MMFF94
             success = False
     
     return mol, success
-
-
-def _apply_ph_protonation(smiles: str, target_ph: float = 7.4) -> Tuple[str, int]:
-    """Apply pH-dependent protonation state to SMILES using Dimorphite-DL.
-    
-    This converts neutral CCD SMILES to the correct protonation state at the target pH.
-    For example:
-    - Carboxylic acids (COOH) → Carboxylates (COO-) at pH 7.4
-    - Primary amines (NH2) → Protonated amines (NH3+) at pH 7.4
-    
-    Args:
-        smiles: Input SMILES (typically neutral from CCD)
-        target_ph: Target pH for protonation (default: 7.4)
-    
-    Returns:
-        Tuple of (protonated_smiles, net_charge)
-    
-    Example:
-        >>> smiles = "CC(=O)O"  # Acetic acid (neutral)
-        >>> prot_smiles, charge = _apply_ph_protonation(smiles, 7.4)
-        >>> print(prot_smiles, charge)  # "CC(=O)[O-]", -1
-    """
-    try:
-        from dimorphite_dl import protonate_smiles
-        from rdkit import Chem
-        
-        logger.info(f"Applying pH {target_ph} protonation to SMILES...")
-        
-        # Run Dimorphite-DL
-        # Use narrow pH range (ph_min=ph_max) and max_variants=1 to get single dominant state
-        # precision=1.0 (default) represents 1 standard deviation from mean pKa
-        protonated_smiles_list = protonate_smiles(
-            smiles,
-            ph_min=target_ph,
-            ph_max=target_ph,
-            precision=1.0,  # Default: 1 std dev from mean pKa
-            max_variants=1  # Only get the most likely state
-        )
-        
-        if not protonated_smiles_list:
-            logger.warning("Dimorphite-DL returned no results, using original SMILES")
-            # Calculate charge from original
-            mol = Chem.MolFromSmiles(smiles)
-            net_charge = Chem.GetFormalCharge(mol) if mol else 0
-            return smiles, net_charge
-        
-        # Take the first (most probable) protonation state
-        protonated_smiles = protonated_smiles_list[0]
-        
-        # Calculate net charge from protonated SMILES
-        mol = Chem.MolFromSmiles(protonated_smiles)
-        if mol is None:
-            logger.warning(f"Invalid protonated SMILES: {protonated_smiles}, using original")
-            mol = Chem.MolFromSmiles(smiles)
-            net_charge = Chem.GetFormalCharge(mol) if mol else 0
-            return smiles, net_charge
-        
-        net_charge = Chem.GetFormalCharge(mol)
-        
-        logger.info(f"Protonation result: {smiles[:30]}... → {protonated_smiles[:30]}... (charge: {net_charge})")
-        
-        return protonated_smiles, net_charge
-        
-    except ImportError:
-        logger.warning("Dimorphite-DL not installed, falling back to estimate_net_charge")
-        from rdkit import Chem
-        mol = Chem.MolFromSmiles(smiles)
-        if mol:
-            # Use simple estimation as fallback
-            charge_info = _estimate_charge_rdkit(mol)
-            net_charge = _estimate_physiological_charge(charge_info, target_ph)
-        else:
-            net_charge = 0
-        return smiles, net_charge
-    except Exception as e:
-        logger.warning(f"Dimorphite-DL failed: {e}, using original SMILES")
-        from rdkit import Chem
-        mol = Chem.MolFromSmiles(smiles)
-        net_charge = Chem.GetFormalCharge(mol) if mol else 0
-        return smiles, net_charge
-
-
-def _estimate_charge_rdkit(mol) -> Dict[str, Any]:
-    """Estimate net charge using RDKit.
-    
-    Args:
-        mol: RDKit molecule object
-    
-    Returns:
-        Dict with charge estimation results
-    """
-    from rdkit import Chem
-    
-    result = {
-        "formal_charge": Chem.GetFormalCharge(mol),
-        "ionizable_groups": [],
-        "method": "rdkit"
-    }
-    
-    # Identify ionizable groups
-    # Carboxylic acids (typically deprotonated at pH 7.4)
-    # Use the simplest working pattern
-    carboxylic_pattern = Chem.MolFromSmarts("C(=O)O")
-    if carboxylic_pattern is not None:
-        matches = mol.GetSubstructMatches(carboxylic_pattern)
-        if matches:
-            result["ionizable_groups"].append({
-                "type": "carboxylic_acid",
-                "count": len(matches),
-                "typical_charge": -1,
-                "pka_range": "3-5"
-            })
-    
-    # Primary amines (typically protonated at pH 7.4)
-    # Excludes amides (NC=O) and aromatic amines (lower pKa)
-    amine_pattern = Chem.MolFromSmarts("[NX3;H2;!$(NC=O);!$(Nc)]")
-    if amine_pattern and mol.HasSubstructMatch(amine_pattern):
-        matches = mol.GetSubstructMatches(amine_pattern)
-        result["ionizable_groups"].append({
-            "type": "primary_amine",
-            "count": len(matches),
-            "typical_charge": +1,
-            "pka_range": "9-11"
-        })
-    
-    # Secondary amines (excludes amides and aromatic)
-    sec_amine_pattern = Chem.MolFromSmarts("[NX3;H1;!$(NC=O);!$(Nc)]([#6])[#6]")
-    if sec_amine_pattern and mol.HasSubstructMatch(sec_amine_pattern):
-        matches = mol.GetSubstructMatches(sec_amine_pattern)
-        result["ionizable_groups"].append({
-            "type": "secondary_amine",
-            "count": len(matches),
-            "typical_charge": +1,
-            "pka_range": "9-11"
-        })
-    
-    # Tertiary amines (excludes amides)
-    tert_amine_pattern = Chem.MolFromSmarts("[NX3;H0;!$(NC=O);!$(Nc)]([#6])([#6])[#6]")
-    if tert_amine_pattern and mol.HasSubstructMatch(tert_amine_pattern):
-        matches = mol.GetSubstructMatches(tert_amine_pattern)
-        result["ionizable_groups"].append({
-            "type": "tertiary_amine",
-            "count": len(matches),
-            "typical_charge": +1,
-            "pka_range": "9-11"
-        })
-    
-    # Phenols
-    phenol_pattern = Chem.MolFromSmarts("[OX2H1]c1ccccc1")
-    if mol.HasSubstructMatch(phenol_pattern):
-        matches = mol.GetSubstructMatches(phenol_pattern)
-        result["ionizable_groups"].append({
-            "type": "phenol",
-            "count": len(matches),
-            "typical_charge": 0,
-            "pka_range": "9-10"
-        })
-    
-    # Sulfonic acids
-    sulfonic_pattern = Chem.MolFromSmarts("[SX4](=O)(=O)[OX1H1]")
-    if mol.HasSubstructMatch(sulfonic_pattern):
-        matches = mol.GetSubstructMatches(sulfonic_pattern)
-        result["ionizable_groups"].append({
-            "type": "sulfonic_acid",
-            "count": len(matches),
-            "typical_charge": -1,
-            "pka_range": "<1"
-        })
-    
-    # Phosphates
-    phosphate_pattern = Chem.MolFromSmarts("[PX4](=O)([OX1H1])([OX1H1])")
-    if mol.HasSubstructMatch(phosphate_pattern):
-        matches = mol.GetSubstructMatches(phosphate_pattern)
-        result["ionizable_groups"].append({
-            "type": "phosphate",
-            "count": len(matches),
-            "typical_charge": -2,
-            "pka_range": "2, 7"
-        })
-    
-    return result
-
-
-def _estimate_physiological_charge(charge_info: Dict[str, Any], ph: float = 7.4) -> int:
-    """Estimate net charge at physiological pH.
-    
-    Args:
-        charge_info: Output from _estimate_charge_rdkit
-        ph: Target pH
-    
-    Returns:
-        Estimated integer net charge
-    """
-    estimated_charge = charge_info["formal_charge"]
-    
-    for group in charge_info.get("ionizable_groups", []):
-        group_type = group["type"]
-        count = group["count"]
-        
-        # Adjust based on typical protonation at pH 7.4
-        if group_type in ["carboxylic_acid", "sulfonic_acid"]:
-            # Typically deprotonated (negative)
-            estimated_charge -= count
-        elif group_type in ["primary_amine", "secondary_amine"]:
-            # Typically protonated (positive) 
-            estimated_charge += count
-        elif group_type == "phosphate":
-            # Typically -2 at pH 7.4
-            estimated_charge -= 2 * count
-    
-    return estimated_charge

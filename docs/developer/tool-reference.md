@@ -43,7 +43,11 @@ skill examples.
   `"implicit"` to exclude explicit ion components from `merged_pdb` and record
   them in `component_disposition.json`. The same component disposition layer
   excludes experimental deuterium across all split components before
-  component-specific preparation.
+  component-specific preparation. Chain-associated ligands discovered by
+  `inspect_molecules.associated_ligand_candidates` require explicit
+  `include_ligand_ids` selection or `include_associated_ligands=True`; otherwise
+  prep fails with `code="associated_ligands_require_selection"` instead of
+  silently dropping ligand components.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,
@@ -51,10 +55,13 @@ skill examples.
   Heavy internal missing-residue gaps stop with
   `code="pdbfixer_missing_residues_out_of_scope"` and recommend regenerating
   the source through MODELLER or Boltz-2.
-- `clean_ligand(...)`: ligand chemistry cleaning; emits SDF/PDB chemistry
+- `clean_ligand(...)`: ligand chemistry cleaning; emits charged-graph SDF/PDB
   artifacts for topology-time ligand force-field resolution.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
-  water components.
+  water components. Same-author ligand candidates are surfaced in inspection
+  output, can be included with `include_associated_ligands=True`, and otherwise
+  block with `code="associated_ligands_require_selection"` when `ligand` is in
+  `include_types`.
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short
   compatibility labels and may repeat in large assemblies.
@@ -136,8 +143,11 @@ skill examples.
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
   artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
-  prep emits `ligand_chemistry`; ligands are parameterized with
-  `GAFFTemplateGenerator` (GAFF2/AM1-BCC). For glycoproteins,
+  prep emits `ligand_chemistry`; ligand formal charge comes from the
+  charged SMILES/SDF molecule graph, topology assigns small-molecule partial
+  charges with OpenFF NAGL first, and falls back to
+  `GAFFTemplateGenerator` AM1-BCC when NAGL is unavailable or fails. For
+  glycoproteins,
   `cpptraj prepareforleap` is scoped to Amber/GLYCAM residue conversion and
   bond-plan generation; `build_amber_system` records
   `system.glycam_bond_plan.json` and `system.glycam_normalization.json` while

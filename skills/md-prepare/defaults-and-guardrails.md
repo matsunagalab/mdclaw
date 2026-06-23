@@ -16,8 +16,8 @@ Preparation-specific defaults:
   LYS/LYN, and CYS/CYX/CYM.
 - Standard DNA/RNA are preserved as nucleic polymers, not treated as ligands.
 - Glycan residues are preserved and passed to GLYCAM-aware topology generation.
-- Ligands are cleaned into `ligand_chemistry` records during prep; topology
-  generation parameterizes them with `GAFFTemplateGenerator` (GAFF2/AM1-BCC).
+- Ligands are cleaned into `ligand_chemistry`; charge comes from charged
+  SMILES/SDF, not a detached integer.
 - Supported crystallographic ions are retained by default for explicit-solvent
   systems. For implicit solvent, pass `--solvent-type implicit` to
   `prepare_complex` so explicit ions are removed during prep. Deliberate

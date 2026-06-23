@@ -40,33 +40,18 @@ Chain ID rule:
 
 Ligand selection rule:
 
-- `--select-chains` gates every molecular type, including ligands. If you
-  select only the protein chain, ligands on separate mmCIF/PDB subchains are
-  excluded before `--include-ligand-ids` is considered.
-- `chains[].unique_id` is the ligand identifier to pass to
-  `--include-ligand-ids`. Its first field is the ligand's `author_chain`
-  (`auth_asym_id`), not the mmCIF label chain.
+- Use `inspect_molecules.associated_ligand_candidates` for chain-associated
+  ligands. Copy `unique_id` to `--include-ligand-ids`, or use
+  `--include-associated-ligands` when all listed same-author candidates should
+  be included.
 - When the user says "no ligand" / "ligandなし", exclude ligands explicitly in
   the prep command by omitting `ligand` from `--include-types` and passing
   `--no-process-ligands`. Do not pass `--include-ligand-ids []` or a bare
   `--include-ligand-ids`; the CLI expects one or more values when the flag is
   present.
-- When the user says "chain X with ligand", inspect first, then include:
-  1. Protein/nucleic/glycan label chains whose `chain_id == X` or
-     `author_chain == X`.
-  2. Ligand label chains whose `author_chain == X`.
-  3. The exact ligand `unique_id` values in `--include-ligand-ids`.
-
-Example: in 1AKE mmCIF, AP5 is conceptually on author chain `A` but may be
-stored as a separate ligand label chain such as `C`, with
-`unique_id="A:AP5:215"`. For "1AKE chain A ligandあり", prepare with the
-protein label and the ligand label:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --select-chains A C \
-  --include-types protein nucleic glycan ligand \
-  --include-ligand-ids A:AP5:215
-```
+- If a selected polymer chain has associated ligand candidates and `ligand` is
+  in `--include-types`, `prepare_complex` / `split_molecules` block with
+  `code="associated_ligands_require_selection"` instead of silently dropping
+  them. Follow the returned `ligand_selection.recommended_*` fields.
 
 For ligand-free command examples, use `skills/md-prepare/prepare-complex.md`.

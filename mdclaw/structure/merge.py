@@ -49,7 +49,14 @@ SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.pdb_utils import _fix_amino_acid_hetatm_records, _iter_unique_conect_bonds, _path_lookup_keys, _pdb_chain_id_for_index, _read_pdb_unique_residues  # noqa: E402
+from mdclaw.structure.pdb_utils import (  # noqa: E402
+    _fix_amino_acid_hetatm_records,
+    _iter_unique_conect_bonds,
+    _path_lookup_keys,
+    _pdb_chain_id_for_index,
+    _read_pdb_conect_bonds,
+    _read_pdb_unique_residues,
+)
 
 
 def merge_structures(
@@ -206,7 +213,12 @@ def merge_structures(
                 continue
             
             input_model = input_structure[0]
-            source_conect_bonds = _iter_unique_conect_bonds(input_structure.conect_map)
+            conect_map = getattr(input_structure, "conect_map", None)
+            source_conect_bonds = (
+                _iter_unique_conect_bonds(conect_map)
+                if conect_map is not None
+                else _read_pdb_conect_bonds(pdb_path)
+            )
             source_serial_to_merged_atom_index: dict[int, int] = {}
             file_chain_mapping = {}
             source_chain_index = 0

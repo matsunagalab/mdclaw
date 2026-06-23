@@ -62,8 +62,8 @@ flowchart TD
 - Bond orders are not inferred only from PDB connectivity. `clean_ligand`
   obtains a SMILES template from user input, CCD, or a local dictionary, then
   uses RDKit template matching.
-- Protonation and charge are explicitly surfaced. `clean_ligand` records
-  pH, SMILES source, formal charge, calculated net charge, and warnings.
+- Charge is explicitly surfaced. `clean_ligand` records SMILES source,
+  graph formal charge, graph-derived `net_charge`, and warnings.
 - Parameterization prefers curated CCD-derived parameters when available.
   `run_antechamber_robust` checks `amber_geostd` before falling back to GAFF2.
 - Metal-containing ligands hard-fail before GAFF. This is the correct policy:
@@ -120,8 +120,8 @@ Recommended invariant:
 - Heavy atom count is unchanged across input PDB, SDF, mol2, and amber PDB.
 - Heavy atom element multiset is unchanged.
 - Residue name is stable and matches `ligand_params[].residue_name`.
-- `mol2` total partial charge is close to `charge_used`, for example
-  `abs(sum(charges) - charge_used) < 0.05`.
+- Assigned partial charges sum to the graph-derived `net_charge`, for example
+  `abs(sum(charges) - net_charge) < 0.05`.
 - The final merged PDB contains all successful ligands and no failed ligands.
 - The generated tleap script includes one `loadamberparams` and one `loadmol2`
   entry per ligand parameter set.
@@ -161,24 +161,23 @@ Recommended invariant:
   should warn or fail depending on policy. Silent protein-only topology with
   unparameterized HETATM ligand records is not acceptable.
 
-### 5. Charge Confidence Is Visible But Not Fully Enforced
+### 5. Charge Contract Should Stay Graph-Derived
 
-The pathway surfaces `LOW_CONFIDENCE_CHARGE`, known cofactor overrides, and
-manual charge overrides. However, the code does not yet enforce a complete
-charge consistency contract across `clean_ligand`, `run_antechamber_robust`,
-and `mol2` output.
+The ligand pathway should not infer a new ligand charge from free text,
+physiological-pH heuristics, or an integer override. `clean_ligand` should
+derive formal charge from the charged SMILES/SDF graph, and topology should
+validate that OpenFF `Molecule.total_charge` matches the recorded prep
+metadata before assigning NAGL partial charges.
 
 Audit severity: medium.
 
 Recommended invariant:
 
-- `charge_source` and `charge_confidence` should be propagated into each
-  ligand result and into `ligand_params` metadata.
-- `mol2` charge sum should match `charge_used`.
-- Known cofactor charge overrides should be recorded as such, not just warning
-  text.
-- Manual charge overrides should be recorded with provenance, including user
-  supplied value and ligand id.
+- `net_charge` is graph-derived metadata, not an override.
+- `expected_net_charge` is validation-only and must fail on mismatch.
+- Partial-charge sums should match OpenFF `Molecule.total_charge`.
+- If a user wants a different ligand charge, they must provide a charged
+  SMILES/SDF graph, e.g. `[O-]` or `[NH3+]`.
 
 ### 6. Coverage Is Not Yet a Scientific Regression Suite
 
@@ -220,15 +219,13 @@ Audit severity: medium.
 
 ### Charge Invariants
 
-- `charge_used` should be an integer and should match the mol2 partial charge
-  sum within tolerance.
-- `charge_confidence` should be one of a documented set:
-  - `manual`
-  - `dimorphite`
-  - `known_cofactor`
-  - `geostd_curated`
-  - `default`
-- Low-confidence charge must remain a stop-and-ask condition in skills.
+- `net_charge` should match the formal charge encoded in the charged
+  SMILES/SDF graph.
+- `expected_net_charge` should be treated only as a validation value.
+- NAGL partial-charge sums should match OpenFF `Molecule.total_charge` within
+  tolerance; AM1-BCC fallback should record why NAGL was not used.
+- Low-confidence or missing chemistry should remain a stop-and-ask condition in
+  skills.
 
 ### Parameter Invariants
 

@@ -734,6 +734,42 @@ def _iter_unique_conect_bonds(conect_map: dict) -> list[tuple[int, int, int]]:
     ]
 
 
+def _read_pdb_conect_bonds(pdb_file: str | Path) -> list[tuple[int, int, int]]:
+    """Read unique CONECT bonds directly from a PDB file.
+
+    Older gemmi releases do not expose ``Structure.conect_map``.  Prepared
+    ligand PDB files still need their internal bonds carried through merge, so
+    parse the records from text and reuse the same bond-order collapse logic.
+    """
+    conect_map: dict[int, list[int]] = {}
+    try:
+        lines = Path(pdb_file).read_text().splitlines()
+    except OSError:
+        return []
+
+    for line in lines:
+        if not line.startswith("CONECT"):
+            continue
+        fields = [
+            line[start:start + 5].strip()
+            for start in range(6, min(len(line), 31), 5)
+        ]
+        try:
+            serials = [int(field) for field in fields if field]
+        except ValueError:
+            tokens = line.split()[1:]
+            try:
+                serials = [int(token) for token in tokens]
+            except ValueError:
+                continue
+        if len(serials) < 2:
+            continue
+        source = serials[0]
+        conect_map.setdefault(source, []).extend(serials[1:])
+
+    return _iter_unique_conect_bonds(conect_map)
+
+
 def _read_pdb_unique_residues(pdb_file: str | Path) -> list[dict]:
     """Read unique residue records from a PDB file without changing order."""
     residues = []

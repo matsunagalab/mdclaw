@@ -37,8 +37,9 @@ real contract violation.
 ### Ligand Chemistry Handoff
 
 The public ligand contract is `ligand_chemistry`: prep records
-SDF/SMILES/charge/provenance, and `build_amber_system` passes OpenFF Molecules
-to `GAFFTemplateGenerator` (GAFF2/AM1-BCC).
+SDF/SMILES/charge/provenance, and `build_amber_system` validates OpenFF
+Molecule formal charge, assigns ligand partial charges with OpenFF NAGL first,
+and uses `GAFFTemplateGenerator` AM1-BCC only as fallback.
 
 ## Source-Bundle DAG Principle
 

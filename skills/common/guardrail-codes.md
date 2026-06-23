@@ -25,6 +25,7 @@ human-readable messages.
 | `explicit_solvent_box_dimensions_missing` | Build topology from a completed explicit-solvent `solv` node. |
 | `explicit_ions_in_implicit_solvent` | Remove explicit ions before an implicit build, or choose explicit solvent / deliberate vacuum. |
 | `implicit_solvent_topology_mismatch` | Match the run-time implicit solvent to the topology build. |
+| `associated_ligands_require_selection` | Use the returned `ligand_selection.recommended_include_ligand_ids`, pass `--include-associated-ligands`, or omit `ligand` from `--include-types`. |
 | `modern_system_hmr_mismatch` | Use the HMR setting baked into `system.xml`. |
 | `parent_not_completed` | Complete or repair the parent node before running this node. |
 | `parent_type_invalid` | Create a new node with a legal parent type for the target stage. |

@@ -47,7 +47,7 @@ SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.ligand_chemistry import _apply_ph_protonation, _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit  # noqa: E402
+from mdclaw.structure.ligand_chemistry import _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit  # noqa: E402
 
 
 def clean_ligand(
@@ -58,22 +58,20 @@ def clean_ligand(
     optimize: bool = True,
     max_opt_iters: int = 200,
     fetch_smiles: bool = True,
-    target_ph: float = 7.4,
-    manual_charge: Optional[int] = None
+    expected_net_charge: Optional[int] = None,
 ) -> dict:
     """Clean ligand chemistry using SMILES template matching.
     
     Workflow for robust ligand preparation:
-    1. Get correct SMILES (user-provided > CCD API > known dictionary)
-    2. Apply pH-dependent protonation using Dimorphite-DL
-    3. Use AssignBondOrdersFromTemplate to assign correct bond orders
-    4. Add hydrogens with correct geometry
-    5. Optionally optimize with MMFF94
-    6. Calculate net charge from protonated molecule
-    7. Output SDF format (preserves bond orders) and a matching PDB for merge
+    1. Get a charged SMILES graph (user-provided > CCD API > known dictionary)
+    2. Use AssignBondOrdersFromTemplate to assign correct bond orders
+    3. Add hydrogens with correct geometry
+    4. Optionally optimize with MMFF94
+    5. Record the formal/net charge from the molecule graph
+    6. Output SDF format (preserves bond orders) and a matching PDB for merge
     
-    This approach eliminates bond order ambiguity and ensures correct protonation
-    state for the target pH.
+    The molecule graph is the source of truth for ligand formal charge. MDClaw
+    does not mutate a neutral graph to satisfy an integer charge request.
     
     Args:
         ligand_pdb: Path to ligand PDB file (from split_molecules)
@@ -83,8 +81,9 @@ def clean_ligand(
         optimize: Whether to run MMFF94 optimization
         max_opt_iters: Maximum optimization iterations
         fetch_smiles: Whether to fetch SMILES from PDB CCD API
-        target_ph: Target pH for protonation state (default: 7.4)
-        manual_charge: Override calculated net charge (for complex cases)
+        expected_net_charge: Optional validation-only integer charge. If the
+            charged SMILES/SDF graph has a different formal charge, ligand
+            cleaning fails and asks for a corrected charged SMILES/SDF.
     
     Returns:
         Dict with:
@@ -93,13 +92,13 @@ def clean_ligand(
             - ligand_id: str - Ligand identifier
             - sdf_file: str - Path to prepared SDF file
             - pdb_file: str - Path to prepared PDB file
-            - net_charge: int - Calculated net charge at target pH
-            - charge_source: str - Source of charge value ('dimorphite', 'manual')
+            - net_charge: int - Formal charge from molecule graph
+            - charge_source: str - Source of charge value ('molecule_formal_charge')
             - mol_formal_charge: int - Formal charge from molecule
-            - smiles_used: str - SMILES that was used (protonated form)
-            - smiles_original: str - Original SMILES before protonation
+            - expected_net_charge: int | None - Validation-only expected charge
+            - smiles_used: str - SMILES used as the chemistry graph
+            - smiles_original: str - Original SMILES before template matching
             - smiles_source: str - Where SMILES came from ('user', 'ccd', 'dictionary')
-            - target_ph: float - Target pH used for protonation
             - num_atoms: int - Total number of atoms
             - num_heavy_atoms: int - Number of heavy atoms
             - optimized: bool - Whether optimization was performed
@@ -112,10 +111,9 @@ def clean_ligand(
         >>> result = clean_ligand(
         ...     "ligand_ATP_chainA.pdb", 
         ...     "ATP",
-        ...     target_ph=7.4,  # Physiological pH
         ...     optimize=True
         ... )
-        >>> print(f"Charge at pH 7.4: {result['net_charge']}")
+        >>> print(f"Graph formal charge: {result['net_charge']}")
         >>> print(result['sdf_file'])  # Chemistry artifact for topology build
     """
     logger.info(f"Cleaning ligand: {ligand_pdb} (ID: {ligand_id})")
@@ -130,10 +128,10 @@ def clean_ligand(
         "net_charge": None,
         "charge_source": None,
         "mol_formal_charge": None,
+        "expected_net_charge": expected_net_charge,
         "smiles_used": None,
         "smiles_original": None,
         "smiles_source": None,
-        "target_ph": target_ph,
         "num_atoms": 0,
         "num_heavy_atoms": 0,
         "optimized": optimize,
@@ -193,21 +191,21 @@ def clean_ligand(
         
         logger.info(f"Using SMILES from {smiles_source}: {smiles_used[:50]}...")
         
-        # Store original SMILES before protonation
+        # Store original SMILES. The charged molecule graph is the contract:
+        # if the user needs a specific protonation state, it must be encoded in
+        # SMILES/SDF rather than supplied as a detached integer charge.
         smiles_original = smiles_used
         result["smiles_original"] = smiles_original
         result["smiles_source"] = smiles_source
-        
-        # Step 2: Apply pH-dependent protonation using Dimorphite-DL
-        # This converts neutral CCD SMILES to correct protonation state
-        protonated_smiles, calculated_charge = _apply_ph_protonation(smiles_used, target_ph)
-        
-        # Use protonated SMILES for template matching
-        smiles_used = protonated_smiles
         result["smiles_used"] = smiles_used
-        
-        logger.info(f"Protonated SMILES at pH {target_ph}: {smiles_used[:50]}...")
-        logger.info(f"Calculated net charge: {calculated_charge}")
+
+        template_mol = Chem.MolFromSmiles(smiles_used)
+        if template_mol is None:
+            result["errors"].append(f"Invalid SMILES template: {smiles_used}")
+            logger.error(f"Invalid SMILES template: {smiles_used}")
+            return result
+        template_charge = int(Chem.GetFormalCharge(template_mol))
+        logger.info(f"SMILES graph formal charge: {template_charge}")
         
         # Step 3: Read PDB (without sanitization to avoid bond order issues)
         pdb_mol = Chem.MolFromPDBFile(str(ligand_path), removeHs=False, sanitize=False)
@@ -256,34 +254,32 @@ def clean_ligand(
             )
             result["optimization_converged"] = optimization_converged
         
-        # Step 7: Determine net charge
-        # Priority: manual_charge > Dimorphite-DL calculated_charge > GetFormalCharge
+        # Step 7: Record net charge from the chemistry graph.
         mol_formal_charge = Chem.GetFormalCharge(mol_with_h)
         result["mol_formal_charge"] = mol_formal_charge
-        
-        if manual_charge is not None:
-            net_charge = manual_charge
-            charge_source = "manual"
-            logger.info(f"Using manual override charge: {net_charge}")
-        else:
-            # Use Dimorphite-DL calculated charge
-            net_charge = calculated_charge
-            charge_source = "dimorphite"
-            
-            # Log any discrepancy
-            if mol_formal_charge != calculated_charge:
-                result["warnings"].append(
-                    f"Charge discrepancy: mol formal={mol_formal_charge}, "
-                    f"Dimorphite={calculated_charge}. Using Dimorphite result."
-                )
-                logger.warning(
-                    f"Charge discrepancy: mol formal={mol_formal_charge}, "
-                    f"Dimorphite={calculated_charge}. Using Dimorphite result."
-                )
-        
-        result["net_charge"] = net_charge
-        result["charge_source"] = charge_source
-        logger.info(f"Final net charge: {net_charge} (source: {charge_source})")
+        if mol_formal_charge != template_charge:
+            result["warnings"].append(
+                f"Charge discrepancy after template matching: template={template_charge}, "
+                f"molecule={mol_formal_charge}. Using molecule graph formal charge."
+            )
+
+        if expected_net_charge is not None and int(expected_net_charge) != int(mol_formal_charge):
+            result["errors"].append(
+                f"Expected ligand net charge {expected_net_charge}, but the supplied "
+                f"SMILES/SDF graph has formal charge {mol_formal_charge}."
+            )
+            result["errors"].append(
+                "Hint: provide a charged SMILES/SDF that encodes the intended "
+                "protonation state, e.g. [O-] or [NH3+]. Integer charge metadata "
+                "does not change the OpenFF Molecule graph."
+            )
+            result["code"] = "ligand_formal_charge_mismatch"
+            logger.error(result["errors"][-2])
+            return result
+
+        result["net_charge"] = int(mol_formal_charge)
+        result["charge_source"] = "molecule_formal_charge"
+        logger.info(f"Final net charge from molecule graph: {mol_formal_charge}")
         
         # Step 8: Write chemistry and coordinate artifacts. The SDF is the
         # chemistry source for topology; the PDB lets prepare_complex merge the

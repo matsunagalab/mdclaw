@@ -70,7 +70,6 @@ _CITATION_KEY_BY_TOKEN = {
     "propka": "Olsson2011PROPKA3",
     "rdkit": "RDKitZenodo",
     "gemmi": "Wojdyr2022Gemmi",
-    "dimorphite": "Ropp2019DimorphiteDL",
     "hpacker": "Visani2024HPacker",
     "modxna": "Love2024modXNA",
     "plip": "Salentin2015PLIP",
@@ -812,8 +811,6 @@ def _collect_citation_tokens(lineage: list[tuple[str, dict]], facts: dict) -> li
             add("rdkit")
         if "gemmi" in haystack:
             add("gemmi")
-        if "dimorphite" in haystack:
-            add("dimorphite")
         if "hpacker" in haystack or "h-packer" in haystack:
             add("hpacker")
         if "modxna" in haystack:

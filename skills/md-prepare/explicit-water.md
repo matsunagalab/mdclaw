@@ -163,7 +163,8 @@ has failed, completed, or the user explicitly abandons it.
 prep/solv DAG artifacts. It runs the resolved prepared/solvated PDB through
 OpenFF Pablo, applies the resolved Amber XML
 bundle via `openmmforcefields.SystemGenerator` (`GAFFTemplateGenerator` from
-prep's `ligand_chemistry` artifact), and emits the modern artifact triple
+prep's `ligand_chemistry` artifact; NAGL charges are assigned internally), and
+emits the modern artifact triple
 `system.system.xml` +
 `system.topology.pdb` + `system.state.xml` on the topo node, with
 `metadata.system_artifact_kind="openmm_system_xml"` and a

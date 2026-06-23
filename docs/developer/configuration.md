@@ -37,14 +37,15 @@ Notes:
 - `MDCLAW_AMBER_TIMEOUT` controls the `build_amber_system` wall-time budget for
   the openmmforcefields `SystemGenerator` build + initial `LocalEnergyMinimizer`
   pass (no tleap is invoked); raise it for very large fusions and glycoproteins.
-- `MDCLAW_CHARGE_FIT_TIMEOUT` bounds the in-process ligand charge-fitting step
-  (antechamber/sqm AM1-BCC, triggered lazily inside `SystemGenerator`
-  `create_system` when `GAFFTemplateGenerator` parameterizes a small molecule).
+- `MDCLAW_CHARGE_FIT_TIMEOUT` bounds the fallback ligand charge-fitting step.
+  The normal path assigns small-molecule partial charges with OpenFF NAGL
+  before `SystemGenerator` sees the molecules; when NAGL is unavailable or
+  fails, `GAFFTemplateGenerator` falls back to AM1-BCC via antechamber/sqm.
   A large, highly charged ligand such as AP5 can keep sqm busy for many
   minutes. The value has a hard **floor of 1800 s**: it may be *raised* for an
   exceptionally large ligand but is silently *clamped up* to the floor if set
   lower. This is deliberate — an agent driving the CLI cannot shorten the
-  charge-fitting budget and induce a spurious `openmmforcefields_build_timeout`.
+  fallback budget and induce a spurious `openmmforcefields_build_timeout`.
   There is no CLI/function argument for it, only this floored env override. On
   expiry the build fails with `code: openmmforcefields_build_timeout`; the
   documented recovery is to re-run the same build node (sqm timing varies) or
@@ -115,6 +116,11 @@ mdclaw prepare_complex --json-input '{"structure_file": "1AKE.pdb", "select_chai
 
 When preserving ligands while narrowing chains, include the ligand's chain as
 reported by `inspect_molecules`; `select_chains=["A"]` alone is protein-chain
-selection and can drop hetero ligands on separate subchains.
+selection. `inspect_molecules` reports `associated_ligand_candidates` for
+same-author ligand candidates. `split_molecules` / `prepare_complex` block
+with `code="associated_ligands_require_selection"` instead of silently dropping
+those candidates when `ligand` is in `include_types`; pass the recommended
+`--include-ligand-ids ...`, pass `--include-associated-ligands`, or omit
+`ligand` from `include_types` for ligand-free prep.
 
 Skills reference these tools through the same CLI.

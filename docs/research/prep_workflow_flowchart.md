@@ -235,7 +235,7 @@ flowchart TD
   E -->|"no"| F["resolve OpenMM XML bundle"]
   E1 --> F
 
-  F --> G3["GAFFTemplateGenerator (GAFF2/AM1-BCC)"]
+  F --> G3["OpenFF NAGL charges + GAFFTemplateGenerator"]
 
   G3 --> H["Pablo load"]
   H --> H1["sanitize ions and Amber protonation variants for Pablo, then restore"]
