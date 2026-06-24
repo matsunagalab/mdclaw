@@ -266,11 +266,26 @@ def _read_harness_record(
     for path in candidates:
         if not path.is_file():
             continue
-        try:
-            return json.loads(path.read_text())
-        except Exception:
-            return {}
+        return _read_json_or_jsonl(path)
     return {}
+
+
+def _read_json_or_jsonl(path: Path) -> Any:
+    text = path.read_text()
+    if not text.strip():
+        return {}
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        records: list[Any] = []
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError:
+                return {}
+        return records
 
 
 # ---------------------------------------------------------------------------

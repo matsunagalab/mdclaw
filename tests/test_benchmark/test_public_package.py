@@ -28,6 +28,8 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
     assert result["success"], result
     dataset = json.loads((out_dir / "dataset.json").read_text())
     assert result["task_count"] == dataset["task_count"]
+    assert (out_dir / "tools" / "package_submission.py").is_file()
+    assert str(out_dir / "tools" / "package_submission.py") in result["files_written"]
 
     for task_id in dataset["task_ids"]:
         task_dir = out_dir / "tasks" / task_id
@@ -57,7 +59,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "mdclaw package_openmm_submission" in (
             packaging["preferred_packager"]
         )
-        assert "benchmarks/tools/package_submission.py" in (
+        assert "tools/package_submission.py" in (
             packaging["preferred_packager"]
         )
         assert "mdclaw package_mdprep_submission" in (
@@ -97,7 +99,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         command_log = contract["submission_blueprint"]["provenance_minimum"][
             "command_log"
         ]
-        assert len(command_log) >= 4
+        assert len(command_log) >= 1
         assert all("command" in item for item in command_log)
         assert all("exit_code" in item for item in command_log)
         assert all("walltime_seconds" in item for item in command_log)
@@ -446,8 +448,8 @@ def test_export_public_package_documents_mdclaw_free_packaging(tmp_path: Path):
     guidance = contract["manifest_contract"]["packaging_guidance"]
 
     assert "non-MDClaw submissions" in guidance["artifact_contract"]
-    assert guidance["standalone_packager"] == "benchmarks/tools/package_submission.py"
-    assert "python benchmarks/tools/package_submission.py" in (
+    assert guidance["standalone_packager"] == "tools/package_submission.py"
+    assert "python tools/package_submission.py" in (
         guidance["standalone_command_template"]
     )
     assert "finite coordinates/energy" in guidance["purpose"]

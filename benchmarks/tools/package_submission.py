@@ -16,7 +16,8 @@ must be supplied by the agent; it is never fabricated here.
 
 Usage:
 
-    python benchmarks/tools/package_submission.py \\
+    # From an exported public package:
+    python tools/package_submission.py \\
         --submission-dir runs/<run_id>/tasks/<task_id>/submission \\
         --task-id P01_prep_apo_t4_lysozyme \\
         --system-xml system.xml \\
@@ -29,6 +30,9 @@ Usage:
         [--command-log command_log.json] \\
         [--evidence-report evidence_report.json] \\
         [--extra-output parent_prepared_structure=wt_prepared_structure.pdb]
+
+    # From this repository checkout, the same script lives at:
+    python benchmarks/tools/package_submission.py ...
 """
 
 from __future__ import annotations

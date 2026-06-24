@@ -12,6 +12,7 @@ OPENMM_TOPOLOGY_EXAMPLE = [
     "topology/topology.pdb",
     "topology/state.xml",
 ]
+STANDALONE_PACKAGER_RELATIVE_PATH = "tools/package_submission.py"
 MINIMIZED_STRUCTURE_GUIDANCE = {
     "required_filename": "minimized_structure.pdb",
     "manifest_path": "outputs.minimized_structure",
@@ -370,7 +371,7 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
         ),
         "preferred_packager": (
             "For any OpenMM-capable workflow, use mdclaw package_openmm_submission "
-            "or benchmarks/tools/package_submission.py with one self-consistent "
+            f"or {STANDALONE_PACKAGER_RELATIVE_PATH} with one self-consistent "
             "post-minimization system/topology/state triple. This is the "
             "tool-agnostic submission path."
         ),
@@ -440,9 +441,9 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "[--evidence-report-file <evidence_report.json>] "
             "[--extra-output-files <manifest_key=artifact_path> ...]"
         ),
-        "standalone_packager": "benchmarks/tools/package_submission.py",
+        "standalone_packager": STANDALONE_PACKAGER_RELATIVE_PATH,
         "standalone_command_template": (
-            "python benchmarks/tools/package_submission.py "
+            f"python {STANDALONE_PACKAGER_RELATIVE_PATH} "
             "--submission-dir <exact_submission_dir> --task-id <task_id> "
             "--system-xml <system.xml> --topology-pdb <topology.pdb> "
             "--state-xml <minimized_state.xml> "
@@ -633,7 +634,7 @@ def submission_checklist(task: Task) -> list[str]:
             "create work directories outside submission_dir",
             "package one self-consistent post-minimization "
             "system/topology/state triple with package_openmm_submission or "
-            "benchmarks/tools/package_submission.py",
+            f"{STANDALONE_PACKAGER_RELATIVE_PATH}",
             "for MDClaw DAG workflows, package_mdprep_submission is an optional "
             "helper that gathers the same contract from a completed min node",
             "after packaging, do not hand-edit package-written files; rerun "

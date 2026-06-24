@@ -34,6 +34,11 @@ _PUBLIC_EXPORT_MARKER = ".md-benchmark-public-export.json"
 _PUBLIC_EXPORT_KIND = "md_benchmark_public_export"
 _PRIVATE_EXPORT_MARKER = ".md-benchmark-private-export.json"
 _PRIVATE_EXPORT_KIND = "md_benchmark_private_evaluator_export"
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_STANDALONE_PACKAGER_RELATIVE = Path("tools") / "package_submission.py"
+_STANDALONE_PACKAGER_SOURCE = (
+    _REPO_ROOT / "benchmarks" / "tools" / "package_submission.py"
+)
 
 
 def _has_valid_public_export_marker(path: Path) -> bool:
@@ -410,6 +415,13 @@ def export_benchmark_public_package(
                 shutil.copy2(src, schemas_dir / name)
                 schema_files.append(str(dest / "schemas" / name))
 
+        tool_files: list[str] = []
+        if _STANDALONE_PACKAGER_SOURCE.is_file():
+            packager_dest = staging / _STANDALONE_PACKAGER_RELATIVE
+            packager_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_STANDALONE_PACKAGER_SOURCE, packager_dest)
+            tool_files.append(str(dest / _STANDALONE_PACKAGER_RELATIVE))
+
         task_files: list[str] = []
         task_ids = [str(tid) for tid in dataset.get("task_ids", [])]
         benchmark_version = str(
@@ -467,7 +479,10 @@ def export_benchmark_public_package(
             "shape expected by the scorer. The final topology must be an "
             "OpenMM `system.xml` + `topology.pdb` + `state.xml` bundle. "
             "Use any OpenMM-capable workflow to create a matching "
-            "`minimized_structure.pdb`; MDClaw helpers are optional.\n\n"
+            "`minimized_structure.pdb`; MDClaw helpers are optional. For "
+            "MDClaw-free packaging, use `tools/package_submission.py` from "
+            "this public package to write manifest/provenance files and "
+            "`provenance.raw_outputs` hashes.\n\n"
             "Agents "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
             "files from the canonical repository tree. The contract lists required "
@@ -512,6 +527,7 @@ def export_benchmark_public_package(
             str(dest / _PUBLIC_EXPORT_MARKER),
         ]
         + schema_files
+        + tool_files
         + task_files,
         "omitted_private_material": ["task.json", "truth/", "scorer/"],
     }

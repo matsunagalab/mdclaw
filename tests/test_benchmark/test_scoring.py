@@ -705,6 +705,60 @@ def test_score_submission_accepts_harness_execution_record_when_required(
     assert score.weighted_total == 1.0
 
 
+def test_score_submission_accepts_jsonl_harness_execution_record_when_required(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="ok",
+                check_type="json_equals",
+                json_path="preparation.topology_ready",
+                equals=True,
+                weight=1.0,
+            )
+        ],
+    )
+    task.scoring.integrity_policy = "reject"
+    task.scoring.integrity_checks = [
+        IntegrityCheck(
+            check_id="workflow_execution_recorded",
+            check_type="provenance_execution_evidence",
+            required_stages=["source", "prep", "topo", "min"],
+            min_command_count=4,
+            require_harness_record=True,
+        )
+    ]
+    command_log = [
+        {
+            "stage": stage,
+            "command": f"mdclaw {stage}",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        }
+        for stage in ["source", "prep", "topo", "min"]
+    ]
+    _write_submission(
+        tmp_path,
+        manifest={"task_id": "t", "status": "completed"},
+        metrics={"preparation": {"topology_ready": True}},
+        provenance={"command_log": command_log},
+        evidence={},
+    )
+    harness_path = tmp_path.parent / "harness_execution.json"
+    harness_path.write_text("\n".join(json.dumps(entry) for entry in command_log))
+
+    score = scoring.score_submission(
+        task,
+        tmp_path,
+        harness_record_file=harness_path,
+    )
+
+    assert score.status == "passed"
+    assert score.weighted_total == 1.0
+
+
 def test_status_failed_keeps_score_when_allowed_truth_passes(tmp_path: Path):
     """A task may define a scorer-side truth check for an intentional failed
     outcome; if that hidden check passes, failed status can still receive

@@ -842,6 +842,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "submission_dir",
         "work_dir",
         "mdclaw_cli",
+        "submission_packaging",
     }
     assert agent_tasks["tasks"] == [task_instructions]
     assert Path(task_instructions["agent_prompt"]).is_file()
@@ -855,6 +856,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "Use work_dir for study/job/work files" in agent_prompt
     assert "exact submission_dir path" in agent_prompt
     assert "work_dir/submission" in agent_prompt
+    assert "submission_packaging" in agent_prompt
     assert "do not edit manifest.json or provenance.json" in agent_prompt
     assert "Run IDs and directory names are labels only" in agent_prompt
     assert "The evaluator scores separately." in agent_prompt
@@ -864,6 +866,9 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert task_instructions["mdclaw_cli"]["runtime"] == "auto"
     assert task_instructions["mdclaw_cli"]["command"] == "mdclaw"
     assert Path(task_instructions["mdclaw_cli"]["wrapper"]).is_file()
+    assert task_instructions["submission_packaging"]["standalone_packager"].endswith(
+        "/public_tasks/tools/package_submission.py"
+    )
     assert Path(prepared["operator_prompt_file"]).is_file()
     operator_prompt = Path(prepared["operator_prompt_file"]).read_text()
     assert "The run_id and directory names are labels only" in operator_prompt

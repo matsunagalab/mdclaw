@@ -13,6 +13,7 @@ Provides tools for:
 
 # Configure logging early to suppress noisy third-party logs
 import os
+import shutil
 import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
@@ -254,10 +255,14 @@ def clean_protein(
         logger.error(f"Input file not found: {pdb_file}")
         return result
     
-    # Generate output filename: protein_1.pdb -> protein_1.clean.pdb
+    # Generate output filenames:
+    # - *.pdbfixer.pdb: intermediate heavy-atom PDBFixer output.
+    # - *.clean.pdb: final agent-facing cleaned output, after Amber/protonation.
     stem = input_path.stem
-    output_file = input_path.parent / f"{stem}.clean.pdb"
+    final_output_file = input_path.parent / f"{stem}.clean.pdb"
+    output_file = input_path.parent / f"{stem}.pdbfixer.pdb"
     result["output_file"] = str(output_file)
+    result["final_output_file"] = str(final_output_file)
     
     try:
         # Load structure
@@ -889,6 +894,16 @@ def clean_protein(
                         "cap_residues_present": cap_h_result.get("cap_residues_present", []),
                         "cap_hydrogens_added": cap_h_result.get("cap_hydrogens_added", 0),
                     })
+
+        current_output = Path(str(result.get("output_file") or ""))
+        if current_output.is_file() and current_output.resolve() != final_output_file.resolve():
+            shutil.copy2(current_output, final_output_file)
+            result["published_from"] = str(current_output)
+            result["output_file"] = str(final_output_file)
+            result["statistics"]["final_atoms"] = _pdb_atom_count(final_output_file)
+            result["statistics"]["final_hydrogens"] = _pdb_hydrogen_count(
+                final_output_file
+            )
 
         # Build structured provenance summary at top level
         # (operations[] is kept for full detail, summary for quick access)

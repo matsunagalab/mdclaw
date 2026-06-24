@@ -806,6 +806,35 @@ def _mdclaw_cli_instruction(
     }
 
 
+def _submission_packaging_instruction(public_dir: Path) -> dict[str, Any]:
+    """Agent-visible final packaging contract for one task."""
+    packager = public_dir / "tools" / "package_submission.py"
+    return {
+        "standalone_packager": str(packager),
+        "mdclaw_packager": "mdclaw package_openmm_submission",
+        "usage": (
+            "Finalize completed OpenMM prep submissions with a packager. "
+            "Do not hand-write manifest.json or provenance.json when a "
+            "system/topology/state bundle exists."
+        ),
+        "writes": [
+            "manifest.json",
+            "metrics.json",
+            "provenance.json with raw_outputs md5 hashes",
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+            "minimized_structure.pdb",
+            "minimization_report.json",
+        ],
+        "post_packaging_rule": (
+            "After packaging, do not edit manifest.json, provenance.json, "
+            "topology/state.xml, or minimized_structure.pdb; rerun the packager "
+            "with corrected inputs instead."
+        ),
+    }
+
+
 def _task_agent_prompt(
     task_id: str,
     instruction_file: Path,
@@ -814,11 +843,10 @@ def _task_agent_prompt(
 ) -> str:
     """Short prompt intended for the evaluated task agent."""
     skill_line = (
-        "Agent skills may be available; artifacts and execution evidence are scored."
+        "Agent skills may be available; artifacts/evidence are scored."
         if skills_available
         else (
-            "MDClaw skills are neither required nor rewarded; artifacts and "
-            "execution evidence count."
+            "MDClaw skills are neither required nor rewarded; artifacts/evidence count."
         )
     )
     return (
@@ -826,24 +854,25 @@ def _task_agent_prompt(
         "Use this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
-        "Read only JSON-named prompt_file, contract, checklist, submission_dir, "
-        "work_dir, and agent_skills. Use work_dir for study/job/work files; "
-        "write final outputs only to the exact submission_dir path. Never use "
-        "work_dir/submission or a cwd-relative ./submission unless it is that "
-        "exact path.\n\n"
+        "Read paths named in task_instructions.json: prompt_file, "
+        "contract, checklist, submission_dir, work_dir, submission_packaging, "
+        "agent_skills. Use work_dir for study/job/work files; final outputs "
+        "only to exact submission_dir path. Never use work_dir/submission or "
+        "./submission unless it is that path.\n\n"
         "Solve only this task. Do not inspect sibling task directories, "
         "categorize the suite, or write benchmark-wide solver scripts. "
-        "Record task-local helper steps in provenance.command_log.\n\n"
-        "Record real task commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER "
-        "--stage run -- <command>` or another descriptive label. Do not "
-        "create/edit harness_execution.json.\n\n"
-        "Use mdclaw CLI only if mdclaw_cli.allowed. Call `mdclaw ...`; "
-        "the harness pins conda/SIF/docker.\n\n"
-        "With MDClaw DAG tools, do not edit node dirs, progress.json, or node.json.\n\n"
+        "Record helper commands in provenance.command_log.\n\n"
+        "Record commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- "
+        "<command>`. Do not create/edit harness_execution.json.\n\n"
+        "Use mdclaw only if mdclaw_cli.allowed; call bare `mdclaw ...`.\n\n"
+        "Do not edit MDClaw DAG node dirs, progress.json, or node.json.\n\n"
         "Run IDs and directory names are labels only; infer no shortcuts/"
         "outcomes.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
-        "truth/, scorer/. Do not fabricate; record commands/blockers.\n\n"
+        "truth/, scorer/. Do not fabricate.\n\n"
+        "Finalize OpenMM prep with submission_packaging or "
+        "`mdclaw package_openmm_submission`; packagers write manifest/"
+        "provenance raw output hashes.\n\n"
         "After packaging, do not edit manifest.json or provenance.json. "
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
@@ -1321,6 +1350,7 @@ def prepare_benchmark_run(
                     "MDClaw-enabled tooling conditions."
                 ),
             ),
+            "submission_packaging": _submission_packaging_instruction(public_dir),
         }
         harness_instruction = {
             "task_id": task_id,
@@ -1791,6 +1821,7 @@ def _run_one_benchmark_agent_task(
             policy=mdclaw_cli_policy,
             reason=mdclaw_cli_reason,
         ),
+        "submission_packaging": _submission_packaging_instruction(public_dir),
     }
     if agent_skills:
         instruction["agent_skills"] = {

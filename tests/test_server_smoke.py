@@ -376,6 +376,7 @@ class TestStructureServer:
         )
         assert result["success"] is True
         assert Path(result["output_file"]).exists()
+        assert Path(result["output_file"]).name.endswith(".clean.pdb")
 
     def test_clean_protein_handles_nonstandard_residue_tuples(
         self, small_pdb, monkeypatch
