@@ -518,6 +518,32 @@ def test_provenance_execution_evidence_accepts_measured_harness_record():
     assert warnings == []
 
 
+def test_provenance_execution_evidence_uses_harness_as_strict_source():
+    harness_log = [
+        {
+            "stage": stage,
+            "command": f"measured {stage}",
+            "exit_code": 0,
+            "walltime_seconds": 1.0,
+        }
+        for stage in ("source", "prep", "topo", "min")
+    ]
+    solver_log = [
+        {"command": f"agent reported {stage}", "exit_code": 0}
+        for stage in ("source", "prep", "topo", "min")
+    ]
+
+    warnings = integrity.check_provenance_execution_evidence(
+        {"command_log": solver_log},
+        required_stages=["source", "prep", "topo", "min"],
+        min_command_count=4,
+        harness_record={"records": harness_log},
+        require_harness_record=True,
+    )
+
+    assert warnings == []
+
+
 def test_provenance_execution_evidence_rejects_unmeasured_harness_record():
     command_log = [
         {"stage": "source", "command": "mdclaw fetch", "exit_code": 0},

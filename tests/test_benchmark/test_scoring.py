@@ -589,7 +589,11 @@ def test_score_submission_rejects_missing_execution_evidence_under_reject_policy
         evidence={},
     )
 
-    score = scoring.score_submission(task, tmp_path)
+    score = scoring.score_submission(
+        task,
+        tmp_path,
+        harness_record_file=tmp_path / "missing_harness_execution.json",
+    )
 
     assert score.status == "failed"
     assert score.weighted_total == 0.0
@@ -635,7 +639,11 @@ def test_score_submission_rejects_solver_only_provenance_when_harness_required(
         evidence={},
     )
 
-    score = scoring.score_submission(task, tmp_path)
+    score = scoring.score_submission(
+        task,
+        tmp_path,
+        harness_record_file=tmp_path / "missing_harness_execution.json",
+    )
 
     assert score.status == "failed"
     assert score.weighted_total == 0.0

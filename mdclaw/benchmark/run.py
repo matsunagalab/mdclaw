@@ -748,7 +748,10 @@ case "$RUNTIME" in
     if command -v nvidia-smi >/dev/null 2>&1; then
       NV_FLAG=(--nv)
     fi
-    exec "$RUNNER" exec "${{NV_FLAG[@]}}" "$SIF_PATH" mdclaw "$@"
+    exec "$RUNNER" exec "${{NV_FLAG[@]}}" \
+      --bind "$REPO_ROOT:$REPO_ROOT" --pwd "$PWD" \
+      "$SIF_PATH" env PYTHONPATH="$REPO_ROOT${{PYTHONPATH:+:$PYTHONPATH}}" \
+      python -m mdclaw._cli "$@"
     ;;
   docker)
     command -v docker >/dev/null 2>&1 || {{
@@ -910,7 +913,27 @@ def _scorer_delegate_argv() -> Optional[list[str]]:
     if sif:
         for runner in ("singularity", "apptainer"):
             if shutil.which(runner):
-                return [runner, "exec", "--nv", sif, "mdclaw"]
+                cmd = [runner, "exec"]
+                if shutil.which("nvidia-smi"):
+                    cmd.append("--nv")
+                repo_root = str(_REPO_ROOT)
+                pythonpath = repo_root
+                existing_pythonpath = os.environ.get("PYTHONPATH")
+                if existing_pythonpath:
+                    pythonpath += os.pathsep + existing_pythonpath
+                return [
+                    *cmd,
+                    "--bind",
+                    f"{repo_root}:{repo_root}",
+                    "--pwd",
+                    repo_root,
+                    sif,
+                    "env",
+                    f"PYTHONPATH={pythonpath}",
+                    "python",
+                    "-m",
+                    "mdclaw._cli",
+                ]
     if shutil.which("mdclaw"):
         return ["mdclaw"]
     return None
@@ -924,11 +947,16 @@ def _delegate_score_benchmark_run(
     llm_judge_file: Optional[str],
 ) -> dict[str, Any]:
     """Re-run ``score_benchmark_run`` through an OpenMM-capable runtime."""
-    cmd = [*argv, "score_benchmark_run", "--run-dir", str(run_dir)]
+    cmd = [
+        *argv,
+        "score_benchmark_run",
+        "--run-dir",
+        str(Path(run_dir).resolve()),
+    ]
     if dataset_dir:
-        cmd += ["--dataset-dir", str(dataset_dir)]
+        cmd += ["--dataset-dir", str(Path(dataset_dir).resolve())]
     if llm_judge_file:
-        cmd += ["--llm-judge-file", str(llm_judge_file)]
+        cmd += ["--llm-judge-file", str(Path(llm_judge_file).resolve())]
     sub_env = os.environ.copy()
     sub_env["MDCLAW_SCORE_INPROCESS"] = "1"  # prevent re-delegation loop
     proc = subprocess.run(cmd, env=sub_env, capture_output=True, text=True)

@@ -838,41 +838,36 @@ def check_provenance_execution_evidence(
     if not isinstance(provenance, dict):
         return ["provenance.json is not a JSON object"]
 
-    command_log = _execution_log_from_payload(provenance)
-    if not command_log:
-        warnings = [
-            "provenance lacks command_log/commands/execution_log entries; "
-            "scripts alone are not execution evidence"
-        ]
-    else:
-        warnings = _check_execution_log_entries(
-            command_log,
-            source_label="provenance execution log",
-            entry_label="provenance command_log",
-            required_stages=required_stages,
-            min_command_count=min_command_count,
-            require_measured_walltime=False,
-        )
-
     if require_harness_record:
         harness_log = _execution_log_from_payload(harness_record)
         if not harness_log:
-            warnings.append(
+            return [
                 "harness execution record required but missing or empty; "
                 "solver-written provenance.json is not sufficient execution evidence"
-            )
-        else:
-            warnings.extend(
-                _check_execution_log_entries(
-                    harness_log,
-                    source_label="harness execution record",
-                    entry_label="harness execution record",
-                    required_stages=required_stages,
-                    min_command_count=min_command_count,
-                    require_measured_walltime=True,
-                )
-            )
-    return warnings
+            ]
+        return _check_execution_log_entries(
+            harness_log,
+            source_label="harness execution record",
+            entry_label="harness execution record",
+            required_stages=required_stages,
+            min_command_count=min_command_count,
+            require_measured_walltime=True,
+        )
+
+    command_log = _execution_log_from_payload(provenance)
+    if not command_log:
+        return [
+            "provenance lacks command_log/commands/execution_log entries; "
+            "scripts alone are not execution evidence"
+        ]
+    return _check_execution_log_entries(
+        command_log,
+        source_label="provenance execution log",
+        entry_label="provenance command_log",
+        required_stages=required_stages,
+        min_command_count=min_command_count,
+        require_measured_walltime=False,
+    )
 
 
 def _execution_log_from_payload(payload: Any) -> list[Any]:

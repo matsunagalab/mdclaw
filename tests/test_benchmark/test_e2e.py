@@ -914,7 +914,43 @@ def test_prepare_benchmark_run_can_pin_mdclaw_runtime(tmp_path: Path):
 
     assert task_instructions["mdclaw_cli"]["runtime"] == "sif"
     assert run_config["mdclaw_runtime"] == "sif"
-    assert "RUNTIME=sif" in wrapper.read_text()
+    wrapper_text = wrapper.read_text()
+    assert "RUNTIME=sif" in wrapper_text
+    assert "--bind \"$REPO_ROOT:$REPO_ROOT\"" in wrapper_text
+    assert "PYTHONPATH=\"$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}\"" in wrapper_text
+    assert "python -m mdclaw._cli" in wrapper_text
+
+
+def test_scorer_delegate_uses_sif_overlay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    sif = tmp_path / "mdclaw.sif"
+    sif.write_text("fake sif")
+
+    monkeypatch.setattr(benchmark_run, "_openmm_available", lambda: False)
+    monkeypatch.setattr(benchmark_run, "_resolve_sif_path", lambda: str(sif))
+    monkeypatch.setenv("PYTHONPATH", "existing")
+
+    def fake_which(name: str) -> str | None:
+        if name == "singularity":
+            return "/usr/bin/singularity"
+        return None
+
+    monkeypatch.setattr(benchmark_run.shutil, "which", fake_which)
+
+    argv = benchmark_run._scorer_delegate_argv()
+
+    assert argv is not None
+    assert argv[:2] == ["singularity", "exec"]
+    assert "--nv" not in argv
+    assert "--bind" in argv
+    assert f"{REPO_ROOT}:{REPO_ROOT}" in argv
+    assert "--pwd" in argv
+    assert str(REPO_ROOT) in argv
+    assert str(sif) in argv
+    assert f"PYTHONPATH={REPO_ROOT}{os.pathsep}existing" in argv
+    assert argv[-3:] == ["python", "-m", "mdclaw._cli"]
 
 
 def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
