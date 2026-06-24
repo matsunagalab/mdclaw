@@ -1911,6 +1911,54 @@ def test_structure_component_rescan_counts_residue_aliases(tmp_path: Path):
     assert score.deterministic_checks[0].passed is True
 
 
+def test_p14_glycam_linked_asn_is_allowed_without_counting_as_nag(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="nag_retained",
+                check_type="structure_component_rescan",
+                structure_manifest_path="outputs.prepared_structure",
+                min_residue_counts={"NAG": 1},
+                residue_aliases={"NAG": ["0YB", "4YA", "4YB"]},
+                weight=1.0,
+            ),
+            DeterministicCheck(
+                check_id="no_extra",
+                check_type="unexpected_residue_rescan",
+                structure_manifest_path="outputs.prepared_structure",
+                allowed_nonstandard_residue_names=["NAG", "NLN"],
+                residue_aliases={"NAG": ["0YB", "4YA", "4YB"]},
+                weight=1.0,
+            ),
+        ],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  NLN A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2  C1  0YB B   2       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+
+    score = scoring.score_submission(task, tmp_path)
+
+    assert [check.passed for check in score.deterministic_checks] == [True, True]
+
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  NLN A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+
+
 def test_json_allowed_values_accepts_lipid_ratio_synonym(tmp_path: Path):
     task = _make_task(
         primary="preparation",

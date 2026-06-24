@@ -31,7 +31,8 @@
       },
       {
         "allowed_nonstandard_residue_names": [
-          "NAG"
+          "NAG",
+          "NLN"
         ],
         "check_id": "no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
@@ -51,7 +52,8 @@
       },
       {
         "allowed_nonstandard_residue_names": [
-          "NAG"
+          "NAG",
+          "NLN"
         ],
         "check_id": "minimized_no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",

@@ -230,12 +230,17 @@ def test_p14_minimized_glycan_check_accepts_glycam_residue_names():
 
     prepared_check = checks["nag_glycan_retained"]
     minimized_check = checks["minimized_nag_glycan_retained"]
+    prepared_unexpected = checks["no_unrequested_nonstandard_residues"]
+    minimized_unexpected = checks["minimized_no_unrequested_nonstandard_residues"]
 
     assert prepared_check["min_residue_counts"] == {"NAG": 1}
     assert minimized_check["min_residue_counts"] == {"NAG": 1}
     assert {"0YB", "4YA", "4YB"}.issubset(
         set(minimized_check["residue_aliases"]["NAG"])
     )
+    assert "NLN" not in minimized_check["residue_aliases"]["NAG"]
+    assert "NLN" in prepared_unexpected["allowed_nonstandard_residue_names"]
+    assert "NLN" in minimized_unexpected["allowed_nonstandard_residue_names"]
 
 
 def test_p18_lipid_contract_checks_mixed_species_without_exact_ratio():
