@@ -15,7 +15,10 @@ candidate nodes before running them.
 
    Read `params.solvent_regime`, `nodes`, `leaf_nodes`, `pending_nodes`,
    `running_nodes`, `failed_nodes`, `claims`, and `open_needs`. The current stage
-   skill plus study plan decide which node type/tool to create or run.
+   skill plus study plan decide which node type/tool to create or run. If a
+   relevant node is already `running`, keep monitoring or explain that node;
+   do not create a sibling retry unless the running node fails, the user asks
+   for an explicit branch, or a tool result recommends superseding it.
 
 2. **Create the node (parents resolve themselves).**
 
@@ -61,7 +64,12 @@ candidate nodes before running them.
    Use the stable `code` field (see `skills/common/guardrail-codes.md`). Never
    parse stderr or human messages. Do not rerun a completed or partially run
    node with different settings — create a new node/branch so stale artifacts
-   cannot mix with the new result. If the tool output does not make the next
+   cannot mix with the new result. Preserve scientific invariants from the
+   user request or study plan when branching: target molecules, chain/ligand
+   selections, stoichiometry or ratios, solvent regime, and force-field intent.
+   Retry branches may change search or packing controls such as random seed,
+   packing budget, or recommended buffer/box expansion; do not silently
+   simplify the scientific target. If the tool output does not make the next
    action clear, run:
 
    ```bash

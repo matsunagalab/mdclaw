@@ -95,6 +95,12 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
 Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
 On success, the solv node records `is_membrane=true` for downstream topology,
 equilibration, and production.
+Membrane embedding with packmol-memgen is a long-running operation. For large
+or mixed membrane systems, tens of minutes are normal, and CPU runs may take
+more than an hour. Do not assume a running membrane `solv` node is hung only
+because it has been running for 10-30 minutes. Continue monitoring or explain
+the same node until it completes, fails, or reaches the configured timeout; do
+not create a sibling `solv` node just to retry an in-progress membrane build.
 Membrane embedding runs MDClaw's bounded Packmol retry plan as a 4-lane
 parallel race by default (`--packmol-race-lanes 4`). Use
 `--packmol-race-lanes 1` only on CPU-constrained/shared hosts when preserving
@@ -111,7 +117,12 @@ same `prep` parent only when the `retry_suggestion.suggested_parameters`
 change the lateral xy box via `dist`; keep `leaflet` and `dist_wat` unchanged
 unless the user or prompt explicitly asks for a thicker membrane/water slab.
 Do not manually increase Packmol loop counts after this failure unless you are
-running a deliberate debugging experiment outside the benchmark path.
+running a deliberate debugging experiment outside the benchmark path. More
+generally, membrane retries may adjust packing controls, random seed, or
+recommended lateral box/buffer expansion, but must preserve the requested
+lipid species, ratios, solute identity, solvent regime, and force-field intent.
+If the requested target appears infeasible, stop and report that instead of
+silently simplifying the system.
 Packmol may write both a postprocessed primary PDB and a raw `*_FORCED` PDB
 when it cannot find a perfect packing. MDClaw may continue with the
 postprocessed primary PDB as a topology/minimization candidate, but records
