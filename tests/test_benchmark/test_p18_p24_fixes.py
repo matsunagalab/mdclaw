@@ -8,6 +8,7 @@ or assembly submission score full marks:
 - lipid component counts tolerate truncated CHARMM lipid names and ignore small
   water/ion residues whose names can collide with truncated lipid aliases,
 - the assembly chain count ignores cofactor/ligand chains via ``molecule_type``,
+- the assembly PDB fallback counts polymer chains, not ligand-only chains,
 - MDClaw's PDB writer preserves 4-character residue names across a round-trip.
 """
 
@@ -264,6 +265,30 @@ def test_assembly_counts_all_chains_without_molecule_type(tmp_path: Path):
         _assembly_check(), sub, manifest, metrics,
     )
     assert not passed and score == 0.0, msg
+
+
+def test_assembly_fallback_counts_polymer_chains_not_ligand_chains(
+    tmp_path: Path,
+):
+    _write_structure(
+        tmp_path / "prepared_structure.pdb",
+        [
+            ("ALA", "A", 1, 5), ("ALA", "B", 1, 5),
+            ("ALA", "C", 1, 5), ("ALA", "D", 1, 5),
+            ("BTN", "E", 300, 32), ("BTN", "F", 300, 32),
+            ("BTN", "G", 300, 32), ("BTN", "H", 300, 32),
+        ],
+    )
+    manifest = {"outputs": {"prepared_structure": "prepared_structure.pdb"}}
+    check = DeterministicCheck(
+        check_id="asm",
+        check_type="assembly_identity_check",
+        exact_chain_count=4,
+    )
+    passed, score, msg = scoring._check_assembly_identity(
+        check, tmp_path, manifest, {},
+    )
+    assert passed and score == 1.0, msg
 
 
 # ---------------------------------------------------------------------------

@@ -1378,6 +1378,26 @@ def _chain_ids_from_pdb(path: Path) -> set[str]:
     return chain_ids
 
 
+def _polymer_chain_ids_from_pdb(path: Path) -> set[str]:
+    """Collect chain IDs that contain standard protein or nucleic residues."""
+    chain_ids: set[str] = set()
+    with path.open() as handle:
+        for line in handle:
+            if not line.startswith(("ATOM  ", "HETATM")):
+                continue
+            resname = line[17:20].strip().upper()
+            if resname not in _STANDARD_POLYMER_RESIDUE_NAMES:
+                continue
+            chain_id = line[21:22].strip()
+            if not chain_id:
+                parts = line.split()
+                if len(parts) >= 5:
+                    chain_id = parts[4].strip()
+            if chain_id:
+                chain_ids.add(chain_id)
+    return chain_ids
+
+
 def _observed_residue_count(
     counts: dict[str, int],
     resname: str,
@@ -2065,6 +2085,14 @@ def _check_assembly_identity(check: DeterministicCheck,
     if counted_chain_ids:
         chain_count = len(counted_chain_ids)
         chain_count_label = count_label_qualifier
+    elif check.count_polymer_chains_only:
+        polymer_chain_ids = _polymer_chain_ids_from_pdb(structure_path)
+        if polymer_chain_ids:
+            chain_count = len(polymer_chain_ids)
+            chain_count_label = "structure polymer chain count"
+        else:
+            chain_count = len(chain_ids)
+            chain_count_label = "structure chain count"
     else:
         chain_count = len(chain_ids)
         chain_count_label = "structure chain count"
