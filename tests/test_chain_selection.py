@@ -335,6 +335,54 @@ def cif_protein_a_ligand_c_auth_a(tmp_path: Path) -> str:
     return str(p)
 
 
+_CIF_PROTEIN_A_AP5_ACT_AUTH_A = """\
+data_TEST
+#
+loop_
+_atom_site.group_PDB
+_atom_site.id
+_atom_site.type_symbol
+_atom_site.label_atom_id
+_atom_site.label_alt_id
+_atom_site.label_comp_id
+_atom_site.label_asym_id
+_atom_site.label_entity_id
+_atom_site.label_seq_id
+_atom_site.pdbx_PDB_ins_code
+_atom_site.Cartn_x
+_atom_site.Cartn_y
+_atom_site.Cartn_z
+_atom_site.occupancy
+_atom_site.B_iso_or_equiv
+_atom_site.pdbx_formal_charge
+_atom_site.auth_seq_id
+_atom_site.auth_comp_id
+_atom_site.auth_asym_id
+_atom_site.auth_atom_id
+_atom_site.pdbx_PDB_model_num
+ATOM   1 N N   . ALA A 1 1   ? 0.0 0.0 0.0 1.0 0.0 ? 1   ALA A N   1
+ATOM   2 C CA  . ALA A 1 1   ? 1.5 0.0 0.0 1.0 0.0 ? 1   ALA A CA  1
+ATOM   3 C C   . ALA A 1 1   ? 2.0 1.5 0.0 1.0 0.0 ? 1   ALA A C   1
+ATOM   4 O O   . ALA A 1 1   ? 1.5 2.5 0.0 1.0 0.0 ? 1   ALA A O   1
+ATOM   5 N N   . GLY B 4 1   ? 0.0 5.0 0.0 1.0 0.0 ? 1   GLY B N   1
+ATOM   6 C CA  . GLY B 4 1   ? 1.5 5.0 0.0 1.0 0.0 ? 1   GLY B CA  1
+ATOM   7 C C   . GLY B 4 1   ? 2.0 6.5 0.0 1.0 0.0 ? 1   GLY B C   1
+ATOM   8 O O   . GLY B 4 1   ? 1.5 7.5 0.0 1.0 0.0 ? 1   GLY B O   1
+HETATM 9 P P1  . AP5 C 2 215 ? 5.0 0.0 0.0 1.0 0.0 ? 215 AP5 A P1  1
+HETATM 10 O O1 . AP5 C 2 215 ? 6.5 0.0 0.0 1.0 0.0 ? 215 AP5 A O1  1
+HETATM 11 C C1 . ACT D 3 216 ? 8.0 0.0 0.0 1.0 0.0 ? 216 ACT A C1  1
+HETATM 12 O O1 . ACT D 3 216 ? 9.5 0.0 0.0 1.0 0.0 ? 216 ACT A O1  1
+#
+"""
+
+
+@pytest.fixture
+def cif_protein_a_ap5_act_auth_a(tmp_path: Path) -> str:
+    p = tmp_path / "protein_a_ap5_act_auth_a.cif"
+    p.write_text(_CIF_PROTEIN_A_AP5_ACT_AUTH_A, encoding="utf-8")
+    return str(p)
+
+
 def test_split_molecules_auto_includes_requested_ligand_chain(
     cif_protein_a_ligand_c_auth_a,
     tmp_path,
@@ -471,6 +519,118 @@ def test_split_molecules_can_auto_include_associated_ligands(
     )
     assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]
     assert r["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+
+
+def test_split_molecules_includes_associated_ligand_by_resname(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+):
+    """Residue-name selection should add the ligand label chain, not all ligands."""
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "out_ligand_resname"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        include_ligand_resnames=["AP5"],
+    )
+
+    assert r["success"], r.get("errors")
+    assert len(r["protein_files"]) == 1
+    assert len(r["ligand_files"]) == 1
+    assert r["selection_adjustments"][0]["code"] == "ligand_resname_chain_auto_included"
+    assert r["selection_adjustments"][0]["added_chain_ids"] == ["C"]
+    assert r["ligand_selection"]["mode"] == "include_ligand_resnames"
+    assert r["ligand_selection"]["scope"] == "selected_associated_ligands"
+    assert r["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+    assert r["ligand_selection"]["excluded_same_author_ligand_ids"] == ["A:ACT:216"]
+
+    ligand_content = Path(r["ligand_files"][0]).read_text()
+    assert "AP5" in ligand_content
+    assert "ACT" not in ligand_content
+
+
+def test_split_molecules_resname_scope_rejects_other_chain_match(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+):
+    """A resname match outside the selected polymer scope should not be stolen."""
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "out_ligand_resname_wrong_scope"),
+        select_chains=["B"],
+        include_types=["protein", "ligand"],
+        include_ligand_resnames=["AP5"],
+    )
+
+    assert r["success"] is False
+    assert r["code"] == "requested_ligand_resnames_not_in_selected_scope"
+    assert r["ligand_selection"]["selected_ligand_ids"] == []
+
+
+def test_split_molecules_resname_selector_without_chain_selects_all_matches(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+):
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "out_ligand_resname_global"),
+        include_types=["protein", "ligand"],
+        include_ligand_resnames=["AP5"],
+    )
+
+    assert r["success"], r.get("errors")
+    assert len(r["ligand_files"]) == 1
+    assert r["ligand_selection"]["scope"] == "all_matching_ligands"
+    assert r["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+
+
+def test_prepare_complex_surfaces_resname_ligand_selection(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+):
+    """prepare_complex should preserve the split ligand-selection metadata."""
+    from mdclaw.structure_server import prepare_complex
+
+    r = prepare_complex(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "prep_ligand_resname"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        process_proteins=False,
+        process_ligands=False,
+        include_ligand_resnames=["AP5"],
+    )
+
+    assert r["success"], r.get("errors")
+    assert r["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+    assert r["split"]["ligand_selection"]["selected_ligand_ids"] == ["A:AP5:215"]
+    assert len(r["split"]["ligand_files"]) == 1
+
+
+def test_split_molecules_rejects_ligand_id_resname_mismatch(
+    cif_protein_a_ap5_act_auth_a,
+    tmp_path,
+):
+    from mdclaw.structure_server import split_molecules
+
+    r = split_molecules(
+        structure_file=cif_protein_a_ap5_act_auth_a,
+        output_dir=str(tmp_path / "out_ligand_id_resname_mismatch"),
+        select_chains=["A"],
+        include_types=["protein", "ligand"],
+        include_ligand_ids=["A:ACT:216"],
+        include_ligand_resnames=["AP5"],
+    )
+
+    assert r["success"] is False
+    assert r["code"] == "ligand_id_resname_mismatch"
+    assert r["ligand_selection"]["mismatched_ligand_ids"] == ["A:ACT:216"]
 
 
 def test_split_molecules_rejects_bare_ligand_residue_name(

@@ -495,6 +495,18 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     assert p18_model_check["align_selection"] == "protein and name CA"
 
 
+def test_p05_prompt_clarifies_ndp_only_and_solvent_scope():
+    task_id = "P05_prep_dap_dehydrogenase_nadp"
+    prompt = (DATASET_DIR / "tasks" / task_id / "prompt.md").read_text()
+    task = json.loads((DATASET_DIR / "tasks" / task_id / "task.json").read_text())
+    combined = prompt + "\n" + task["task_intent"]
+
+    assert "exactly the two deposited NDP cofactors" in combined
+    assert "other deposited ligands or organic co-solutes" in combined
+    assert "explicit solvent" in prompt
+    assert "not required" in prompt
+
+
 def test_p08_branching_scores_wt_parent_artifact_not_text_claims():
     p08_task = json.loads(
         (

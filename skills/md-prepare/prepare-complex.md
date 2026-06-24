@@ -34,10 +34,22 @@ record them in `component_disposition.json`. For a deliberate
 vacuum/no-solvent topology, explicit ions may be retained.
 
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
-If the tool returns `code="associated_ligands_require_selection"`, rerun with
-the returned `ligand_selection.recommended_include_ligand_ids`, use
-`--include-associated-ligands`, or omit `ligand` from `--include-types` for a
-ligand-free task. Do not retry unchanged.
+If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,
+prefer residue-name scoped selection:
+
+```bash
+mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
+  --select-chains A B \
+  --include-types protein ligand \
+  --include-ligand-resnames NDP
+```
+
+This selects matching associated ligands even when their ligand label chain IDs
+differ from the selected protein chain IDs. If the exact instance matters, use
+the returned `ligand_selection.recommended_include_ligand_ids` with
+`--include-ligand-ids`. Use `--include-associated-ligands` only when all listed
+same-author ligand candidates should be included. Omit `ligand` from
+`--include-types` for a ligand-free task. Do not retry unchanged.
 
 Ligand-free systems:
 
@@ -54,8 +66,9 @@ IDs are being included.
 
 If `--include-ligand-ids` is wrong, `split_molecules` fails with
 `requested_ligand_ids_not_found` and lists the available ligand `unique_id`
-values. Rerun a new prep node with one of those IDs; do not retry with a bare
-residue name.
+values. Rerun a new prep node with one of those IDs, or use
+`--include-ligand-resnames <RESNAME>` when the task names a residue/cofactor and
+all matching associated instances should be retained.
 
 Important outputs:
 

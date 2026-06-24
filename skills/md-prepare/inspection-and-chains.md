@@ -41,9 +41,12 @@ Chain ID rule:
 Ligand selection rule:
 
 - Use `inspect_molecules.associated_ligand_candidates` for chain-associated
-  ligands. Copy `unique_id` to `--include-ligand-ids`, or use
-  `--include-associated-ligands` when all listed same-author candidates should
-  be included.
+  ligands. If the user names a target residue/cofactor such as `NDP`, `ATP`,
+  or `AP5`, pass it with `--include-ligand-resnames <RESNAME>` so only matching
+  associated ligands are selected. If the exact instance matters, copy
+  `unique_id` to `--include-ligand-ids`.
+- Use `--include-associated-ligands` only when all same-author associated
+  ligand candidates should be included.
 - When the user says "no ligand" / "ligandなし", exclude ligands explicitly in
   the prep command by omitting `ligand` from `--include-types` and passing
   `--no-process-ligands`. Do not pass `--include-ligand-ids []` or a bare

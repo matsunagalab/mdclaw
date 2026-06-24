@@ -45,9 +45,10 @@ skill examples.
   excludes experimental deuterium across all split components before
   component-specific preparation. Chain-associated ligands discovered by
   `inspect_molecules.associated_ligand_candidates` require explicit
-  `include_ligand_ids` selection or `include_associated_ligands=True`; otherwise
-  prep fails with `code="associated_ligands_require_selection"` instead of
-  silently dropping ligand components.
+  `include_ligand_ids`, residue-name scoped `include_ligand_resnames`, or
+  deliberate `include_associated_ligands=True`; otherwise prep fails with
+  `code="associated_ligands_require_selection"` instead of silently dropping
+  ligand components.
 - `clean_protein(...)`: PDBFixer plus pdb2pqr protonation, with fallback
   paths and optional site-specific residue protonation overrides rebuilt via
   OpenMM `Modeller.addHydrogens(variants=...)`. If ACE/NME caps are present,
@@ -59,8 +60,12 @@ skill examples.
   artifacts for topology-time ligand force-field resolution.
 - `split_molecules(...)`: extract protein, nucleic, glycan, ligand, ion, and
   water components. Same-author ligand candidates are surfaced in inspection
-  output, can be included with `include_associated_ligands=True`, and otherwise
-  block with `code="associated_ligands_require_selection"` when `ligand` is in
+  output. Targeted ligands can be included by exact `include_ligand_ids` or by
+  `include_ligand_resnames`, which selects matching associated ligand chains
+  even when the ligand label chain differs from the selected polymer chain.
+  `include_associated_ligands=True` remains available only for deliberately
+  including all same-author ligand candidates; otherwise selection blocks with
+  `code="associated_ligands_require_selection"` when `ligand` is in
   `include_types`.
 - `merge_structures(...)`: merge prepared PDB fragments and emit
   `chain_identity_map` / `*.chain_identity_map.json`; PDB chain IDs are short

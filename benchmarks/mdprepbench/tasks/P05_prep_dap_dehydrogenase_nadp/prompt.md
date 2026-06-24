@@ -6,6 +6,8 @@ Use this prompt as the task statement. Retrieve public sources as needed, and do
 
 Task: Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance.
 
+The only deposited ligand/cofactor expected in the submitted artifacts is NDP. Retain exactly the two deposited NDP cofactors, and do not include other deposited ligands or organic co-solutes in the final prepared structure, minimized structure, or OpenMM topology bundle. Added solvent and neutralizing ions, if you choose to use them, are not considered deposited ligands.
+
 Public source anchors: PDB 1DAP.
 
 Your submission directory must contain:
@@ -18,7 +20,7 @@ Your submission directory must contain:
 - `minimized_structure.pdb`
 - `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short OpenMM minimization/finite-energy check, then record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short OpenMM minimization/finite-energy check, then record the result in `minimization_report.json` and `metrics.json`. Full equilibration, production MD, and explicit solvent are not required for this prep task; a compact vacuum or implicit-solvent OpenMM topology is acceptable if the scorer can reload it, the energy is finite, and both NDP cofactors are retained.
 
 
 

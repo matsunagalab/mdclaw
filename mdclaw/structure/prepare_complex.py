@@ -401,6 +401,7 @@ def _validate_prepare_node_context(
     process_ligands: bool,
     include_types: Optional[List[str]],
     include_ligand_ids: Optional[List[str]],
+    include_ligand_resnames: Optional[List[str]],
     exclude_ligand_ids: Optional[List[str]],
     include_associated_ligands: bool,
     keep_crystal_waters: bool,
@@ -428,6 +429,7 @@ def _validate_prepare_node_context(
             "process_ligands": process_ligands,
             "include_types": include_types,
             "include_ligand_ids": include_ligand_ids,
+            "include_ligand_resnames": include_ligand_resnames,
             "exclude_ligand_ids": exclude_ligand_ids,
             "include_associated_ligands": include_associated_ligands,
             "keep_crystal_waters": keep_crystal_waters,
@@ -481,6 +483,7 @@ def prepare_complex(
     ligand_smiles: Optional[Dict[str, str]] = None,
     include_types: Optional[List[str]] = None,
     include_ligand_ids: Optional[List[str]] = None,
+    include_ligand_resnames: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
     include_associated_ligands: bool = False,
     optimize_ligands: bool = False,
@@ -569,6 +572,11 @@ def prepare_complex(
                            are processed. Requested ligand label chains are
                            auto-included when select_chains would otherwise
                            omit them.
+        include_ligand_resnames: List of ligand residue names to include in
+                         the selected polymer scope, e.g. ["NDP"]. Matching
+                         associated ligand label chains are auto-included even
+                         when their label chain IDs differ from the selected
+                         protein/nucleic/glycan chain IDs.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). These ligands are skipped.
         include_associated_ligands: Auto-include ligand label chains associated
@@ -735,6 +743,7 @@ def prepare_complex(
             process_ligands=process_ligands,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
+            include_ligand_resnames=include_ligand_resnames,
             exclude_ligand_ids=exclude_ligand_ids,
             include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
@@ -915,6 +924,7 @@ def prepare_complex(
             select_chains=select_chains,
             include_types=include_types,
             include_ligand_ids=include_ligand_ids,
+            include_ligand_resnames=include_ligand_resnames,
             exclude_ligand_ids=exclude_ligand_ids,
             include_associated_ligands=include_associated_ligands,
             keep_crystal_waters=keep_crystal_waters,
@@ -956,6 +966,10 @@ def prepare_complex(
             "water_files": split_result.get("water_files", []),
             "chain_file_info": split_result.get("chain_file_info", [])
         }
+        for key in ("ligand_selection", "selection_adjustments"):
+            if key in split_result:
+                result["split"][key] = split_result[key]
+                result[key] = split_result[key]
         
         if not split_result["success"]:
             result["errors"].append(f"Split failed: {split_result['errors']}")

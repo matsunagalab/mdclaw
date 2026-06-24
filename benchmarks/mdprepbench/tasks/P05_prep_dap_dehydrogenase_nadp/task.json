@@ -148,6 +148,6 @@
     "evidence_communication"
   ],
   "task_id": "P05_prep_dap_dehydrogenase_nadp",
-  "task_intent": "Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance.",
+  "task_intent": "Charged cofactor-like ligand stress: prepare DAP dehydrogenase with exactly the two deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B), excluding other deposited ligands or organic co-solutes, without silently dropping either cofactor or changing its charge without provenance.",
   "time_limit_minutes": 60
 }

@@ -66,6 +66,42 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 
+def _normalize_ligand_resnames(values: Optional[List[str]]) -> list[str]:
+    if values is None:
+        return []
+    return sorted({str(value).strip().upper() for value in values if str(value).strip()})
+
+
+def _chain_residue_names(chain: dict) -> list[str]:
+    names = chain.get("residue_names")
+    if isinstance(names, dict):
+        values = names.get("unique_residues") or []
+        return [str(value).strip().upper() for value in values if str(value).strip()]
+    if isinstance(names, list):
+        return [str(value).strip().upper() for value in names if str(value).strip()]
+    resname = str(chain.get("resname") or "").strip().upper()
+    return [resname] if resname else []
+
+
+def _chain_matches_ligand_resnames(chain: dict, requested_resnames: set[str]) -> bool:
+    return bool(set(_chain_residue_names(chain)) & requested_resnames)
+
+
+def _candidate_matches_ligand_resnames(
+    candidate: dict,
+    requested_resnames: set[str],
+) -> bool:
+    names = [
+        str(value).strip().upper()
+        for value in candidate.get("residue_names", [])
+        if str(value).strip()
+    ]
+    resname = str(candidate.get("resname") or "").strip().upper()
+    if resname:
+        names.append(resname)
+    return bool(set(names) & requested_resnames)
+
+
 def _inspect_molecules_impl(structure_file: str) -> dict:
     """Inspect an mmCIF or PDB structure file and return detailed molecular information.
     
@@ -549,6 +585,7 @@ def split_molecules(
     select_chains: Optional[List[str]] = None,
     include_types: Optional[List[str]] = None,
     include_ligand_ids: Optional[List[str]] = None,
+    include_ligand_resnames: Optional[List[str]] = None,
     exclude_ligand_ids: Optional[List[str]] = None,
     keep_crystal_waters: bool = False,
     include_associated_ligands: bool = False,
@@ -631,6 +668,14 @@ def split_molecules(
                            ligand's label chain, the chain is auto-included
                            with a ``ligand_chain_auto_included`` adjustment.
                            Use inspect_molecules to get available ligand unique IDs.
+        include_ligand_resnames: List of ligand residue names to include
+                           within the selected polymer scope, e.g. ["NDP"].
+                           When select_chains is provided, matching
+                           associated ligand label chains are auto-included
+                           even if their label chain IDs differ from the
+                           selected protein/nucleic/glycan chain IDs. When
+                           select_chains is omitted, all matching ligand
+                           residue names in the structure are included.
         exclude_ligand_ids: List of ligand unique IDs to exclude (format: "chain:resname:resnum",
                            e.g., ["A:ACT:401", "A:ACT:402"]). If specified, these ligands are
                            skipped. Takes precedence if a ligand is in both include and exclude.
@@ -677,6 +722,19 @@ def split_molecules(
     if "water" in include_types and not keep_crystal_waters:
         logger.info("Crystal waters excluded (default behavior, use keep_crystal_waters=True to retain)")
         include_types = [t for t in include_types if t != "water"]
+
+    requested_ligand_ids: list[str] | None = None
+    requested_ligand_id_set: set[str] | None = None
+    requested_ligand_resnames = _normalize_ligand_resnames(include_ligand_resnames)
+    requested_ligand_resname_set = set(requested_ligand_resnames)
+    excluded_ligand_id_set: set[str] | None = None
+    if exclude_ligand_ids is not None:
+        excluded_ligand_id_set = {
+            str(item).strip()
+            for item in exclude_ligand_ids
+            if str(item).strip()
+        }
+    resname_selected_ligand_ids: set[str] | None = None
     
     # Initialize result structure for LLM error handling
     job_id = generate_job_id()
@@ -714,6 +772,7 @@ def split_molecules(
         requested_ligand_ids = sorted(
             {str(item).strip() for item in include_ligand_ids if str(item).strip()}
         )
+        requested_ligand_id_set = set(requested_ligand_ids)
         available_ligand_ids = sorted(
             {
                 str(chain["unique_id"])
@@ -755,6 +814,109 @@ def split_molecules(
                         "missing_ligand_ids": missing_ligand_ids,
                     },
                     code="requested_ligand_ids_not_found",
+                )
+            )
+            return result
+
+        if requested_ligand_resname_set:
+            ligand_chain_by_id = {
+                str(chain.get("unique_id")): chain
+                for chain in analysis["chains"]
+                if chain.get("chain_type") == "ligand" and chain.get("unique_id")
+            }
+            mismatched_ligand_ids = sorted(
+                ligand_id
+                for ligand_id in matched_ligand_ids
+                if not _chain_matches_ligand_resnames(
+                    ligand_chain_by_id[ligand_id],
+                    requested_ligand_resname_set,
+                )
+            )
+            result["ligand_selection"]["requested_ligand_resnames"] = (
+                requested_ligand_resnames
+            )
+            if mismatched_ligand_ids:
+                result["ligand_selection"]["mismatched_ligand_ids"] = (
+                    mismatched_ligand_ids
+                )
+                result.update(
+                    create_validation_error(
+                        "include_ligand_ids/include_ligand_resnames",
+                        "requested ligand ID(s) do not match requested residue name(s)",
+                        expected=(
+                            "If both selectors are supplied, every explicit ligand ID "
+                            "must have one of the requested residue names"
+                        ),
+                        actual=", ".join(mismatched_ligand_ids),
+                        hints=[
+                            "Use only --include-ligand-ids for exact instance selection.",
+                            "Use only --include-ligand-resnames for residue-name scoped selection.",
+                        ],
+                        context_extra={
+                            "requested_ligand_ids": requested_ligand_ids,
+                            "requested_ligand_resnames": requested_ligand_resnames,
+                            "mismatched_ligand_ids": mismatched_ligand_ids,
+                        },
+                        code="ligand_id_resname_mismatch",
+                    )
+                )
+                return result
+
+    if (
+        include_ligand_resnames is not None
+        and not requested_ligand_resnames
+        and "ligand" in include_types
+    ):
+        result.update(
+            create_validation_error(
+                "include_ligand_resnames",
+                "include_ligand_resnames was provided but no residue names were usable",
+                expected="One or more ligand residue names such as NDP, ATP, or AP5",
+                actual=include_ligand_resnames,
+                code="empty_ligand_resname_selection",
+            )
+        )
+        return result
+
+    if requested_ligand_resname_set and "ligand" in include_types:
+        available_resnames = sorted(
+            {
+                resname
+                for chain in analysis["chains"]
+                if chain.get("chain_type") == "ligand"
+                for resname in _chain_residue_names(chain)
+            }
+        )
+        matching_chains = [
+            chain
+            for chain in analysis["chains"]
+            if chain.get("chain_type") == "ligand"
+            and chain.get("unique_id")
+            and _chain_matches_ligand_resnames(chain, requested_ligand_resname_set)
+        ]
+        if not matching_chains:
+            result["ligand_selection"] = {
+                "mode": "include_ligand_resnames",
+                "requested_ligand_resnames": requested_ligand_resnames,
+                "available_ligand_resnames": available_resnames,
+                "available_ligand_ids": sorted(
+                    str(chain.get("unique_id"))
+                    for chain in analysis["chains"]
+                    if chain.get("chain_type") == "ligand" and chain.get("unique_id")
+                ),
+            }
+            result.update(
+                create_validation_error(
+                    "include_ligand_resnames",
+                    "requested ligand residue name(s) were not found",
+                    expected="Ligand residue names present in inspect_molecules output",
+                    actual=", ".join(requested_ligand_resnames),
+                    hints=[
+                        f"Available ligand residue names: {available_resnames}",
+                        "Use inspect_molecules to confirm ligand residue names and unique IDs.",
+                    ],
+                    context_extra=result["ligand_selection"],
+                    code="requested_ligand_resnames_not_found",
                 )
             )
             return result
@@ -894,7 +1056,7 @@ def split_molecules(
                             f"auth 'FFF')."
                         )
             if include_ligand_ids is not None and "ligand" in include_types:
-                requested = set(include_ligand_ids)
+                requested = requested_ligand_id_set or set()
                 matching_ligands = [
                     c for c in analysis["chains"]
                     if c.get("chain_type") == "ligand"
@@ -922,11 +1084,136 @@ def split_molecules(
                         f"{sorted(requested)} require ligand label chain(s) "
                         f"{auto_added}, which were added to select_chains."
                     )
+            elif requested_ligand_resname_set and "ligand" in include_types:
+                associated_candidates = selected_associated_ligand_candidates(
+                    analysis["chains"],
+                    selected_chain_ids,
+                    exclude_ligand_ids=excluded_ligand_id_set,
+                )
+                matching_associated = [
+                    candidate
+                    for candidate in associated_candidates
+                    if _candidate_matches_ligand_resnames(
+                        candidate,
+                        requested_ligand_resname_set,
+                    )
+                ]
+                direct_selected_ligands = [
+                    c for c in analysis["chains"]
+                    if c.get("chain_type") == "ligand"
+                    and c.get("unique_id")
+                    and c.get("chain_id") in selected_chain_ids
+                    and (
+                        excluded_ligand_id_set is None
+                        or c.get("unique_id") not in excluded_ligand_id_set
+                    )
+                    and _chain_matches_ligand_resnames(
+                        c,
+                        requested_ligand_resname_set,
+                    )
+                ]
+                resname_selected_ligand_ids = {
+                    str(candidate["unique_id"])
+                    for candidate in matching_associated
+                } | {
+                    str(chain["unique_id"])
+                    for chain in direct_selected_ligands
+                }
+                auto_added = sorted(
+                    {
+                        str(candidate["ligand_chain_id"])
+                        for candidate in matching_associated
+                        if candidate.get("ligand_chain_id") not in selected_chain_ids
+                    }
+                )
+                if auto_added:
+                    selected_chain_ids |= set(auto_added)
+                excluded_same_author_ids = sorted(
+                    {
+                        str(candidate["unique_id"])
+                        for candidate in associated_candidates
+                        if str(candidate["unique_id"]) not in resname_selected_ligand_ids
+                    }
+                )
+                selected_label_chains = sorted(
+                    {
+                        str(candidate["ligand_chain_id"])
+                        for candidate in matching_associated
+                    }
+                    | {
+                        str(chain["chain_id"])
+                        for chain in direct_selected_ligands
+                    }
+                )
+                result["ligand_selection"] = {
+                    "mode": "include_ligand_resnames",
+                    "scope": "selected_associated_ligands",
+                    "requested_ligand_resnames": requested_ligand_resnames,
+                    "selected_ligand_ids": sorted(resname_selected_ligand_ids),
+                    "selected_ligand_label_chains": selected_label_chains,
+                    "associated_ligand_candidates": associated_candidates,
+                    "excluded_same_author_ligand_ids": excluded_same_author_ids,
+                }
+                if not resname_selected_ligand_ids:
+                    available_matching_ids = sorted(
+                        str(chain.get("unique_id"))
+                        for chain in analysis["chains"]
+                        if chain.get("chain_type") == "ligand"
+                        and chain.get("unique_id")
+                        and _chain_matches_ligand_resnames(
+                            chain,
+                            requested_ligand_resname_set,
+                        )
+                    )
+                    result.update(
+                        create_validation_error(
+                            "include_ligand_resnames",
+                            (
+                                "requested ligand residue name(s) were found, "
+                                "but none are associated with the selected chain scope"
+                            ),
+                            expected=(
+                                "A selected polymer chain with associated ligand(s) "
+                                "matching the requested residue name(s)"
+                            ),
+                            actual=", ".join(requested_ligand_resnames),
+                            hints=[
+                                "Check --select-chains against inspect_molecules output.",
+                                (
+                                    "Use --include-ligand-ids for an exact ligand "
+                                    "instance outside the selected polymer scope."
+                                ),
+                                f"Matching ligand IDs elsewhere: {available_matching_ids}",
+                            ],
+                            context_extra=result["ligand_selection"],
+                            code="requested_ligand_resnames_not_in_selected_scope",
+                        )
+                    )
+                    return result
+                result["selection_adjustments"].append(
+                    {
+                        "code": "ligand_resname_chain_auto_included",
+                        "message": (
+                            "Ligand chain(s) matching requested residue name(s) "
+                            "were selected within the associated polymer scope."
+                        ),
+                        "requested_ligand_resnames": requested_ligand_resnames,
+                        "added_chain_ids": auto_added,
+                        "selected_ligand_ids": sorted(resname_selected_ligand_ids),
+                        "excluded_same_author_ligand_ids": excluded_same_author_ids,
+                    }
+                )
+                result["warnings"].append(
+                    "ligand_resname_chain_auto_included: selected ligand "
+                    f"residue name(s) {requested_ligand_resnames}; selected "
+                    f"ligand ID(s) {sorted(resname_selected_ligand_ids)}; "
+                    f"added label chain(s) {auto_added}."
+                )
             elif "ligand" in include_types:
                 associated_candidates = selected_associated_ligand_candidates(
                     analysis["chains"],
                     selected_chain_ids,
-                    exclude_ligand_ids=exclude_ligand_ids,
+                    exclude_ligand_ids=excluded_ligand_id_set,
                 )
                 if associated_candidates:
                     if include_associated_ligands:
@@ -1040,6 +1327,33 @@ def split_molecules(
         else:
             # Default: select all chains (type filtering happens later)
             selected_chain_ids = set(c["chain_id"] for c in analysis["chains"])
+            if requested_ligand_resname_set and "ligand" in include_types:
+                matching_ligands = [
+                    c for c in analysis["chains"]
+                    if c.get("chain_type") == "ligand"
+                    and c.get("unique_id")
+                    and (
+                        excluded_ligand_id_set is None
+                        or c.get("unique_id") not in excluded_ligand_id_set
+                    )
+                    and _chain_matches_ligand_resnames(
+                        c,
+                        requested_ligand_resname_set,
+                    )
+                ]
+                resname_selected_ligand_ids = {
+                    str(chain["unique_id"])
+                    for chain in matching_ligands
+                }
+                result["ligand_selection"] = {
+                    "mode": "include_ligand_resnames",
+                    "scope": "all_matching_ligands",
+                    "requested_ligand_resnames": requested_ligand_resnames,
+                    "selected_ligand_ids": sorted(resname_selected_ligand_ids),
+                    "selected_ligand_label_chains": sorted(
+                        str(chain["chain_id"]) for chain in matching_ligands
+                    ),
+                }
         
         logger.info(f"Chains to export: {sorted(selected_chain_ids)}")
         
@@ -1075,12 +1389,27 @@ def split_molecules(
                 unique_id = info.get("unique_id")
                 if unique_id:
                     # Check exclude filter first (takes precedence)
-                    if exclude_ligand_ids is not None and unique_id in exclude_ligand_ids:
+                    if (
+                        excluded_ligand_id_set is not None
+                        and unique_id in excluded_ligand_id_set
+                    ):
                         logger.info(f"Excluding ligand {unique_id} (in exclude_ligand_ids)")
                         continue
                     # Check include filter
-                    if include_ligand_ids is not None and unique_id not in include_ligand_ids:
+                    if (
+                        requested_ligand_id_set is not None
+                        and unique_id not in requested_ligand_id_set
+                    ):
                         logger.info(f"Skipping ligand {unique_id} (not in include_ligand_ids)")
+                        continue
+                    if (
+                        resname_selected_ligand_ids is not None
+                        and unique_id not in resname_selected_ligand_ids
+                    ):
+                        logger.info(
+                            f"Skipping ligand {unique_id} "
+                            "(not selected by include_ligand_resnames)"
+                        )
                         continue
             
             # Build new structure with this chain's residues
