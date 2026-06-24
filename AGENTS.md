@@ -51,12 +51,30 @@ Developer references:
 
 ## Development Defaults
 
-Use the `mdclaw` conda environment for linting and tests:
+Default to the `mdclaw` conda environment for local development, linting, and
+tests:
 
 ```bash
 conda run -n mdclaw ruff check mdclaw/
 conda run -n mdclaw pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 ```
+
+On Linux hosts where creating conda is expensive, use the current SIF as a
+dependency/runtime image and import the checkout source instead of rebuilding
+the SIF for every Python-only edit:
+
+```bash
+PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
+  mdclaw.sif python -m mdclaw._cli --list
+PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
+  mdclaw.sif python -m mdclaw._cli <tool> ...
+singularity exec mdclaw.sif ruff check mdclaw/ tests/
+```
+
+Use this SIF-overlay loop for changes under `mdclaw/`, `skills/`, tests,
+benchmark/scorer code, and docs. Rebuild and push the SIF only when container
+contents change: dependencies, `environment.yml`, `container/Dockerfile`,
+runtime binaries, package metadata/version, or release artifacts.
 
 If touching tool execution paths, also run the relevant smoke or pipeline tests
 from `docs/developer/testing.md`.
