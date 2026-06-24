@@ -44,6 +44,10 @@ from mdclaw._common import (  # noqa: E402
     split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
+from mdclaw.chemistry_constants import (  # noqa: E402
+    STANDARD_DNA_RESNAMES,
+    STANDARD_RNA_RESNAMES,
+)
 
 
 # =============================================================================
@@ -81,6 +85,21 @@ OPENMM_FALLBACK_WATER_MAP = {
     "spce": "spce.xml",
 }
 OPENMM_FALLBACK_WATER_MODELS = set(OPENMM_FALLBACK_WATER_MAP)
+
+TERMINAL_DNA_RESNAMES = {
+    f"{base}{suffix}"
+    for base in STANDARD_DNA_RESNAMES
+    for suffix in ("3", "5", "N")
+}
+TERMINAL_RNA_RESNAMES = {
+    f"{base}{suffix}"
+    for base in STANDARD_RNA_RESNAMES
+    for suffix in ("3", "5", "N")
+}
+NUCLEIC_RESNAME_KIND = {
+    **{resname: "DNA" for resname in STANDARD_DNA_RESNAMES | TERMINAL_DNA_RESNAMES},
+    **{resname: "RNA" for resname in STANDARD_RNA_RESNAMES | TERMINAL_RNA_RESNAMES},
+}
 
 
 def _normalize_water_model_name(water_model: Optional[str]) -> Optional[str]:
@@ -1253,6 +1272,166 @@ def _pdb_element(line: str) -> str:
     return "".join(ch for ch in atom if ch.isalpha())[:1].upper()
 
 
+def _pdb_residue_key(line: str) -> tuple[str, str, str]:
+    chain_id = line[21:22].strip() if len(line) >= 22 else ""
+    resseq = line[22:26].strip() if len(line) >= 26 else ""
+    icode = line[26:27].strip() if len(line) >= 27 else ""
+    return chain_id, resseq, icode
+
+
+def _pdb_residue_label(residue: dict) -> str:
+    chain_id = residue["chain_id"] or "-"
+    insertion = residue["insertion_code"]
+    suffix = insertion if insertion else ""
+    return f"{chain_id}:{residue['residue_number']}{suffix}:{residue['resname']}"
+
+
+def _iter_pdb_residues(path: Path) -> list[dict]:
+    residues: list[dict] = []
+    current_key: tuple[str, str, str] | None = None
+    current: dict | None = None
+    segment_break_before_next = False
+
+    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if line.startswith("TER"):
+            if current is not None:
+                residues.append(current)
+            current_key = None
+            current = None
+            segment_break_before_next = True
+            continue
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        key = _pdb_residue_key(line)
+        if key != current_key:
+            if current is not None:
+                residues.append(current)
+            chain_id, resseq, icode = key
+            current_key = key
+            current = {
+                "chain_id": chain_id,
+                "residue_number": resseq,
+                "insertion_code": icode,
+                "resname": line[17:20].strip() if len(line) >= 20 else "",
+                "atom_count": 0,
+                "segment_break_before": segment_break_before_next,
+            }
+            segment_break_before_next = False
+        if current is not None:
+            current["atom_count"] += 1
+
+    if current is not None:
+        residues.append(current)
+    return residues
+
+
+def _flush_nucleic_segment(
+    segment: list[dict],
+    *,
+    kind: str,
+    segments: list[dict],
+) -> int:
+    if not segment:
+        return 0
+
+    resnames = [residue["resname"] for residue in segment]
+    terminal_resnames = (
+        TERMINAL_DNA_RESNAMES if kind == "DNA" else TERMINAL_RNA_RESNAMES
+    )
+    standard_resnames = STANDARD_DNA_RESNAMES if kind == "DNA" else STANDARD_RNA_RESNAMES
+    terminal_names_present = sorted({name for name in resnames if name in terminal_resnames})
+
+    correction = 0
+    skipped_reason: str | None = None
+    if len(segment) < 2:
+        skipped_reason = "short_nucleic_segment"
+    elif terminal_names_present:
+        skipped_reason = "terminal_residue_names_present"
+    elif all(name in standard_resnames for name in resnames):
+        correction = 1
+    else:
+        skipped_reason = "nonstandard_nucleic_residue_names"
+
+    entry = {
+        "kind": kind,
+        "chain_id": segment[0]["chain_id"],
+        "start": _pdb_residue_label(segment[0]),
+        "end": _pdb_residue_label(segment[-1]),
+        "length": len(segment),
+        "residue_names": resnames,
+        "charge_pdb_delta": correction,
+    }
+    if terminal_names_present:
+        entry["terminal_residue_names_present"] = terminal_names_present
+    if skipped_reason:
+        entry["skipped_reason"] = skipped_reason
+    segments.append(entry)
+    return correction
+
+
+def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
+    """Return packmol-memgen charge delta needed for standard nucleic termini.
+
+    packmol-memgen estimates standard DA/DC/DG/DT/A/C/G/U residues as -1 each.
+    Amber terminal templates make each ordinary linear nucleic-acid segment one
+    charge unit less negative overall. Pass that difference through
+    ``--charge_pdb_delta`` instead of rewriting final PDB residue names.
+    """
+    residues = _iter_pdb_residues(pdb_path)
+    segments: list[dict] = []
+    current_segment: list[dict] = []
+    current_kind: str | None = None
+    current_chain: str | None = None
+    charge_delta = 0
+
+    for residue in residues:
+        kind = NUCLEIC_RESNAME_KIND.get(residue["resname"])
+        if (
+            kind is None
+            or current_kind is None
+            or kind != current_kind
+            or residue["chain_id"] != current_chain
+            or residue.get("segment_break_before")
+        ):
+            if current_segment and current_kind is not None:
+                charge_delta += _flush_nucleic_segment(
+                    current_segment,
+                    kind=current_kind,
+                    segments=segments,
+                )
+            current_segment = []
+            current_kind = None
+            current_chain = None
+
+        if kind is None:
+            continue
+
+        current_segment.append(residue)
+        current_kind = kind
+        current_chain = residue["chain_id"]
+
+    if current_segment and current_kind is not None:
+        charge_delta += _flush_nucleic_segment(
+            current_segment,
+            kind=current_kind,
+            segments=segments,
+        )
+
+    applied_segments = [
+        segment for segment in segments if int(segment.get("charge_pdb_delta", 0)) != 0
+    ]
+    return {
+        "charge_pdb_delta": int(charge_delta),
+        "segments": segments,
+        "applied_segment_count": len(applied_segments),
+        "reason": (
+            f"standard nucleic termini: {len(applied_segments)} segment(s) x +1"
+            if applied_segments
+            else "no standard nucleic terminal correction needed"
+        ),
+    }
+
+
 def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
     """Restore solute PDB identity columns after packmol-memgen renumbering."""
     report = {
@@ -1738,6 +1917,28 @@ def solvate_structure(
     input_copy = out_dir / pdb_path.name
     shutil.copy(pdb_path, input_copy)
 
+    auto_charge_delta_report = {
+        "charge_pdb_delta": 0,
+        "segments": [],
+        "applied_segment_count": 0,
+        "reason": "not evaluated",
+    }
+    try:
+        auto_charge_delta_report = _auto_nucleic_packmol_charge_pdb_delta(input_copy)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            "Could not evaluate automatic nucleic-acid charge_pdb_delta "
+            f"for packmol-memgen: {type(exc).__name__}: {exc}"
+        )
+    auto_charge_delta = int(auto_charge_delta_report.get("charge_pdb_delta", 0))
+    auto_charge_delta_applied = bool(salt and auto_charge_delta)
+    result["auto_charge_pdb_delta"] = auto_charge_delta
+    result["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
+    result["auto_charge_pdb_delta_reason"] = auto_charge_delta_report.get("reason")
+    result["nucleic_charge_segments"] = auto_charge_delta_report.get("segments", [])
+    result["parameters"]["auto_charge_pdb_delta"] = auto_charge_delta
+    result["parameters"]["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
+
     # Output file
     output_file = out_dir / f"{output_name}.pdb"
     packlog = out_dir / f"{output_name}_packmol"
@@ -1753,6 +1954,9 @@ def solvate_structure(
             '--ffwat', water_model.lower(),  # Water model for solvation
             '--tolerance', '2.0'  # Default packmol tolerance
         ]
+
+        if auto_charge_delta_applied:
+            args.extend(['--charge_pdb_delta', str(auto_charge_delta)])
 
         if cubic:
             args.append('--cubic')
@@ -1897,6 +2101,10 @@ def solvate_structure(
                     "box_shape": "cubic" if _box.get("is_cubic") else "rectangular",
                     "buffer_distance_angstrom": dist,
                     "salt_concentration_M": saltcon,
+                    "auto_charge_pdb_delta": result.get("auto_charge_pdb_delta"),
+                    "auto_charge_pdb_delta_applied": result.get(
+                        "auto_charge_pdb_delta_applied"
+                    ),
                     "total_atoms": result.get("statistics", {}).get("total_atoms"),
                 })
             update_job_summaries(job_dir, params={

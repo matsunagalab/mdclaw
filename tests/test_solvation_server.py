@@ -6,10 +6,145 @@ from types import SimpleNamespace
 
 import mdclaw.solvation_server as solvation_server
 from mdclaw.solvation_server import (
+    _auto_nucleic_packmol_charge_pdb_delta,
     _record_packmol_memgen_output,
     embed_in_membrane,
     extract_box_size_from_packmol_inp,
 )
+
+
+def _pdb_atom(serial, atom, resname, chain, resseq, element, x=0.0):
+    return (
+        f"ATOM  {serial:5d} {atom:<4} {resname:>3} {chain:1}{resseq:4d}"
+        f"    {x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}\n"
+    )
+
+
+def test_auto_nucleic_packmol_charge_delta_counts_standard_segments(tmp_path):
+    pdb = tmp_path / "dna.pdb"
+    lines = []
+    serial = 1
+    for chain, start in (("A", 1), ("B", 13)):
+        for offset, resname in enumerate(["DC", "DG", "DA"]):
+            lines.append(_pdb_atom(serial, "P", resname, chain, start + offset, "P", x=serial))
+            serial += 1
+    pdb.write_text("".join(lines) + "END\n")
+
+    report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 2
+    assert report["applied_segment_count"] == 2
+    assert [segment["charge_pdb_delta"] for segment in report["segments"]] == [1, 1]
+
+
+def test_auto_nucleic_packmol_charge_delta_skips_terminal_named_segments(tmp_path):
+    pdb = tmp_path / "dna_terminal_named.pdb"
+    pdb.write_text(
+        "".join(
+            [
+                _pdb_atom(1, "P", "DC5", "A", 1, "P"),
+                _pdb_atom(2, "P", "DG", "A", 2, "P"),
+                _pdb_atom(3, "P", "DG3", "A", 3, "P"),
+            ]
+        )
+        + "END\n"
+    )
+
+    report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 0
+    assert report["segments"][0]["skipped_reason"] == "terminal_residue_names_present"
+
+
+def test_auto_nucleic_packmol_charge_delta_respects_ter_records(tmp_path):
+    pdb = tmp_path / "same_chain_two_strands.pdb"
+    pdb.write_text(
+        "".join(
+            [
+                _pdb_atom(1, "P", "DC", "A", 1, "P"),
+                _pdb_atom(2, "P", "DG", "A", 2, "P"),
+                "TER\n",
+                _pdb_atom(3, "P", "DC", "A", 1, "P"),
+                _pdb_atom(4, "P", "DG", "A", 2, "P"),
+            ]
+        )
+        + "END\n"
+    )
+
+    report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 2
+    assert report["applied_segment_count"] == 2
+
+
+def test_auto_nucleic_packmol_charge_delta_ignores_protein_only(tmp_path):
+    pdb = tmp_path / "protein.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "CA", "ALA", "A", 1, "C")
+        + _pdb_atom(2, "CA", "GLY", "A", 2, "C")
+        + "END\n"
+    )
+
+    report = _auto_nucleic_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 0
+    assert report["segments"] == []
+
+
+def test_solvate_structure_passes_auto_nucleic_charge_delta(
+    tmp_path,
+    monkeypatch,
+):
+    pdb = tmp_path / "dna.pdb"
+    lines = []
+    serial = 1
+    for chain, start in (("A", 1), ("B", 13)):
+        for offset, resname in enumerate(["DC", "DG", "DA"]):
+            lines.append(_pdb_atom(serial, "P", resname, chain, start + offset, "P", x=serial))
+            serial += 1
+    pdb.write_text("".join(lines) + "END\n")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        input_path = Path(args[args.index("--pdb") + 1])
+        output_path = Path(args[args.index("-o") + 1])
+        atom_lines = [
+            line
+            for line in input_path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+        output_path.write_text(
+            "CRYST1   40.000   40.000   40.000  90.00  90.00  90.00 P 1           1\n"
+            + "\n".join(atom_lines)
+            + "\nHETATM 9999  O   WAT W   1       9.000   0.000   0.000  1.00  0.00           O\n"
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = solvation_server.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=True,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    assert len(calls) == 1
+    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "2"
+    assert result["auto_charge_pdb_delta"] == 2
+    assert result["auto_charge_pdb_delta_applied"] is True
+    assert result["parameters"]["auto_charge_pdb_delta"] == 2
 
 
 def test_packmol_box_extraction_uses_union_of_inside_boxes(tmp_path):
