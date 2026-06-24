@@ -414,6 +414,31 @@ def test_provenance_execution_evidence_passes_stage_log():
     assert warnings == []
 
 
+def test_provenance_execution_evidence_without_required_stages_is_tool_agnostic():
+    command_log = [
+        {
+            "command": "python prepare_with_openmm.py",
+            "exit_code": 0,
+            "walltime_seconds": 10.0,
+        },
+        {
+            "command": "python minimize_with_openmm.py",
+            "exit_code": 0,
+            "walltime_seconds": 5.0,
+        },
+    ]
+
+    warnings = integrity.check_provenance_execution_evidence(
+        {"command_log": command_log},
+        required_stages=[],
+        min_command_count=2,
+        harness_record={"records": command_log},
+        require_harness_record=True,
+    )
+
+    assert warnings == []
+
+
 def test_provenance_execution_evidence_accepts_legacy_minimization_stage():
     provenance = {
         "command_log": [

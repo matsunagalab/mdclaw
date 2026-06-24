@@ -9,6 +9,7 @@ These cover the three places where v0.1 was wrong:
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -55,6 +56,17 @@ def _write_submission(tmp: Path, manifest: dict, metrics: dict | None = None,
         (tmp / "provenance.json").write_text(json.dumps(provenance))
     if evidence is not None:
         (tmp / "evidence_report.json").write_text(json.dumps(evidence))
+
+
+def _raw_output_hashes(tmp: Path, rel_paths: list[str]) -> list[dict[str, str]]:
+    out = []
+    for rel_path in rel_paths:
+        data = (tmp / rel_path).read_bytes()
+        out.append({
+            "path": rel_path,
+            "md5": hashlib.md5(data).hexdigest(),
+        })
+    return out
 
 
 def _prep_command_log() -> list[dict]:
@@ -1225,15 +1237,10 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
     task = validation.load_task(task_file)
     _write_openmm_bundle(tmp_path, include_water=True)
 
-    protein_lines = [
-        "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N\n",
-        "ATOM      2  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00           C\n",
-        "ATOM      3  C   ALA A   1       2.000   0.000   0.000  1.00  0.00           C\n",
-        "ATOM      4  O   ALA A   1       3.000   0.000   0.000  1.00  0.00           O\n",
-        "ATOM      5  CB  ALA A   1       1.000   1.000   0.000  1.00  0.00           C\n",
-        "END\n",
-    ]
-    prepared = "".join(protein_lines)
+    prepared = (
+        (tmp_path / "topology" / "topology.pdb").read_text()
+        + "REMARK scorer fixture padding for realistic artifact size\n"
+    )
     (tmp_path / "prepared_structure.pdb").write_text(prepared)
     (tmp_path / "minimized_structure.pdb").write_text(prepared)
 
@@ -1250,26 +1257,27 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
         }
     }
     (tmp_path / "minimization_report.json").write_text(json.dumps(report))
+    manifest = {
+        "schema_version": "1.0",
+        "task_id": task.task_id,
+        "status": "completed",
+        "outputs": {
+            "metrics": "metrics.json",
+            "provenance": "provenance.json",
+            "evidence_report": "evidence_report.json",
+            "prepared_structure": "prepared_structure.pdb",
+            "minimized_structure": "minimized_structure.pdb",
+            "minimization_report": "minimization_report.json",
+            "topology": [
+                "topology/system.xml",
+                "topology/topology.pdb",
+                "topology/state.xml",
+            ],
+        },
+    }
     _write_submission(
         tmp_path,
-        manifest={
-            "schema_version": "1.0",
-            "task_id": task.task_id,
-            "status": "completed",
-            "outputs": {
-                "metrics": "metrics.json",
-                "provenance": "provenance.json",
-                "evidence_report": "evidence_report.json",
-                "prepared_structure": "prepared_structure.pdb",
-                "minimized_structure": "minimized_structure.pdb",
-                "minimization_report": "minimization_report.json",
-                "topology": [
-                    "topology/system.xml",
-                    "topology/topology.pdb",
-                    "topology/state.xml",
-                ],
-            },
-        },
+        manifest=manifest,
         metrics={
             "preparation": {
                 "source_pdb_id": "2LZM",
@@ -1302,6 +1310,22 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
             "evidence": {"topology": "OpenMM artifact triple loaded."},
         },
     )
+    provenance = json.loads((tmp_path / "provenance.json").read_text())
+    provenance["raw_outputs"] = _raw_output_hashes(
+        tmp_path,
+        [
+            "manifest.json",
+            "metrics.json",
+            "evidence_report.json",
+            "prepared_structure.pdb",
+            "minimized_structure.pdb",
+            "minimization_report.json",
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ],
+    )
+    (tmp_path / "provenance.json").write_text(json.dumps(provenance))
     (tmp_path.parent / "harness_execution.json").write_text(
         json.dumps({"records": _prep_command_log()})
     )

@@ -90,5 +90,5 @@
     ]
   },
   "task_id": "P17_prep_dna_duplex_neutralization",
-  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain."
+  "task_intent": "DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex in an explicit-solvent OpenMM system, select a DNA-compatible force-field library, and include explicit counterions so the submitted topology is charge-neutral rather than treating the duplex as a single protein-like chain."
 }

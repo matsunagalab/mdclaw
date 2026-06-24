@@ -141,8 +141,8 @@ def openmm_minimized_state_consistency_warnings(
     MDPrepBench uses the OpenMM ``system.xml`` + ``topology.pdb`` +
     ``state.xml`` triple as the topology/coordinate contract.  The submitted
     ``minimized_structure.pdb`` must be a PDB view of the same state
-    coordinates; otherwise an agent can mix a topology-time state with a
-    separate min-node PDB/report.
+    coordinates; otherwise an agent can mix a topology-time state with an
+    unrelated minimized PDB/report.
     """
     outputs = manifest.get("outputs") or {}
     if not isinstance(outputs, dict):
@@ -830,8 +830,10 @@ def check_provenance_execution_evidence(
     """Require structured evidence that real workflow commands/actions ran.
 
     This does not forbid Python or custom scripts; it rejects the weaker pattern
-    script filenames, but no stage-aware execution log tying those artifacts to
-    source/prep/topology/min work.
+    of listing script filenames without structured evidence that commands or
+    actions actually ran. When a task supplies required_stages, entries must
+    also carry matching stage labels; otherwise stage names are optional so the
+    benchmark remains tool-agnostic.
     """
     if not isinstance(provenance, dict):
         return ["provenance.json is not a JSON object"]
@@ -907,14 +909,15 @@ def _check_execution_log_entries(
             f"entry(ies); require >= {min_command_count}"
         )
 
+    require_stage_labels = bool(required_stages)
     stages_seen: set[str] = set()
     for index, entry in enumerate(structured):
         stage = _canonical_stage(entry.get("stage"))
         command = _first_nonempty(entry, "command", "action", "tool")
         status = entry.get("exit_code", entry.get("status", entry.get("result")))
-        if not stage:
+        if require_stage_labels and not stage:
             warnings.append(f"{entry_label}[{index}] missing stage")
-        else:
+        elif stage:
             stages_seen.add(stage)
         if not command:
             warnings.append(

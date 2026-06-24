@@ -8,12 +8,12 @@ Shared preparation requirements live in `defaults.json`:
 
 - common required outputs
 - artifact-integrity checks
-- the OpenMM topology / min-stage deterministic check bundle
+- the OpenMM topology / minimization deterministic check bundle
 - common score axes, tool tags, and rubrics
 
 Each `tasks/<task_id>.json` contains only the task-specific metadata and
 deterministic checks. The `{"$bundle": "topology_minimization"}` placeholder is
-expanded into the shared topology / min-stage checks during generation.
+expanded into the shared topology / minimization checks during generation.
 
 After editing specs, regenerate canonical task files from the repository root:
 

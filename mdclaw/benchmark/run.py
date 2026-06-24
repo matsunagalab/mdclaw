@@ -831,9 +831,9 @@ def _task_agent_prompt(
         "Solve only this task. Do not inspect sibling task directories, "
         "categorize the suite, or write benchmark-wide solver scripts. "
         "Record task-local helper steps in provenance.command_log.\n\n"
-        "Run stages with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage source -- "
-        "<command>`; repeat for source/prep/topo/min. Do not create/edit "
-        "harness_execution.json.\n\n"
+        "Record real task commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER "
+        "--stage run -- <command>` or another descriptive label. Do not "
+        "create/edit harness_execution.json.\n\n"
         "Use mdclaw CLI only if mdclaw_cli.allowed. Call `mdclaw ...`; "
         "the harness pins conda/SIF/docker.\n\n"
         "With MDClaw DAG tools, do not edit node dirs, progress.json, or node.json.\n\n"
@@ -1006,8 +1006,8 @@ def _read_harness_jsonl_records(*paths: Path) -> list[dict[str, Any]]:
     The benchmark runner sets ``MDCLAW_BENCHMARK_HARNESS_LOG`` to the
     harness-owned task-run file, but some evaluated agents also mirror or move
     stage-wrapper output into their solver task directory. Keep the runner
-    tolerant of that layout so a real recorded source/prep/topo/min stage is
-    not lost before scoring.
+    tolerant of that layout so real measured command records are not lost
+    before scoring.
     """
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1752,8 +1752,8 @@ def _run_one_benchmark_agent_task(
         "stage_recording": {
             "wrapper": str(stage_wrapper_path),
             "usage": (
-                f"{stage_wrapper_path} --stage source -- <command>; "
-                "repeat for prep, topo, and min as applicable"
+                f"{stage_wrapper_path} --stage run -- <command>; "
+                "repeat for real task commands/actions as applicable"
             ),
         },
         "mdclaw_cli": _mdclaw_cli_instruction(

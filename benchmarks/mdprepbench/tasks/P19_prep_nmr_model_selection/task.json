@@ -110,13 +110,7 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 4,
-        "require_harness_record": true,
-        "required_stages": [
-          "source",
-          "prep",
-          "topo",
-          "min"
-        ]
+        "require_harness_record": true
       },
       {
         "check_id": "submitted_artifacts_are_hashed",

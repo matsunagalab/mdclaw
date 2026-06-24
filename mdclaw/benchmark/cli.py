@@ -464,11 +464,10 @@ def export_benchmark_public_package(
             "`tasks/<task_id>/submission_checklist.md` to build a `submission/` "
             "directory. The contract includes a `submission_blueprint` for the "
             "minimum manifest, metrics, provenance, and minimization-report "
-            "shape expected by the scorer. For MDClaw prep submissions, use "
-            "a `min` node with `mdclaw run_minimization` when running a normal "
-            "MDClaw DAG. When packaging a topology bundle directly, use "
-            "`mdclaw export_state_pdb` to create `minimized_structure.pdb` "
-            "from the `topology.pdb` + `state.xml` bundle.\n\n"
+            "shape expected by the scorer. The final topology must be an "
+            "OpenMM `system.xml` + `topology.pdb` + `state.xml` bundle. "
+            "Use any OpenMM-capable workflow to create a matching "
+            "`minimized_structure.pdb`; MDClaw helpers are optional.\n\n"
             "Agents "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
             "files from the canonical repository tree. The contract lists required "
@@ -1137,7 +1136,8 @@ def package_openmm_submission(
         warnings.append(
             "no command_log provided; the scorer's execution-evidence check "
             "will flag this submission. Pass --command-log-file with the "
-            "agent's own source/prep/topo/min steps."
+            "agent's own retrieval, preparation, OpenMM build/export, and "
+            "minimization commands."
         )
     if sub.exists():
         shutil.rmtree(sub)
@@ -1488,7 +1488,8 @@ def package_mdprep_submission(
         warnings.append(
             "no command_log provided; the scorer's execution-evidence check "
             "will flag this submission. Pass --command-log-file with the "
-            "agent's own source/prep/topo/min steps."
+            "agent's own retrieval, preparation, OpenMM build/export, and "
+            "minimization commands."
         )
     if sub.exists():
         shutil.rmtree(sub)

@@ -97,11 +97,15 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         command_log = contract["submission_blueprint"]["provenance_minimum"][
             "command_log"
         ]
-        min_commands = [
-            item for item in command_log if item.get("stage") == "min"
-        ]
-        assert min_commands
-        assert "run_minimization" in min_commands[0]["command"]
+        assert len(command_log) >= 4
+        assert all("command" in item for item in command_log)
+        assert all("exit_code" in item for item in command_log)
+        assert all("walltime_seconds" in item for item in command_log)
+        assert all("stage" not in item for item in command_log)
+        harness_requirements = contract["harness_evidence_requirements"]
+        assert harness_requirements
+        assert "required_stages" not in harness_requirements[0]
+        assert "stage" not in harness_requirements[0]["required_fields_per_record"]
         assert (
             "package_mdprep_submission"
             in contract["submission_blueprint"]["minimized_structure_export"][

@@ -147,7 +147,15 @@ def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
             continue
         if not check.require_harness_record:
             continue
-        requirements.append({
+        required_stages = list(check.required_stages or [])
+        required_fields = [
+            "command/action/tool",
+            "exit_code/status/result",
+            "walltime_seconds",
+        ]
+        if required_stages:
+            required_fields.insert(0, "stage")
+        item = {
             "check_id": check.check_id,
             "required": True,
             "record_owner": "benchmark_harness",
@@ -155,19 +163,16 @@ def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
                 check.harness_record_path
                 or "scorer-side harness_execution.json outside submission/"
             ),
-            "required_stages": list(check.required_stages or []),
             "min_command_count": int(check.min_command_count or 1),
-            "required_fields_per_record": [
-                "stage",
-                "command/action/tool",
-                "exit_code/status/result",
-                "walltime_seconds",
-            ],
+            "required_fields_per_record": required_fields,
             "note": (
                 "provenance.command_log is still useful, but strict scoring "
                 "also requires a harness-owned measured execution record"
             ),
-        })
+        }
+        if required_stages:
+            item["required_stages"] = required_stages
+        requirements.append(item)
     return requirements
 
 
@@ -584,8 +589,16 @@ def submission_checklist(task: Task) -> list[str]:
             )
     else:
         checks.append(
-            "provenance.json records commands or agent actions attempted"
+            "provenance.json command_log records commands or agent actions attempted"
         )
+        if any(
+            check.check_type == "provenance_execution_evidence"
+            and check.require_harness_record
+            for check in task.scoring.integrity_checks
+        ):
+            checks.append(
+                "the benchmark harness records measured command/action execution outside submission/"
+            )
     if public_metric_requirements(task):
         checks.append(
             "metrics.json contains every metric_requirements json_path from this contract"
@@ -845,7 +858,14 @@ def _command_log_blueprint(task: Task) -> list[dict[str, Any]]:
         if check.check_type == "provenance_execution_evidence":
             min_count = max(min_count, int(check.min_command_count or 1))
     if not stages:
-        stages = ["<stage>"]
+        return [
+            {
+                "command": "<command or agent action>",
+                "exit_code": 0,
+                "walltime_seconds": "<number>",
+            }
+            for _ in range(min_count)
+        ]
     while len(stages) < min_count:
         stages.append(f"additional_{len(stages) + 1}")
     return [
