@@ -813,24 +813,25 @@ def _submission_packaging_instruction(public_dir: Path) -> dict[str, Any]:
         "standalone_packager": str(packager),
         "mdclaw_packager": "mdclaw package_openmm_submission",
         "usage": (
-            "Finalize completed OpenMM prep submissions with a packager. "
-            "Do not hand-write manifest.json or provenance.json when a "
-            "system/topology/state bundle exists."
+            "For MDPrepBench preparation tasks, write raw OpenMM artifacts to "
+            "submission/: topology/system.xml, topology/topology.pdb, "
+            "topology/state.xml, prepared_structure.pdb, and task-specific "
+            "raw artifacts. The evaluator normalizes these into manifest.json, "
+            "metrics.json, provenance.json, minimized_structure.pdb, "
+            "minimization_report.json, and md5 hashes. Do not hand-write those "
+            "generated files. Packagers are optional helpers, not required."
         ),
         "writes": [
-            "manifest.json",
-            "metrics.json",
-            "provenance.json with raw_outputs md5 hashes",
             "topology/system.xml",
             "topology/topology.pdb",
             "topology/state.xml",
-            "minimized_structure.pdb",
-            "minimization_report.json",
+            "prepared_structure.pdb",
+            "task-specific raw artifacts",
         ],
         "post_packaging_rule": (
-            "After packaging, do not edit manifest.json, provenance.json, "
-            "topology/state.xml, or minimized_structure.pdb; rerun the packager "
-            "with corrected inputs instead."
+            "Do not edit evaluator-generated manifest.json, provenance.json, "
+            "metrics.json, minimized_structure.pdb, or minimization_report.json. "
+            "Fix raw artifacts and let the evaluator regenerate derived files."
         ),
     }
 
@@ -854,14 +855,12 @@ def _task_agent_prompt(
         "Use this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
-        "Read paths named in task_instructions.json: prompt_file, "
-        "contract, checklist, submission_dir, work_dir, submission_packaging, "
-        "agent_skills. Use work_dir for study/job/work files; final outputs "
-        "only to exact submission_dir path. Never use work_dir/submission or "
-        "./submission unless it is that path.\n\n"
+        "Read task_instructions.json paths: prompt_file, contract, checklist, "
+        "submission_dir, work_dir, submission_packaging, agent_skills. Use "
+        "work_dir for study/job/work files; final outputs only to exact "
+        "submission_dir path, never work_dir/submission unless exact.\n\n"
         "Solve only this task. Do not inspect sibling task directories, "
-        "categorize the suite, or write benchmark-wide solver scripts. "
-        "Record helper commands in provenance.command_log.\n\n"
+        "categorize the suite, or write benchmark-wide solver scripts.\n\n"
         "Record commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- "
         "<command>`. Do not create/edit harness_execution.json.\n\n"
         "Use mdclaw only if mdclaw_cli.allowed; call bare `mdclaw ...`.\n\n"
@@ -870,10 +869,11 @@ def _task_agent_prompt(
         "outcomes.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
         "truth/, scorer/. Do not fabricate.\n\n"
-        "Finalize OpenMM prep with submission_packaging or "
-        "`mdclaw package_openmm_submission`; packagers write manifest/"
-        "provenance raw output hashes.\n\n"
-        "After packaging, do not edit manifest.json or provenance.json. "
+        "For OpenMM prep tasks, put raw artifacts in submission/: "
+        "topology/{system.xml,topology.pdb,state.xml}, prepared_structure.pdb, "
+        "and task-specific raw files. The evaluator generates metadata, hashes, "
+        "minimized_structure, and minimization_report.\n\n"
+        "Do not hand-write or edit evaluator-generated metadata files. "
         "Stop after writing submission/. The evaluator scores separately.\n"
     )
 

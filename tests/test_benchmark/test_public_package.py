@@ -40,7 +40,14 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         contract = json.loads(contract_path.read_text())
         assert contract["task_id"] == task_id
         assert contract["required_outputs"]
-        assert "minimized_structure.pdb" in contract["required_outputs"]
+        assert "topology/system.xml" in contract["required_outputs"]
+        assert "topology/topology.pdb" in contract["required_outputs"]
+        assert "topology/state.xml" in contract["required_outputs"]
+        assert "manifest.json" not in contract["required_outputs"]
+        assert "metrics.json" not in contract["required_outputs"]
+        assert "provenance.json" not in contract["required_outputs"]
+        assert "minimized_structure.pdb" not in contract["required_outputs"]
+        assert "minimized_structure.pdb" in contract["normalized_outputs"]
         assert contract["manifest_contract"]["completed_status"] == "completed"
         assert contract["manifest_contract"]["topology_output_shape"] == "list[str]"
         assert contract["manifest_contract"]["required_topology_backend"] == "openmm"
@@ -52,28 +59,39 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         guidance = contract["manifest_contract"]["minimized_structure_guidance"]
         assert guidance["required_filename"] == "minimized_structure.pdb"
         assert "MDClaw, plain OpenMM" in guidance["state_source"]
-        assert "package_openmm_submission" in guidance["generic_openmm_command_template"]
+        assert "tools/package_submission.py" in (
+            guidance["generic_openmm_command_template"]
+        )
         assert "run_minimization" in guidance["mdclaw_dag_command_template"]
         assert "package_mdprep_submission" in guidance["mdclaw_export_command_template"]
         packaging = contract["manifest_contract"]["packaging_guidance"]
+        assert "raw OpenMM artifact contract" in packaging["artifact_contract"]
+        assert "evaluator" in packaging["benchmark_normalization"]
+        assert "manifest.json" in packaging["benchmark_normalization"]
+        assert "tools/package_submission.py" in packaging["optional_packager"]
         assert "mdclaw package_openmm_submission" in (
-            packaging["preferred_packager"]
-        )
-        assert "tools/package_submission.py" in (
-            packaging["preferred_packager"]
+            packaging["optional_packager"]
         )
         assert "mdclaw package_mdprep_submission" in (
             packaging["mdclaw_dag_helper"]
         )
-        assert "manifest.json" in packaging["packager_writes"]
-        assert "evidence_report" in " ".join(packaging["packager_writes"])
+        assert "manifest.json" in packaging["normalizer_writes"]
+        assert "provenance.json with raw output hashes" in packaging["normalizer_writes"]
+        assert "topology/system.xml" in packaging["required_agent_inputs"]
         assert "output-only" in packaging["submission_dir_policy"]
         assert "exact submission_dir" in packaging["submission_dir_policy"]
         assert "work_dir/submission" in packaging["submission_dir_policy"]
-        assert "do not hand-edit" in packaging["post_packaging_rule"]
+        assert "Do not hand-write" in packaging["post_submission_rule"]
+        assert "optional convenience" in packaging["post_submission_rule"]
         assert "--evidence-report-file" in packaging["mdclaw_dag_command_template"]
-        assert "--preparation-summary-file" in (
+        assert "--preparation-summary" in (
             packaging["generic_command_template"]
+        )
+        assert "tools/package_submission.py" in (
+            packaging["generic_command_template"]
+        )
+        assert "--preparation-summary-file" in (
+            packaging["mdclaw_openmm_wrapper_command_template"]
         )
         assert "--submission-dir <exact_submission_dir>" in (
             packaging["generic_command_template"]
@@ -83,6 +101,9 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "chains" in packaging["does_not_choose"]
         assert "provenance_text_requirements" in contract
         assert "submission_blueprint" in contract
+        assert contract["submission_blueprint"]["raw_artifact_minimum"][
+            "topology/state.xml"
+        ] == "<OpenMM State XML after minimization>"
         assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
             "topology"
         ] == [
@@ -90,20 +111,18 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             "topology/topology.pdb",
             "topology/state.xml",
         ]
+        assert contract["submission_blueprint"]["manifest_minimum"][
+            "generated_by"
+        ]["tool"] == "mdprepbench-normalizer"
+        assert contract["submission_blueprint"]["provenance_minimum"][
+            "generated_by"
+        ]["tool"] == "mdprepbench-normalizer"
         assert (
-            "package_openmm_submission"
+            "tools/package_submission.py"
             in contract["submission_blueprint"]["minimized_structure_export"][
                 "generic_package_command"
             ]
         )
-        command_log = contract["submission_blueprint"]["provenance_minimum"][
-            "command_log"
-        ]
-        assert len(command_log) >= 1
-        assert all("command" in item for item in command_log)
-        assert all("exit_code" in item for item in command_log)
-        assert all("walltime_seconds" in item for item in command_log)
-        assert all("stage" not in item for item in command_log)
         harness_requirements = contract["harness_evidence_requirements"]
         assert harness_requirements
         assert "required_stages" not in harness_requirements[0]
@@ -115,14 +134,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             ]
         )
         assert any(
-            "command_log" in item for item in contract["submission_checklist"]
-        )
-        assert any(
-            "same state.xml submitted in outputs.topology" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "package_openmm_submission" in item
+            "topology/state.xml" in item
             for item in contract["submission_checklist"]
         )
         assert any(
@@ -134,7 +146,11 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
             for item in contract["submission_checklist"]
         )
         assert any(
-            "do not hand-edit package-written files" in item
+            "do not hand-write manifest.json" in item
+            for item in contract["submission_checklist"]
+        )
+        assert any(
+            "evaluator normalizes raw artifacts" in item
             for item in contract["submission_checklist"]
         )
         checklist = (task_dir / "submission_checklist.md").read_text()
@@ -142,7 +158,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "outputs.topology" in checklist
         assert "Minimized Structure Export" in checklist
         assert "run_minimization" in checklist
-        assert "package_openmm_submission" in checklist
+        assert "tools/package_submission.py" in checklist
         assert "package_mdprep_submission" in checklist
         assert "metric_requirements" in contract
         assert "required_components" in contract
@@ -447,12 +463,13 @@ def test_export_public_package_documents_mdclaw_free_packaging(tmp_path: Path):
     )
     guidance = contract["manifest_contract"]["packaging_guidance"]
 
-    assert "non-MDClaw submissions" in guidance["artifact_contract"]
+    assert "raw OpenMM artifact contract" in guidance["artifact_contract"]
     assert guidance["standalone_packager"] == "tools/package_submission.py"
     assert "python tools/package_submission.py" in (
         guidance["standalone_command_template"]
     )
     assert "finite coordinates/energy" in guidance["purpose"]
+    assert "optional convenience helpers" in guidance["optional_packager"]
     assert "--extra-output" in guidance["standalone_command_template"]
 
 

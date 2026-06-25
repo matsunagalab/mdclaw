@@ -64,12 +64,42 @@ with open("topology.pdb", "w") as fh:
                       state.getPositions(), fh)
 ```
 
-## 4. Package into a scorer-valid `submission/`
+## 4. Write raw artifacts into `submission/`
 
-Two equivalent options:
+For MDPrepBench preparation tasks, the canonical MDClaw-free output is raw
+OpenMM artifacts. Copy the final self-consistent bundle into the exact
+`submission_dir` from `task_instructions.json`:
 
-- **MDClaw convenience packager** (allowed for `mdclaw-free` runs — it only
-  reshapes files and never chooses chemistry):
+```bash
+mkdir -p .../submission/topology
+cp system.xml .../submission/topology/system.xml
+cp topology.pdb .../submission/topology/topology.pdb
+cp state.xml .../submission/topology/state.xml
+cp prepared_structure.pdb .../submission/prepared_structure.pdb
+# copy any task-specific raw artifacts named in submission_contract.json
+```
+
+The evaluator normalizes these files into `manifest.json`, `metrics.json`,
+`provenance.json`, raw-output md5 hashes, `minimized_structure.pdb`, and
+`minimization_report.json` before scoring.
+
+The standalone packager is still available as an optional helper for a fully
+MDClaw-free toolchain:
+
+```bash
+python benchmarks/tools/package_submission.py \
+  --submission-dir .../submission \
+  --task-id P01_prep_apo_t4_lysozyme \
+  --system-xml system.xml \
+  --topology-pdb topology.pdb \
+  --state-xml state.xml \
+  --run-id 20260613_mdcrow_prep \
+  --command-log mdcrow_command_log.json \
+  --evidence-report evidence_report.json
+```
+
+When MDClaw is installed, `mdclaw package_openmm_submission` is a compatibility
+wrapper around the same optional helper:
 
 ```bash
 mdclaw package_openmm_submission \
@@ -85,34 +115,18 @@ mdclaw package_openmm_submission \
   --evidence-report-file evidence_report.json
 ```
 
-- **Standalone no-MDClaw packager** (imports only stdlib + OpenMM, for a fully
-  MDClaw-free toolchain):
+Both packagers are convenience tools. Neither packager invents force field,
+water model, chains, ions, or mutations: anything the agent did not declare is
+recorded as `"unspecified"` and recomputed from the artifact at scoring time.
 
-```bash
-python benchmarks/tools/package_submission.py \
-  --submission-dir .../submission \
-  --task-id P01_prep_apo_t4_lysozyme \
-  --system-xml system.xml \
-  --topology-pdb topology.pdb \
-  --state-xml state.xml \
-  --run-id 20260613_mdcrow_prep \
-  --evidence-report evidence_report.json
-```
+Do not hand-edit evaluator-generated `manifest.json`, `metrics.json`, or
+`provenance.json`. If raw artifacts are wrong, fix the raw artifacts and rescore
+so the evaluator can regenerate derived metadata.
 
-Both write `manifest.json`, `metrics.json`, `provenance.json`,
-`prepared_structure.pdb`, `minimized_structure.pdb`,
-`minimization_report.json`, and the `topology/` triple. Neither invents force
-field, water model, chains, ions, or mutations: anything the agent did not
-declare is recorded as `"unspecified"` and recomputed from the artifact at
-scoring time.
-
-If the task needs an `evidence_report.json`, pass it to the packager. Do not
-hand-edit `manifest.json` or `provenance.json` after packaging.
-
-Provide the agent's real execution steps via `--command-log-file` (a JSON list,
-or an object with a `command_log` list). Without it, the scorer's
-execution-evidence check will flag the submission — the packager will not
-fabricate steps.
+Provide the agent's real execution steps via `--command-log` for the standalone
+packager or `--command-log-file` for the MDClaw wrapper (a JSON list, or an
+object with a `command_log` list). Without it, the scorer's execution-evidence
+check will flag the submission — the packager will not fabricate steps.
 
 ## 5. Score with the same neutral scorer
 

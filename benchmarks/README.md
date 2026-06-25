@@ -62,17 +62,18 @@ to make them, and the same MDClaw scorer judges every entrant. Key properties:
   force field applied + required minimized structure) must pass or the task
   scores zero. Identity / fidelity / provenance checks then give weighted
   partial credit and roll up into a per-capability profile.
-- **Slim required set.** `manifest.json`, `metrics.json`, `provenance.json`,
-  `prepared_structure.pdb`, `minimized_structure.pdb`,
-  `minimization_report.json`, and the OpenMM triple. `evidence_report.json` is
-  optional unless a task's contract lists it. Unsafe manifest paths, fabricated
-  or undersized required artifacts, and missing execution evidence remain hard
-  failures.
+- **Slim solver output.** Solvers submit raw artifacts: the OpenMM triple,
+  `prepared_structure.pdb`, and any task-specific raw files. The evaluator
+  generates `manifest.json`, `metrics.json`, `provenance.json`, md5 hashes,
+  `minimized_structure.pdb`, and `minimization_report.json` before scoring.
+  `evidence_report.json` is optional unless a task's contract lists it. Unsafe
+  paths, fabricated or undersized required artifacts, and missing execution
+  evidence remain hard failures.
 - **MDClaw-free solve path.** Solvers do not need to import or call MDClaw.
   Direct OpenMM, Amber/GROMACS-to-OpenMM exports, MDCrow-style runners, or other
-  MD-prep stacks are valid if they submit the same artifact contract. Use
-  `benchmarks/tools/package_submission.py` to package an existing OpenMM triple
-  without depending on MDClaw.
+  MD-prep stacks are valid if they submit the same raw artifact contract.
+  `benchmarks/tools/package_submission.py` remains available as an optional
+  helper, but it is not a scorer eligibility requirement.
 - **Comparison conditions.** Each run records a `tooling_condition`
   (`mdclaw-skills+cli` / `mdclaw-cli-only` / `mdclaw-free` / `unknown`), a
   machine-readable `attestation.json`, and a `verified` flag. MDClaw-free

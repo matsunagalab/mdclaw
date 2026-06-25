@@ -647,6 +647,8 @@ def test_package_openmm_submission_builds_scorer_valid_bundle(tmp_path: Path):
     assert provenance["declared_preparation"]["water_model"] == "unspecified"
     # Topology bundle is loadable by the scorer.
     manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["generated_by"]["tool"] == "mdprepbench-packager"
+    assert manifest["generated_by"]["tool_variant"] == "mdclaw-openmm-wrapper"
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
 
 
@@ -757,6 +759,8 @@ def test_standalone_packager_matches_shape(tmp_path: Path):
                  "minimization_report.json"):
         assert (sub / name).is_file(), name
     manifest = json.loads((sub / "manifest.json").read_text())
+    assert manifest["generated_by"]["tool"] == "mdprepbench-packager"
+    assert manifest["generated_by"]["tool_variant"] == "openmm-standalone"
     assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
     assert manifest["outputs"]["parent_prepared_structure"] == (
         "wt_prepared_structure.pdb"
@@ -766,6 +770,7 @@ def test_standalone_packager_matches_shape(tmp_path: Path):
     metrics = json.loads((sub / "metrics.json").read_text())
     assert "force_field" not in metrics["preparation"]
     provenance = json.loads((sub / "provenance.json").read_text())
+    assert provenance["generated_by"] == manifest["generated_by"]
     assert provenance["declared_preparation"]["force_field"] == "unspecified"
     assert scoring._openmm_bundle_is_loadable(sub, manifest)
     # MDClaw-free: the packager imports no mdclaw module.

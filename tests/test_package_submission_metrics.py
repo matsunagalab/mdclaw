@@ -172,6 +172,9 @@ def test_packager_writes_raw_output_hashes(tmp_path):
     warnings.extend(integrity.verify_provenance_hashes(sub, provenance))
 
     assert warnings == []
+    assert manifest["generated_by"] == provenance["generated_by"]
+    assert manifest["generated_by"]["tool"] == "mdprepbench-packager"
+    assert manifest["generated_by"]["tool_variant"] == "mdclaw-openmm-wrapper"
     hashed_paths = {entry["path"] for entry in provenance["raw_outputs"]}
     assert "manifest.json" in hashed_paths
     assert "topology/state.xml" in hashed_paths
@@ -300,4 +303,5 @@ def test_package_mdprep_submission_uses_min_node_state(tmp_path):
     assert (sub / "topology" / "state.xml").read_text() == Path(state_xml).read_text()
     provenance = json.loads((sub / "provenance.json").read_text())
     assert provenance["mdclaw_dag"]["min_node_id"] == min_node["node_id"]
+    assert provenance["generated_by"]["tool_variant"] == "mdclaw-dag-adapter"
     assert provenance["raw_outputs"]

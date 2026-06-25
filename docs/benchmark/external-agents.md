@@ -45,8 +45,8 @@ receive the same resolved value.
 
 The runner sets an opt-in MDClaw CLI logging hook so agent-issued `mdclaw`
 commands become measured `harness_execution.json` records. Agents that never
-invoke the MDClaw CLI need their own adapter or packager step before strict
-stage-level provenance can pass.
+invoke the MDClaw CLI should run the exposed stage-recording wrapper, or use
+their own runner adapter, so strict stage-level provenance can pass.
 
 The runner does not inject extra solver instructions and does not award or
 deduct points based on skill visibility. Use `--tooling-condition
@@ -171,66 +171,51 @@ benchmark_runs/<run_id>/
   tasks/
     <task_id>/
       submission/
-        manifest.json
-        metrics.json
-        evidence_report.json
-        provenance.json
-        decision_log.jsonl
+        topology/
+          system.xml
+          topology.pdb
+          state.xml
         prepared_structure.pdb
-        minimized_structure.pdb
-        minimization_report.json
-        figures/
-        methods.md
+        <task-specific raw artifacts>
       score.json
   summary.json
 ```
 
-Required files vary by task. Evaluator or harness code can read
-`task.json.required_outputs` before launching the agent. The common files are:
+Required raw files vary by task. External agents should read the exported
+`submission_contract.json` and use its `required_outputs` field, not the private
+`task.json.required_outputs` field. For MDPrepBench preparation tasks, the
+benchmark evaluator derives the common metadata files:
 
-- `manifest.json`: `run_id`, `task_id`, `status`, and paths to submitted
-  artifacts.
-- `metrics.json`: deterministic values such as topology backend, force-field,
-  minimization completion, finite energy / coordinate checks, ligand RMSD, or
-  analysis summary values. These are declarations the scorer cross-checks
-  against values recomputed from the artifact; the recomputed value is what
-  scores.
+- `manifest.json`: generated paths to normalized artifacts.
+- `metrics.json`: generated objective metadata such as OpenMM backend and
+  single-point energy sanity.
+- `provenance.json`: generated raw-output md5 hashes and normalization metadata.
+- `minimized_structure.pdb`: exported from `topology/state.xml` by the evaluator.
+- `minimization_report.json`: generated from the submitted OpenMM bundle.
 - `evidence_report.json` (optional under the slim contract): preparation
   decisions, evidence, limitations, and any non-default chemistry choices.
   Required only when a specific task's contract lists it.
-- `provenance.json`: agent, runner, backend, model, scripts, raw outputs, and
-  md5 records when available. Completed prep submissions must include a
-  structured `command_log` or equivalent execution log covering `source`,
-  `prep`, `topo`, and `min` stages. The legacy stage name `minimization` is
-  accepted as an alias, but new submissions should use `min`. Listing scripts
-  alone is not enough. Strict scoring also requires a harness-owned
+- Harness execution evidence is recorded outside `submission/` by the benchmark
+  stage wrapper. Listing scripts alone is not enough. Strict scoring also requires a harness-owned
   `harness_execution.json` outside `submission/` with measured walltime for the
   required stages; agent-written provenance is not trusted as runtime evidence.
-- Task artifacts: `prepared_structure.pdb`, `minimized_structure.pdb`,
-  OpenMM topology files, and `minimization_report.json` for the current prep
-  battery.
+- Task artifacts: `prepared_structure.pdb`, OpenMM topology files, and any
+  task-specific raw files named in `submission_contract.json`.
 
-Preparation artifacts can be supplied through `manifest.outputs` rather than
-copied to a benchmark-specific fixed filename:
+For preparation tasks, the raw artifact layout is:
 
-```json
-{
-  "outputs": {
-    "prepared_structure": "ckpt_exports/prepared_structure.pdb",
-    "topology": [
-      "topology/system.xml",
-      "topology/topology.pdb",
-      "topology/state.xml"
-    ],
-    "minimized_structure": "minimized_structure.pdb",
-    "minimization_report": "minimization_report.json"
-  }
-}
+```text
+submission/
+  topology/
+    system.xml
+    topology.pdb
+    state.xml
+  prepared_structure.pdb
+  <task-specific raw artifacts>
 ```
 
-For MDClaw DAG submissions, prefer packaging the `min` node's
-`minimized_structure.pdb` plus `minimization_report.json`. If you are packaging
-an existing topology bundle directly, export the minimized-state PDB explicitly:
+The evaluator exports `minimized_structure.pdb` from `topology/state.xml`.
+If you want to inspect the same PDB locally, you can run:
 
 ```bash
 mdclaw export_state_pdb \
@@ -239,16 +224,10 @@ mdclaw export_state_pdb \
   --output-pdb-file minimized_structure.pdb
 ```
 
-Then set `manifest.outputs.minimized_structure` to
-`"minimized_structure.pdb"`. In MDClaw topology builds, `state.xml` carries the
-topology-time minimized coordinates; `topology.pdb` is the topology reference
-used to write atom/residue records. Use `topology.pdb` directly only if your
-workflow documents that it already contains minimized coordinates.
-
-Paths are resolved relative to the `submission/` directory and must stay inside
-that directory. Absolute paths and `../` escapes are rejected. This keeps the
-benchmark agent-independent while requiring a common OpenMM topology artifact
-format for the current prep battery.
+Raw paths are resolved relative to the `submission/` directory and must stay
+inside that directory. Absolute paths and `../` escapes are rejected during
+normalization. This keeps the benchmark agent-independent while requiring a
+common OpenMM topology artifact format for the current prep battery.
 
 For MDStudyBench, completed scientific-answer tasks such as S01/S02 must list
 real comparative trajectory artifacts in `manifest.outputs.trajectories` and
@@ -287,18 +266,20 @@ files, and your `submission/` files.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
 - The contract never requires any MDClaw-specific field, so MDClaw-free agents
-  (MDCrow, plain OpenMM/pdbfixer scripts) are scored identically. Package an
-  agent's own OpenMM System with `mdclaw package_openmm_submission` or the
-  standalone `benchmarks/tools/package_submission.py`; see
+  (MDCrow, plain OpenMM/pdbfixer scripts) are scored identically. Put the
+  agent's own OpenMM System/Topology/State artifacts under `submission/topology/`
+  and let the evaluator normalize them. The standalone
+  `benchmarks/tools/package_submission.py` and `mdclaw package_openmm_submission`
+  are optional helpers, not required scorer inputs. See
   `docs/benchmark/mdcrow-runner.md` and `docs/benchmark/fairness-protocol.md`.
-  Pass optional `evidence_report.json` through the packager instead of editing
-  `manifest.json` or `provenance.json` after packaging.
 
 For leaderboard-style runs, JSON claims are never enough when a task asks for
-MD preparation artifacts. The manifest must point at the real prepared
-structure, topology artifacts, minimized structure, minimization report, and
-any task-specific artifacts. The scorer may verify file existence, byte floors,
-residue/component content, and derived metrics. Synthetic submissions generated
+MD preparation artifacts. The solver must place the real prepared structure,
+OpenMM topology artifacts, and any task-specific raw artifacts in
+`submission/`; the evaluator then writes the normalized manifest, metrics,
+provenance hashes, minimized structure, and minimization report. The scorer may
+verify file existence, byte floors, residue/component content, and derived
+metrics. Synthetic submissions generated
 by benchmark tests are for scorer CI only and should not be interpreted as
 agent performance.
 
@@ -313,8 +294,8 @@ credit.
 
 MDCrow stores generated files in a checkpoint directory and tracks them through
 file IDs in `ckpt/paths_registry.json`. The MD benchmark suites do not need a
-MDCrow-specific adapter if the final submission records the relevant files in
-the standard manifest.
+MDCrow-specific adapter if the final submission contains the raw OpenMM
+artifacts at the public contract paths.
 
 A generic MDCrow-style workflow is:
 
@@ -324,11 +305,10 @@ A generic MDCrow-style workflow is:
    `truth/` or `scorer/`.
 3. Let MDCrow run normally and produce its checkpoint files.
 4. Export or copy the relevant files under `submission/`, for example
-   `submission/topology/topology.pdb` and `submission/minimization_report.json`.
-5. Write `manifest.json` with `outputs.topology`, `outputs.minimized_structure`,
-   and any task-specific outputs pointing at those files.
-6. Write `metrics.json`, `evidence_report.json`, and `provenance.json` with the
-   model, runner, backend, and any raw-output hashes available.
+   `submission/topology/system.xml`, `submission/topology/topology.pdb`,
+   `submission/topology/state.xml`, and `submission/prepared_structure.pdb`.
+5. Copy any task-specific raw artifacts named by `submission_contract.json`.
+6. Stop. The benchmark evaluator writes normalized metadata and hashes.
 
 The same pattern applies to any other file-registry agent. The benchmark
 contract is the `submission/` directory, not the internal registry.
@@ -397,9 +377,10 @@ minimization evidence. The key deterministic checks are:
 
 ```text
 submission/prepared_structure.pdb: residue A:11 is GLH with atom HE2
-submission/manifest.json: outputs.topology points to OpenMM topology artifacts
-submission/manifest.json: outputs.minimized_structure points to the minimized structure
-submission/minimization_report.json: minimization.completed == true and finite energies/positions
+submission/topology/system.xml: OpenMM System XML
+submission/topology/topology.pdb: OpenMM topology atom/residue records
+submission/topology/state.xml: post-minimization OpenMM State XML
+normalized minimization_report.json: finite energies/positions derived by evaluator
 ```
 
 Example `evidence_report.json`:

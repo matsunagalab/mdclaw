@@ -48,6 +48,20 @@ from pathlib import Path
 from typing import Any, Optional
 
 
+_PACKAGER_TOOL = "mdprepbench-packager"
+_PACKAGER_SCHEMA_VERSION = "1.0"
+_PACKAGER_HASH_ALGORITHM = "md5"
+
+
+def _packager_generated_by(tool_variant: str) -> dict[str, str]:
+    return {
+        "tool": _PACKAGER_TOOL,
+        "tool_variant": tool_variant,
+        "schema_version": _PACKAGER_SCHEMA_VERSION,
+        "hash_algorithm": _PACKAGER_HASH_ALGORITHM,
+    }
+
+
 def _single_point_energy(system_xml: Path, state_xml: Path) -> dict[str, Any]:
     """Measure one potential energy for the agent's own system+state."""
     out: dict[str, Any] = {
@@ -344,8 +358,10 @@ def package(args: argparse.Namespace) -> int:
         ),
     })
 
+    generated_by = _packager_generated_by("openmm-standalone")
     manifest = {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": args.run_id,
         "task_id": args.task_id,
         "status": args.status,
@@ -403,6 +419,7 @@ def package(args: argparse.Namespace) -> int:
     )
     _write_json(staging / "provenance.json", {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": args.run_id,
         "task_id": args.task_id,
         "agent": args.agent,

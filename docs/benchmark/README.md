@@ -191,12 +191,15 @@ per-axis scores, the per-capability profile, `tooling_condition`, and
 
 **3. MDClaw-free agent (e.g. MDCrow, `mdclaw-free`).** Init with
 `mdclaw init_benchmark_run --tooling-condition mdclaw-free`, hand the agent only
-the exported public `prompt.md`, package its own OpenMM triple with
-`mdclaw package_openmm_submission` or the standalone
-`benchmarks/tools/package_submission.py`, then `score_benchmark_run`. Optional
-evidence reports should be passed to the packager, not added by hand-editing
-`manifest.json` or `provenance.json` after packaging. Full
-recipe: `docs/benchmark/mdcrow-runner.md`.
+the exported public `prompt.md`, and ask it to place raw OpenMM artifacts in
+`submission/`: `topology/system.xml`, `topology/topology.pdb`,
+`topology/state.xml`, `prepared_structure.pdb`, and task-specific raw files.
+`score_benchmark_run` normalizes those artifacts into `manifest.json`,
+`metrics.json`, `provenance.json`, md5 hashes, `minimized_structure.pdb`, and
+`minimization_report.json` before scoring. The standalone
+`benchmarks/tools/package_submission.py` and MDClaw package commands remain
+optional helpers, not eligibility requirements. Full recipe:
+`docs/benchmark/mdcrow-runner.md`.
 
 **4. Weak baselines (discrimination check).**
 `benchmarks/baselines/naive_pdbfixer_prep.py` (no-MDClaw floor) and
@@ -306,25 +309,24 @@ including where to store solver outputs and `harness_execution.json`.
 
 ## Submission Contract
 
-Every task requires a `submission/` directory with the slim core set
-(`evidence_report.json` is optional unless a specific task's contract lists it):
+Every preparation task requires a `submission/` directory with raw physical
+artifacts (`evidence_report.json` is optional unless a specific task's contract
+lists it):
 
 ```text
-manifest.json
-metrics.json
-provenance.json
+topology/system.xml
+topology/topology.pdb
+topology/state.xml
 prepared_structure.pdb
-minimized_structure.pdb
-minimization_report.json
+task-specific raw artifacts
 ```
 
-Every completed prep submission must also point `manifest.outputs.topology` to
-an OpenMM topology bundle and `manifest.outputs.minimized_structure` to the
-post-minimization structure. The OpenMM bundle must include the `system.xml`,
-`topology.pdb`, and `state.xml` artifact triple under `outputs.topology` as a
-JSON list, not a role-keyed object. Amber or GROMACS can still be used upstream,
-but completed prep submissions must export an OpenMM-compatible artifact triple
-for scoring.
+The OpenMM bundle is the scoring contract. Amber or GROMACS can still be used
+upstream, but completed prep submissions must export an OpenMM-compatible
+`system.xml` + `topology.pdb` + `state.xml` triple for scoring. The evaluator
+normalizes this raw directory into `manifest.json`, `metrics.json`,
+`provenance.json`, raw-output md5 hashes, `minimized_structure.pdb`, and
+`minimization_report.json`.
 
 For MDClaw DAG runs, the standard post-topology workflow is `topo -> min`; the
 `min` node writes `minimized_structure.pdb`, `minimized.xml`, and
@@ -340,24 +342,24 @@ mdclaw export_state_pdb \
   --output-pdb-file minimized_structure.pdb
 ```
 
-Record that command in `provenance.command_log`. Do not assume
-`topology.pdb` itself is the minimized structure unless your workflow documents
-that it was written with minimized coordinates. This topology-time minimization
-evidence is separate from the standalone `min` node used before later
-equilibration nodes in ordinary MDClaw DAGs.
+That command is now an optional local inspection helper. In MDPrepBench scoring,
+the evaluator derives `minimized_structure.pdb` from the submitted
+`topology/topology.pdb` + `topology/state.xml` pair and writes the
+minimization report itself. Solver-side provenance should describe the commands
+that produced the raw OpenMM triple and prepared structure; it is not a source
+of truth for hashes, final energies, or minimized coordinates.
 
-The public `submission_contract.json` records the artifact requirements plus a
-`submission_blueprint` showing the minimum manifest, metrics, minimization
-report, and provenance shape. MDPrepBench intentionally keeps structured
-submitted metrics small: the scorer should recompute scientific and physical
-facts from artifacts whenever possible instead of accepting self-reported JSON.
-All `manifest.outputs` paths must be relative paths under `submission/`;
-absolute paths and parent-directory escapes are rejected. Completed prep
-submissions must include structured provenance execution evidence, usually
-`provenance.command_log`, covering source, prep, topology, and minimization.
-Strict tasks also require a harness-owned `harness_execution.json` outside
-`submission/`, with measured walltime for each required stage. A solver-written
-`provenance.json` alone is not sufficient execution evidence.
+The public `submission_contract.json` records the raw artifact requirements
+plus a `submission_blueprint` describing evaluator-generated normalized outputs.
+MDPrepBench intentionally keeps solver-authored structured metadata small: the
+scorer recomputes scientific and physical facts from artifacts whenever
+possible instead of accepting self-reported JSON. Agents should place only raw
+physical artifacts and task-specific evidence in `submission/`; the evaluator
+writes relative `manifest.outputs`, normalized metrics, provenance hashes, and
+minimization reports. Strict tasks also require a harness-owned
+`harness_execution.json` outside `submission/`, with measured walltime for each
+required stage. A solver-written provenance note alone is not sufficient
+execution evidence.
 
 Individual tasks inspect submitted structures, OpenMM bundle contents, and
 scorer-side references under `truth/`. For example, P11 checks the submitted PDB

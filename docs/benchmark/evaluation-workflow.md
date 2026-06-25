@@ -118,7 +118,7 @@ When the agent invokes `mdclaw` commands, the runner sets an opt-in environment
 hook so the MDClaw CLI appends measured stage records to a runner-owned JSONL
 log that is folded into `harness_execution.json`. This replaces hand-written
 harness records. Agents that never call the MDClaw CLI need an adapter or
-packager-specific runner before strict stage-level provenance can pass. The
+stage-recording wrapper before strict stage-level provenance can pass. The
 runner also writes an agent-safe `record_stage.py` wrapper into each task
 workspace and exposes it in `task_instructions.json` as `stage_recording` and
 in `$MDCLAW_BENCHMARK_STAGE_WRAPPER`; non-MDClaw solvers can run

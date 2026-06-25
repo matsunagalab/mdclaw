@@ -742,6 +742,7 @@ class Attestation(BaseModel):
     scorer_version: str = ""
     public_package_sha256: str = ""
     tooling_condition: ToolingCondition = "unknown"
+    solver_context: SolverContextInfo = Field(default_factory=SolverContextInfo)
     no_task_specific_hints_injected: bool = True
     created_at: str = ""
 

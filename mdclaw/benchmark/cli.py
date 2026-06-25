@@ -16,7 +16,14 @@ from typing import Any, Optional
 from pydantic import ValidationError
 
 from mdclaw._common import ensure_directory
-from mdclaw.benchmark import integrity, judge, public_contract, scoring, validation
+from mdclaw.benchmark import (
+    integrity,
+    judge,
+    normalization,
+    public_contract,
+    scoring,
+    validation,
+)
 from mdclaw.benchmark.datasets import (
     DEFAULT_BENCHMARK_VERSION,
     DEFAULT_DATASET_DIR,
@@ -39,6 +46,18 @@ _STANDALONE_PACKAGER_RELATIVE = Path("tools") / "package_submission.py"
 _STANDALONE_PACKAGER_SOURCE = (
     _REPO_ROOT / "benchmarks" / "tools" / "package_submission.py"
 )
+_PACKAGER_TOOL = "mdprepbench-packager"
+_PACKAGER_SCHEMA_VERSION = "1.0"
+_PACKAGER_HASH_ALGORITHM = "md5"
+
+
+def _packager_generated_by(tool_variant: str) -> dict[str, str]:
+    return {
+        "tool": _PACKAGER_TOOL,
+        "tool_variant": tool_variant,
+        "schema_version": _PACKAGER_SCHEMA_VERSION,
+        "hash_algorithm": _PACKAGER_HASH_ALGORITHM,
+    }
 
 
 def _has_valid_public_export_marker(path: Path) -> bool:
@@ -190,9 +209,13 @@ def score_benchmark_submission(
     output_file: Optional[str] = None,
     llm_judge_file: Optional[str] = None,
     harness_record_file: Optional[str] = None,
+    normalize_preparation: bool = True,
 ) -> dict[str, Any]:
     """Score a submission directory and write ``score.json``.
 
+    Preparation submissions may be raw artifact bundles.  In that case the
+    evaluator normalizes them into ``normalized_submission/`` before scoring so
+    agents are not required to self-report metrics, hashes, or minimized PDBs.
     Returns a dict with the score payload and the path to score.json.
     """
     task_path = Path(task_file)
@@ -208,9 +231,33 @@ def score_benchmark_submission(
     except ValueError as exc:
         return {"success": False, "errors": [str(exc)]}
 
+    normalization_result: Optional[dict[str, Any]] = None
+    scoring_submission_dir = sub_dir
+    if normalize_preparation and task.primary_score == "preparation":
+        normalized_dir = sub_dir.parent / "normalized_submission"
+        normalization_result = normalization.normalize_preparation_submission(
+            task=task,
+            raw_submission_dir=sub_dir,
+            normalized_submission_dir=normalized_dir,
+            run_id=run_id,
+        )
+        if not normalization_result.get("success"):
+            return {
+                "success": False,
+                "task_id": task.task_id,
+                "submission_dir": str(sub_dir),
+                "normalized_submission_dir": str(normalized_dir),
+                "score_file": output_file,
+                "score": None,
+                "normalization": normalization_result,
+                "errors": list(normalization_result.get("errors") or []),
+                "warnings": list(normalization_result.get("warnings") or []),
+            }
+        scoring_submission_dir = normalized_dir
+
     score = scoring.score_submission(
         task=task,
-        submission_dir=sub_dir,
+        submission_dir=scoring_submission_dir,
         run_id=run_id,
         llm_judge_payload=judge_payload,
         task_dir=task_path.parent,
@@ -228,8 +275,13 @@ def score_benchmark_submission(
     return {
         "success": True,
         "task_id": score.task_id,
+        "submission_dir": str(sub_dir),
+        "normalized_submission_dir": (
+            str(scoring_submission_dir) if scoring_submission_dir != sub_dir else None
+        ),
         "score_file": str(out_path),
         "score": score_payload,
+        "normalization": normalization_result,
     }
 
 
@@ -252,7 +304,54 @@ def validate_and_score_benchmark_submission(
     internal shape returned by :func:`score_benchmark_submission`.
     """
     sub_dir = Path(submission_dir)
-    validation_result = validate_benchmark_submission(task_file, submission_dir)
+    try:
+        task = validation.load_task(task_file)
+    except (ValidationError, json.JSONDecodeError, FileNotFoundError) as exc:
+        validation_result = {
+            "success": False,
+            "task_id": None,
+            "submission_dir": str(sub_dir),
+            "errors": [f"task file invalid: {exc}"],
+            "warnings": [],
+            "missing_outputs": [],
+        }
+        task = None
+
+    normalization_result: Optional[dict[str, Any]] = None
+    scoring_submission_dir = sub_dir
+    if task is not None and task.primary_score == "preparation":
+        normalized_dir = sub_dir.parent / "normalized_submission"
+        normalization_result = normalization.normalize_preparation_submission(
+            task=task,
+            raw_submission_dir=sub_dir,
+            normalized_submission_dir=normalized_dir,
+            run_id=run_id,
+        )
+        if normalization_result.get("success"):
+            scoring_submission_dir = normalized_dir
+        else:
+            validation_result = {
+                "success": False,
+                "task_id": task.task_id,
+                "submission_dir": str(sub_dir),
+                "normalized_submission_dir": str(normalized_dir),
+                "errors": list(normalization_result.get("errors") or []),
+                "warnings": list(normalization_result.get("warnings") or []),
+                "missing_outputs": [],
+                "normalization": normalization_result,
+            }
+    if task is not None and (
+        normalization_result is None or normalization_result.get("success")
+    ):
+        validation_result = validate_benchmark_submission(
+            task_file,
+            str(scoring_submission_dir),
+        )
+        if normalization_result is not None:
+            validation_result["raw_submission_dir"] = str(sub_dir)
+            validation_result["normalized_submission_dir"] = str(scoring_submission_dir)
+            validation_result["normalization"] = normalization_result
+
     validation_file = None
     if validation_output_file:
         validation_path = Path(validation_output_file)
@@ -267,6 +366,11 @@ def validate_and_score_benchmark_submission(
             "success": False,
             "task_id": validation_result.get("task_id"),
             "submission_dir": str(sub_dir),
+            "normalized_submission_dir": (
+                str(scoring_submission_dir)
+                if scoring_submission_dir != sub_dir
+                else None
+            ),
             "validation_success": False,
             "validation_file": validation_file,
             "score_success": False,
@@ -282,17 +386,23 @@ def validate_and_score_benchmark_submission(
 
     score_result = score_benchmark_submission(
         task_file=task_file,
-        submission_dir=submission_dir,
+        submission_dir=str(scoring_submission_dir),
         run_id=run_id,
         output_file=output_file,
         llm_judge_file=llm_judge_file,
         harness_record_file=harness_record_file,
+        normalize_preparation=False,
     )
     if not score_result.get("success"):
         return {
             "success": False,
             "task_id": validation_result.get("task_id"),
             "submission_dir": str(sub_dir),
+            "normalized_submission_dir": (
+                str(scoring_submission_dir)
+                if scoring_submission_dir != sub_dir
+                else None
+            ),
             "validation_success": bool(validation_result.get("success")),
             "validation_file": validation_file,
             "score_success": False,
@@ -313,6 +423,11 @@ def validate_and_score_benchmark_submission(
         "success": True,
         "task_id": score_payload.get("task_id") or validation_result.get("task_id"),
         "submission_dir": str(sub_dir),
+        "normalized_submission_dir": (
+            str(scoring_submission_dir)
+            if scoring_submission_dir != sub_dir
+            else None
+        ),
         "validation_success": bool(validation_result.get("success")),
         "validation_file": validation_file,
         "score_success": True,
@@ -323,6 +438,7 @@ def validate_and_score_benchmark_submission(
         "benchmark_passed": score_status == "passed",
         "validation": validation_result,
         "score": score_payload,
+        "normalization": normalization_result,
         "errors": [],
     }
 
@@ -474,20 +590,20 @@ def export_benchmark_public_package(
             "Agents should read `tasks/<task_id>/prompt.md`, then use "
             "`tasks/<task_id>/submission_contract.json` and "
             "`tasks/<task_id>/submission_checklist.md` to build a `submission/` "
-            "directory. The contract includes a `submission_blueprint` for the "
-            "minimum manifest, metrics, provenance, and minimization-report "
-            "shape expected by the scorer. The final topology must be an "
-            "OpenMM `system.xml` + `topology.pdb` + `state.xml` bundle. "
-            "Use any OpenMM-capable workflow to create a matching "
-            "`minimized_structure.pdb`; MDClaw helpers are optional. For "
-            "MDClaw-free packaging, use `tools/package_submission.py` from "
-            "this public package to write manifest/provenance files and "
-            "`provenance.raw_outputs` hashes.\n\n"
+            "directory. For MDPrepBench preparation tasks, submit raw OpenMM "
+            "artifacts: `topology/system.xml`, `topology/topology.pdb`, "
+            "`topology/state.xml`, `prepared_structure.pdb`, and any "
+            "task-specific raw files. The evaluator normalizes those artifacts "
+            "into `manifest.json`, `metrics.json`, `provenance.json`, md5 "
+            "hashes, `minimized_structure.pdb`, and "
+            "`minimization_report.json`; do not hand-write those generated "
+            "files. MDClaw helpers and `tools/package_submission.py` are "
+            "optional convenience tools only.\n\n"
             "Agents "
             "must not be given evaluator-side `task.json`, `truth/`, or `scorer/` "
-            "files from the canonical repository tree. The contract lists required "
-            "outputs, metric requirements, and manifest rules such as "
-            "`status=\"completed\"`.\n\n"
+            "files from the canonical repository tree. The contract lists raw "
+            "required outputs, normalized evaluator outputs, and task-specific "
+            "requirements.\n\n"
             "Score submissions with the MDClaw benchmark scorer from a held-out "
             "private evaluator package exported by "
             "`mdclaw export_benchmark_private_package`, or from a canonical "
@@ -1012,8 +1128,10 @@ def package_openmm_submission(
         json.dumps(minimization_report, indent=2, sort_keys=True) + "\n"
     )
 
+    generated_by = _packager_generated_by("mdclaw-openmm-wrapper")
     manifest = {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": run_id,
         "task_id": task_id,
         "status": status,
@@ -1132,6 +1250,7 @@ def package_openmm_submission(
 
     provenance = {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": run_id,
         "task_id": task_id,
         "agent": agent,
@@ -1352,8 +1471,10 @@ def package_mdprep_submission(
                 f"source_selection_file is not valid JSON: {source_selection_input}"
             )
 
+    generated_by = _packager_generated_by("mdclaw-dag-adapter")
     manifest = {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": run_id,
         "task_id": task_id,
         "status": status,
@@ -1480,6 +1601,7 @@ def package_mdprep_submission(
 
     provenance = {
         "schema_version": "1.0",
+        "generated_by": generated_by,
         "run_id": run_id,
         "task_id": task_id,
         "agent": agent,

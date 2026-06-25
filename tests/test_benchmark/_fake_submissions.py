@@ -183,6 +183,18 @@ def _component_atom_names(check: dict[str, Any]) -> list[str]:
     return [f"C{i + 1}" for i in range(n)]
 
 
+def _unique_atom_names(atom_names: list[Any]) -> list[str]:
+    seen: set[str] = set()
+    unique: list[str] = []
+    for atom_name in atom_names:
+        atom = str(atom_name)
+        if atom in seen:
+            continue
+        seen.add(atom)
+        unique.append(atom)
+    return unique
+
+
 def _check_targets_topology(check: dict[str, Any]) -> bool:
     target = str(
         check.get("structure_manifest_path")
@@ -204,6 +216,7 @@ def _topology_component_residues(
     """
     residues: list[tuple[str, int, int]] = []
     ion_residue_names: set[str] = set()
+    nucleic_residue_names: set[str] = set()
     for check in task["scoring"]["deterministic_checks"]:
         if check.get("check_type") != "ion_concentration_recompute":
             continue
@@ -214,6 +227,15 @@ def _topology_component_residues(
         ion_residue_names.update(
             str(name).strip().upper()
             for name in (check.get("anion_residue_names") or [])
+        )
+    for check in task["scoring"]["deterministic_checks"]:
+        if check.get("check_type") != "nucleic_content_rescan":
+            continue
+        nucleic_type = str(check.get("required_nucleic_acid_type") or "").upper()
+        nucleic_residue_names.update(
+            {"A", "C", "G", "U"}
+            if nucleic_type == "RNA"
+            else {"DA", "DC", "DG", "DT"}
         )
     for check in task["scoring"]["deterministic_checks"]:
         check_type = check.get("check_type")
@@ -227,11 +249,13 @@ def _topology_component_residues(
             continue
         n_atoms = max(1, int(check.get("min_residue_atom_count") or 1))
         for resname, count in (check.get("min_residue_counts") or {}).items():
-            if str(resname).strip().upper() in ion_residue_names:
+            normalized = str(resname).strip().upper()
+            if normalized in ion_residue_names or normalized in nucleic_residue_names:
                 continue
             residues.append((str(resname), n_atoms, int(count)))
         for resname, count in (check.get("exact_residue_counts") or {}).items():
-            if str(resname).strip().upper() in ion_residue_names:
+            normalized = str(resname).strip().upper()
+            if normalized in ion_residue_names or normalized in nucleic_residue_names:
                 continue
             residues.append((str(resname), n_atoms, int(count)))
     return residues
@@ -507,6 +531,7 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
     # Embed component residues (e.g. lipids) for checks that read the OpenMM
     # topology bundle, with enough atoms to clear any per-residue atom floor.
     if task is not None:
+        residue_state_keys: set[tuple[str, int, str]] = set()
         for check in task.get("scoring", {}).get("deterministic_checks", []):
             if check.get("check_type") != "pdb_residue_state":
                 continue
@@ -515,7 +540,17 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
                 str(check.get("residue_number") or "1").strip() or 1
             )
             resname = check.get("required_residue_name") or "ALA"
-            atoms = ["N", "CA", "C", "O", *(check.get("required_atom_names") or [])]
+            residue_state_key = (str(chain_id), resseq_required, str(resname))
+            if residue_state_key in residue_state_keys:
+                continue
+            residue_state_keys.add(residue_state_key)
+            atoms = _unique_atom_names([
+                "N",
+                "CA",
+                "C",
+                "O",
+                *(check.get("required_atom_names") or []),
+            ])
             chain_for_residue = topology.addChain(str(chain_id))
             residue = topology.addResidue(
                 str(resname),
@@ -526,12 +561,69 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
                 element = "H" if str(atom_name).startswith("H") else "C"
                 mass = 1.0 if element == "H" else 12.0
                 add_atom(str(atom_name), element, str(resname), residue, 0.0, mass)
+        component_chain = topology.addChain("Z")
         for resname, n_atoms, count in _topology_component_residues(task):
             for _ in range(count):
-                residue = topology.addResidue(resname, chain, str(resseq))
+                residue = topology.addResidue(resname, component_chain, str(resseq))
                 for atom_i in range(n_atoms):
                     add_atom(f"C{atom_i + 1}", "C", resname, residue, 0.0, 12.0)
                 resseq += 1
+
+        nucleic_keys: set[tuple[str, int, int]] = set()
+        for check in task.get("scoring", {}).get("deterministic_checks", []):
+            if check.get("check_type") != "nucleic_content_rescan":
+                continue
+            nucleic_type = str(
+                check.get("required_nucleic_acid_type") or "DNA"
+            ).upper()
+            chain_count = int(
+                check.get("exact_nucleic_chain_count")
+                or check.get("min_nucleic_chain_count")
+                or 1
+            )
+            residue_count = int(check.get("min_nucleic_residue_count") or 4)
+            nucleic_key = (nucleic_type, chain_count, residue_count)
+            if nucleic_key in nucleic_keys:
+                continue
+            nucleic_keys.add(nucleic_key)
+            residue_names = (
+                ["A", "C", "G", "U"]
+                if nucleic_type == "RNA"
+                else ["DA", "DC", "DG", "DT"]
+            )
+            chain_ids = ["N", "M", "R", "S", "T", "U"]
+            per_chain = max(1, (residue_count + chain_count - 1) // chain_count)
+            for chain_i in range(chain_count):
+                nucleic_chain = topology.addChain(chain_ids[chain_i])
+                for residue_i in range(per_chain):
+                    resname = residue_names[residue_i % len(residue_names)]
+                    residue = topology.addResidue(resname, nucleic_chain, str(resseq))
+                    add_atom("P", "P", resname, residue, 0.0, 31.0)
+                    add_atom("C1", "C", resname, residue, 0.0, 12.0)
+                    add_atom("N1", "N", resname, residue, 0.0, 14.0)
+                    resseq += 1
+
+        assembly_chain_count = 0
+        for check in task.get("scoring", {}).get("deterministic_checks", []):
+            if check.get("check_type") != "assembly_identity_check":
+                continue
+            assembly_chain_count = max(
+                assembly_chain_count,
+                int(
+                    check.get("exact_chain_count")
+                    or check.get("min_chain_count")
+                    or check.get("min_distinct_output_chains")
+                    or 1
+                ),
+            )
+        for chain_id in ["B", "C", "D", "E", "F", "G"][:max(assembly_chain_count - 1, 0)]:
+            assembly_chain = topology.addChain(chain_id)
+            residue = topology.addResidue("GLY", assembly_chain, str(resseq))
+            add_atom("N", "N", "GLY", residue, 0.0, 14.0)
+            add_atom("CA", "C", "GLY", residue, 0.0, 12.0)
+            add_atom("C", "C", "GLY", residue, 0.0, 12.0)
+            add_atom("O", "O", "GLY", residue, 0.0, 16.0)
+            resseq += 1
 
     system.addForce(nonbonded)
 
@@ -628,7 +720,13 @@ def _prepared_structure(
             chain = check.get("residue_chain") or "A"
             number = int(str(check.get("residue_number") or "1").strip() or 1)
             resname = check.get("required_residue_name") or "ALA"
-            atoms = ["N", "CA", "C", "O", *(check.get("required_atom_names") or [])]
+            atoms = _unique_atom_names([
+                "N",
+                "CA",
+                "C",
+                "O",
+                *(check.get("required_atom_names") or []),
+            ])
             if mode != "honest":
                 resname = "GLY"
                 atoms = ["N", "CA", "C", "O"]

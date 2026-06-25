@@ -80,10 +80,9 @@ def required_raw_output_hash_warnings(
 ) -> list[str]:
     """Require ``provenance.raw_outputs`` hashes for submitted artifacts.
 
-    The packagers write these hashes immediately before publishing
-    ``submission/``.  The scorer then re-hashes the final bytes, which catches
-    the common failure mode where an agent packages once and then manually
-    replaces ``minimized_structure.pdb`` or ``minimization_report.json``.
+    The benchmark normalizer or optional packagers write these hashes before
+    scoring. The scorer then re-hashes the final bytes, which catches the
+    common failure mode where files are edited after normalization.
 
     ``provenance.json`` itself is intentionally excluded because it cannot
     carry a stable hash of itself.
@@ -101,10 +100,11 @@ def required_raw_output_hash_warnings(
 
     raw_outputs = provenance.get("raw_outputs")
     if not isinstance(raw_outputs, list):
-        return [
+        warnings.append(
             "provenance.raw_outputs is missing or not a list; cannot verify "
             "submitted artifact hashes"
-        ]
+        )
+        return warnings
 
     claims: dict[str, str] = {}
     for index, entry in enumerate(raw_outputs):
