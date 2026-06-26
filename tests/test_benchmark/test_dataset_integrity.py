@@ -296,6 +296,17 @@ def test_p18_lipid_contract_checks_mixed_species_without_exact_ratio():
         assert "PA" not in aliases["POPE"]
         assert "OL" not in aliases["POPE"]
 
+    for check_id in (
+        "topology_no_unrequested_nonstandard_residues",
+        "minimized_no_unrequested_nonstandard_residues",
+    ):
+        # Amber lipid21 can represent POPC/POPE as headgroup residues plus
+        # acyl-chain modules (PA/OL). Those fragments are expected topology
+        # modules, but must not count as whole POPC/POPE species above.
+        assert {"PA", "OL"}.issubset(
+            set(checks[check_id]["ignored_residue_names"])
+        )
+
 
 def test_studybench_dataset_json_matches_task_directories():
     dataset = json.loads((STUDY_DATASET_DIR / "dataset.json").read_text())
@@ -453,6 +464,8 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     assert "PDB 2LOP NMR ensemble" in p18_prompt
     assert "submitted coordinates" in p18_prompt
     assert "no self-reported source-selection evidence is required" in p18_prompt
+    assert "still-running" in p18_prompt
+    assert "completed raw artifacts" in p18_prompt
 
     p19_dir = DATASET_DIR / "tasks" / "P19_prep_nmr_model_selection"
     p19_prompt = (p19_dir / "prompt.md").read_text()

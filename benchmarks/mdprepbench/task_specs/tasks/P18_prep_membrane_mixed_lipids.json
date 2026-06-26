@@ -40,6 +40,10 @@
         ],
         "check_id": "topology_no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
+        "ignored_residue_names": [
+          "PA",
+          "OL"
+        ],
         "min_residue_atom_count": 2,
         "residue_aliases": {
           "CHL1": [
@@ -109,6 +113,10 @@
         ],
         "check_id": "minimized_no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
+        "ignored_residue_names": [
+          "PA",
+          "OL"
+        ],
         "min_residue_atom_count": 2,
         "residue_aliases": {
           "CHL1": [

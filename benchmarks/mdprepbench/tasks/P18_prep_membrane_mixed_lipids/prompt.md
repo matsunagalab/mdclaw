@@ -6,6 +6,11 @@ Use this prompt as the task statement. Retrieve public sources as needed, and do
 
 Task: Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. The scorer verifies model selection from the submitted coordinates against a fixed model-1 reference, so no self-reported source-selection evidence is required.
 
+Membrane construction can legitimately take tens of minutes or longer. Do not
+submit a result that depends on background or still-running preparation,
+membrane embedding, topology, or minimization work; wait until those steps have
+completed or failed and submit only completed raw artifacts.
+
 Public source anchors: PDB 2LOP.
 
 Your submission directory must contain:

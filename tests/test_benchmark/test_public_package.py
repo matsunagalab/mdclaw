@@ -81,6 +81,8 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "output-only" in packaging["submission_dir_policy"]
         assert "exact submission_dir" in packaging["submission_dir_policy"]
         assert "work_dir/submission" in packaging["submission_dir_policy"]
+        assert "still running" in packaging["completion_requirement"]
+        assert "background" in packaging["completion_requirement"]
         assert "Do not hand-write" in packaging["post_submission_rule"]
         assert "optional convenience" in packaging["post_submission_rule"]
         assert "--evidence-report-file" in packaging["mdclaw_dag_command_template"]
@@ -147,6 +149,10 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         )
         assert any(
             "do not hand-write manifest.json" in item
+            for item in contract["submission_checklist"]
+        )
+        assert any(
+            "background preparation" in item
             for item in contract["submission_checklist"]
         )
         assert any(
@@ -324,11 +330,19 @@ def test_export_public_package_exposes_p18_mixed_lipid_requirements(
             / "submission_contract.json"
         ).read_text()
     )
+    prompt = (
+        out_dir
+        / "tasks"
+        / "P18_prep_membrane_mixed_lipids"
+        / "prompt.md"
+    ).read_text()
     artifact_requirements = {
         item["check_id"]: item
         for item in contract["artifact_requirements"]
     }
 
+    assert "still-running" in prompt
+    assert "completed raw artifacts" in prompt
     assert "lipid_ratio_rescanned" not in artifact_requirements
     component_requirements = {
         item["check_id"]: item

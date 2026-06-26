@@ -11,6 +11,7 @@ Design principle:
 
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -115,6 +116,107 @@ def inspect_job(job_dir: str) -> dict:
         "progress_warnings": progress.get("warnings", []),
         "nodes": nodes,
     }
+
+
+def wait_node(
+    job_dir: str,
+    node_id: str,
+    timeout_seconds: float = 0.0,
+    poll_interval_seconds: float = 5.0,
+    terminal_statuses: Optional[list[str]] = None,
+) -> dict:
+    """Wait until a node reaches a terminal status.
+
+    This is a read-only workflow helper for long-running nodes.  It does not
+    claim, start, fail, or complete the node; it only polls ``node.json`` until
+    a terminal status is observed or the timeout expires.
+    """
+    jd = Path(job_dir).resolve()
+    terminal = set(terminal_statuses or ["completed", "failed"])
+    timeout = max(float(timeout_seconds), 0.0)
+    interval = max(float(poll_interval_seconds), 0.1)
+    started = time.monotonic()
+    polls = 0
+    last_status = None
+
+    while True:
+        polls += 1
+        node_json = jd / "nodes" / node_id / "node.json"
+        if not node_json.is_file():
+            return {
+                "success": False,
+                "code": "node_missing",
+                "message": f"Node '{node_id}' does not exist under {jd}",
+                "job_dir": str(jd),
+                "node_id": node_id,
+                "terminal_statuses": sorted(terminal),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "polls": polls,
+                "errors": [f"missing node.json: {node_json}"],
+                "warnings": [],
+            }
+
+        try:
+            node = json.loads(node_json.read_text())
+        except json.JSONDecodeError as exc:
+            return {
+                "success": False,
+                "code": "node_json_invalid",
+                "message": f"node.json is not valid JSON: {exc}",
+                "job_dir": str(jd),
+                "node_id": node_id,
+                "terminal_statuses": sorted(terminal),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "polls": polls,
+                "errors": [str(exc)],
+                "warnings": [],
+            }
+
+        last_status = node.get("status")
+        if last_status in terminal:
+            return {
+                "success": True,
+                "code": "node_terminal",
+                "message": f"Node '{node_id}' reached status '{last_status}'",
+                "job_dir": str(jd),
+                "node_id": node_id,
+                "node_type": node.get("node_type"),
+                "status": last_status,
+                "node_completed": last_status == "completed",
+                "node_failed": last_status == "failed",
+                "terminal_statuses": sorted(terminal),
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "polls": polls,
+                "errors": [],
+                "warnings": [],
+            }
+
+        elapsed = time.monotonic() - started
+        if elapsed >= timeout:
+            return {
+                "success": False,
+                "code": "node_wait_timeout",
+                "message": (
+                    f"Timed out waiting for node '{node_id}' to reach one of "
+                    f"{sorted(terminal)}; current status is '{last_status}'"
+                ),
+                "job_dir": str(jd),
+                "node_id": node_id,
+                "node_type": node.get("node_type"),
+                "status": last_status,
+                "node_completed": False,
+                "node_failed": False,
+                "terminal_statuses": sorted(terminal),
+                "elapsed_seconds": round(elapsed, 3),
+                "polls": polls,
+                "errors": [
+                    f"node still {last_status}; do not package final outputs "
+                    "until the node reaches completed or failed"
+                ],
+                "warnings": [],
+            }
+
+        time.sleep(min(interval, max(timeout - elapsed, 0.1)))
 
 
 def get_ancestors(job_dir: str, node_id: str) -> list[str]:

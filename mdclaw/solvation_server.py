@@ -2247,6 +2247,10 @@ def embed_in_membrane(
         ...     preoriented=True
         ... )
     """
+    if isinstance(lipids, (list, tuple)):
+        lipids = ":".join(
+            str(lipid).strip() for lipid in lipids if str(lipid).strip()
+        )
     logger.info(f"Embedding structure in membrane: {pdb_file}")
     
     # Initialize result structure

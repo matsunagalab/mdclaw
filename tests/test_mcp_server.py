@@ -126,6 +126,8 @@ class TestImportServers:
 
         assert "inspect_job" in TOOLS
         assert callable(TOOLS["inspect_job"])
+        assert "wait_node" in TOOLS
+        assert callable(TOOLS["wait_node"])
         assert "explain_node" in TOOLS
         assert callable(TOOLS["explain_node"])
 

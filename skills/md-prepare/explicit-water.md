@@ -101,6 +101,17 @@ more than an hour. Do not assume a running membrane `solv` node is hung only
 because it has been running for 10-30 minutes. Continue monitoring or explain
 the same node until it completes, fails, or reaches the configured timeout; do
 not create a sibling `solv` node just to retry an in-progress membrane build.
+Run membrane embedding in the foreground for autonomous benchmark-style tasks.
+Do not exit or package a final submission while the membrane `solv` node is
+still `running`; wait until it reaches `completed` or `failed`, then continue
+from that concrete node outcome. If you need a simple blocking check after a
+long-running membrane command, use:
+
+```bash
+mdclaw wait_node --job-dir <job_dir> --node-id <solv_node_id> \
+  --timeout-seconds 7200 --poll-interval-seconds 30
+```
+
 Membrane embedding runs MDClaw's bounded Packmol retry plan as a 4-lane
 parallel race by default (`--packmol-race-lanes 4`). Use
 `--packmol-race-lanes 1` only on CPU-constrained/shared hosts when preserving

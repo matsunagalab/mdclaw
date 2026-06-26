@@ -40,6 +40,7 @@ from mdclaw._node import (
     update_node,
     update_node_status,
     validate_node_execution_context,
+    wait_node,
 )
 from mdclaw._node import complete_node as _real_complete_node
 from mdclaw._node import _sync_progress_node_entry
@@ -1526,6 +1527,41 @@ class TestUpdateNode:
         assert result["success"] is False
         assert result["code"] == "completed_node_sealed"
         assert read_node(str(job_dir), "prep_001")["status"] == "completed"
+
+
+class TestWaitNode:
+
+    def test_wait_node_returns_completed_terminal_status(self, job_dir):
+        create_node(str(job_dir), "solv")
+        complete_node(
+            str(job_dir),
+            "solv_001",
+            artifacts={"solvated_pdb": "artifacts/membrane.pdb"},
+        )
+
+        result = wait_node(str(job_dir), "solv_001", timeout_seconds=0)
+
+        assert result["success"] is True
+        assert result["code"] == "node_terminal"
+        assert result["status"] == "completed"
+        assert result["node_completed"] is True
+        assert result["node_failed"] is False
+
+    def test_wait_node_times_out_on_running_node(self, job_dir):
+        create_node(str(job_dir), "solv")
+        begin_node(str(job_dir), "solv_001")
+
+        result = wait_node(
+            str(job_dir),
+            "solv_001",
+            timeout_seconds=0,
+            poll_interval_seconds=0.1,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "node_wait_timeout"
+        assert result["status"] == "running"
+        assert "do not package final outputs" in result["errors"][0]
 
 
 # ── update_job_summaries ───────────────────────────────────────────────────

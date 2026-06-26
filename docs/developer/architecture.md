@@ -308,11 +308,14 @@ DAG invariants:
 ## Orchestration For Weak Agents
 
 The DAG is designed so an agent can resume from durable evidence instead of a
-separate next-step planner. Four additive helpers carry that load:
+separate next-step planner. Five additive helpers carry that load:
 
 - `inspect_job(job_dir)` reads `progress.json` and returns node statuses,
   leaves, claims, open needs, warnings, and workflow params such as
   `solvent_regime`.
+- `wait_node(job_dir, node_id)` polls a long-running node until it reaches a
+  terminal status. It is read-only and exists to prevent premature packaging or
+  duplicate retry branches while a node is still `running`.
 - `explain_node(job_dir, node_id)` validates a candidate node before execution
   and reports `ready_to_run`, resolved inputs, missing inputs, parent status, and
   blocking codes.

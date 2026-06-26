@@ -392,6 +392,12 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "the OpenMM bundle deserializes, has finite coordinates/energy, "
             "and matches the task-specific structural requirements."
         ),
+        "completion_requirement": (
+            "Do not submit while preparation, solvation, topology, or "
+            "minimization work is still running in the background. The final "
+            "raw artifacts in the exact submission_dir must be the completed "
+            "post-minimization OpenMM bundle, not paths to in-progress work."
+        ),
         "required_agent_inputs": [
             "topology/system.xml",
             "topology/topology.pdb",
@@ -682,6 +688,8 @@ def submission_checklist(task: Task) -> list[str]:
             "create work directories outside submission_dir",
             "write topology/system.xml, topology/topology.pdb, and "
             "topology/state.xml as one self-consistent OpenMM bundle",
+            "do not leave background preparation, solvation, topology, or "
+            "minimization work running when handing off the submission",
             "write prepared_structure.pdb and any task-specific raw artifacts",
             "do not hand-write manifest.json, metrics.json, provenance.json, "
             "md5 hashes, minimized_structure.pdb, or minimization_report.json",

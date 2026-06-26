@@ -14,11 +14,13 @@ from mdclaw._node import (
     trace_failure,
     update_job_params,
     update_node_status,
+    wait_node,
 )
 
 TOOLS = {
     "create_node": create_node,
     "inspect_job": inspect_job,
+    "wait_node": wait_node,
     "explain_node": explain_node,
     "trace_failure": trace_failure,
     "explain_failure": explain_failure,

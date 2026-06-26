@@ -71,6 +71,7 @@ def validate_submission(task_file: str | Path,
         "errors": [],
         "warnings": [],
         "missing_outputs": [],
+        "hints": [],
     }
 
     try:
@@ -141,6 +142,13 @@ def validate_submission(task_file: str | Path,
     out["missing_outputs"] = missing
     if missing:
         out["errors"].append(f"missing required outputs: {missing}")
+        if task.primary_score == "preparation":
+            out["hints"].append(
+                "Preparation submissions must contain completed raw OpenMM "
+                "artifacts in the exact submission directory. If solvation, "
+                "membrane embedding, topology, or minimization is still "
+                "running, wait for that work to complete before submitting."
+            )
 
     out["success"] = not out["errors"]
     return out

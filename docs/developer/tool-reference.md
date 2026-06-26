@@ -271,6 +271,9 @@ skill examples.
   `referenced_node_missing`).
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
+- `wait_node(...)`: read-only polling helper for long-running nodes. It waits
+  for a node to reach `completed` or `failed` and reports timeout with a
+  structured `node_wait_timeout` code instead of encouraging duplicate branches.
 - `explain_node(...)`: read-only node details plus execution-context validation
   and auto-resolved inputs for a candidate node.
 - `trace_failure(...)` / `explain_failure(...)`: read-only failed-node

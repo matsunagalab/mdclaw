@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from mdclaw.benchmark import scoring, validation
+from mdclaw.benchmark import normalization, scoring, validation
 from mdclaw.benchmark.models import (
     DeterministicCheck,
     GroundTruthCheck,
@@ -454,6 +454,49 @@ def test_completed_prep_validation_requires_topology_manifest_output(tmp_path: P
 
     assert result["success"] is False
     assert any("outputs.topology" in err for err in result["errors"])
+
+
+def test_prep_validation_hints_to_wait_for_completed_artifacts(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    task.required_outputs = ["topology/system.xml"]
+    task_file = tmp_path / "task.json"
+    task_file.write_text(task.model_dump_json())
+    submission_dir = tmp_path / "submission"
+    _write_submission(
+        submission_dir,
+        manifest={"task_id": "t", "status": "completed", "outputs": {}},
+    )
+
+    result = validation.validate_submission(task_file, submission_dir)
+
+    assert result["success"] is False
+    assert result["missing_outputs"] == ["topology/system.xml"]
+    assert any("still running" in hint for hint in result["hints"])
+
+
+def test_prep_normalization_reports_incomplete_background_work(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[
+            DeterministicCheck(
+                check_id="topo",
+                check_type="topology_artifact_bundle",
+                weight=1.0,
+            )
+        ],
+    )
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=tmp_path / "normalized_submission",
+    )
+
+    assert result["success"] is False
+    assert any("topology/system.xml" in err for err in result["errors"])
+    assert any("still running in the background" in err for err in result["errors"])
 
 
 def test_study_methods_validation_does_not_require_metrics_output(tmp_path: Path):
@@ -2121,6 +2164,56 @@ def test_p18_lipid_aliases_count_species_but_not_tail_fragments(tmp_path: Path):
     assert failed.passed is False
     assert "POPC" in failed.message
     assert "POPE" in failed.message
+
+
+def test_p18_unexpected_residue_rescan_ignores_lipid21_tail_fragments(
+    tmp_path: Path,
+):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_extra_nonstandard",
+            check_type="unexpected_residue_rescan",
+            structure_manifest_path="outputs.topology",
+            structure_path="topology/topology.pdb",
+            allowed_nonstandard_residue_names=["POPC", "POPE", "CHL1"],
+            ignored_residue_names=["PA", "OL"],
+            min_residue_atom_count=2,
+            residue_aliases={
+                "POPC": ["PC", "OPC"],
+                "POPE": ["PE", "OPE"],
+                "CHL1": ["CHL", "CHOL", "HL1"],
+            },
+            weight=1.0,
+        )],
+    )
+    topology_dir = tmp_path / "topology"
+    topology_dir.mkdir()
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"topology": ["topology/topology.pdb"]},
+        },
+    )
+
+    (topology_dir / "topology.pdb").write_text(
+        _lipid_structure([("PC", 1), ("PE", 1), ("CHL", 1), ("PA", 1), ("OL", 1)],
+                         atoms_per_res=25)
+    )
+    passed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert passed.passed is True, passed.message
+
+    (topology_dir / "topology.pdb").write_text(
+        _lipid_structure([("PC", 1), ("PA", 1), ("OL", 1), ("BEN", 1)],
+                         atoms_per_res=25)
+    )
+    failed = scoring.score_submission(task, tmp_path).deterministic_checks[0]
+    assert failed.passed is False
+    assert "BEN" in failed.message
+    assert "PA" not in failed.message
+    assert "OL" not in failed.message
 
 
 def test_artifact_provenance_text_checks_provenance_and_evidence(tmp_path: Path):

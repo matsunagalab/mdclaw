@@ -321,7 +321,11 @@ class TestArgparseConstruction:
         assert params["smiles_list"]["required"] is False
 
     def test_embed_in_membrane_pdb_file_is_optional_for_autoresolve(self):
-        from mdclaw._cli import _build_parser, _discover_tools
+        from mdclaw._cli import (
+            _apply_cli_convenience_defaults,
+            _build_parser,
+            _discover_tools,
+        )
 
         tools = _discover_tools()
         _pick_existing_tool(tools, "embed_in_membrane")
@@ -329,8 +333,15 @@ class TestArgparseConstruction:
 
         args = parser.parse_args(["embed_in_membrane", "--lipids", "POPC"])
         assert args.pdb_file is None
-        assert args.lipids == "POPC"
+        assert args.lipids == ["POPC"]
         assert args.water_model == "opc"  # default
+
+        args = parser.parse_args(
+            ["embed_in_membrane", "--lipids", "POPC", "POPE", "CHL1"]
+        )
+        kwargs = {"lipids": args.lipids}
+        _apply_cli_convenience_defaults("embed_in_membrane", kwargs)
+        assert kwargs["lipids"] == "POPC:POPE:CHL1"
 
     def test_inspect_molecules_structure_file_is_optional_for_autoresolve(self):
         from mdclaw._cli import _build_parser, _discover_tools

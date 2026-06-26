@@ -161,6 +161,16 @@ def _is_list_of_str(hint) -> bool:
     return False
 
 
+_CLI_REPEATED_STRING_PARAMS = frozenset({
+    ("embed_in_membrane", "lipids"),
+})
+
+
+def _is_cli_repeated_string_param(tool_name: str, pname: str) -> bool:
+    """Return true for string parameters that accept repeated CLI tokens."""
+    return (tool_name, pname) in _CLI_REPEATED_STRING_PARAMS
+
+
 def _is_dict_type(hint) -> bool:
     """Check if hint is dict or Dict[...]."""
     origin = get_origin(hint)
@@ -321,7 +331,18 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
             cli_name = "--" + pname.replace("_", "-")
             required = param.default is inspect.Parameter.empty and not is_optional
 
-            if inner is bool:
+            if _is_cli_repeated_string_param(tool_name, pname):
+                sub.add_argument(
+                    cli_name,
+                    nargs="+",
+                    default=param.default if param.default is not inspect.Parameter.empty else None,
+                    required=False,
+                    help=(
+                        "(str values joined with ':', default: "
+                        f"{param.default if param.default is not inspect.Parameter.empty else 'required'})"
+                    ),
+                )
+            elif inner is bool:
                 default_val = param.default if param.default is not inspect.Parameter.empty else False
                 sub.add_argument(
                     cli_name,
@@ -587,22 +608,32 @@ def _load_json_cli(value: str, field: str):
         )
 
 
+def _normalize_repeated_string_value(value, *, sep: str = ":"):
+    """Join repeated string CLI values while preserving scalar strings."""
+    if not isinstance(value, (list, tuple)):
+        return value
+    parts = [str(item).strip() for item in value if str(item).strip()]
+    return sep.join(parts)
+
+
 def _apply_cli_convenience_defaults(tool_name: str, kwargs: dict) -> None:
     """Apply narrow CLI-only defaults that reduce weak-agent retry loops."""
-    if tool_name != "fetch_structure" or kwargs.get("source"):
-        return
-    source_fields = [
-        ("pdb", "pdb_id"),
-        ("alphafold", "uniprot_id"),
-        ("local", "file_path"),
-    ]
-    matches = [
-        (source, field)
-        for source, field in source_fields
-        if kwargs.get(field) not in {None, ""}
-    ]
-    if len(matches) == 1:
-        kwargs["source"] = matches[0][0]
+    if tool_name == "fetch_structure" and not kwargs.get("source"):
+        source_fields = [
+            ("pdb", "pdb_id"),
+            ("alphafold", "uniprot_id"),
+            ("local", "file_path"),
+        ]
+        matches = [
+            (source, field)
+            for source, field in source_fields
+            if kwargs.get(field) not in {None, ""}
+        ]
+        if len(matches) == 1:
+            kwargs["source"] = matches[0][0]
+
+    if tool_name == "embed_in_membrane" and "lipids" in kwargs:
+        kwargs["lipids"] = _normalize_repeated_string_value(kwargs["lipids"])
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +708,9 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
         }
         if inner is bool:
             entry["cli_action"] = "boolean_optional"
+        elif _is_cli_repeated_string_param(tool_name, pname):
+            entry["nargs"] = "+"
+            entry["join_repeated_values_with"] = ":"
         elif _is_list_of_str(inner):
             entry["nargs"] = "+"
         elif _takes_json(inner):

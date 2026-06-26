@@ -96,6 +96,12 @@ def normalize_preparation_submission(
     if state_xml is None:
         errors.append("missing OpenMM state XML artifact (expected topology/state.xml)")
     if errors:
+        errors.append(
+            "submission appears incomplete: do not submit while preparation, "
+            "membrane embedding, topology, or minimization work is still "
+            "running in the background; wait for completed raw artifacts in "
+            "the exact submission directory"
+        )
         return _normalization_result(False, raw_dir, out_dir, errors, warnings)
 
     energy = _single_point_energy(system_xml, state_xml)
