@@ -579,6 +579,18 @@ def _membrane_packmol_attempt_plan(
     return plan
 
 
+def _next_membrane_attempt_increases_lateral_box(
+    attempt_plan: list[dict],
+    attempt_index: int,
+    current_attempt: dict,
+) -> bool:
+    """Return true when the next sequential retry grows the XY membrane box."""
+    if attempt_index >= len(attempt_plan):
+        return False
+    next_attempt = attempt_plan[attempt_index]
+    return float(next_attempt["dist"]) > float(current_attempt["dist"])
+
+
 def _snapshot_packmol_attempt_artifacts(
     *,
     out_dir: Path,
@@ -2668,6 +2680,28 @@ def embed_in_membrane(
                     "random_seed": attempt["random_seed"],
                     "failure_reasons": failure_reasons,
                 }
+
+                if (
+                    failure_reasons
+                    and allow_imperfect_primary_output
+                    and output_file.exists()
+                    and _next_membrane_attempt_increases_lateral_box(
+                        attempt_plan,
+                        attempt_index,
+                        attempt,
+                    )
+                ):
+                    attempt_record["status"] = "failed"
+                    result["adaptive_packmol_retry"]["attempts"].append(attempt_record)
+                    result["parameters"]["effective_dist"] = attempt["dist"]
+                    result["parameters"]["effective_nloop"] = attempt["nloop"]
+                    result["parameters"]["effective_nloop_all"] = attempt["nloop_all"]
+                    result["warnings"].append(
+                        "packmol-memgen produced a postprocessed primary output "
+                        "after same-box retries. Skipping the larger-box retry "
+                        "and validating the primary output downstream."
+                    )
+                    break
 
                 if failure_reasons and attempt_index < len(attempt_plan):
                     preserved = _snapshot_packmol_attempt_artifacts(

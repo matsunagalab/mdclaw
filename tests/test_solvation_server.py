@@ -557,7 +557,7 @@ def test_embed_in_membrane_retries_before_reporting_packmol_failure(
     assert "GLY Z 999" not in output_text
 
 
-def test_embed_in_membrane_marks_final_imperfect_primary_attempt(
+def test_embed_in_membrane_accepts_imperfect_primary_before_lateral_retry(
     tmp_path,
     monkeypatch,
 ):
@@ -612,12 +612,12 @@ def test_embed_in_membrane_marks_final_imperfect_primary_attempt(
 
     assert result["success"] is True
     assert result["code"] == "packmol_imperfect_primary_output_candidate"
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert result["adaptive_packmol_retry"]["attempts"][0]["status"] == "retry_packing_quality"
-    assert result["adaptive_packmol_retry"]["attempts"][1]["status"] == "retry_packing_quality"
-    final_attempt = result["adaptive_packmol_retry"]["attempts"][2]
+    final_attempt = result["adaptive_packmol_retry"]["attempts"][1]
     assert final_attempt["status"] == "accepted_imperfect_primary"
     assert final_attempt["accepted_output_file"] == result["packmol_primary_output_file"]
+    assert final_attempt["dist"] == 15.0
     assert result["packing_quality"]["primary_output_accepted"] is True
 
 
