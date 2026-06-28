@@ -11,6 +11,7 @@ Output is always JSON on stdout; logs go to stderr.
 """
 
 import argparse
+import ast
 import asyncio
 import inspect
 import json
@@ -610,10 +611,27 @@ def _load_json_cli(value: str, field: str):
 
 def _normalize_repeated_string_value(value, *, sep: str = ":"):
     """Join repeated string CLI values while preserving scalar strings."""
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith(("[", "(")) and stripped.endswith(("]", ")")):
+            try:
+                parsed = ast.literal_eval(stripped)
+            except (SyntaxError, ValueError):
+                return value
+            if isinstance(parsed, (list, tuple)):
+                return _normalize_repeated_string_value(parsed, sep=sep)
+        return value
     if not isinstance(value, (list, tuple)):
         return value
     parts = [str(item).strip() for item in value if str(item).strip()]
     return sep.join(parts)
+
+
+def _coerce_cli_param_value(tool_name: str, pname: str, value, hint):
+    """Coerce one CLI value, preserving repeated-string parameters."""
+    if _is_cli_repeated_string_param(tool_name, pname):
+        value = _normalize_repeated_string_value(value)
+    return _coerce_value(value, hint)
 
 
 def _apply_cli_convenience_defaults(tool_name: str, kwargs: dict) -> None:
@@ -843,7 +861,7 @@ def main(argv: list[str] | None = None) -> None:
             if pname not in sig.parameters or value is None:
                 continue
             hint = hints.get(pname, sig.parameters[pname].annotation)
-            kwargs[pname] = _coerce_value(value, hint)
+            kwargs[pname] = _coerce_cli_param_value(tool_name, pname, value, hint)
         _apply_cli_convenience_defaults(tool_name, kwargs)
     else:
         sig = inspect.signature(fn)
@@ -878,7 +896,7 @@ def main(argv: list[str] | None = None) -> None:
                 continue
             if _takes_json(_unwrap_optional(hint)[0]) and isinstance(value, str):
                 value = _load_json_cli(value, f"--{pname.replace('_', '-')}")
-            value = _coerce_value(value, hint)
+            value = _coerce_cli_param_value(tool_name, pname, value, hint)
             kwargs[pname] = value
 
         _apply_cli_convenience_defaults(tool_name, kwargs)

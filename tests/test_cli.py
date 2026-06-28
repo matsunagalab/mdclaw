@@ -343,6 +343,53 @@ class TestArgparseConstruction:
         _apply_cli_convenience_defaults("embed_in_membrane", kwargs)
         assert kwargs["lipids"] == "POPC:POPE:CHL1"
 
+    def test_embed_in_membrane_lipids_are_normalized_before_str_coercion(
+        self, monkeypatch, capsys
+    ):
+        from mdclaw import _cli
+
+        def fake_embed_in_membrane(lipids: str = "POPC") -> dict:
+            return {"success": True, "lipids": lipids}
+
+        monkeypatch.setattr(
+            _cli,
+            "_discover_tools",
+            lambda: {
+                "embed_in_membrane": {
+                    "fn": fake_embed_in_membrane,
+                    "description": "fake membrane embed",
+                    "is_async": False,
+                    "server": "fake",
+                }
+            },
+        )
+        monkeypatch.setattr(_cli, "_NODE_REQUIRED_TOOLS", frozenset())
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main(["embed_in_membrane", "--lipids", "POPC:POPE:CHL1"])
+
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["lipids"] == "POPC:POPE:CHL1"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main(["embed_in_membrane", "--lipids", "POPC", "POPE", "CHL1"])
+
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["lipids"] == "POPC:POPE:CHL1"
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "embed_in_membrane",
+                "--json-input",
+                '{"lipids": ["POPC:POPE:CHL1"]}',
+            ])
+
+        assert exc_info.value.code == 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["lipids"] == "POPC:POPE:CHL1"
+
     def test_inspect_molecules_structure_file_is_optional_for_autoresolve(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
@@ -660,6 +707,14 @@ class TestParameterCoercion:
         result = _coerce_value(payload, list[dict])
         assert isinstance(result, list)
         assert result[0]["node_id"] == "prod_001"
+
+    def test_repeated_string_value_accepts_stringified_single_item_list(self):
+        from mdclaw._cli import _normalize_repeated_string_value
+
+        assert (
+            _normalize_repeated_string_value("['POPC:POPE:CHL1']")
+            == "POPC:POPE:CHL1"
+        )
 
     def test_coerce_int(self):
         from mdclaw._cli import _coerce_value
