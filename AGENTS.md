@@ -71,6 +71,16 @@ PYTHONPATH="$PWD" singularity exec --bind "$PWD:$PWD" --pwd "$PWD" \
 singularity exec mdclaw.sif ruff check mdclaw/ tests/
 ```
 
+If Singularity fails with `unknown userid`, avoid host account lookup by binding
+the checkout at a neutral path:
+
+```bash
+singularity exec --no-home --bind "$PWD:/work" --pwd /work \
+  mdclaw.sif python -m mdclaw._cli --list
+singularity exec --no-home --bind "$PWD:/work" --pwd /work \
+  mdclaw.sif env XDG_CACHE_HOME=/tmp/mdclaw-cache ruff check mdclaw/ tests/
+```
+
 Use this SIF-overlay loop for changes under `mdclaw/`, `skills/`, tests,
 benchmark/scorer code, and docs. Rebuild and push the SIF only when container
 contents change: dependencies, `environment.yml`, `container/Dockerfile`,

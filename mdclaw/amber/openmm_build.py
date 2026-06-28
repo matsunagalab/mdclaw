@@ -341,6 +341,39 @@ _LIPID21_EXTERNAL_PAIR_KEYS = {
     frozenset((("PE", "C21"), ("OL", "C12"))),
 }
 _LIPID21_EXTERNAL_RESNAMES = {"PC", "PE", "PA", "OL"}
+_LIPID21_MODULAR_RESNAMES = _LIPID21_EXTERNAL_RESNAMES | {"CHL"}
+_LIPID21_FULL_RESNAMES = {"POPC", "POPE", "CHL1"}
+
+
+def _pdb_residue_names_4char(pdb_path: Path) -> set[str]:
+    """Return residue names from a PDB, preserving 4-character lipid names."""
+    names: set[str] = set()
+    try:
+        with pdb_path.open() as handle:
+            for line in handle:
+                if not line.startswith(("ATOM  ", "HETATM")):
+                    continue
+                # MDClaw deliberately writes 4-character residue names into
+                # columns 18-21 for lipids such as POPC/POPE/CHL1. The usual
+                # 3-character slice would misread POPC as POP.
+                name = line[17:21].strip().upper()
+                if not name:
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        name = parts[3].strip().upper()
+                if name:
+                    names.add(name)
+    except OSError:
+        return set()
+    return names
+
+
+def _select_lipid21_xml_key_for_pdb(pdb_path: Path) -> str:
+    """Choose the Lipid21 XML variant matching the PDB lipid representation."""
+    residue_names = _pdb_residue_names_4char(pdb_path)
+    if residue_names & _LIPID21_FULL_RESNAMES:
+        return "lipid21_full"
+    return "lipid21"
 
 
 def _lipid21_external_key(atom: Any) -> tuple[str, str] | None:
@@ -607,7 +640,12 @@ def _run_openmmforcefields_build(
     dna_name = _resolve_dna_name_from_libraries(nucleic_libraries)
     rna_name = _resolve_rna_name_from_libraries(nucleic_libraries)
     glycan_name = _resolve_glycan_name_from_library(glycan_library)
-    lipid_name = "lipid21" if is_membrane else None
+    lipid_name = _select_lipid21_xml_key_for_pdb(pdb_path) if is_membrane else None
+    if lipid_name == "lipid21_full":
+        result["topology_notes"].append(
+            "Detected whole-lipid POPC/POPE/CHL1 residue names; using the "
+            "OpenMM app-data Lipid21 XML with full-residue templates."
+        )
 
     if canon_implicit and canon_implicit not in _ff_catalog.IMPLICIT_SOLVENT_XML:
         # The public ``build_amber_system`` already guards this path, but

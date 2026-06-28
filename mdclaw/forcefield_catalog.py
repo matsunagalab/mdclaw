@@ -349,6 +349,14 @@ LIPID_XML: dict[str, str] = {
     "lipid17": "amber/lipid17.xml",
 }
 
+OPENMM_APP_LIPID_XML: dict[str, str] = {
+    # OpenMM app-data variant with whole-lipid POPC/POPE/CHL1 templates.
+    # Keep this separate from LIPID_XML: the openmmforcefields-shipped
+    # amber/lipid21.xml uses modular PA/PC/PE/OL/CHL residues and remains the
+    # canonical path for packmol-memgen outputs in that representation.
+    "lipid21_full": "amber19/lipid21.xml",
+}
+
 GLYCAN_XML: dict[str, str] = {
     "GLYCAM_06j-1": "amber/GLYCAM_06j-1.xml",
 }
@@ -677,8 +685,11 @@ def resolve_xml_bundle(
         if canon_w and canon_w in WATER_MODELS:
             bundle.append(WATER_MODELS[canon_w].openmm_xml)
 
-    if lipid and lipid in LIPID_XML:
-        bundle.append(LIPID_XML[lipid])
+    if lipid:
+        if lipid in LIPID_XML:
+            bundle.append(LIPID_XML[lipid])
+        elif lipid in OPENMM_APP_LIPID_XML:
+            bundle.append(OPENMM_APP_LIPID_XML[lipid])
 
     if implicit_solvent and implicit_solvent in IMPLICIT_SOLVENT_XML:
         bundle.append(IMPLICIT_SOLVENT_XML[implicit_solvent])
@@ -717,6 +728,7 @@ __all__ = [
     "WATER_MODELS",
     "PHOSAA_XML",
     "LIPID_XML",
+    "OPENMM_APP_LIPID_XML",
     "GLYCAN_XML",
     "DNA_XML",
     "RNA_XML",

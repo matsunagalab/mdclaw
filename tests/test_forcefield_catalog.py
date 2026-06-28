@@ -213,6 +213,31 @@ def test_resolve_xml_bundle_with_phosaa_and_lipid():
     ]
 
 
+def test_resolve_xml_bundle_with_full_residue_lipid21():
+    xml_list = fc.resolve_xml_bundle(
+        protein="ff19SB",
+        water="opc",
+        lipid="lipid21_full",
+    )
+    assert xml_list == [
+        "amber/protein.ff19SB.xml",
+        "amber/opc_standard.xml",
+        "amber19/lipid21.xml",
+    ]
+
+
+def test_openmm_app_full_lipid21_templates_when_available():
+    pytest.importorskip("openmm")
+    from openmm.app import ForceField  # noqa: WPS433
+
+    try:
+        forcefield = ForceField(fc.OPENMM_APP_LIPID_XML["lipid21_full"])
+    except ValueError as exc:
+        pytest.skip(f"OpenMM app-data full Lipid21 XML not available: {exc}")
+
+    assert {"POPC", "POPE", "CHL1"} <= set(forcefield._templates)
+
+
 def test_resolve_xml_bundle_with_dna_rna_glycan():
     xml_list = fc.resolve_xml_bundle(
         protein="ff14SB",
