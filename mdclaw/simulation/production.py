@@ -32,9 +32,37 @@ WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
 from mdclaw.simulation._base import _check_topology_implicit_solvent_match, _fail_node_if_running, _resolve_implicit_solvent_model  # noqa: E402
+from mdclaw.simulation.custom_forces import CUSTOM_FORCE_GROUP, CustomForceError, CustomForceReporter, custom_force_signature, load_custom_forces, write_cv_metadata  # noqa: E402
 from mdclaw.simulation.integrator_plan import _compute_step_plan, _record_production_node_result  # noqa: E402
 from mdclaw.simulation.restart import _close_reporter_stream, _count_state_data_rows, _detect_ensemble_mismatch, _flush_reporter_stream, _load_state_into_simulation, _node_previously_failed, _resolve_dcd_append_mode, _resolve_restart_node_id_for_run, _restart_random_seed, _restart_source_metadata, _save_checkpoint_atomic, _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _signature_mismatches, _system_signature, _validate_xml_system_contract  # noqa: E402
+
+
+def _safe_custom_force_signature(
+    custom_force_script: Optional[str],
+    custom_force_module: Optional[str],
+    custom_force_parameters: Optional[dict],
+) -> Optional[dict]:
+    """Best-effort custom-force signature for node identity.
+
+    Returns ``None`` when no custom force is configured. Never raises — a
+    missing/unreadable file degrades to a signature without the hash so node
+    validation can still proceed (the real load below surfaces the error).
+    """
+    if not custom_force_script and not custom_force_module:
+        return None
+    try:
+        return custom_force_signature(
+            custom_force_script=custom_force_script,
+            custom_force_module=custom_force_module,
+            custom_force_parameters=custom_force_parameters,
+        )
+    except Exception:  # noqa: BLE001
+        return {
+            "kind": "torch_script_energy" if custom_force_script else "torch_module",
+            "sha256": None,
+            "parameters": custom_force_parameters or {},
+        }
 
 
 def run_production(
@@ -48,6 +76,9 @@ def run_production(
     output_frequency_ps: float = 10.0,
     trajectory_format: str = "dcd",
     restraint_file: Optional[str] = None,
+    custom_force_script: Optional[str] = None,
+    custom_force_module: Optional[str] = None,
+    custom_force_parameters: Optional[dict] = None,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
     is_membrane: bool = False,
@@ -87,7 +118,27 @@ def run_production(
         timestep_fs: Integration timestep in femtoseconds (default: 4.0)
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
         trajectory_format: Trajectory format - "dcd" or "pdb" (default: "dcd")
-        restraint_file: Optional file with restraint definitions
+        restraint_file: DEPRECATED and ignored. Use ``custom_force_script``
+                     (or ``custom_force_module``) for production biases.
+        custom_force_script: Path to a Python script defining a single
+                     ``energy(positions, ctx) -> torch.Tensor`` function (a
+                     scalar potential energy in kJ/mol). MDClaw computes the
+                     forces by autograd (``forces = -dE/dx``) and wraps it in
+                     an ``openmmtorch.PythonTorchForce`` added to the System
+                     before the Simulation is built. ``positions`` is an
+                     (N,3) nm tensor; ``ctx.select(sel)`` returns mdtraj-style
+                     atom indices that match the System, ``ctx.reference`` is
+                     the fixed reference geometry, and ``ctx.params`` exposes
+                     ``custom_force_parameters``. The function may return
+                     ``(energy, {cv_name: value})`` to log collective
+                     variables. Requires the ``openmm-torch`` plugin.
+        custom_force_module: Path to a pre-trained TorchScript ``.pt`` module
+                     wrapped in an ``openmmtorch.TorchForce`` (no user Python
+                     executed). Mutually exclusive with ``custom_force_script``.
+        custom_force_parameters: Optional dict passed to the script as
+                     ``ctx.params`` (and used to configure the TorchForce for
+                     the module path). Recognized keys include ``pbc`` (bool)
+                     and, for modules, ``global_parameters`` (dict).
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -157,6 +208,17 @@ def run_production(
             is_membrane = True
         _eq_final_ensemble = _inputs.get("eq_final_ensemble")
         _eq_pressure_bar = _inputs.get("eq_pressure_bar")
+        # Inherit the custom force from a ``--continue-from`` parent so a
+        # biased production can be extended without re-specifying the bias.
+        # Explicit flags always win over the inherited value.
+        if not custom_force_script and not custom_force_module:
+            if _inputs.get("custom_force_script"):
+                custom_force_script = _inputs["custom_force_script"]
+            elif _inputs.get("custom_force_module"):
+                custom_force_module = _inputs["custom_force_module"]
+            if (custom_force_parameters is None
+                    and _inputs.get("custom_force_parameters") is not None):
+                custom_force_parameters = _inputs["custom_force_parameters"]
         if (pressure_bar is None
                 and _eq_final_ensemble == "NPT"
                 and _eq_pressure_bar is not None):
@@ -212,6 +274,10 @@ def run_production(
                 "device_index": device_index,
                 "hmr": hmr,
                 "random_seed": random_seed,
+                "custom_force": _safe_custom_force_signature(
+                    custom_force_script, custom_force_module,
+                    custom_force_parameters,
+                ),
             },
         )
         if not _ctx["success"]:
@@ -330,6 +396,31 @@ def run_production(
         base_dir = Path(output_dir) if output_dir else WORKING_DIR
         out_dir = create_unique_subdir(base_dir, "production")
     result["output_dir"] = str(out_dir)
+
+    # Copy a node-mode custom-force script/module into the node's artifacts so
+    # the exact bias used is preserved (provenance) and survives ``--continue
+    # -from``. Repoint the variable at the copy so loading and the recorded
+    # artifact reference the same file.
+    _custom_force_script_artifact: Optional[str] = None
+    _custom_force_module_artifact: Optional[str] = None
+    if _node_mode:
+        import shutil
+        if custom_force_script:
+            src = Path(custom_force_script)
+            if src.is_file():
+                dest = out_dir / "custom_force_script.py"
+                if src.resolve() != dest.resolve():
+                    shutil.copy2(src, dest)
+                custom_force_script = str(dest)
+                _custom_force_script_artifact = "artifacts/custom_force_script.py"
+        elif custom_force_module:
+            src = Path(custom_force_module)
+            if src.is_file():
+                dest = out_dir / "custom_force_module.pt"
+                if src.resolve() != dest.resolve():
+                    shutil.copy2(src, dest)
+                custom_force_module = str(dest)
+                _custom_force_module_artifact = "artifacts/custom_force_module.pt"
 
     # Validate input files. Every early-return path below this point
     # happens AFTER begin_node(), so it must transit through
@@ -451,6 +542,45 @@ def run_production(
             result["errors"].append(str(exc))
             result["code"] = exc.code
             return _fail_node_if_running(job_dir, node_id, result)
+
+        # Custom force / CV bias. Resolved and added to the System *before*
+        # the Simulation is built (OpenMM requires forces be present at
+        # Context creation). The bias goes in a dedicated force group so its
+        # energy can be logged in isolation for CV analysis / reweighting.
+        _custom_force_loaded = None
+        if custom_force_script or custom_force_module:
+            try:
+                _custom_force_loaded = load_custom_forces(
+                    system=system,
+                    topology_pdb_file=str(topology_pdb_path),
+                    reference_positions=xml_inputs.positions,
+                    custom_force_script=custom_force_script,
+                    custom_force_module=custom_force_module,
+                    custom_force_parameters=custom_force_parameters,
+                )
+            except CustomForceError as exc:
+                result["errors"].append(str(exc))
+                result["code"] = exc.code
+                return _fail_node_if_running(job_dir, node_id, result)
+            for _f in _custom_force_loaded["forces"]:
+                _f.setForceGroup(CUSTOM_FORCE_GROUP)
+                system.addForce(_f)
+            result["custom_force"] = {
+                "kind": _custom_force_loaded["kind"],
+                "signature": _custom_force_loaded["signature"],
+                "has_cv": _custom_force_loaded["has_cv"],
+                "cv_names": _custom_force_loaded["cv_names"],
+            }
+            if restart_from:
+                result["warnings"].append(
+                    "Custom force changes the System; binary .chk restart is "
+                    "unsupported with a custom force. The portable XML state "
+                    "restart is used instead."
+                )
+            logger.info(
+                "Custom force loaded (kind=%s, cv=%s)",
+                _custom_force_loaded["kind"], _custom_force_loaded["cv_names"],
+            )
 
         restart_seed_step: Optional[int] = None
         if restart_from and _node_mode:
@@ -709,10 +839,14 @@ def run_production(
                 if xml_inputs.box_vectors is not None:
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
-        # Apply restraints if provided
-        if restraint_file and Path(restraint_file).is_file():
-            logger.info(f"Applying restraints from {restraint_file}")
-            result["warnings"].append("Restraint file parsing not yet implemented")
+        # ``restraint_file`` is deprecated and ignored; production biases now
+        # go through custom_force_script / custom_force_module (added to the
+        # System before the Simulation was built, above).
+        if restraint_file:
+            result["warnings"].append(
+                "restraint_file is deprecated and ignored; use "
+                "custom_force_script / custom_force_module instead."
+            )
 
         # Setup output file paths
         trajectory_file = out_dir / f"{pref}trajectory.{trajectory_format}"
@@ -769,6 +903,33 @@ def run_production(
         )
         result["checkpoint_file"] = str(checkpoint_file)
         result["state_file"] = str(state_file)
+
+        # Custom-force / CV logging. Bias potential energy is read from the
+        # dedicated force group every report; CV values (if the script
+        # returned a cv_dict) are logged alongside. Shares the trajectory /
+        # energy report interval and append state.
+        _cv_reporter = None
+        if _custom_force_loaded is not None:
+            cv_file = out_dir / f"{pref}collective_variables.csv"
+            _cv_reporter = CustomForceReporter(
+                str(cv_file),
+                report_interval,
+                force_group=CUSTOM_FORCE_GROUP,
+                evaluator=_custom_force_loaded["evaluator"],
+                cv_names=_custom_force_loaded["cv_names"],
+                append=do_append,
+            )
+            simulation.reporters.append(_cv_reporter)
+            result["collective_variables_file"] = str(cv_file)
+            meta_file = out_dir / f"{pref}collective_variables.meta.json"
+            write_cv_metadata(
+                str(meta_file),
+                signature=_custom_force_loaded["signature"],
+                cv_names=_custom_force_loaded["cv_names"],
+                temperature_kelvin=temperature_kelvin,
+                parameters=custom_force_parameters,
+            )
+            result["collective_variables_meta_file"] = str(meta_file)
 
         # Get initial energy
         state = simulation.context.getState(getEnergy=True)
@@ -865,6 +1026,8 @@ def run_production(
 
         for reporter in (trajectory_reporter, energy_reporter):
             _close_reporter_stream(reporter)
+        if _cv_reporter is not None:
+            _cv_reporter.close()
 
         # Save final structure
         final_pdb = out_dir / f"{pref}final_structure.pdb"
@@ -939,6 +1102,8 @@ def run_production(
             timestep_fs=timestep_fs,
             output_frequency_ps=output_frequency_ps,
             random_seed=random_seed,
+            custom_force_script_artifact=_custom_force_script_artifact,
+            custom_force_module_artifact=_custom_force_module_artifact,
         )
 
     return result

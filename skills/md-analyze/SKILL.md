@@ -30,6 +30,8 @@ not block normal analysis.
   `skills/md-analyze/troubleshooting.md`
 - Legacy notes for current analysis helpers:
   `skills/md-analyze/analysis.md`
+- Collective variables and bias energy from custom-force production runs:
+  `skills/md-analyze/collective-variables.md`
 
 ## Step 0 Summary
 

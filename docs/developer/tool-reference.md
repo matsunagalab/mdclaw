@@ -206,7 +206,16 @@ skill examples.
   explicit `nvt_steps` / `npt_steps` remain available for low-level
   reproducibility.
 - `run_production(...)`: production MD with HMR, state/checkpoint persistence,
-  DAG restart resolution, and timeline metadata.
+  DAG restart resolution, and timeline metadata. Accepts an optional custom
+  force / CV bias via `custom_force_script` (an autograd-backed
+  `energy(positions, ctx)` wrapped in `PythonTorchForce`) or
+  `custom_force_module` (a TorchScript `.pt` wrapped in `TorchForce`), plus
+  `custom_force_parameters` (JSON dict → `ctx.params`). The bias is added to
+  the System in a dedicated force group before the Simulation is built, and
+  bias energy + optional CV values are logged to
+  `collective_variables.csv` (+ `.meta.json`). See
+  `mdclaw/simulation/custom_forces.py`. (The legacy `restraint_file` argument
+  is deprecated and ignored.)
 
 ## `visualization_server.py`
 

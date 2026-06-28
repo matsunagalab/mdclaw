@@ -37,6 +37,11 @@ dependencies:
   # HPacker uses torch at import time. Keep this on conda-forge to avoid
   # mixing pkgs/main PyTorch with conda-forge protobuf on macOS.
   - pytorch>=2.7,<2.8
+  # openmm-torch (openmmtorch) backs production custom force / CV bias plugins
+  # (PythonTorchForce for agent-written energy scripts, TorchForce for
+  # pre-trained .pt models). conda-forge builds it against the matching
+  # openmm + pytorch ABI, so keep it on conda-forge alongside both.
+  - openmm-torch>=1.5
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip
   - pip:

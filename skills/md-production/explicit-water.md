@@ -104,6 +104,15 @@ Inside the job script, omit `--system-xml-file`, `--topology-pdb-file`, `--state
 --no-hmr --timestep-fs 2.0
 ```
 
+## Custom Force / CV Bias
+
+To bias production (positional restraint, distance / domain-distance bias, or a
+candidate collective variable), pass `--custom-force-script <energy.py>`
+(autograd-backed `energy(positions, ctx)`) or `--custom-force-module <model.pt>`
+with optional `--custom-force-parameters '<json>'`. Bias energy and CV values
+are logged to `artifacts/collective_variables.csv`. Read and follow
+`skills/md-production/custom-force.md`.
+
 ## Restart / Extension
 
 For planned extensions, create a new prod node with `--continue-from`. For

@@ -114,34 +114,56 @@ def _record_production_node_result(
     timestep_fs: float,
     output_frequency_ps: float,
     random_seed: Optional[int],
+    custom_force_script_artifact: Optional[str] = None,
+    custom_force_module_artifact: Optional[str] = None,
 ) -> None:
     """Persist production artifacts and metadata to the DAG node."""
     from mdclaw._node import complete_node, fail_node
 
     if result.get("success"):
-        complete_node(job_dir, node_id,
-            artifacts={
-                "trajectory": _node_artifact_path(result.get("trajectory_file")),
-                "final_structure": _node_artifact_path(result.get("final_structure")),
-                "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
-                "state": _node_artifact_path(result.get("state_file")),
-                "energy": _node_artifact_path(result.get("energy_file")),
-            },
-            metadata={
-                "simulation_time_ns": simulation_time_ns,
-                "temperature_kelvin": temperature_kelvin,
-                "pressure_bar": pressure_bar,
-                "platform": result.get("platform") or platform,
-                "hmr": hmr,
-                "timestep_fs": timestep_fs,
-                "output_frequency_ps": output_frequency_ps,
-                "random_seed": random_seed,
-                "num_steps": result.get("steps_completed"),
-                "start_step": result.get("start_step"),
-                "start_time_ns": result.get("start_time_ns"),
-                "final_step": result.get("steps_completed"),
-                "system_signature": result.get("system_signature"),
-                "integrator_signature": result.get("integrator_signature"),
-            })
+        artifacts = {
+            "trajectory": _node_artifact_path(result.get("trajectory_file")),
+            "final_structure": _node_artifact_path(result.get("final_structure")),
+            "checkpoint": _node_artifact_path(result.get("checkpoint_file")),
+            "state": _node_artifact_path(result.get("state_file")),
+            "energy": _node_artifact_path(result.get("energy_file")),
+        }
+        # Custom-force provenance + CV log artifacts (only when a bias ran).
+        if custom_force_script_artifact:
+            artifacts["custom_force_script"] = custom_force_script_artifact
+        if custom_force_module_artifact:
+            artifacts["custom_force_module"] = custom_force_module_artifact
+        if result.get("collective_variables_file"):
+            artifacts["collective_variables"] = _node_artifact_path(
+                result.get("collective_variables_file")
+            )
+        if result.get("collective_variables_meta_file"):
+            artifacts["collective_variables_meta"] = _node_artifact_path(
+                result.get("collective_variables_meta_file")
+            )
+        metadata = {
+            "simulation_time_ns": simulation_time_ns,
+            "temperature_kelvin": temperature_kelvin,
+            "pressure_bar": pressure_bar,
+            "platform": result.get("platform") or platform,
+            "hmr": hmr,
+            "timestep_fs": timestep_fs,
+            "output_frequency_ps": output_frequency_ps,
+            "random_seed": random_seed,
+            "num_steps": result.get("steps_completed"),
+            "start_step": result.get("start_step"),
+            "start_time_ns": result.get("start_time_ns"),
+            "final_step": result.get("steps_completed"),
+            "system_signature": result.get("system_signature"),
+            "integrator_signature": result.get("integrator_signature"),
+        }
+        custom_force = result.get("custom_force")
+        if custom_force:
+            metadata["custom_force"] = custom_force
+            metadata["custom_force_signature"] = custom_force.get("signature")
+            metadata["custom_force_parameters"] = (
+                (custom_force.get("signature") or {}).get("parameters")
+            )
+        complete_node(job_dir, node_id, artifacts=artifacts, metadata=metadata)
     else:
         fail_node(job_dir, node_id, errors=result.get("errors", []))

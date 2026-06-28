@@ -54,9 +54,11 @@ RUN apt-get update && \
 COPY environment.yml pyproject.toml README.md ./
 COPY mdclaw/ mdclaw/
 
-# Create conda environment (strip editable install from environment.yml;
-# the package is installed separately in the next step)
-RUN sed '/- -e \./d' environment.yml > environment-docker.yml && \
+# Create conda environment. Strip the editable install (added separately
+# below) and openmm-torch: the conda build of openmm-torch links the conda
+# OpenMM, but Stage 2 replaces OpenMM with a CUDA-11.8 source build, so the
+# plugin is rebuilt from source there against that OpenMM + the cu118 torch.
+RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docker.yml && \
     mamba env create -f environment-docker.yml -n mdclaw && \
     mamba clean -afy
 
@@ -134,6 +136,30 @@ RUN cmake .. \
 
 # Verify OpenMM installed correctly
 RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__}')"
+
+# Build openmm-torch from source against the just-built OpenMM and the
+# cu118 PyTorch already installed in /opt/mdclaw. This backs the production
+# custom force / CV bias plugin (PythonTorchForce + TorchForce). The conda
+# build was stripped above because it links the conda OpenMM ABI.
+ARG OPENMM_TORCH_VERSION=v1.5.1
+RUN git clone --depth 1 --branch ${OPENMM_TORCH_VERSION} \
+    https://github.com/openmm/openmm-torch.git /build/openmm-torch && \
+    mkdir /build/openmm-torch/build
+WORKDIR /build/openmm-torch/build
+RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import torch; print(torch.utils.cmake_prefix_path)") && \
+    cmake .. \
+    -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
+    -DOPENMM_DIR=/opt/mdclaw \
+    -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
+    -DCMAKE_PREFIX_PATH="${TORCH_CMAKE_DIR}" \
+    -DNN_BUILD_CUDA_LIB=ON \
+    -DNN_BUILD_OPENCL_LIB=OFF && \
+    make -j$(nproc) && \
+    make install && \
+    make PythonInstall
+
+# Verify the openmm-torch plugin imports against the source OpenMM
+RUN /opt/mdclaw/bin/python -c "import openmmtorch; print('openmm-torch OK')"
 
 # =============================================================================
 # Stage 3: Slim runtime

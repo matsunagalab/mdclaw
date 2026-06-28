@@ -92,6 +92,20 @@ class TestImportServers:
         param = sig.parameters["random_seed"]
         assert param.default is None, "random_seed default should be None"
 
+    def test_run_production_has_custom_force_params(self):
+        """run_production exposes the custom force / CV bias parameters."""
+        import inspect
+        from mdclaw.md_simulation_server import run_production
+
+        sig = inspect.signature(run_production)
+        for name in (
+            "custom_force_script",
+            "custom_force_module",
+            "custom_force_parameters",
+        ):
+            assert name in sig.parameters, f"run_production missing {name!r}"
+            assert sig.parameters[name].default is None
+
     def test_md_simulation_platform_preflight_registered(self):
         """Local-run feasibility preflight is exposed as a CLI/MCP tool."""
         from mdclaw.md_simulation_server import TOOLS

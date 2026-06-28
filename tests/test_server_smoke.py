@@ -768,6 +768,163 @@ class TestMDSimulationServer:
         assert Path(result["trajectory_file"]).stat().st_size > 0
         assert Path(result["energy_file"]).stat().st_size > 0
 
+    def test_run_production_custom_force_positional_restraint(self, small_pdb, tmp_path):
+        """Custom-force script (positional restraint) runs and logs bias energy."""
+        pytest.importorskip("openmmtorch")
+        from md_simulation_server import run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+        script = tmp_path / "restraint.py"
+        script.write_text(
+            "import torch\n"
+            "def energy(positions, ctx):\n"
+            "    sel = ctx.select('name CA')\n"
+            "    k = ctx.params['k']\n"
+            "    disp = positions[sel] - ctx.reference[sel]\n"
+            "    return 0.5 * k * (disp ** 2).sum()\n"
+        )
+        result = run_production(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_restraint"),
+            platform="CPU",
+            custom_force_script=str(script),
+            custom_force_parameters={"k": 1000.0},
+        )
+        assert result["success"] is True, result["errors"]
+        assert result["custom_force"]["kind"] == "torch_script_energy"
+        assert result["custom_force"]["has_cv"] is False
+        cv_csv = Path(result["collective_variables_file"])
+        assert cv_csv.stat().st_size > 0
+        header = cv_csv.read_text().splitlines()[0]
+        assert header == "step,time_ps,bias_energy_kj_mol"
+        assert Path(result["collective_variables_meta_file"]).exists()
+
+    def test_run_production_custom_force_distance_bias_logs_cv(self, small_pdb, tmp_path):
+        """Custom-force distance bias returns a cv_dict and logs the CV column."""
+        pytest.importorskip("openmmtorch")
+        from md_simulation_server import run_production
+
+        amber = self._build_topology(small_pdb, tmp_path)
+        script = tmp_path / "dist_bias.py"
+        script.write_text(
+            "import torch\n"
+            "def energy(positions, ctx):\n"
+            "    i = ctx.select('index 0')\n"
+            "    j = ctx.select('index 1')\n"
+            "    d = torch.linalg.norm(positions[i][0] - positions[j][0])\n"
+            "    k = ctx.params['k']; d0 = ctx.params['d0']\n"
+            "    return 0.5 * k * (d - d0) ** 2, {'d': d}\n"
+        )
+        result = run_production(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            timestep_fs=2.0,
+            output_frequency_ps=0.5,
+            output_dir=str(tmp_path / "md_dist_bias"),
+            platform="CPU",
+            custom_force_script=str(script),
+            custom_force_parameters={"k": 1000.0, "d0": 1.0},
+        )
+        assert result["success"] is True, result["errors"]
+        assert result["custom_force"]["has_cv"] is True
+        assert result["custom_force"]["cv_names"] == ["d"]
+        cv_csv = Path(result["collective_variables_file"])
+        header = cv_csv.read_text().splitlines()[0]
+        assert header == "step,time_ps,bias_energy_kj_mol,d"
+        # At least one data row with a parseable CV value.
+        data_rows = cv_csv.read_text().splitlines()[1:]
+        assert data_rows and float(data_rows[0].split(",")[-1]) >= 0.0
+
+    def test_run_production_custom_force_node_artifacts(self, small_pdb, tmp_path):
+        """Node-mode custom force records script + CV artifacts and signature."""
+        pytest.importorskip("openmmtorch")
+        from md_simulation_server import run_equilibration, run_production
+        from mdclaw._node import complete_node, create_node, read_node
+
+        amber = self._build_topology(small_pdb, tmp_path)
+        equil = run_equilibration(
+            system_xml_file=amber["system_xml"],
+            topology_pdb_file=amber["topology_pdb"],
+            state_xml_file=amber["state_xml"],
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            nvt_steps=100,
+            npt_steps=100,
+            output_dir=str(tmp_path / "equil_cf"),
+            platform="CPU",
+        )
+        assert equil["success"] is True
+
+        job_dir = tmp_path / "job_cf"
+        topo = create_node(str(job_dir), "topo")
+        topo_artifacts = job_dir / "nodes" / topo["node_id"] / "artifacts"
+        topo_artifacts.mkdir(parents=True, exist_ok=True)
+        for key in ("system_xml", "topology_pdb", "state_xml"):
+            src = Path(amber[key])
+            (topo_artifacts / src.name).write_bytes(src.read_bytes())
+        complete_node(
+            str(job_dir), topo["node_id"],
+            artifacts={
+                "system_xml": f"artifacts/{Path(amber['system_xml']).name}",
+                "topology_pdb": f"artifacts/{Path(amber['topology_pdb']).name}",
+                "state_xml": f"artifacts/{Path(amber['state_xml']).name}",
+            },
+        )
+        eq = create_node(str(job_dir), "eq", parent_node_ids=[topo["node_id"]])
+        eq_artifacts = job_dir / "nodes" / eq["node_id"] / "artifacts"
+        eq_artifacts.mkdir(parents=True, exist_ok=True)
+        (eq_artifacts / Path(equil["checkpoint_file"]).name).write_bytes(
+            Path(equil["checkpoint_file"]).read_bytes()
+        )
+        complete_node(
+            str(job_dir), eq["node_id"],
+            artifacts={"checkpoint": f"artifacts/{Path(equil['checkpoint_file']).name}"},
+        )
+
+        script = tmp_path / "restraint.py"
+        script.write_text(
+            "import torch\n"
+            "def energy(positions, ctx):\n"
+            "    sel = ctx.select('name CA')\n"
+            "    return 0.5 * ctx.params['k'] * "
+            "((positions[sel] - ctx.reference[sel]) ** 2).sum()\n"
+        )
+        prod = create_node(str(job_dir), "prod", parent_node_ids=[eq["node_id"]])
+        result = run_production(
+            simulation_time_ns=0.001,
+            temperature_kelvin=300.0,
+            pressure_bar=1.0,
+            output_frequency_ps=0.5,
+            platform="CPU",
+            job_dir=str(job_dir),
+            node_id=prod["node_id"],
+            custom_force_script=str(script),
+            custom_force_parameters={"k": 500.0},
+        )
+        assert result["success"] is True, result["errors"]
+
+        prod_node = read_node(str(job_dir), prod["node_id"])
+        assert prod_node["artifacts"]["custom_force_script"] == "artifacts/custom_force_script.py"
+        assert prod_node["artifacts"]["collective_variables"] == "artifacts/collective_variables.csv"
+        assert prod_node["artifacts"]["collective_variables_meta"] == "artifacts/collective_variables.meta.json"
+        cf_meta = prod_node["metadata"]["custom_force"]
+        assert cf_meta["kind"] == "torch_script_energy"
+        assert prod_node["metadata"]["custom_force_signature"]["sha256"]
+        # The script was copied into the node artifacts directory.
+        copied = job_dir / "nodes" / prod["node_id"] / "artifacts" / "custom_force_script.py"
+        assert copied.is_file()
+
     def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
         """Run MD with explicit CPU platform selection."""
         from md_simulation_server import run_production

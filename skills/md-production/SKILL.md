@@ -79,6 +79,10 @@ mdclaw create_node --job-dir <dir> --node-type prod \
   --label "+50ns" --conditions '{"simulation_time_ns": 50}'
 ```
 
+**Custom force / CV bias**: declare it in `--conditions` so the biased node is
+distinct, e.g. `'{"simulation_time_ns": 1, "custom_force": {"kind":
+"torch_script_energy"}}'`. See `skills/md-production/custom-force.md`.
+
 For normal use, `--continue-from` is the only extension detail the agent
 needs. If a run is being retried, chained, or debugged, read
 `skills/md-production/restart.md`.
@@ -95,6 +99,12 @@ with `mdclaw update_job_params` before creating new prod nodes.
 1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**
    - Implicit solvent -> **Read and follow `skills/md-production/implicit-water.md`**
+
+To apply a biasing potential (positional restraint, distance / domain bias, or
+a candidate collective variable for CV exploration), **read and follow
+`skills/md-production/custom-force.md`** — you write a single
+`energy(positions, ctx)` function and MDClaw computes the forces by autograd,
+logging bias energy and CV values for analysis.
 
 ## Error Handling
 

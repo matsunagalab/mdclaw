@@ -403,6 +403,37 @@ def _resolve_md_restart(job_dir: str, node_id: str) -> dict:
 _resolve_prod_restart = _resolve_md_restart
 
 
+def _resolve_prod_custom_force(job_dir: str, node_id: str) -> dict:
+    """Inherit the custom-force bias from a ``--continue-from`` prod parent.
+
+    A biased production extended via ``continue_from`` should keep biasing
+    with the same script/module and parameters unless the caller overrides
+    them. Returns the parent's ``custom_force_script`` / ``custom_force_module``
+    artifact path (resolved absolute) and ``custom_force_parameters`` metadata,
+    or an empty dict when the parent carried no custom force.
+    """
+    result: dict = {}
+    continued_from = _read_continued_from(job_dir, node_id)
+    if continued_from is None:
+        return result
+    script = _read_artifact_from_node(job_dir, continued_from, "custom_force_script")
+    if script:
+        result["custom_force_script"] = script
+    else:
+        module = _read_artifact_from_node(
+            job_dir, continued_from, "custom_force_module"
+        )
+        if module:
+            result["custom_force_module"] = module
+    if "custom_force_script" in result or "custom_force_module" in result:
+        params = _read_metadata_field(
+            job_dir, continued_from, "custom_force_parameters"
+        )
+        if isinstance(params, dict):
+            result["custom_force_parameters"] = params
+    return result
+
+
 def _resolve_eq_ensemble_metadata(job_dir: str, node_id: str) -> dict:
     result: dict = {}
     eq_anc = _find_ancestor_node_id(job_dir, node_id, "eq")
@@ -551,6 +582,7 @@ def resolve_node_inputs(
             if isinstance(is_membrane, bool):
                 result["is_membrane"] = is_membrane
         result.update(_resolve_md_restart(job_dir, node_id))
+        result.update(_resolve_prod_custom_force(job_dir, node_id))
 
         # Surface the eq ancestor's ensemble as a default-pressure hint
         # so a prod that omits ``--pressure-bar`` still defaults to NPT

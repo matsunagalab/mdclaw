@@ -16,6 +16,13 @@ from mdclaw.simulation.equilibrate import (
 from mdclaw.simulation.production import (
     run_production,
 )
+from mdclaw.simulation.custom_forces import (  # noqa: F401
+    CustomForceError,
+    CustomForceReporter,
+    custom_force_signature,
+    load_custom_forces,
+    write_cv_metadata,
+)
 
 TOOLS = {
     "export_state_pdb": export_state_pdb,

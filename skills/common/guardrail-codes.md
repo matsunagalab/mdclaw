@@ -27,6 +27,12 @@ human-readable messages.
 | `implicit_solvent_topology_mismatch` | Match the run-time implicit solvent to the topology build. |
 | `associated_ligands_require_selection` | If the task names a target residue/cofactor, use `--include-ligand-resnames <RESNAME>`; otherwise use the returned `ligand_selection.recommended_include_ligand_ids`, pass `--include-associated-ligands` only when all candidates are intended, or omit `ligand` from `--include-types`. |
 | `modern_system_hmr_mismatch` | Use the HMR setting baked into `system.xml`. |
+| `custom_force_dependency_missing` | `openmm-torch` is not installed; run in a runtime that ships the plugin (container/SIF or a conda env with `openmm-torch`). |
+| `custom_force_script_error` | The `--custom-force-script` failed to import or does not define `energy(positions, ctx)`. Fix the script. |
+| `custom_force_contract_error` | `energy` must return a finite scalar tensor (or `(scalar, {cv: scalar})`) via differentiable torch ops; remove `.item()`/casts/in-place writes. |
+| `custom_force_module_invalid` | The `--custom-force-module` `.pt` is missing or not a loadable TorchScript module. |
+| `custom_force_topology_mismatch` | `topology.pdb` atom count ≠ System particle count; rebuild the topo node so the triple is consistent. |
+| `custom_force_selection_empty` | `ctx.select(...)` matched 0 atoms; correct the mdtraj selection string. |
 | `parent_not_completed` | Complete or repair the parent node before running this node. |
 | `parent_type_invalid` | Create a new node with a legal parent type for the target stage. |
 | `condition_missing` | Pass actual tool parameters that cover every declared node condition. |

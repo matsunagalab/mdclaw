@@ -402,6 +402,28 @@ class TestArgparseConstruction:
         args = parser.parse_args(["solvate_structure", "--json-input", json_str])
         assert args.json_input == json_str
 
+    def test_run_production_custom_force_flags(self):
+        """run_production exposes the custom force / CV bias CLI flags."""
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        tools = _discover_tools()
+        parser = _build_parser(tools)
+
+        args = parser.parse_args([
+            "run_production",
+            "--custom-force-script", "energy.py",
+            "--custom-force-parameters", '{"k": 1000.0, "d0": 1.2}',
+        ])
+        assert args.custom_force_script == "energy.py"
+        # custom_force_parameters is a JSON dict at the CLI boundary
+        assert args.custom_force_parameters == '{"k": 1000.0, "d0": 1.2}'
+
+        args = parser.parse_args([
+            "run_production",
+            "--custom-force-module", "model.pt",
+        ])
+        assert args.custom_force_module == "model.pt"
+
     def test_path_params_parse_as_path(self):
         from mdclaw._cli import _build_parser
 
