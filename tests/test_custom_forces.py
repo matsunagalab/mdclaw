@@ -70,19 +70,8 @@ def fake_openmmtorch(monkeypatch):
         def setUsesPeriodicBoundaryConditions(self, value):
             self.pbc = value
 
-    class _FakeTorchForce:
-        def __init__(self, arg, *a, **k):
-            self.arg = arg
-
-        def setUsesPeriodicBoundaryConditions(self, value):
-            self.pbc = value
-
-        def addGlobalParameter(self, name, value):
-            pass
-
     mod = types.ModuleType("openmmtorch")
     mod.PythonTorchForce = _FakePythonTorchForce
-    mod.TorchForce = _FakeTorchForce
     monkeypatch.setitem(sys.modules, "openmmtorch", mod)
     return mod
 
@@ -271,14 +260,31 @@ def test_dependency_missing(pdb_setup, monkeypatch):
     assert exc.value.code == "custom_force_dependency_missing"
 
 
-def test_both_routes_rejected(pdb_setup):
+def test_python_torch_force_missing(pdb_setup, monkeypatch):
+    # openmmtorch imports but lacks PythonTorchForce (the released 1.5.1 case):
+    # this must surface as a dependency-missing code, not a crash.
+    mod = types.ModuleType("openmmtorch")  # no PythonTorchForce attribute
+    monkeypatch.setitem(sys.modules, "openmmtorch", mod)
+    script = pdb_setup["tmp"] / "energy.py"
+    script.write_text(POSITIONAL_RESTRAINT)
     with pytest.raises(cf.CustomForceError) as exc:
         cf.load_custom_forces(
             system=pdb_setup["system"],
             topology_pdb_file=str(pdb_setup["pdb"]),
             reference_positions=pdb_setup["reference"],
-            custom_force_script="a.py",
-            custom_force_module="b.pt",
+            custom_force_script=str(script),
+            custom_force_parameters={"k": 1.0},
+        )
+    assert exc.value.code == "custom_force_dependency_missing"
+
+
+def test_missing_script_rejected(pdb_setup):
+    with pytest.raises(cf.CustomForceError) as exc:
+        cf.load_custom_forces(
+            system=pdb_setup["system"],
+            topology_pdb_file=str(pdb_setup["pdb"]),
+            reference_positions=pdb_setup["reference"],
+            custom_force_script=None,
         )
     assert exc.value.code == "custom_force_contract_error"
 
@@ -311,11 +317,11 @@ def test_signature_stability(pdb_setup):
     script = pdb_setup["tmp"] / "energy.py"
     script.write_text(POSITIONAL_RESTRAINT)
     sig1 = cf.custom_force_signature(
-        custom_force_script=str(script), custom_force_module=None,
+        custom_force_script=str(script),
         custom_force_parameters={"k": 1.0},
     )
     sig2 = cf.custom_force_signature(
-        custom_force_script=str(script), custom_force_module=None,
+        custom_force_script=str(script),
         custom_force_parameters={"k": 1.0},
     )
     assert sig1 == sig2
@@ -324,7 +330,7 @@ def test_signature_stability(pdb_setup):
     # Editing the script changes the hash.
     script.write_text(POSITIONAL_RESTRAINT + "\n# edit\n")
     sig3 = cf.custom_force_signature(
-        custom_force_script=str(script), custom_force_module=None,
+        custom_force_script=str(script),
         custom_force_parameters={"k": 1.0},
     )
     assert sig3["sha256"] != sig1["sha256"]
@@ -332,7 +338,7 @@ def test_signature_stability(pdb_setup):
 
 def test_signature_none_without_force():
     assert cf.custom_force_signature(
-        custom_force_script=None, custom_force_module=None,
+        custom_force_script=None,
         custom_force_parameters=None,
     ) is None
 

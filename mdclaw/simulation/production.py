@@ -40,7 +40,6 @@ from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserial
 
 def _safe_custom_force_signature(
     custom_force_script: Optional[str],
-    custom_force_module: Optional[str],
     custom_force_parameters: Optional[dict],
 ) -> Optional[dict]:
     """Best-effort custom-force signature for node identity.
@@ -49,17 +48,16 @@ def _safe_custom_force_signature(
     missing/unreadable file degrades to a signature without the hash so node
     validation can still proceed (the real load below surfaces the error).
     """
-    if not custom_force_script and not custom_force_module:
+    if not custom_force_script:
         return None
     try:
         return custom_force_signature(
             custom_force_script=custom_force_script,
-            custom_force_module=custom_force_module,
             custom_force_parameters=custom_force_parameters,
         )
     except Exception:  # noqa: BLE001
         return {
-            "kind": "torch_script_energy" if custom_force_script else "torch_module",
+            "kind": "torch_script_energy",
             "sha256": None,
             "parameters": custom_force_parameters or {},
         }
@@ -77,7 +75,6 @@ def run_production(
     trajectory_format: str = "dcd",
     restraint_file: Optional[str] = None,
     custom_force_script: Optional[str] = None,
-    custom_force_module: Optional[str] = None,
     custom_force_parameters: Optional[dict] = None,
     name: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -119,7 +116,7 @@ def run_production(
         output_frequency_ps: Output frequency in picoseconds (default: 10.0)
         trajectory_format: Trajectory format - "dcd" or "pdb" (default: "dcd")
         restraint_file: DEPRECATED and ignored. Use ``custom_force_script``
-                     (or ``custom_force_module``) for production biases.
+                     for production biases.
         custom_force_script: Path to a Python script defining a single
                      ``energy(positions, ctx) -> torch.Tensor`` function (a
                      scalar potential energy in kJ/mol). MDClaw computes the
@@ -131,14 +128,11 @@ def run_production(
                      the fixed reference geometry, and ``ctx.params`` exposes
                      ``custom_force_parameters``. The function may return
                      ``(energy, {cv_name: value})`` to log collective
-                     variables. Requires the ``openmm-torch`` plugin.
-        custom_force_module: Path to a pre-trained TorchScript ``.pt`` module
-                     wrapped in an ``openmmtorch.TorchForce`` (no user Python
-                     executed). Mutually exclusive with ``custom_force_script``.
+                     variables. A pre-trained model is loaded inside this
+                     function (e.g. ``torch.load``). Requires an
+                     ``openmm-torch`` build that provides ``PythonTorchForce``.
         custom_force_parameters: Optional dict passed to the script as
-                     ``ctx.params`` (and used to configure the TorchForce for
-                     the module path). Recognized keys include ``pbc`` (bool)
-                     and, for modules, ``global_parameters`` (dict).
+                     ``ctx.params``. Recognized keys include ``pbc`` (bool).
         name: Optional name prefix for output files
         output_dir: Output directory. If None, creates output/{job_id}/
         is_membrane: Set True for membrane systems to use MonteCarloMembraneBarostat
@@ -211,11 +205,9 @@ def run_production(
         # Inherit the custom force from a ``--continue-from`` parent so a
         # biased production can be extended without re-specifying the bias.
         # Explicit flags always win over the inherited value.
-        if not custom_force_script and not custom_force_module:
+        if not custom_force_script:
             if _inputs.get("custom_force_script"):
                 custom_force_script = _inputs["custom_force_script"]
-            elif _inputs.get("custom_force_module"):
-                custom_force_module = _inputs["custom_force_module"]
             if (custom_force_parameters is None
                     and _inputs.get("custom_force_parameters") is not None):
                 custom_force_parameters = _inputs["custom_force_parameters"]
@@ -275,8 +267,7 @@ def run_production(
                 "hmr": hmr,
                 "random_seed": random_seed,
                 "custom_force": _safe_custom_force_signature(
-                    custom_force_script, custom_force_module,
-                    custom_force_parameters,
+                    custom_force_script, custom_force_parameters,
                 ),
             },
         )
@@ -402,25 +393,15 @@ def run_production(
     # -from``. Repoint the variable at the copy so loading and the recorded
     # artifact reference the same file.
     _custom_force_script_artifact: Optional[str] = None
-    _custom_force_module_artifact: Optional[str] = None
-    if _node_mode:
+    if _node_mode and custom_force_script:
         import shutil
-        if custom_force_script:
-            src = Path(custom_force_script)
-            if src.is_file():
-                dest = out_dir / "custom_force_script.py"
-                if src.resolve() != dest.resolve():
-                    shutil.copy2(src, dest)
-                custom_force_script = str(dest)
-                _custom_force_script_artifact = "artifacts/custom_force_script.py"
-        elif custom_force_module:
-            src = Path(custom_force_module)
-            if src.is_file():
-                dest = out_dir / "custom_force_module.pt"
-                if src.resolve() != dest.resolve():
-                    shutil.copy2(src, dest)
-                custom_force_module = str(dest)
-                _custom_force_module_artifact = "artifacts/custom_force_module.pt"
+        src = Path(custom_force_script)
+        if src.is_file():
+            dest = out_dir / "custom_force_script.py"
+            if src.resolve() != dest.resolve():
+                shutil.copy2(src, dest)
+            custom_force_script = str(dest)
+            _custom_force_script_artifact = "artifacts/custom_force_script.py"
 
     # Validate input files. Every early-return path below this point
     # happens AFTER begin_node(), so it must transit through
@@ -548,14 +529,13 @@ def run_production(
         # Context creation). The bias goes in a dedicated force group so its
         # energy can be logged in isolation for CV analysis / reweighting.
         _custom_force_loaded = None
-        if custom_force_script or custom_force_module:
+        if custom_force_script:
             try:
                 _custom_force_loaded = load_custom_forces(
                     system=system,
                     topology_pdb_file=str(topology_pdb_path),
                     reference_positions=xml_inputs.positions,
                     custom_force_script=custom_force_script,
-                    custom_force_module=custom_force_module,
                     custom_force_parameters=custom_force_parameters,
                 )
             except CustomForceError as exc:
@@ -840,12 +820,12 @@ def run_production(
                     simulation.context.setPeriodicBoxVectors(*xml_inputs.box_vectors)
 
         # ``restraint_file`` is deprecated and ignored; production biases now
-        # go through custom_force_script / custom_force_module (added to the
-        # System before the Simulation was built, above).
+        # go through custom_force_script (added to the System before the
+        # Simulation was built, above).
         if restraint_file:
             result["warnings"].append(
                 "restraint_file is deprecated and ignored; use "
-                "custom_force_script / custom_force_module instead."
+                "custom_force_script instead."
             )
 
         # Setup output file paths
@@ -1103,7 +1083,6 @@ def run_production(
             output_frequency_ps=output_frequency_ps,
             random_seed=random_seed,
             custom_force_script_artifact=_custom_force_script_artifact,
-            custom_force_module_artifact=_custom_force_module_artifact,
         )
 
     return result

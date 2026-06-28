@@ -139,12 +139,21 @@ RUN /opt/mdclaw/bin/python -c "import openmm; print(f'OpenMM {openmm.__version__
 
 # Build openmm-torch from source against the just-built OpenMM and the
 # cu118 PyTorch already installed in /opt/mdclaw. This backs the production
-# custom force / CV bias plugin (PythonTorchForce + TorchForce). The conda
-# build was stripped above because it links the conda OpenMM ABI.
-ARG OPENMM_TORCH_VERSION=v1.5.1
-RUN git clone --depth 1 --branch ${OPENMM_TORCH_VERSION} \
-    https://github.com/openmm/openmm-torch.git /build/openmm-torch && \
-    mkdir /build/openmm-torch/build
+# custom force / CV bias plugin via PythonTorchForce. The conda build was
+# stripped above because it links the conda OpenMM ABI.
+#
+# Pinned to the master commit that introduced PythonTorchForce
+# ("Create PythonTorchForce (#179)", 2026-06-24). Upstream deprecated the
+# TorchScript-based TorchForce and recommends PythonTorchForce in all cases,
+# but as of openmm-torch v1.5.1 no tagged release ships it yet, so we build
+# from this commit. Bump to a tagged release once one includes it.
+ARG OPENMM_TORCH_COMMIT=b6532900ad825cb3d12193817a1e34a7f46ae6a3
+RUN mkdir -p /build/openmm-torch && cd /build/openmm-torch && \
+    git init -q && \
+    git remote add origin https://github.com/openmm/openmm-torch.git && \
+    git fetch --depth 1 origin ${OPENMM_TORCH_COMMIT} && \
+    git checkout -q FETCH_HEAD && \
+    mkdir build
 WORKDIR /build/openmm-torch/build
 RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import torch; print(torch.utils.cmake_prefix_path)") && \
     cmake .. \
@@ -158,8 +167,8 @@ RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import torch; print(torch.utils
     make install && \
     make PythonInstall
 
-# Verify the openmm-torch plugin imports against the source OpenMM
-RUN /opt/mdclaw/bin/python -c "import openmmtorch; print('openmm-torch OK')"
+# Verify the openmm-torch plugin imports and provides PythonTorchForce
+RUN /opt/mdclaw/bin/python -c "import openmmtorch; assert hasattr(openmmtorch, 'PythonTorchForce'), 'PythonTorchForce missing'; print('openmm-torch OK (PythonTorchForce present)')"
 
 # =============================================================================
 # Stage 3: Slim runtime

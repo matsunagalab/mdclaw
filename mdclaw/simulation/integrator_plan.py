@@ -115,7 +115,6 @@ def _record_production_node_result(
     output_frequency_ps: float,
     random_seed: Optional[int],
     custom_force_script_artifact: Optional[str] = None,
-    custom_force_module_artifact: Optional[str] = None,
 ) -> None:
     """Persist production artifacts and metadata to the DAG node."""
     from mdclaw._node import complete_node, fail_node
@@ -131,8 +130,6 @@ def _record_production_node_result(
         # Custom-force provenance + CV log artifacts (only when a bias ran).
         if custom_force_script_artifact:
             artifacts["custom_force_script"] = custom_force_script_artifact
-        if custom_force_module_artifact:
-            artifacts["custom_force_module"] = custom_force_module_artifact
         if result.get("collective_variables_file"):
             artifacts["collective_variables"] = _node_artifact_path(
                 result.get("collective_variables_file")

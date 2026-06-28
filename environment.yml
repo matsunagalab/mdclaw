@@ -37,10 +37,13 @@ dependencies:
   # HPacker uses torch at import time. Keep this on conda-forge to avoid
   # mixing pkgs/main PyTorch with conda-forge protobuf on macOS.
   - pytorch>=2.7,<2.8
-  # openmm-torch (openmmtorch) backs production custom force / CV bias plugins
-  # (PythonTorchForce for agent-written energy scripts, TorchForce for
-  # pre-trained .pt models). conda-forge builds it against the matching
-  # openmm + pytorch ABI, so keep it on conda-forge alongside both.
+  # openmm-torch (openmmtorch) backs the production custom force / CV bias
+  # plugin via PythonTorchForce (agent-written energy(positions, ctx) scripts;
+  # autograd computes the forces). NOTE: PythonTorchForce landed on master on
+  # 2026-06-24 (#179) and is NOT in any tagged release yet (v1.5.1 ships only
+  # the deprecated TorchForce). The container source-builds the pinned commit;
+  # this conda package mainly pulls a matching openmm+pytorch ABI for local
+  # dev, where the custom-force path is skipped until PythonTorchForce exists.
   - openmm-torch>=1.5
   # --- pip dependencies (delegated to pyproject.toml) ---
   - pip

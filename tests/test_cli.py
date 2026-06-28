@@ -418,12 +418,6 @@ class TestArgparseConstruction:
         # custom_force_parameters is a JSON dict at the CLI boundary
         assert args.custom_force_parameters == '{"k": 1000.0, "d0": 1.2}'
 
-        args = parser.parse_args([
-            "run_production",
-            "--custom-force-module", "model.pt",
-        ])
-        assert args.custom_force_module == "model.pt"
-
     def test_path_params_parse_as_path(self):
         from mdclaw._cli import _build_parser
 

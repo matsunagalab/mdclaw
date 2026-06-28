@@ -30,7 +30,6 @@ human-readable messages.
 | `custom_force_dependency_missing` | `openmm-torch` is not installed; run in a runtime that ships the plugin (container/SIF or a conda env with `openmm-torch`). |
 | `custom_force_script_error` | The `--custom-force-script` failed to import or does not define `energy(positions, ctx)`. Fix the script. |
 | `custom_force_contract_error` | `energy` must return a finite scalar tensor (or `(scalar, {cv: scalar})`) via differentiable torch ops; remove `.item()`/casts/in-place writes. |
-| `custom_force_module_invalid` | The `--custom-force-module` `.pt` is missing or not a loadable TorchScript module. |
 | `custom_force_topology_mismatch` | `topology.pdb` atom count ≠ System particle count; rebuild the topo node so the triple is consistent. |
 | `custom_force_selection_empty` | `ctx.select(...)` matched 0 atoms; correct the mdtraj selection string. |
 | `parent_not_completed` | Complete or repair the parent node before running this node. |

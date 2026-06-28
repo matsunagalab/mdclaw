@@ -9,7 +9,7 @@ emits a per-frame log under the prod node's artifacts.
 |---|---|---|
 | `collective_variables` | `artifacts/collective_variables.csv` | `step,time_ps,bias_energy_kj_mol[,<cv...>]` per report frame. |
 | `collective_variables_meta` | `artifacts/collective_variables.meta.json` | `temperature_kelvin`, `parameters`, custom-force `signature`, `cv_names`, `bias_energy_unit`. |
-| `custom_force_script` / `custom_force_module` | the exact bias used | provenance. |
+| `custom_force_script` | the exact bias used | provenance. |
 
 `bias_energy_kj_mol` is always present (read from the dedicated custom-force
 group, isolated from the force-field energy). CV columns appear only when the

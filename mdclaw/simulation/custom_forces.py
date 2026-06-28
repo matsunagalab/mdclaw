@@ -1,4 +1,4 @@
-"""Custom force / CV bias plugin for production MD (TorchForce-backed).
+"""Custom force / CV bias plugin for production MD (PythonTorchForce-backed).
 
 This module lets an agent attach an arbitrary biasing force to a production
 run by writing a *single* Python function:
@@ -17,9 +17,11 @@ goes through ``ctx.select`` (mdtraj VMD-style DSL), whose indices are
 guaranteed to match the OpenMM ``System`` particle indices because the
 ``topology.pdb`` and ``system.xml`` come from the same build triple.
 
-A pre-trained TorchScript module (``.pt``) can be supplied instead, in which
-case MDClaw wraps it in a classic ``openmmtorch.TorchForce`` (no user Python
-is executed).
+``PythonTorchForce`` is the only supported backend: upstream openmm-torch
+deprecated ``TorchForce`` (it relies on TorchScript, which PyTorch no longer
+maintains) and recommends ``PythonTorchForce`` for all cases. A pre-trained
+model is therefore loaded inside the same ``energy`` function (e.g. via
+``torch.load``) rather than through a separate TorchScript route.
 
 The function may optionally return ``(energy, cv_dict)`` where ``cv_dict``
 maps collective-variable names to scalar tensors; those values are logged per
@@ -308,8 +310,12 @@ def _build_python_torch_force(
     if not hasattr(openmmtorch, "PythonTorchForce"):
         raise CustomForceError(
             "custom_force_dependency_missing",
-            "openmm-torch is too old; PythonTorchForce (openmm-torch >= 1.5) "
-            "is required for the script route. Upgrade openmm-torch.",
+            "The installed openmm-torch has no PythonTorchForce. As of "
+            "openmm-torch 1.5.1 the released conda-forge/pip package still "
+            "ships only the deprecated TorchForce; PythonTorchForce was added "
+            "to master on 2026-06-24 and is not in any tagged release yet. "
+            "Install an openmm-torch built from master (the MDClaw container "
+            "source-builds it) to use custom forces.",
         )
     force = openmmtorch.PythonTorchForce(_compute)
     try:
@@ -328,35 +334,6 @@ def _build_python_torch_force(
         return {str(k): float(v) for k, v in cv_dict.items()}
 
     return force, _evaluator, cv_names
-
-
-def _build_torch_module_force(*, module_path: Path, params: dict):
-    """Wrap a pre-trained TorchScript ``.pt`` in a classic TorchForce."""
-    openmmtorch = _import_openmmtorch()
-    if not module_path.is_file():
-        raise CustomForceError(
-            "custom_force_module_invalid",
-            f"TorchScript module not found: {module_path}",
-        )
-    try:
-        force = openmmtorch.TorchForce(str(module_path))
-    except Exception as exc:  # noqa: BLE001
-        raise CustomForceError(
-            "custom_force_module_invalid",
-            f"Failed to load TorchScript module {module_path}: "
-            f"{type(exc).__name__}: {exc}",
-        ) from exc
-    if params.get("pbc"):
-        try:
-            force.setUsesPeriodicBoundaryConditions(True)
-        except Exception:  # noqa: BLE001
-            pass
-    for name, value in (params.get("global_parameters") or {}).items():
-        try:
-            force.addGlobalParameter(str(name), float(value))
-        except Exception:  # noqa: BLE001
-            logger.warning("Could not add global parameter %s to TorchForce", name)
-    return force, None, []
 
 
 class CustomForceReporter:
@@ -468,25 +445,18 @@ def write_cv_metadata(
 def custom_force_signature(
     *,
     custom_force_script: Optional[str],
-    custom_force_module: Optional[str],
     custom_force_parameters: Optional[dict],
 ) -> Optional[dict]:
     """Reproducibility signature for the custom force.
 
     ``None`` when no custom force is configured. Otherwise a dict with the
-    kind, the SHA-256 of the script/module content, and the parameters, so a
-    biased node is distinct from an unbiased one and reproducible across runs.
+    kind, the SHA-256 of the script content, and the parameters, so a biased
+    node is distinct from an unbiased one and reproducible across runs.
     """
     if custom_force_script:
         return {
             "kind": "torch_script_energy",
             "sha256": sha256_file(Path(custom_force_script)),
-            "parameters": custom_force_parameters or {},
-        }
-    if custom_force_module:
-        return {
-            "kind": "torch_module",
-            "sha256": sha256_file(Path(custom_force_module)),
             "parameters": custom_force_parameters or {},
         }
     return None
@@ -498,13 +468,11 @@ def load_custom_forces(
     topology_pdb_file: str,
     reference_positions,
     custom_force_script: Optional[str] = None,
-    custom_force_module: Optional[str] = None,
     custom_force_parameters: Optional[dict] = None,
 ) -> dict:
-    """Resolve a custom force from a user script or a TorchScript module.
+    """Resolve a custom force from a user ``energy(positions, ctx)`` script.
 
-    Exactly one of ``custom_force_script`` / ``custom_force_module`` may be
-    provided. Returns a dict::
+    Returns a dict::
 
         {
             "forces": [openmm.Force, ...],   # to addForce before Simulation
@@ -517,45 +485,32 @@ def load_custom_forces(
 
     Raises ``CustomForceError`` (with a stable ``code``) on any failure.
     """
-    if custom_force_script and custom_force_module:
+    if not custom_force_script:
         raise CustomForceError(
             "custom_force_contract_error",
-            "Provide only one of custom_force_script / custom_force_module.",
-        )
-    if not custom_force_script and not custom_force_module:
-        raise CustomForceError(
-            "custom_force_contract_error",
-            "load_custom_forces called without a script or module.",
+            "load_custom_forces called without a custom_force_script.",
         )
 
     params = dict(custom_force_parameters or {})
     mdtraj_top = _load_mdtraj_topology(topology_pdb_file, system)
     reference_np = _reference_positions_to_numpy(reference_positions)
 
-    if custom_force_script:
-        script_path = Path(custom_force_script)
-        if not script_path.is_file():
-            raise CustomForceError(
-                "custom_force_script_error",
-                f"Custom-force script not found: {custom_force_script}",
-            )
-        energy_fn = _load_energy_function(script_path)
-        force, evaluator, cv_names = _build_python_torch_force(
-            energy_fn=energy_fn,
-            mdtraj_top=mdtraj_top,
-            reference_np=reference_np,
-            params=params,
+    script_path = Path(custom_force_script)
+    if not script_path.is_file():
+        raise CustomForceError(
+            "custom_force_script_error",
+            f"Custom-force script not found: {custom_force_script}",
         )
-        kind = "torch_script_energy"
-    else:
-        force, evaluator, cv_names = _build_torch_module_force(
-            module_path=Path(custom_force_module), params=params
-        )
-        kind = "torch_module"
+    energy_fn = _load_energy_function(script_path)
+    force, evaluator, cv_names = _build_python_torch_force(
+        energy_fn=energy_fn,
+        mdtraj_top=mdtraj_top,
+        reference_np=reference_np,
+        params=params,
+    )
 
     signature = custom_force_signature(
         custom_force_script=custom_force_script,
-        custom_force_module=custom_force_module,
         custom_force_parameters=custom_force_parameters,
     )
     return {
@@ -563,6 +518,6 @@ def load_custom_forces(
         "evaluator": evaluator,
         "cv_names": cv_names,
         "has_cv": bool(cv_names),
-        "kind": kind,
+        "kind": "torch_script_energy",
         "signature": signature,
     }

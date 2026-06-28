@@ -193,7 +193,7 @@ mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
 
 To bias production (positional restraint, distance / domain-distance bias, or a
 candidate collective variable), pass `--custom-force-script <energy.py>`
-(autograd-backed `energy(positions, ctx)`) or `--custom-force-module <model.pt>`
+(autograd-backed `energy(positions, ctx)`, wrapped in `PythonTorchForce`)
 with optional `--custom-force-parameters '<json>'`. Bias energy and CV values
 are logged to `artifacts/collective_variables.csv`. Read and follow
 `skills/md-production/custom-force.md`.

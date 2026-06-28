@@ -54,11 +54,13 @@ singularity exec --nv \
   (uses `openmm.app.topology.MergedResidue`, added in 8.5).
 - NVRTC and nvrtc-builtins are copied into `/opt/mdclaw/lib/` so the slim
   runtime image can JIT without using a devel base image.
-- `openmm-torch` (the production custom force / CV bias plugin backend) is
-  source-built in Stage 2 against the source OpenMM and the cu118 PyTorch, and
-  is stripped from the conda env file because the conda build links the conda
-  OpenMM ABI. Bumping `openmm`, `pytorch`, or `OPENMM_TORCH_VERSION` requires a
-  container rebuild + push (container contents changed).
+- `openmm-torch` (the production custom force / CV bias plugin backend, used
+  via `PythonTorchForce`) is source-built in Stage 2 against the source OpenMM
+  and the cu118 PyTorch, and is stripped from the conda env file because the
+  conda build links the conda OpenMM ABI. It is pinned to `OPENMM_TORCH_COMMIT`
+  (the master commit that added `PythonTorchForce`, #179) because no tagged
+  release ships it yet. Bumping `openmm`, `pytorch`, or `OPENMM_TORCH_COMMIT`
+  requires a container rebuild + push (container contents changed).
 - BioEmu is installed into `/opt/mdclaw/surrogates/bioemu/venv`, not into the
   conda-packed `/opt/mdclaw` environment. Use `BIOEMU_DEVICE=cuda` at build time
   to install `bioemu[cuda]`; the default installs CPU BioEmu for import and

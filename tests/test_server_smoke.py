@@ -770,7 +770,9 @@ class TestMDSimulationServer:
 
     def test_run_production_custom_force_positional_restraint(self, small_pdb, tmp_path):
         """Custom-force script (positional restraint) runs and logs bias energy."""
-        pytest.importorskip("openmmtorch")
+        _ot = pytest.importorskip("openmmtorch")
+        if not hasattr(_ot, "PythonTorchForce"):
+            pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
         from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
@@ -808,7 +810,9 @@ class TestMDSimulationServer:
 
     def test_run_production_custom_force_distance_bias_logs_cv(self, small_pdb, tmp_path):
         """Custom-force distance bias returns a cv_dict and logs the CV column."""
-        pytest.importorskip("openmmtorch")
+        _ot = pytest.importorskip("openmmtorch")
+        if not hasattr(_ot, "PythonTorchForce"):
+            pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
         from md_simulation_server import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
@@ -848,7 +852,9 @@ class TestMDSimulationServer:
 
     def test_run_production_custom_force_node_artifacts(self, small_pdb, tmp_path):
         """Node-mode custom force records script + CV artifacts and signature."""
-        pytest.importorskip("openmmtorch")
+        _ot = pytest.importorskip("openmmtorch")
+        if not hasattr(_ot, "PythonTorchForce"):
+            pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
         from md_simulation_server import run_equilibration, run_production
         from mdclaw._node import complete_node, create_node, read_node
 

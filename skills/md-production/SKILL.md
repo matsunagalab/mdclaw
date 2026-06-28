@@ -79,9 +79,12 @@ mdclaw create_node --job-dir <dir> --node-type prod \
   --label "+50ns" --conditions '{"simulation_time_ns": 50}'
 ```
 
-**Custom force / CV bias**: declare it in `--conditions` so the biased node is
-distinct, e.g. `'{"simulation_time_ns": 1, "custom_force": {"kind":
-"torch_script_energy"}}'`. See `skills/md-production/custom-force.md`.
+**Custom force / CV bias**: pass `--custom-force-script` (an
+`energy(positions, ctx)` function, autograd computes the forces via
+`PythonTorchForce`) to `run_production`; the bias signature and artifacts are
+auto-recorded on the node (do not hand-declare `custom_force` in
+`--conditions` — it is validated by
+exact match and would fail). See `skills/md-production/custom-force.md`.
 
 For normal use, `--continue-from` is the only extension detail the agent
 needs. If a run is being retried, chained, or debugged, read

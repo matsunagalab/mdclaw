@@ -100,11 +100,11 @@ class TestImportServers:
         sig = inspect.signature(run_production)
         for name in (
             "custom_force_script",
-            "custom_force_module",
             "custom_force_parameters",
         ):
             assert name in sig.parameters, f"run_production missing {name!r}"
             assert sig.parameters[name].default is None
+        assert "custom_force_module" not in sig.parameters
 
     def test_md_simulation_platform_preflight_registered(self):
         """Local-run feasibility preflight is exposed as a CLI/MCP tool."""

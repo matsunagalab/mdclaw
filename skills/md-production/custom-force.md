@@ -1,20 +1,27 @@
-# Production MD: Custom Force / CV Bias (TorchForce)
+# Production MD: Custom Force / CV Bias (PythonTorchForce)
 
 Attach an arbitrary biasing potential (positional restraint, distance/angle
 bias, domain-distance bias, a candidate collective variable, ...) to a
 production run. This is the foundation for CV exploration and, later, pymbar
 reweighting.
 
-There are two routes:
+You write one Python function `energy(positions, ctx)` and pass it with
+`--custom-force-script`. **You write only the potential energy; MDClaw
+computes the forces by autograd** and wraps your function in an
+`openmmtorch.PythonTorchForce`. A pre-trained model is simply loaded inside
+the same function (e.g. `torch.load(ctx.params["model_path"])`).
 
-- **Script route (`--custom-force-script`)** — you write one Python function
-  `energy(positions, ctx)`. **You write only the potential energy; MDClaw
-  computes the forces by autograd.** Backed by `openmmtorch.PythonTorchForce`.
-- **Module route (`--custom-force-module`)** — a pre-trained TorchScript
-  `.pt` model wrapped in `openmmtorch.TorchForce` (no Python executed).
+Requires an `openmm-torch` build that provides `PythonTorchForce` (code
+`custom_force_dependency_missing` otherwise).
 
-Requires the `openmm-torch` plugin (code `custom_force_dependency_missing`
-when absent).
+> **Availability note**: upstream openmm-torch deprecated `TorchForce` (it
+> relies on TorchScript, which PyTorch no longer maintains) and recommends
+> `PythonTorchForce` for all cases. `PythonTorchForce` landed on master on
+> 2026-06-24 (#179) and is **not in any tagged release yet** (v1.5.1 ships
+> only the deprecated `TorchForce`). The MDClaw container source-builds the
+> pinned commit, so this works there; a plain `conda install openmm-torch`
+> does not yet provide it and the custom-force path reports
+> `custom_force_dependency_missing`.
 
 ---
 
@@ -100,13 +107,28 @@ def energy(positions, ctx):
     return 0.5 * k * (d - d0) ** 2, {"domain_distance_nm": d}
 ```
 
-## Module route (pre-trained `.pt`)
+## Using a pre-trained model
+
+There is no separate module route. Load the model inside `energy`:
+
+```python
+import torch
+
+_MODEL = None
+
+def energy(positions, ctx):
+    global _MODEL
+    if _MODEL is None:
+        _MODEL = torch.jit.load(ctx.params["model_path"]).eval()
+    e = _MODEL(positions)  # model returns a scalar energy in kJ/mol
+    return e
+```
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --simulation-time-ns 0.1 --temperature-kelvin 300 \
-  --custom-force-module model.pt \
-  --custom-force-parameters '{"pbc": true, "global_parameters": {"lambda": 0.5}}'
+  --custom-force-script ml_potential.py \
+  --custom-force-parameters '{"model_path": "model.pt"}'
 ```
 
 ---
@@ -124,23 +146,27 @@ When a custom force runs, production writes per-report-frame:
   reweighting needs later).
 
 These are recorded on the node as `collective_variables` /
-`collective_variables_meta` artifacts, and the script/module is copied to
-`artifacts/custom_force_script.py` / `artifacts/custom_force_module.pt` for
-provenance. See `skills/md-analyze` for consuming the CV log.
+`collective_variables_meta` artifacts, and the script is copied to
+`artifacts/custom_force_script.py` for provenance. See `skills/md-analyze`
+for consuming the CV log.
 
 ---
 
 ## Node declaration & continuation
 
-Declare the bias in `create_node --conditions` so the biased node is distinct:
+Do **not** declare `custom_force` in `create_node --conditions`: the bias
+signature (including its content `sha256`) is recorded automatically into the
+prod node's `metadata.custom_force` and `artifacts` when the run completes, and
+a declared condition is validated by *exact* match — a partial
+`{"kind": ...}` would always fail with `condition_mismatch`. Use a normal label
+to keep the biased branch distinct:
 
 ```bash
 mdclaw create_node --job-dir <dir> --node-type prod --parent-node-ids <eq_id> \
-  --label "dist_bias" \
-  --conditions '{"simulation_time_ns": 1, "custom_force": {"kind": "torch_script_energy"}}'
+  --label "dist_bias" --conditions '{"simulation_time_ns": 1}'
 ```
 
-`--continue-from` a biased prod inherits the same script/module and parameters
+`--continue-from` a biased prod inherits the same script and parameters
 automatically (override with explicit flags to change the bias).
 
 ---
@@ -149,9 +175,8 @@ automatically (override with explicit flags to change the bias).
 
 | Code | Meaning / fix |
 |---|---|
-| `custom_force_dependency_missing` | `openmm-torch` not installed; use a runtime that ships it. |
+| `custom_force_dependency_missing` | `openmm-torch` with `PythonTorchForce` not installed; use a runtime that ships it (the MDClaw container). |
 | `custom_force_script_error` | Script failed to import or has no `energy(positions, ctx)`. |
 | `custom_force_contract_error` | `energy` returned a non-scalar / non-finite value, a bad tuple, or a non-differentiable result. |
-| `custom_force_module_invalid` | TorchScript `.pt` missing or failed to load. |
 | `custom_force_topology_mismatch` | `topology.pdb` atom count ≠ System particle count; rebuild the topo node. |
 | `custom_force_selection_empty` | `ctx.select(...)` matched 0 atoms; fix the selection string. |
