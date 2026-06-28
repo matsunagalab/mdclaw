@@ -65,7 +65,7 @@ RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docke
 # Install PyTorch with CUDA 11.8 support (matches the base image's CUDA
 # toolkit, so PyTorch's bundled CUDA runtime is consistent with the one
 # OpenMM is compiled against — no dual-runtime loader surprises).
-RUN mamba run -n mdclaw pip install torch --index-url https://download.pytorch.org/whl/cu118 && \
+RUN mamba run -n mdclaw pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118 && \
     mamba run -n mdclaw pip cache purge
 
 # Install mdclaw package into the environment. Include ruff in the packaged
@@ -84,7 +84,7 @@ RUN SITE_PACKAGES=$(mamba run -n mdclaw python -c "import site; print(site.getsi
 
 # Install conda-pack and pack the environment
 RUN mamba install -n base -y conda-pack && \
-    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz --ignore-editable-packages && \
+    conda-pack -n mdclaw -o /build/mdclaw_env.tar.gz --ignore-editable-packages --ignore-missing-files && \
     mamba clean -afy
 
 # =============================================================================
@@ -155,12 +155,16 @@ RUN mkdir -p /build/openmm-torch && cd /build/openmm-torch && \
     git checkout -q FETCH_HEAD && \
     mkdir build
 WORKDIR /build/openmm-torch/build
-RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import torch; print(torch.utils.cmake_prefix_path)") && \
+# Conda's PyTorch 2.7 CUDAMacros.h can reference a generated header that is
+# not packaged. PyTorch supports C10_CUDA_NO_CMAKE_CONFIGURE_FILE as an opt-out
+# for external CUDA builds such as openmm-torch.
+RUN TORCH_CMAKE_DIR=$(/opt/mdclaw/bin/python -c "import pathlib, torch; print(pathlib.Path(torch.__file__).resolve().parent / 'share' / 'cmake' / 'Torch')") && \
     cmake .. \
     -DCMAKE_INSTALL_PREFIX=/opt/mdclaw \
     -DOPENMM_DIR=/opt/mdclaw \
     -DPYTHON_EXECUTABLE=/opt/mdclaw/bin/python \
-    -DCMAKE_PREFIX_PATH="${TORCH_CMAKE_DIR}" \
+    -DTorch_DIR="${TORCH_CMAKE_DIR}" \
+    -DCMAKE_CXX_FLAGS="-DC10_CUDA_NO_CMAKE_CONFIGURE_FILE" \
     -DNN_BUILD_CUDA_LIB=ON \
     -DNN_BUILD_OPENCL_LIB=OFF && \
     make -j$(nproc) && \
