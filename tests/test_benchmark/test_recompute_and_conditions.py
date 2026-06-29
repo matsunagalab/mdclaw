@@ -673,6 +673,29 @@ def test_package_openmm_submission_can_include_evidence_report(tmp_path: Path):
     assert str(sub / "evidence_report.json") in res["files_written"]
 
 
+def test_package_openmm_submission_rejects_stale_evidence_report(tmp_path: Path):
+    sx, tp, st = _make_external_triple(tmp_path)
+    sub = tmp_path / "submission"
+    sub.mkdir()
+    evidence = tmp_path / "evidence_report.json"
+    evidence.write_text(
+        json.dumps({"schema_version": "1.0", "task_id": "P25_old_task"})
+    )
+
+    res = cli.package_openmm_submission(
+        submission_dir=str(sub),
+        task_id="P18_prep_membrane_mixed_lipids",
+        system_xml_file=str(sx),
+        topology_pdb_file=str(tp),
+        state_xml_file=str(st),
+        run_id="pkg",
+        evidence_report_file=str(evidence),
+    )
+
+    assert not res["success"]
+    assert any("task_id mismatch" in err for err in res["errors"])
+
+
 def test_package_openmm_submission_can_include_source_selection(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
     source_selection = tmp_path / "source_selection.json"

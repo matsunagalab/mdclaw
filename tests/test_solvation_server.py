@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import subprocess
 import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import mdclaw.solvation_server as solvation_server
+from mdclaw.membrane_cache import slab_xy_side_for_protein
 from mdclaw.solvation_server import (
     _auto_nucleic_packmol_charge_pdb_delta,
     _record_packmol_memgen_output,
@@ -17,6 +19,20 @@ def _pdb_atom(serial, atom, resname, chain, resseq, element, x=0.0):
     return (
         f"ATOM  {serial:5d} {atom:<4} {resname:>3} {chain:1}{resseq:4d}"
         f"    {x:8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00          {element:>2}\n"
+    )
+
+
+def _pdb_hetatm(serial, atom, resname, chain, resseq, element, x=0.0, y=0.0, z=0.0):
+    return (
+        f"HETATM{serial:5d} {atom:<4} {resname:>3} {chain:1}{resseq:4d}"
+        f"    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2}\n"
+    )
+
+
+def _pdb_hetatm_amber4(serial, atom, resname, chain, resseq, element, x=0.0, y=0.0, z=0.0):
+    return (
+        f"HETATM{serial:5d} {atom:>4} {resname:<4}{chain:1}{resseq:4d}"
+        f"    {x:8.3f}{y:8.3f}{z:8.3f}  1.00  0.00          {element:>2}\n"
     )
 
 
@@ -478,6 +494,416 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
     output_text = Path(result["output_file"]).read_text()
     assert "ALA X   7" in output_text
     assert "GLY Z 999" not in output_text
+
+
+def test_embed_in_membrane_slab_cache_builds_then_reuses_cache(tmp_path, monkeypatch):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    cache_dir = tmp_path / "cache"
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   60.000   60.000   80.000  90.00  90.00  90.00 P 1           1\n"
+            # Group M:1 is close to the protein and should be carved as a whole
+            # lipid21 phospholipid group because PA/PC/OL share chain/resseq.
+            + _pdb_hetatm(1, "P", "PA", "M", 1, "P", x=0.0)
+            + _pdb_hetatm(2, "N", "PC", "M", 1, "N", x=8.0)
+            + _pdb_hetatm(3, "C1", "OL", "M", 1, "C", x=9.0)
+            # Group M:2 remains and proves requested POPC survives.
+            + _pdb_hetatm(4, "P", "PA", "M", 2, "P", x=20.0)
+            + _pdb_hetatm(5, "N", "PC", "M", 2, "N", x=21.0)
+            + _pdb_hetatm(6, "C1", "OL", "M", 2, "C", x=22.0)
+            + _pdb_hetatm(7, "O", "HOH", "W", 1, "O", x=0.1)
+            + _pdb_hetatm(8, "O", "HOH", "W", 2, "O", x=-80.1)
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    first = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(cache_dir),
+        membrane_slab_bin_size=10.0,
+        membrane_carve_padding=2.5,
+    )
+    second = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(cache_dir),
+        membrane_slab_bin_size=10.0,
+        membrane_carve_padding=2.5,
+    )
+
+    assert first["success"] is True
+    assert first["parameters"]["membrane_backend_used"] == "slab-cache"
+    assert first["parameters"]["membrane_cache_hit"] is False
+    assert second["success"] is True
+    assert second["parameters"]["membrane_cache_hit"] is True
+    assert len(calls) == 1
+    assert "--distxy_fix" in calls[0]
+    assert calls[0][calls[0].index("--distxy_fix") + 1] == str(
+        slab_xy_side_for_protein(input_pdb, dist=15.0, bin_size=10.0)
+    )
+
+    output_text = Path(first["output_file"]).read_text()
+    assert "ALA X   7" in output_text
+    assert "PA M   1" not in output_text
+    assert "PC M   1" not in output_text
+    assert "OL M   1" not in output_text
+    assert "PA M   2" in output_text
+    assert "PC M   2" in output_text
+    assert "OL M   2" in output_text
+    assert "HOH W   1" not in output_text
+    assert "HOH W   2" in output_text
+    assert Path(first["box_dimensions_file"]).exists()
+    assert Path(first["membrane_cache_metadata_file"]).exists()
+
+
+def test_embed_in_membrane_slab_cache_default_cache_uses_absolute_builder_paths(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("MDCLAW_CACHE_DIR", raising=False)
+    monkeypatch.delenv("MDCLAW_MEMBRANE_CACHE_DIR", raising=False)
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append((list(args), Path(cwd)))
+        output_path = Path(args[args.index("-o") + 1])
+        packlog_path = Path(args[args.index("--packlog") + 1])
+        assert output_path.is_absolute()
+        assert packlog_path.is_absolute()
+        assert Path(cwd).is_absolute()
+        output_path.write_text(
+            "CRYST1   60.000   60.000   80.000  90.00  90.00  90.00 P 1           1\n"
+            + _pdb_hetatm(1, "P", "PA", "M", 1, "P", x=-20.0)
+            + _pdb_hetatm(2, "N", "PC", "M", 1, "N", x=-21.0)
+            + _pdb_hetatm(3, "C1", "OL", "M", 1, "C", x=-22.0)
+            + _pdb_hetatm(4, "P", "PA", "M", 2, "P", x=20.0)
+            + _pdb_hetatm(5, "N", "PC", "M", 2, "N", x=21.0)
+            + _pdb_hetatm(6, "C1", "OL", "M", 2, "C", x=22.0)
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path / "out"),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_slab_bin_size=10.0,
+        membrane_carve_padding=2.5,
+    )
+
+    assert result["success"] is True
+    assert result["parameters"]["membrane_cache_hit"] is False
+    assert len(calls) == 1
+    cache_entry_dir = Path(result["membrane_cache"]["cache_entry_dir"])
+    assert cache_entry_dir.is_absolute()
+    assert str(cache_entry_dir).startswith(str(tmp_path / ".mdclaw_cache" / "membranes"))
+
+
+def test_embed_in_membrane_slab_cache_accepts_nonzero_builder_with_valid_slab(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      2  C   ALA X   7       1.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    cache_dir = tmp_path / "cache"
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   60.000   60.000   80.000  90.00  90.00  90.00 P 1           1\n"
+            + _pdb_hetatm(1, "P", "PA", "M", 1, "P", x=20.0)
+            + _pdb_hetatm(2, "N", "PC", "M", 1, "N", x=21.0)
+            + _pdb_hetatm(3, "C1", "OL", "M", 1, "C", x=22.0)
+            + _pdb_hetatm(4, "O", "HOH", "W", 1, "O", x=-20.0)
+            + "END\n"
+        )
+        (Path(cwd) / "slab_packmol.log").write_text(
+            "ENDED WITHOUT PERFECT PACKING\n"
+        )
+        raise subprocess.CalledProcessError(
+            1,
+            args,
+            output="packmol stdout",
+            stderr="packmol stderr",
+        )
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    first = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(cache_dir),
+        membrane_slab_bin_size=10.0,
+        membrane_carve_padding=2.5,
+    )
+    second = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(cache_dir),
+        membrane_slab_bin_size=10.0,
+        membrane_carve_padding=2.5,
+    )
+
+    assert first["success"] is True
+    assert first["parameters"]["membrane_backend_used"] == "slab-cache"
+    assert first["warnings"] == [
+        "packmol-memgen slab build returned non-zero but wrote a valid "
+        "slab PDB; cached the slab for reuse."
+    ]
+    assert second["success"] is True
+    assert second["parameters"]["membrane_cache_hit"] is True
+    assert len(calls) == 1
+
+    manifest = first["membrane_cache_manifest"]
+    assert manifest["accepted_nonzero_output"] is True
+    assert manifest["builder_exit_code"] == 1
+    assert "CalledProcessError" in manifest["build_exception"]
+    assert manifest["stdout_tail"] == "packmol stdout"
+    assert manifest["stderr_tail"] == "packmol stderr"
+
+    output_text = Path(first["output_file"]).read_text()
+    assert "ALA X   7" in output_text
+    assert "PC M   1" in output_text
+
+
+def test_embed_in_membrane_slab_cache_accepts_timeout_with_complete_valid_slab(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    cache_dir = tmp_path / "cache"
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(timeout)
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            _pdb_hetatm_amber4(1, "P", "POPC", "M", 1, "P", x=20.0)
+            + _pdb_hetatm_amber4(2, "P", "POPE", "M", 2, "P", x=30.0)
+            + _pdb_hetatm_amber4(3, "O3", "CHL1", "M", 3, "O", x=40.0)
+            + _pdb_hetatm(4, "O", "HOH", "W", 1, "O", x=-100.0)
+            + "END\n"
+        )
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC:POPE:CHL1",
+        ratio="2:1:1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(cache_dir),
+        membrane_slab_builder_timeout=123,
+        membrane_carve_padding=2.5,
+    )
+
+    assert result["success"] is True
+    assert result["parameters"]["membrane_slab_builder_timeout"] == 123
+    assert calls == [123]
+    assert result["warnings"] == [
+        "packmol-memgen slab build timed out but wrote a complete valid "
+        "slab PDB; cached the slab for reuse."
+    ]
+    manifest = result["membrane_cache_manifest"]
+    assert manifest["accepted_nonzero_output"] is False
+    assert manifest["accepted_timeout_output"] is True
+    assert manifest["accepted_partial_output"] is True
+    assert "TimeoutExpired" in manifest["build_exception"]
+    assert result["box_dimensions"]["box_a"] == 40.0
+    assert result["box_dimensions"]["box_b"] == 40.0
+    assert result["box_dimensions"]["box_c"] == 81.0
+    assert Path(result["box_dimensions_file"]).exists()
+    assert Path(result["output_file"]).read_text().startswith(
+        "CRYST1   40.000   40.000   81.000"
+    )
+
+
+def test_embed_in_membrane_slab_cache_rejects_incomplete_timeout_output(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+
+    def fake_run(args, cwd, timeout):
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   60.000   60.000   80.000  90.00  90.00  90.00 P 1           1\n"
+            + _pdb_hetatm(1, "P", "PA", "M", 1, "P", x=20.0)
+        )
+        raise subprocess.TimeoutExpired(args, timeout)
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="slab-cache",
+        membrane_cache_mode="auto",
+        membrane_cache_dir=str(tmp_path / "cache"),
+        membrane_slab_builder_timeout=123,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "membrane_slab_build_invalid_output"
+    assert result["errors"] == ["membrane slab PDB is incomplete; missing END record"]
+
+
+def test_embed_in_membrane_auto_falls_back_when_slab_cache_misses_read_only(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA X   7       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    calls = []
+
+    def fake_full_run(args, cwd, timeout):
+        calls.append(list(args))
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(
+            "CRYST1   40.000   40.000   70.000  90.00  90.00  90.00 P 1           1\n"
+            "ATOM    101  CA  GLY Z 999       0.000   0.000   0.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        (Path(cwd) / "membrane_packmol.log").write_text("")
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        fake_full_run,
+    )
+
+    result = embed_in_membrane(
+        pdb_file=str(input_pdb),
+        output_dir=str(tmp_path),
+        output_name="membrane",
+        lipids="POPC",
+        ratio="1",
+        preoriented=True,
+        membrane_backend="auto",
+        membrane_cache_mode="read-only",
+        membrane_cache_dir=str(tmp_path / "empty-cache"),
+        packmol_race_lanes=1,
+    )
+
+    assert result["success"] is True
+    assert result["membrane_cache_fallback"]["reason"] == "membrane_slab_cache_miss"
+    assert "falling back to full packmol-memgen" in result["warnings"][-1]
+    assert len(calls) == 1
+    assert "--distxy_fix" not in calls[0]
 
 
 def test_embed_in_membrane_retries_before_reporting_packmol_failure(

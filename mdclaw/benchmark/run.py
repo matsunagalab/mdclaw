@@ -1878,6 +1878,10 @@ def _run_one_benchmark_agent_task(
     run_env["MDCLAW_BENCHMARK_HARNESS_LOG"] = str(harness_jsonl)
     run_env["MDCLAW_BENCHMARK_RUN_ID"] = run_id
     run_env["MDCLAW_BENCHMARK_TASK_ID"] = task_id
+    run_env["MDCLAW_BENCHMARK_WORK_DIR"] = str(solver_work_dir)
+    run_env["MDCLAW_BENCHMARK_SUBMISSION_DIR"] = str(solver_submission)
+    run_env["WORK_DIR"] = str(solver_work_dir)
+    run_env["SUBMISSION_DIR"] = str(solver_submission)
     run_env["MDCLAW_BENCHMARK_STAGE_WRAPPER"] = str(stage_wrapper_path)
     run_env["MDCLAW_BENCHMARK_MDCLAW"] = str(mdclaw_wrapper_path)
     run_env["MDCLAW_BENCHMARK_MDCLAW_RUNTIME"] = _normalize_mdclaw_runtime(

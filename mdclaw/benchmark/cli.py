@@ -946,6 +946,28 @@ def _parse_extra_output_files(
     return parsed, errors
 
 
+def _evidence_report_task_id_errors(
+    evidence_report_file: str,
+    expected_task_id: str,
+) -> list[str]:
+    path = Path(evidence_report_file)
+    if not path.is_file():
+        return [f"evidence_report_file not found: {evidence_report_file}"]
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    found_task_id = payload.get("task_id")
+    if found_task_id and str(found_task_id) != expected_task_id:
+        return [
+            "evidence_report_file task_id mismatch: "
+            f"expected {expected_task_id}, found {found_task_id}"
+        ]
+    return []
+
+
 def package_openmm_submission(
     submission_dir: str,
     task_id: str,
@@ -1024,8 +1046,10 @@ def package_openmm_submission(
     ):
         if not path.is_file():
             errors.append(f"{label} not found: {path}")
-    if evidence_report_file and not Path(evidence_report_file).is_file():
-        errors.append(f"evidence_report_file not found: {evidence_report_file}")
+    if evidence_report_file:
+        errors.extend(
+            _evidence_report_task_id_errors(evidence_report_file, task_id)
+        )
     if source_selection_file and not Path(source_selection_file).is_file():
         errors.append(f"source_selection_file not found: {source_selection_file}")
     extra_outputs, extra_errors = _parse_extra_output_files(extra_output_files)
@@ -1393,8 +1417,10 @@ def package_mdprep_submission(
             or find_ancestor_artifact(str(jd), node_id, "topo", "topology_pdb"),
             "prepared_structure",
         )
-    if evidence_report_file and not Path(evidence_report_file).is_file():
-        errors.append(f"evidence_report_file not found: {evidence_report_file}")
+    if evidence_report_file:
+        errors.extend(
+            _evidence_report_task_id_errors(evidence_report_file, task_id)
+        )
     if source_selection_file and not Path(source_selection_file).is_file():
         errors.append(f"source_selection_file not found: {source_selection_file}")
 

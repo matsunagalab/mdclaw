@@ -193,6 +193,11 @@ session_file.write_text('{"event":"fake-agent-started"}\\n')
 mdclaw_wrapper = Path(os.environ["MDCLAW_BENCHMARK_MDCLAW"])
 assert mdclaw_wrapper.name == "mdclaw"
 assert shutil.which("mdclaw") == str(mdclaw_wrapper)
+expected_work_dir = str(Path(args.submission_dir).parent / "work")
+assert os.environ["SUBMISSION_DIR"] == args.submission_dir
+assert os.environ["MDCLAW_BENCHMARK_SUBMISSION_DIR"] == args.submission_dir
+assert os.environ["WORK_DIR"] == expected_work_dir
+assert os.environ["MDCLAW_BENCHMARK_WORK_DIR"] == expected_work_dir
 
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
 for stage in ("source", "prep", "topo", "min"):

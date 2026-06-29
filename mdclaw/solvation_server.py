@@ -48,6 +48,7 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,
 )
+from mdclaw.membrane_cache import embed_with_membrane_slab_cache  # noqa: E402
 
 
 # =============================================================================
@@ -99,6 +100,22 @@ TERMINAL_RNA_RESNAMES = {
 NUCLEIC_RESNAME_KIND = {
     **{resname: "DNA" for resname in STANDARD_DNA_RESNAMES | TERMINAL_DNA_RESNAMES},
     **{resname: "RNA" for resname in STANDARD_RNA_RESNAMES | TERMINAL_RNA_RESNAMES},
+}
+MEMBRANE_BACKENDS = {
+    "packmol-memgen": "packmol-memgen",
+    "packmol_memgen": "packmol-memgen",
+    "packmol": "packmol-memgen",
+    "slab-cache": "slab-cache",
+    "slab_cache": "slab-cache",
+    "cache": "slab-cache",
+    "auto": "auto",
+}
+MEMBRANE_CACHE_MODES = {
+    "off": "off",
+    "read-only": "read-only",
+    "read_only": "read-only",
+    "auto": "auto",
+    "refresh": "refresh",
 }
 
 
@@ -284,6 +301,48 @@ ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers
 packmol_memgen_wrapper = BaseToolWrapper("packmol-memgen")
+DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT = 300
+
+
+def _resolve_membrane_slab_builder_timeout(value: Optional[int]) -> int:
+    """Return the slab-cache builder timeout in seconds.
+
+    The slab-cache backend is opt-in, so it can use a shorter cold-build budget
+    than the legacy full membrane packing path.  Passing 0 or a negative value
+    keeps the broader membrane timeout.
+    """
+    if value is None:
+        raw = os.environ.get("MDCLAW_MEMBRANE_SLAB_BUILDER_TIMEOUT")
+        if raw:
+            try:
+                value = int(raw)
+            except ValueError:
+                logger.warning(
+                    "Ignoring invalid MDCLAW_MEMBRANE_SLAB_BUILDER_TIMEOUT=%r",
+                    raw,
+                )
+                value = DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT
+        else:
+            value = DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT
+
+    timeout = int(value)
+    if timeout <= 0:
+        return get_timeout("membrane")
+    return timeout
+
+
+def _run_packmol_memgen_for_slab_cache(
+    args: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+) -> subprocess.CompletedProcess:
+    return _run_packmol_memgen_cancellable(
+        args,
+        cwd=Path(cwd),
+        timeout=timeout,
+        cancel_event=threading.Event(),
+    )
 
 
 def _write_box_dimensions_json(out_dir: Path, box_dims: dict) -> Optional[Path]:
@@ -2153,6 +2212,13 @@ def embed_in_membrane(
     allow_forced_output: bool = False,
     allow_imperfect_primary_output: bool = True,
     packmol_race_lanes: int = 4,
+    membrane_backend: str = "packmol-memgen",
+    membrane_cache_mode: str = "auto",
+    membrane_cache_dir: Optional[str] = None,
+    membrane_slab_bin_size: float = 10.0,
+    membrane_carve_padding: float = 2.5,
+    membrane_slab_builder_timeout: Optional[int] = None,
+    membrane_cache_strict: bool = False,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -2221,6 +2287,25 @@ def embed_in_membrane(
         packmol_race_lanes: Number of adaptive Packmol attempts to run in
                      parallel (default: 4). Set to 1 for the previous
                      sequential retry behavior on CPU-constrained hosts.
+        membrane_backend: Membrane construction backend. ``packmol-memgen``
+                     preserves the previous full packing behavior. ``slab-cache``
+                     reuses/builds a protein-free membrane slab and carves it
+                     around the input protein. ``auto`` tries slab-cache first
+                     and falls back to full packmol-memgen.
+        membrane_cache_mode: Slab cache policy: ``off``, ``read-only``,
+                     ``auto`` (build on miss), or ``refresh`` (rebuild).
+        membrane_cache_dir: Optional slab cache root. Defaults to
+                     ``MDCLAW_MEMBRANE_CACHE_DIR`` or
+                     ``MDCLAW_CACHE_DIR/membranes``.
+        membrane_slab_bin_size: XY side length bin size in Angstroms for slab
+                     reuse (default: 10.0).
+        membrane_carve_padding: Protein-slab contact cutoff in Angstroms used
+                     to remove overlapping slab residues/groups.
+        membrane_slab_builder_timeout: Slab-cache cold-build timeout in
+                     seconds (default: 300). Use 0 to keep the broader
+                     membrane timeout.
+        membrane_cache_strict: If true, ``auto`` does not fall back after a
+                     slab-cache validation failure.
     
     Returns:
         Dict with:
@@ -2291,6 +2376,13 @@ def embed_in_membrane(
             "allow_forced_output": allow_forced_output,
             "allow_imperfect_primary_output": allow_imperfect_primary_output,
             "packmol_race_lanes": packmol_race_lanes,
+            "membrane_backend": membrane_backend,
+            "membrane_cache_mode": membrane_cache_mode,
+            "membrane_cache_dir": membrane_cache_dir,
+            "membrane_slab_bin_size": membrane_slab_bin_size,
+            "membrane_carve_padding": membrane_carve_padding,
+            "membrane_slab_builder_timeout": membrane_slab_builder_timeout,
+            "membrane_cache_strict": membrane_cache_strict,
         },
         "packmol_log": None,
         "statistics": {},
@@ -2318,6 +2410,52 @@ def embed_in_membrane(
     water_model = canonical_water_model
     result["parameters"]["water_model"] = water_model
 
+    canonical_membrane_backend = normalize_choice(membrane_backend, MEMBRANE_BACKENDS)
+    if not canonical_membrane_backend:
+        blocked = create_validation_error(
+            "membrane_backend",
+            f"Unknown membrane backend: {membrane_backend}",
+            expected=f"One of: {sorted(set(MEMBRANE_BACKENDS.values()))}",
+            actual=membrane_backend,
+        )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="embed_in_membrane unknown membrane_backend",
+            )
+        return blocked
+    membrane_backend = canonical_membrane_backend
+    result["parameters"]["membrane_backend"] = membrane_backend
+
+    canonical_cache_mode = normalize_choice(membrane_cache_mode, MEMBRANE_CACHE_MODES)
+    if not canonical_cache_mode:
+        blocked = create_validation_error(
+            "membrane_cache_mode",
+            f"Unknown membrane cache mode: {membrane_cache_mode}",
+            expected=f"One of: {sorted(set(MEMBRANE_CACHE_MODES.values()))}",
+            actual=membrane_cache_mode,
+        )
+        if job_dir and node_id:
+            from mdclaw._node import fail_node_from_result
+            return fail_node_from_result(
+                job_dir,
+                node_id,
+                blocked,
+                default_error="embed_in_membrane unknown membrane_cache_mode",
+            )
+        return blocked
+    membrane_cache_mode = canonical_cache_mode
+    if membrane_backend == "packmol-memgen":
+        membrane_cache_mode = "off"
+    result["parameters"]["membrane_cache_mode"] = membrane_cache_mode
+    slab_builder_timeout = _resolve_membrane_slab_builder_timeout(
+        membrane_slab_builder_timeout
+    )
+    result["parameters"]["membrane_slab_builder_timeout"] = slab_builder_timeout
+
     if job_dir and node_id:
         from mdclaw._node import validate_node_execution_context
         _ctx = validate_node_execution_context(
@@ -2340,6 +2478,13 @@ def embed_in_membrane(
                 "allow_forced_output": allow_forced_output,
                 "allow_imperfect_primary_output": allow_imperfect_primary_output,
                 "packmol_race_lanes": packmol_race_lanes,
+                "membrane_backend": membrane_backend,
+                "membrane_cache_mode": membrane_cache_mode,
+                "membrane_cache_dir": membrane_cache_dir,
+                "membrane_slab_bin_size": membrane_slab_bin_size,
+                "membrane_carve_padding": membrane_carve_padding,
+                "membrane_slab_builder_timeout": slab_builder_timeout,
+                "membrane_cache_strict": membrane_cache_strict,
             },
         )
         if not _ctx["success"]:
@@ -2384,8 +2529,10 @@ def embed_in_membrane(
             fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
     
-    # Check packmol-memgen availability
-    if not packmol_memgen_wrapper.is_available():
+    # Check packmol-memgen availability.  A warm slab-cache hit can still run
+    # without the builder, but the legacy full-packing backend cannot.
+    packmol_memgen_available = packmol_memgen_wrapper.is_available()
+    if not packmol_memgen_available and membrane_backend == "packmol-memgen":
         result["errors"].append("packmol-memgen not found in PATH")
         result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
         logger.error("packmol-memgen not available")
@@ -2414,6 +2561,153 @@ def embed_in_membrane(
     # Output file
     output_file = out_dir / f"{output_name}.pdb"
     packlog = out_dir / f"{output_name}_packmol"
+
+    packmol_path = shutil.which("packmol")
+    if packmol_path:
+        logger.info(f"Using packmol: {packmol_path}")
+
+    if membrane_backend in {"slab-cache", "auto"} and membrane_cache_mode != "off":
+        slab_result = embed_with_membrane_slab_cache(
+            protein_pdb=input_copy,
+            output_file=output_file,
+            output_dir=out_dir,
+            lipids=lipids,
+            ratio=ratio,
+            water_model=water_model,
+            salt=salt,
+            salt_c=salt_c,
+            salt_a=salt_a,
+            saltcon=saltcon,
+            dist=dist,
+            dist_wat=dist_wat,
+            leaflet=leaflet,
+            nloop=nloop,
+            nloop_all=nloop_all,
+            cache_mode=membrane_cache_mode,
+            cache_dir=membrane_cache_dir,
+            slab_bin_size=membrane_slab_bin_size,
+            carve_padding=membrane_carve_padding,
+            packmol_memgen_runner=(
+                _run_packmol_memgen_for_slab_cache
+                if packmol_memgen_available
+                else None
+            ),
+            packmol_path=packmol_path,
+            timeout=slab_builder_timeout,
+        )
+        result["membrane_cache"] = {
+            key: value
+            for key, value in slab_result.items()
+            if key not in {"cache_manifest"}
+        }
+        if slab_result.get("cache_manifest") is not None:
+            result["membrane_cache_manifest"] = slab_result.get("cache_manifest")
+
+        if slab_result.get("success"):
+            result["success"] = True
+            result["code"] = slab_result.get("code")
+            result["output_file"] = slab_result.get("output_file")
+            result["box_dimensions"] = slab_result.get("box_dimensions") or {}
+            result["box_dimensions_file"] = slab_result.get("box_dimensions_file")
+            result["statistics"].update(slab_result.get("statistics") or {})
+            result["statistics"]["method"] = "slab_cache"
+            result["packing_quality"] = {
+                "passed": True,
+                "backend": "slab-cache",
+                "primary_output_accepted": False,
+            }
+            result["parameters"]["effective_dist"] = dist
+            result["parameters"]["effective_nloop"] = nloop
+            result["parameters"]["effective_nloop_all"] = nloop_all
+            result["parameters"]["membrane_backend_used"] = "slab-cache"
+            result["parameters"]["membrane_cache_hit"] = bool(
+                slab_result.get("cache_hit")
+            )
+            result["membrane_cache_metadata_file"] = slab_result.get(
+                "cache_metadata_file"
+            )
+            result["warnings"].extend(slab_result.get("warnings", []))
+
+            metadata_file = out_dir / "membrane_metadata.json"
+            with open(metadata_file, "w") as f:
+                json.dump(result, f, indent=2, default=str)
+
+            if _node_mode:
+                from mdclaw._node import complete_node, update_job_summaries
+                artifact_output = Path(str(result.get("output_file") or output_file))
+                artifacts = {
+                    "solvated_pdb": f"artifacts/{artifact_output.name}",
+                    "box_dimensions": "artifacts/box_dimensions.json",
+                }
+                if result.get("membrane_cache_metadata_file"):
+                    artifacts["membrane_cache_metadata"] = (
+                        "artifacts/membrane_cache_metadata.json"
+                    )
+                complete_node(job_dir, node_id,
+                    artifacts=artifacts,
+                    metadata={
+                        "water_model": water_model,
+                        "lipid_type": lipids,
+                        "is_membrane": True,
+                        "salt_concentration_M": saltcon,
+                        "salt_override": salt_override,
+                        "packing_quality": result.get("packing_quality"),
+                        "membrane_backend": "slab-cache",
+                        "membrane_cache_hit": bool(slab_result.get("cache_hit")),
+                        "membrane_cache_key": slab_result.get("cache_key"),
+                        "forced_output_accepted": False,
+                        "imperfect_primary_output_accepted": False,
+                    },
+                    warnings=result.get("warnings") or None)
+                update_job_summaries(job_dir, params={
+                    "solvation_type": "membrane",
+                    "water_model": water_model,
+                })
+            return result
+
+        if membrane_backend == "slab-cache" or membrane_cache_strict:
+            result["success"] = False
+            result["code"] = slab_result.get("code", "membrane_slab_cache_failed")
+            result["errors"].extend(slab_result.get("errors", []))
+            result["warnings"].extend(slab_result.get("warnings", []))
+            metadata_file = out_dir / "membrane_metadata.json"
+            with open(metadata_file, "w") as f:
+                json.dump(result, f, indent=2, default=str)
+            if _node_mode:
+                from mdclaw._node import fail_node
+                fail_node(
+                    job_dir,
+                    node_id,
+                    errors=result.get("errors", []),
+                    warnings=result.get("warnings") or None,
+                )
+            return result
+
+        fallback_reason = slab_result.get("code", "membrane_slab_cache_failed")
+        result["membrane_cache_fallback"] = {
+            "backend_attempted": "slab-cache",
+            "fallback_backend": "packmol-memgen",
+            "reason": fallback_reason,
+            "errors": slab_result.get("errors", []),
+        }
+        result["warnings"].append(
+            "slab-cache membrane backend failed "
+            f"({fallback_reason}); falling back to full packmol-memgen."
+        )
+
+    if not packmol_memgen_available:
+        result["errors"].append("packmol-memgen not found in PATH")
+        result["errors"].append("Hint: Install AmberTools or activate the mdclaw conda environment")
+        logger.error("packmol-memgen not available")
+        if _node_mode:
+            from mdclaw._node import fail_node
+            fail_node(
+                job_dir,
+                node_id,
+                errors=result.get("errors", []),
+                warnings=result.get("warnings") or None,
+            )
+        return result
 
     try:
         # Build packmol-memgen command
@@ -2460,11 +2754,8 @@ def embed_in_membrane(
             args.append('--keepligs')
 
         # Add packmol and memembed paths explicitly
-        import shutil
-        packmol_path = shutil.which("packmol")
         if packmol_path:
             args.extend(['--packmol', packmol_path])
-            logger.info(f"Using packmol: {packmol_path}")
 
         # Add memembed path for membrane orientation (when preoriented=False)
         if not preoriented:
@@ -2813,6 +3104,11 @@ def embed_in_membrane(
                     "salt_concentration_M": saltcon,
                     "salt_override": salt_override,
                     "packing_quality": result.get("packing_quality"),
+                    "membrane_backend": result.get("parameters", {}).get(
+                        "membrane_backend_used",
+                        "packmol-memgen",
+                    ),
+                    "membrane_cache_fallback": result.get("membrane_cache_fallback"),
                     "forced_output_accepted": bool(
                         result.get("forced_output_accepted")
                     ),
