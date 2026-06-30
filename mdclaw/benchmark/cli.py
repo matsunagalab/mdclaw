@@ -47,6 +47,10 @@ _STANDALONE_PACKAGER_RELATIVE = Path("tools") / "package_submission.py"
 _STANDALONE_PACKAGER_SOURCE = (
     _REPO_ROOT / "benchmarks" / "tools" / "package_submission.py"
 )
+_STANDALONE_PREFLIGHT_RELATIVE = Path("tools") / "validate_submission.py"
+_STANDALONE_PREFLIGHT_SOURCE = (
+    _REPO_ROOT / "benchmarks" / "tools" / "validate_submission.py"
+)
 _PACKAGER_TOOL = "mdprepbench-packager"
 _PACKAGER_SCHEMA_VERSION = "1.0"
 _PACKAGER_HASH_ALGORITHM = "md5"
@@ -503,7 +507,9 @@ def _public_package_readme(primary_scores: set[str]) -> str:
             "into `manifest.json`, `metrics.json`, `provenance.json`, md5 "
             "hashes, `minimized_structure.pdb`, and `minimization_report.json`; "
             "do not hand-write those generated files. MDClaw helpers and "
-            "`tools/package_submission.py` are optional convenience tools only.\n"
+            "`tools/package_submission.py` are optional convenience tools only. "
+            "`tools/validate_submission.py` is a tool-neutral public preflight "
+            "for the raw artifact contract.\n"
         )
     if has_study:
         parts.append(
@@ -596,6 +602,11 @@ def export_benchmark_public_package(
             packager_dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(_STANDALONE_PACKAGER_SOURCE, packager_dest)
             tool_files.append(str(dest / _STANDALONE_PACKAGER_RELATIVE))
+        if _STANDALONE_PREFLIGHT_SOURCE.is_file():
+            preflight_dest = staging / _STANDALONE_PREFLIGHT_RELATIVE
+            preflight_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(_STANDALONE_PREFLIGHT_SOURCE, preflight_dest)
+            tool_files.append(str(dest / _STANDALONE_PREFLIGHT_RELATIVE))
 
         task_files: list[str] = []
         primary_scores: set[str] = set()

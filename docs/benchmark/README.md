@@ -351,6 +351,12 @@ of truth for hashes, final energies, or minimized coordinates.
 
 The public `submission_contract.json` records the raw artifact requirements
 plus a `submission_blueprint` describing evaluator-generated normalized outputs.
+It also records `submission_lifecycle`, including the exact handoff rule:
+finish work outside `submission_dir`, copy completed raw artifacts into
+`submission_dir`, run the public `tools/validate_submission.py` preflight, and
+exit only after preflight passes or after explicitly declaring the submission
+incomplete/failed. This is deliberately tool-neutral; MDPrepBench does not
+provide or require a benchmark-specific MDClaw skill.
 MDPrepBench intentionally keeps solver-authored structured metadata small: the
 scorer recomputes scientific and physical facts from artifacts whenever
 possible instead of accepting self-reported JSON. Agents should place only raw
@@ -360,6 +366,14 @@ minimization reports. Strict tasks also require a harness-owned
 `harness_execution.json` outside `submission/`, with measured walltime for each
 required stage. A solver-written provenance note alone is not sufficient
 execution evidence.
+
+Automated runs additionally write `finalization.json` per task and aggregate
+`contract_diagnostics` / `harness_diagnostics` in `summary.json`. The
+`weighted_total` or per-task `scientific_score` remains the artifact score;
+`contract_status`, `harness_status`, `failure_class`, and
+`harness_evidence_status` report whether the harness saw a complete, auditable
+handoff or a control-plane failure such as `background_processes` or
+`incomplete_running_work`.
 
 Individual tasks inspect submitted structures, OpenMM bundle contents, and
 scorer-side references under `truth/`. For example, P11 checks the submitted PDB

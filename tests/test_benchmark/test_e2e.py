@@ -266,10 +266,21 @@ _fake_submissions.GENERATORS[args.task_id](
         == "none"
     )
     assert result["score"]["summary"]["summary"]["overall_score"] >= 0.9
+    summary = result["score"]["summary"]["summary"]
+    assert summary["task_scores"][0]["scientific_score"] >= 0.9
+    assert summary["task_scores"][0]["contract_status"] == "complete"
+    assert summary["task_scores"][0]["harness_status"] == "ok"
+    assert summary["task_scores"][0]["harness_evidence_status"] == "present"
+    assert summary["contract_diagnostics"]["status_counts"]["complete"] == 1
+    assert summary["harness_diagnostics"]["status_counts"]["ok"] == 1
 
     agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
     assert agent_run["agent_model"] == "test-provider/test-model"
     assert agent_run["solver_context"]["skill_usage"] == "none"
+    assert agent_run["finalization"]["contract_status"] == "complete"
+    assert agent_run["finalization"]["harness_status"] == "ok"
+    assert (task_run_dir / "submission_preflight.json").is_file()
+    assert (task_run_dir / "finalization.json").is_file()
     assert agent_run["agent_session_transcripts"]
     copied_session = Path(agent_run["agent_session_transcripts"][0]["copy"])
     assert copied_session.is_file()
@@ -301,6 +312,9 @@ _fake_submissions.GENERATORS[args.task_id](
     assert wrapper.name == "mdclaw"
     assert wrapper.is_file()
     assert solver_instruction["submission_dir"].endswith("/submission")
+    assert solver_instruction["submission_preflight"]["script"].endswith(
+        "/public_tasks/tools/validate_submission.py"
+    )
 
 
 def test_run_benchmark_agent_folds_solver_local_harness_jsonl(
@@ -370,6 +384,110 @@ _fake_submissions.GENERATORS[args.task_id](
     score_payload = json.loads((task_run_dir / "score.json").read_text())
     score = score_payload.get("score", score_payload)
     assert score["status"] == "passed"
+
+
+def test_run_benchmark_agent_classifies_running_mdclaw_work_as_incomplete(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent_running_node.py"
+    fake_agent.write_text(
+        """
+import argparse
+import json
+import os
+from pathlib import Path
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+job_dir = Path(os.environ["MDCLAW_BENCHMARK_WORK_DIR"]) / "study" / "jobs" / "main"
+job_dir.mkdir(parents=True, exist_ok=True)
+(job_dir / "progress.json").write_text(json.dumps({
+    "nodes": {
+        "source_001": {"node_type": "source", "status": "completed"},
+        "topo_001": {"node_type": "topo", "status": "running"},
+    }
+}))
+Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_running_node",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert not result["success"]
+    task_run_dir = output_dir / "agent_runner_running_node" / "tasks" / TASK_ID
+    finalization = json.loads((task_run_dir / "finalization.json").read_text())
+    assert finalization["harness_status"] == "failed"
+    assert finalization["failure_class"] == "incomplete_running_work"
+    assert finalization["contract_status"] == "failed"
+    assert finalization["mdclaw_progress"]["active_nodes"][0]["node_id"] == "topo_001"
+    summary = result["score"]["summary"]["summary"]
+    assert summary["task_scores"][0]["harness_status"] == "failed"
+    assert summary["task_scores"][0]["failure_class"] == "incomplete_running_work"
+
+
+@pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-only")
+def test_run_benchmark_agent_classifies_background_process_after_exit(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent_background.py"
+    fake_agent.write_text(
+        """
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+args = parser.parse_args()
+
+Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_background",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert not result["success"]
+    task_run_dir = output_dir / "agent_runner_background" / "tasks" / TASK_ID
+    finalization = json.loads((task_run_dir / "finalization.json").read_text())
+    assert finalization["harness_status"] == "failed"
+    assert finalization["failure_class"] == "background_processes"
+    assert finalization["background_processes"]
 
 
 def test_run_benchmark_agent_renders_paths_valid_from_solver_workspace(
@@ -888,6 +1006,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "work_dir",
         "mdclaw_cli",
         "submission_packaging",
+        "submission_preflight",
     }
     assert agent_tasks["tasks"] == [task_instructions]
     assert Path(task_instructions["agent_prompt"]).is_file()
@@ -902,6 +1021,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "exact submission_dir path" in agent_prompt
     assert "work_dir/submission" in agent_prompt
     assert "submission_packaging" in agent_prompt
+    assert "submission_preflight" in agent_prompt
+    assert "preflight passes" in agent_prompt
     assert "raw artifacts in submission/" in agent_prompt
     assert "Do not hand-write or edit evaluator-generated metadata files" in agent_prompt
     assert "Run IDs and directory names are labels only" in agent_prompt
@@ -914,6 +1035,9 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert Path(task_instructions["mdclaw_cli"]["wrapper"]).is_file()
     assert task_instructions["submission_packaging"]["standalone_packager"].endswith(
         "/public_tasks/tools/package_submission.py"
+    )
+    assert task_instructions["submission_preflight"]["script"].endswith(
+        "/public_tasks/tools/validate_submission.py"
     )
     assert Path(prepared["operator_prompt_file"]).is_file()
     operator_prompt = Path(prepared["operator_prompt_file"]).read_text()

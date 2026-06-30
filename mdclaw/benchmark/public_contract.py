@@ -13,6 +13,7 @@ OPENMM_TOPOLOGY_EXAMPLE = [
     "topology/state.xml",
 ]
 STANDALONE_PACKAGER_RELATIVE_PATH = "tools/package_submission.py"
+STANDALONE_PREFLIGHT_RELATIVE_PATH = "tools/validate_submission.py"
 MINIMIZED_STRUCTURE_GUIDANCE = {
     "required_filename": "minimized_structure.pdb",
     "manifest_path": "outputs.minimized_structure",
@@ -382,6 +383,13 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "remain optional convenience helpers. They are not required for "
             "benchmark eligibility."
         ),
+        "tool_neutral_preflight": (
+            f"python {STANDALONE_PREFLIGHT_RELATIVE_PATH} "
+            "--submission-dir <exact_submission_dir> "
+            "--submission-contract <submission_contract.json>. This checks only "
+            "the public contract and raw artifact loadability; it is not a "
+            "task-specific MDClaw recipe."
+        ),
         "mdclaw_dag_helper": (
             "If the workflow used MDClaw's DAG, mdclaw package_mdprep_submission "
             "can collect the same contract from a completed min node. It is a "
@@ -465,6 +473,7 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "[--extra-output-files <manifest_key=artifact_path> ...]"
         ),
         "standalone_packager": STANDALONE_PACKAGER_RELATIVE_PATH,
+        "standalone_preflight": STANDALONE_PREFLIGHT_RELATIVE_PATH,
         "standalone_command_template": (
             f"python {STANDALONE_PACKAGER_RELATIVE_PATH} "
             "--submission-dir <exact_submission_dir> --task-id <task_id> "
@@ -477,6 +486,66 @@ def packaging_guidance(task: Task) -> dict[str, Any] | None:
             "[--solvent-model <solvent_model>] "
             "[--evidence-report <evidence_report.json>] "
             "[--extra-output <manifest_key=artifact_path>]"
+        ),
+    }
+
+
+def submission_lifecycle(task: Task) -> dict[str, Any]:
+    """Return the tool-neutral lifecycle contract for solver handoff."""
+    if task.primary_score == PREPARATION_SCORE_AXIS:
+        required_raw_outputs = _agent_required_outputs(task)
+        return {
+            "work_dir_policy": (
+                "Use work_dir or another scratch directory for retrieval, "
+                "preparation, topology generation, and minimization."
+            ),
+            "submission_dir_policy": (
+                "Copy only completed final artifacts into the exact "
+                "submission_dir path supplied by the harness."
+            ),
+            "required_raw_outputs": required_raw_outputs,
+            "preflight_command_template": (
+                f"python {STANDALONE_PREFLIGHT_RELATIVE_PATH} "
+                "--submission-dir <exact_submission_dir> "
+                "--submission-contract <submission_contract.json>"
+            ),
+            "exit_condition": (
+                "Exit only after required raw outputs are present in "
+                "submission_dir and the public preflight passes, or after "
+                "writing an explicit incomplete/failed submission record."
+            ),
+            "background_policy": (
+                "Do not leave preparation, solvation, topology, minimization, "
+                "or packaging work running after the agent process exits."
+            ),
+            "agent_neutrality": (
+                "No MDClaw-specific command sequence is required or rewarded; "
+                "any MD toolchain may satisfy the raw artifact contract."
+            ),
+        }
+    return {
+        "work_dir_policy": "Use work_dir for scratch analysis and generated intermediates.",
+        "submission_dir_policy": (
+            "Write final manifest-declared outputs into the exact submission_dir "
+            "path supplied by the harness."
+        ),
+        "required_raw_outputs": list(task.required_outputs),
+        "preflight_command_template": (
+            f"python {STANDALONE_PREFLIGHT_RELATIVE_PATH} "
+            "--submission-dir <exact_submission_dir> "
+            "--submission-contract <submission_contract.json> --skip-openmm"
+        ),
+        "exit_condition": (
+            "Exit only after required public-contract outputs are present in "
+            "submission_dir, or after writing an explicit incomplete/failed "
+            "submission record."
+        ),
+        "background_policy": (
+            "Do not leave evidence generation or analysis work running after "
+            "the agent process exits."
+        ),
+        "agent_neutrality": (
+            "No MDClaw-specific command sequence is required or rewarded."
         ),
     }
 
@@ -785,6 +854,18 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
         "",
     ])
     lines.extend(f"- {item}" for item in contract["submission_checklist"])
+    lifecycle = contract.get("submission_lifecycle") or {}
+    if lifecycle:
+        lines.extend([
+            "",
+            "## Submission Lifecycle",
+            "",
+            f"- Work directory: {lifecycle['work_dir_policy']}",
+            f"- Submission directory: {lifecycle['submission_dir_policy']}",
+            f"- Exit condition: {lifecycle['exit_condition']}",
+            f"- Background policy: {lifecycle['background_policy']}",
+            f"- Public preflight: `{lifecycle['preflight_command_template']}`",
+        ])
     guidance = contract.get("manifest_contract", {}).get(
         "minimized_structure_guidance"
     )
@@ -832,6 +913,7 @@ def public_submission_contract(
         "provenance_text_requirements": public_provenance_text_requirements(task),
         "harness_evidence_requirements": public_harness_evidence_requirements(task),
         "manifest_contract": manifest_contract(task),
+        "submission_lifecycle": submission_lifecycle(task),
         "submission_blueprint": submission_blueprint(task),
         "submission_checklist": submission_checklist(task),
         "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",

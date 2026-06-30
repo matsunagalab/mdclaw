@@ -29,7 +29,9 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
     dataset = json.loads((out_dir / "dataset.json").read_text())
     assert result["task_count"] == dataset["task_count"]
     assert (out_dir / "tools" / "package_submission.py").is_file()
+    assert (out_dir / "tools" / "validate_submission.py").is_file()
     assert str(out_dir / "tools" / "package_submission.py") in result["files_written"]
+    assert str(out_dir / "tools" / "validate_submission.py") in result["files_written"]
 
     for task_id in dataset["task_ids"]:
         task_dir = out_dir / "tasks" / task_id
@@ -69,6 +71,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "evaluator" in packaging["benchmark_normalization"]
         assert "manifest.json" in packaging["benchmark_normalization"]
         assert "tools/package_submission.py" in packaging["optional_packager"]
+        assert "tools/validate_submission.py" in packaging["tool_neutral_preflight"]
         assert "mdclaw package_openmm_submission" in (
             packaging["optional_packager"]
         )
@@ -78,6 +81,7 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "manifest.json" in packaging["normalizer_writes"]
         assert "provenance.json with raw output hashes" in packaging["normalizer_writes"]
         assert "topology/system.xml" in packaging["required_agent_inputs"]
+        assert packaging["standalone_preflight"] == "tools/validate_submission.py"
         assert "output-only" in packaging["submission_dir_policy"]
         assert "exact submission_dir" in packaging["submission_dir_policy"]
         assert "work_dir/submission" in packaging["submission_dir_policy"]
@@ -102,6 +106,13 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         assert "--water-model" in packaging["generic_command_template"]
         assert "chains" in packaging["does_not_choose"]
         assert "provenance_text_requirements" in contract
+        assert "submission_lifecycle" in contract
+        assert "validate_submission.py" in (
+            contract["submission_lifecycle"]["preflight_command_template"]
+        )
+        assert "No MDClaw-specific command sequence" in (
+            contract["submission_lifecycle"]["agent_neutrality"]
+        )
         assert "submission_blueprint" in contract
         assert contract["submission_blueprint"]["raw_artifact_minimum"][
             "topology/state.xml"
@@ -161,6 +172,8 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
         )
         checklist = (task_dir / "submission_checklist.md").read_text()
         assert "Pre-Submission Checks" in checklist
+        assert "Submission Lifecycle" in checklist
+        assert "validate_submission.py" in checklist
         assert "outputs.topology" in checklist
         assert "Minimized Structure Export" in checklist
         assert "run_minimization" in checklist

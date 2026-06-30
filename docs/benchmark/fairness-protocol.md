@@ -40,6 +40,31 @@ evaluator workspace layout, see `docs/benchmark/evaluation-workflow.md`.
    `provenance.command_log` is an audit trail, not a trusted timing source.
    Strict scoring requires a harness-owned `harness_execution.json` outside
    `submission/` with stage, command/action, exit status, and walltime.
+7. **No MDPrepBench-specific skills.** Benchmark robustness must come from the
+   public contract, the tool-neutral preflight, and harness diagnostics, not
+   from a hidden or MDClaw-only skill that teaches agents how to solve this
+   benchmark.
+
+## Public lifecycle and preflight
+
+The public package includes `tools/validate_submission.py`. It reads only
+`submission_contract.json` and the candidate `submission/` directory. For
+MDPrepBench preparation tasks it checks the required raw OpenMM files, relative
+paths, non-empty artifacts, and OpenMM bundle loadability. It does not inspect
+private truth, task-specific scorer files, or MDClaw DAG state.
+
+The per-task `submission_contract.json` also contains a
+`submission_lifecycle` block: work in scratch space, copy completed raw
+artifacts into the exact `submission_dir`, run public preflight, and exit only
+after preflight passes or after declaring an explicit incomplete/failed
+submission. Leaving topology/minimization work running after agent exit is a
+harness/contract failure, not a successful handoff.
+
+`summary.json` keeps artifact scoring separate from harness control-plane
+diagnostics. Per-task `scientific_score` / `weighted_total` are still computed
+from the submitted artifacts; `contract_status`, `harness_status`,
+`failure_class`, and `harness_evidence_status` explain whether the runner saw a
+complete, auditable handoff.
 
 ## Allowed vs forbidden
 
@@ -53,6 +78,7 @@ evaluator workspace layout, see `docs/benchmark/evaluation-workflow.md`.
 | Hand-editing artifacts to pass a check without doing the work | Forbidden |
 | Giving the solver `truth/`, `scorer/`, or canonical `task.json` | Forbidden |
 | Writing `provenance.json` after the fact without a harness execution record | Forbidden |
+| Creating an MDPrepBench-only skill or task-specific recipe for one solver | Forbidden |
 
 ## Comparison conditions (`tooling_condition`)
 
@@ -141,3 +167,6 @@ A third party auditing a run should be able to:
 5. Confirm every strict task has a harness-owned `harness_execution.json` beside
    the task `submission/`, not inside it.
 6. Confirm the `tooling_condition` matches how the solver was actually run.
+7. Check `summary.json` harness diagnostics for `background_processes`,
+   `incomplete_running_work`, and missing public preflight failures before
+   presenting a run as comparable.

@@ -836,6 +836,26 @@ def _submission_packaging_instruction(public_dir: Path) -> dict[str, Any]:
     }
 
 
+def _submission_preflight_instruction(public_dir: Path, task_id: str) -> dict[str, Any]:
+    """Agent-visible, tool-neutral preflight command for one task."""
+    script = public_dir / "tools" / "validate_submission.py"
+    contract = public_dir / "tasks" / task_id / "submission_contract.json"
+    return {
+        "script": str(script),
+        "submission_contract": str(contract),
+        "usage": (
+            "Run this after final raw artifacts are in the exact submission_dir "
+            "and before exiting. It checks only the public contract, not hidden "
+            "truth or MDClaw-specific workflow choices."
+        ),
+        "command_template": (
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+            "--submission-dir <exact_submission_dir> "
+            f"--submission-contract {shlex.quote(str(contract))}"
+        ),
+    }
+
+
 def _task_agent_prompt(
     task_id: str,
     instruction_file: Path,
@@ -856,17 +876,16 @@ def _task_agent_prompt(
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
         "Read task_instructions.json paths: prompt_file, contract, checklist, "
-        "submission_dir, work_dir, submission_packaging, agent_skills. Use "
-        "work_dir for study/job/work files; final outputs only to exact "
-        "submission_dir path, never work_dir/submission unless exact.\n\n"
-        "Solve only this task. Do not inspect sibling task directories, "
-        "categorize the suite, or write benchmark-wide solver scripts.\n\n"
+        "submission_dir, work_dir, submission_packaging, submission_preflight, "
+        "agent_skills. Use work_dir for study/job/work files; final outputs "
+        "only to exact submission_dir path, never work_dir/submission unless "
+        "exact.\n\n"
+        "Solve only this task. Do not inspect siblings, categorize the suite, "
+        "or write benchmark-wide solver scripts.\n\n"
         "Record commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- "
         "<command>`. Do not create/edit harness_execution.json.\n\n"
         "Use mdclaw only if mdclaw_cli.allowed; call bare `mdclaw ...`.\n\n"
-        "Do not edit MDClaw DAG node dirs, progress.json, or node.json.\n\n"
-        "Run IDs and directory names are labels only; infer no shortcuts/"
-        "outcomes.\n\n"
+        "Run IDs and directory names are labels only; infer no shortcuts.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
         "truth/, scorer/. Do not fabricate.\n\n"
         "For OpenMM prep tasks, put raw artifacts in submission/: "
@@ -874,7 +893,9 @@ def _task_agent_prompt(
         "and task-specific raw files. The evaluator generates metadata, hashes, "
         "minimized_structure, and minimization_report.\n\n"
         "Do not hand-write or edit evaluator-generated metadata files. "
-        "Stop after writing submission/. The evaluator scores separately.\n"
+        "Run public preflight after writing submission/. Exit only after "
+        "preflight passes or explicit incomplete failure. "
+        "The evaluator scores separately.\n"
     )
 
 
@@ -1076,6 +1097,282 @@ def _read_harness_jsonl_records(*paths: Path) -> list[dict[str, Any]]:
             seen.add(identity)
             out.append(record)
     return out
+
+
+def _process_group_members(process_group_id: Optional[int]) -> list[dict[str, Any]]:
+    """Return live POSIX process-group members for background-work detection."""
+    if os.name != "posix" or not process_group_id:
+        return []
+    try:
+        completed = subprocess.run(
+            ["ps", "-o", "pid=,stat=,command=", "-g", str(process_group_id)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
+        return []
+    if completed.returncode != 0:
+        return []
+    current_pid = os.getpid()
+    members: list[dict[str, Any]] = []
+    for line in completed.stdout.splitlines():
+        parts = line.strip().split(maxsplit=2)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        if pid == current_pid:
+            continue
+        members.append({
+            "pid": pid,
+            "stat": parts[1],
+            "command": parts[2] if len(parts) > 2 else "",
+        })
+    return members
+
+
+def _terminate_process_group_id(
+    process_group_id: Optional[int],
+    *,
+    grace_seconds: float = 1.0,
+) -> None:
+    """Best-effort cleanup for background children after normal agent exit."""
+    if os.name != "posix" or not process_group_id:
+        return
+    if process_group_id == os.getpgrp():
+        return
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    time.sleep(grace_seconds)
+    if not _process_group_members(process_group_id):
+        return
+    try:
+        os.killpg(process_group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+
+
+def _run_public_submission_preflight(
+    *,
+    public_dir: Path,
+    task_id: str,
+    submission_dir: Path,
+    task_run_dir: Path,
+) -> dict[str, Any]:
+    """Run the same public preflight script exposed to external agents."""
+    script = public_dir / "tools" / "validate_submission.py"
+    contract = public_dir / "tasks" / task_id / "submission_contract.json"
+    output_file = task_run_dir / "submission_preflight.json"
+    if not script.is_file():
+        payload = {
+            "schema_version": "1.0",
+            "task_id": task_id,
+            "submission_dir": str(submission_dir),
+            "submission_contract": str(contract),
+            "success": False,
+            "contract_status": "failed",
+            "failure_class": "missing_preflight_tool",
+            "errors": [f"public preflight script not found: {script}"],
+            "warnings": [],
+            "checks": [],
+        }
+        _write_json(output_file, payload)
+        return payload
+    command = [
+        sys.executable,
+        str(script),
+        "--submission-dir",
+        str(submission_dir),
+        "--submission-contract",
+        str(contract),
+        "--output-file",
+        str(output_file),
+    ]
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        payload = {
+            "schema_version": "1.0",
+            "task_id": task_id,
+            "submission_dir": str(submission_dir),
+            "submission_contract": str(contract),
+            "success": False,
+            "contract_status": "failed",
+            "failure_class": "preflight_timeout",
+            "errors": ["public preflight timed out after 300 seconds"],
+            "warnings": [],
+            "checks": [],
+        }
+        _write_json(output_file, payload)
+        return payload
+
+    if output_file.is_file():
+        try:
+            payload = json.loads(output_file.read_text())
+        except json.JSONDecodeError:
+            payload = {}
+    else:
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError:
+            payload = {}
+    if not isinstance(payload, dict) or not payload:
+        payload = {
+            "schema_version": "1.0",
+            "task_id": task_id,
+            "submission_dir": str(submission_dir),
+            "submission_contract": str(contract),
+            "success": False,
+            "contract_status": "failed",
+            "failure_class": "preflight_output_invalid",
+            "errors": [
+                "public preflight did not produce valid JSON",
+                completed.stderr.strip(),
+            ],
+            "warnings": [],
+            "checks": [],
+        }
+    payload["command"] = " ".join(shlex.quote(part) for part in command)
+    payload["exit_code"] = int(completed.returncode)
+    if completed.returncode != 0 and payload.get("success"):
+        payload["success"] = False
+        payload["contract_status"] = "failed"
+        payload["failure_class"] = payload.get("failure_class") or "contract_violation"
+        payload.setdefault("errors", []).append(
+            f"public preflight exited with {completed.returncode}"
+        )
+    _write_json(output_file, payload)
+    return payload
+
+
+def _scan_mdclaw_progress(task_workspace_dir: Path) -> dict[str, Any]:
+    """Inspect solver-visible MDClaw DAG progress for unfinished work."""
+    terminal = {"completed", "failed", "blocked", "skipped", "cancelled"}
+    active_statuses = {
+        "running",
+        "queued",
+        "submitted",
+        "claimed",
+    }
+    progress_files: list[dict[str, Any]] = []
+    active_nodes: list[dict[str, Any]] = []
+    incomplete_nodes: list[dict[str, Any]] = []
+    for path in sorted(task_workspace_dir.rglob("progress.json")):
+        if "submission" in path.relative_to(task_workspace_dir).parts:
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        nodes = payload.get("nodes")
+        if not isinstance(nodes, dict):
+            continue
+        status_counts: dict[str, int] = {}
+        for node_id, node in nodes.items():
+            if not isinstance(node, dict):
+                continue
+            status = str(node.get("status") or "unknown")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            entry = {
+                "progress_file": str(path),
+                "job_dir": str(path.parent),
+                "node_id": str(node_id),
+                "node_type": node.get("node_type"),
+                "status": status,
+            }
+            if status in active_statuses:
+                active_nodes.append(entry)
+            if status not in terminal:
+                incomplete_nodes.append(entry)
+        progress_files.append({
+            "progress_file": str(path),
+            "node_status_counts": status_counts,
+        })
+    return {
+        "progress_files": progress_files,
+        "active_nodes": active_nodes,
+        "incomplete_nodes": incomplete_nodes,
+        "active_node_count": len(active_nodes),
+        "incomplete_node_count": len(incomplete_nodes),
+    }
+
+
+def _harness_evidence_status(records: list[dict[str, Any]]) -> str:
+    substantive = [
+        record
+        for record in records
+        if str(record.get("stage") or "") != "agent_run"
+    ]
+    return "present" if substantive else "missing"
+
+
+def _finalize_task_submission(
+    *,
+    public_dir: Path,
+    task_id: str,
+    task_run_dir: Path,
+    task_workspace_dir: Path,
+    evaluator_submission: Path,
+    background_processes: list[dict[str, Any]],
+    harness_records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    preflight = _run_public_submission_preflight(
+        public_dir=public_dir,
+        task_id=task_id,
+        submission_dir=evaluator_submission,
+        task_run_dir=task_run_dir,
+    )
+    progress = _scan_mdclaw_progress(task_workspace_dir)
+    harness_status = "ok"
+    failure_class = None
+    warnings: list[str] = []
+    if background_processes:
+        harness_status = "failed"
+        failure_class = "background_processes"
+    elif progress["active_nodes"]:
+        harness_status = "failed"
+        failure_class = "incomplete_running_work"
+    elif not preflight.get("success"):
+        harness_status = "failed"
+        failure_class = preflight.get("failure_class") or "contract_violation"
+    elif progress["incomplete_nodes"]:
+        harness_status = "warning"
+        warnings.append("MDClaw progress.json contains non-terminal nodes")
+
+    payload = {
+        "schema_version": "1.0",
+        "task_id": task_id,
+        "contract_status": preflight.get("contract_status", "unknown"),
+        "harness_status": harness_status,
+        "failure_class": failure_class,
+        "harness_evidence_status": _harness_evidence_status(harness_records),
+        "background_processes": background_processes,
+        "mdclaw_progress": progress,
+        "preflight": preflight,
+        "warnings": warnings,
+    }
+    _write_json(task_run_dir / "finalization.json", payload)
+    return payload
+
+
+def _finalization_policy_violations(finalization: dict[str, Any]) -> list[str]:
+    if finalization.get("harness_status") not in {"failed"}:
+        return []
+    task_id = finalization.get("task_id")
+    failure_class = finalization.get("failure_class") or "unknown"
+    return [f"{task_id}: finalization failed ({failure_class})"]
 
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
@@ -1351,6 +1648,10 @@ def prepare_benchmark_run(
                 ),
             ),
             "submission_packaging": _submission_packaging_instruction(public_dir),
+            "submission_preflight": _submission_preflight_instruction(
+                public_dir,
+                task_id,
+            ),
         }
         harness_instruction = {
             "task_id": task_id,
@@ -1840,6 +2141,10 @@ def _run_one_benchmark_agent_task(
             reason=mdclaw_cli_reason,
         ),
         "submission_packaging": _submission_packaging_instruction(public_dir),
+        "submission_preflight": _submission_preflight_instruction(
+            public_dir,
+            task_id,
+        ),
     }
     if agent_skills:
         instruction["agent_skills"] = {
@@ -1940,6 +2245,7 @@ def _run_one_benchmark_agent_task(
             stderr=stderr_f,
             **process_kwargs,
         )
+        process_group_id = process.pid if os.name == "posix" else None
         try:
             exit_code = int(process.wait(timeout=timeout_seconds))
         except subprocess.TimeoutExpired:
@@ -1959,6 +2265,10 @@ def _run_one_benchmark_agent_task(
         task_id=task_id,
     )
 
+    background_processes = _process_group_members(process_group_id)
+    if background_processes:
+        _terminate_process_group_id(process_group_id)
+
     if evaluator_submission.exists():
         shutil.rmtree(evaluator_submission)
     if solver_submission.exists():
@@ -1975,6 +2285,16 @@ def _run_one_benchmark_agent_task(
         solver_context=solver_context,
         mdclaw_cli_policy=mdclaw_cli_policy,
     )
+    finalization = _finalize_task_submission(
+        public_dir=public_dir,
+        task_id=task_id,
+        task_run_dir=task_run_dir,
+        task_workspace_dir=solver_task_dir,
+        evaluator_submission=evaluator_submission,
+        background_processes=background_processes,
+        harness_records=records,
+    )
+    policy_violations.extend(_finalization_policy_violations(finalization))
     agent_record = {
         "stage": "agent_run",
         "command": rendered_command,
@@ -2001,6 +2321,7 @@ def _run_one_benchmark_agent_task(
         "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
         "agent_skills": agent_skills,
         "policy_violations": policy_violations,
+        "finalization": finalization,
         "records": [*records, agent_record],
     }
     _write_json(harness_record_path, harness_payload)
@@ -2017,6 +2338,7 @@ def _run_one_benchmark_agent_task(
             "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
             "agent_skills": agent_skills,
             "policy_violations": policy_violations,
+            "finalization": finalization,
             "command": rendered_command,
             "exit_code": exit_code,
             "walltime_seconds": walltime,
@@ -2041,6 +2363,7 @@ def _run_one_benchmark_agent_task(
         "mdclaw_runtime": _normalize_mdclaw_runtime(mdclaw_runtime),
         "agent_skills": agent_skills,
         "policy_violations": policy_violations,
+        "finalization": finalization,
         "command": rendered_command,
         "exit_code": exit_code,
         "walltime_seconds": walltime,
@@ -2143,6 +2466,30 @@ def summarize_benchmark_run(
     )
 
     aggregate = scoring.aggregate_run_scores(scores, tasks)
+    diagnostics = _collect_run_diagnostics(
+        run_dir=rd,
+        task_ids=configured_task_ids,
+        tooling_condition=tooling_condition,
+    )
+    diagnostic_by_task = {
+        item.get("task_id"): item
+        for item in diagnostics.get("tasks", [])
+        if item.get("task_id")
+    }
+    for task_score in aggregate["task_scores"]:
+        task_diag = diagnostic_by_task.get(task_score.get("task_id"), {})
+        task_score["scientific_score"] = task_score.get("weighted_total", 0.0)
+        task_score["contract_status"] = task_diag.get("contract_status", "unknown")
+        task_score["harness_status"] = task_diag.get("harness_status", "unknown")
+        task_score["failure_class"] = task_diag.get("failure_class")
+        task_score["harness_evidence_status"] = task_diag.get(
+            "harness_evidence_status",
+            "unknown",
+        )
+        task_score["tooling_condition"] = task_diag.get(
+            "tooling_condition",
+            tooling_condition,
+        )
     summary = RunSummary(
         run_id=cfg_payload.get("run_id", ""),
         created_at=_now_utc(),
@@ -2164,6 +2511,8 @@ def summarize_benchmark_run(
         capability_scores=aggregate.get("capability_scores", {}),
         task_scores=aggregate["task_scores"],
         runtime=aggregate["runtime"],
+        contract_diagnostics=diagnostics.get("contract", {}),
+        harness_diagnostics=diagnostics.get("harness", {}),
         benchmark_version=benchmark_version,
     )
     summary_payload = summary.model_dump()
@@ -2281,6 +2630,112 @@ def score_benchmark_run(
             f"{item.get('task_id')}: {', '.join(item.get('errors') or []) or item.get('score_status')}"
             for item in failed
         ],
+    }
+
+
+def _read_json_dict(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _collect_run_diagnostics(
+    *,
+    run_dir: Path,
+    task_ids: list[str],
+    tooling_condition: str,
+) -> dict[str, Any]:
+    tasks: list[dict[str, Any]] = []
+    contract_counts: dict[str, int] = {}
+    harness_counts: dict[str, int] = {}
+    failure_counts: dict[str, int] = {}
+    evidence_counts: dict[str, int] = {}
+    for task_id in task_ids:
+        task_run_dir = run_dir / "tasks" / task_id
+        finalization = _read_json_dict(task_run_dir / "finalization.json")
+        preflight = _read_json_dict(task_run_dir / "submission_preflight.json")
+        harness = _read_json_dict(task_run_dir / "harness_execution.json")
+        records = harness.get("records") if isinstance(harness.get("records"), list) else []
+
+        contract_status = (
+            finalization.get("contract_status")
+            or preflight.get("contract_status")
+            or "unknown"
+        )
+        harness_status = finalization.get("harness_status") or (
+            "recorded" if records else "missing"
+        )
+        failure_class = (
+            finalization.get("failure_class")
+            or preflight.get("failure_class")
+        )
+        evidence_status = (
+            finalization.get("harness_evidence_status")
+            or _harness_evidence_status(records)
+        )
+        item = {
+            "task_id": task_id,
+            "contract_status": contract_status,
+            "harness_status": harness_status,
+            "failure_class": failure_class,
+            "tooling_condition": tooling_condition,
+            "harness_evidence_status": evidence_status,
+            "preflight_file": (
+                str(task_run_dir / "submission_preflight.json")
+                if (task_run_dir / "submission_preflight.json").is_file()
+                else None
+            ),
+            "finalization_file": (
+                str(task_run_dir / "finalization.json")
+                if (task_run_dir / "finalization.json").is_file()
+                else None
+            ),
+            "harness_record_file": (
+                str(task_run_dir / "harness_execution.json")
+                if (task_run_dir / "harness_execution.json").is_file()
+                else None
+            ),
+        }
+        tasks.append(item)
+        contract_counts[contract_status] = contract_counts.get(contract_status, 0) + 1
+        harness_counts[harness_status] = harness_counts.get(harness_status, 0) + 1
+        evidence_counts[evidence_status] = evidence_counts.get(evidence_status, 0) + 1
+        if failure_class:
+            failure_counts[failure_class] = failure_counts.get(failure_class, 0) + 1
+
+    return {
+        "tasks": tasks,
+        "contract": {
+            "status_counts": contract_counts,
+            "failure_class_counts": failure_counts,
+            "tasks": [
+                {
+                    "task_id": item["task_id"],
+                    "contract_status": item["contract_status"],
+                    "failure_class": item["failure_class"],
+                    "preflight_file": item["preflight_file"],
+                }
+                for item in tasks
+            ],
+        },
+        "harness": {
+            "status_counts": harness_counts,
+            "harness_evidence_status_counts": evidence_counts,
+            "failure_class_counts": failure_counts,
+            "tasks": [
+                {
+                    "task_id": item["task_id"],
+                    "harness_status": item["harness_status"],
+                    "failure_class": item["failure_class"],
+                    "harness_evidence_status": item["harness_evidence_status"],
+                    "finalization_file": item["finalization_file"],
+                    "harness_record_file": item["harness_record_file"],
+                }
+                for item in tasks
+            ],
+        },
     }
 
 

@@ -779,3 +779,5 @@ class RunSummary(BaseModel):
     capability_scores: dict[str, Optional[float]] = Field(default_factory=dict)
     task_scores: list[dict] = Field(default_factory=list)
     runtime: dict = Field(default_factory=dict)
+    contract_diagnostics: dict = Field(default_factory=dict)
+    harness_diagnostics: dict = Field(default_factory=dict)

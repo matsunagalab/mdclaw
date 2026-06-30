@@ -54,6 +54,12 @@ mdclaw-free`, `mdclaw-cli-only`, or `mdclaw-skills+cli` only to describe the
 solver condition for later comparison; scoring is based on artifacts, metrics,
 and execution evidence.
 
+There is intentionally no MDPrepBench-specific skill. All solvers see the same
+public prompt, contract, checklist, `tools/validate_submission.py` preflight,
+and optional stage recorder. MDClaw skills may be exposed only as the normal
+MDClaw workflow context for a declared `mdclaw-skills+cli` condition, not as a
+benchmark-specific recipe.
+
 To compare skill-assisted and skill-free runs, use the harness-owned
 `solver_context` field in `run_config.json`, `attestation.json`,
 `summary.json`, or `tasks/<task_id>/agent_run.json`. It records whether the
@@ -120,6 +126,9 @@ The evaluated agent should read only files from the selected public package:
   requirements. It contains no scoring checks or held-back truth.
 - `benchmark_public/mdprepbench/tasks/<task_id>/submission_checklist.md`:
   per-task pre-submission checklist derived from the public contract.
+- `benchmark_public/mdprepbench/tools/validate_submission.py`: tool-neutral
+  public preflight. Run it against the exact `submission_dir` and the task's
+  `submission_contract.json` before the agent exits.
 
 Use the analogous `benchmark_public/mdstudybench/...` paths when running
 MDStudyBench tasks. The StudyBench public contract uses the same
@@ -142,6 +151,14 @@ canonical task directory to the evaluated agent.
 For real benchmark measurements, prefer separate solver and evaluator
 workspaces. The private evaluator package first appears in the evaluator
 workspace after solving is complete.
+
+Agent handoff is complete only when final artifacts are in the exact
+`submission_dir` and the public preflight passes, or when the agent explicitly
+declares an incomplete/failed submission. The automated runner records
+`finalization.json` and includes `contract_status`, `harness_status`,
+`failure_class`, and `harness_evidence_status` in `summary.json`; this keeps
+scientific artifact score separate from harness/runtime failures such as
+background processes or running MDClaw DAG nodes.
 
 Harness or evaluator code may also read:
 

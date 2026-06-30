@@ -126,6 +126,21 @@ in `$MDCLAW_BENCHMARK_STAGE_WRAPPER`; non-MDClaw solvers can run
 prep, topology, and minimization commands. This is an execution-evidence
 requirement, not an MDClaw-skills requirement.
 
+The runner also exposes `submission_preflight` in `task_instructions.json`.
+That command runs the public `tools/validate_submission.py` script against the
+exact `submission_dir` and public `submission_contract.json`. It is the same
+tool for MDClaw and non-MDClaw solvers and does not contain task-specific
+recipes.
+
+After the agent process exits, the runner finalizes the handoff before scoring:
+it detects and terminates leftover process-group members, copies the solver
+submission to the evaluator task directory, runs the public preflight, scans
+solver-visible MDClaw `progress.json` files for active `running`/queued nodes,
+and writes `finalization.json`. These diagnostics do not change the raw
+artifact score, but they are surfaced in `summary.json` as contract/harness
+status fields so incomplete background work is not confused with a completed MD
+preparation.
+
 The default runner uses a separate solver workspace but does not create a hard
 OS/container sandbox. For leaderboard-quality held-out results, run the solver
 workspace in a container or account that cannot read the maintainer checkout,
