@@ -2,8 +2,8 @@
   "capability_tags": [
     "study_workflow",
     "comparative_md",
-    "mutation_effect",
-    "protein_stability"
+    "ligand_binding",
+    "affinity_trend"
   ],
   "category": "experimental_ground_truth",
   "execution_mode": "lite",
@@ -12,15 +12,15 @@
     "insufficient_information_allowed": false
   },
   "primary_score": "scientific_answer",
-  "public_source": "PDB 1STN",
+  "public_source": "PDB 4W52",
   "references": [
     {
-      "note": "Truckses et al. 1996 - staphylococcal nuclease H124L stabilization.",
-      "source": "doi:10.1002/pro.5560050917"
+      "note": "Morton, Baase & Matthews 1995 - alkylbenzene binding to the T4L L99A cavity.",
+      "source": "doi:10.1021/bi00027a006"
     },
     {
-      "note": "Staphylococcal nuclease wild type (His124).",
-      "source": "PDB 1STN"
+      "note": "Merski et al. 2015 - matched L99A apolar-ligand complexes.",
+      "source": "doi:10.1073/pnas.1500806112"
     }
   ],
   "required_outputs": [
@@ -38,19 +38,17 @@
         "json_file": "evidence_report.json",
         "json_path": "effect.direction",
         "allowed_values": [
-          "destabilizing",
-          "stabilizing",
-          "neutral"
+          "stronger_binding",
+          "weaker_binding",
+          "similar"
         ],
         "weight": 0.0
       },
       {
-        "check_id": "paired_h124l_mutation",
+        "check_id": "paired_ligand_complexes",
         "check_type": "paired_mutation_topology",
         "topology_manifest_path": "outputs.topology.0",
         "mutant_topology_manifest_path": "outputs.topology.1",
-        "wild_type_residue_name": "HIS",
-        "required_residue_name": "LEU",
         "weight": 0.0
       },
       {
@@ -166,7 +164,7 @@
   "secondary_scores": [
     "evidence_communication"
   ],
-  "task_id": "S04_stability_nuclease_h124l",
-  "task_intent": "Scientific-answer calibration test: compare wild-type staphylococcal nuclease (PDB 1STN, His124) with the H124L variant using short comparative MD, and report the literature-calibrated stability direction in effect.direction. Unlike the T4 lysozyme cavity mutant, H124L is STABILIZING (about +1.9 kcal/mol; Truckses et al. 1996), so a constant 'mutations destabilize' prior is wrong here. Populate metrics.md_analysis with local consistency evidence (e.g. RMSF/SASA around residue 124, secondary-structure persistence, packing), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from the literature-calibrated thermodynamic interpretation.",
+  "task_id": "S04_affinity_t4l_l99a_alkylbenzene",
+  "task_intent": "Scientific-answer test: compare binding of two apolar ligands to the engineered T4 lysozyme L99A cavity and report which binds more tightly. Compare the benzene complex (PDB 4W52, also 181L) with the n-butylbenzene complex (PDB 4W57) using short comparative MD, and report effect.direction as stronger_binding, weaker_binding, or similar for n-butylbenzene RELATIVE TO benzene. Adding hydrophobic surface tightens binding in the apolar cavity (Morton, Baase & Matthews 1995), so n-butylbenzene binds more strongly than benzene. Populate metrics.md_analysis with interaction evidence (ligand-cavity contact counts, buried apolar surface, ligand occupancy/retention), mirror those values in evidence_report.evidence.md_metrics, and separate MD-supported observations from the literature-calibrated affinity direction.",
   "time_limit_minutes": 120
 }

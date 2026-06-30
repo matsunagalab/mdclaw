@@ -1,3 +1,0 @@
-{"step": "mutation_site", "decision": "build D39A on barstar (chain D); barnase residue 39 is a lysine, so the D39 hotspot is on barstar"}
-{"step": "paired_system_design", "decision": "compare WT and D39A complexes under matched protonation, solvation, force field, and production length"}
-{"step": "direction_basis", "decision": "report weakened_binding from Schreiber & Fersht 1995; use planned MD as consistency evidence only"}

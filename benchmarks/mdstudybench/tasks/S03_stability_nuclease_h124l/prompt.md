@@ -1,6 +1,6 @@
-# S04_stability_nuclease_h124l: Staphylococcal Nuclease H124L Stability
+# S03_stability_nuclease_h124l: Staphylococcal Nuclease H124L Stability
 
-You are evaluating an MD agent on `S04_stability_nuclease_h124l`.
+You are evaluating an MD agent on `S03_stability_nuclease_h124l`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 

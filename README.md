@@ -541,17 +541,6 @@ mdclaw prepare_benchmark_run \
   --execution-mode lite
 ```
 
-For the methods-bundle task only:
-
-```bash
-mdclaw prepare_benchmark_run \
-  --output-dir benchmark_runs \
-  --run-id study_methods_s03 \
-  --dataset-dir benchmarks/mdstudybench \
-  --execution-mode dry_run \
-  --task-ids S03_ppi_evidence_bundle_barnase
-```
-
 After submissions are written, evaluate with:
 
 ```bash
@@ -560,11 +549,11 @@ mdclaw score_benchmark_run \
   --dataset-dir benchmarks/mdstudybench
 ```
 
-`S01`, `S02`, `S04`, and `S05` expect comparative WT/mutant (or paired-ligand) MD
-evidence with index-aligned `outputs.trajectories` / `outputs.topology`; the
-scorer reloads the trajectories and verifies the substitution, so a literature
-guess without real MD scores zero. `S03` focuses on methods, provenance,
-decision logging, and a calibrated evidence report.
+All four tasks expect comparative WT/mutant (or paired-ligand) MD evidence with
+index-aligned `outputs.trajectories` / `outputs.topology`; the scorer reloads the
+trajectories and verifies the substitution, so a literature guess without real MD
+scores zero. Run every agent over the suite with
+`python benchmarks/tools/run_mdstudybench_all_agents.py`.
 
 For an external agent or runner that should receive only public files, export
 the agent-visible package first:
@@ -589,10 +578,9 @@ workflow battery:
 |---|---|---|
 | Preparation Workflow Battery | MD-ready preparation artifacts, ligand/chain selection, residue protonation, PTMs, glycans, nucleic acids, membranes, assemblies, ion concentration, and backend-neutral provenance. | 1AKE + AP5 selection; T4L Glu11 GLH protonation; mixed-lipid membrane prep |
 
-`MDStudyBench-v0.2` seeds the study-level suite with five tasks: four
+`MDStudyBench-v0.2` seeds the study-level suite with four uniform-load
 scientific-answer comparisons spanning destabilizing, weakened-binding,
-stabilizing, and ligand-affinity directions (so a constant prior cannot win),
-plus one study methods/provenance bundle.
+stabilizing, and ligand-affinity directions, so a constant prior cannot win.
 
 Public benchmark tasks do not require MDClaw-specific guardrail codes; those
 remain ordinary MDClaw regression tests. Scientific MD reasoning tasks now live

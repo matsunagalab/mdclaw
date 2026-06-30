@@ -58,9 +58,9 @@ Expected behavior:
   StudyBench discrimination floor — a credible solver must run real comparative
   MD, not guess the textbook answer.
 
-The honest study floor for the dry-run evidence-bundle task is the committed
-reference submission under
-`benchmarks/mdstudybench/examples/S03_ppi_evidence_bundle_barnase/`.
+All four study tasks require real comparative MD; the
+`tests/test_benchmark/_fake_study_submissions.py` builder shows the expected
+submission shape (index-aligned `outputs.trajectories` / `outputs.topology`).
 
 ## Intended comparison set
 

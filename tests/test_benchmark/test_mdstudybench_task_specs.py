@@ -42,8 +42,8 @@ def test_mdstudybench_comparative_tasks_use_shared_md_evidence_bundle():
         comparative = {
             "S01_stability_t4l_l99a",
             "S02_ppi_hotspot_barnase_d39a",
-            "S04_stability_nuclease_h124l",
-            "S05_affinity_t4l_l99a_alkylbenzene",
+            "S03_stability_nuclease_h124l",
+            "S04_affinity_t4l_l99a_alkylbenzene",
         }
         if task_id in comparative:
             assert has_bundle, task_id

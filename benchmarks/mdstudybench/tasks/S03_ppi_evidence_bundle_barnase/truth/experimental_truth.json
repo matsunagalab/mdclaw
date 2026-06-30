@@ -1,8 +1,0 @@
-{
-  "expected_direction": "weakened_binding",
-  "ddg_bind_kcal_per_mol_min": 3.0,
-  "ddg_bind_kcal_per_mol_max": 6.0,
-  "magnitude_class": "large",
-  "source": "Schreiber & Fersht 1995 J. Mol. Biol. 248:478-486 doi:10.1006/jmbi.1995.0185",
-  "note": "Asp39 on barstar (chain D in 1BRS) is a buried interface hotspot; D39A weakens barnase-barstar binding by 3-5 orders of magnitude in Kd. This bundle task reuses the barnase-barstar system as a packaging subject distinct from S02's scientific-answer task; it is scored on auditable study packaging (methods, provenance roles, decision log), with effect.direction as a secondary anchor."
-}

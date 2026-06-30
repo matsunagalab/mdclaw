@@ -13,21 +13,21 @@ contract; broad preparation coverage belongs in MDPrepBench.
 
 ## Current Scope
 
-The scientific-answer battery deliberately spans different effect directions so a
-constant "mutations are destabilizing / loss-of-function" prior cannot win — it
-includes a stabilizing mutation and a ligand-affinity trend alongside the
-destabilizing and weakened-binding cases.
+All four tasks are uniform-load comparative-MD scientific-answer tasks: each runs
+two short MD systems and answers a direction. The battery deliberately spans
+different effect directions so a constant "mutations are destabilizing /
+loss-of-function" prior cannot win — it includes a stabilizing mutation and a
+ligand-affinity trend alongside the destabilizing and weakened-binding cases.
 
-| Task | Family | Truth direction | Focus |
-|---|---|---|---|
-| S01_stability_t4l_l99a | scientific_answer | destabilizing | T4 lysozyme L99A cavity mutation, stability calibration |
-| S02_ppi_hotspot_barnase_d39a | scientific_answer | weakened_binding | Barnase-barstar barstar-D39A interface hotspot |
-| S03_ppi_evidence_bundle_barnase | evidence_communication | weakened_binding (anchor) | Auditable barnase-barstar D39A study bundle (dry-run) |
-| S04_stability_nuclease_h124l | scientific_answer | stabilizing | Staphylococcal nuclease H124L (a stabilizing mutation) |
-| S05_affinity_t4l_l99a_alkylbenzene | scientific_answer | stronger_binding | T4L L99A apolar cavity, benzene vs n-butylbenzene affinity |
+| Task | Truth direction | Focus |
+|---|---|---|
+| S01_stability_t4l_l99a | destabilizing | T4 lysozyme L99A cavity mutation, stability calibration |
+| S02_ppi_hotspot_barnase_d39a | weakened_binding | Barnase-barstar barstar-D39A interface hotspot |
+| S03_stability_nuclease_h124l | stabilizing | Staphylococcal nuclease H124L (a stabilizing mutation) |
+| S04_affinity_t4l_l99a_alkylbenzene | stronger_binding | T4L L99A apolar cavity, benzene vs n-butylbenzene affinity |
 
 Note: in PDB 1BRS, barnase is chain A and barstar is chain D/E/F. The D39 hotspot
-is on **barstar** (barnase residue 39 is a lysine), so S02/S03 mutate barstar.
+is on **barstar** (barnase residue 39 is a lysine), so S02 mutates barstar.
 
 ## Scoring
 
@@ -35,7 +35,7 @@ StudyBench is scored by the same engine as MDPrepBench (`mdclaw.benchmark`), wit
 a study-specific check set. Like the prep suite, it is **artifact-as-truth**: the
 scientific answer is bound to recomputed evidence, not to self-reported JSON.
 
-Scientific-answer tasks (S01/S02/S04/S05):
+Every task (S01–S04) is scored the same way:
 
 - **Ground-truth direction** (weight 1.0) — `evidence_report.effect.direction`
   must equal the hidden experimental direction. This is the only graded score on
@@ -63,38 +63,27 @@ trajectories, or a wrong/absent mutation scores **0** even if the declared
 direction is correct — exactly the gamed submissions the
 `study_literature_guess_no_md` baseline demonstrates.
 
-Evidence-bundle task (S03): `evidence_communication` primary, scored on
-`methods.md` presence/structure (Methods + Limitations sections, byte floor, no
-template markers), `provenance.study.roles` (≥2 roles), a decision log, and the
-literature-anchored direction as a secondary; it is a `dry_run` task and requires
-no trajectories.
-
 ## Submission contract
 
 Unlike MDPrepBench (where the evaluator normalizes raw OpenMM artifacts), study
 agents author the submission files themselves and they are scored as written.
 
-Scientific-answer tasks (`completed`) submit:
+Each task (`completed`) submits:
 
 ```text
 submission/
   manifest.json          # status + outputs (paths relative to submission/)
   metrics.json           # md_analysis.* quantitative comparison
-  provenance.json        # command_log; study roles for bundles
+  provenance.json        # command_log
   evidence_report.json   # effect.direction, evidence.citations, evidence.md_metrics, limitations
   trajectories/          # WT then mutant production trajectories
   topology/              # WT then mutant topologies (index-aligned with trajectories)
 ```
 
 `manifest.outputs.trajectories` and `manifest.outputs.topology` must each list
-the WT system first and the mutant/variant second so the scorer can reload and
-verify the paired comparison. The exported `submission_contract.json` carries
-`required_manifest_output_fields` listing these keys.
-
-Evidence-bundle task (S03, `dry_run`) submits `manifest.json`,
-`evidence_report.json`, `methods.md`, `provenance.json`, and `decision_log.jsonl`
-— no trajectories. A complete honest example is committed under
-`benchmarks/mdstudybench/examples/S03_ppi_evidence_bundle_barnase/`.
+the WT/reference system first and the mutant/variant second so the scorer can
+reload and verify the paired comparison. The exported `submission_contract.json`
+carries `required_manifest_output_fields` listing these keys.
 
 A scorer-side `harness_execution.json` (kept outside `submission/`) supplies the
 trusted workflow-stage evidence; solver-written `provenance.json` is an audit
@@ -142,23 +131,23 @@ python benchmarks/tools/run_mdstudybench_all_agents.py \
 
 This wraps `mdclaw run_benchmark_agent` per agent (built-in agent profiles) and
 writes an operator summary. Smoke-test the wiring with `--dry-run` and a task
-subset (`--task-ids S03_ppi_evidence_bundle_barnase`).
+subset (`--task-ids S01_stability_t4l_l99a`).
 
 ### Time limits
 
 `run_benchmark_agent` enforces a per-task walltime and kills the agent process
 group on timeout. The study batch runner defaults to
 `--max-walltime-minutes-per-task 0`, which means "use each task's declared
-`time_limit_minutes`" (S01/S02/S04/S05 = 120 min, S03 = 60 min). Pass an explicit
-positive value to override with a fixed cap for slow local MD.
+`time_limit_minutes`" (all four tasks = 120 min). Pass an explicit positive value
+to override with a fixed cap for slow local MD.
 
-Compute note: S03 is dry-run (no GPU). S01/S02/S04/S05 require real comparative
-MD of two systems each (S02/S03 a solvated complex), so plan GPU walltime for
+Compute note: every task requires real comparative MD of two systems (S02 a
+solvated complex; S04 needs a parameterized ligand), so plan GPU walltime for
 ≥1 ns × 2 systems per task at minimum.
 
-Reference runners under `benchmarks/baselines/` establish the discrimination
-floor: `study_literature_guess_no_md.py` (must score 0 on the comparative tasks)
-and the committed honest S03 bundle in `benchmarks/mdstudybench/examples/`.
+Reference runner under `benchmarks/baselines/` establishes the discrimination
+floor: `study_literature_guess_no_md.py` (must score 0 — a confident literature
+direction with fake trajectories and no real mutation).
 
 ## Dataset layout
 
@@ -174,7 +163,6 @@ benchmarks/mdstudybench/
     prompt.md                  # public prompt for the agent under test
     task.json                  # runner/scorer metadata; not given to agents
     truth/                     # scorer-only experimental direction + citation pool
-  examples/                    # committed reference submissions
 ```
 
 ## Developer validation

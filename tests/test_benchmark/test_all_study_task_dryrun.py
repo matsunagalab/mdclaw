@@ -75,10 +75,10 @@ def test_all_study_task_honest_fake_submission_scores_are_stable(tmp_path: Path)
 
     summary, tasks = _score_fake_study_run(tmp_path, "honest")
 
-    assert summary["n_tasks"] == 5
+    assert summary["n_tasks"] == 4
     assert summary["overall_score"] == pytest.approx(1.0)
     assert summary["scores"]["scientific_answer"] == pytest.approx(1.0)
-    assert summary["scores"]["evidence_communication"] == pytest.approx(1.0)
+    assert summary["scores"]["evidence_communication"] is None
     assert summary["scores"]["preparation"] is None
     assert summary["scores"]["execution"] is None
 
@@ -94,15 +94,15 @@ def test_all_study_task_wrong_answer_fake_submission_scores_are_stable(
 
     summary, tasks = _score_fake_study_run(tmp_path, "wrong")
 
-    assert summary["n_tasks"] == 5
-    # The four scientific-answer tasks build real correct-mutation systems
+    assert summary["n_tasks"] == 4
+    # All four scientific-answer tasks build real correct-mutation systems
     # (gates pass) but report the wrong direction, so scientific_answer is 0.0 —
     # the answer is driven solely by the ground-truth direction, with the
     # real-MD and correct-mutation requirements enforced as weight-0 hard-fail
-    # gates. Only S03 (evidence bundle) contributes its 0.5.
-    assert summary["overall_score"] == pytest.approx(0.5 / 5, abs=1e-4)
+    # gates.
+    assert summary["overall_score"] == pytest.approx(0.0)
     assert summary["scores"]["scientific_answer"] == pytest.approx(0.0)
-    assert summary["scores"]["evidence_communication"] == pytest.approx(0.5)
+    assert summary["scores"]["evidence_communication"] is None
     assert all(payload["status"] == "partial" for payload in tasks.values())
     assert all(payload["weighted_total"] < 0.8 for payload in tasks.values())
     assert all(not payload["integrity_warnings"] for payload in tasks.values())

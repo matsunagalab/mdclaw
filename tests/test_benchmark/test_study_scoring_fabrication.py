@@ -25,8 +25,8 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 COMPARATIVE_TASKS = [
     "S01_stability_t4l_l99a",
     "S02_ppi_hotspot_barnase_d39a",
-    "S04_stability_nuclease_h124l",
-    "S05_affinity_t4l_l99a_alkylbenzene",
+    "S03_stability_nuclease_h124l",
+    "S04_affinity_t4l_l99a_alkylbenzene",
 ]
 
 
@@ -94,10 +94,10 @@ def test_real_md_wrong_direction_scores_zero_answer(tmp_path: Path, task_id: str
         "S02_ppi_hotspot_barnase_d39a": [
             "weakened_binding", "strengthened_binding", "neutral",
         ],
-        "S04_stability_nuclease_h124l": [
+        "S03_stability_nuclease_h124l": [
             "destabilizing", "stabilizing", "neutral",
         ],
-        "S05_affinity_t4l_l99a_alkylbenzene": [
+        "S04_affinity_t4l_l99a_alkylbenzene": [
             "stronger_binding", "weaker_binding", "similar",
         ],
     }[task_id]

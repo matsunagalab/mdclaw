@@ -105,11 +105,11 @@ _FIXTURE_CITATIONS: dict[str, dict[str, str]] = {
         "pool": "SKEMPI", "record_id": "synthetic-SKEMPI-1BRS-D39A",
         "pmid": "7540270",
     },
-    "S04_stability_nuclease_h124l": {
+    "S03_stability_nuclease_h124l": {
         "pool": "ProThermDB", "record_id": "synthetic-ProThermDB-1STN-H124L",
         "doi": "10.1002/pro.5560050917",
     },
-    "S05_affinity_t4l_l99a_alkylbenzene": {
+    "S04_affinity_t4l_l99a_alkylbenzene": {
         "pool": "PDBbind", "record_id": "synthetic-PDBbind-L99A-butylbenzene",
         "doi": "10.1021/bi00027a006",
     },
@@ -133,7 +133,7 @@ def _comparative_metrics(task_id: str, mode: str) -> dict[str, Any]:
             "delta_salt_bridge_count": -1,
             "interpretation": "D39A removes interface polar contacts.",
         }
-    elif task_id == "S04_stability_nuclease_h124l":
+    elif task_id == "S03_stability_nuclease_h124l":
         md_analysis = {
             **base,
             "systems": ["nuclease_wt", "nuclease_h124l"],
@@ -142,7 +142,7 @@ def _comparative_metrics(task_id: str, mode: str) -> dict[str, Any]:
             "delta_secondary_structure_fraction": 0.03,
             "interpretation": "H124L improves local packing around residue 124.",
         }
-    elif task_id == "S05_affinity_t4l_l99a_alkylbenzene":
+    elif task_id == "S04_affinity_t4l_l99a_alkylbenzene":
         md_analysis = {
             **base,
             "systems": ["l99a_benzene", "l99a_n_butylbenzene"],
@@ -237,8 +237,8 @@ _RES_ATOMS: dict[str, list[tuple[str, str]]] = {
 _MUTATION_SITE = {
     "S01_stability_t4l_l99a": ("LEU", "ALA"),
     "S02_ppi_hotspot_barnase_d39a": ("ASP", "ALA"),
-    "S04_stability_nuclease_h124l": ("HIS", "LEU"),
-    "S05_affinity_t4l_l99a_alkylbenzene": ("BNZ", "NBB"),
+    "S03_stability_nuclease_h124l": ("HIS", "LEU"),
+    "S04_affinity_t4l_l99a_alkylbenzene": ("BNZ", "NBB"),
 }
 COMPARATIVE_TASKS = set(_MUTATION_SITE)
 
@@ -330,64 +330,6 @@ def make_study_submission(
         _write(sub_dir / "provenance.json", provenance)
         _write_harness_record(sub_dir, provenance)
         _write(sub_dir / "evidence_report.json", evidence)
-        return
-
-    if task_id == "S03_ppi_evidence_bundle_barnase":
-        methods = (
-            "# WT vs D39A Barnase-Barstar Study\n\n"
-            "## Methods\n"
-            "Prepare the wild-type barnase-barstar complex from PDB 1BRS and "
-            "generate the barstar D39A mutant complex (chain D) as a paired "
-            "system. Use matched protonation, solvation, force-field settings, "
-            "equilibration, and production lengths so interface differences can "
-            "be attributed to the mutation rather than workflow drift. Analyze "
-            "interface SASA, inter-chain contacts, hydrogen bonds, salt bridges, "
-            "and interface water occupancy, then compare the binding direction "
-            "against the published Schreiber & Fersht hotspot result.\n\n"
-            "## Limitations\n"
-            "This CI fixture is a methods-contract artifact only. It does not "
-            "contain real simulation output, and it should never be interpreted "
-            "as benchmark performance evidence.\n"
-        )
-        evidence = _evidence_report(task, mode)
-        provenance = _common_provenance(
-            run_id,
-            task_id,
-            mode,
-            ["study", "report"],
-        )
-        provenance["study"] = {
-            "roles": [
-                {"role": "reference", "system": "barnase-barstar WT complex"},
-                {"role": "variant", "system": "barnase-barstar D39A complex"},
-            ]
-        }
-        _write(sub_dir / "manifest.json", {
-            "schema_version": "1.0",
-            "run_id": run_id,
-            "task_id": task_id,
-            "status": "completed",
-            "outputs": {
-                "provenance": "provenance.json",
-                "evidence_report": "evidence_report.json",
-                "methods": "methods.md",
-                "decision_log": "decision_log.jsonl",
-            },
-            "limitations": [
-                "Synthetic CI fixture; methods text is not a full study report.",
-            ],
-        })
-        _write(sub_dir / "methods.md", methods)
-        _write(sub_dir / "provenance.json", provenance)
-        _write_harness_record(sub_dir, provenance)
-        _write(sub_dir / "evidence_report.json", evidence)
-        _write(
-            sub_dir / "decision_log.jsonl",
-            json.dumps({
-                "step": "paired_system_design",
-                "decision": "compare WT and D39A complexes under matched workflow settings",
-            }) + "\n",
-        )
         return
 
     raise ValueError(f"unknown MDStudyBench task_id: {task_id}")

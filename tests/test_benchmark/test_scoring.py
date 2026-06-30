@@ -499,41 +499,6 @@ def test_prep_normalization_reports_incomplete_background_work(tmp_path: Path):
     assert any("still running in the background" in err for err in result["errors"])
 
 
-def test_study_methods_validation_does_not_require_metrics_output(tmp_path: Path):
-    repo_root = Path(__file__).resolve().parents[2]
-    task_file = (
-        repo_root
-        / "benchmarks"
-        / "mdstudybench"
-        / "tasks"
-        / "S03_ppi_evidence_bundle_barnase"
-        / "task.json"
-    )
-    submission_dir = tmp_path / "submission"
-    submission_dir.mkdir()
-    manifest = {
-        "schema_version": "1.0",
-        "task_id": "S03_ppi_evidence_bundle_barnase",
-        "status": "completed",
-        "outputs": {
-            "evidence_report": "evidence_report.json",
-            "methods": "methods.md",
-            "provenance": "provenance.json",
-            "decision_log": "decision_log.jsonl",
-        },
-    }
-    (submission_dir / "manifest.json").write_text(json.dumps(manifest))
-    (submission_dir / "evidence_report.json").write_text("{}")
-    (submission_dir / "methods.md").write_text("## Methods\n\n## Limitations\n")
-    (submission_dir / "provenance.json").write_text("{}")
-    (submission_dir / "decision_log.jsonl").write_text("{}\n")
-
-    result = validation.validate_submission(task_file, submission_dir)
-
-    assert result["success"] is True
-    assert not any("outputs.metrics" in err for err in result["errors"])
-
-
 def test_study_answer_validation_requires_trajectory_manifest_outputs(
     tmp_path: Path,
 ):

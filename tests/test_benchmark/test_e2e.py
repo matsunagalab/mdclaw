@@ -24,7 +24,7 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
 MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
-STUDY_TASK_ID = "S03_ppi_evidence_bundle_barnase"
+STUDY_TASK_ID = "S03_stability_nuclease_h124l"
 
 
 def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
@@ -1033,7 +1033,7 @@ parser.add_argument("--task-id", required=True)
 args = parser.parse_args()
 
 stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
-for stage in ("study", "report"):
+for stage in ("source", "prep", "prod", "analysis", "report"):
     subprocess.run(
         [sys.executable, stage_wrapper, "--stage", stage, "--",
          sys.executable, "-c", "pass"],
@@ -1052,7 +1052,7 @@ _fake_study_submissions.GENERATORS[args.task_id](
     )
     output_dir = tmp_path / "benchmark_runs"
 
-    # default cap = 0 -> use S03's declared time_limit_minutes (60)
+    # default cap = 0 -> use S03's declared time_limit_minutes (120)
     result = benchmark_run.run_benchmark_agent(
         output_dir=str(output_dir),
         run_id="study_timelimit_default",
@@ -1068,7 +1068,7 @@ _fake_study_submissions.GENERATORS[args.task_id](
     record = _agent_run_record(
         output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
     )
-    assert record["walltime_limit_minutes"] == 60
+    assert record["walltime_limit_minutes"] == 120
 
     # explicit cap overrides the declared per-task limit
     result = benchmark_run.run_benchmark_agent(
@@ -1117,7 +1117,7 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert "agent_prompt" in agent_tasks["tasks"][0]
     assert "submission_checklist" in agent_tasks["tasks"][0]
-    assert contract["primary_score"] == "evidence_communication"
+    assert contract["primary_score"] == "scientific_answer"
     assert "topology_output_shape" not in contract["manifest_contract"]
 
 

@@ -318,7 +318,7 @@ def test_studybench_dataset_json_matches_task_directories():
     )
 
     assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
-    assert dataset["task_count"] == len(task_ids) == 5
+    assert dataset["task_count"] == len(task_ids) == 4
     assert sorted(task_ids) == task_dirs
     assert (
         "tasks/<task_id>/submission_checklist.md"
@@ -335,7 +335,6 @@ def test_studybench_families_cover_each_task_once():
     families = dataset.get("families") or {}
     assert set(families) == {
         "scientific_answer_battery",
-        "study_evidence_bundle",
     }
 
     for family_key, family in families.items():
@@ -390,8 +389,8 @@ def test_studybench_integrity_is_strict_without_prep_topology_requirements():
     comparative_tasks = {
         "S01_stability_t4l_l99a",
         "S02_ppi_hotspot_barnase_d39a",
-        "S04_stability_nuclease_h124l",
-        "S05_affinity_t4l_l99a_alkylbenzene",
+        "S03_stability_nuclease_h124l",
+        "S04_affinity_t4l_l99a_alkylbenzene",
     }
 
     for task_id in dataset["task_ids"]:
@@ -450,13 +449,12 @@ def test_list_benchmark_tasks_supports_studybench():
 
     assert result["success"], result
     assert result["benchmark_version"] == "MDStudyBench-v0.2"
-    assert result["task_count"] == 5
+    assert result["task_count"] == 4
     assert {task["task_id"] for task in result["tasks"]} == {
         "S01_stability_t4l_l99a",
         "S02_ppi_hotspot_barnase_d39a",
-        "S03_ppi_evidence_bundle_barnase",
-        "S04_stability_nuclease_h124l",
-        "S05_affinity_t4l_l99a_alkylbenzene",
+        "S03_stability_nuclease_h124l",
+        "S04_affinity_t4l_l99a_alkylbenzene",
     }
 
 

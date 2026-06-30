@@ -11,16 +11,8 @@
       "task_ids": [
         "S01_stability_t4l_l99a",
         "S02_ppi_hotspot_barnase_d39a",
-        "S04_stability_nuclease_h124l",
-        "S05_affinity_t4l_l99a_alkylbenzene"
-      ]
-    },
-    "study_evidence_bundle": {
-      "display_name": "Study Evidence Bundle",
-      "intent": "Evaluate whether an agent can package an auditable MD study plan, methods draft, provenance, decision log, and evidence report.",
-      "score_axis": "evidence_communication",
-      "task_ids": [
-        "S03_ppi_evidence_bundle_barnase"
+        "S03_stability_nuclease_h124l",
+        "S04_affinity_t4l_l99a_alkylbenzene"
       ]
     }
   },
@@ -46,12 +38,11 @@
   },
   "released": "2026-06-30",
   "schema_version": "1.0",
-  "task_count": 5,
+  "task_count": 4,
   "task_ids": [
     "S01_stability_t4l_l99a",
     "S02_ppi_hotspot_barnase_d39a",
-    "S03_ppi_evidence_bundle_barnase",
-    "S04_stability_nuclease_h124l",
-    "S05_affinity_t4l_l99a_alkylbenzene"
+    "S03_stability_nuclease_h124l",
+    "S04_affinity_t4l_l99a_alkylbenzene"
   ]
 }

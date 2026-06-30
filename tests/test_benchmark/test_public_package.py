@@ -602,7 +602,7 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert result["success"], result
     dataset = json.loads((out_dir / "dataset.json").read_text())
     assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
-    assert result["task_count"] == 5
+    assert result["task_count"] == 4
 
     contract = json.loads(
         (
@@ -637,24 +637,4 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     assert any(
         "source, prep, prod, analysis, report" in item
         for item in contract["submission_checklist"]
-    )
-
-    methods_contract = json.loads(
-        (
-            out_dir
-            / "tasks"
-            / "S03_ppi_evidence_bundle_barnase"
-            / "submission_contract.json"
-        ).read_text()
-    )
-    methods_outputs = methods_contract["submission_blueprint"][
-        "manifest_minimum"
-    ]["outputs"]
-    assert methods_outputs["methods"] == "methods.md"
-    assert methods_outputs["decision_log"] == "decision_log.jsonl"
-    assert "metrics" not in methods_outputs
-    assert "trajectories" not in methods_outputs
-    assert any(
-        "study, report" in item
-        for item in methods_contract["submission_checklist"]
     )

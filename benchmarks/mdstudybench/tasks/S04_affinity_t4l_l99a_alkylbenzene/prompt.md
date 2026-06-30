@@ -1,6 +1,6 @@
-# S05_affinity_t4l_l99a_alkylbenzene: T4 Lysozyme L99A Apolar Ligand Affinity
+# S04_affinity_t4l_l99a_alkylbenzene: T4 Lysozyme L99A Apolar Ligand Affinity
 
-You are evaluating an MD agent on `S05_affinity_t4l_l99a_alkylbenzene`.
+You are evaluating an MD agent on `S04_affinity_t4l_l99a_alkylbenzene`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 

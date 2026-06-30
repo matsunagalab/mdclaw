@@ -84,6 +84,7 @@ See `docs/benchmark/fairness-protocol.md`, `docs/benchmark/capability-coverage.m
 `docs/benchmark/mdcrow-runner.md`, and `benchmarks/baselines/README.md`.
 
 For MDStudyBench, the same public-contract helpers are used without prep-only
-topology requirements. S01/S02 require trajectory-backed comparative evidence;
-S03 remains a dry-run methods/evidence bundle with methods, decision-log, and
-study/report provenance requirements.
+topology requirements. All four tasks require trajectory-backed comparative
+evidence: the scorer reloads the submitted WT/mutant (or paired-ligand)
+trajectories and verifies the substitution, so the scientific answer is bound to
+real comparative MD rather than a self-reported direction.

@@ -223,10 +223,11 @@ correct.
 
 ## Suite B: Scientific MD Reasoning
 
-Current size: **5 tasks** in `benchmarks/mdstudybench/` (`MDStudyBench-v0.2`).
-This suite should stay small: roughly **3-5 carefully curated tasks** is enough
-unless a new task covers a genuinely distinct scientific-answer pattern. Use
-experimental truth as the anchor, but score the workflow in layers:
+Current size: **4 tasks** in `benchmarks/mdstudybench/` (`MDStudyBench-v0.2`),
+all uniform-load comparative-MD scientific-answer tasks. This suite should stay
+small: roughly **3-5 carefully curated tasks** is enough unless a new task covers
+a genuinely distinct scientific-answer pattern. Use experimental truth as the
+anchor, but score the workflow in layers:
 
 1. Study design: correct systems, controls, mutations, apo/holo state,
    replicates, and observables.
@@ -254,9 +255,8 @@ This intentionally makes truth direction important but not the sole gate.
 |---|---|---|---|---|---:|
 | S01 | Monomer stability calibration | T4L WT vs L99A | destabilizing | Real trajectories, local consistency evidence, calibrated direction, and overclaim control. | 1 |
 | S02 | PPI hotspot mutation | Barnase-barstar barstar-D39A | weakened_binding | Require interface observables and uncertainty calibration. | 1 |
-| S03 | Study methods bundle | Barnase-barstar D39A | weakened_binding (anchor) | Auditable methods/provenance/decision-log bundle (dry-run); rebased off T4L so it is not redundant with S01. | 1 |
-| S04 | Stabilizing mutation | Staph nuclease H124L | stabilizing | Breaks the "mutations destabilize" prior; tests direction discrimination, not bias. | 1 |
-| S05 | Protein-ligand affinity trend | T4L L99A benzene vs n-butylbenzene | stronger_binding | Adds the affinity-direction pattern; paired ligand-swap comparison. | 1 |
+| S03 | Stabilizing mutation | Staph nuclease H124L | stabilizing | Breaks the "mutations destabilize" prior; tests direction discrimination, not bias. | 1 |
+| S04 | Protein-ligand affinity trend | T4L L99A benzene vs n-butylbenzene | stronger_binding | Adds the affinity-direction pattern; paired ligand-swap comparison. | 1 |
 
 The v0.2 set deliberately spans destabilizing, weakened-binding, stabilizing,
 and ligand-affinity directions so a constant prior scores zero on at least two
@@ -303,10 +303,11 @@ agent tasks.
    - simple script baseline,
    - LLM-only/no-run baseline,
    - one external MD tool/harness when available.
-6. Keep MDStudyBench compact: `MDStudyBench-v0.2` is at 5 tasks spanning the
-   destabilizing / weakened-binding / stabilizing / ligand-affinity directions.
-   Run real reference submissions for S01/S02/S04/S05 and validate the
-   truth-direction calibration before adding any further task.
+6. Keep MDStudyBench compact: `MDStudyBench-v0.2` is at 4 uniform-load
+   comparative-MD tasks spanning the destabilizing / weakened-binding /
+   stabilizing / ligand-affinity directions. Run real reference submissions for
+   S01-S04 and validate the truth-direction calibration before adding any
+   further task.
 
 ### Current Prep Implementation Status
 
@@ -346,10 +347,10 @@ Still to do:
 
 Implemented (`MDStudyBench-v0.2`):
 
-- Five tasks: S01 (destabilizing), S02 (weakened binding), S03 (barnase-barstar
-  D39A evidence bundle, dry-run), S04 (stabilizing nuclease H124L), S05
-  (benzene vs n-butylbenzene affinity trend). The direction set defeats a
-  constant prior.
+- Four uniform-load comparative-MD tasks: S01 (destabilizing, T4L L99A), S02
+  (weakened binding, barstar D39A), S03 (stabilizing, nuclease H124L), S04
+  (stronger binding, benzene vs n-butylbenzene affinity trend). The direction
+  set defeats a constant prior.
 - Scientific-answer correctness is bound to real artifacts: `trajectory_rescan`
   (WT + mutant) and `paired_mutation_topology` are weight-0 hard-fail gates, so
   garbage/copied trajectories or an absent/wrong mutation clamp the score to 0
@@ -362,13 +363,13 @@ Implemented (`MDStudyBench-v0.2`):
 - LLM-judge rubric scores are aggregated into the secondary axis (previously
   read by axis name and silently dropped).
 - Trajectory signatures accept DCD/XTC/TRR/HDF5/NetCDF, not DCD only.
-- A committed honest S03 reference submission and a `study_literature_guess_no_md`
-  fabrication baseline establish the discrimination floor; honest/wrong/fabricated
-  fixtures and per-gate tests cover the scorer.
+- A `study_literature_guess_no_md` fabrication baseline establishes the
+  discrimination floor; honest/wrong/fabricated fixtures and per-gate tests cover
+  the scorer.
 
 Still to do:
 
-- Run real MDClaw reference submissions for S01/S02/S04/S05 (real comparative MD)
+- Run real MDClaw reference submissions for S01-S04 (real comparative MD)
   and record them as runnable evidence.
 - Optionally reward a calibrated magnitude (the truth files carry ddG ranges and
   `magnitude_class`) once the direction-gated scoring is stable.
