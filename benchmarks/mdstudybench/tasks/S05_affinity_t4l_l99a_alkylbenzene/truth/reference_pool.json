@@ -1,0 +1,12 @@
+{
+  "allowed_source_pools": [
+    "PDBbind",
+    "BindingDB",
+    "BindingMOAD"
+  ],
+  "primary_reference": {
+    "doi": "10.1021/bi00027a006",
+    "citation": "Morton, Baase & Matthews 1995, alkylbenzene binding to the T4 lysozyme L99A cavity."
+  },
+  "note": "Report effect.direction (stronger_binding for n-butylbenzene vs benzene) and use submitted short comparative MD metrics (ligand-cavity contacts, buried hydrophobic surface, ligand occupancy/retention) as consistency evidence. Do not claim that short MD alone yields a quantitative binding delta-delta-G."
+}

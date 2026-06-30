@@ -20,6 +20,21 @@ _PMID_RE = re.compile(r"\bPMID\s*:?\s*\d+\b", re.IGNORECASE)
 _URL_RE = re.compile(r"^https?://\S+$", re.IGNORECASE)
 _DCD_MAGIC = b"\x54\x00\x00\x00CORD"
 
+# Recognized MD trajectory formats keyed by file extension. Each entry maps to
+# the accepted leading magic bytes for that format. We verify the on-disk magic
+# (not just the extension) so padded/renamed non-trajectory files are rejected,
+# but we accept the common portable formats any MD stack can emit rather than
+# pinning the benchmark to a single engine's DCD.
+_TRAJECTORY_MAGICS: dict[str, tuple[bytes, ...]] = {
+    ".dcd": (_DCD_MAGIC,),
+    ".xtc": (b"\x00\x00\x07\xcb",),  # GROMACS XTC magic 1995 (big-endian int)
+    ".trr": (b"\x00\x00\x07\xc9",),  # GROMACS TRR magic 1993 (big-endian int)
+    ".h5": (b"\x89HDF\r\n\x1a\n",),  # mdtraj HDF5 / NetCDF4
+    ".hdf5": (b"\x89HDF\r\n\x1a\n",),
+    ".nc": (b"CDF", b"\x89HDF\r\n\x1a\n"),  # AMBER NetCDF classic or NetCDF4
+    ".netcdf": (b"CDF", b"\x89HDF\r\n\x1a\n"),
+}
+
 
 def hash_file(path: str | Path, algorithm: str = "md5") -> Optional[str]:
     """Stream-hash a file. Returns ``None`` if the file does not exist."""
@@ -774,9 +789,11 @@ def check_trajectory_file_signatures(
 ) -> list[str]:
     """Require trajectory artifacts to have a recognized trajectory signature.
 
-    StudyBench currently publishes DCD examples in its submission blueprint.
-    A DCD must start with the fixed 84-record + ``CORD`` magic; plain text,
-    JSON, or arbitrary padded bytes are not accepted as trajectory artifacts.
+    The accepted formats (and their magic bytes) are listed in
+    ``_TRAJECTORY_MAGICS``: DCD, XTC, TRR, HDF5, and NetCDF. The on-disk magic
+    is verified, so plain text, JSON, or arbitrary padded bytes are rejected;
+    but any portable trajectory format an MD stack can emit is accepted rather
+    than pinning the benchmark to a single engine's DCD.
     """
     value = _safe_path(manifest, manifest_path)
     if not isinstance(value, list):
@@ -785,6 +802,7 @@ def check_trajectory_file_signatures(
             f"{type(value).__name__ if value is not None else 'missing'}"
         ]
 
+    max_magic = max(len(m) for magics in _TRAJECTORY_MAGICS.values() for m in magics)
     warnings: list[str] = []
     for i, rel in enumerate(value):
         if not isinstance(rel, str) or not rel.strip():
@@ -797,24 +815,26 @@ def check_trajectory_file_signatures(
             )
             continue
         suffix = path.suffix.lower()
-        if suffix != ".dcd":
+        accepted = _TRAJECTORY_MAGICS.get(suffix)
+        if accepted is None:
             warnings.append(
                 f"manifest {manifest_path}[{i}]: unsupported trajectory "
-                f"extension {suffix!r}; expected .dcd"
+                f"extension {suffix!r}; expected one of "
+                f"{sorted(_TRAJECTORY_MAGICS)}"
             )
             continue
         try:
             with path.open("rb") as handle:
-                head = handle.read(len(_DCD_MAGIC))
+                head = handle.read(max_magic)
         except OSError as exc:
             warnings.append(
                 f"manifest {manifest_path}[{i}]: could not read {rel}: {exc}"
             )
             continue
-        if head != _DCD_MAGIC:
+        if not any(head.startswith(magic) for magic in accepted):
             warnings.append(
-                f"manifest {manifest_path}[{i}]: {rel} is not a DCD "
-                "trajectory (missing DCD CORD header)"
+                f"manifest {manifest_path}[{i}]: {rel} is not a valid "
+                f"{suffix} trajectory (magic-byte header mismatch)"
             )
     return warnings
 

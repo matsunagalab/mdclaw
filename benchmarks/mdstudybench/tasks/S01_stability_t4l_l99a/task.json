@@ -12,6 +12,7 @@
     "insufficient_information_allowed": false
   },
   "primary_score": "scientific_answer",
+  "public_source": "PDB 2LZM",
   "references": [
     {
       "note": "FireProtDB curated single-mutation DDG database for calibration, not a substitute for submitted MD artifacts.",
@@ -44,12 +45,21 @@
         "weight": 0.0
       },
       {
+        "check_id": "paired_l99a_mutation",
+        "check_type": "paired_mutation_topology",
+        "topology_manifest_path": "outputs.topology.0",
+        "mutant_topology_manifest_path": "outputs.topology.1",
+        "wild_type_residue_name": "LEU",
+        "required_residue_name": "ALA",
+        "weight": 0.0
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
         "json_path": "outputs.trajectories",
         "min_length": 2,
-        "weight": 0.3
+        "weight": 0.0
       },
       {
         "check_id": "md_production_time_minimum",
@@ -57,7 +67,23 @@
         "json_file": "metrics.json",
         "json_path": "md_analysis.production_time_ns",
         "min_value": 1.0,
-        "weight": 0.2
+        "weight": 0.0
+      },
+      {
+        "check_id": "wt_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
+        "require_min_frames": 2,
+        "weight": 0.0
+      },
+      {
+        "check_id": "mutant_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.1",
+        "topology_manifest_path": "outputs.topology.1",
+        "require_min_frames": 2,
+        "weight": 0.0
       }
     ],
     "ground_truth_checks": [

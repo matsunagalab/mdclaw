@@ -1,0 +1,11 @@
+{
+  "expected_direction": "stronger_binding",
+  "ddg_bind_kcal_per_mol_reference_ligand": -5.2,
+  "ddg_bind_kcal_per_mol_variant_ligand": -6.4,
+  "ddg_bind_delta_kcal_per_mol": -1.2,
+  "reference_ligand": "benzene",
+  "variant_ligand": "n-butylbenzene",
+  "magnitude_class": "moderate",
+  "source": "Morton, Baase & Matthews 1995 Biochemistry 34:8564-8575 doi:10.1021/bi00027a006 (PMID 7547892)",
+  "note": "In the apolar T4 lysozyme L99A cavity, binding affinity increases with added hydrophobic surface: benzene dG_bind approximately -5.2 kcal/mol, n-butylbenzene approximately -6.4 kcal/mol, so n-butylbenzene binds STRONGER than benzene. effect.direction is reported for the variant ligand (n-butylbenzene) relative to benzene. Matched crystal complexes: benzene PDB 4W52 (and 181L), n-butylbenzene PDB 4W57 (Merski et al. 2015). This task adds a protein-ligand affinity-direction pattern distinct from the mutation-stability and PPI-hotspot tasks."
+}

@@ -601,8 +601,8 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
 
     assert result["success"], result
     dataset = json.loads((out_dir / "dataset.json").read_text())
-    assert dataset["benchmark_version"] == "MDStudyBench-v0.1"
-    assert result["task_count"] == 3
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
+    assert result["task_count"] == 5
 
     contract = json.loads(
         (
@@ -643,7 +643,7 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
         (
             out_dir
             / "tasks"
-            / "S03_t4l_wt_vs_l99a_methods"
+            / "S03_ppi_evidence_bundle_barnase"
             / "submission_contract.json"
         ).read_text()
     )

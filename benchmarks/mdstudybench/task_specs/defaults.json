@@ -106,7 +106,7 @@
         "json_file": "manifest.json",
         "json_path": "outputs.trajectories",
         "min_length": 2,
-        "weight": 0.3
+        "weight": 0.0
       },
       {
         "check_id": "md_production_time_minimum",
@@ -114,7 +114,23 @@
         "json_file": "metrics.json",
         "json_path": "md_analysis.production_time_ns",
         "min_value": 1.0,
-        "weight": 0.2
+        "weight": 0.0
+      },
+      {
+        "check_id": "wt_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
+        "require_min_frames": 2,
+        "weight": 0.0
+      },
+      {
+        "check_id": "mutant_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.1",
+        "topology_manifest_path": "outputs.topology.1",
+        "require_min_frames": 2,
+        "weight": 0.0
       }
     ]
   }

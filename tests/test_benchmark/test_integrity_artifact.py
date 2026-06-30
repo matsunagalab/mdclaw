@@ -320,7 +320,7 @@ def test_trajectory_file_signature_rejects_text_dcd(tmp_path: Path):
     )
 
     assert len(warnings) == 1
-    assert "missing DCD CORD header" in warnings[0]
+    assert "magic-byte header mismatch" in warnings[0]
 
 
 def test_trajectory_file_signature_accepts_dcd_header(tmp_path: Path):
@@ -334,6 +334,43 @@ def test_trajectory_file_signature_accepts_dcd_header(tmp_path: Path):
     )
 
     assert warnings == []
+
+
+def test_trajectory_file_signature_accepts_portable_formats(tmp_path: Path):
+    # Any portable trajectory format an MD stack can emit must be accepted, not
+    # only DCD (regression for the DCD-only reject that zeroed valid runs).
+    cases = {
+        "traj.xtc": b"\x00\x00\x07\xcb" + b"x" * 64,
+        "traj.trr": b"\x00\x00\x07\xc9" + b"x" * 64,
+        "traj.h5": b"\x89HDF\r\n\x1a\n" + b"x" * 64,
+        "traj.nc": b"CDF\x02" + b"x" * 64,
+    }
+    for name, payload in cases.items():
+        (tmp_path / name).write_bytes(payload)
+    manifest = {"outputs": {"trajectories": list(cases)}}
+
+    warnings = integrity.check_trajectory_file_signatures(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+    )
+
+    assert warnings == [], warnings
+
+
+def test_trajectory_file_signature_rejects_wrong_magic_for_extension(tmp_path: Path):
+    # Correct extension but wrong magic bytes is still rejected.
+    (tmp_path / "traj.xtc").write_bytes(b"\x89HDF\r\n\x1a\n" + b"x" * 64)
+    manifest = {"outputs": {"trajectories": ["traj.xtc"]}}
+
+    warnings = integrity.check_trajectory_file_signatures(
+        manifest,
+        tmp_path,
+        "outputs.trajectories",
+    )
+
+    assert len(warnings) == 1
+    assert "magic-byte header mismatch" in warnings[0]
 
 
 # ---------------------------------------------------------------------------

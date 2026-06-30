@@ -134,6 +134,7 @@ DeterministicCheckType = Literal[
     "json_min_length",
     "json_allowed_values",
     "trajectory_rescan",
+    "paired_mutation_topology",
     "topology_solvent_rescan",
     "structure_component_rescan",
     "topology_component_rescan",
@@ -183,6 +184,7 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "json_min_length": "provenance",
     "json_allowed_values": "fidelity",
     "trajectory_rescan": "physical_validity",
+    "paired_mutation_topology": "physical_validity",
     "topology_solvent_rescan": "identity",
     "structure_component_rescan": "identity",
     "topology_component_rescan": "physical_validity",
@@ -293,6 +295,15 @@ class DeterministicCheck(BaseModel):
     trajectory_manifest_path: Optional[str] = None
     topology_manifest_path: Optional[str] = None
     require_min_frames: Optional[int] = None
+
+    # paired_mutation_topology: load the submitted wild-type topology
+    # (topology_manifest_path, default outputs.topology.0) and mutant topology
+    # (mutant_topology_manifest_path, default outputs.topology.1) and require the
+    # residue-name multisets to differ by exactly one
+    # wild_type_residue_name -> required_residue_name substitution. Chain-agnostic
+    # so it does not depend on how the solver labeled chains.
+    mutant_topology_manifest_path: Optional[str] = None
+    wild_type_residue_name: Optional[str] = None
 
     # topology / minimization prep checks
     required_topology_backend: Optional[str] = None

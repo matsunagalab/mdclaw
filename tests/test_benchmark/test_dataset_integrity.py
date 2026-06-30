@@ -317,8 +317,8 @@ def test_studybench_dataset_json_matches_task_directories():
         if path.is_dir() and (path / "task.json").is_file()
     )
 
-    assert dataset["benchmark_version"] == "MDStudyBench-v0.1"
-    assert dataset["task_count"] == len(task_ids) == 3
+    assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
+    assert dataset["task_count"] == len(task_ids) == 5
     assert sorted(task_ids) == task_dirs
     assert (
         "tasks/<task_id>/submission_checklist.md"
@@ -390,6 +390,8 @@ def test_studybench_integrity_is_strict_without_prep_topology_requirements():
     comparative_tasks = {
         "S01_stability_t4l_l99a",
         "S02_ppi_hotspot_barnase_d39a",
+        "S04_stability_nuclease_h124l",
+        "S05_affinity_t4l_l99a_alkylbenzene",
     }
 
     for task_id in dataset["task_ids"]:
@@ -447,12 +449,14 @@ def test_list_benchmark_tasks_supports_studybench():
     result = cli.list_benchmark_tasks(str(STUDY_DATASET_DIR))
 
     assert result["success"], result
-    assert result["benchmark_version"] == "MDStudyBench-v0.1"
-    assert result["task_count"] == 3
+    assert result["benchmark_version"] == "MDStudyBench-v0.2"
+    assert result["task_count"] == 5
     assert {task["task_id"] for task in result["tasks"]} == {
         "S01_stability_t4l_l99a",
         "S02_ppi_hotspot_barnase_d39a",
-        "S03_t4l_wt_vs_l99a_methods",
+        "S03_ppi_evidence_bundle_barnase",
+        "S04_stability_nuclease_h124l",
+        "S05_affinity_t4l_l99a_alkylbenzene",
     }
 
 

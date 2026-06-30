@@ -1,0 +1,50 @@
+{
+  "task_id": "S05_affinity_t4l_l99a_alkylbenzene",
+  "public_source": "PDB 4W52",
+  "capability_tags_extra": [
+    "comparative_md",
+    "ligand_binding",
+    "affinity_trend"
+  ],
+  "task_intent": "Scientific-answer test: compare binding of two apolar ligands to the engineered T4 lysozyme L99A cavity and report which binds more tightly. Compare the benzene complex (PDB 4W52, also 181L) with the n-butylbenzene complex (PDB 4W57) using short comparative MD, and report effect.direction as stronger_binding, weaker_binding, or similar for n-butylbenzene RELATIVE TO benzene. Adding hydrophobic surface tightens binding in the apolar cavity (Morton, Baase & Matthews 1995), so n-butylbenzene binds more strongly than benzene. Populate metrics.md_analysis with interaction evidence (ligand-cavity contact counts, buried apolar surface, ligand occupancy/retention), mirror those values in evidence_report.evidence.md_metrics, and separate MD-supported observations from the literature-calibrated affinity direction.",
+  "references": [
+    {
+      "note": "Morton, Baase & Matthews 1995 - alkylbenzene binding to the T4L L99A cavity.",
+      "source": "doi:10.1021/bi00027a006"
+    },
+    {
+      "note": "Merski et al. 2015 - matched L99A apolar-ligand complexes.",
+      "source": "doi:10.1073/pnas.1500806112"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "effect_direction_in_allowed_set",
+        "check_type": "json_allowed_values",
+        "json_file": "evidence_report.json",
+        "json_path": "effect.direction",
+        "allowed_values": [
+          "stronger_binding",
+          "weaker_binding",
+          "similar"
+        ],
+        "weight": 0.0
+      },
+      {
+        "check_id": "paired_ligand_complexes",
+        "check_type": "paired_mutation_topology",
+        "topology_manifest_path": "outputs.topology.0",
+        "mutant_topology_manifest_path": "outputs.topology.1",
+        "weight": 0.0
+      },
+      {
+        "$bundle": "comparative_md_evidence"
+      }
+    ],
+    "llm_judge_rubrics": [
+      "confidence_calibration",
+      "overclaim_detection"
+    ]
+  }
+}

@@ -12,6 +12,7 @@
     "insufficient_information_allowed": false
   },
   "primary_score": "scientific_answer",
+  "public_source": "PDB 1BRS",
   "references": [
     {
       "note": "SKEMPI 2.0 curated PPI mutation effects (scorer-side citation pool).",
@@ -44,12 +45,21 @@
         "weight": 0.0
       },
       {
+        "check_id": "paired_d39a_mutation",
+        "check_type": "paired_mutation_topology",
+        "topology_manifest_path": "outputs.topology.0",
+        "mutant_topology_manifest_path": "outputs.topology.1",
+        "wild_type_residue_name": "ASP",
+        "required_residue_name": "ALA",
+        "weight": 0.0
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
         "json_path": "outputs.trajectories",
         "min_length": 2,
-        "weight": 0.3
+        "weight": 0.0
       },
       {
         "check_id": "md_production_time_minimum",
@@ -57,7 +67,23 @@
         "json_file": "metrics.json",
         "json_path": "md_analysis.production_time_ns",
         "min_value": 1.0,
-        "weight": 0.2
+        "weight": 0.0
+      },
+      {
+        "check_id": "wt_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.0",
+        "topology_manifest_path": "outputs.topology.0",
+        "require_min_frames": 2,
+        "weight": 0.0
+      },
+      {
+        "check_id": "mutant_trajectory_loads",
+        "check_type": "trajectory_rescan",
+        "trajectory_manifest_path": "outputs.trajectories.1",
+        "topology_manifest_path": "outputs.topology.1",
+        "require_min_frames": 2,
+        "weight": 0.0
       }
     ],
     "ground_truth_checks": [
@@ -141,6 +167,6 @@
     "evidence_communication"
   ],
   "task_id": "S02_ppi_hotspot_barnase_d39a",
-  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barnase D39A in the barnase-barstar complex (PDB 1BRS) from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (delta interface SASA, delta inter-chain contact count, delta hydrogen-bond count, delta salt-bridge count, delta water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
+  "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barstar D39A (the interface hotspot residue; barstar is chain D in PDB 1BRS, paired with barnase chain A) in the barnase-barstar complex from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (delta interface SASA, delta inter-chain contact count, delta hydrogen-bond count, delta salt-bridge count, delta water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
   "time_limit_minutes": 120
 }

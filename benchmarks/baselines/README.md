@@ -42,6 +42,26 @@ Expected behavior:
   credit this; a non-zero score here would indicate the scorer trusts JSON over
   artifacts.
 
+## `study_literature_guess_no_md.py` (MDStudyBench)
+
+Writes a confident comparative-MD submission for a scientific-answer task
+(S01/S02/S04/S05) that reports the correct literature direction but ships fake
+trajectories (a DCD magic header over junk bytes) and no real paired mutation.
+
+Expected behavior:
+
+- Scored zero on the comparative scientific-answer tasks. StudyBench binds the
+  scientific answer to real artifacts: the `trajectory_rescan` and
+  `paired_mutation_topology` hard-fail gates are recomputed from the submitted
+  trajectories/topologies, so a garbage trajectory clamps `weighted_total` to 0
+  even when the declared direction matches the experimental truth. This is the
+  StudyBench discrimination floor — a credible solver must run real comparative
+  MD, not guess the textbook answer.
+
+The honest study floor for the dry-run evidence-bundle task is the committed
+reference submission under
+`benchmarks/mdstudybench/examples/S03_ppi_evidence_bundle_barnase/`.
+
 ## Intended comparison set
 
 Group runs by `tooling_condition` and read the per-capability profile

@@ -24,7 +24,7 @@ DATASET_DIR = REPO_ROOT / "benchmarks" / "mdprepbench"
 STUDY_DATASET_DIR = REPO_ROOT / "benchmarks" / "mdstudybench"
 TASK_ID = "P11_prep_site_protonation_t4l_glu11"
 MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
-STUDY_TASK_ID = "S03_t4l_wt_vs_l99a_methods"
+STUDY_TASK_ID = "S03_ppi_evidence_bundle_barnase"
 
 
 def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
@@ -1004,6 +1004,91 @@ def test_scorer_delegate_uses_sif_overlay(
     assert argv[-3:] == ["python", "-m", "mdclaw._cli"]
 
 
+def _agent_run_record(task_run_dir: Path) -> dict:
+    harness = json.loads((task_run_dir / "harness_execution.json").read_text())
+    for record in harness["records"]:
+        if record.get("stage") == "agent_run":
+            return record
+    raise AssertionError("no agent_run harness record found")
+
+
+def test_run_benchmark_agent_falls_back_to_task_time_limit(tmp_path: Path):
+    """With ``max_walltime_minutes_per_task=0`` the per-task timeout uses the
+    task's declared ``time_limit_minutes`` (S03 = 60); an explicit cap overrides."""
+    fake_agent = tmp_path / "fake_study_agent.py"
+    fake_agent.write_text(
+        """
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_study_submissions
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("study", "report"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
+
+_fake_study_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir), run_id=args.run_id, mode="honest"
+)
+""".lstrip()
+    )
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} --task-id {{task_id}}"
+    )
+    output_dir = tmp_path / "benchmark_runs"
+
+    # default cap = 0 -> use S03's declared time_limit_minutes (60)
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="study_timelimit_default",
+        dataset_dir=str(STUDY_DATASET_DIR),
+        task_ids=[STUDY_TASK_ID],
+        agent_name="fake-study-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        max_walltime_minutes_per_task=0,
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert result["success"], result
+    record = _agent_run_record(
+        output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
+    )
+    assert record["walltime_limit_minutes"] == 60
+
+    # explicit cap overrides the declared per-task limit
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="study_timelimit_capped",
+        dataset_dir=str(STUDY_DATASET_DIR),
+        task_ids=[STUDY_TASK_ID],
+        agent_name="fake-study-agent",
+        agent_command=command,
+        execution_mode="dry_run",
+        max_walltime_minutes_per_task=5,
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+    assert result["success"], result
+    record = _agent_run_record(
+        output_dir / "study_timelimit_capped" / "tasks" / STUDY_TASK_ID
+    )
+    assert record["walltime_limit_minutes"] == 5
+
+
 def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
     output_dir = tmp_path / "benchmark_runs"
     prepared = benchmark_run.prepare_benchmark_run(
@@ -1027,7 +1112,7 @@ def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):
         ).read_text()
     )
 
-    assert run_config["benchmark_version"] == "MDStudyBench-v0.1"
+    assert run_config["benchmark_version"] == "MDStudyBench-v0.2"
     assert run_config["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert agent_tasks["dataset_dir"] == str(STUDY_DATASET_DIR)
     assert "agent_prompt" in agent_tasks["tasks"][0]

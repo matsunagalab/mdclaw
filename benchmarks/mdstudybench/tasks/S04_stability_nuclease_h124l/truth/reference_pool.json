@@ -1,0 +1,13 @@
+{
+  "allowed_source_pools": [
+    "FireProtDB",
+    "ProThermDB",
+    "ThermoMutDB",
+    "ProtaBank"
+  ],
+  "primary_reference": {
+    "doi": "10.1002/pro.5560050917",
+    "citation": "Truckses et al. 1996, staphylococcal nuclease H124L stabilization."
+  },
+  "note": "Report effect.direction (stabilizing) as a literature-calibrated direction and use submitted short comparative MD metrics (local RMSF/SASA around residue 124, secondary-structure persistence, packing) as consistency evidence. Do not claim that short MD alone proves the experimental delta-delta-G."
+}

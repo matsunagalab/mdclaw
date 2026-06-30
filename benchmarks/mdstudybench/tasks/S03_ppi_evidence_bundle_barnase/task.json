@@ -12,14 +12,15 @@
     "insufficient_information_allowed": false
   },
   "primary_score": "evidence_communication",
+  "public_source": "PDB 1BRS",
   "references": [
     {
-      "note": "Eriksson et al. 1992 - L99A destabilization.",
-      "source": "doi:10.1126/science.1553543"
+      "note": "Schreiber & Fersht 1995 - barstar D39A interface hotspot.",
+      "source": "doi:10.1006/jmbi.1995.0185"
     },
     {
-      "note": "T4 lysozyme WT.",
-      "source": "PDB 2LZM"
+      "note": "Barnase-barstar complex.",
+      "source": "PDB 1BRS"
     }
   ],
   "required_outputs": [
@@ -55,8 +56,8 @@
         "json_file": "evidence_report.json",
         "json_path": "effect.direction",
         "allowed_values": [
-          "destabilizing",
-          "stabilizing",
+          "weakened_binding",
+          "strengthened_binding",
           "neutral"
         ],
         "weight": 0.2
@@ -135,7 +136,7 @@
   "secondary_scores": [
     "scientific_answer"
   ],
-  "task_id": "S03_t4l_wt_vs_l99a_methods",
-  "task_intent": "Evidence-and-methods test: package a WT vs L99A T4 lysozyme comparison as an auditable study bundle. Include WT and mutant roles in provenance.study.roles, a methods.md draft describing the comparison protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices.",
+  "task_id": "S03_ppi_evidence_bundle_barnase",
+  "task_intent": "Evidence-and-methods test: package a wild-type vs D39A barnase-barstar binding comparison as an auditable study bundle. Include reference and variant roles in provenance.study.roles, a methods.md draft describing the comparative complex-MD protocol, an evidence_report with effect.direction anchored to literature, and a decision_log capturing key choices. The D39A hotspot is on barstar (chain D in 1BRS). This bundle task is scored on auditable packaging, not on running MD.",
   "time_limit_minutes": 60
 }

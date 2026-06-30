@@ -1,0 +1,10 @@
+{
+  "expected_direction": "stabilizing",
+  "ddg_kcal_per_mol_min": 1.7,
+  "ddg_kcal_per_mol_max": 2.1,
+  "ddg_kcal_per_mol_central_estimate": 1.9,
+  "ph": 5.5,
+  "magnitude_class": "moderate",
+  "source": "Truckses et al. 1996 Protein Sci 5:1907-1916 doi:10.1002/pro.5560050917 (PMID 8880915)",
+  "note": "His124->Leu makes staphylococcal nuclease about 1.9 kcal/mol MORE stable than the His124 wild type at pH 5.5 (sign convention: positive ddG = stabilized). Residue 124 is surface-exposed and part of the effect couples to a Pro117 cis/trans equilibrium shift, but the net single-substitution effect is stabilizing. This task deliberately breaks the 'mutations are destabilizing' prior so the suite tests direction discrimination, not a constant loss-of-function bias. WT His124 reference: PDB 1STN; H124L variant: PDB 1JOO."
+}

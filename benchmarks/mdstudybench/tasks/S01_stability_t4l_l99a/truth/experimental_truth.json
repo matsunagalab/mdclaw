@@ -1,9 +1,10 @@
 {
   "expected_direction": "destabilizing",
-  "ddg_kcal_per_mol_min": 3.0,
-  "ddg_kcal_per_mol_max": 6.0,
-  "ddg_kcal_per_mol_central_estimate": 4.6,
+  "ddg_kcal_per_mol_min": 4.5,
+  "ddg_kcal_per_mol_max": 5.0,
+  "ddg_kcal_per_mol_central_estimate": 5.0,
+  "ph": 3.0,
   "magnitude_class": "large",
   "source": "Eriksson et al. 1992 doi:10.1126/science.1553543",
-  "note": "Cavity-creating mutation; benzene rescues a fraction of the destabilization. The direction (destabilizing) is a calibration target from FireProtDB, S669, Ssym, and the original Matthews-lab thermodynamic series. S01 should not require or reward a claim that short MD alone proves the experimental delta-delta-G."
+  "note": "Cavity-creating mutation that decreased folding stability by 5.0 kcal/mol at pH 3.0 (Eriksson et al., Science 1992); it created the largest (~150 A^3) cavity in the series. Do not confuse this folding destabilization with the benzene->cavity BINDING free energy (about -5.2 kcal/mol; Morton & Matthews, Biochemistry 1995), nor with the ~2.7 kcal/mol folding destabilization of the smaller-cavity L46A/L121A mutants. Bound benzene re-stabilizes the L99A cavity (Eriksson et al., Nature 1992). The direction (destabilizing) is a calibration target from FireProtDB, S669, Ssym, and the original Matthews-lab thermodynamic series. S01 should not require or reward a claim that short MD alone proves the experimental delta-delta-G."
 }

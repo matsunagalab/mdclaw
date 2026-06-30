@@ -6,7 +6,7 @@ scientific study tasks do not share one overloaded dataset.
 | Suite | Path | Version | Focus |
 |---|---|---|---|
 | MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.1` | System preparation, topology artifacts, min-stage evidence, and preparation provenance. |
-| MDStudyBench | `benchmarks/mdstudybench/` | `MDStudyBench-v0.1` | A small curated set of scientific question answering and study-bundle tasks. |
+| MDStudyBench | `benchmarks/mdstudybench/` | `MDStudyBench-v0.2` | A small curated set of scientific question answering and study-bundle tasks. |
 
 Both suites use the same artifact-based scorer framework:
 

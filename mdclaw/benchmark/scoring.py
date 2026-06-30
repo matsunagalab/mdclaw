@@ -15,6 +15,7 @@ import json
 import math
 import re
 import statistics
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -45,6 +46,11 @@ _HARD_FAIL_CHECK_TYPES = {
     "forcefield_applied_rescan",
     "topology_component_rescan",
     "minimized_structure_required",
+    # StudyBench comparative-MD gates: a completed scientific-answer submission
+    # must include real, loadable trajectories and a correctly built paired
+    # mutant, or its scientific answer cannot be trusted (clamp to 0).
+    "trajectory_rescan",
+    "paired_mutation_topology",
 }
 
 _DEUTERIUM_FALLBACK_ATOM_NAME_RE = re.compile(r"^D[0-9]*$")
@@ -506,6 +512,94 @@ def _check_trajectory_rescan(check: DeterministicCheck, submission_dir: Path,
     if has_nan:
         return False, 0.0, f"{msg}; NaN coordinates detected"
     return True, 1.0, msg
+
+
+_SOLVENT_RESIDUE_NAMES = {
+    # water
+    "HOH", "WAT", "H2O", "DOD", "SOL", "SPC", "T3P", "T4P", "T5P",
+    "TIP", "TIP2", "TIP3", "TIP4", "TIP5",
+    # monatomic ions / counterions
+    "NA", "CL", "K", "LI", "RB", "CS", "BR", "IOD", "F",
+    "MG", "CA", "ZN", "MN", "FE", "CU", "NI", "CO",
+    "SOD", "CLA", "POT", "CAL", "CES", "MG2", "CA2",
+}
+
+
+def _check_paired_mutation_topology(check: DeterministicCheck,
+                                    submission_dir: Path,
+                                    manifest: dict, **_):
+    """Verify the submitted comparative topologies differ by exactly one residue
+    substitution at the mutation / ligand site.
+
+    Loads ``outputs.topology[0]`` (wild-type / reference) and
+    ``outputs.topology[1]`` (mutant / variant) and compares their non-solvent
+    residue-name multisets. Water and counterions are ignored so the check is
+    robust to solvated submissions whose water/ion counts differ between the two
+    systems. It is chain-agnostic (independent of how the solver labeled chains).
+
+    Two modes:
+    - named: when ``wild_type_residue_name`` and ``required_residue_name`` are
+      both set, require exactly one ``wild -> mutant`` substitution (e.g.
+      LEU -> ALA), pinning the specific mutation.
+    - name-agnostic: when they are omitted, require exactly one residue to be
+      substituted between the two systems (used for ligand-swap comparisons
+      where the residue codes are solver-chosen).
+    """
+    wt_rel = _manifest_artifact_path(
+        manifest, check.topology_manifest_path, "outputs.topology.0",
+    ) or check.topology_path
+    mut_rel = _manifest_artifact_path(
+        manifest, check.mutant_topology_manifest_path, "outputs.topology.1",
+    )
+    if not wt_rel or not mut_rel:
+        return False, 0.0, (
+            "reference and variant topology paths required via "
+            "outputs.topology[0] and outputs.topology[1]"
+        )
+    wild = (check.wild_type_residue_name or "").strip().upper()
+    mutant = (check.required_residue_name or "").strip().upper()
+    named = bool(wild and mutant)
+    try:
+        import mdtraj as md
+    except ImportError:
+        return False, 0.0, "mdtraj not available; cannot verify mutation topology"
+
+    names: dict[str, Counter] = {}
+    for label, rel in (("reference", wt_rel), ("variant", mut_rel)):
+        path = _resolve_relative(submission_dir, rel)
+        if not path.is_file():
+            return False, 0.0, f"{label} topology file not found: {rel}"
+        try:
+            top = md.load(str(path)).topology
+        except Exception as exc:  # pragma: no cover -- depends on file content
+            return False, 0.0, f"{label} topology load failed: {exc}"
+        names[label] = Counter(
+            res.name.upper() for res in top.residues
+            if res.name.upper() not in _SOLVENT_RESIDUE_NAMES
+        )
+
+    added = names["variant"] - names["reference"]
+    removed = names["reference"] - names["variant"]
+    if named:
+        if added == Counter({mutant: 1}) and removed == Counter({wild: 1}):
+            return True, 1.0, (
+                f"paired topology differs by exactly one {wild}->{mutant} "
+                "substitution"
+            )
+        return False, 0.0, (
+            f"expected exactly one {wild}->{mutant} substitution between the "
+            f"reference and variant topology; got added={dict(added)} "
+            f"removed={dict(removed)}"
+        )
+    if sum(added.values()) == 1 and sum(removed.values()) == 1:
+        return True, 1.0, (
+            f"paired topology differs by exactly one residue substitution "
+            f"({dict(removed)} -> {dict(added)})"
+        )
+    return False, 0.0, (
+        "expected the reference and variant topology to differ by exactly one "
+        f"residue substitution; got added={dict(added)} removed={dict(removed)}"
+    )
 
 
 def _check_topology_solvent_rescan(check: DeterministicCheck,
@@ -2454,6 +2548,7 @@ _DETERMINISTIC_DISPATCH = {
     "json_min_length": _check_json_min_length,
     "json_allowed_values": _check_json_allowed_values,
     "trajectory_rescan": _check_trajectory_rescan,
+    "paired_mutation_topology": _check_paired_mutation_topology,
     "topology_solvent_rescan": _check_topology_solvent_rescan,
     "structure_component_rescan": _check_structure_component_rescan,
     "topology_component_rescan": _check_topology_component_rescan,
@@ -2545,11 +2640,22 @@ def _assemble_axis_scores(
 
     if llm_judge_payload:
         judge_scores = (llm_judge_payload.get("scores") or {})
+        # The judge reports one score per rubric name (e.g. confidence_calibration,
+        # limitations) — see judge.make_judge_prompt. Aggregate the task's rubric
+        # scores into its secondary axis. A score keyed directly by axis name is
+        # also honored so axis-keyed judge files keep working.
+        rubric_values = [
+            float(judge_scores[name])
+            for name in task.scoring.llm_judge_rubrics
+            if isinstance(judge_scores.get(name), (int, float))
+        ]
         for axis in task.secondary_scores:
-            v = judge_scores.get(axis)
-            if isinstance(v, (int, float)):
-                axes[axis] = max(0.0, min(1.0, float(v)))
-    # task.secondary_scores axes without a judge value remain None.
+            direct = judge_scores.get(axis)
+            if isinstance(direct, (int, float)):
+                axes[axis] = max(0.0, min(1.0, float(direct)))
+            elif rubric_values:
+                axes[axis] = max(0.0, min(1.0, statistics.fmean(rubric_values)))
+    # task.secondary_scores axes without any judge value remain None.
     return axes
 
 
@@ -2564,6 +2670,12 @@ def _assemble_capability_scores(
     """
     buckets: dict[str, list[CheckResult]] = {axis: [] for axis in _CAPABILITY_AXES}
     for result in deterministic:
+        # Weight-0 checks are pure gates (e.g. the StudyBench trajectory/mutation
+        # hard-fail gates): they clamp on failure but are not graded credit, so
+        # they must not define a capability score (a passing weight-0 gate would
+        # otherwise read as a 0.0 capability via the zero-denominator path).
+        if result.weight <= 0:
+            continue
         axis = DEFAULT_CHECK_CAPABILITY.get(result.check_type or "", "identity")
         buckets.setdefault(axis, []).append(result)
     profile: dict[str, Optional[float]] = {axis: None for axis in _CAPABILITY_AXES}

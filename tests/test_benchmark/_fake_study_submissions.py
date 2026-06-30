@@ -94,25 +94,38 @@ def _runtime_metrics() -> dict[str, Any]:
     }
 
 
-def _study_citation(task_id: str) -> dict[str, str]:
-    if task_id == "S02_ppi_hotspot_barnase_d39a":
-        return {
-            "pool": "SKEMPI",
-            "record_id": "synthetic-SKEMPI-1BRS-D39A",
-            "pmid": "7540270",
-        }
-    return {
-        "pool": "FireProtDB",
-        "record_id": "synthetic-FireProtDB-2LZM-L99A",
+# Per-task synthetic citation that satisfies each task's citation pool (either
+# an allowed pool name + anchor, or the pool's primary-reference DOI).
+_FIXTURE_CITATIONS: dict[str, dict[str, str]] = {
+    "S01_stability_t4l_l99a": {
+        "pool": "FireProtDB", "record_id": "synthetic-FireProtDB-2LZM-L99A",
         "doi": "10.1126/science.1553543",
-    }
+    },
+    "S02_ppi_hotspot_barnase_d39a": {
+        "pool": "SKEMPI", "record_id": "synthetic-SKEMPI-1BRS-D39A",
+        "pmid": "7540270",
+    },
+    "S04_stability_nuclease_h124l": {
+        "pool": "ProThermDB", "record_id": "synthetic-ProThermDB-1STN-H124L",
+        "doi": "10.1002/pro.5560050917",
+    },
+    "S05_affinity_t4l_l99a_alkylbenzene": {
+        "pool": "PDBbind", "record_id": "synthetic-PDBbind-L99A-butylbenzene",
+        "doi": "10.1021/bi00027a006",
+    },
+}
+
+
+def _study_citation(task_id: str) -> dict[str, str]:
+    return _FIXTURE_CITATIONS.get(task_id, _FIXTURE_CITATIONS["S01_stability_t4l_l99a"])
 
 
 def _comparative_metrics(task_id: str, mode: str) -> dict[str, Any]:
     production_time = 1.0 if mode == "honest" else 0.5
+    base = {"production_time_ns": production_time}
     if task_id == "S02_ppi_hotspot_barnase_d39a":
         md_analysis = {
-            "production_time_ns": production_time,
+            **base,
             "systems": ["barnase_barstar_wt", "barnase_barstar_d39a"],
             "delta_interface_sasa_angstrom2": 240.0,
             "delta_inter_chain_contact_count": -5,
@@ -120,9 +133,27 @@ def _comparative_metrics(task_id: str, mode: str) -> dict[str, Any]:
             "delta_salt_bridge_count": -1,
             "interpretation": "D39A removes interface polar contacts.",
         }
+    elif task_id == "S04_stability_nuclease_h124l":
+        md_analysis = {
+            **base,
+            "systems": ["nuclease_wt", "nuclease_h124l"],
+            "delta_residue124_rmsf_angstrom": -0.30,
+            "delta_local_sasa_angstrom2": -45.0,
+            "delta_secondary_structure_fraction": 0.03,
+            "interpretation": "H124L improves local packing around residue 124.",
+        }
+    elif task_id == "S05_affinity_t4l_l99a_alkylbenzene":
+        md_analysis = {
+            **base,
+            "systems": ["l99a_benzene", "l99a_n_butylbenzene"],
+            "delta_ligand_cavity_contacts": 8,
+            "delta_buried_apolar_surface_angstrom2": 95.0,
+            "delta_ligand_occupancy_fraction": 0.07,
+            "interpretation": "n-butylbenzene buries more apolar surface in the cavity.",
+        }
     else:
         md_analysis = {
-            "production_time_ns": production_time,
+            **base,
             "systems": ["t4l_wt", "t4l_l99a"],
             "delta_core_sasa_angstrom2": 180.0,
             "delta_cavity_volume_angstrom3": 120.0,
@@ -178,18 +209,82 @@ def _evidence_report(
     }
 
 
-def _write_trajectory_pair(sub_dir: Path) -> list[str]:
-    payload = (
-        b"\x54\x00\x00\x00CORD"
-        + b"SYNTHETIC STUDYBENCH DCD FIXTURE - NOT REAL MD\n" * 32
-    )
-    rels = [
-        "trajectories/wt.dcd",
-        "trajectories/mutant.dcd",
-    ]
-    for rel in rels:
-        _write(sub_dir / rel, payload)
-    return rels
+# Minimal residue -> (atom_name, element_symbol) templates used to build tiny
+# but genuinely loadable topologies. The mutation site uses the wild-type
+# residue in the WT system and ALA in the mutant system so the scorer's
+# paired_mutation_topology check sees exactly one wild->ALA substitution.
+_RES_ATOMS: dict[str, list[tuple[str, str]]] = {
+    "ALA": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C")],
+    "GLY": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O")],
+    "VAL": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"),
+            ("CB", "C"), ("CG1", "C"), ("CG2", "C")],
+    "SER": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"),
+            ("CB", "C"), ("OG", "O")],
+    "LEU": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"),
+            ("CB", "C"), ("CG", "C"), ("CD1", "C"), ("CD2", "C")],
+    "ASP": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"),
+            ("CB", "C"), ("CG", "C"), ("OD1", "O"), ("OD2", "O")],
+    "HIS": [("N", "N"), ("CA", "C"), ("C", "C"), ("O", "O"), ("CB", "C"),
+            ("CG", "C"), ("ND1", "N"), ("CD2", "C"), ("CE1", "C"), ("NE2", "N")],
+    # ligand residues for the affinity task (atom counts differ; names differ)
+    "BNZ": [(f"C{i}", "C") for i in range(1, 7)],
+    "NBB": [(f"C{i}", "C") for i in range(1, 11)],
+}
+
+# (reference, variant) residue at the comparative site per task. For mutation
+# tasks the variant is the mutant residue; for the ligand-affinity task it is
+# the swapped ligand residue.
+_MUTATION_SITE = {
+    "S01_stability_t4l_l99a": ("LEU", "ALA"),
+    "S02_ppi_hotspot_barnase_d39a": ("ASP", "ALA"),
+    "S04_stability_nuclease_h124l": ("HIS", "LEU"),
+    "S05_affinity_t4l_l99a_alkylbenzene": ("BNZ", "NBB"),
+}
+COMPARATIVE_TASKS = set(_MUTATION_SITE)
+
+
+def _build_trajectory(residues: list[str], n_frames: int = 3):
+    import mdtraj as md
+    import numpy as np
+    from mdtraj.core import element as elem
+
+    top = md.Topology()
+    chain = top.add_chain()
+    for i, name in enumerate(residues):
+        res = top.add_residue(name, chain, resSeq=95 + i)
+        for aname, symbol in _RES_ATOMS[name]:
+            top.add_atom(aname, elem.get_by_symbol(symbol), res)
+    xyz = np.random.RandomState(len(residues)).rand(
+        n_frames, top.n_atoms, 3
+    ).astype("float32")
+    return md.Trajectory(xyz, top)
+
+
+def _write_comparative_systems(sub_dir: Path, task_id: str) -> dict[str, list[str]]:
+    """Write real, loadable reference/variant topologies + trajectories.
+
+    The two systems share a common scaffold and differ only by a single residue
+    substitution at the comparative site, so the scorer's
+    paired_mutation_topology and trajectory_rescan gates pass on honest runs.
+    """
+    wild, variant = _MUTATION_SITE[task_id]
+    reference = ["ALA", "GLY", "VAL", wild, "SER", "GLY"]
+    variant_residues = ["ALA", "GLY", "VAL", variant, "SER", "GLY"]
+
+    systems = {"wt": reference, "mutant": variant_residues}
+    trajectories: list[str] = []
+    topologies: list[str] = []
+    for name, residues in systems.items():
+        traj = _build_trajectory(residues)
+        top_rel = f"topology/{name}.pdb"
+        traj_rel = f"trajectories/{name}.dcd"
+        (sub_dir / top_rel).parent.mkdir(parents=True, exist_ok=True)
+        (sub_dir / traj_rel).parent.mkdir(parents=True, exist_ok=True)
+        traj.save_pdb(str(sub_dir / top_rel))
+        traj.save_dcd(str(sub_dir / traj_rel))
+        topologies.append(top_rel)
+        trajectories.append(traj_rel)
+    return {"trajectories": trajectories, "topology": topologies}
 
 
 def make_study_submission(
@@ -201,11 +296,8 @@ def make_study_submission(
     task_dir = DATASET_DIR / "tasks" / task_id
     task = json.loads((task_dir / "task.json").read_text())
 
-    if task_id in {
-        "S01_stability_t4l_l99a",
-        "S02_ppi_hotspot_barnase_d39a",
-    }:
-        trajectories = _write_trajectory_pair(sub_dir)
+    if task_id in COMPARATIVE_TASKS:
+        systems = _write_comparative_systems(sub_dir, task_id)
         metrics = _comparative_metrics(task_id, mode)
         evidence = _evidence_report(
             task,
@@ -227,7 +319,8 @@ def make_study_submission(
                 "metrics": "metrics.json",
                 "provenance": "provenance.json",
                 "evidence_report": "evidence_report.json",
-                "trajectories": trajectories,
+                "trajectories": systems["trajectories"],
+                "topology": systems["topology"],
             },
             "limitations": [
                 "Synthetic CI fixture; trajectory bytes are not real MD.",
@@ -239,17 +332,18 @@ def make_study_submission(
         _write(sub_dir / "evidence_report.json", evidence)
         return
 
-    if task_id == "S03_t4l_wt_vs_l99a_methods":
+    if task_id == "S03_ppi_evidence_bundle_barnase":
         methods = (
-            "# WT vs L99A T4 Lysozyme Study\n\n"
+            "# WT vs D39A Barnase-Barstar Study\n\n"
             "## Methods\n"
-            "Prepare WT T4 lysozyme from PDB 2LZM and generate the L99A mutant "
-            "as a paired system. Use matched protonation, solvation, force-field "
-            "settings, equilibration, and production lengths so differences can "
+            "Prepare the wild-type barnase-barstar complex from PDB 1BRS and "
+            "generate the barstar D39A mutant complex (chain D) as a paired "
+            "system. Use matched protonation, solvation, force-field settings, "
+            "equilibration, and production lengths so interface differences can "
             "be attributed to the mutation rather than workflow drift. Analyze "
-            "core SASA, cavity volume, packing density, mutation-region RMSF, "
-            "and hydrophobic contacts, then compare the direction against the "
-            "published Eriksson et al. thermodynamic result.\n\n"
+            "interface SASA, inter-chain contacts, hydrogen bonds, salt bridges, "
+            "and interface water occupancy, then compare the binding direction "
+            "against the published Schreiber & Fersht hotspot result.\n\n"
             "## Limitations\n"
             "This CI fixture is a methods-contract artifact only. It does not "
             "contain real simulation output, and it should never be interpreted "
@@ -264,8 +358,8 @@ def make_study_submission(
         )
         provenance["study"] = {
             "roles": [
-                {"role": "reference", "system": "T4 lysozyme WT"},
-                {"role": "variant", "system": "T4 lysozyme L99A"},
+                {"role": "reference", "system": "barnase-barstar WT complex"},
+                {"role": "variant", "system": "barnase-barstar D39A complex"},
             ]
         }
         _write(sub_dir / "manifest.json", {
@@ -291,7 +385,7 @@ def make_study_submission(
             sub_dir / "decision_log.jsonl",
             json.dumps({
                 "step": "paired_system_design",
-                "decision": "compare WT and L99A under matched workflow settings",
+                "decision": "compare WT and D39A complexes under matched workflow settings",
             }) + "\n",
         )
         return

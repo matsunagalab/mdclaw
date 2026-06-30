@@ -1,8 +1,8 @@
 # MDAgentBench Suite Design
 
 This design has been promoted into two focused benchmark suites:
-`MDPrepBench-v0.1` for preparation workflows and `MDStudyBench-v0.1` for the
-first scientific question / study-bundle tasks. The long-term goal is to keep
+`MDPrepBench-v0.1` for preparation workflows and `MDStudyBench-v0.2` for the
+scientific question / study-bundle tasks. The long-term goal is to keep
 MDAgentBench organized around these two main suites:
 
 1. **Preparation Workflow Battery**: can an agent turn structurally messy
@@ -223,10 +223,10 @@ correct.
 
 ## Suite B: Scientific MD Reasoning
 
-Current size: **3 tasks** in `benchmarks/mdstudybench/`. This suite should stay
-small: roughly **3-5 carefully curated tasks** is enough unless a new task
-covers a genuinely distinct scientific-answer pattern. Use experimental truth
-as the anchor, but score the workflow in layers:
+Current size: **5 tasks** in `benchmarks/mdstudybench/` (`MDStudyBench-v0.2`).
+This suite should stay small: roughly **3-5 carefully curated tasks** is enough
+unless a new task covers a genuinely distinct scientific-answer pattern. Use
+experimental truth as the anchor, but score the workflow in layers:
 
 1. Study design: correct systems, controls, mutations, apo/holo state,
    replicates, and observables.
@@ -250,16 +250,20 @@ This intentionally makes truth direction important but not the sole gate.
 
 ### Current Scientific Tasks
 
-| ID | Question class | Candidate source | What is hidden | Scoring note | Priority |
+| ID | Question class | Candidate source | Truth direction | Scoring note | Priority |
 |---|---|---|---|---|---:|
-| S01 | Monomer stability calibration | T4L WT vs L99A | Experimental stability direction / ddG source | Real trajectories, local consistency evidence, calibrated direction, and overclaim control. | 1 |
-| S02 | PPI hotspot mutation | Barnase-barstar D39A | Experimental binding direction / ddG source | Require interface observables and uncertainty calibration. | 1 |
-| S03 | Study methods bundle | T4L WT vs L99A | Experimental stability direction / methods rubric | Ask agent to package methods, provenance, decision log, and calibrated evidence. | 1 |
+| S01 | Monomer stability calibration | T4L WT vs L99A | destabilizing | Real trajectories, local consistency evidence, calibrated direction, and overclaim control. | 1 |
+| S02 | PPI hotspot mutation | Barnase-barstar barstar-D39A | weakened_binding | Require interface observables and uncertainty calibration. | 1 |
+| S03 | Study methods bundle | Barnase-barstar D39A | weakened_binding (anchor) | Auditable methods/provenance/decision-log bundle (dry-run); rebased off T4L so it is not redundant with S01. | 1 |
+| S04 | Stabilizing mutation | Staph nuclease H124L | stabilizing | Breaks the "mutations destabilize" prior; tests direction discrimination, not bias. | 1 |
+| S05 | Protein-ligand affinity trend | T4L L99A benzene vs n-butylbenzene | stronger_binding | Adds the affinity-direction pattern; paired ligand-swap comparison. | 1 |
 
-Do not expand MDStudyBench just to increase task count. Possible future
-additions should replace weaker tasks or add one clearly missing scientific
-answer pattern, such as a protein-ligand affinity trend or a compact
-multi-mutation ranking task.
+The v0.2 set deliberately spans destabilizing, weakened-binding, stabilizing,
+and ligand-affinity directions so a constant prior scores zero on at least two
+tasks. Do not expand MDStudyBench just to increase task count; future additions
+should replace weaker tasks or add a clearly distinct pattern (e.g. a pKa /
+protonation shift, an allostery apo-vs-holo change, or a compact multi-mutation
+ranking task).
 
 ## Experimental-Truth Source Pools
 
@@ -299,8 +303,10 @@ agent tasks.
    - simple script baseline,
    - LLM-only/no-run baseline,
    - one external MD tool/harness when available.
-6. Keep MDStudyBench compact after prep scorer stability; stabilize S01-S03
-   before considering at most one or two additional scientific-answer tasks.
+6. Keep MDStudyBench compact: `MDStudyBench-v0.2` is at 5 tasks spanning the
+   destabilizing / weakened-binding / stabilizing / ligand-affinity directions.
+   Run real reference submissions for S01/S02/S04/S05 and validate the
+   truth-direction calibration before adding any further task.
 
 ### Current Prep Implementation Status
 
@@ -335,6 +341,37 @@ Still to do:
   runs need them.
 - Decide whether P24 should gain a many-chain stress variant under the same ID
   family or become a later separate task.
+
+### Current Study Implementation Status
+
+Implemented (`MDStudyBench-v0.2`):
+
+- Five tasks: S01 (destabilizing), S02 (weakened binding), S03 (barnase-barstar
+  D39A evidence bundle, dry-run), S04 (stabilizing nuclease H124L), S05
+  (benzene vs n-butylbenzene affinity trend). The direction set defeats a
+  constant prior.
+- Scientific-answer correctness is bound to real artifacts: `trajectory_rescan`
+  (WT + mutant) and `paired_mutation_topology` are weight-0 hard-fail gates, so
+  garbage/copied trajectories or an absent/wrong mutation clamp the score to 0
+  even when the declared direction is correct. The implemented `scientific_answer`
+  axis is the ground-truth direction gated behind those checks (the 25/20/20/20/15
+  split above is the original design intent, not the v0.2 weighting).
+- S02 corrected to mutate barstar D39 (barnase residue 39 is a lysine).
+- S01 truth corrected to the pH-3.0 folding ΔΔG ≈ 5.0 kcal/mol (the earlier 4.6
+  was the benzene→cavity binding ΔG; 2.6–2.7 belongs to L46A/L121A).
+- LLM-judge rubric scores are aggregated into the secondary axis (previously
+  read by axis name and silently dropped).
+- Trajectory signatures accept DCD/XTC/TRR/HDF5/NetCDF, not DCD only.
+- A committed honest S03 reference submission and a `study_literature_guess_no_md`
+  fabrication baseline establish the discrimination floor; honest/wrong/fabricated
+  fixtures and per-gate tests cover the scorer.
+
+Still to do:
+
+- Run real MDClaw reference submissions for S01/S02/S04/S05 (real comparative MD)
+  and record them as runnable evidence.
+- Optionally reward a calibrated magnitude (the truth files carry ddG ranges and
+  `magnitude_class`) once the direction-gated scoring is stable.
 
 ## What Not To Do Yet
 

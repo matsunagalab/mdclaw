@@ -1,16 +1,18 @@
 {
   "agent_independent": true,
   "benchmark_type": "artifact_based_agent_benchmark",
-  "benchmark_version": "MDStudyBench-v0.1",
+  "benchmark_version": "MDStudyBench-v0.2",
   "evaluation_unit": "submission_artifacts",
   "families": {
     "scientific_answer_battery": {
       "display_name": "Scientific Answer Battery",
-      "intent": "Evaluate whether an agent can plan and execute small comparative MD studies, extract quantitative evidence, and answer a scientific question with calibrated confidence.",
+      "intent": "Evaluate whether an agent can plan and execute small comparative MD studies, extract quantitative evidence, and answer a scientific question with calibrated confidence. The battery spans loss-of-function (destabilizing, weakened binding), gain-of-function (stabilizing), and ligand-affinity directions so a constant prior cannot win.",
       "score_axis": "scientific_answer",
       "task_ids": [
         "S01_stability_t4l_l99a",
-        "S02_ppi_hotspot_barnase_d39a"
+        "S02_ppi_hotspot_barnase_d39a",
+        "S04_stability_nuclease_h124l",
+        "S05_affinity_t4l_l99a_alkylbenzene"
       ]
     },
     "study_evidence_bundle": {
@@ -18,7 +20,7 @@
       "intent": "Evaluate whether an agent can package an auditable MD study plan, methods draft, provenance, decision log, and evidence report.",
       "score_axis": "evidence_communication",
       "task_ids": [
-        "S03_t4l_wt_vs_l99a_methods"
+        "S03_ppi_evidence_bundle_barnase"
       ]
     }
   },
@@ -42,12 +44,14 @@
       "tasks/<task_id>/submission_checklist.md"
     ]
   },
-  "released": "2026-06-10",
+  "released": "2026-06-30",
   "schema_version": "1.0",
-  "task_count": 3,
+  "task_count": 5,
   "task_ids": [
     "S01_stability_t4l_l99a",
     "S02_ppi_hotspot_barnase_d39a",
-    "S03_t4l_wt_vs_l99a_methods"
+    "S03_ppi_evidence_bundle_barnase",
+    "S04_stability_nuclease_h124l",
+    "S05_affinity_t4l_l99a_alkylbenzene"
   ]
 }

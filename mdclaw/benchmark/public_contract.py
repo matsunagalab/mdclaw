@@ -489,6 +489,16 @@ def manifest_contract(task: Task) -> dict[str, Any]:
         "required_outputs_for_completed_submission": list(task.required_outputs),
     }
     if task.primary_score != PREPARATION_SCORE_AXIS:
+        # Study tasks: surface the manifest output keys completion depends on,
+        # mirroring prep's required_output_fields_for_completed_prep so agents
+        # do not learn the trajectory/topology/methods requirement only from the
+        # checklist. (required_outputs alone lists JSON files, not these.)
+        study_required = {
+            "scientific_answer": ["outputs.trajectories", "outputs.topology"],
+            "evidence_communication": ["outputs.methods", "outputs.decision_log"],
+        }.get(task.primary_score)
+        if study_required:
+            contract["required_manifest_output_fields"] = study_required
         return contract
 
     recommended_optional_outputs: list[str] = []
@@ -514,7 +524,12 @@ def manifest_contract(task: Task) -> dict[str, Any]:
 def submission_blueprint(task: Task) -> dict[str, Any]:
     """Return a concrete submission skeleton for agent-side self-checks."""
     outputs = _manifest_output_blueprint(task)
-    if task.primary_score == PREPARATION_SCORE_AXIS:
+    is_prep = task.primary_score == PREPARATION_SCORE_AXIS
+    # Preparation manifests/provenance are written by the evaluator normalizer;
+    # study submissions are authored by the agent and scored as written, so the
+    # illustrative generated_by tool differs by suite.
+    generated_by_tool = "mdprepbench-normalizer" if is_prep else "agent"
+    if is_prep:
         outputs["topology"] = OPENMM_TOPOLOGY_EXAMPLE
         if _has_candidate_selection(task):
             outputs["source_selection"] = "source_selection.json"
@@ -532,14 +547,14 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
         ),
         "manifest_minimum": {
             "schema_version": "1.0",
-            "generated_by": {"tool": "mdprepbench-normalizer"},
+            "generated_by": {"tool": generated_by_tool},
             "task_id": task.task_id,
             "status": "completed",
             "outputs": outputs,
         },
         "provenance_minimum": {
             "schema_version": "1.0",
-            "generated_by": {"tool": "mdprepbench-normalizer"},
+            "generated_by": {"tool": generated_by_tool},
             "task_id": task.task_id,
             "command_log": _command_log_blueprint(task),
             "raw_outputs": [

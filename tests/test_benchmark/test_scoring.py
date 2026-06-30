@@ -506,14 +506,14 @@ def test_study_methods_validation_does_not_require_metrics_output(tmp_path: Path
         / "benchmarks"
         / "mdstudybench"
         / "tasks"
-        / "S03_t4l_wt_vs_l99a_methods"
+        / "S03_ppi_evidence_bundle_barnase"
         / "task.json"
     )
     submission_dir = tmp_path / "submission"
     submission_dir.mkdir()
     manifest = {
         "schema_version": "1.0",
-        "task_id": "S03_t4l_wt_vs_l99a_methods",
+        "task_id": "S03_ppi_evidence_bundle_barnase",
         "status": "completed",
         "outputs": {
             "evidence_report": "evidence_report.json",

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0",
+  "run_id": "reference-S03",
+  "task_id": "S03_ppi_evidence_bundle_barnase",
+  "status": "completed",
+  "outputs": {
+    "evidence_report": "evidence_report.json",
+    "methods": "methods.md",
+    "provenance": "provenance.json",
+    "decision_log": "decision_log.jsonl"
+  },
+  "limitations": [
+    "Reference example: the methods bundle is a planned (dry-run) study; no production trajectories are shipped."
+  ]
+}

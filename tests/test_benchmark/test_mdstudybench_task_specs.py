@@ -39,7 +39,13 @@ def test_mdstudybench_comparative_tasks_use_shared_md_evidence_bundle():
         checks = spec["scoring"]["deterministic_checks"]
         has_bundle = {"$bundle": "comparative_md_evidence"} in checks
 
-        if task_id in {"S01_stability_t4l_l99a", "S02_ppi_hotspot_barnase_d39a"}:
+        comparative = {
+            "S01_stability_t4l_l99a",
+            "S02_ppi_hotspot_barnase_d39a",
+            "S04_stability_nuclease_h124l",
+            "S05_affinity_t4l_l99a_alkylbenzene",
+        }
+        if task_id in comparative:
             assert has_bundle, task_id
         else:
             assert not has_bundle, task_id

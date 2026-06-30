@@ -35,6 +35,27 @@ def _now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _dataset_token(dataset_dir: str) -> str:
+    """Short token for run-id prefixes, e.g. 'mdprepbench' / 'mdstudybench'."""
+    return _safe_token(Path(dataset_dir).name)
+
+
+def _benchmark_label(dataset_dir: str) -> str:
+    """Human label for the operator summary, derived from the dataset.
+
+    Reads ``dataset.json``'s ``benchmark_version`` when available (e.g.
+    ``MDStudyBench-v0.2``), else falls back to the dataset directory name.
+    """
+    try:
+        payload = json.loads((Path(dataset_dir) / "dataset.json").read_text())
+        version = str(payload.get("benchmark_version") or "").strip()
+        if version:
+            return version.split("-v")[0] or version
+    except (OSError, json.JSONDecodeError):
+        pass
+    return Path(dataset_dir).name
+
+
 def _safe_token(value: str) -> str:
     token = re.sub(r"[^A-Za-z0-9]+", "_", value.strip()).strip("_").lower()
     return token or "agent"
@@ -187,7 +208,7 @@ def _run_agent(
 def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
-        "benchmark": "MDPrepBench",
+        "benchmark": _benchmark_label(args.dataset_dir),
         "created_at": _now_utc(),
         "run_id_prefix": run_id_prefix,
         "output_dir": str(Path(args.output_dir)),
@@ -267,8 +288,9 @@ def main(argv: list[str] | None = None) -> int:
 
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    dataset_token = _dataset_token(args.dataset_dir)
     run_id_prefix = args.run_id_prefix or datetime.now().strftime(
-        "%Y%m%d_%H%M%S_mdprepbench"
+        f"%Y%m%d_%H%M%S_{dataset_token}"
     )
     summary_path = output_dir / f"{run_id_prefix}_all_agents_operator_summary.json"
     summary = _build_summary(args, run_id_prefix)
@@ -291,7 +313,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             summary["runs"].append(record)
             _write_json(summary_path, summary)
-            print(f"[mdprepbench-all-agents] {agent}: skipped existing {run_id}")
+            print(f"[benchmark-all-agents] {agent}: skipped existing {run_id}")
             exit_code = 1
             if args.stop_on_failure:
                 break
@@ -311,7 +333,7 @@ def main(argv: list[str] | None = None) -> int:
             agent_profile=agent_profiles.get(agent),
             agent_model=agent_models.get(agent),
         )
-        print(f"[mdprepbench-all-agents] {agent}: {shlex.join(command)}")
+        print(f"[benchmark-all-agents] {agent}: {shlex.join(command)}")
         record = _run_agent(
             command=command,
             agent=agent,
@@ -323,16 +345,16 @@ def main(argv: list[str] | None = None) -> int:
         _write_json(summary_path, summary)
         if not record["success"]:
             exit_code = 1
-            print(f"[mdprepbench-all-agents] {agent}: FAILED")
+            print(f"[benchmark-all-agents] {agent}: FAILED")
             if args.stop_on_failure:
                 break
         else:
-            print(f"[mdprepbench-all-agents] {agent}: ok")
+            print(f"[benchmark-all-agents] {agent}: ok")
 
     summary["completed_at"] = _now_utc()
     summary["success"] = all(record.get("success") for record in summary["runs"])
     _write_json(summary_path, summary)
-    print(f"[mdprepbench-all-agents] summary: {summary_path}")
+    print(f"[benchmark-all-agents] summary: {summary_path}")
     return exit_code
 
 

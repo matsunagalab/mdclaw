@@ -1,5 +1,6 @@
 {
   "task_id": "S01_stability_t4l_l99a",
+  "public_source": "PDB 2LZM",
   "capability_tags_extra": [
     "comparative_md",
     "mutation_effect",
@@ -28,6 +29,15 @@
           "stabilizing",
           "neutral"
         ],
+        "weight": 0.0
+      },
+      {
+        "check_id": "paired_l99a_mutation",
+        "check_type": "paired_mutation_topology",
+        "topology_manifest_path": "outputs.topology.0",
+        "mutant_topology_manifest_path": "outputs.topology.1",
+        "wild_type_residue_name": "LEU",
+        "required_residue_name": "ALA",
         "weight": 0.0
       },
       {

@@ -1743,6 +1743,24 @@ def run_benchmark_agent(
     }
 
 
+def _task_time_limit_minutes(private_dir: Path, task_id: str) -> Optional[int]:
+    """Read a task's declared ``time_limit_minutes`` from its private task.json.
+
+    Used as the per-task walltime fallback when the operator does not set an
+    explicit ``--max-walltime-minutes-per-task`` cap, so a benchmark's declared
+    per-task time budgets are actually enforced.
+    """
+    task_file = private_dir / "tasks" / task_id / "task.json"
+    try:
+        payload = json.loads(task_file.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    value = payload.get("time_limit_minutes")
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    return None
+
+
 def _run_one_benchmark_agent_task(
     *,
     run_id: str,
@@ -1896,9 +1914,15 @@ def _run_one_benchmark_agent_task(
 
     started_wall = time.monotonic()
     started_at = _now_utc()
+    # Effective per-task walltime: an explicit operator cap wins; otherwise fall
+    # back to the task's declared time_limit_minutes so the benchmark's own time
+    # budgets are enforced rather than ignored.
+    effective_walltime_minutes = max_walltime_minutes_per_task
+    if not effective_walltime_minutes or effective_walltime_minutes <= 0:
+        effective_walltime_minutes = _task_time_limit_minutes(private_dir, task_id)
     timeout_seconds = (
-        max_walltime_minutes_per_task * 60
-        if max_walltime_minutes_per_task and max_walltime_minutes_per_task > 0
+        effective_walltime_minutes * 60
+        if effective_walltime_minutes and effective_walltime_minutes > 0
         else None
     )
     exit_code = 0
@@ -1956,6 +1980,7 @@ def _run_one_benchmark_agent_task(
         "command": rendered_command,
         "exit_code": exit_code,
         "walltime_seconds": walltime,
+        "walltime_limit_minutes": effective_walltime_minutes,
         "started_at": started_at,
         "completed_at": _now_utc(),
     }
