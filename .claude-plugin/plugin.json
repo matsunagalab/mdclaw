@@ -1,6 +1,6 @@
 {
   "name": "mdclaw",
-  "version": "0.6.3",
+  "version": "0.6.4",
   "description": "Skills and CLIs for vibe-MD simulations and autonomous scientific investigation in the Amber/OpenMM ecosystem",
   "author": {
     "name": "matsunagalab"

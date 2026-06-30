@@ -33,7 +33,7 @@ def _preload_torch_for_openmm_torch() -> None:
 
 _preload_torch_for_openmm_torch()
 
-__version__ = "0.6.3"
+__version__ = "0.6.4"
 
 __all__ = [
     "structure_server",
