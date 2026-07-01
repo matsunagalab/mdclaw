@@ -66,3 +66,33 @@ def test_run_llm_judge_extracts_json_and_clamps(tmp_path: Path, monkeypatch):
     payload = json.loads(out.read_text())
     assert payload["scores"]["confidence_calibration"] == 1.0  # clamped
     assert payload["scores"]["overclaim_detection"] == 0.0     # clamped
+
+
+def test_missing_judge_marks_study_task_incomplete(tmp_path: Path, monkeypatch):
+    """A study task scored without its (expected) LLM judge is incomplete, even
+    if the deterministic checks pass."""
+    from mdclaw.benchmark import run as benchmark_run
+    from tests.test_benchmark import _fake_study_submissions as fakes
+
+    task_id = "S01_stability_t4l_l99a"
+    dataset = str(REPO_ROOT / "benchmarks" / "mdstudybench")
+    rd = tmp_path / "run"
+    (rd / "tasks" / task_id).mkdir(parents=True)
+    fakes.make_study_submission(
+        rd / "tasks" / task_id / "submission", run_id="r", mode="honest", task_id=task_id,
+    )
+    (rd / "run_config.json").write_text(json.dumps({
+        "schema_version": "1.0", "run_id": "r",
+        "task_ids": [task_id], "dataset_dir": dataset,
+    }))
+    # in-process (no SIF delegation, no auto-judge run), judge expected but absent
+    monkeypatch.setenv("MDCLAW_SCORE_INPROCESS", "1")
+    monkeypatch.delenv("MDCLAW_DISABLE_LLM_JUDGE", raising=False)
+
+    result = benchmark_run.score_benchmark_run(
+        str(rd), dataset_dir=dataset, run_judge=True, summarize=False,
+    )
+    task = next(t for t in result["tasks"] if t.get("task_id") == task_id)
+    assert task["judge_status"] == "missing"
+    assert task["benchmark_passed"] is False
+    assert result["failed_task_count"] == 1

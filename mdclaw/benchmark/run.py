@@ -2720,11 +2720,23 @@ def score_benchmark_run(
             require_validation_success=require_validation_success,
             harness_record_file=str(task_run_dir / "harness_execution.json"),
         )
-        # Mandatory judge for study tasks: flag when rubrics exist but no judge ran.
-        if _task_has_rubrics(task_file) and not judge_path.is_file():
-            result.setdefault("warnings", []).append(
-                "LLM judge required for this task but no judge result was "
-                "produced; evidence_communication was not scored"
+        # Mandatory judge for study tasks: a rubric-bearing task whose judge was
+        # expected (run_judge on and not disabled) but did not produce a result is
+        # INCOMPLETE -- its qualitative axis was never evaluated -- so it does not
+        # count as passed, regardless of the deterministic score. When the judge
+        # is deliberately off (run_judge=False or MDCLAW_DISABLE_LLM_JUDGE) the
+        # operator opted out and the result is left as-is.
+        judge_expected = (
+            run_judge
+            and _task_has_rubrics(task_file)
+            and not os.environ.get("MDCLAW_DISABLE_LLM_JUDGE")
+        )
+        if judge_expected and not judge_path.is_file():
+            result["benchmark_passed"] = False
+            result["judge_status"] = "missing"
+            result.setdefault("errors", []).append(
+                "LLM judge required for this study task but no judge result was "
+                "produced; result is incomplete (evidence_communication not scored)"
             )
         task_results.append(result)
 

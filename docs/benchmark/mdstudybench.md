@@ -54,9 +54,16 @@ Every task (S01–S04) is scored the same way:
   template markers, evidence completeness, trajectory artifact floor and
   signatures, citation pool membership, and harness-backed provenance execution
   evidence across `source/prep/prod/analysis/report`.
-- **LLM-judge rubrics** feed the secondary `evidence_communication` axis
-  (`confidence_calibration`, `overclaim_detection`, `limitations`). The rubric
-  scores are aggregated into the axis; the judge is optional.
+- **LLM judge (mandatory, auto-run)** feeds the secondary `evidence_communication`
+  axis. `mdclaw run_llm_judge` (Claude sonnet by default) is run automatically on
+  the host by `score_benchmark_run` / `run_benchmark_agent` for every study task,
+  scoring the rubrics `evidence_grounding` (the conclusion is derived from and
+  consistent with the submission's OWN MD metrics, not merely the known literature
+  answer), `confidence_calibration`, and `overclaim_detection`. The scorer itself
+  stays offline; the judge is a separate host step. A study task scored without
+  its judge is marked **incomplete** (it does not count as passed). This is what
+  separates a data-grounded answer from an agent that just states the known
+  direction — the deterministic gates cannot see that difference.
 
 Net effect: a literature guess with no real comparative MD, garbage/copied
 trajectories, or a wrong/absent mutation scores **0** even if the declared
