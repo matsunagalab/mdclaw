@@ -159,6 +159,7 @@
     ],
     "integrity_policy": "reject",
     "llm_judge_rubrics": [
+      "evidence_grounding",
       "confidence_calibration",
       "overclaim_detection"
     ]
