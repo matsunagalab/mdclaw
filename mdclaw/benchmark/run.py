@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from mdclaw import __version__ as MDCLAW_VERSION
 from mdclaw._common import ensure_directory
+from mdclaw.benchmark import judge
 from mdclaw.benchmark import scoring
 from mdclaw.benchmark.datasets import (
     DEFAULT_BENCHMARK_VERSION,
@@ -2590,14 +2591,70 @@ def summarize_benchmark_run(
     }
 
 
+def _task_has_rubrics(task_file: Path) -> bool:
+    """True when a task declares LLM-judge rubrics (the study suite)."""
+    try:
+        payload = json.loads(Path(task_file).read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(payload.get("scoring", {}).get("llm_judge_rubrics"))
+
+
+def _autorun_run_judges(
+    run_dir: str, dataset_dir: Optional[str], judge_model: str,
+) -> None:
+    """Run the LLM judge (host / claude CLI) for every rubric-bearing task in a
+    run dir, writing a per-task ``llm_judge.json``. Best-effort: a judge failure
+    leaves no file, so the task is scored on deterministic checks and flagged as
+    missing the judge at scoring time."""
+    rd = Path(run_dir)
+    try:
+        cfg = json.loads((rd / "run_config.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    selected = dataset_dir or cfg.get("dataset_dir") or _DEFAULT_DATASET_DIR
+    dataset = _resolve_dataset_dir(str(selected))
+    task_ids = [str(t) for t in cfg.get("task_ids", [])] or _list_task_ids(str(dataset))
+    for task_id in task_ids:
+        task_file = dataset / "tasks" / task_id / "task.json"
+        submission_dir = rd / "tasks" / task_id / "submission"
+        out = rd / "tasks" / task_id / "llm_judge.json"
+        if out.is_file() or not submission_dir.is_dir():
+            continue
+        if not (task_file.is_file() and _task_has_rubrics(task_file)):
+            continue
+        try:
+            judge.run_llm_judge(
+                str(task_file), str(submission_dir), str(out), judge_model=judge_model,
+            )
+        except Exception:  # noqa: BLE001 -- best-effort; missing file is flagged later
+            pass
+
+
 def score_benchmark_run(
     run_dir: str,
     dataset_dir: Optional[str] = None,
     require_validation_success: bool = True,
     llm_judge_file: Optional[str] = None,
     summarize: bool = True,
+    run_judge: bool = True,
+    judge_model: str = judge.DEFAULT_JUDGE_MODEL,
 ) -> dict[str, Any]:
-    """Validate and score every task submission in a benchmark run directory."""
+    """Validate and score every task submission in a benchmark run directory.
+
+    For tasks that declare ``llm_judge_rubrics`` (the study suite), the LLM
+    judge is run automatically on the host (``run_judge=True``) before scoring,
+    writing a per-task ``llm_judge.json`` that the scorer consumes. The judge
+    runs here on the host because it uses the ``claude`` CLI, while the scorer
+    itself may be delegated to the SIF for OpenMM — so it must precede that
+    delegation.
+    """
+    if (
+        run_judge
+        and not os.environ.get("MDCLAW_SCORE_INPROCESS")
+        and not os.environ.get("MDCLAW_DISABLE_LLM_JUDGE")
+    ):
+        _autorun_run_judges(run_dir, dataset_dir, judge_model)
     if not os.environ.get("MDCLAW_SCORE_INPROCESS"):
         delegate_argv = _scorer_delegate_argv()
         if delegate_argv is not None:
@@ -2649,16 +2706,26 @@ def score_benchmark_run(
             })
             continue
 
+        # Prefer a per-task judge file written by the host judge step; fall back
+        # to an operator-supplied file.
+        judge_path = task_run_dir / "llm_judge.json"
+        task_judge = str(judge_path) if judge_path.is_file() else llm_judge_file
         result = benchmark_cli.validate_and_score_benchmark_submission(
             task_file=str(task_file),
             submission_dir=str(submission_dir),
             run_id=run_id,
             output_file=str(task_run_dir / "score.json"),
             validation_output_file=str(task_run_dir / "validation.json"),
-            llm_judge_file=llm_judge_file,
+            llm_judge_file=task_judge,
             require_validation_success=require_validation_success,
             harness_record_file=str(task_run_dir / "harness_execution.json"),
         )
+        # Mandatory judge for study tasks: flag when rubrics exist but no judge ran.
+        if _task_has_rubrics(task_file) and not judge_path.is_file():
+            result.setdefault("warnings", []).append(
+                "LLM judge required for this task but no judge result was "
+                "produced; evidence_communication was not scored"
+            )
         task_results.append(result)
 
     summary_result = None

@@ -31,6 +31,7 @@ from mdclaw.benchmark.cli import (
     validate_benchmark_task,
     write_benchmark_schemas,
 )
+from mdclaw.benchmark.judge import run_llm_judge
 from mdclaw.benchmark.run import (
     init_benchmark_run,
     prepare_benchmark_run,
@@ -40,6 +41,7 @@ from mdclaw.benchmark.run import (
 )
 
 TOOLS = {
+    "run_llm_judge": run_llm_judge,
     "list_benchmark_tasks": list_benchmark_tasks,
     "init_benchmark_run": init_benchmark_run,
     "prepare_benchmark_run": prepare_benchmark_run,
