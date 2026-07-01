@@ -166,5 +166,5 @@
   ],
   "task_id": "S04_affinity_t4l_l99a_alkylbenzene",
   "task_intent": "Scientific-answer test: compare binding of two apolar ligands to the engineered T4 lysozyme L99A cavity and report which binds more tightly. Compare the benzene complex (PDB 4W52, also 181L) with the n-butylbenzene complex (PDB 4W57) using short comparative MD, and report effect.direction as stronger_binding, weaker_binding, or similar for n-butylbenzene RELATIVE TO benzene. Adding hydrophobic surface tightens binding in the apolar cavity (Morton, Baase & Matthews 1995), so n-butylbenzene binds more strongly than benzene. Populate metrics.md_analysis with interaction evidence (ligand-cavity contact counts, buried apolar surface, ligand occupancy/retention), mirror those values in evidence_report.evidence.md_metrics, and separate MD-supported observations from the literature-calibrated affinity direction.",
-  "time_limit_minutes": 120
+  "time_limit_minutes": 30
 }

@@ -168,5 +168,5 @@
   ],
   "task_id": "S03_stability_nuclease_h124l",
   "task_intent": "Scientific-answer calibration test: compare wild-type staphylococcal nuclease (PDB 1STN, His124) with the H124L variant using short comparative MD, and report the literature-calibrated stability direction in effect.direction. Unlike the T4 lysozyme cavity mutant, H124L is STABILIZING (about +1.9 kcal/mol; Truckses et al. 1996), so a constant 'mutations destabilize' prior is wrong here. Populate metrics.md_analysis with local consistency evidence (e.g. RMSF/SASA around residue 124, secondary-structure persistence, packing), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from the literature-calibrated thermodynamic interpretation.",
-  "time_limit_minutes": 120
+  "time_limit_minutes": 30
 }

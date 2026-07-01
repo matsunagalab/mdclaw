@@ -1136,9 +1136,11 @@ def _agent_run_record(task_run_dir: Path) -> dict:
     raise AssertionError("no agent_run harness record found")
 
 
-def test_run_benchmark_agent_falls_back_to_task_time_limit(tmp_path: Path):
-    """With ``max_walltime_minutes_per_task=0`` the per-task timeout uses the
-    task's declared ``time_limit_minutes`` (S03 = 60); an explicit cap overrides."""
+def test_run_benchmark_agent_study_time_limit_is_authoritative(tmp_path: Path):
+    """For MDStudyBench the task's declared ``time_limit_minutes`` (30) is
+    authoritative: it is used with no operator cap AND an explicit operator cap
+    is ignored, so the per-task budget is fixed/reproducible and matches the
+    number shown to the agent in the prompt."""
     fake_agent = tmp_path / "fake_study_agent.py"
     fake_agent.write_text(
         """
@@ -1176,7 +1178,7 @@ _fake_study_submissions.GENERATORS[args.task_id](
     )
     output_dir = tmp_path / "benchmark_runs"
 
-    # default cap = 0 -> use S03's declared time_limit_minutes (120)
+    # no operator cap -> use S03's declared time_limit_minutes (30)
     result = benchmark_run.run_benchmark_agent(
         output_dir=str(output_dir),
         run_id="study_timelimit_default",
@@ -1192,9 +1194,9 @@ _fake_study_submissions.GENERATORS[args.task_id](
     record = _agent_run_record(
         output_dir / "study_timelimit_default" / "tasks" / STUDY_TASK_ID
     )
-    assert record["walltime_limit_minutes"] == 120
+    assert record["walltime_limit_minutes"] == 30
 
-    # explicit cap overrides the declared per-task limit
+    # explicit operator cap is IGNORED for study tasks (declared limit wins)
     result = benchmark_run.run_benchmark_agent(
         output_dir=str(output_dir),
         run_id="study_timelimit_capped",
@@ -1210,7 +1212,7 @@ _fake_study_submissions.GENERATORS[args.task_id](
     record = _agent_run_record(
         output_dir / "study_timelimit_capped" / "tasks" / STUDY_TASK_ID
     )
-    assert record["walltime_limit_minutes"] == 5
+    assert record["walltime_limit_minutes"] == 30
 
 
 def test_prepare_benchmark_run_records_studybench_version(tmp_path: Path):

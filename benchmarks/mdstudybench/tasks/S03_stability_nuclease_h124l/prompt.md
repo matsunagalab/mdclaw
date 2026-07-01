@@ -12,6 +12,8 @@ Note: not every mutation is destabilizing. Report the calibrated direction suppo
 
 Do not claim that a short trajectory by itself proves a folding-stability delta-delta-G. Separate (1) MD-supported local observations from (2) the literature-calibrated stability direction. If the short MD metrics are noisy or inconclusive, say so explicitly while still reporting the calibrated direction and limitations.
 
+Time budget: complete this task within 30 minutes of wall-clock — preparing both systems, running the short comparative MD, analysing, and writing the submission. Size your MD (production length and any replicate count) to finish within that budget; short consistency-evidence MD is expected here, not a converged free energy.
+
 Your submission directory must contain:
 
 - `manifest.json`

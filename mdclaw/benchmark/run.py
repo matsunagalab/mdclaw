@@ -2044,22 +2044,28 @@ def run_benchmark_agent(
     }
 
 
-def _task_time_limit_minutes(private_dir: Path, task_id: str) -> Optional[int]:
-    """Read a task's declared ``time_limit_minutes`` from its private task.json.
+_STUDY_PRIMARY_SCORES = {"scientific_answer", "evidence_communication"}
 
-    Used as the per-task walltime fallback when the operator does not set an
-    explicit ``--max-walltime-minutes-per-task`` cap, so a benchmark's declared
-    per-task time budgets are actually enforced.
+
+def _task_time_budget(private_dir: Path, task_id: str) -> tuple[Optional[int], bool]:
+    """Return ``(declared time_limit_minutes, is_study_task)`` from the private
+    task.json.
+
+    For MDStudyBench tasks the declared per-task time limit is authoritative and
+    the operator's ``--max-walltime-minutes-per-task`` is ignored, so the
+    benchmark's stated per-task budget is fixed and reproducible (and is the same
+    number surfaced to the agent in the prompt). For other suites the CLI cap
+    still applies with the declared limit only as a fallback.
     """
     task_file = private_dir / "tasks" / task_id / "task.json"
     try:
         payload = json.loads(task_file.read_text())
     except (OSError, json.JSONDecodeError):
-        return None
+        return None, False
     value = payload.get("time_limit_minutes")
-    if isinstance(value, (int, float)) and value > 0:
-        return int(value)
-    return None
+    minutes = int(value) if isinstance(value, (int, float)) and value > 0 else None
+    is_study = payload.get("primary_score") in _STUDY_PRIMARY_SCORES
+    return minutes, is_study
 
 
 def _run_one_benchmark_agent_task(
@@ -2219,12 +2225,17 @@ def _run_one_benchmark_agent_task(
 
     started_wall = time.monotonic()
     started_at = _now_utc()
-    # Effective per-task walltime: an explicit operator cap wins; otherwise fall
-    # back to the task's declared time_limit_minutes so the benchmark's own time
-    # budgets are enforced rather than ignored.
-    effective_walltime_minutes = max_walltime_minutes_per_task
-    if not effective_walltime_minutes or effective_walltime_minutes <= 0:
-        effective_walltime_minutes = _task_time_limit_minutes(private_dir, task_id)
+    # Effective per-task walltime. For MDStudyBench the task's declared limit is
+    # authoritative and the operator cap is ignored (fixed, reproducible, and the
+    # same number the prompt shows the agent). For other suites an explicit
+    # operator cap wins, falling back to the task's declared limit.
+    task_limit, is_study = _task_time_budget(private_dir, task_id)
+    if is_study and task_limit:
+        effective_walltime_minutes = task_limit
+    else:
+        effective_walltime_minutes = max_walltime_minutes_per_task
+        if not effective_walltime_minutes or effective_walltime_minutes <= 0:
+            effective_walltime_minutes = task_limit
     timeout_seconds = (
         effective_walltime_minutes * 60
         if effective_walltime_minutes and effective_walltime_minutes > 0

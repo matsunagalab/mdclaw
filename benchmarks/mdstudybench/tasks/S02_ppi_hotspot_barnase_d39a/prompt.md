@@ -8,6 +8,8 @@ Task: retrieve the barnase-barstar complex from PDB entry 1BRS, create the D39A 
 
 Public source anchors: PDB 1BRS.
 
+Time budget: complete this task within 30 minutes of wall-clock — preparing both complexes, running the short comparative MD, analysing, and writing the submission. Size your MD (production length and any replicate count) to finish within that budget; short consistency-evidence MD is expected here, not a converged free energy.
+
 Your submission directory must contain:
 
 - `manifest.json`

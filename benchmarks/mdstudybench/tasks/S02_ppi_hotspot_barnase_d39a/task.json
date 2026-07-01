@@ -168,5 +168,5 @@
   ],
   "task_id": "S02_ppi_hotspot_barnase_d39a",
   "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barstar D39A (the interface hotspot residue; barstar is chain D in PDB 1BRS, paired with barnase chain A) in the barnase-barstar complex from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (delta interface SASA, delta inter-chain contact count, delta hydrogen-bond count, delta salt-bridge count, delta water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
-  "time_limit_minutes": 120
+  "time_limit_minutes": 30
 }

@@ -168,5 +168,5 @@
   ],
   "task_id": "S01_stability_t4l_l99a",
   "task_intent": "Scientific-answer calibration test: compare WT T4 lysozyme (PDB 2LZM) with the L99A cavity mutant using short comparative MD, but do not claim that short MD alone proves a folding-stability delta-delta-G. Report the literature-calibrated stability direction in effect.direction, populate metrics.md_analysis with local consistency evidence (core SASA, cavity or packing proxy, C-alpha RMSF near residue 99, hydrophobic contact count, etc.), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from literature-calibrated thermodynamic interpretation.",
-  "time_limit_minutes": 120
+  "time_limit_minutes": 30
 }

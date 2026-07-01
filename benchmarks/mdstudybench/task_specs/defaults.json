@@ -9,7 +9,7 @@
       "evidence_communication"
     ],
     "execution_mode": "lite",
-    "time_limit_minutes": 120,
+    "time_limit_minutes": 30,
     "failure_policy": {
       "blocked_by_missing_input_allowed": false,
       "insufficient_information_allowed": false

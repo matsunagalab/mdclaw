@@ -202,13 +202,14 @@ skipped.
 
 ## Compute Budget
 
-Budget awareness is **opt-in by the user**. If the user did not mention
-GPUs, wall time, queues, or an ns budget, **omit the `budget` block
-entirely** from the recorded plan; do not insert a `to_be_decided`
-placeholder, and do not auto-detect compute via `inspect_openmm_platforms`
-or `inspect_cluster` (those tools stay out of `md-study`).
-
-When the user did mention compute, do this before recording the plan:
+Always record a `budget` block so MD length is never left undetermined. If the
+user named GPUs, wall time, queues, or an ns budget, parse that; if a harness
+imposes a per-task time limit (e.g. a benchmark prompt), use that limit;
+otherwise **default to ~1 day of wall time on 1 local GPU**
+(`compute_target: "local"`, `gpu_count: 1`, `wall_time_hours: 24`,
+`notes: "default assumption; no budget stated"`). Do not auto-detect compute via
+`inspect_openmm_platforms`/`inspect_cluster` (those stay out of `md-study`).
+Then, before recording the plan:
 
 1. **Parse from the user's request** into a working budget object:
    - `compute_target`: one of `local`, `hpc`, `none`.
@@ -246,12 +247,14 @@ When the user did mention compute, do this before recording the plan:
      / gpu_count`
    - `headroom_hours = wall_time_hours - expected_wallclock_hours`
 
-4. **Guardrail**. If `total_simulation_ns < 50 * len(jobs)` — i.e. you
-   cannot fit even 1 replicate × 50 ns per planned job — prefix
-   `budget.notes` with `"INSUFFICIENT_BUDGET: "` and explain in one
-   sentence. Do **not** silently shrink targets below 50 ns per
-   replicate; surface the gap to the user so they can either raise the
-   budget or drop a job.
+4. **Tier the plan to the budget.** If `total_simulation_ns >= 50 * len(jobs)`,
+   plan research-scale replicates × length as above. If it is smaller (a short
+   benchmark-style budget), drop to a **consistency-evidence** tier: plan the
+   longest feasible run down to ~1 ns per replicate, set
+   `"evidence_tier": "consistency"` in `derived`, and note in `budget.notes`
+   that this is local consistency evidence, not a converged free energy. Only
+   prefix `"INSUFFICIENT_BUDGET: "` when the budget cannot fit even ~1 ns per
+   job, and surface the gap so the user can raise the budget or drop a job.
 
 5. **Record** the budget block on `study_plan.json`:
 
