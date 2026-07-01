@@ -856,11 +856,22 @@ def _submission_preflight_instruction(public_dir: Path, task_id: str) -> dict[st
     }
 
 
+def _task_primary_score(base_dir: Path, task_id: str) -> str:
+    """Read a task's ``primary_score`` (default ``preparation``) from its
+    task.json under ``base_dir/tasks/<task_id>/task.json``."""
+    try:
+        payload = json.loads((base_dir / "tasks" / task_id / "task.json").read_text())
+        return str(payload.get("primary_score") or "preparation")
+    except (OSError, json.JSONDecodeError):
+        return "preparation"
+
+
 def _task_agent_prompt(
     task_id: str,
     instruction_file: Path,
     *,
     skills_available: bool = False,
+    primary_score: str = "preparation",
 ) -> str:
     """Short prompt intended for the evaluated task agent."""
     skill_line = (
@@ -870,6 +881,32 @@ def _task_agent_prompt(
             "MDClaw skills are neither required nor rewarded; artifacts/evidence count."
         )
     )
+    # Artifact guidance is suite-aware: preparation tasks submit a raw OpenMM
+    # artifact bundle the evaluator normalizes; study tasks author their own
+    # manifest/metrics/provenance/evidence and (for scientific-answer tasks)
+    # comparative trajectories, which are scored as written.
+    if primary_score == "evidence_communication":
+        artifact_guidance = (
+            "You author every submission file yourself (scored as written, not "
+            "regenerated): manifest.json, evidence_report.json, methods.md, "
+            "provenance.json, and decision_log.jsonl. "
+        )
+    elif primary_score == "scientific_answer":
+        artifact_guidance = (
+            "You author every submission file yourself (scored as written, not "
+            "regenerated): manifest.json, metrics.json, provenance.json, "
+            "evidence_report.json, plus comparative reference/variant production "
+            "trajectories under outputs.trajectories with matching topologies "
+            "under outputs.topology (reference first, variant second). "
+        )
+    else:
+        artifact_guidance = (
+            "For OpenMM prep tasks, put raw artifacts in submission/: "
+            "topology/{system.xml,topology.pdb,state.xml}, prepared_structure.pdb, "
+            "and task-specific raw files. The evaluator generates metadata, hashes, "
+            "minimized_structure, and minimization_report. "
+            "Do not hand-write or edit evaluator-generated metadata files. "
+        )
     return (
         f"# MD Benchmark Task Agent: {task_id}\n\n"
         "Use this agent-safe instruction file:\n\n"
@@ -888,11 +925,7 @@ def _task_agent_prompt(
         "Run IDs and directory names are labels only; infer no shortcuts.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
         "truth/, scorer/. Do not fabricate.\n\n"
-        "For OpenMM prep tasks, put raw artifacts in submission/: "
-        "topology/{system.xml,topology.pdb,state.xml}, prepared_structure.pdb, "
-        "and task-specific raw files. The evaluator generates metadata, hashes, "
-        "minimized_structure, and minimization_report.\n\n"
-        "Do not hand-write or edit evaluator-generated metadata files. "
+        f"{artifact_guidance}\n\n"
         "Run public preflight after writing submission/. Exit only after "
         "preflight passes or explicit incomplete failure. "
         "The evaluator scores separately.\n"
@@ -1671,7 +1704,14 @@ def prepare_benchmark_run(
             ),
         }
         _write_json(task_instruction_path, instruction)
-        _write_text(agent_prompt_path, _task_agent_prompt(task_id, task_instruction_path))
+        _write_text(
+            agent_prompt_path,
+            _task_agent_prompt(
+                task_id,
+                task_instruction_path,
+                primary_score=_task_primary_score(dataset, task_id),
+            ),
+        )
         _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
         task_instructions.append(instruction)
         harness_instructions.append(harness_instruction)
@@ -2168,6 +2208,7 @@ def _run_one_benchmark_agent_task(
             task_id,
             task_instruction_path,
             skills_available=bool(agent_skills),
+            primary_score=_task_primary_score(private_dir, task_id),
         ),
     )
 
