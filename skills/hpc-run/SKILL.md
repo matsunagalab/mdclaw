@@ -9,13 +9,21 @@ Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
 `skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
 reference) before acting.
 
-Use this skill when the user wants to run equilibration or production nodes on
-SLURM, submit multiple replicates or systems, monitor/recover jobs, configure
-cluster policy, or extend production runs.
+Use this skill when the user wants to run minimization, equilibration, or
+production nodes on SLURM, submit multiple replicates or systems, monitor/recover
+jobs, configure cluster policy, or extend production runs.
 
 Structure preparation remains a login-node or interactive step. HPC submission
-starts after a `topo` node exists and the next `eq` or `prod` node can resolve
+starts after a `topo` node exists and the next `min`/`eq`/`prod` node can resolve
 its inputs from the DAG.
+
+## Step 0: Confirm
+
+- `job_dir` and the `node_id` to submit (from `create_node`).
+- Current DAG state via `mdclaw inspect_job --job-dir <job_dir>`: a completed
+  `topo` (and, for `prod`, a completed `eq`) parent, and no conflicting running
+  work.
+- Cluster resources/policy if unknown (see `skills/hpc-run/discovery-policy.md`).
 
 ## Route To The Right Guidance
 

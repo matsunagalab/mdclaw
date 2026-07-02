@@ -21,11 +21,8 @@ mdclaw submit_array_job \
   ]'
 ```
 
-All array tasks share one `--gpus`/`--gres` value. As with `submit_job`, if any
-task command uses `--platform CUDA` (or `OpenCL`) and you pass neither `--gpus`
-nor `--gres`, the whole array is auto-set to `--gpus 1` with a warning. Keep
-`--gpus 1` explicit for clarity, or use `--gres gpu:<type>:1` on GRES-only
-clusters.
+All array tasks share one `--gpus`/`--gres` value; the same GPU auto-detection
+as `submit_job` applies (see `skills/hpc-run/SKILL.md` "Critical Rules").
 
 Use arrays for small replicate sets with similar runtime and failure likelihood.
 For large campaigns with heterogeneous systems, prefer individual `submit_job`

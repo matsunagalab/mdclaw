@@ -41,12 +41,14 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   `run_equilibration` starts from the `min` node's `state`, skips coordinate
   minimization, then runs low-temperature warmup before normal NVT/NPT.
 - Equilibration uses positional restraints to prevent structural collapse.
-  `--restraint-atoms` accepts:
-  - `CA` (default): alpha carbons only — recommended for most workflows
-  - `backbone`: protein backbone heavy atoms (N, CA, C, O)
-  - `heavy`: all non-hydrogen solute atoms — strongest, useful for early-stage relaxation
-  All three options automatically exclude water and ions (solute only),
-  so OPC virtual sites and counterions are never restrained.
+  `--restraint-atoms` options (solute-only; water, ions, and OPC virtual sites
+  are always excluded):
+
+  | Value | Restrains | Notes |
+  |---|---|---|
+  | `CA` (default) | alpha carbons | recommended for most workflows |
+  | `backbone` | protein backbone heavy atoms (N, CA, C, O) | |
+  | `heavy` | all non-hydrogen solute atoms | strongest; useful for early-stage relaxation |
 - NVT default length: 1 ns. Prefer `--nvt-time-ns <ns>` for user-facing
   duration requests.
 - NPT default length: 1 ns. Prefer `--npt-time-ns <ns>` for user-facing
@@ -64,8 +66,8 @@ The tool self-updates `node.json` and `progress.json` on success or failure.
   Both record `currentStep=0` so `run_production --simulation-time-ns` is the
   full production length.
 - For finer control (e.g. NPT compress with `heavy` → NVT thermalize with `CA`
-  → NPT relax with no restraints), chain multiple eq nodes — see the
-  "Multi-Stage Chaining" section in `skills/md-equilibration/SKILL.md`.
+  → NPT relax with no restraints), chain multiple eq nodes — see
+  `skills/md-equilibration/multi-stage-eq.md`.
 - Energy should drop during the `min` node minimization (good sign)
 
 ---

@@ -144,13 +144,7 @@ Failure codes you may see (run side, after the topology resolver):
 
 ## Handoff
 
-1. Read `progress.json` — verify the topology node returned by `create_node`
-   has status `completed`.
-2. Tell the user:
-   ```
-   Preparation complete. Next:
-     Continue with skills/md-equilibration/SKILL.md on this job_dir.
-     Shortcut, if available: /md-equilibration <job_dir>
-   ```
-   Preparation does not auto-invoke equilibration — each stage is
-   user-initiated.
+Verify the `topo` node is `completed` in `progress.json`, then follow the
+canonical handoff in `SKILL.md` step 9 (continue with
+`skills/md-equilibration/SKILL.md` on this `job_dir`; shortcut
+`/md-equilibration`). Preparation does not auto-invoke equilibration.

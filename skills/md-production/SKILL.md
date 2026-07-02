@@ -12,11 +12,6 @@ Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
 `skills/common/guardrail-codes.md` before acting. `run-loop.md` is the single
 canonical loop and node-CLI-invariant reference.
 
-Respond in the user's language. Use English for tool parameter values.
-All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
-Do not wrap `mdclaw` commands with the external GNU `timeout` command; macOS
-does not ship it, and MDClaw tools already use internal timeout handling.
-
 ## Step 0: Parse and Confirm
 
 | Parameter | Value |
@@ -112,36 +107,17 @@ logging bias energy and CV values for analysis.
 
 ## Error Handling
 
-- Use structured JSON fields from tool output to decide next steps. Never
-  parse stderr or warning strings to make decisions.
-- Branch on stable `code` values when present; otherwise report the
-  structured `errors` / `warnings` fields.
-- Retrying the same failed command with identical parameters will produce
-  the same error.
+Follow `skills/common/tool-output.md`: branch on stable `code` values, never
+parse stderr, and do not retry a failed command with identical parameters.
 
 ## Handoff
 
-1. Verify prod node status is `completed`.
-
-2. Run a best-effort final-structure preview when PyMOL is available:
-   ```bash
-   mdclaw --job-dir <job_dir> --node-id <prod_node_id> \
-     render_structure_preview --style publication --ray
-   ```
-   In node mode, `render_structure_preview` resolves `structure_file` from
-   node artifacts; pass `--structure-file` only to override.
-   Use `--style ligand_site` for ligand-binding systems and `--style
-   membrane` for membrane proteins. If a preview PNG is produced, show it to
-   the user in image-capable agent UIs; otherwise provide the PNG path, node
-   ID, caption, and source artifact path. If PyMOL is unavailable
-   (`code=pymol_not_available`), continue the handoff.
-
-3. Perform Visual QA per `skills/common/visual-qa.md` and register the result
-   with `register_visual_review`. Visual QA is only an obvious-accident check;
-   do not infer scientific correctness from the image. If severity is `high`,
-   ask the user before using the production output downstream.
-
-4. Present:
+1. Verify the `prod` node is `completed`.
+2. Perform Visual QA per `skills/common/visual-qa.md` (render preview, inspect,
+   `register_visual_review`; `--style publication` for the final structure,
+   `--style ligand_site` / `--style membrane` when relevant). If severity is
+   `high`, ask the user before using the production output downstream.
+3. Present:
    ```
    Production complete. Next:
      Continue with skills/md-analyze/SKILL.md on this job_dir.

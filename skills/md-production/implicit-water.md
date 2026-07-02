@@ -1,34 +1,9 @@
 # Production MD: Implicit Solvent
 
-Officially supported implicit-water models: **HCT, OBC1, OBC2, GBn, GBn2**.
-
-Standard recipe: `build_amber_system --implicit-solvent <MODEL>` on the
-topo node, then `run_production --implicit-solvent <MODEL>` on the prod
-node. `build_amber_system` bakes the matching GB force
-(`implicit/gbn2.xml` etc.) into `system.xml`, stamps the canonical
-model name on `metadata.implicit_solvent`, and the run side validates
-the chain in three layers: a topology guard
-(`implicit_solvent_topology_mismatch` if the topo metadata and runtime
-flag disagree after canonicalization), a runtime lookup
-(`implicit_solvent_model_unsupported` for unknown names — no silent
-OBC2 fallback), and the shim's GB-force presence check
-(`modern_system_implicit_solvent_unsupported` if the saved System has
-no GB force).
-
-Research-mode shipped XML path:
-`build_openmm_system --forcefield-xml … implicit/<model>.xml --implicit-solvent <MODEL>`.
-Same metadata contract, but the user owns the bundle. Missing XML
-returns `implicit_solvent_xml_missing`; bundling two shipped GB XMLs
-without an explicit `--implicit-solvent` returns
-`implicit_solvent_xml_ambiguous`.
-
-External GB XML (third-party, e.g. the Greener group's `GB99dms.xml`)
-is an advanced escape hatch through `build_openmm_system`. mdclaw
-cannot canonicalize a non-catalog GB XML, so the topo node's
-`metadata.implicit_solvent` stays `None` and the run-side topology
-guard cannot validate the build/runtime match — the user must manage
-XML correctness, GB-force presence, and consistency between build and
-run themselves.
+Read `skills/common/implicit-solvent-contract.md` first for the supported models
+(HCT, OBC1, OBC2, GBn, GBn2; GBn2 recommended) and the build/run validation
+contract. Pass the same `--implicit-solvent <MODEL>` on the `prod` node that was
+baked into `system.xml` at the `topo` node.
 
 ## System Configuration
 
@@ -138,21 +113,11 @@ mdclaw --job-dir <job_dir> --node-id <obc2_prod_node_id> run_production \
 
 ### SLURM Execution (HPC)
 
-```bash
-mdclaw submit_job \
-  --script "mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
-    --simulation-time-ns <user_specified> \
-    --temperature-kelvin <T> \
-    --pressure-bar 0 \
-    --implicit-solvent GBn2 \
-    --platform CUDA" \
-  --job-name md_<name> \
-  --partition <partition> --gpus 1 \
-  --time-limit <estimated> --memory "32G"
-```
-
-`--job-dir` is auto-resolved to an absolute path by the CLI, so SLURM
-compute nodes can find all files without manual `realpath` conversion.
+For long runs, multi-replicate sweeps, or fan-out across many systems, hand off
+to HPC execution instead of duplicating sbatch patterns here. Use the focused
+HPC guidance (`skills/hpc-run/submit-single.md`, `submit-array.md`,
+`prod-extension.md`, `monitor-recover.md`), and keep `--implicit-solvent <MODEL>`
+plus `--pressure-bar 0` in the job-script command.
 
 ---
 

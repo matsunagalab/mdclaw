@@ -60,100 +60,10 @@ CUDA/OpenCL platform was detected and prefer `/hpc-run`, or explicitly switch
 to a shorter smoke-test protocol. Reducing the water box is a debugging choice
 that changes the system and should be stated as such.
 
-### Membrane
-
-Use the same `solv` node type for membrane embedding:
-
-```bash
-mdclaw create_node --job-dir <job_dir> --node-type solv
-mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
-  --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
-  --salt --saltcon 0.15
-```
-
-`pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
-Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
-On success, the solv node records `is_membrane=true` for downstream topology,
-equilibration, and production.
-
-Membrane embedding defaults to the `patch-tile` backend
-(`--membrane-backend patch-tile`). Instead of packing the full protein box with
-packmol every time, patch-tile builds a small composition-keyed lipid patch
-once, equilibrates it under PBC, caches it, then tiles it around the oriented
-protein and neutralizes the net charge by swapping bulk waters for ions. This
-converges reliably for cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`) that
-full-box packing struggles with. Use `--membrane-backend packmol-memgen` to
-force the legacy full packing path, or `--membrane-backend auto` to try
-patch-tile first and fall back to packmol-memgen.
-
-Cold-build notice: the **first** time a given lipid composition is requested
-(and it is not in the writable or bundled patch cache), the `solv` step runs a
-one-time OpenMM equilibration of the patch (energy minimization + a few hundred
-ps of MD). This can take several minutes on CPU. When this happens the tool
-prints a `[mdclaw] patch-tile: ...` notice to stderr, adds it to `warnings`, and
-sets `patch_cold_build_notice` on the result; the result's `patch_build` field
-and `parameters.patch_equilibration_ran` report whether equilibration ran. Tell
-the user up front that the first build of a new composition will take a few
-extra minutes and is cached for reuse. Common compositions are pre-built into a
-read-only bundled cache in the container, so they hit without equilibration.
-
-Membrane embedding is a long-running operation. For large or mixed membrane
-systems, tens of minutes are normal, and CPU runs (including a cold patch
-equilibration) may take more than an hour. Do not assume a running membrane
-`solv` node is hung only
-because it has been running for 10-30 minutes. Continue monitoring or explain
-the same node until it completes, fails, or reaches the configured timeout; do
-not create a sibling `solv` node just to retry an in-progress membrane build.
-Run membrane embedding in the foreground for autonomous benchmark-style tasks.
-Do not exit or package a final submission while the membrane `solv` node is
-still `running`; wait until it reaches `completed` or `failed`, then continue
-from that concrete node outcome. If you need a simple blocking check after a
-long-running membrane command, use:
-
-```bash
-mdclaw wait_node --job-dir <job_dir> --node-id <solv_node_id> \
-  --timeout-seconds 7200 --poll-interval-seconds 30
-```
-
-Membrane embedding runs MDClaw's bounded Packmol retry plan as a 4-lane
-parallel race by default (`--packmol-race-lanes 4`). Use
-`--packmol-race-lanes 1` only on CPU-constrained/shared hosts when preserving
-the previous sequential behavior matters more than wall time.
-Explicit solvation and membrane tools first try the requested `--saltcon`
-(default 0.15 M). If neutralization requires a higher ion concentration, MDClaw
-automatically reruns packmol-memgen with `--salt_override` without changing the
-explicit-solvent mode, and records a warning plus metadata for provenance.
-If `embed_in_membrane` returns `code="packmol_packing_quality_failed"` and
-`recommended_next_action="retry_membrane_with_larger_box"`, keep the requested
-lipid species and ratio fixed. The CLI has already retried Packmol with a
-bounded adaptive packing budget before returning this failure. Retry from the
-same `prep` parent only when the `retry_suggestion.suggested_parameters`
-change the lateral xy box via `dist`; keep `leaflet` and `dist_wat` unchanged
-unless the user or prompt explicitly asks for a thicker membrane/water slab.
-Do not manually increase Packmol loop counts after this failure unless you are
-running a deliberate debugging experiment outside the benchmark path. More
-generally, membrane retries may adjust packing controls, random seed, or
-recommended lateral box/buffer expansion, but must preserve the requested
-lipid species, ratios, solute identity, solvent regime, and force-field intent.
-If the requested target appears infeasible, stop and report that instead of
-silently simplifying the system.
-Packmol may write both a postprocessed primary PDB and a raw `*_FORCED` PDB
-when it cannot find a perfect packing. MDClaw may continue with the
-postprocessed primary PDB as a topology/minimization candidate, but records
-`packing_quality.passed=false`. Do not treat the raw `*_FORCED` PDB as the
-solvated topology input, because it can bypass packmol-memgen's final
-AMBER/LIPID residue-name postprocessing. Trust downstream objective checks
-(topology load, finite energy, minimization report) before calling the
-preparation usable.
-
-Common structured outcomes:
-
-| `code` / action | What it means | Agent response |
-|---|---|---|
-| `packmol_imperfect_primary_output_candidate` | Packmol did not reach perfect packing after MDClaw's bounded retry, but packmol-memgen wrote a postprocessed primary PDB. | Continue to `build_amber_system` and `run_minimization`; only trust the candidate if topology load, finite energy, and minimization checks pass. |
-| `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | Packmol could not produce a perfect packing after MDClaw's bounded adaptive retry. The box/packing is not MD-ready. | Retry only with the CLI-provided larger xy/lateral box suggestion unless geometry was explicitly fixed. |
-| `forced_output_available` metadata | Packmol wrote a `*_FORCED` PDB during a failed attempt. | Keep it for debugging/provenance only; do not pass it to topology generation. |
-| `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
+For membrane systems, use the same `solv` node type but run `embed_in_membrane`
+instead of `solvate_structure`. The full procedure (backend, cold-build timing,
+Packmol race, salt override, failure codes) lives in
+`skills/md-prepare/membrane.md`.
 
 ### Domain Knowledge
 - Buffer distance 15 A ensures protein doesn't interact with periodic images
@@ -237,13 +147,7 @@ interaction policy.
 
 ## Handoff
 
-1. Read `progress.json` -- verify the topology node returned by `create_node`
-   has status `completed`.
-2. Tell the user:
-   ```
-   Preparation complete. Next:
-     Continue with skills/md-equilibration/SKILL.md on this job_dir.
-     Shortcut, if available: /md-equilibration <job_dir>
-   ```
-   Preparation does not auto-invoke equilibration — each stage is
-   user-initiated.
+Verify the `topo` node is `completed` in `progress.json`, then follow the
+canonical handoff in `SKILL.md` step 9 (continue with
+`skills/md-equilibration/SKILL.md` on this `job_dir`; shortcut
+`/md-equilibration`). Preparation does not auto-invoke equilibration.

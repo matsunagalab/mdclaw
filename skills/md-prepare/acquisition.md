@@ -34,7 +34,7 @@ Rules:
 - Use `list_source_candidates` to show the selectable candidates, ranks,
   files, and any generator metrics such as Boltz confidence.
 - If the source bundle contains multiple structures, pass an explicit
-  `prepare_complex` selector such as `--source-structure-id <candidate_id>`.
+  `prepare_complex` selector such as `--source-candidate-id <candidate_id>`.
 - For Boltz-2 generated structures, create/register the output as the job's
   source bundle before continuing into preparation; the candidate metadata
   should carry Boltz rank, model index, confidence file, and confidence score
@@ -43,9 +43,9 @@ Rules:
   register the selected model on the same `source` node before preparation.
 - Run `inspect_molecules` after acquisition when chains, ligands, metals,
   glycans, nucleic acids, or PTMs may affect choices. Pass the same
-  `--source-structure-id` selector to inspect a specific candidate.
+  `--source-candidate-id` selector to inspect a specific candidate.
 
 ```bash
 mdclaw list_source_candidates --job-dir <job_dir> --node-id <source_node_id>
-mdclaw inspect_molecules --job-dir <job_dir> --node-id <source_node_id> --source-structure-id <candidate_id>
+mdclaw inspect_molecules --job-dir <job_dir> --node-id <source_node_id> --source-candidate-id <candidate_id>
 ```

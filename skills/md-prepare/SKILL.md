@@ -11,10 +11,11 @@ Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
 `skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
 `skills/common/guardrail-codes.md` before acting.
 
-`skills/common/run-loop.md` is the single canonical loop (it now also carries
-the node-CLI invariants and the explicit-water/resume checklists): inspect the
-job DAG, create the node for the current stage, validate it with `explain_node`,
-then run the tool with node context. Use IDs returned by `inspect_job`,
+`skills/common/run-loop.md` is the single canonical loop (it also carries the
+node-CLI invariants and the re-entry checklist): inspect the job DAG, create the
+node for the current stage, validate it with `explain_node`, then run the tool
+with node context. The prepare-specific compact checklist is
+`skills/md-prepare/happy-path.md`. Use IDs returned by `inspect_job`,
 `explain_node`, and `create_node`, never literal example IDs.
 
 ## Defaults — Source of Truth
@@ -37,9 +38,8 @@ guardrails are authoritative; the skill guidance provides quick references:
 
 - `skills/md-prepare/defaults-and-guardrails.md` — preparation defaults,
   guardrails, and ligand failure policy
-- `skills/md-prepare/explicit-water.md` — "Decision Defaults" table
-  (explicit-water specific: forcefield, water model, box geometry,
-  salt)
+- `skills/common/solvent-regimes.md` — "Explicit-Water Constant Defaults" table
+  (forcefield, water model, box geometry, salt) and regime mapping
 - `skills/md-prepare/implicit-water.md` — implicit-solvent defaults
 
 Read the relevant guidance page **before** writing any value into the Step 0
@@ -113,7 +113,7 @@ use the HPacker-based `create_mutated_structure` branch in
 3. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
    setup guidance for acquisition, inspection, cleaning, branches, and resume.
    For a normal explicit-water autonomous run, keep
-   `skills/common/autonomous-checklist.md` as the short execution spine and
+   `skills/md-prepare/happy-path.md` as the short execution spine and
    open only the task-specific guidance pages tagged by `setup.md`.
 4. Determine the effective `solvent_regime` from the study plan / job params.
    Then read the matching guidance page. If the current job lacks
@@ -123,57 +123,35 @@ use the HPacker-based `create_mutated_structure` branch in
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
    - Implicit solvent → `skills/md-prepare/implicit-water.md`
-   - Membrane → explicit-water guidance plus membrane setup guidance from
-     `setup.md`
-   - Vacuum/no-solvent → implicit-water guidance for the no-solvation topology
-     contract, but do not pass `--implicit-solvent`
+   - Membrane → `skills/md-prepare/explicit-water.md` plus
+     `skills/md-prepare/membrane.md`
+   - Vacuum/no-solvent → the "Implicit / Vacuum Topology Contract" section of
+     `skills/common/solvent-regimes.md`; do not pass `--implicit-solvent`
 6. **Now present the Step 0 confirmation summary** (see Step 0 below)
    to the user. Only the fields enumerated there belong in the table —
    forcefield, water model, box geometry, etc. are tool-level defaults
-   surfaced from the guidance pages read in steps 2–3 and are not part of
+   surfaced from the guidance pages read in steps 4–5 and are not part of
    the user-facing summary unless the user explicitly named them.
-7. Execute prepare_complex / mutate / PTM restore / solv / topo per setup.md and the
-   solvation guidance. If the user specifies site-specific residue
-   protonation, pass it explicitly through `protonation_states`; do not leave
-   it as a free-text note. If the user specifies a biological assembly, request
-   it during `fetch_structure` with `--assembly-ids <id...>` or
-   `--assembly-mode preferred|all`, then select the intended source candidate
-   during `prepare_complex`. Create nodes first, then run workflow tools with
-   both `--job-dir` and `--node-id`. For biological assemblies or systems with
-   many chains, do not treat the one-character PDB chain ID in `merged_pdb` as
-   a canonical identity. Read `chain_identity_map.json` and use `component_id`,
-   source label/auth IDs, topology chain index, and atom/residue ranges to
-   identify components. Always pass the effective solvent regime to
-   `prepare_complex`: `explicit` for explicit-water and membrane systems,
-   `implicit` for implicit solvent, and `vacuum` for deliberate no-solvent
-   topologies. Keep supported crystallographic ions by default on the
-   explicit-solvent path. In implicit solvent, prep will exclude explicit ion
-   components from `merged_pdb` and record them in
-   `component_disposition.json`. A deliberate vacuum/no-solvent topology may
-   keep explicit ions, but it is not the default MD workflow. `build_amber_system`
-   validates the same invariant and rejects implicit builds that contain
-   explicit ions with `code="explicit_ions_in_implicit_solvent"`.
-   Experimental isotope atoms such as deuterium are excluded by
-   `prepare_complex` across split components from the default classical MD
-   path, then standard hydrogens are rebuilt; copy the tool-written
-   `component_disposition.json` rather than hand-writing it. If the user
-   requests terminal caps, use `--n-terminal-cap ACE` and/or
-   `--c-terminal-cap NME`; `--cap-termini` is only the shorthand for both.
-   Cap-residue hydrogen completion is tool-owned in `prepare_complex`; when
-   the user specifies a non-default protein force field for the eventual
-   topology, pass the same value as `--terminal-cap-forcefield`, otherwise use
-   the ff19SB default. If the user
-   prepares standard DNA/RNA, `prepare_complex` rebuilds nucleic hydrogens with
-   OpenMM Modeller using the current DNA.OL15/RNA.OL3 libraries before topology.
-   If the user
-   explicitly asks for isotope-preserving MD, treat that as unsupported for now
-   and stop with a structured explanation instead of silently converting D to H.
-   For glycoproteins, prep preserves glycan provenance/linkages; Amber/GLYCAM
-   conversion, bond-plan application, and glycan-only H completion are topology
-   normalization artifacts written by `build_amber_system`.
-   When creating the `topo` node, use the correct completed parent node and let
-   `build_amber_system` auto-resolve its input; do not supply a free-standing
-   `--pdb-file` or re-enter the workflow from a raw PDB.
+7. **Execute the happy path**: run `prep` → (optional `mutate`/PTM branch) →
+   `solv` → `topo`, following `skills/md-prepare/happy-path.md` and the
+   solvation page. The invariants that always apply:
+   - Create each node first, then run the tool with both `--job-dir` and
+     `--node-id` (see `skills/common/run-loop.md`).
+   - Pass the effective solvent regime to `prepare_complex`
+     (`--solvent-type explicit|implicit|vacuum`).
+   - Let `build_amber_system` auto-resolve its parent artifact when creating the
+     `topo` node; never pass a free-standing `--pdb-file` or re-enter from a raw
+     PDB.
+
+   Read a focused page only when the request needs it:
+   - Ions kept/excluded by regime → `skills/md-prepare/ion-policy.md`
+   - Site-specific protonation, terminal caps, DNA/RNA hydrogen rebuild,
+     isotopes/deuterium, glycoproteins, large-assembly chain identity →
+     `skills/md-prepare/prep-chemistry.md`
+   - Biological assemblies and candidate selection →
+     `skills/md-prepare/acquisition.md`
+   - Mutations / supported PTMs → `skills/md-prepare/branches.md`
+   - Membrane embedding → `skills/md-prepare/membrane.md`
 8. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), perform Visual QA per
    `skills/common/visual-qa.md` and register it with `register_visual_review`.
@@ -189,28 +167,35 @@ use the HPacker-based `create_mutated_structure` branch in
 
 ## Step 0: Parse and Confirm
 
-Run this **after** Workflow steps 2–4 (the guidance pages have been read).
+Run this **after** Workflow steps 4–5 (the solvation guidance page has been
+read). Confirm in two parts, because chains and ligands can only be finalized
+after molecule inspection.
 
-The summary table includes only the fields listed below. Do **not**
-add forcefield, water model, box geometry, or any other tool-level
-default to this table — those values come from the guidance pages and are
+Do **not** add forcefield, water model, box geometry, or any other tool-level
+default to these tables — those values come from the guidance pages and are
 applied silently by the tools unless the user explicitly named one.
 
-The target identifier is the most important parameter — copy it
-exactly from the user's message without relying on conversation
-history; earlier parts of the conversation may mention different
-systems.
+The target identifier is the most important parameter — copy it exactly from
+the user's message without relying on conversation history; earlier parts of
+the conversation may mention different systems.
+
+**Step 0 (before inspection)** — confirm the identity of the run:
 
 | Parameter | Value |
 |-----------|-------|
 | Target | (PDB ID / sequence / file — exactly as the user wrote) |
-| Execution mode | `autonomous` (default) / `human_in_the_loop` |
-| Chain(s) | (if specified; after inspection, expand to ligand label chains when ligands should be included) |
-| Ligands | include / exclude (use inspected ligand `unique_id` values) |
 | Solvent regime | explicit (default) / implicit / vacuum / membrane |
+| Execution mode | `autonomous` (default) / `human_in_the_loop` |
 | Mutations | (if any — one-letter notation, e.g. K27A) |
 | Production length | (if specified) |
 | Other | (only parameters the user explicitly named — do not pre-fill defaults here) |
+
+**Step 0b (after `inspect_molecules`)** — confirm what to keep:
+
+| Parameter | Value |
+|-----------|-------|
+| Chain(s) | (expand to ligand label chains when ligands should be included) |
+| Ligands | include / exclude (use inspected ligand `unique_id` values) |
 
 This confirmation step applies to all interaction modes including
 autonomous. Misidentifying the target cannot be recovered later.

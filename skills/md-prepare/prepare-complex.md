@@ -20,7 +20,7 @@ pass an explicit selector:
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-structure-id <candidate_id>
+  --source-candidate-id <candidate_id>
 ```
 
 For NMR-style model numbering, `--source-model-index 2` selects the second

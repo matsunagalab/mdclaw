@@ -41,6 +41,8 @@ ForceField XML.
 Developer references:
 
 - `docs/developer/architecture.md`: repository map and schema v3 DAG details.
+- `docs/developer/skill-conventions.md`: how to author/refactor `skills/**` so
+ weak LLMs can follow them (spine + routed leaf pages, single canonical home).
 - `docs/developer/tool-reference.md`: tool modules and signatures index.
 - `docs/developer/cli-internals.md`: CLI discovery, argument mapping, guardrails.
 - `docs/developer/testing.md`: test levels and commands.

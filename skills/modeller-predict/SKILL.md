@@ -33,84 +33,33 @@ candidate rather than patch a large missing loop inside PDBFixer.
 MODELLER is optional and licensed. The CLI expects a `KEY_MODELLER*`
 environment variable such as `KEY_MODELLER10v8`.
 
+## Step 0: Confirm
+
+| Parameter | Value |
+|-----------|-------|
+| Template PDB | (path) |
+| Target | one sequence, one sequence per chain, or an alignment file |
+| Codes | template/target codes if the user gave them (else tool defaults) |
+| Variant | single chain / multi-chain / loop refinement / explicit alignment |
+| Number of models | 1 (default) / 3-5 for a small ranked set |
+| Mode | source node (default) / standalone file |
+
 ## Source Node Workflow
 
-For normal MDClaw DAG work, create or use the job's `source` node and run
-MODELLER in node mode:
+For normal MDClaw DAG work, run MODELLER in node mode on the job's `source`
+node. Choose one variant and follow its command in
+`skills/modeller-predict/workflow-variants.md`:
 
-```bash
-mdclaw create_node --job-dir <job_dir> --node-type source
+- One target chain -> single chain (`--target-sequence`).
+- Complex / heterodimer -> multi-chain (`--target-sequences`,
+  `--template-chains`).
+- Fill/refine gaps in an existing structure -> loop refinement
+  (`--loop-refinement`).
+- You already have a PIR/ALI alignment -> explicit alignment
+  (`--alignment-file`).
 
-mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
-  --template-pdb "/abs/template.pdb" \
-  --target-sequence "MVLSPADKTNVKAAW..." \
-  --num-models 3
-```
-
-Multi-chain complexes (e.g. a heterodimer) pass one sequence per target chain
-with `--target-sequences`. The tool builds the complex alignment with MODELLER
-`align2d` against the template structure (chains joined with `/`). Use
-`--template-chains` to choose and order the template chains that map to the
-target chains, in the same order as `--target-sequences`:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
-  --template-pdb "/abs/9OPW.pdb" \
-  --template-code "9OPW" \
-  --template-chains A B \
-  --target-sequences "<chainA seq>" "<chainB seq>" \
-  --target-code "complex" \
-  --num-models 3
-```
-
-Provide either `--target-sequence` (single chain) or `--target-sequences`
-(one per chain), never both. `--template-chains` length must match
-`--target-sequences` length. When `--template-chains` is omitted, all template
-chains are used in file order.
-
-To fill and refine the missing residues of a structure (cryo-EM/X-ray gaps),
-pass that structure as the template and its full sequence (e.g. from SEQRES) as
-the target, and add `--loop-refinement`. The base model builds the missing
-residues and MODELLER loop modeling (`LoopModel`) then rebuilds every gap loop.
-`--loop-models` sets how many refined loop models to generate (best by DOPE is
-selected); `--loop-min-length` / `--loop-max-length` bound which gap loops are
-refined (defaults 1..30):
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
-  --template-pdb "/abs/9OPW.pdb" \
-  --template-code "9OPW" \
-  --template-chains A B \
-  --target-sequences "<chainA SEQRES>" "<chainB SEQRES>" \
-  --target-code "9OPW_filled" \
-  --loop-refinement \
-  --num-models 1 \
-  --loop-models 4
-```
-
-With an explicit alignment (any chain count; chains separated by `/`):
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment \
-  --template-pdb "/abs/template.pdb" \
-  --alignment-file "/abs/alignment.ali" \
-  --template-code "tmpl" \
-  --target-code "target" \
-  --num-models 3
-```
-
-The tool normalizes the selected model into the source bundle:
-
-```text
-nodes/<source_node_id>/artifacts/source_bundle.json
-nodes/<source_node_id>/artifacts/candidates/<candidate_id>.pdb
-```
-
-Then list candidates before preparation:
-
-```bash
-mdclaw list_source_candidates --job-dir <job_dir> --node-id <source_node_id>
-```
+The tool normalizes the selected model into the source bundle; run
+`list_source_candidates` before preparation.
 
 ## Standalone Workflow
 
@@ -145,12 +94,7 @@ tell the user to install MODELLER separately, for example with
 
 ## Handoff
 
-After a successful source-node run, continue with `skills/md-prepare/SKILL.md`.
-Create the prep node first, then run `prepare_complex` with the selected
-candidate when needed:
-
-```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-structure-id <candidate_id>
-```
+After a successful source-node run, follow the canonical handoff in
+`skills/common/md-handoff.md`: create the `prep` node, run
+`prepare_complex --source-candidate-id <candidate_id>`, then continue with
+`skills/md-prepare/SKILL.md`.

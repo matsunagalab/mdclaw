@@ -8,8 +8,9 @@ description: "Generate monomer conformational source candidates with BioEmu, the
 Use this skill when the user wants to sample a monomer conformational ensemble
 with BioEmu before running atomistic MD.
 
-Respond in the user's language. Invoke MDClaw tools via Bash with `mdclaw`.
-Output is JSON on stdout.
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
+`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
+reference) before acting.
 
 ## Scope
 
@@ -47,9 +48,11 @@ environment.
 
 ## Step 2: Generate Candidates
 
-For a source node:
+Create the `source` node first (its parent auto-resolves), then generate:
 
 ```bash
+mdclaw create_node --job-dir <job_dir> --node-type source
+
 mdclaw generate_surrogate_candidates \
   --model bioemu \
   --amino-acid-sequence YYDPETGTWY \
@@ -86,12 +89,7 @@ multi-candidate selection and fan-out belong to later workflow phases.
 
 ## Step 4: Handoff To Prepare
 
-Use the selected candidate with the standard preparation skill. Create the
-prep node first (its parent auto-resolves to the source node), then run
-`prepare_complex` with the node id `create_node` returns:
-
-```bash
-mdclaw create_node --job-dir <job_dir> --node-type prep
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-candidate-id <candidate_id>
-```
+Hand off to MD preparation using the canonical procedure in
+`skills/common/md-handoff.md` (create `prep`, run
+`prepare_complex --source-candidate-id <candidate_id>`, then follow
+`skills/md-prepare/SKILL.md`).

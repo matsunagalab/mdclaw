@@ -21,18 +21,25 @@ list as the starting point for metric selection. Treat it as scientific intent,
 not as a brittle execution contract: missing or incomplete plan fields should
 not block normal analysis.
 
-## Route To The Right Guidance
+## Workflow
 
-- Combine a production lineage into an analysis trajectory:
-  `skills/md-analyze/concat.md`
-- RMSD, RMSF, contacts, distances, hydrogen bonds, or energy summaries:
-  `skills/md-analyze/metrics.md`
-- Errors, missing artifacts, bad selections, or empty DCDs:
-  `skills/md-analyze/troubleshooting.md`
-- Legacy notes for current analysis helpers:
-  `skills/md-analyze/analysis.md`
+Follow the canonical loop in `skills/common/run-loop.md`, specialized here as:
+
+1. `inspect_job` to confirm the job state and find the production/analysis
+   node(s) that answer the question.
+2. Confirm the Step 0 fields below.
+3. Combine the production lineage into one analysis trajectory:
+   `skills/md-analyze/concat.md`.
+4. Create an `analyze` node per metric and run the tool with `--job-dir` /
+   `--node-id`: `skills/md-analyze/metrics.md`.
+5. Report results with node lineage, selection, and stride.
+
+Read by task:
+
 - Collective variables and bias energy from custom-force production runs:
   `skills/md-analyze/collective-variables.md`
+- Errors, missing artifacts, bad selections, or empty DCDs:
+  `skills/md-analyze/troubleshooting.md`
 
 ## Step 0 Summary
 
@@ -50,14 +57,14 @@ Confirm these fields before running analysis:
 | Stride | integer, default `1` |
 
 For comparison analyses, create the node with explicit subjects and mapping:
-Use two completed `production_chain` analyze nodes as parents.
-Put `analysis_subjects` and `comparison_mapping` on the comparison node itself,
-not on the parent `production_chain` analyze nodes.
-The resolver still exposes multi-parent analyze inputs as `branches_input` for
-tool compatibility.
-For `residue_number` mappings, each reference uses
-`subject_label:residue_id`; the `residue_id` is a string, not a number.
-For `atom_selection` mappings, selection values are mdtraj selection strings.
+
+- Parents: two completed `production_chain` analyze nodes.
+- Put `analysis_subjects` and `comparison_mapping` on the comparison node
+  itself, not on the parent nodes. The resolver still exposes multi-parent
+  inputs as `branches_input` for tool compatibility.
+- `residue_number` mapping: each reference is `subject_label:residue_id`, where
+  `residue_id` is a string, not a number.
+- `atom_selection` mapping: selection values are mdtraj selection strings.
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type analyze \

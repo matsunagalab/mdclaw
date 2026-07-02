@@ -10,38 +10,19 @@ questions into MDClaw studies.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
 `skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
-reference) before acting.
+reference) before acting. Then use `skills/md-study/setup.md` to route to the
+focused planning pages.
 
 ## When To Use This Skill
 
-Use this skill when the user asks a scientific or campaign-level question, such
-as:
+Use this skill when the user asks a scientific or campaign-level question:
+comparing WT vs mutant, apo vs holo, temperatures, force fields, or candidates;
+asking which simulations answer a biological/physical question; or asking for
+production length, replicates, observables, controls, or decision criteria.
 
-- Comparing WT vs mutant, apo vs holo, ligand-bound vs unbound, temperatures,
-  force fields, constructs, or multiple candidates.
-- Asking which MD simulations are needed to answer a biological or physical
-  question.
-- Asking for production length, replicates, observables, controls, or decision
-  criteria.
-- Requesting a study/campaign rather than one straightforward MD run.
-
-All MD workflows have a study plan and the canonical
-`study_dir/jobs/<job_id>` layout. This skill is the richer planning entry point
-for scientific questions and campaigns. If the user already gives a concrete
-target and asks to run it, create a minimal plan with
-`bootstrap_md_workflow` (or hand off to `skills/md-prepare/SKILL.md`, which
-will do the same bootstrap) instead of performing a heavy campaign-design
-exercise. Examples of minimal-plan requests:
-
-- "Simulate 1AKE chain A."
-- "Run this PDB in explicit water for 100 ns."
-- "Try this protein in implicit solvent."
-
-Direct runs use a thin `study_dir` with one `jobs/main` job so execution state
-and artifacts live under the same study/job contract. `study_plan.json` is
-mandatory even for those direct runs; the plan can be minimal and simply
-normalize the user's requested target, solvent regime, stop policy, and
-default workflow steps.
+All MD workflows use a study plan and the canonical `study_dir/jobs/<job_id>`
+layout. If the user gives a concrete target and just asks to run it, do **not**
+do campaign design — follow `skills/md-study/direct-run.md` instead.
 
 ## Step 0: Parse and Confirm
 
@@ -52,279 +33,50 @@ Extract parameters from the user's request and present a summary.
 | Scientific question | (one sentence, copied or restated from the user) |
 | Study directory | (path, e.g. `studies/<study_id>`) |
 | Execution mode | `autonomous` (default) / `human_in_the_loop` |
-| Variants / planned jobs | (WT vs mutant, apo vs holo, etc., if the user named them) |
+| Variants / planned jobs | (WT vs mutant, apo vs holo, etc., if named) |
 | Solvent regime | `explicit` (default) / `implicit` / `vacuum` / `membrane` |
-| Compute budget | (free text the user gave, e.g. "1x A100 for 7 days"; or "not specified") |
+| Compute budget | (free text, e.g. "1x A100 for 7 days"; or "not specified") |
 | Other | (only parameters the user explicitly named) |
 
-The execution-mode default matches the other MDClaw skills. Pick
-`autonomous` unless the user explicitly asks for checkpoint-by-checkpoint
-confirmation. The mode is propagated to each registered job's
-`progress.json` (see Workflow step 10) so downstream skills inherit it.
-
-## Interaction Mode
-
-- **`autonomous` (default)**: Restate the question, design the plan, record
-  it, register the planned jobs, then auto-invoke the next-stage skill on the
-  first registered structural-setup job. Continue planning-related work
-  without pausing for substep confirmations. Ask only when the scientific
-  question is genuinely ambiguous, a required field has no safe default, or a
-  structured tool failure requires a decision.
-
-  Auto-chaining `study -> prepare` is safe because `md-prepare` does not start
-  any simulation. The "each stage is user-initiated" rule from the other
-  skills applies to compute-starting stages (`prepare -> equilibration`,
-  `equilibration -> production`, `production -> analyze`) and remains in
-  effect there.
-
-- **`human_in_the_loop`**: Pause at every major checkpoint:
-  1. Restated scientific question and MD goal.
-  2. Proposed job list.
-  3. Analysis observables.
-  4. Decision criteria.
-  5. Plan write (`record_study_plan`).
-  6. Job registration (`add_study_job`).
-  7. Handoff to the next-stage skill.
-
-  In HIL mode, do **not** auto-invoke `md-prepare`. Report the plan, the next
-  skill path, and the example command, then wait for the user.
-
-## Planning Goal
-
-The goal is not to write a perfect grant-style research plan. The goal is to
-record enough intent that later agents can see:
-
-- What scientific question was asked.
-- What MD can realistically test.
-- Which jobs should be prepared and why.
-- Which observables should be analyzed.
-- What results would support, argue against, or leave the question unresolved.
-
-## Minimal Plan Schema
-
-Keep the JSON small so weaker agents and re-entry flows can preserve it. The
-required fields are:
-
-```json
-{
-  "plan_schema_version": 2,
-  "question": "...",
-  "md_goal": "...",
-  "solvent_regime": "explicit",
-  "jobs": [
-    {
-      "job_id": "main",
-      "purpose": "..."
-    }
-  ],
-  "analysis": ["..."],
-  "decision": {
-    "support": "...",
-    "against": "...",
-    "inconclusive": "..."
-  }
-}
-```
-
-`solvent_regime` is required study-level intent, not a topology afterthought.
-Use one of:
-
-- `"explicit"` — default for ordinary biomolecular MD; downstream prepare runs
-  `prepare_complex --solvent-type explicit`, then `solvate_structure` or
-  `embed_in_membrane` only if the regime below requires it.
-- `"implicit"` — continuum solvent; downstream prepare runs
-  `prepare_complex --solvent-type implicit`, skips explicit solvation, and
-  topology must pass an explicit `--implicit-solvent <MODEL>`.
-- `"vacuum"` — deliberate research/no-solvent topology; downstream prepare runs
-  `prepare_complex --solvent-type vacuum` and skips solvation and GB.
-- `"membrane"` — explicit membrane/water environment; downstream prepare runs
-  `prepare_complex --solvent-type explicit`, then `embed_in_membrane`.
-
-Default to `"explicit"` unless the user explicitly asks for implicit solvent,
-vacuum/no-solvent, or a membrane workflow. Do not defer this decision to
-topology generation; it affects prep-time component disposition such as whether
-explicit ion components are retained.
-
-An optional top-level `budget` block records the user's compute budget
-and the derived (replicates × length) plan. Include it only when the
-user actually mentioned compute; omit the key entirely otherwise. See
-the "Compute Budget" section below for the schema and the derivation
-contract.
-
-Optional detail belongs under `notes` or extra per-job fields. Do not invent
-precise replicate counts, production lengths, protonation states, or controls
-unless the user requested them or they are clearly part of the study design.
-Use `unknown` or `to_be_decided` instead of filling uncertain details.
-
-## Literature And Database Lookup
-
-Study planning must be grounded in current databases and literature, not in
-the agent's training-data memory. The agent's knowledge of "good PDB IDs"
-and "typical comparisons" is often stale or imprecise (wrong chain,
-unexpected ligand, superseded by a higher-resolution entry). MDClaw exposes
-the relevant tools natively; use them before designing the plan.
-
-Minimum contract for multi-system or comparative studies:
-
-1. **Structure candidates** — run `search_structures` (use `--rank-for-md`
-   for MD-suitability ordering by resolution, experimental method, and
-   chain composition) and/or `get_structure_info --pdb-id <id>` for any
-   candidate the user named. Note resolution, experimental method, chain
-   composition, ligands, and bound cofactors that matter to the
-   hypothesis (Ca2+, peptide, NADP, lipid, etc.).
-2. **Sequence / functional context** — when the user names a protein but
-   not a structure, run `search_proteins` and `get_protein_info` against
-   UniProt to confirm the canonical sequence, isoforms, and PTM sites.
-3. **Prior MD or structural work** — run `pubmed_search` on the system and
-   hypothesis (for example `"calmodulin MLCK molecular dynamics"`) and
-   `pubmed_fetch --pmids ...` on the most relevant 1-3 PMIDs to read
-   abstracts. This surfaces typical observables, force-field choices,
-   timescales, and known pitfalls already in the literature.
-
-Record what you consulted under `notes.references` in the plan so later
-agents and reviewers can see the evidence base:
-
-```json
-"notes": {
-  "references": {
-    "pdb_ids": ["1CDL", "1CLL", "1CFD"],
-    "pmids": ["12345678", "23456789"],
-    "summary": "1CDL chosen as master start (X-ray 2.0 A, single CaM chain + 19-residue MLCK peptide, 4 Ca2+). 1CLL and 1CFD cited as references for the holo_nopep and apo_nopep cells."
-  }
-}
-```
-
-When the user has specified a concrete PDB ID and asked for a direct run
-(the single-system fast path described in `## When To Use This Skill`),
-this section is optional — a single `get_structure_info` to confirm
-resolution and chain composition is enough, and `pubmed_search` can be
-skipped.
-
-## Compute Budget
-
-When the user mentions compute (GPUs, wall time, queues, or an ns budget), or a
-harness imposes a per-task time limit, record a `budget` block on
-`study_plan.json`. Otherwise omit the `budget` key but still fix MD length via
-the default assumption (~1 day on 1 local GPU). The full parse → estimate →
-derive → tier → record procedure and JSON schema live in
-`skills/md-study/compute-budget.md`; follow it whenever this step applies. Do not
-auto-detect compute via `inspect_openmm_platforms` / `inspect_cluster`.
+Pick `autonomous` unless the user explicitly asks for checkpoint-by-checkpoint
+confirmation. The mode is propagated to each registered job's `progress.json`
+so downstream skills inherit it. Full interaction-mode behavior is in
+`skills/md-study/handoff-routing.md`.
 
 ## Workflow
 
-1. Parse the user's request. Set `execution_mode` per Step 0; default
-   `autonomous`.
-2. Decide whether this needs rich campaign planning or only a minimal direct-run
-   plan. If it is a direct run, use `bootstrap_md_workflow` or hand off to
-   `skills/md-prepare/SKILL.md`; either path must create `study_plan.json` and
-   `jobs/main`.
-3. **Ground the design in literature and databases.** Do not pick starting
-   structures, comparison cells, or analysis observables from training-data
-   memory. Run the lookups described in `## Literature And Database Lookup`
-   (`search_structures` / `get_structure_info`, optionally `search_proteins`
-   / `get_protein_info`, and `pubmed_search` / `pubmed_fetch`) and record
-   what you consulted under `notes.references` in the plan JSON. Skip only
-   for a minimal single-system plan (step 2).
-4. Restate the scientific question in one clear sentence.
-5. Translate it into an MD goal: what structural, dynamical, or interaction
-   behavior MD can measure.
-6. Choose the study-level `solvent_regime`. Default to `explicit`; choose
-   `implicit`, `vacuum`, or `membrane` only when the user requested it or the
-   scientific question requires it. Record the reason briefly in `notes` when
-   it is not the default.
-7. Propose the smallest job set that can answer the question. Prefer one
-   baseline/control and one test variant when possible.
-8. Propose a short analysis list tied to the question. Avoid long generic
-   metric catalogs.
-9. State decision criteria for support, against, and inconclusive outcomes.
-10. **Compute budget (only if the user mentioned compute).** Follow
-   `skills/md-study/compute-budget.md`: parse the user-stated budget, call
-   `estimate_md_throughput`, derive `(replicates × length)` with 15 % headroom,
-   run the INSUFFICIENT_BUDGET guardrail, and stage the `budget` block for
-   inclusion in the plan JSON. If the user did not mention compute, skip this
-   step and omit the `budget` block.
-11. **HIL only**: confirm the restated question, solvent regime, jobs, analysis, and decision
-   criteria with the user before writing them. In autonomous mode, skip this
-   confirmation unless a required value is missing or genuinely ambiguous.
-12. Create or reuse a `study_dir` and record the plan. For one-job workflows,
-    prefer `bootstrap_md_workflow`; for richer multi-job plans, use the
-    lower-level commands below so every job can be registered explicitly:
-
-    ```bash
-    mdclaw bootstrap_md_workflow \
-      --study-dir <study_dir> \
-      --question "<question>" \
-      --md-goal "<md goal>" \
-      --solvent-regime explicit \
-      --execution-mode autonomous
-
-    # For richer multi-job plans:
-    mdclaw init_study --study-dir <study_dir> --title "<short title>" \
-      --objective "<one sentence objective>"   # only if the study does not exist
-
-    mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
-    ```
-
-13. Register planned jobs and propagate `execution_mode` and `solvent_regime`
-    so downstream skills inherit them:
-
-    ```bash
-    mdclaw add_study_job --study-dir <study_dir> \
-      --job-id <id> --job-dir <study_dir>/jobs/<id> \
-      --role <baseline|test|control|...> \
-      --label "<short label>" --description "<one-line purpose>" \
-      --create-job-dir
-
-    mdclaw update_workflow_state --job-dir <study_dir>/jobs/<id> \
-      --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
-    ```
-
-    Register jobs only when the job IDs are clear. Otherwise leave job
-    creation to the downstream prepare step.
-
-14. Handoff:
-
-    - **`autonomous`**: Invoke the next-stage skill on the first registered
-      structural-setup job. Determine the current job state with
-      `mdclaw inspect_job --job-dir <job_dir>` and the stage guidance rather
-      than guessing:
-        * No prepared system yet → `skills/md-prepare/SKILL.md`
-        * Prepared, not equilibrated → `skills/md-equilibration/SKILL.md`
-        * Equilibrated, not run → `skills/md-production/SKILL.md`
-        * Trajectories already present → `skills/md-analyze/SKILL.md`
-
-      Pass the `job_dir`, the variant / system summary from the plan,
-      `solvent_regime`, and any job-specific instructions (e.g. mutation,
-      chain selection) to the invoked skill. After it returns, continue with
-      the next planned job in the same conversation turn.
-
-    - **`human_in_the_loop`**: Report the plan summary, the next-stage skill
-      path, and a copy-pasteable command, then stop:
-
-      ```
-      Plan recorded at <study_dir>/study_plan.json.
-      Next: skills/md-prepare/SKILL.md on <first job_dir>.
-      Harness shortcut (if available): /md-prepare <first job_dir>
-      ```
+1. Parse the request; set `execution_mode` per Step 0 (default `autonomous`).
+2. If this is one concrete target, follow `skills/md-study/direct-run.md` and
+   stop. Otherwise continue with campaign planning.
+3. Ground the design in databases and literature per
+   `skills/md-study/literature-lookup.md`. Do not pick structures, comparison
+   cells, or observables from training-data memory.
+4. Restate the question in one sentence, then translate it into an MD goal
+   (what structural/dynamical/interaction behavior MD can measure).
+5. Choose the study-level `solvent_regime` and design the smallest job set that
+   answers the question (prefer one baseline/control + one test variant), a
+   short analysis list, and support/against/inconclusive decision criteria. See
+   `skills/md-study/minimal-plan-schema.md`.
+6. Compute budget: only if the user mentioned compute, follow
+   `skills/md-study/compute-budget.md`; otherwise omit the `budget` block.
+7. Record the plan and register jobs per `skills/md-study/register-jobs.md`.
+8. Hand off per `skills/md-study/handoff-routing.md`.
 
 ## Guardrails
 
-- Do not select starting structures, comparison cells, or analysis
-  observables purely from training-data memory. Use the lookups described
-  in `## Literature And Database Lookup` and record the consulted PDB IDs
-  and PMIDs in the plan under `notes.references`.
-- Do not treat visual QA or simple RMSD plots as scientific validation by
-  themselves.
-- Do not make the plan so detailed that later agents must satisfy fragile
-  fields before running ordinary MD.
-- Do not block downstream execution when a plan field is incomplete; ask only
-  when a missing value is necessary for a safe next action.
-- Keep execution state in each job DAG. The study plan is intent and design,
-  not a replacement for node artifacts or `progress.json`.
+- Do not select starting structures, comparison cells, or analysis observables
+  purely from training-data memory; use the lookups in
+  `skills/md-study/literature-lookup.md` and record consulted PDB IDs / PMIDs
+  under `notes.references`.
+- Do not treat visual QA or simple RMSD plots as scientific validation.
+- Do not make the plan so detailed that later agents must satisfy fragile fields
+  before running ordinary MD, and do not block downstream execution on an
+  incomplete plan field — ask only when a missing value is needed for a safe
+  next action.
+- Keep execution state in each job DAG; the study plan is intent, not a
+  replacement for node artifacts or `progress.json`.
 
 ## Error Handling
 
-Use structured JSON fields from tool output to decide next steps. Never parse
-stderr or warning strings to make decisions. Branch on stable `code` values
-when present. Retrying the same command with identical parameters will
-produce the same error.
+Follow `skills/common/tool-output.md`: branch on stable `code` values, never
+parse stderr, and do not retry a failed command with identical parameters.
