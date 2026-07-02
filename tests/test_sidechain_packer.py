@@ -255,7 +255,8 @@ def test_sort_protein_atoms_like_reference_rejects_missing_residue(tmp_path):
 
 
 def test_create_mutated_structure_uses_hpacker_metadata(monkeypatch, tmp_path):
-    from mdclaw import sidechain_packer, structure_server
+    from mdclaw import sidechain_packer
+    from mdclaw.structure import mutation as structure_server
 
     monkeypatch.setattr(
         sidechain_packer,

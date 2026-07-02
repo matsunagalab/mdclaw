@@ -11,7 +11,7 @@ import pytest
 def fetch_pdb_node(job_dir: Path, pdb_id: str, label: str | None = None) -> str:
     """Create a source node and populate it with an RCSB PDB structure."""
     from mdclaw._node import create_node, read_node
-    from mdclaw.research_server import fetch_structure
+    from mdclaw.research.fetch import fetch_structure
 
     node = create_node(str(job_dir), "source", label=label or f"PDB {pdb_id}")
     assert node["success"], node
@@ -88,7 +88,7 @@ def require_topology_builder_stack() -> None:
 
 
 def require_packmol_memgen() -> None:
-    from mdclaw.solvation_server import packmol_memgen_wrapper
+    from mdclaw.solvation._base import packmol_memgen_wrapper
 
     if not packmol_memgen_wrapper.is_available():
         pytest.skip("packmol-memgen is required for this integration test")

@@ -41,7 +41,7 @@ class Test1akeAp5BuildTopology:
 
     def test_step1_source(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from research_server import fetch_structure
+        from mdclaw.research.fetch import fetch_structure
 
         node = create_node(str(job_dir), "source", label="PDB 1AKE")
         assert node["success"]
@@ -59,7 +59,7 @@ class Test1akeAp5BuildTopology:
 
     def test_step2_prep_with_ap5_ligand(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(
             str(job_dir), "prep", parent_node_ids=[self.source_id]
@@ -82,7 +82,7 @@ class Test1akeAp5BuildTopology:
 
     def test_step3_solvate(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from solvation_server import solvate_structure
+        from mdclaw.solvation.water import solvate_structure
 
         node = create_node(
             str(job_dir), "solv", parent_node_ids=[self.prep_id]
@@ -108,7 +108,7 @@ class Test1akeAp5BuildTopology:
         GAFFTemplateGenerator derives AM1-BCC charges (sqm); the
         ``MDCLAW_CHARGE_FIT_TIMEOUT`` floor guards that fallback.
         """
-        from amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
         from mdclaw._node import create_node, read_node
 
         node = create_node(

@@ -93,8 +93,9 @@ from `docs/developer/testing.md`.
 
 ## Adding Or Changing Tools
 
-1. Add or update the function in the appropriate `mdclaw/*_server.py` file.
-2. Register it in that module's `TOOLS` dict.
+1. Add or update the function in the appropriate `mdclaw/<tool>/` submodule.
+2. Re-export it from the package `__init__.py` and add it to that package's
+   `TOOLS` dict.
 3. If adding a server, register it in `mdclaw/_registry.py` and
    `mdclaw/__init__.py`.
 4. Add or update unit tests and smoke tests.
@@ -165,7 +166,7 @@ contracts.
 - `run_production` and `run_equilibration` both prefer portable XML state over
   binary checkpoints for restart, and use `metadata.final_step` to restore
   timeline metadata. The ensemble-agnostic loader (`_load_state_into_simulation`
-  in `mdclaw/md_simulation_server.py`) transfers positions / velocities / box
+  in `mdclaw/simulation/restart.py`) transfers positions / velocities / box
   via `XmlSerializer.deserialize` without restoring Context parameters, so
   NPT ↔ NVT switching is safe across nodes (barostat parameters in the saved
   state are dropped or introduced as the new System requires).

@@ -15,9 +15,10 @@ from mdclaw._node import (
     create_node,
     read_node,
 )
-from mdclaw.amber_server import build_amber_system
-from mdclaw.research_server import PHOSPHO_RESNAMES, detect_ptm_sites
-from mdclaw.structure_server import (
+from mdclaw.amber.build_system import build_amber_system
+from mdclaw.chemistry_constants import PHOSPHO_RESNAMES
+from mdclaw.research.inspection import detect_ptm_sites
+from mdclaw.structure.phosphorylation import (
     _PHOSPHO_TARGETS,
     _apply_phosphorylation_to_pdb,
     _build_source_to_merged_chain_map,
@@ -689,7 +690,7 @@ def _capture_om_bundle(tmp_path):
 
     def _fake_om_build(**kwargs):
         from mdclaw import forcefield_catalog as _fc
-        from mdclaw.amber_server import (
+        from mdclaw.amber.openmm_build import (
             _resolve_dna_name_from_libraries,
             _resolve_glycan_name_from_library,
             _resolve_phosaa_name_from_library,

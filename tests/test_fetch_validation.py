@@ -18,10 +18,12 @@ from mdclaw._node import create_node, read_node
 
 pytest.importorskip("httpx")
 
-from mdclaw.research_server import (
+from mdclaw.research.fetch import (
     download_structure,
     fetch_structure,
     get_alphafold_structure,
+)
+from mdclaw.research.source_node import (
     list_source_candidates,
     register_local_structure,
 )

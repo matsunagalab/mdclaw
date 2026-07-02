@@ -2,7 +2,7 @@
 
 import json
 
-from mdclaw.evidence_server import (
+from mdclaw.evidence import (
     generate_md_evidence_report,
     generate_md_methods_report,
     generate_study_evidence_report,
@@ -378,7 +378,7 @@ def test_generate_md_methods_report_includes_modxna_and_nucleic_citations(tmp_pa
 
 def test_generate_study_evidence_report(tmp_path):
     from mdclaw._node import complete_node, create_node
-    from mdclaw.study_server import add_study_job, init_study, record_study_plan
+    from mdclaw.study import add_study_job, init_study, record_study_plan
 
     study_dir = tmp_path / "study"
     init_study(str(study_dir), title="screen", objective="compare branches")
@@ -417,7 +417,7 @@ def test_generate_study_evidence_report(tmp_path):
 
 
 def test_generate_study_methods_report_for_wt_mutant_study(tmp_path):
-    from mdclaw.study_server import add_study_job, init_study
+    from mdclaw.study import add_study_job, init_study
 
     study_dir = tmp_path / "study"
     init_study(
@@ -465,7 +465,7 @@ def test_generate_study_methods_report_for_wt_mutant_study(tmp_path):
 
 def test_generate_study_methods_report_registered_as_tool():
     from mdclaw._cli import _discover_tools
-    from mdclaw.evidence_server import TOOLS
+    from mdclaw.evidence import TOOLS
 
     assert "generate_study_methods_report" in TOOLS
     assert callable(TOOLS["generate_study_methods_report"])

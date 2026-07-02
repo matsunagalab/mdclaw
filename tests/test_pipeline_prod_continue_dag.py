@@ -22,7 +22,7 @@ class TestPipelineProdContinueDag:
 
     def test_step2_prepare_chain_a(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(str(job_dir), "prep", parent_node_ids=[self.fetch_id])
         assert node["success"], node
@@ -43,7 +43,7 @@ class TestPipelineProdContinueDag:
 
     def test_step3_solvate(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.solvation_server import solvate_structure
+        from mdclaw.solvation import solvate_structure
 
         node = create_node(str(job_dir), "solv", parent_node_ids=[self.prep_id])
         assert node["success"], node
@@ -62,7 +62,7 @@ class TestPipelineProdContinueDag:
 
     def test_step4_topology(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.solv_id])
         assert node["success"], node
@@ -81,7 +81,7 @@ class TestPipelineProdContinueDag:
 
     def test_step5_equilibration(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         node = create_node(
             str(job_dir),
@@ -108,7 +108,7 @@ class TestPipelineProdContinueDag:
 
     def test_step6_first_production(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         node = create_node(
             str(job_dir),
@@ -135,7 +135,7 @@ class TestPipelineProdContinueDag:
 
     def test_step7_continue_from_prod_state(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         node = create_node(str(job_dir), "prod", continue_from=self.prod1_id)
         assert node["success"], node

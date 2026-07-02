@@ -12,7 +12,7 @@ class TestNoLegacyLigandParamsAutoDetect:
     """The public topology handoff is ligand_chemistry, not ligand_params."""
 
     def test_stale_ligand_params_json_is_not_loaded(self, tmp_path):
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         solvate_dir = tmp_path / "solvate"
         solvate_dir.mkdir()
@@ -30,7 +30,7 @@ class TestNoLegacyLigandParamsAutoDetect:
         assert "ligand_params" not in all_text
 
     def test_sibling_ligand_params_json_is_not_considered(self, tmp_path):
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         shared_root = tmp_path / "outputs"
         job_a = shared_root / "job_aaaa"
@@ -59,7 +59,7 @@ class TestLigandChemistryAutoDetect:
 
         from openmm.app import Topology, element
 
-        from mdclaw.amber_server import _patch_ligand_molecule_internal_bonds
+        from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds
 
         topology = Topology()
         chain = topology.addChain("B")
@@ -90,7 +90,7 @@ class TestLigandChemistryAutoDetect:
         assert len(list(topology.bonds())) == 3
 
     def test_build_amber_system_auto_detects_ligand_chemistry_json(self, tmp_path):
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         job = tmp_path / "job_cccc"
         solvate = job / "solvate"
@@ -122,11 +122,12 @@ class TestJobIsolation:
 
     def test_output_dir_none_creates_unique_job_dir(self, small_pdb, monkeypatch):
         pytest.importorskip("gemmi")
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
-        import mdclaw.structure_server as mod
+        import importlib
         import tempfile
 
+        mod = importlib.import_module("mdclaw.structure.prepare_complex")
         tmp = Path(tempfile.mkdtemp())
         monkeypatch.setattr(mod, "WORKING_DIR", tmp)
 
@@ -154,7 +155,7 @@ class TestCleanLigand:
 
     def test_clean_ligand_with_smiles(self, acetic_acid_pdb, tmp_path):
         pytest.importorskip("rdkit")
-        from mdclaw.structure_server import clean_ligand
+        from mdclaw.structure.clean_ligand import clean_ligand
 
         result = clean_ligand(
             ligand_pdb=acetic_acid_pdb,
@@ -177,7 +178,7 @@ class TestCleanLigand:
         # With protonation disabled the graph-as-contract path still applies:
         # a neutral SMILES cannot satisfy expected_net_charge=-1.
         pytest.importorskip("rdkit")
-        from mdclaw.structure_server import clean_ligand
+        from mdclaw.structure.clean_ligand import clean_ligand
 
         result = clean_ligand(
             ligand_pdb=acetic_acid_pdb,
@@ -200,7 +201,7 @@ class TestCleanLigand:
         # neutral CC(=O)O + expected -1 selects the deprotonated carboxylate.
         pytest.importorskip("rdkit")
         pytest.importorskip("dimorphite_dl")
-        from mdclaw.structure_server import clean_ligand
+        from mdclaw.structure.clean_ligand import clean_ligand
 
         result = clean_ligand(
             ligand_pdb=acetic_acid_pdb,
@@ -225,7 +226,7 @@ class TestCleanLigand:
         # picking a different protonation state.
         pytest.importorskip("rdkit")
         pytest.importorskip("dimorphite_dl")
-        from mdclaw.structure_server import clean_ligand
+        from mdclaw.structure.clean_ligand import clean_ligand
 
         result = clean_ligand(
             ligand_pdb=acetic_acid_pdb,
@@ -241,7 +242,7 @@ class TestCleanLigand:
         assert result["code"] == "ligand_protonation_charge_unreachable"
 
     def test_clean_ligand_known_smiles_lookup(self):
-        from mdclaw.structure_server import _get_ligand_smiles
+        from mdclaw.structure.ligand_chemistry import _get_ligand_smiles
 
         smiles = _get_ligand_smiles("ATP", user_smiles=None, fetch_from_ccd=False)
         assert smiles is not None
@@ -249,7 +250,7 @@ class TestCleanLigand:
     def test_ap5_known_smiles_is_curated_charged_graph(self):
         pytest.importorskip("rdkit")
         from rdkit import Chem
-        from mdclaw.structure_server import _get_ligand_smiles
+        from mdclaw.structure.ligand_chemistry import _get_ligand_smiles
 
         smiles = _get_ligand_smiles("AP5", user_smiles=None, fetch_from_ccd=True)
         mol = Chem.MolFromSmiles(smiles)
@@ -258,7 +259,7 @@ class TestCleanLigand:
         assert Chem.GetFormalCharge(mol) == -5
 
     def test_clean_ligand_user_smiles_priority(self):
-        from mdclaw.structure_server import _get_ligand_smiles
+        from mdclaw.structure.ligand_chemistry import _get_ligand_smiles
 
         assert _get_ligand_smiles("ATP", user_smiles="C(=O)O", fetch_from_ccd=False) == "C(=O)O"
 
@@ -268,7 +269,7 @@ class TestPrepareComplexWorkflowStatus:
 
     def test_default_records_ligand_chemistry_without_prep_parameterization(self, tmp_path):
         pytest.importorskip("rdkit")
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         pdb_file = tmp_path / "complex.pdb"
         pdb_file.write_text(
@@ -306,7 +307,7 @@ class TestPrepareComplexWorkflowStatus:
 
     def test_blocking_ligand_failure_status(self, tmp_path):
         pytest.importorskip("rdkit")
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         pdb_file = tmp_path / "complex.pdb"
         pdb_file.write_text(
@@ -348,7 +349,7 @@ class TestPrepareComplexWorkflowStatus:
 
     def test_success_status_on_clean_run(self, tmp_path):
         pytest.importorskip("rdkit")
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         pdb_file = tmp_path / "complex.pdb"
         pdb_file.write_text(
@@ -377,8 +378,8 @@ class TestPrepareComplexWorkflowStatus:
         assert result.get("workflow_recommendation") is None
 
     def test_prepare_complex_has_no_prep_parameterization_knobs(self):
-        from mdclaw import structure_server
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw import structure as structure_server
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         params = inspect.signature(prepare_complex).parameters
         assert "run_parameterization" not in params
@@ -388,14 +389,14 @@ class TestPrepareComplexWorkflowStatus:
         assert not hasattr(structure_server, "download_amber_geostd")
 
     def test_prepare_complex_default_preserves_bound_pose(self):
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         assert inspect.signature(prepare_complex).parameters["optimize_ligands"].default is False
 
 
 class TestMultiLigandTopologyPreflight:
     def test_multi_ligand_unl_repair_fails_without_guessing(self, tmp_path):
-        from mdclaw.amber_server import fix_ligand_residue_names
+        from mdclaw.amber.water_utils import fix_ligand_residue_names
 
         pdb = tmp_path / "input.pdb"
         out = tmp_path / "out.pdb"
@@ -409,7 +410,7 @@ class TestMultiLigandTopologyPreflight:
         assert "Ambiguous UNL" in result["errors"][0]
 
     def test_single_ligand_unl_repair_still_works(self, tmp_path):
-        from mdclaw.amber_server import fix_ligand_residue_names
+        from mdclaw.amber.water_utils import fix_ligand_residue_names
 
         pdb = tmp_path / "input.pdb"
         out = tmp_path / "out.pdb"
@@ -422,7 +423,7 @@ class TestMultiLigandTopologyPreflight:
         assert "LIG" in out.read_text()
 
     def test_ligand_template_coverage_requires_pdb_residue(self, tmp_path):
-        from mdclaw.amber_server import validate_ligand_template_coverage
+        from mdclaw.amber.ligand_validation import validate_ligand_template_coverage
 
         pdb = tmp_path / "complex.pdb"
         pdb.write_text(
@@ -437,7 +438,7 @@ class TestMultiLigandTopologyPreflight:
         assert "AP5" in errors[0]
 
     def test_implicit_ligand_diagnostics_do_not_select_protocol(self):
-        from mdclaw.amber_server import implicit_ligand_diagnostics
+        from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics
 
         result = implicit_ligand_diagnostics([
             {"residue_name": "AP5", "total_charge": -5, "ligand_instance_id": "A:AP5:501"}
@@ -447,7 +448,7 @@ class TestMultiLigandTopologyPreflight:
         assert "protocol" not in result
 
     def test_ligand_contact_detector_catches_close_contact(self, tmp_path):
-        from mdclaw.amber_server import validate_initial_ligand_contacts
+        from mdclaw.amber.ligand_validation import validate_initial_ligand_contacts
 
         pdb = tmp_path / "complex.pdb"
         pdb.write_text(
@@ -461,7 +462,7 @@ class TestMultiLigandTopologyPreflight:
         assert result["closest_contacts"][0]["distance_angstrom"] == 0.5
 
     def test_synthetic_two_ligand_residue_smoke_metadata(self, tmp_path):
-        from mdclaw.amber_server import validate_ligand_template_coverage
+        from mdclaw.amber.ligand_validation import validate_ligand_template_coverage
 
         pdb = tmp_path / "two_ligands.pdb"
         pdb.write_text(

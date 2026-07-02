@@ -40,7 +40,7 @@ class TestPipeline3PWBLigandDag:
     # Step 1: source acquisition (fetch_structure under a source node)
     def test_step1_fetch_pdb(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from research_server import fetch_structure
+        from mdclaw.research.fetch import fetch_structure
 
         node = create_node(str(job_dir), "source", label="PDB 3PWB")
         assert node["success"]
@@ -67,7 +67,7 @@ class TestPipeline3PWBLigandDag:
     # Step 2: inspect (read-only, records under source node)
     def test_step2_inspect_multi_ligand(self, job_dir):
         from mdclaw._node import read_node
-        from research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         fetch_artifacts = job_dir / "nodes" / self.source_id / "artifacts"
         result = inspect_molecules(
@@ -90,7 +90,7 @@ class TestPipeline3PWBLigandDag:
     # Step 3: prep (auto-resolves structure_file from source ancestor)
     def test_step3_prep_multi_ligand(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(
             str(job_dir),
@@ -145,7 +145,7 @@ class TestPipeline3PWBLigandDag:
     # Step 4: solvate (auto-resolves merged_pdb from prep)
     def test_step4_solvate(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from solvation_server import solvate_structure
+        from mdclaw.solvation.water import solvate_structure
 
         node = create_node(
             str(job_dir),
@@ -168,7 +168,7 @@ class TestPipeline3PWBLigandDag:
 
     # Step 5: topology (auto-resolves solvated_pdb + box_dimensions from solv)
     def test_step5_topology_with_ligands(self, job_dir):
-        from amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
         from mdclaw._node import create_node, read_node
 
         node = create_node(
@@ -206,7 +206,7 @@ class TestPipeline3PWBLigandDag:
 
     # Step 6: equilibration (auto-resolves topology from topo)
     def test_step6_equilibration(self, job_dir):
-        from md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
         from mdclaw._node import create_node, read_node
 
         node = create_node(
@@ -239,7 +239,7 @@ class TestPipeline3PWBLigandDag:
 
     # Step 7: production (auto-resolves topology + eq state)
     def test_step7_production(self, job_dir):
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
         from mdclaw._node import create_node, read_node
 
         node = create_node(

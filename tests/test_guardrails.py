@@ -9,34 +9,42 @@ from mdclaw._common import (
     create_file_not_found_error,
     create_tool_not_available_error,
 )
-from mdclaw.amber_server import (
-    _canonical_water_model_name as amber_canonical_water_model_name,
-    _evaluate_forcefield_water_guardrails,
-    _normalize_pdb_chain_id,
+from mdclaw.amber.build_system import (
     _resolve_build_amber_node_inputs,
-    _rewrite_pablo_ion_pdb_line,
     build_amber_system,
 )
+from mdclaw.amber.content_detection import (
+    _normalize_pdb_chain_id,
+    _rewrite_pablo_ion_pdb_line,
+)
+from mdclaw.amber.water_utils import (
+    _canonical_water_model_name as amber_canonical_water_model_name,
+    _evaluate_forcefield_water_guardrails,
+)
 from mdclaw._node import complete_node, create_node, read_node, update_job_params
-from mdclaw.metal_server import (
+from mdclaw.metal._base import (
     ION_FRCMODS_BY_SET,
     SUPPORTED_ION_WATER_MODELS,
+)
+from mdclaw.metal.parameterize import (
     _normalize_water_model_name as metal_canonical_water_model_name,
     parameterize_metal_ion,
 )
-from mdclaw.md_simulation_server import (
+from mdclaw.simulation.equilibrate import run_equilibration
+from mdclaw.simulation.xml_contract import (
     _effective_pressure_bar,
     _signature_mismatches,
-    run_equilibration,
 )
-from mdclaw.slurm_server import _validate_against_policy
-from mdclaw.solvation_server import (
+from mdclaw.slurm.config import _validate_against_policy
+from mdclaw.solvation import (
+    embed_in_membrane,
+    solvate_structure,
+)
+from mdclaw.solvation.box import _write_box_dimensions_json
+from mdclaw.solvation.constants import (
     OPENMM_FALLBACK_WATER_MAP,
     OPENMM_FALLBACK_WATER_MODELS,
     _normalize_water_model_name as solvation_canonical_water_model_name,
-    _write_box_dimensions_json,
-    embed_in_membrane,
-    solvate_structure,
 )
 
 
@@ -141,7 +149,7 @@ def test_build_amber_system_phospho_forcefield_unsupported_has_code(tmp_path):
         "END\n"
     )
 
-    with patch.dict("mdclaw.amber_server.PHOSAA_LIBRARY_FOR_FF", {}, clear=True):
+    with patch.dict("mdclaw.amber.forcefield_constants.PHOSAA_LIBRARY_FOR_FF", {}, clear=True):
         result = build_amber_system(
             pdb_file=str(pdb_file),
             forcefield="ff14SB",
@@ -399,7 +407,7 @@ def test_solvate_structure_blocks_opc_on_openmm_fallback(tmp_path):
     pdb_file = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb_file)
 
-    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available", return_value=False):
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available", return_value=False):
         result = solvate_structure(
             pdb_file=str(pdb_file),
             output_dir=str(tmp_path / "solvate"),
@@ -446,7 +454,7 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
         # Stand-in for the real OpenMM solvation: honour the same
         # subdirectory contract and persist box_dimensions.json so the
         # caller's complete_node receives matching artifact paths.
-        from mdclaw.solvation_server import (
+        from mdclaw.solvation.box import (
             _write_box_dimensions_json as _wbd,
         )
         from mdclaw._common import create_unique_subdir
@@ -464,9 +472,9 @@ def test_solvate_structure_node_mode_openmm_fallback_writes_artifacts_directly(t
         result["statistics"] = {"total_atoms": 1, "method": "fake"}
         return result
 
-    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
                return_value=False), \
-         patch("mdclaw.solvation_server._solvate_with_openmm",
+         patch("mdclaw.solvation.water._solvate_with_openmm",
                side_effect=_fake_openmm):
         result = solvate_structure(
             pdb_file=str(pdb_file),
@@ -511,9 +519,9 @@ def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
         )
         return SimpleNamespace(stdout="", stderr="")
 
-    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
                return_value=True), \
-         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+         patch("mdclaw.solvation._base.packmol_memgen_wrapper.run",
                side_effect=_fake_packmol_memgen):
         result = embed_in_membrane(
             job_dir=str(job_dir),
@@ -557,9 +565,9 @@ def test_solvate_structure_applies_salt_override_fallback_with_warning(tmp_path)
         _write_minimal_box_pdb(output_path)
         return SimpleNamespace(stdout="", stderr="")
 
-    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
                return_value=True), \
-         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+         patch("mdclaw.solvation._base.packmol_memgen_wrapper.run",
                side_effect=_fake_packmol_memgen):
         result = solvate_structure(
             pdb_file=str(input_pdb),
@@ -599,9 +607,9 @@ def test_embed_in_membrane_applies_salt_override_fallback_with_warning(tmp_path)
         _write_minimal_box_pdb(output_path)
         return SimpleNamespace(stdout="", stderr="")
 
-    with patch("mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+    with patch("mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
                return_value=True), \
-         patch("mdclaw.solvation_server.packmol_memgen_wrapper.run",
+         patch("mdclaw.solvation._base.packmol_memgen_wrapper.run",
                side_effect=_fake_packmol_memgen):
         result = embed_in_membrane(
             pdb_file=str(input_pdb),
@@ -644,7 +652,7 @@ def test_parameterize_metal_ion_defaults_to_opc(tmp_path):
         )
         return {"success": True, "mol2_file": mol2_path}
 
-    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
+    with patch("mdclaw.metal.parameterize._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
         result = parameterize_metal_ion(
             pdb_file=str(pdb_file),
             output_dir=str(tmp_path / "metal_out"),
@@ -671,7 +679,7 @@ def test_parameterize_metal_ion_supports_opc3_normal_set(tmp_path):
         )
         return {"success": True, "mol2_file": mol2_path}
 
-    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
+    with patch("mdclaw.metal.parameterize._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
         result = parameterize_metal_ion(
             pdb_file=str(pdb_file),
             output_dir=str(tmp_path / "metal_out"),
@@ -696,7 +704,7 @@ def test_parameterize_metal_ion_selects_iod_and_hfe_sets(tmp_path):
         )
         return {"success": True, "mol2_file": mol2_path}
 
-    with patch("mdclaw.metal_server._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
+    with patch("mdclaw.metal.parameterize._run_metalpdb2mol2", side_effect=_fake_metalpdb2mol2):
         iod = parameterize_metal_ion(
             pdb_file=str(pdb_file),
             output_dir=str(tmp_path / "iod"),
@@ -805,7 +813,7 @@ def test_build_amber_system_passes_hmr_and_implicit_into_node_conditions(tmp_pat
     ``validate_node_execution_context`` can match them against
     ``node.conditions``. (Review fix 3 of openmmforcefields-unification.)"""
     from unittest.mock import patch
-    from mdclaw.amber_server import build_amber_system
+    from mdclaw.amber.build_system import build_amber_system
 
     pdb = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb)
@@ -858,7 +866,7 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
     """If the topo node declared ``hmr=True`` but the run came in with
     ``hmr=False``, validation must fail before the build helper runs."""
     from unittest.mock import patch
-    from mdclaw.amber_server import build_amber_system
+    from mdclaw.amber.build_system import build_amber_system
 
     pdb = tmp_path / "input.pdb"
     _write_minimal_pdb(pdb)
@@ -900,7 +908,7 @@ def test_build_amber_system_blocks_hmr_condition_mismatch(tmp_path):
 
 
 def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
-    from mdclaw.amber_server import build_amber_system
+    from mdclaw.amber.build_system import build_amber_system
 
     job_dir = tmp_path / "job_topo_missing_input"
     update_job_params(str(job_dir), {"water_model": "opc"})
@@ -915,7 +923,7 @@ def test_build_amber_system_node_missing_pdb_marks_failed(tmp_path):
 
 
 def test_prepare_complex_node_input_resolution_marks_failed(tmp_path):
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     job_dir = tmp_path / "job_prep_missing_source"
     node = create_node(str(job_dir), "prep")

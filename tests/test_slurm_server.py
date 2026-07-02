@@ -11,27 +11,35 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from mdclaw.slurm_server import (
-    _append_job_record,
+from mdclaw.slurm.cluster import (
+    configure_container,
+    inspect_cluster,
+    set_policy,
+    show_policy,
+)
+from mdclaw.slurm.config import (
     _build_singularity_command,
     _extract_bind_paths,
     _is_partition_allowed,
     _parse_memory_bytes,
     _parse_time_limit_seconds,
-    _read_job_records,
-    _update_job_record,
     _validate_against_policy,
+)
+from mdclaw.slurm.monitor import (
     cancel_job,
     check_job,
     check_job_log,
-    configure_container,
-    inspect_cluster,
     list_jobs,
     list_tracked_jobs,
-    set_policy,
-    show_policy,
+)
+from mdclaw.slurm.submit import (
     submit_array_job,
     submit_job,
+)
+from mdclaw.slurm.tracker import (
+    _append_job_record,
+    _read_job_records,
+    _update_job_record,
 )
 
 
@@ -1614,7 +1622,7 @@ class TestSubmitJobNodeIntegration:
     def test_stamp_rolls_back_metadata_when_queue_status_update_fails(
         self, tmp_path
     ):
-        from mdclaw import slurm_server as slurm_mod
+        from mdclaw.slurm import node_sync as slurm_mod
 
         jd = _make_job_with_nodes(tmp_path, "job_stamp_status_fail", ["prod_001"])
         intent_id = "intent-1"
@@ -2127,7 +2135,7 @@ class TestSubmitArrayJob:
     def test_array_later_stamp_failure_rolls_back_prior_stamped_node(
         self, mock_run, mock_check, tmp_path, monkeypatch
     ):
-        from mdclaw import slurm_server as slurm_mod
+        from mdclaw.slurm import node_sync as slurm_mod
 
         monkeypatch.chdir(tmp_path)
         jd0 = _make_job_with_nodes(tmp_path, "job_array_stamp_ok", ["prod_001"])

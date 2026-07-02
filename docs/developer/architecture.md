@@ -11,8 +11,8 @@ happened.
 |---|---|---|
 | Skill layer | Agent-facing MD decision policy and procedures | `skills/`, `.agents/skills/`, `.claude/skills/` |
 | CLI and dispatch | Parse command-line calls, discover tools, inject node context | `bin/mdclaw`, `mdclaw/_cli.py`, `mdclaw/_registry.py` |
-| Tool execution | Fetch structures, prepare systems, build OpenMM XML, run MD, analyze output | `mdclaw/*_server.py` |
-| State and evidence | Record node status, artifacts, events, and reports | `mdclaw/_node.py`, `mdclaw/_event.py`, `mdclaw/evidence_server.py` |
+| Tool execution | Fetch structures, prepare systems, build OpenMM XML, run MD, analyze output | `mdclaw/<tool>/` packages |
+| State and evidence | Record node status, artifacts, events, and reports | `mdclaw/_node.py`, `mdclaw/_event.py`, `mdclaw/evidence/` |
 | Distribution | Package skills and runtime for users | `.claude-plugin/`, `hooks/`, `container/`, `scripts/` |
 
 The key design split is:
@@ -35,7 +35,7 @@ flowchart LR
   agent --> skill[skills/*/SKILL.md]
   skill --> cli[mdclaw CLI]
   cli --> registry[_registry.py]
-  registry --> tool[*_server.py tool]
+  registry --> tool[mdclaw/&lt;tool&gt;/ package]
   tool --> node[_node.py state helpers]
   tool --> artifacts[node artifacts]
   node --> progress[progress.json index]
@@ -47,7 +47,7 @@ Important boundaries:
 - `skills/*/SKILL.md` should contain scientific decision policy and tool-use
   procedure, not hidden state mutation logic.
 - `_cli.py` is the common entry point for direct users and agents.
-- `_registry.py` maps public tool names to `mdclaw/*_server.py` functions.
+- `_registry.py` maps public tool names to `mdclaw/<tool>/` packages.
 - Workflow tools receive `job_dir` and `node_id`, then call `begin_node`,
   `complete_node`, or `fail_node`.
 - `progress.json` is a thin index. Each node owns its durable details in
@@ -81,7 +81,7 @@ Important boundaries:
 | `_node.py` | Schema v3 node DAG management, artifact registration, status transitions. |
 | `_event.py` | Append-only JSON event log. |
 | `_lock.py` | File-based locking with `fcntl.flock`. |
-| `*_server.py` | Public tool modules. Each exposes a `TOOLS` dict. |
+| `<tool>/` | Public tool packages (e.g. `structure/`, `solvation/`, `amber/`, `simulation/`, `study/`, `evidence/`). Each package `__init__.py` assembles a `TOOLS` dict from responsibility-scoped submodules. |
 
 ## Job DAG
 
@@ -436,7 +436,7 @@ study_XXXXXXXX/
       nodes/source_001/...
 ```
 
-`study_server.py` manages the study index and lightweight study plans. It does
+The `mdclaw/study/` package manages the study index and lightweight study plans. It does
 not execute OpenMM or mutate node DAG semantics. Each registered job owns its
 node DAG and source bundle; the study records cross-job intent, roles,
 decisions, planned analyses, and evidence.
@@ -466,9 +466,9 @@ layout and records a minimal `study_plan.json` before creating DAG nodes.
 
 To add a new CLI tool:
 
-1. Add a plain Python function in the relevant `mdclaw/*_server.py`.
-2. Add it to that module's `TOOLS` dict.
-3. Register a new server in `_registry.py` only if you created a new module.
+1. Add a plain Python function in the relevant `mdclaw/<tool>/` submodule.
+2. Re-export it from that package's `__init__.py` and add it to the package `TOOLS` dict.
+3. Register a new server in `_registry.py` only if you created a new package.
 4. Add focused tests for registration, argument handling, and behavior.
 5. Update the relevant `skills/*/SKILL.md` examples if users or agents should
    call the new tool.

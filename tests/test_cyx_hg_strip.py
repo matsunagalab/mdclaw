@@ -46,7 +46,7 @@ def mixed_pdb(tmp_path: Path) -> str:
 
 
 def test_reconcile_strips_hg_from_preexisting_and_promoted_cyx(mixed_pdb):
-    from mdclaw.structure_server import _reconcile_cyx_cys_in_pdb
+    from mdclaw.structure.disulfide import _reconcile_cyx_cys_in_pdb
 
     # Declare both residues as SS-bonded → both should end up CYX, no HG.
     bonds = [{
@@ -78,7 +78,7 @@ def test_reconcile_strips_hg_from_preexisting_and_promoted_cyx(mixed_pdb):
 def test_reconcile_demotes_cyx_to_cys_and_keeps_hg(tmp_path):
     """The reverse path: a CYX residue not in the disulfide list is demoted
     to CYS. CYS legitimately carries HG, so the HG line must NOT be stripped."""
-    from mdclaw.structure_server import _reconcile_cyx_cys_in_pdb
+    from mdclaw.structure.disulfide import _reconcile_cyx_cys_in_pdb
 
     pdb = """\
 ATOM      1  N   CYX A  23       0.000   0.000   0.000  1.00  0.00           N
@@ -105,7 +105,7 @@ END
 
 def test_reconcile_noop_on_consistent_input(tmp_path):
     """No CYX, no CYS-in-target — function should be a no-op."""
-    from mdclaw.structure_server import _reconcile_cyx_cys_in_pdb
+    from mdclaw.structure.disulfide import _reconcile_cyx_cys_in_pdb
 
     pdb = """\
 ATOM      1  N   ALA A  10       0.000   0.000   0.000  1.00  0.00           N

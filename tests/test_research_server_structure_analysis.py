@@ -4,7 +4,7 @@ from pathlib import Path
 
 def test_analyze_structure_details_does_not_treat_hie_as_ligand(tmp_path):
     """HIE/HID/HIP are protein residues (Amber naming), not ligands."""
-    from mdclaw.research_server import analyze_structure_details
+    from mdclaw.research.structure_analysis import analyze_structure_details
 
     pdb = textwrap.dedent(
         """\
@@ -35,7 +35,7 @@ def test_analyze_structure_details_does_not_treat_hie_as_ligand(tmp_path):
 
 def test_parse_ssbond_records_returns_pair(ssbond_mini_pdb):
     """SSBOND record is read back with recomputed SG-SG distance and source tag."""
-    from mdclaw.research_server import _parse_ssbond_records
+    from mdclaw.research.structure_analysis import _parse_ssbond_records
 
     pairs = _parse_ssbond_records(Path(ssbond_mini_pdb))
     assert len(pairs) == 1
@@ -51,14 +51,14 @@ def test_parse_ssbond_records_returns_pair(ssbond_mini_pdb):
 
 def test_parse_ssbond_records_empty_when_no_ssbond(small_pdb):
     """Structures without SSBOND/disulf connections yield an empty list."""
-    from mdclaw.research_server import _parse_ssbond_records
+    from mdclaw.research.structure_analysis import _parse_ssbond_records
 
     assert _parse_ssbond_records(Path(small_pdb)) == []
 
 
 def test_detect_disulfide_candidates_marks_source(ssbond_mini_pdb):
     """Distance-based detection tags entries with source='distance'."""
-    from mdclaw.research_server import _detect_disulfide_candidates
+    from mdclaw.research.structure_analysis import _detect_disulfide_candidates
 
     pairs = _detect_disulfide_candidates(Path(ssbond_mini_pdb))
     assert len(pairs) == 1
@@ -67,7 +67,7 @@ def test_detect_disulfide_candidates_marks_source(ssbond_mini_pdb):
 
 def test_merge_disulfide_pairs_dedup_and_merge_source():
     """Same pair in both sources merges to a single entry with combined source."""
-    from mdclaw.structure_server import _merge_disulfide_pairs
+    from mdclaw.structure.disulfide import _merge_disulfide_pairs
 
     ssbond = [{
         "cys1": {"chain": "A", "resnum": 10, "resname": "CYS"},
@@ -94,7 +94,7 @@ def test_merge_disulfide_pairs_dedup_and_merge_source():
 
 def test_merge_disulfide_pairs_select_chains_filter():
     """Pairs spanning chains outside select_chains are dropped."""
-    from mdclaw.structure_server import _merge_disulfide_pairs
+    from mdclaw.structure.disulfide import _merge_disulfide_pairs
 
     ssbond = [
         {
@@ -131,7 +131,7 @@ def test_merge_disulfide_pairs_select_chains_filter():
 
 def test_merge_disulfide_pairs_distance_only_entry():
     """Distance-only entries (no SSBOND) pass through unchanged."""
-    from mdclaw.structure_server import _merge_disulfide_pairs
+    from mdclaw.structure.disulfide import _merge_disulfide_pairs
 
     distance = [{
         "cys1": {"chain": "A", "resnum": 10, "resname": "CYS"},

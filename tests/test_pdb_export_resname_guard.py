@@ -44,10 +44,10 @@ RESTORE_HELPERS = (
 EXPECTED = {
     "structure/pdb_utils.py": (1, "source"),            # render helper internals
     "amber/openmm_build.py": (1, "restore"),            # topology.pdb contract
-    "openmm_system_server.py": (1, "restore"),          # topology.pdb (openmm FF)
+    "openmm_system/build.py": (1, "restore"),           # topology.pdb (openmm FF)
     "simulation/platform.py": (1, "restore"),           # diagnostic state export
     "structure/terminal_caps.py": (1, "restore"),       # cap H completion
-    "solvation_server.py": (1, "restore"),              # openmm solvation fallback
+    "solvation/water.py": (1, "restore"),               # openmm solvation fallback
     "sidechain_packer.py": (1, "restore"),              # HPacker mutation output
     "structure/protonation.py": (1, "restore"),         # user-state Modeller path
     "structure/clean_protein.py": (2, "source"),        # transient + nucleic_h

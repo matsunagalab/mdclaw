@@ -116,7 +116,7 @@ def _write_glycoprotein(tmp_path: Path) -> str:
 
 
 def test_glycan_linkages_are_extracted_from_mmcif_struct_conn(tmp_path):
-    from mdclaw.structure_server import _parse_glycan_link_records
+    from mdclaw.structure.prepare_complex import _parse_glycan_link_records
 
     links = _parse_glycan_link_records(_write_6ya2_like_mmcif(tmp_path))
 
@@ -144,7 +144,7 @@ def test_glycan_linkages_are_extracted_from_mmcif_struct_conn(tmp_path):
 
 
 def test_glycan_linkages_keep_pdb_link_fallback(tmp_path):
-    from mdclaw.structure_server import _parse_pdb_glycan_link_records
+    from mdclaw.structure.prepare_complex import _parse_pdb_glycan_link_records
 
     pdb = tmp_path / "link.pdb"
     pdb.write_text(
@@ -162,7 +162,7 @@ def test_glycan_linkages_keep_pdb_link_fallback(tmp_path):
 
 
 def test_inspect_molecules_classifies_glycan_not_ligand(tmp_path):
-    from mdclaw.structure_server import _inspect_molecules_impl
+    from mdclaw.structure.split import _inspect_molecules_impl
 
     result = _inspect_molecules_impl(_write_glycoprotein(tmp_path))
 
@@ -174,7 +174,7 @@ def test_inspect_molecules_classifies_glycan_not_ligand(tmp_path):
 
 
 def test_split_molecules_emits_glycan_files(tmp_path):
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     result = split_molecules(
         structure_file=_write_glycoprotein(tmp_path),
@@ -190,7 +190,7 @@ def test_split_molecules_emits_glycan_files(tmp_path):
 
 
 def test_prepare_complex_passes_glycans_through_without_ligand_chemistry(tmp_path):
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     result = prepare_complex(
         structure_file=_write_glycoprotein(tmp_path),
@@ -212,7 +212,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
     upstream of the topology load, and the SystemGenerator XML bundle picks
     up the GLYCAM_06j-1 conversion XML."""
     from unittest.mock import patch
-    from mdclaw import amber_server
+    from mdclaw.amber import build_system as amber_server
 
     class FakeCpptraj:
         def is_available(self):
@@ -249,7 +249,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
 
     def _fake_om_build(**kwargs):
         from mdclaw import forcefield_catalog as _fc
-        from mdclaw.amber_server import _resolve_glycan_name_from_library
+        from mdclaw.amber.openmm_build import _resolve_glycan_name_from_library
         assert kwargs["glycam_bond_plan"]["bond_count"] == 1
         assert kwargs["glycam_normalization_file"].name == "system.glycam_normalization.json"
         bundle = _fc.resolve_xml_bundle(
@@ -319,7 +319,7 @@ def test_build_amber_system_loads_glycam_and_bonds_linkage(monkeypatch, tmp_path
 
 
 def test_glycam_prepareforleap_bond_plan_is_structured(tmp_path):
-    from mdclaw.amber_server import _parse_glycam_leap_bond_plan
+    from mdclaw.amber.glycam_topology import _parse_glycam_leap_bond_plan
 
     prepared_pdb = tmp_path / "system.glycam.pdb"
     lines = []
@@ -361,7 +361,7 @@ def test_glycam_prepareforleap_bond_plan_is_structured(tmp_path):
 def test_glycam_bond_plan_apply_failure_is_structured(tmp_path):
     from openmm import Vec3, unit
     from openmm.app import Topology, element
-    from mdclaw.amber_server import _normalize_glycam_topology
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
 
     topology = Topology()
     chain = topology.addChain("A")
@@ -399,7 +399,7 @@ def test_glycam_bond_plan_apply_failure_is_structured(tmp_path):
 def test_glycam_bond_plan_uses_identity_not_residue_order(tmp_path):
     from openmm import Vec3, unit
     from openmm.app import Topology, element
-    from mdclaw.amber_server import _normalize_glycam_topology
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
 
     class FakeModeller:
         def __init__(self, topology, positions):
@@ -478,7 +478,7 @@ def test_glycam_bond_plan_uses_identity_not_residue_order(tmp_path):
 def test_glycam_bond_plan_applies_when_unit_and_identity_match(tmp_path):
     from openmm import Vec3, unit
     from openmm.app import Topology, element
-    from mdclaw.amber_server import _normalize_glycam_topology
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
 
     class FakeModeller:
         def __init__(self, topology, positions):
@@ -553,7 +553,7 @@ def test_glycam_bond_plan_applies_when_unit_and_identity_match(tmp_path):
 def test_glycam_bond_plan_ambiguous_identity_fails(tmp_path):
     from openmm import Vec3, unit
     from openmm.app import Topology, element
-    from mdclaw.amber_server import _normalize_glycam_topology
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
 
     class FakeModeller:
         def __init__(self, topology, positions):
@@ -632,7 +632,7 @@ def test_glycam_bond_plan_ambiguous_identity_fails(tmp_path):
 def test_glycam_bond_plan_legacy_unit_index_fallback_still_applies(tmp_path):
     from openmm import Vec3, unit
     from openmm.app import Topology, element
-    from mdclaw.amber_server import _normalize_glycam_topology
+    from mdclaw.amber.glycam_topology import _normalize_glycam_topology
 
     class FakeModeller:
         def __init__(self, topology, positions):
@@ -691,7 +691,7 @@ def test_glycam_bond_plan_legacy_unit_index_fallback_still_applies(tmp_path):
 
 
 def test_packmol_solute_identity_restore_keeps_water_renumbering(tmp_path):
-    from mdclaw.solvation_server import _restore_packmol_solute_identity
+    from mdclaw.solvation.pdb_identity import _restore_packmol_solute_identity
 
     input_pdb = tmp_path / "input.pdb"
     output_pdb = tmp_path / "solvated.pdb"
@@ -715,7 +715,7 @@ def test_packmol_solute_identity_restore_keeps_water_renumbering(tmp_path):
 
 
 def test_glycan_linkage_mapping_failure_stops_before_cpptraj(monkeypatch, tmp_path):
-    from mdclaw import amber_server
+    from mdclaw.amber import glycam_topology as amber_server
 
     class FakeCpptraj:
         def is_available(self):

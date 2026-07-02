@@ -4,7 +4,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from mdclaw.visualization_server import register_visual_review, render_structure_preview
+from mdclaw.visualization import register_visual_review, render_structure_preview
 
 
 PDB_TEXT = """\
@@ -24,7 +24,7 @@ def _write_pdb(path):
 
 
 def _mock_pymol(monkeypatch):
-    import mdclaw.visualization_server as vs
+    import shutil as _shutil
 
     def fake_run(args, capture_output, text, timeout, check):
         script_file = Path(args[-1])
@@ -34,8 +34,8 @@ def _mock_pymol(monkeypatch):
         view_file.write_text(json.dumps({"view": [1.0] * 18}))
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="rendered", stderr="")
 
-    monkeypatch.setattr(vs.shutil, "which", lambda name: "/usr/bin/pymol")
-    monkeypatch.setattr(vs.subprocess, "run", fake_run)
+    monkeypatch.setattr(_shutil, "which", lambda name: "/usr/bin/pymol")
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
 
 def test_render_structure_preview_direct_mode(monkeypatch, tmp_path):
@@ -109,9 +109,9 @@ def test_render_structure_preview_registers_analyze_node(monkeypatch, tmp_path):
 
 
 def test_render_structure_preview_reports_missing_pymol(monkeypatch, tmp_path):
-    import mdclaw.visualization_server as vs
+    import shutil as _shutil
 
-    monkeypatch.setattr(vs.shutil, "which", lambda name: None)
+    monkeypatch.setattr(_shutil, "which", lambda name: None)
     pdb = _write_pdb(tmp_path / "input.pdb")
 
     result = render_structure_preview(
@@ -216,7 +216,7 @@ def test_register_visual_review_high_severity_does_not_fail_node(tmp_path):
 
 def test_render_structure_preview_registered_as_tool():
     from mdclaw._cli import _discover_tools
-    from mdclaw.visualization_server import TOOLS
+    from mdclaw.visualization import TOOLS
 
     assert "render_structure_preview" in TOOLS
     assert "register_visual_review" in TOOLS

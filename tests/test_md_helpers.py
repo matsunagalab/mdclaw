@@ -12,18 +12,20 @@ from pathlib import Path
 
 import pytest
 
-from mdclaw.md_simulation_server import (
-    _DCD_MAGIC,
+from mdclaw.simulation.equilibrate import run_equilibration
+from mdclaw.simulation.integrator_plan import (
     _compute_step_plan,
+    _equilibration_steps_from_time_ns,
+    _resolve_equilibration_stage_steps,
+)
+from mdclaw.simulation.platform import inspect_openmm_platforms
+from mdclaw.simulation.production import run_production
+from mdclaw.simulation.restart import (
+    _DCD_MAGIC,
     _dcd_has_valid_header,
     _detect_ensemble_mismatch,
-    _equilibration_steps_from_time_ns,
     _node_previously_failed,
     _resolve_dcd_append_mode,
-    _resolve_equilibration_stage_steps,
-    inspect_openmm_platforms,
-    run_equilibration,
-    run_production,
 )
 from mdclaw._node import (
     begin_node,
@@ -590,7 +592,7 @@ class TestLoadStateIntoSimulation:
         import numpy as np
         from openmm.unit import nanometer, picosecond
 
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         src = self._build_lj_simulation(with_barostat=False)
         self._seed_positions_velocities(src)
@@ -638,7 +640,7 @@ class TestLoadStateIntoSimulation:
         ensemble-agnostic loader transfers only positions/velocities/box
         and skips Context parameters, so the same XML resumes cleanly
         into a barostat-free System and a step succeeds."""
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         npt = self._build_lj_simulation(with_barostat=True)
         self._seed_positions_velocities(npt)
@@ -659,7 +661,7 @@ class TestLoadStateIntoSimulation:
     def test_xml_state_without_velocities_rethermalizes(self, tmp_path):
         from openmm.unit import nanometer, picosecond
 
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         src = self._build_lj_simulation(with_barostat=False)
         self._seed_positions_velocities(src)
@@ -694,7 +696,7 @@ class TestLoadStateIntoSimulation:
         target.step(1)
 
     def test_xml_particle_count_mismatch_rejected(self, tmp_path):
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         src = self._build_lj_simulation(with_barostat=False)
         self._seed_positions_velocities(src)
@@ -718,7 +720,7 @@ class TestLoadStateIntoSimulation:
     ):
         from openmm import XmlSerializer
 
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         src = self._build_lj_simulation(with_barostat=False)
         self._seed_positions_velocities(src)
@@ -749,7 +751,7 @@ class TestLoadStateIntoSimulation:
         """Binary checkpoint route requires identical System layout but
         is the fast same-GPU bit-exact path. Verify the loader returns
         ``"checkpoint"`` and the target context advances after the call."""
-        from mdclaw.md_simulation_server import _load_state_into_simulation
+        from mdclaw.simulation.restart import _load_state_into_simulation
 
         src = self._build_lj_simulation(with_barostat=False)
         self._seed_positions_velocities(src)
@@ -766,14 +768,14 @@ class TestLoadStateIntoSimulation:
 
 class TestRestartPersistenceHelpers:
     def test_restart_random_seed_offsets_and_avoids_zero(self):
-        from mdclaw.md_simulation_server import _restart_random_seed
+        from mdclaw.simulation.restart import _restart_random_seed
 
         assert _restart_random_seed(None, 100) is None
         assert _restart_random_seed(42, 0) == 43
         assert _restart_random_seed(42, 100) == 142
 
     def test_atomic_checkpoint_save_cleans_temp_on_failure(self, tmp_path):
-        from mdclaw.md_simulation_server import _save_checkpoint_atomic
+        from mdclaw.simulation.restart import _save_checkpoint_atomic
 
         out = tmp_path / "checkpoint.chk"
 
@@ -908,7 +910,7 @@ class TestRunEquilibrationFailNodeCoverage:
         """Topo ancestor never completed → ``input_resolution_error``.
         Before the fix the eq node stayed in ``pending``."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -930,7 +932,7 @@ class TestRunEquilibrationFailNodeCoverage:
         ``input_resolution_error`` and the new eq node must be flipped
         to ``failed``."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -954,7 +956,7 @@ class TestRunEquilibrationFailNodeCoverage:
         disk must flip the eq node to ``failed`` (and propagate the
         structured error)."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -990,7 +992,7 @@ class TestRunEquilibrationFailNodeCoverage:
         and the new eq node must be flipped to ``failed`` rather than
         silently rolling back to the topo state.xml."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1016,7 +1018,7 @@ class TestRunEquilibrationTimeFlags:
     """Public API guards for weak-agent-safe equilibration durations."""
 
     def test_rejects_time_and_steps_for_same_stage_before_openmm(self):
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         result = run_equilibration(
             system_xml_file="missing.xml",
@@ -1037,7 +1039,7 @@ class TestRunEquilibrationTimeFlags:
         test stays light while still covering the DAG condition contract.
         """
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1176,7 +1178,7 @@ class TestXMLSystemContractValidation:
         return top, system
 
     def test_validator_accepts_matching_hmr(self, tmp_path):
-        from mdclaw.md_simulation_server import _validate_xml_system_contract
+        from mdclaw.simulation.xml_contract import _validate_xml_system_contract
 
         topology, system = self._build_minimal_system(
             hmr=True, implicit=False, tmp_path=tmp_path,
@@ -1189,9 +1191,9 @@ class TestXMLSystemContractValidation:
         )
 
     def test_validator_rejects_hmr_request_against_non_hmr_system(self, tmp_path):
-        from mdclaw.md_simulation_server import (
-            _validate_xml_system_contract,
+        from mdclaw.simulation.xml_contract import (
             _ModernSystemContractError,
+            _validate_xml_system_contract,
         )
 
         topology, system = self._build_minimal_system(
@@ -1208,9 +1210,9 @@ class TestXMLSystemContractValidation:
         """The reverse direction: requesting standard hydrogen masses
         against a System whose H atoms were already repartitioned to
         4 amu would silently mis-simulate at 2 fs without this guard."""
-        from mdclaw.md_simulation_server import (
-            _validate_xml_system_contract,
+        from mdclaw.simulation.xml_contract import (
             _ModernSystemContractError,
+            _validate_xml_system_contract,
         )
 
         topology, system = self._build_minimal_system(
@@ -1224,9 +1226,9 @@ class TestXMLSystemContractValidation:
         assert exc_info.value.code == "modern_system_hmr_mismatch"
 
     def test_validator_rejects_implicit_request_against_non_gb_system(self, tmp_path):
-        from mdclaw.md_simulation_server import (
-            _validate_xml_system_contract,
+        from mdclaw.simulation.xml_contract import (
             _ModernSystemContractError,
+            _validate_xml_system_contract,
         )
 
         topology, system = self._build_minimal_system(
@@ -1240,7 +1242,7 @@ class TestXMLSystemContractValidation:
         assert exc_info.value.code == "modern_system_implicit_solvent_unsupported"
 
     def test_validator_accepts_implicit_request_when_gb_force_present(self, tmp_path):
-        from mdclaw.md_simulation_server import _validate_xml_system_contract
+        from mdclaw.simulation.xml_contract import _validate_xml_system_contract
 
         topology, system = self._build_minimal_system(
             hmr=False, implicit=True, tmp_path=tmp_path,
@@ -1255,7 +1257,7 @@ class TestXMLSystemContractValidation:
     def test_validator_default_requests_are_pass_through(self, tmp_path):
         """When neither HMR nor implicit-solvent is being requested at
         run time, the validator must not consult the System."""
-        from mdclaw.md_simulation_server import _validate_xml_system_contract
+        from mdclaw.simulation.xml_contract import _validate_xml_system_contract
 
         topology, system = self._build_minimal_system(
             hmr=False, implicit=False, tmp_path=tmp_path,
@@ -1315,9 +1317,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         """Sanity: when the user does NOT pass ``restart_from`` and the
         resolver picks eq_001, the helper picks up the resolver's
         ``restart_from_node_id``."""
-        from mdclaw.md_simulation_server import (
-            _resolve_restart_node_id_for_run,
-        )
+        from mdclaw.simulation.restart import _resolve_restart_node_id_for_run
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1342,9 +1342,7 @@ class TestExplicitRestartFromFinalStepAlignment:
     ):
         """The explicit path equals eq_001's ``state`` artifact, so the
         helper still binds the step counter to eq_001."""
-        from mdclaw.md_simulation_server import (
-            _resolve_restart_node_id_for_run,
-        )
+        from mdclaw.simulation.restart import _resolve_restart_node_id_for_run
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1368,9 +1366,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         ``None`` so ``read_ancestor_final_step`` will not bind
         ``simulation.currentStep`` to a DAG ancestor whose state is
         not the one we loaded."""
-        from mdclaw.md_simulation_server import (
-            _resolve_restart_node_id_for_run,
-        )
+        from mdclaw.simulation.restart import _resolve_restart_node_id_for_run
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1400,9 +1396,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         ``restart_from``, the helper trusts the resolver's chosen node
         id verbatim. This is the auto-resolve path used by
         ``eq → prod`` in node mode."""
-        from mdclaw.md_simulation_server import (
-            _resolve_restart_node_id_for_run,
-        )
+        from mdclaw.simulation.restart import _resolve_restart_node_id_for_run
 
         jd = tmp_path / "job"
         jd.mkdir()
@@ -1453,7 +1447,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         eq_001's state."""
         from unittest.mock import patch
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
         from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
@@ -1506,7 +1500,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         is called with ``explicit_restart_from=False`` so the
         resolver's ``restart_from_node_id`` is trusted."""
         from unittest.mock import patch
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
         from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
@@ -1557,7 +1551,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         introduced to prevent."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
         from mdclaw.simulation import production as md_mod
 
         jd = tmp_path / "job"
@@ -1668,7 +1662,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
         from mdclaw.simulation import equilibrate as md_mod
 
         jd = tmp_path / "job"
@@ -1765,7 +1759,7 @@ class TestExplicitRestartFromFinalStepAlignment:
         in the helper with ``explicit_restart_from=True``."""
         from unittest.mock import patch
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
         from mdclaw.simulation import equilibrate as md_mod
 
         jd = tmp_path / "job"
@@ -1918,7 +1912,7 @@ class TestRunProductionFailNodeCoverage:
         """When called without job_dir/node_id, the helper must be a no-op
         on the result dict (it just returns ``result`` so call sites can
         ``return _fail_node_if_running(...)`` regardless of mode)."""
-        from mdclaw.md_simulation_server import _fail_node_if_running
+        from mdclaw.simulation._base import _fail_node_if_running
 
         result = {"success": False, "errors": ["x"], "warnings": []}
         out = _fail_node_if_running(None, None, result)
@@ -1940,7 +1934,7 @@ class TestRunProductionFailNodeCoverage:
         from openmm.app import Element, PDBFile, Topology
         from openmm.unit import dalton
         from mdclaw._node import complete_node, create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         # 1) Build a minimal non-periodic OpenMM System and serialize to
         #    system.xml. Topology gets a single ALA residue's heavy atoms.
@@ -2013,7 +2007,7 @@ class TestRunProductionFailNodeCoverage:
         sometimes passes through this helper from non-fatal cleanup
         branches."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import _fail_node_if_running
+        from mdclaw.simulation._base import _fail_node_if_running
 
         job_dir = tmp_path / "job_ok"
         create_node(str(job_dir), "prod")
@@ -2078,7 +2072,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """Topology build must validate the prep artifact, not repair/rewrite it."""
         from pathlib import Path
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "glh_input.pdb"
         pdb.write_text(
@@ -2110,7 +2104,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         is mocked so we can assert the kwarg propagation without running
         SystemGenerator."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2144,7 +2138,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         ``build_amber_system`` test in tests/test_guardrails.py covers the
         public-API path and the matching ``box_dimensions`` conflict guard.
         """
-        from mdclaw.amber_server import _run_openmmforcefields_build
+        from mdclaw.amber.openmm_build import _run_openmmforcefields_build
 
         result = _run_openmmforcefields_build(
             pdb_path=tmp_path / "x.pdb",
@@ -2177,7 +2171,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         default ``hmr=True`` would otherwise trip
         ``modern_system_hmr_mismatch`` against a non-HMR build."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2207,7 +2201,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
     def test_implicit_crystallographic_ions_are_rejected(self, tmp_path):
         """Explicit ion residues should not sneak into implicit builds."""
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "ion_input.pdb"
         pdb.write_text(
@@ -2231,7 +2225,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """Vacuum/no-solvent topology is distinct from implicit solvent and may
         intentionally contain explicit ion particles."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "ion_input.pdb"
         pdb.write_text(
@@ -2263,7 +2257,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """Explicit-solvent builds keep supported crystallographic ions and
         load the selected water/ion XML."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "ion_input.pdb"
         pdb.write_text(
@@ -2294,7 +2288,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         topo node's ``forcefield_provenance.method.hmr`` must reflect that
         choice so evidence_server / run_* can read the source of truth."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2320,7 +2314,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """``build_amber_system(implicit_solvent=..., box_dimensions=...)``
         must fail-fast with a structured ``implicit_solvent_explicit_box_conflict``
         code so callers cannot accidentally produce a periodic GB system."""
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2341,7 +2335,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
     ):
         """Unknown GB model names are rejected by the public ``build_amber_system``
         surface, not just the internal helper."""
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2369,7 +2363,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         warning so users keep the ability to opt back to plain ff14SB by
         passing ``ff14SBonlysc`` explicitly."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2409,7 +2403,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         """ff19SB is OPC-tuned; pairing it with GB raises a warning but is
         not blocked outright (research workflows may still want it)."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2437,7 +2431,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         as the canonical key (``OBC2``, ``GBn2``) so provenance / metadata
         are stable across user inputs."""
         from unittest.mock import patch
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         pdb = tmp_path / "input.pdb"
         pdb.write_text(
@@ -2486,7 +2480,7 @@ class TestBuildAmberSystemImplicitEndToEnd:
         pytest.importorskip("pdbfixer")
 
         from openmm import XmlSerializer
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         result = build_amber_system(
             pdb_file=str(small_pdb),
@@ -2528,10 +2522,10 @@ class TestBuildAmberSystemImplicitEndToEnd:
         pytest.importorskip("pdbfixer")
 
         from openmm.app import PDBFile
-        from mdclaw.amber_server import build_amber_system
-        from mdclaw.md_simulation_server import (
-            _load_xml_topology_inputs,
+        from mdclaw.amber.build_system import build_amber_system
+        from mdclaw.simulation.xml_contract import (
             _deserialize_xml_system,
+            _load_xml_topology_inputs,
             _validate_xml_system_contract,
         )
 
@@ -2591,7 +2585,7 @@ class TestResolveImplicitSolventModel:
         """The headline regression: ``"GBn2"`` must resolve to the GBn2
         symbol, not silently fall back to OBC2 the way the old
         ``IMPLICIT_MODELS.get(name.upper(), OBC2)`` lookup did."""
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         models = self._stub_models()
         model, err = _resolve_implicit_solvent_model("GBn2", models)
@@ -2600,7 +2594,7 @@ class TestResolveImplicitSolventModel:
         assert model is not models["OBC2"]
 
     def test_resolves_canonical_gbn_to_distinct_object_not_obc2(self):
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         models = self._stub_models()
         model, err = _resolve_implicit_solvent_model("GBn", models)
@@ -2627,7 +2621,7 @@ class TestResolveImplicitSolventModel:
     ):
         """Aliases (``gbneck2``, ``igb8``, case variants) reach the OpenMM
         symbol associated with the canonical key, never via OBC2 fallback."""
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         models = self._stub_models()
         model, err = _resolve_implicit_solvent_model(alias, models)
@@ -2638,7 +2632,7 @@ class TestResolveImplicitSolventModel:
         """A typo / unknown GB model must surface the structured failure
         code rather than silently selecting OBC2 — the silent fallback was
         precisely the regression this helper exists to fix."""
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         models = self._stub_models()
         model, err = _resolve_implicit_solvent_model("MAGIC_GB", models)
@@ -2651,7 +2645,7 @@ class TestResolveImplicitSolventModel:
         assert any("OBC2" in e and "GBn2" in e for e in err["errors"])
 
     def test_blank_input_is_unknown(self):
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         models = self._stub_models()
         model, err = _resolve_implicit_solvent_model("   ", models)
@@ -2663,7 +2657,7 @@ class TestResolveImplicitSolventModel:
         not been updated for, the helper must report a structured failure
         rather than silently OBC2-fallback. Models a future drift between
         catalog and runtime."""
-        from mdclaw.md_simulation_server import _resolve_implicit_solvent_model
+        from mdclaw.simulation._base import _resolve_implicit_solvent_model
 
         # Pretend the OpenMM symbol map is out of date and missing GBn2.
         partial = {
@@ -2760,9 +2754,7 @@ class TestCheckTopologyImplicitSolventMatch:
     """
 
     def test_matching_canonical_returns_none(self):
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent="OBC2",
@@ -2782,9 +2774,7 @@ class TestCheckTopologyImplicitSolventMatch:
     def test_alias_pair_canonicalizes_to_match(self, build, runtime):
         """Aliases must canonicalize so users typing ``gbneck2`` against a
         node built with ``GBn2`` (or vice versa) do not trip the guard."""
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent=build,
             runtime_implicit_solvent=runtime,
@@ -2794,9 +2784,7 @@ class TestCheckTopologyImplicitSolventMatch:
         """The headline regression: build-time OBC2 + runtime GBn2 must
         surface ``implicit_solvent_topology_mismatch``, not silently run
         the wrong GB model."""
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent="GBn2",
@@ -2807,9 +2795,7 @@ class TestCheckTopologyImplicitSolventMatch:
         assert "OBC2" in joined and "GBn2" in joined
 
     def test_implicit_topo_with_explicit_runtime_is_mismatch(self):
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent=None,
@@ -2819,9 +2805,7 @@ class TestCheckTopologyImplicitSolventMatch:
         assert "OBC2" in " ".join(err["errors"])
 
     def test_explicit_topo_with_implicit_runtime_is_mismatch(self):
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent=None,
             runtime_implicit_solvent="GBn2",
@@ -2831,9 +2815,7 @@ class TestCheckTopologyImplicitSolventMatch:
         assert "GBn2" in " ".join(err["errors"])
 
     def test_custom_implicit_topo_requires_custom_runtime(self):
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent="custom",
             runtime_implicit_solvent="custom",
@@ -2847,9 +2829,7 @@ class TestCheckTopologyImplicitSolventMatch:
         assert err["code"] == "implicit_solvent_topology_mismatch"
 
     def test_unknown_runtime_implicit_model_is_not_reported_as_mismatch(self):
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="OBC2",
             runtime_implicit_solvent="MAGIC_GB",
@@ -2861,9 +2841,7 @@ class TestCheckTopologyImplicitSolventMatch:
         """A garbage value in ``node.json`` ``metadata.implicit_solvent``
         surfaces as ``implicit_solvent_topology_metadata_invalid`` so it
         is not confused with a runtime typo."""
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         err = _check_topology_implicit_solvent_match(
             topology_implicit_solvent="MAGIC_GB",
             runtime_implicit_solvent="OBC2",
@@ -2874,9 +2852,7 @@ class TestCheckTopologyImplicitSolventMatch:
     def test_both_none_skips_guard(self):
         """Explicit-solvent topo + explicit-solvent run is the most common
         case; the guard must not fire."""
-        from mdclaw.md_simulation_server import (
-            _check_topology_implicit_solvent_match,
-        )
+        from mdclaw.simulation._base import _check_topology_implicit_solvent_match
         assert _check_topology_implicit_solvent_match(
             topology_implicit_solvent=None,
             runtime_implicit_solvent=None,
@@ -2936,7 +2912,7 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
         Must fail with ``implicit_solvent_topology_mismatch`` and never
         reach SystemGenerator."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
         create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
@@ -2958,7 +2934,7 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
 
     def test_run_production_obc2_topo_gbn2_runtime_fails(self, tmp_path):
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
         create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
@@ -2981,7 +2957,7 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
         because ``system.xml`` is a placeholder, but specifically NOT
         with the topology-mismatch code."""
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         job_dir = self._dag_with_modern_topo(tmp_path, "GBn2")
         create_node(str(job_dir), "prod", parent_node_ids=["eq_001"])
@@ -3000,7 +2976,7 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
     ):
         """Topo built without GB; runtime passes ``--implicit-solvent``."""
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         job_dir = self._dag_with_modern_topo(tmp_path, None)
         create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])
@@ -3019,7 +2995,7 @@ class TestImplicitSolventTopologyMismatchInRunFunctions:
     ):
         """Topo built with GB; runtime omits ``--implicit-solvent``."""
         from mdclaw._node import create_node
-        from mdclaw.md_simulation_server import run_equilibration
+        from mdclaw.simulation.equilibrate import run_equilibration
 
         job_dir = self._dag_with_modern_topo(tmp_path, "OBC2")
         create_node(str(job_dir), "eq", parent_node_ids=["topo_001"])

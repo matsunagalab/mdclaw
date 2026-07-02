@@ -79,7 +79,7 @@ def _write_pdb(tmp_path: Path, text: str = _DNA_RNA_PDB) -> str:
 
 
 def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
-    from mdclaw.structure_server import _inspect_molecules_impl
+    from mdclaw.structure.split import _inspect_molecules_impl
 
     result = _inspect_molecules_impl(_write_pdb(tmp_path))
 
@@ -93,7 +93,7 @@ def test_inspect_molecules_classifies_standard_dna_rna(tmp_path):
 
 
 def test_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
-    from mdclaw.structure_server import _inspect_molecules_impl
+    from mdclaw.structure.split import _inspect_molecules_impl
 
     modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
 
@@ -120,7 +120,7 @@ def test_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
 
 
 def test_cli_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path):
-    from mdclaw.research_server import inspect_molecules
+    from mdclaw.research.inspection import inspect_molecules
 
     modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
 
@@ -137,7 +137,7 @@ def test_cli_inspect_molecules_reports_modified_nucleic_as_unsupported(tmp_path)
 
 
 def test_split_molecules_emits_nucleic_files(tmp_path):
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     result = split_molecules(
         structure_file=_write_pdb(tmp_path),
@@ -152,7 +152,7 @@ def test_split_molecules_emits_nucleic_files(tmp_path):
 
 
 def test_prepare_complex_rebuilds_standard_nucleic_hydrogens(tmp_path):
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     result = prepare_complex(
         structure_file=_write_pdb(tmp_path, _STANDARD_NUCLEIC_REBUILD_PDB),
@@ -178,7 +178,7 @@ def test_prepare_complex_rebuilds_standard_nucleic_hydrogens(tmp_path):
 
 
 def test_deuterium_detection_does_not_treat_deoxy_atom_names_as_isotopes():
-    from mdclaw.structure_server import _is_deuterium_atom_record
+    from mdclaw.structure.pdb_utils import _is_deuterium_atom_record
 
     true_deuterium = (
         "ATOM      1  D1  ARG A   1       0.000   0.000   0.000  "
@@ -199,7 +199,7 @@ def test_deuterium_detection_does_not_treat_deoxy_atom_names_as_isotopes():
 
 
 def test_standard_nucleic_hydrogen_rebuild_failure_has_stable_code(tmp_path):
-    from mdclaw.structure_server import _prepare_standard_nucleic
+    from mdclaw.structure.clean_protein import _prepare_standard_nucleic
 
     incomplete = """\
 ATOM      1  P    DA A   1       0.000   0.000   0.000  1.00  0.00           P
@@ -220,13 +220,13 @@ def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path)
     """Standard DNA + RNA presence resolves DNA.OL15 + RNA.OL3 into the
     SystemGenerator XML bundle (PR3: tleap script inspection retired)."""
     from unittest.mock import patch
-    from mdclaw import amber_server
+    from mdclaw.amber import build_system as amber_server
 
     captured: dict = {}
 
     def _fake_om_build(**kwargs):
         from mdclaw import forcefield_catalog as _fc
-        from mdclaw.amber_server import (
+        from mdclaw.amber.openmm_build import (
             _resolve_dna_name_from_libraries,
             _resolve_rna_name_from_libraries,
         )
@@ -278,7 +278,7 @@ def test_build_amber_system_blocks_modified_nucleic_like_residue(tmp_path):
     # The unsupported-modified-nucleic guardrail fires before the
     # openmmforcefields availability check, so this test does not need
     # to mock the build stack.
-    from mdclaw import amber_server
+    from mdclaw.amber import build_system as amber_server
 
     modified = _DNA_RNA_PDB.replace(" DA A   1", " 5M A   1")
 

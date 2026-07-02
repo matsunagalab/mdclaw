@@ -21,7 +21,7 @@ class TestPipelineMetalDag:
         return tmp_path_factory.mktemp("job_4znf_metal_dag")
 
     def test_step1_fetch_and_inspect_zinc(self, job_dir):
-        from mdclaw.research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         self.__class__.fetch_id = fetch_pdb_node(job_dir, "4ZNF")
         inspected = inspect_molecules(str(node_artifact(job_dir, self.fetch_id, "structure_file")))
@@ -32,7 +32,7 @@ class TestPipelineMetalDag:
 
     def test_step2_prepare_keeps_metal(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(str(job_dir), "prep", parent_node_ids=[self.fetch_id])
         assert node["success"], node
@@ -57,7 +57,7 @@ class TestPipelineMetalDag:
 
     def test_step3_parameterize_metal(self, job_dir):
         from mdclaw._node import read_node
-        from mdclaw.metal_server import parameterize_metal_ion
+        from mdclaw.metal.parameterize import parameterize_metal_ion
 
         require_metalpdb2mol2()
         result = parameterize_metal_ion(
@@ -86,7 +86,7 @@ class TestPipelineMetalDag:
         contract until the bridge ships.
         """
         from mdclaw._node import create_node
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         require_topology_builder_stack()
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.prep_id])

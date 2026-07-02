@@ -9,6 +9,20 @@ from types import SimpleNamespace
 import pytest
 
 from mdclaw._node import create_node, init_progress_v3, read_node
+import shutil
+import sys
+from mdclaw.surrogate._base import (
+    BOLTZ_VERSION,
+    SURROGATE_BACKENDS,
+    models_with_capability,
+    resolve_prediction_backend,
+)
+from mdclaw.surrogate.setup import (
+    check_model_backend,
+    setup_model_backend,
+    setup_surrogate_backend,
+)
+from mdclaw.surrogate.candidates import generate_surrogate_candidates
 
 
 @pytest.fixture
@@ -23,9 +37,7 @@ def job_with_source_node(tmp_path):
 
 @pytest.fixture
 def stubbed_bioemu_backend(monkeypatch):
-    from mdclaw import surrogate_server
-
-    backend = surrogate_server.SURROGATE_BACKENDS["bioemu"]
+    backend = SURROGATE_BACKENDS["bioemu"]
     monkeypatch.setattr(
         backend,
         "check",
@@ -51,15 +63,13 @@ def stubbed_bioemu_backend(monkeypatch):
 
 
 def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, tmp_path):
-    from mdclaw import surrogate_server
-
     calls = []
 
-    monkeypatch.setattr(surrogate_server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     def fake_run(cmd, *, cwd=None, timeout=None):
         calls.append(cmd)
-        if cmd[:3] == [surrogate_server.sys.executable, "-m", "venv"]:
+        if cmd[:3] == [sys.executable, "-m", "venv"]:
             python = Path(cmd[3]) / "bin" / "python"
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_text("# fake python\n")
@@ -69,9 +79,9 @@ def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, t
             stderr="",
         )
 
-    monkeypatch.setattr(surrogate_server, "_run_command", fake_run)
+    monkeypatch.setattr("mdclaw.surrogate._base._run_command", fake_run)
 
-    result = surrogate_server.setup_surrogate_backend(
+    result = setup_surrogate_backend(
         model="bioemu",
         device="cuda",
         prefix=str(tmp_path / "bioemu"),
@@ -83,56 +93,50 @@ def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, t
 
 
 def test_setup_model_backend_boltz_pins_version(monkeypatch, tmp_path):
-    from mdclaw import surrogate_server
-
     calls = []
 
-    monkeypatch.setattr(surrogate_server.shutil, "which", lambda name: None)
+    monkeypatch.setattr(shutil, "which", lambda name: None)
 
     def fake_run(cmd, *, cwd=None, timeout=None):
         calls.append(cmd)
-        if cmd[:3] == [surrogate_server.sys.executable, "-m", "venv"]:
+        if cmd[:3] == [sys.executable, "-m", "venv"]:
             python = Path(cmd[3]) / "bin" / "python"
             python.parent.mkdir(parents=True, exist_ok=True)
             python.write_text("# fake python\n")
         return SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"version": surrogate_server.BOLTZ_VERSION}),
+            stdout=json.dumps({"version": BOLTZ_VERSION}),
             stderr="",
         )
 
-    monkeypatch.setattr(surrogate_server, "_run_command", fake_run)
+    monkeypatch.setattr("mdclaw.surrogate._base._run_command", fake_run)
 
-    result = surrogate_server.setup_model_backend(
+    result = setup_model_backend(
         model="boltz",
         device="cuda",
         prefix=str(tmp_path / "boltz"),
     )
 
     assert result["success"], result["errors"]
-    assert any(cmd[-1] == f"boltz=={surrogate_server.BOLTZ_VERSION}" for cmd in calls)
-    assert result["version"] == surrogate_server.BOLTZ_VERSION
+    assert any(cmd[-1] == f"boltz=={BOLTZ_VERSION}" for cmd in calls)
+    assert result["version"] == BOLTZ_VERSION
 
 
 def test_setup_surrogate_backend_is_alias_for_model_backend(monkeypatch):
-    from mdclaw import surrogate_server
-
     seen = {}
 
     def fake_setup(model, device="cpu", prefix=None, reinstall=False):
         seen.update(model=model, device=device, prefix=prefix, reinstall=reinstall)
         return {"success": True}
 
-    monkeypatch.setattr(surrogate_server, "setup_model_backend", fake_setup)
-    result = surrogate_server.setup_surrogate_backend(model="bioemu", device="cuda")
+    monkeypatch.setattr("mdclaw.surrogate.setup.setup_model_backend", fake_setup)
+    result = setup_surrogate_backend(model="bioemu", device="cuda")
     assert result["success"]
     assert seen == {"model": "bioemu", "device": "cuda", "prefix": None, "reinstall": False}
 
 
 def test_check_model_backend_reports_missing_venv(tmp_path):
-    from mdclaw import surrogate_server
-
-    result = surrogate_server.check_model_backend(
+    result = check_model_backend(
         model="bioemu",
         prefix=str(tmp_path / "missing"),
     )
@@ -145,11 +149,9 @@ def test_generate_surrogate_candidates_completes_source_node(
     job_with_source_node,
     stubbed_bioemu_backend,
 ):
-    from mdclaw import surrogate_server
-
     job_dir, node_id = job_with_source_node
 
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
         model="bioemu",
         num_samples=1,
@@ -180,8 +182,6 @@ def test_generate_surrogate_candidates_repacks_sidechains_with_hpacker(
     stubbed_bioemu_backend,
     monkeypatch,
 ):
-    from mdclaw import surrogate_server
-
     job_dir, node_id = job_with_source_node
     repack_calls = []
 
@@ -195,9 +195,9 @@ def test_generate_surrogate_candidates_repacks_sidechains_with_hpacker(
             repack_calls.append(path)
         return list(candidate_paths), warnings, True
 
-    monkeypatch.setattr(surrogate_server, "_repack_sidechains_with_hpacker", fake_repack)
+    monkeypatch.setattr("mdclaw.surrogate.candidates._repack_sidechains_with_hpacker", fake_repack)
 
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
         model="bioemu",
         num_samples=1,
@@ -221,9 +221,7 @@ def test_generate_surrogate_candidates_repacks_sidechains_with_hpacker(
 
 
 def test_generate_surrogate_candidates_rejects_invalid_model():
-    from mdclaw import surrogate_server
-
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
         model="missing",
     )
@@ -233,9 +231,7 @@ def test_generate_surrogate_candidates_rejects_invalid_model():
 
 
 def test_generate_surrogate_candidates_rejects_non_sampling_backend():
-    from mdclaw import surrogate_server
-
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
         model="boltz",
     )
@@ -245,16 +241,12 @@ def test_generate_surrogate_candidates_rejects_non_sampling_backend():
 
 
 def test_capability_dispatch_reflects_backend_declarations():
-    from mdclaw import surrogate_server
-
-    assert surrogate_server.models_with_capability("sampling") == ["bioemu"]
-    assert surrogate_server.models_with_capability("prediction") == ["boltz"]
+    assert models_with_capability("sampling") == ["bioemu"]
+    assert models_with_capability("prediction") == ["boltz"]
 
 
 def test_resolve_prediction_backend_reports_missing_venv(tmp_path):
-    from mdclaw import surrogate_server
-
-    entry, check = surrogate_server.resolve_prediction_backend(
+    entry, check = resolve_prediction_backend(
         model="boltz",
         prefix=str(tmp_path / "missing"),
     )
@@ -263,16 +255,12 @@ def test_resolve_prediction_backend_reports_missing_venv(tmp_path):
 
 
 def test_resolve_prediction_backend_rejects_non_predictor():
-    from mdclaw import surrogate_server
-
     with pytest.raises(ValueError, match="does not support structure prediction"):
-        surrogate_server.resolve_prediction_backend(model="bioemu")
+        resolve_prediction_backend(model="bioemu")
 
 
 def test_generate_surrogate_candidates_rejects_multimer_sequence():
-    from mdclaw import surrogate_server
-
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG:GYDPETGTWG",
         model="bioemu",
     )
@@ -282,14 +270,12 @@ def test_generate_surrogate_candidates_rejects_multimer_sequence():
 
 
 def test_generate_surrogate_candidates_rejects_wrong_node_type(tmp_path):
-    from mdclaw import surrogate_server
-
     jd = tmp_path / "job_wrong_node"
     jd.mkdir()
     init_progress_v3(str(jd), "job_wrong_node")
     prep = create_node(str(jd), "prep")
 
-    result = surrogate_server.generate_surrogate_candidates(
+    result = generate_surrogate_candidates(
         amino_acid_sequence="GYDPETGTWG",
         model="bioemu",
         job_dir=str(jd),

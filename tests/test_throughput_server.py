@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mdclaw.throughput_server import (
-    TOOLS,
-    estimate_md_throughput,
-)
+from mdclaw.throughput import TOOLS
+from mdclaw.throughput.estimate import estimate_md_throughput
 
 
 def test_in_table_a100_30k_returns_medium_confidence():

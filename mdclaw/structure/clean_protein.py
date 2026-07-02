@@ -30,7 +30,7 @@ from openmm.app import PDBFile  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
-from mdclaw.research_server import (  # noqa: E402
+from mdclaw.research.nucleic import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
     classify_nucleic_residues,
 )

@@ -21,7 +21,7 @@ class TestPipelineMembraneDag:
         return tmp_path_factory.mktemp("job_2lop_membrane_dag")
 
     def test_step1_fetch_and_inspect_membrane_protein(self, job_dir):
-        from mdclaw.research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         self.__class__.fetch_id = fetch_pdb_node(job_dir, "2LOP")
         inspected = inspect_molecules(str(node_artifact(job_dir, self.fetch_id, "structure_file")))
@@ -31,7 +31,7 @@ class TestPipelineMembraneDag:
 
     def test_step2_prepare_protein(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(str(job_dir), "prep", parent_node_ids=[self.fetch_id])
         assert node["success"], node
@@ -51,7 +51,7 @@ class TestPipelineMembraneDag:
 
     def test_step3_embed_in_membrane(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.solvation_server import embed_in_membrane
+        from mdclaw.solvation import embed_in_membrane
 
         require_packmol_memgen()
         node = create_node(str(job_dir), "solv", parent_node_ids=[self.prep_id])
@@ -80,7 +80,7 @@ class TestPipelineMembraneDag:
 
     def test_step4_membrane_topology(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         require_topology_builder_stack()
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.solv_id])

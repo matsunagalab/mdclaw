@@ -2,7 +2,7 @@
 
 import textwrap
 
-from mdclaw.structure_server import (
+from mdclaw.structure.protonation import (
     _apply_protonation_states_with_modeller,
     _normalize_protonation_state_overrides,
 )

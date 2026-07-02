@@ -38,7 +38,7 @@ def _stub_boltz(
     multi_model_file: bool = False,
 ):
     """Patch boltz2 module so it writes a fake predicted PDB instead of running."""
-    from mdclaw import genesis_server
+    from mdclaw.genesis import boltz as genesis_server
 
     # Pretend the isolated boltz backend venv is installed
     monkeypatch.setattr(
@@ -229,7 +229,7 @@ class TestBoltz2SourceNodeIntegration:
         job_dir, node_id = job_with_source_node
         _stub_boltz(monkeypatch)
 
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         result = gs.boltz2_protein_from_seq(
             amino_acid_sequence_list=[],
@@ -243,7 +243,7 @@ class TestBoltz2SourceNodeIntegration:
 
     def test_protein_only_smiles_list_can_be_omitted(self, tmp_path, monkeypatch):
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         out = tmp_path / "out"
         out.mkdir()
@@ -257,7 +257,7 @@ class TestBoltz2SourceNodeIntegration:
 
     def test_affinity_requires_ligand_has_stable_code(self, tmp_path, monkeypatch):
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         result = gs.boltz2_protein_from_seq(
             amino_acid_sequence_list=["MVLSPADK"],
@@ -270,7 +270,7 @@ class TestBoltz2SourceNodeIntegration:
 
     def test_num_models_must_be_positive(self, tmp_path, monkeypatch):
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         result = gs.boltz2_protein_from_seq(
             amino_acid_sequence_list=["MVLSPADK"],
@@ -284,7 +284,7 @@ class TestBoltz2SourceNodeIntegration:
     def test_non_node_mode_still_works(self, tmp_path, monkeypatch):
         """Without job_dir/node_id, behavior should match the legacy path."""
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         out = tmp_path / "out"
         out.mkdir()
@@ -301,7 +301,7 @@ class TestBoltz2SourceNodeIntegration:
     def test_custom_msa_is_written_to_yaml_and_not_passed_as_cli_flag(
         self, tmp_path, monkeypatch
     ):
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         out = tmp_path / "out"
         out.mkdir()
@@ -353,7 +353,7 @@ class TestBoltz2SourceNodeIntegration:
 
     def test_custom_msa_rejects_multimer_input(self, tmp_path, monkeypatch):
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         out = tmp_path / "out"
         out.mkdir()
@@ -371,7 +371,7 @@ class TestBoltz2SourceNodeIntegration:
         self, tmp_path, monkeypatch
     ):
         _stub_boltz(monkeypatch)
-        from mdclaw import genesis_server as gs
+        from mdclaw.genesis import boltz as gs
 
         msa = tmp_path / "custom_alignment.csv"
         msa.write_text("dummy")
@@ -432,7 +432,7 @@ def _write_modeller_alignment(path: Path):
 
 def _stub_modeller(monkeypatch):
     """Patch MODELLER subprocess execution with a fake result JSON."""
-    from mdclaw import genesis_server
+    from mdclaw.genesis import modeller as genesis_server
 
     monkeypatch.setenv("KEY_MODELLER10v8", "dummy-license")
     captured = {}
@@ -748,7 +748,7 @@ def test_modeller_from_alignment_real_optional(tmp_path):
 
     if importlib.util.find_spec("modeller") is None:
         pytest.skip("MODELLER package is not installed")
-    from mdclaw import genesis_server as gs
+    from mdclaw.genesis import modeller as gs
 
     template = _write_modeller_template_pdb(tmp_path / "tmpl.pdb")
     alignment = _write_modeller_alignment(tmp_path / "align.ali")
@@ -773,7 +773,7 @@ def test_modeller_from_alignment_real_optional(tmp_path):
 
 
 def test_analyze_plip_interactions_with_mocked_plip(tmp_path, monkeypatch):
-    from mdclaw import genesis_server as gs
+    from mdclaw.genesis import chem as gs
 
     pdb_file = tmp_path / "complex.pdb"
     pdb_file.write_text("ATOM      1  N   ALA A   1       0.0   0.0   0.0  1.00  0.00           N\nEND\n")

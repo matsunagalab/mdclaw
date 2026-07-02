@@ -48,7 +48,7 @@ def test_plan_disulfide_topology_bonds_emits_indices_on_cyx(tmp_path):
     ``Topology.addBond`` — are 1 and 2 regardless of the PDB resSeq
     values (22, 95).
     """
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb = _write_pdb(tmp_path, "CYX", "CYX")
     plan = _plan_disulfide_topology_bonds(pdb, [_pair("A", 22, "A", 95)])
@@ -60,7 +60,7 @@ def test_plan_disulfide_topology_bonds_emits_indices_on_cyx(tmp_path):
 
 def test_plan_disulfide_topology_bonds_skips_cys_protonated(tmp_path):
     """Plain CYS residues are skipped to avoid conflicting with HG on SG."""
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb = _write_pdb(tmp_path, "CYS", "CYS")
     plan = _plan_disulfide_topology_bonds(pdb, [_pair("A", 22, "A", 95)])
@@ -72,7 +72,7 @@ def test_plan_disulfide_topology_bonds_skips_cys_protonated(tmp_path):
 
 def test_plan_disulfide_topology_bonds_unresolved_when_resnum_missing(tmp_path):
     """Pair pointing at a resnum not in the PDB is marked unresolved."""
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb = _write_pdb(tmp_path, "CYX", "CYX")
     plan = _plan_disulfide_topology_bonds(pdb, [_pair("A", 22, "A", 999)])
@@ -88,7 +88,7 @@ def test_plan_disulfide_topology_bonds_ignores_chain_label(tmp_path):
     renames them, so the pair's chain field is unreliable. The scanner looks
     for any chain in the merged PDB that carries both resnums as CYX.
     """
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb = _write_pdb(tmp_path, "CYX", "CYX")
     # Pair declares chain B, but PDB only has chain A.
@@ -109,7 +109,7 @@ def test_plan_disulfide_topology_bonds_homodimer_emits_per_chain(tmp_path):
     rather than double-bonding.
     """
     import textwrap as _textwrap
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb_text = _textwrap.dedent("""\
         ATOM      1  N   CYX A  22       0.000   0.000   0.000  1.00  0.00           N
@@ -158,7 +158,7 @@ def test_plan_disulfide_topology_bonds_homodimer_emits_per_chain(tmp_path):
 
 def test_plan_disulfide_topology_bonds_empty_input(tmp_path):
     """No pairs → empty plan, no warnings."""
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     pdb = _write_pdb(tmp_path, "CYX", "CYX")
     plan = _plan_disulfide_topology_bonds(pdb, [])
@@ -178,7 +178,7 @@ def test_plan_disulfide_topology_bonds_waters_do_not_clobber_protein(tmp_path):
     sequential index used by the openmmforcefields topology builder.
     """
     import textwrap as _textwrap
-    from mdclaw.amber_server import _plan_disulfide_topology_bonds
+    from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds
 
     # Protein CYX at (A, 22) and (A, 95), followed by WAT residues that
     # reuse resSeq 22 and 95 on the same chain A — the real pattern seen

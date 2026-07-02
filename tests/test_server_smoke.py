@@ -27,7 +27,7 @@ class TestNodeServer:
     """Smoke tests for node_server.py tools."""
 
     def test_update_workflow_state_params(self, tmp_path):
-        from node_server import update_workflow_state
+        from mdclaw.node.lifecycle import update_workflow_state
 
         result = update_workflow_state(
             str(tmp_path / "job_modes"),
@@ -46,7 +46,7 @@ class TestResearchServer:
     """Smoke tests for research_server.py tools."""
 
     def test_inspect_molecules(self, small_pdb):
-        from research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         result = inspect_molecules(structure_file=small_pdb)
         assert result["success"] is True
@@ -54,7 +54,7 @@ class TestResearchServer:
 
     @pytest.mark.asyncio
     async def test_download_structure(self, tmp_path):
-        from research_server import download_structure
+        from mdclaw.research.fetch import download_structure
 
         result = await download_structure(
             pdb_id="1AKE",
@@ -70,7 +70,7 @@ class TestResearchServer:
         monkeypatch,
         tmp_path,
     ):
-        import research_server
+        import mdclaw.research.fetch as research_server
 
         async def fake_pdb_fetch(**kwargs):
             return {
@@ -114,7 +114,7 @@ class TestResearchServer:
         assert alphafold_result["file_format"] == "cif"
 
     def test_analyze_structure_details(self, small_pdb):
-        from research_server import analyze_structure_details
+        from mdclaw.research.structure_analysis import analyze_structure_details
 
         result = analyze_structure_details(
             structure_file=small_pdb,
@@ -131,7 +131,7 @@ class TestResearchServer:
         inspection.json into the node's artifacts dir and emits an
         inspection_completed event WITHOUT changing node status."""
         from mdclaw._node import create_node, read_node
-        from research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         job_dir = tmp_path / "job_inspect"
         job_dir.mkdir()
@@ -161,7 +161,8 @@ class TestResearchServer:
     def test_inspect_molecules_auto_resolves_source_artifact(self, small_pdb, tmp_path):
         """Node-mode inspection may omit structure_file when a source artifact exists."""
         from mdclaw._node import create_node
-        from research_server import inspect_molecules, register_local_structure
+        from mdclaw.research.inspection import inspect_molecules
+        from mdclaw.research.source_node import register_local_structure
 
         job_dir = tmp_path / "job_inspect_autoresolve"
         job_dir.mkdir()
@@ -189,7 +190,8 @@ class TestResearchServer:
     def test_inspect_molecules_selects_source_candidate(self, small_pdb, tmp_path):
         """Node-mode inspection can inspect a specific source-bundle candidate."""
         from mdclaw._node import create_node
-        from research_server import _complete_source_node, inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
+        from mdclaw.research.source_core import _complete_source_node
 
         job_dir = tmp_path / "job_inspect_candidate"
         job_dir.mkdir()
@@ -229,7 +231,8 @@ class TestResearchServer:
         import json
 
         from mdclaw._node import create_node, read_node
-        from research_server import fetch_structure, list_source_candidates
+        from mdclaw.research.fetch import fetch_structure
+        from mdclaw.research.source_node import list_source_candidates
 
         job_dir = tmp_path / "job_fetch_local"
         job_dir.mkdir()
@@ -270,7 +273,7 @@ class TestResearchServer:
         import json
 
         from mdclaw._node import create_node, read_node
-        from research_server import register_local_structure
+        from mdclaw.research.source_node import register_local_structure
 
         job_dir = tmp_path / "job_local"
         job_dir.mkdir()
@@ -301,7 +304,7 @@ class TestResearchServer:
 
     def test_register_local_structure_missing_file(self, tmp_path):
         from mdclaw._node import create_node, read_node
-        from research_server import register_local_structure
+        from mdclaw.research.source_node import register_local_structure
 
         job_dir = tmp_path / "job_missing"
         job_dir.mkdir()
@@ -322,7 +325,7 @@ class TestResearchServer:
     @pytest.mark.asyncio
     async def test_download_structure_node_mode(self, tmp_path):
         from mdclaw._node import create_node, read_node
-        from research_server import download_structure
+        from mdclaw.research.fetch import download_structure
 
         job_dir = tmp_path / "job_dl"
         job_dir.mkdir()
@@ -358,7 +361,7 @@ class TestStructureServer:
     """Smoke tests for structure_server.py tools."""
 
     def test_split_molecules(self, small_pdb):
-        from structure_server import split_molecules
+        from mdclaw.structure.split import split_molecules
 
         result = split_molecules(
             structure_file=small_pdb,
@@ -368,7 +371,7 @@ class TestStructureServer:
         assert result["success"] is True
 
     def test_clean_protein(self, small_pdb):
-        from structure_server import clean_protein
+        from mdclaw.structure.clean_protein import clean_protein
 
         result = clean_protein(
             pdb_file=small_pdb,
@@ -387,7 +390,7 @@ class TestStructureServer:
         any structure that actually has non-standard residues (e.g. PCA, MSE).
         """
         from pdbfixer import PDBFixer
-        import structure_server
+        import mdclaw.structure.clean_protein as structure_server
 
         class _FakeChain:
             def __init__(self, chain_id):
@@ -432,7 +435,7 @@ class TestStructureServer:
         assert "PCA->GLU" in ns_ops[0]["details"]
 
     def test_merge_structures(self, small_pdb, tmp_path):
-        from structure_server import merge_structures
+        from mdclaw.structure.merge import merge_structures
 
         # Merge the same file with itself (valid operation)
         result = merge_structures(
@@ -444,7 +447,7 @@ class TestStructureServer:
         assert Path(result["output_file"]).exists()
 
     def test_modxna_fragment_presets_available(self):
-        from structure_server import MODXNA_FRAGMENT_PRESETS
+        from mdclaw.structure.modxna import MODXNA_FRAGMENT_PRESETS
 
         assert MODXNA_FRAGMENT_PRESETS["5CM"] == {
             "backbone": "DPO",
@@ -453,7 +456,7 @@ class TestStructureServer:
         }
 
     def test_prepare_complex(self, small_pdb, tmp_path):
-        from structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         result = prepare_complex(
             structure_file=small_pdb,
@@ -472,7 +475,7 @@ class TestStructureServer:
     ):
         """prepare_complex persists detected SS bonds as a JSON artifact."""
         import json as _json
-        from structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         result = prepare_complex(
             structure_file=ssbond_mini_pdb,
@@ -498,7 +501,7 @@ class TestStructureServer:
 
     def test_component_disposition_normalizes_nonprotein_deuterium(self, tmp_path):
         """The prep-level disposition pass is shared by non-protein components."""
-        from structure_server import _apply_component_disposition_to_split_result
+        from mdclaw.structure.pdb_utils import _apply_component_disposition_to_split_result
 
         def write_fragment(name, line):
             path = tmp_path / name
@@ -555,7 +558,7 @@ class TestStructureServer:
     def test_prepare_complex_excludes_ions_for_implicit_solvent(self, tmp_path):
         """Implicit-solvent prep records explicit ions as excluded before merge."""
         import json as _json
-        from structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         ion_pdb = tmp_path / "ion_only.pdb"
         ion_pdb.write_text(
@@ -606,7 +609,7 @@ class TestSolvationServer:
     """Smoke tests for solvation_server.py tools."""
 
     def test_list_available_lipids(self):
-        from solvation_server import list_available_lipids
+        from mdclaw.solvation.membrane import list_available_lipids
 
         result = list_available_lipids()
         assert result["success"] is True
@@ -618,8 +621,8 @@ class TestSolvationServer:
         NOTE: This requires a cleaned/prepared PDB. We use prepare_complex
         first to generate the input.
         """
-        from structure_server import prepare_complex
-        from solvation_server import solvate_structure
+        from mdclaw.structure.prepare_complex import prepare_complex
+        from mdclaw.solvation.water import solvate_structure
 
         # First prepare the structure
         prep = prepare_complex(
@@ -659,9 +662,9 @@ class TestAmberServer:
 
         This is a multi-step dependency: prepare -> solvate -> build.
         """
-        from structure_server import prepare_complex
-        from solvation_server import solvate_structure
-        from amber_server import build_amber_system
+        from mdclaw.structure.prepare_complex import prepare_complex
+        from mdclaw.solvation.water import solvate_structure
+        from mdclaw.amber.build_system import build_amber_system
 
         # Step 1: Prepare
         prep = prepare_complex(
@@ -708,9 +711,9 @@ class TestMDSimulationServer:
     @staticmethod
     def _build_topology(small_pdb, tmp_path):
         """Helper: prepare -> solvate -> build topology (shared setup)."""
-        from structure_server import prepare_complex
-        from solvation_server import solvate_structure
-        from amber_server import build_amber_system
+        from mdclaw.structure.prepare_complex import prepare_complex
+        from mdclaw.solvation.water import solvate_structure
+        from mdclaw.amber.build_system import build_amber_system
 
         prep = prepare_complex(
             structure_file=small_pdb,
@@ -745,7 +748,7 @@ class TestMDSimulationServer:
 
         Full dependency chain: prepare -> solvate -> build -> simulate.
         """
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -773,7 +776,7 @@ class TestMDSimulationServer:
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
             pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
         script = tmp_path / "restraint.py"
@@ -813,7 +816,7 @@ class TestMDSimulationServer:
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
             pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
         script = tmp_path / "dist_bias.py"
@@ -855,7 +858,8 @@ class TestMDSimulationServer:
         _ot = pytest.importorskip("openmmtorch")
         if not hasattr(_ot, "PythonTorchForce"):
             pytest.skip("openmm-torch build lacks PythonTorchForce (script route)")
-        from md_simulation_server import run_equilibration, run_production
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
         from mdclaw._node import complete_node, create_node, read_node
 
         amber = self._build_topology(small_pdb, tmp_path)
@@ -933,7 +937,7 @@ class TestMDSimulationServer:
 
     def test_run_md_with_platform_cpu(self, small_pdb, tmp_path):
         """Run MD with explicit CPU platform selection."""
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -954,7 +958,7 @@ class TestMDSimulationServer:
 
     def test_run_md_with_checkpoint(self, small_pdb, tmp_path):
         """Verify CheckpointReporter creates a checkpoint file."""
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -976,7 +980,7 @@ class TestMDSimulationServer:
 
     def test_run_md_restart(self, small_pdb, tmp_path):
         """Run MD, then restart from checkpoint and verify DCD append."""
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -1036,7 +1040,8 @@ class TestMDSimulationServer:
         See ``test_equilibration_xml_restart_npt_to_nvt_cross_ensemble`` for
         the XML path with cross-ensemble switching.
         """
-        from md_simulation_server import run_equilibration, run_production
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -1087,7 +1092,8 @@ class TestMDSimulationServer:
         ``MonteCarloPressure`` parameter, but ``XmlSerializer.deserialize``
         + manual transfer of positions/velocities/box succeeds.
         """
-        from md_simulation_server import run_equilibration, run_production
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -1164,7 +1170,8 @@ class TestMDSimulationServer:
         state — _load_state_into_simulation drops barostat parameters and
         transfers positions/velocities/box safely. (Bug 4 of
         openmmforcefields-unification.)"""
-        from md_simulation_server import run_equilibration, run_production
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
         equil_npt = run_equilibration(
@@ -1205,7 +1212,8 @@ class TestMDSimulationServer:
 
     def test_run_production_node_mode_records_relative_artifacts(self, small_pdb, tmp_path):
         """Node-mode production should write non-empty outputs and relative artifacts."""
-        from md_simulation_server import run_equilibration, run_production
+        from mdclaw.simulation.equilibrate import run_equilibration
+        from mdclaw.simulation.production import run_production
         from mdclaw._node import complete_node, create_node, read_node
 
         amber = self._build_topology(small_pdb, tmp_path)
@@ -1276,7 +1284,7 @@ class TestMDSimulationServer:
 
     def test_run_md_with_hmr(self, small_pdb, tmp_path):
         """Run MD with HMR enabled and 4fs timestep."""
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -1298,7 +1306,7 @@ class TestMDSimulationServer:
 
     def test_run_md_invalid_platform(self, small_pdb, tmp_path):
         """Invalid platform name returns error."""
-        from md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         amber = self._build_topology(small_pdb, tmp_path)
 
@@ -1323,20 +1331,20 @@ class TestGenesisServer:
     """Smoke tests for genesis_server.py tools."""
 
     def test_rdkit_validate_smiles(self):
-        from genesis_server import rdkit_validate_smiles
+        from mdclaw.genesis import rdkit_validate_smiles
 
         result = rdkit_validate_smiles(smiles="CCO")
         assert result["success"] is True
         assert "canonical_smiles" in result
 
     def test_rdkit_validate_smiles_invalid(self):
-        from genesis_server import rdkit_validate_smiles
+        from mdclaw.genesis import rdkit_validate_smiles
 
         result = rdkit_validate_smiles(smiles="not_a_smiles_XYZ")
         assert result["success"] is False
 
     def test_pubchem_get_smiles_from_name(self):
-        from genesis_server import pubchem_get_smiles_from_name
+        from mdclaw.genesis import pubchem_get_smiles_from_name
 
         result = pubchem_get_smiles_from_name(chemical_name="aspirin")
         assert result["success"] is True
@@ -1352,7 +1360,7 @@ class TestMetalServer:
     """Smoke tests for metal_server.py tools."""
 
     def test_detect_metal_ions(self, small_pdb):
-        from metal_server import detect_metal_ions
+        from mdclaw.metal.detect import detect_metal_ions
 
         result = detect_metal_ions(pdb_file=small_pdb)
         assert result["metal_count"] == 0

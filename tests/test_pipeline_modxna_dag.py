@@ -12,9 +12,10 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 def test_modified_nucleic_branch_resolves_into_topology(tmp_path):
     from mdclaw._node import create_node, read_node
-    from mdclaw.amber_server import build_amber_system
-    from mdclaw.research_server import inspect_molecules
-    from mdclaw.structure_server import prepare_complex, prepare_modified_nucleic
+    from mdclaw.amber.build_system import build_amber_system
+    from mdclaw.research.inspection import inspect_molecules
+    from mdclaw.structure.modxna import prepare_modified_nucleic
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     modxna_dir = os.environ.get("MDCLAW_MODXNA_DIR")
     if not modxna_dir:

@@ -5,10 +5,10 @@ import json
 import numpy as np
 import pytest
 
-from mdclaw.analyze_server import (
+from mdclaw.analyze.equilibration import detect_equilibration
+from mdclaw.analyze.metrics import (
     analyze_contact_frequency,
     analyze_rmsf,
-    detect_equilibration,
 )
 
 

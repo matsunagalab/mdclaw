@@ -151,7 +151,7 @@ def _job_with_parent_prep(
 def test_build_amber_system_fails_modxna_residue_name_mismatch(tmp_path):
     # modxna validation runs before the openmmforcefields availability check,
     # so this test does not need to mock the build stack.
-    from mdclaw import amber_server
+    from mdclaw.amber import build_system as amber_server
 
     pdb = _write_modified_pdb(tmp_path, _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "RSS A   2"))
     lib = tmp_path / "RSS.lib"
@@ -170,7 +170,7 @@ def test_build_amber_system_fails_modxna_residue_name_mismatch(tmp_path):
 
 
 def test_prepare_complex_writes_nucleic_residue_mapping(tmp_path):
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     result = prepare_complex(
         structure_file=str(_write_modified_pdb(tmp_path, _STANDARD_DNA_RNA_PDB)),
@@ -189,7 +189,7 @@ def test_prepare_complex_writes_nucleic_residue_mapping(tmp_path):
 
 def test_prepare_modified_nucleic_fake_modxna_source_frame(tmp_path):
     from mdclaw._node import create_node, read_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -219,7 +219,7 @@ def test_prepare_modified_nucleic_fake_modxna_source_frame(tmp_path):
 
 def test_prepare_modified_nucleic_applies_5cm_fragment_preset(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -240,7 +240,7 @@ def test_prepare_modified_nucleic_applies_5cm_fragment_preset(tmp_path):
 
 def test_prepare_modified_nucleic_unknown_preset_reports_required_fields(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     mapping = [
         {
@@ -276,7 +276,7 @@ def test_prepare_modified_nucleic_unknown_preset_reports_required_fields(tmp_pat
 
 def test_prepare_modified_nucleic_returns_source_candidates_on_missing_target(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -305,7 +305,7 @@ def test_prepare_modified_nucleic_returns_source_candidates_on_missing_target(tm
 
 def test_prepare_modified_nucleic_merged_coordinate_frame(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -331,7 +331,7 @@ def test_prepare_modified_nucleic_merged_coordinate_frame(tmp_path):
 
 def test_prepare_modified_nucleic_reuses_library_for_duplicate_fragments(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     mapping = [
         {
@@ -377,7 +377,7 @@ def test_prepare_modified_nucleic_reuses_library_for_duplicate_fragments(tmp_pat
 
 def test_prepare_modified_nucleic_reports_terminal_position(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -406,7 +406,7 @@ def test_prepare_modified_nucleic_reports_terminal_position(tmp_path):
 
 def test_prepare_modified_nucleic_reports_tool_unavailable(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -425,7 +425,7 @@ def test_prepare_modified_nucleic_reports_tool_unavailable(tmp_path):
 
 def test_prepare_modified_nucleic_reports_execution_failed(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     root = tmp_path / "bad_modxna"
     (root / "dat").mkdir(parents=True)
@@ -450,7 +450,7 @@ def test_prepare_modified_nucleic_reports_execution_failed(tmp_path):
 
 def test_prepare_modified_nucleic_reports_stale_mapping(tmp_path):
     from mdclaw._node import create_node
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     mapping = [
         {
@@ -484,7 +484,7 @@ def test_prepare_modified_nucleic_reports_stale_mapping(tmp_path):
 
 def test_topo_resolves_modxna_params_from_prep_ancestor(tmp_path):
     from mdclaw._node import create_node, resolve_node_inputs
-    from mdclaw.structure_server import prepare_modified_nucleic
+    from mdclaw.structure.modxna import prepare_modified_nucleic
 
     job_dir, parent_prep = _job_with_parent_prep(tmp_path)
     child = create_node(str(job_dir), "prep", parent_node_ids=[parent_prep])
@@ -535,7 +535,7 @@ def test_build_amber_system_blocks_modxna_without_openmm_xml(tmp_path):
     fail-fast with the structured code ``modxna_openmm_xml_required`` rather
     than emit a warning and continue to a System that lacks the modXNA
     residue template."""
-    from mdclaw.amber_server import build_amber_system
+    from mdclaw.amber.build_system import build_amber_system
 
     pdb = _write_modified_pdb(
         tmp_path, _MODIFIED_NUCLEIC_PDB.replace("5CM A   2", "RSS A   2")

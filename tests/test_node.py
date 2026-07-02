@@ -3554,7 +3554,7 @@ class TestSourceNode:
 
     def test_prepare_resolver_selects_explicit_source_candidate(self, job_dir):
         from mdclaw.source_bundle import build_source_bundle, write_source_bundle
-        from mdclaw.structure_server import _resolve_prepare_node_structure_file
+        from mdclaw.structure.prepare_complex import _resolve_prepare_node_structure_file
 
         jd = str(job_dir)
         create_node(jd, "source")
@@ -3716,11 +3716,11 @@ class TestSourceNode:
 class TestNodeServerRegistration:
 
     def test_create_node_in_tools(self):
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
         assert "create_node" in TOOLS
 
     def test_multi_agent_node_tools_registered(self):
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
         for tool_name in (
             "rebuild_progress_index",
             "claim_node",
@@ -3735,4 +3735,4 @@ class TestNodeServerRegistration:
     def test_registry_has_node(self):
         from mdclaw._registry import SERVER_REGISTRY
         assert "node" in SERVER_REGISTRY
-        assert SERVER_REGISTRY["node"] == "mdclaw.node_server"
+        assert SERVER_REGISTRY["node"] == "mdclaw.node"

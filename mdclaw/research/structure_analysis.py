@@ -24,24 +24,12 @@ from mdclaw._common import (  # noqa: E402
     setup_logger,
 )
 
-# Shared chemistry residue/element constants now live in
-# ``mdclaw.chemistry_constants``. They are re-exported here so existing
-# ``from mdclaw.research_server import <NAME>`` imports keep working. ``noqa``
-# keeps them through the subpackage split even where a submodule does not use
-# them directly.
 from mdclaw.chemistry_constants import (  # noqa: E402
-    AMBER_PROTEIN_RESIDUES,  # noqa: F401
-    AMINO_ACIDS,  # noqa: F401
-    COMMON_IONS,  # noqa: F401
-    GAFF_SUPPORTED_ELEMENTS,  # noqa: F401
-    METAL_ELEMENTS,  # noqa: F401
-    MULTIVALENT_METAL_IONS,  # noqa: F401
-    PHOSPHO_RESNAMES,  # noqa: F401
-    PROTEIN_RESNAMES,  # noqa: F401
-    STANDARD_DNA_RESNAMES,  # noqa: F401
-    STANDARD_NUCLEIC_RESNAMES,  # noqa: F401
-    STANDARD_RNA_RESNAMES,  # noqa: F401
-    WATER_NAMES,  # noqa: F401
+    COMMON_IONS,
+    GAFF_SUPPORTED_ELEMENTS,
+    METAL_ELEMENTS,
+    PROTEIN_RESNAMES,
+    WATER_NAMES,
 )
 
 logger = setup_logger(__name__)

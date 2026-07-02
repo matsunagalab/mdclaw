@@ -10,7 +10,7 @@ pytest.importorskip("openff.pablo")
 pytest.importorskip("openmm")
 pytest.importorskip("openmmforcefields")
 
-from mdclaw.openmm_system_server import build_openmm_system
+from mdclaw.openmm_system.build import build_openmm_system
 
 
 def _hydrogenated_dipeptide(tmp_path: Path) -> Path:
@@ -609,7 +609,7 @@ class TestBuildOpenmmSystemImplicitSolvent:
         specific assertion is that the failure code is *not*
         ``implicit_solvent_topology_mismatch``."""
         from mdclaw._node import create_node, read_node
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         job_dir, topo_id, _pdb = self._setup_topo(tmp_path)
         result = build_openmm_system(

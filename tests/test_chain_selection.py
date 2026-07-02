@@ -74,7 +74,7 @@ def cif_label_ne_auth(tmp_path: Path) -> str:
 
 
 def _inspect(path: str) -> dict:
-    from mdclaw.structure_server import _inspect_molecules_impl
+    from mdclaw.structure.split import _inspect_molecules_impl
     return _inspect_molecules_impl(path)
 
 
@@ -98,7 +98,7 @@ def test_inspect_molecules_exposes_label_and_author_ids(cif_label_ne_auth):
 
 def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):
     """Primary contract: select_chains=['B'] picks label 'B' even though auth is 'BBB'."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_label"
     r = split_molecules(
@@ -118,7 +118,7 @@ def test_split_molecules_matches_label_asym_id(cif_label_ne_auth, tmp_path):
 def test_split_molecules_author_fallback_emits_warning(cif_label_ne_auth, tmp_path):
     """Fallback contract: select_chains=['BBB'] (author value) still resolves,
     but emits a warning pointing the caller at the label-first convention."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_author_fallback"
     r = split_molecules(
@@ -135,7 +135,7 @@ def test_split_molecules_author_fallback_emits_warning(cif_label_ne_auth, tmp_pa
 
 def test_split_molecules_missing_chain_reports_both_systems(cif_label_ne_auth, tmp_path):
     """Error path: unknown chain reports available labels, authors, and the map."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_missing"
     r = split_molecules(
@@ -154,7 +154,7 @@ def test_split_molecules_missing_chain_reports_both_systems(cif_label_ne_auth, t
 
 def test_split_molecules_use_author_chains_kwarg_removed(cif_label_ne_auth):
     """The deprecated `use_author_chains` kwarg is no longer accepted."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     with pytest.raises(TypeError):
         split_molecules(
@@ -255,7 +255,7 @@ def cif_type_fallback(tmp_path: Path) -> str:
 def test_split_molecules_include_types_author_fallback(cif_type_fallback, tmp_path):
     """User passes 'F'; label F exists but is water; include_types=['protein']
     must rescue via author_chain → auth 'FFF' → label B (the protein)."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_type_fallback"
     r = split_molecules(
@@ -278,7 +278,7 @@ def test_split_molecules_pdb_input_no_fallback_warning(pdb_simple, tmp_path):
     spec identifies chains). gemmi's subchain_id is an artifact like 'Axp'
     that the user wouldn't type. Author-fallback resolves and must stay
     silent — telling the caller to pass 'Axp' would be misleading."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_pdb"
     r = split_molecules(
@@ -388,7 +388,7 @@ def test_split_molecules_auto_includes_requested_ligand_chain(
     tmp_path,
 ):
     """Explicit ligand IDs should not be silently dropped by protein-only chain selection."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     out_dir = tmp_path / "out_ligand_auto_add"
     r = split_molecules(
@@ -409,7 +409,7 @@ def test_inspect_molecules_reports_associated_ligand_candidates(
     cif_protein_a_ligand_c_auth_a,
 ):
     """Inspection should surface same-author ligand candidates for agents."""
-    from mdclaw.structure_server import _inspect_molecules_impl
+    from mdclaw.structure.split import _inspect_molecules_impl
 
     r = _inspect_molecules_impl(cif_protein_a_ligand_c_auth_a)
 
@@ -440,7 +440,7 @@ def test_research_inspect_molecules_reports_associated_ligand_candidates(
     cif_protein_a_ligand_c_auth_a,
 ):
     """The public inspect_molecules CLI path should expose the same hints."""
-    from mdclaw.research_server import inspect_molecules
+    from mdclaw.research.inspection import inspect_molecules
 
     r = inspect_molecules(cif_protein_a_ligand_c_auth_a)
 
@@ -454,7 +454,7 @@ def test_split_molecules_blocks_associated_ligand_silent_drop(
     tmp_path,
 ):
     """Protein-only chain selection cannot silently drop associated ligands."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ligand_c_auth_a,
@@ -479,7 +479,7 @@ def test_prepare_complex_surfaces_associated_ligand_selection_block(
     tmp_path,
 ):
     """prepare_complex should expose the split guardrail without tool-log parsing."""
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     r = prepare_complex(
         structure_file=cif_protein_a_ligand_c_auth_a,
@@ -501,7 +501,7 @@ def test_split_molecules_can_auto_include_associated_ligands(
     tmp_path,
 ):
     """The explicit convenience flag includes associated ligand candidates."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ligand_c_auth_a,
@@ -526,7 +526,7 @@ def test_split_molecules_includes_associated_ligand_by_resname(
     tmp_path,
 ):
     """Residue-name selection should add the ligand label chain, not all ligands."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ap5_act_auth_a,
@@ -556,7 +556,7 @@ def test_split_molecules_resname_scope_rejects_other_chain_match(
     tmp_path,
 ):
     """A resname match outside the selected polymer scope should not be stolen."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ap5_act_auth_a,
@@ -575,7 +575,7 @@ def test_split_molecules_resname_selector_without_chain_selects_all_matches(
     cif_protein_a_ap5_act_auth_a,
     tmp_path,
 ):
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ap5_act_auth_a,
@@ -595,7 +595,7 @@ def test_prepare_complex_surfaces_resname_ligand_selection(
     tmp_path,
 ):
     """prepare_complex should preserve the split ligand-selection metadata."""
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.structure.prepare_complex import prepare_complex
 
     r = prepare_complex(
         structure_file=cif_protein_a_ap5_act_auth_a,
@@ -617,7 +617,7 @@ def test_split_molecules_rejects_ligand_id_resname_mismatch(
     cif_protein_a_ap5_act_auth_a,
     tmp_path,
 ):
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ap5_act_auth_a,
@@ -638,7 +638,7 @@ def test_split_molecules_rejects_bare_ligand_residue_name(
     tmp_path,
 ):
     """A residue name is not a stable ligand instance selector."""
-    from mdclaw.structure_server import split_molecules
+    from mdclaw.structure.split import split_molecules
 
     r = split_molecules(
         structure_file=cif_protein_a_ligand_c_auth_a,

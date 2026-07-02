@@ -25,7 +25,7 @@ class TestXMLParsing:
 
     def test_parse_esearch_basic(self):
         """Parse basic esearch response."""
-        from literature_server import _parse_esearch
+        from mdclaw.literature._base import _parse_esearch
 
         xml = """
         <eSearchResult>
@@ -42,7 +42,7 @@ class TestXMLParsing:
 
     def test_parse_esearch_empty(self):
         """Parse esearch response with no results."""
-        from literature_server import _parse_esearch
+        from mdclaw.literature._base import _parse_esearch
 
         xml = """
         <eSearchResult>
@@ -56,7 +56,7 @@ class TestXMLParsing:
 
     def test_parse_esummary_basic(self):
         """Parse basic esummary response."""
-        from literature_server import _parse_esummary
+        from mdclaw.literature._base import _parse_esummary
 
         xml = """
         <eSummaryResult>
@@ -83,7 +83,7 @@ class TestXMLParsing:
 
     def test_parse_efetch_with_abstract(self):
         """Parse efetch response with abstract."""
-        from literature_server import _parse_efetch
+        from mdclaw.literature.fetch import _parse_efetch
 
         xml = """
         <PubmedArticleSet>
@@ -129,7 +129,7 @@ class TestXMLParsing:
 
     def test_parse_efetch_structured_abstract(self):
         """Parse efetch response with structured abstract."""
-        from literature_server import _parse_efetch
+        from mdclaw.literature.fetch import _parse_efetch
 
         xml = """
         <PubmedArticleSet>
@@ -164,13 +164,13 @@ class TestToolImport:
 
     def test_pubmed_search_exists(self):
         """pubmed_search function exists."""
-        from literature_server import pubmed_search
+        from mdclaw.literature.search import pubmed_search
 
         assert callable(pubmed_search)
 
     def test_pubmed_fetch_exists(self):
         """pubmed_fetch function exists."""
-        from literature_server import pubmed_fetch
+        from mdclaw.literature.fetch import pubmed_fetch
 
         assert callable(pubmed_fetch)
 
@@ -180,7 +180,7 @@ class TestServerSetup:
 
     def test_tools_dict_exists(self):
         """TOOLS dict is configured."""
-        from literature_server import TOOLS
+        from mdclaw.literature import TOOLS
 
         assert TOOLS is not None
         assert "pubmed_search" in TOOLS

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from mdclaw.study_server import (
+from mdclaw.study import (
     get_study_plan,
     init_study,
     record_study_plan,

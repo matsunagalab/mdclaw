@@ -2,7 +2,7 @@ from pathlib import Path
 
 from openmm.app import PDBFile
 
-from mdclaw.structure_server import (
+from mdclaw.structure.merge import (
     _enrich_chain_identity_map,
     _index_prepared_component_sources,
     merge_structures,

@@ -78,7 +78,7 @@ def prep_node_with_merged_pdb(tmp_path):
 
 def _stub_metalpdb2mol2(monkeypatch):
     """Patch _run_metalpdb2mol2 to write a minimal mol2 file without calling AmberTools."""
-    from mdclaw import metal_server
+    from mdclaw.metal import parameterize as metal_server
 
     def fake_run(pdb_file, mol2_file, charge, timeout=60):
         from pathlib import Path as _P
@@ -102,7 +102,7 @@ class TestParameterizeMetalIonNodeIntegration:
     ):
         job_dir, source_id, _prep_id = prep_node_with_merged_pdb
         _stub_metalpdb2mol2(monkeypatch)
-        from mdclaw import metal_server as ms
+        from mdclaw.metal import parameterize as ms
 
         result = ms.parameterize_metal_ion(
             job_dir=job_dir, node_id=source_id, water_model="opc"
@@ -121,7 +121,7 @@ class TestParameterizeMetalIonNodeIntegration:
         # prep exists but has NO merged_pdb artifact
 
         _stub_metalpdb2mol2(monkeypatch)
-        from mdclaw import metal_server as ms
+        from mdclaw.metal import parameterize as ms
 
         result = ms.parameterize_metal_ion(
             job_dir=str(jd), node_id=prep["node_id"], water_model="opc"
@@ -131,7 +131,7 @@ class TestParameterizeMetalIonNodeIntegration:
 
     def test_non_node_mode_requires_explicit_inputs(self, monkeypatch):
         _stub_metalpdb2mol2(monkeypatch)
-        from mdclaw import metal_server as ms
+        from mdclaw.metal import parameterize as ms
 
         # Neither node flags nor explicit paths
         result = ms.parameterize_metal_ion(water_model="opc")
@@ -142,7 +142,7 @@ class TestParameterizeMetalIonNodeIntegration:
         pdb_file = tmp_path / "zn_mg.pdb"
         pdb_file.write_text(ZN_MG_PROTEIN_PDB)
         _stub_metalpdb2mol2(monkeypatch)
-        from mdclaw import metal_server as ms
+        from mdclaw.metal import parameterize as ms
 
         result = ms.parameterize_metal_ion(
             pdb_file=str(pdb_file),
@@ -157,7 +157,7 @@ class TestParameterizeMetalIonNodeIntegration:
         pdb_file = tmp_path / "zn.pdb"
         pdb_file.write_text(ZN_PROTEIN_PDB)
         _stub_metalpdb2mol2(monkeypatch)
-        from mdclaw import metal_server as ms
+        from mdclaw.metal import parameterize as ms
 
         result = ms.parameterize_metal_ion(
             pdb_file=str(pdb_file),
@@ -183,7 +183,7 @@ def test_build_amber_system_blocks_metal_without_openmm_xml(tmp_path):
     directly; until a parmed bridge ships, build_amber_system must fail-fast
     with ``metal_openmm_xml_required`` rather than emit a warning that
     masks the eventual ``No template found`` crash inside SystemGenerator."""
-    from mdclaw.amber_server import build_amber_system
+    from mdclaw.amber.build_system import build_amber_system
 
     pdb = tmp_path / "with_metal.pdb"
     pdb.write_text(

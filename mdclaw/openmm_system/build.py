@@ -1,36 +1,11 @@
-"""OpenMM-XML / TorchForce research-mode topology builder.
-
-Companion to ``mdclaw.amber_server.build_amber_system``. Where
-``build_amber_system`` is the curated Amber-catalog path (ff19SB / ff14SB /
-phosaa / lipid21 / GLYCAM, all routed through the openmmforcefields
-catalog), ``build_openmm_system`` is the research-mode escape hatch: the
-user supplies a list of OpenMM ``ForceField`` XML files (e.g.
-``GB99dms.xml`` from the Greener group) together with optional ligand
-molecules, and the tool emits the same ``system.xml + topology.pdb +
-state.xml`` artifact triple so min/eq/prod can consume the result through
-the same DAG resolver, plus a minimization report for benchmark evidence.
-
-The tool is intentionally permissive — there is no FF×water guardrail
-matrix here, because by definition the user is bringing their own XML
-that mdclaw's Amber25 catalog does not know about. We only block on
-critical correctness conditions (e.g. GB99dms requires OpenMM 8.0+).
-
-TorchForce / .pt overlays (garnet-style ML potentials) are explicitly out
-of scope for this PR.
-"""
+"""openmm_system.build submodule (behavior-preserving split)."""
 
 from __future__ import annotations
-
 import io
 import json
 import math
-import os
-import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,  # noqa: F401  (kept for parity / future extension)
     atomic_write_text_group,
@@ -39,21 +14,15 @@ from mdclaw._common import (  # noqa: E402
     create_unique_subdir,
     create_validation_error,
     ensure_directory,
-    setup_logger,
     tail_for_agent,
 )
-from mdclaw import _topology_pablo  # noqa: E402
-from mdclaw._tool_meta import node_tool  # noqa: E402
+from mdclaw import _topology_pablo
+from mdclaw._tool_meta import node_tool
 
-logger = setup_logger(__name__)
-
-WORKING_DIR = Path("outputs").resolve()
-ensure_directory(WORKING_DIR)
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from mdclaw.openmm_system._base import (
+    WORKING_DIR,
+    logger,
+)
 
 
 def _hash_file(path: Path) -> Optional[str]:
@@ -167,11 +136,6 @@ def _check_gb99_openmm_version_compatible(forcefield_xml: List[str]) -> Optional
             f"`conda env update -f environment.yml`."
         )
     return None
-
-
-# ---------------------------------------------------------------------------
-# Public tool
-# ---------------------------------------------------------------------------
 
 
 @node_tool
@@ -807,11 +771,3 @@ def build_openmm_system(
     )
     return result
 
-
-# =============================================================================
-# Tool registry
-# =============================================================================
-
-TOOLS = {
-    "build_openmm_system": build_openmm_system,
-}

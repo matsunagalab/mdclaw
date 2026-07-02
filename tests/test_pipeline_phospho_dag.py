@@ -16,7 +16,7 @@ class TestPipelinePhosphoDag:
         return tmp_path_factory.mktemp("job_5k9p_phospho_dag")
 
     def test_step1_fetch_and_inspect_ptm(self, job_dir):
-        from mdclaw.research_server import inspect_molecules
+        from mdclaw.research.inspection import inspect_molecules
 
         self.__class__.fetch_id = fetch_pdb_node(job_dir, "5K9P")
         inspected = inspect_molecules(
@@ -31,7 +31,7 @@ class TestPipelinePhosphoDag:
 
     def test_step2_prepare_records_detected_ptm(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.structure_server import prepare_complex
+        from mdclaw.structure.prepare_complex import prepare_complex
 
         node = create_node(str(job_dir), "prep", parent_node_ids=[self.fetch_id])
         assert node["success"], node
@@ -58,7 +58,7 @@ class TestPipelinePhosphoDag:
 
     def test_step3_restore_phosphorylation(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.structure_server import phosphorylate_residues
+        from mdclaw.structure.phosphorylation import phosphorylate_residues
 
         node = create_node(str(job_dir), "prep", parent_node_ids=[self.prep_id])
         assert node["success"], node
@@ -80,7 +80,7 @@ class TestPipelinePhosphoDag:
 
     def test_step4_solvate_phosphoprotein(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.solvation_server import solvate_structure
+        from mdclaw.solvation import solvate_structure
 
         node = create_node(str(job_dir), "solv", parent_node_ids=[self.phospho_prep_id])
         assert node["success"], node
@@ -98,7 +98,7 @@ class TestPipelinePhosphoDag:
 
     def test_step5_topology_loads_phosaa(self, job_dir):
         from mdclaw._node import create_node, read_node
-        from mdclaw.amber_server import build_amber_system
+        from mdclaw.amber.build_system import build_amber_system
 
         require_topology_builder_stack()
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.solv_id])

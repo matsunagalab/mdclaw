@@ -50,13 +50,14 @@ class TestServerRegistry:
     def test_registry_module_paths(self):
         from mdclaw._registry import SERVER_REGISTRY
 
+        # Every server is now a canonical package under mdclaw/. The package
+        # name matches the registry key except for md_simulation, whose package
+        # is mdclaw.simulation.
         expected_overrides = {
-            # The benchmark package exposes CLI tools directly from
-            # mdclaw/benchmark/__init__.py rather than a *_server module.
-            "benchmark": "mdclaw.benchmark",
+            "md_simulation": "mdclaw.simulation",
         }
         for name, module_path in SERVER_REGISTRY.items():
-            assert module_path == expected_overrides.get(name, f"mdclaw.{name}_server")
+            assert module_path == expected_overrides.get(name, f"mdclaw.{name}")
 
 
 # ---------------------------------------------------------------------------
@@ -85,7 +86,7 @@ class TestImportServers:
     def test_run_production_has_random_seed_param(self):
         """run_production accepts a random_seed parameter."""
         import inspect
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         sig = inspect.signature(run_production)
         assert "random_seed" in sig.parameters, "run_production missing 'random_seed' param"
@@ -95,7 +96,7 @@ class TestImportServers:
     def test_run_production_has_custom_force_params(self):
         """run_production exposes the custom force / CV bias parameters."""
         import inspect
-        from mdclaw.md_simulation_server import run_production
+        from mdclaw.simulation.production import run_production
 
         sig = inspect.signature(run_production)
         for name in (
@@ -108,7 +109,7 @@ class TestImportServers:
 
     def test_md_simulation_platform_preflight_registered(self):
         """Local-run feasibility preflight is exposed as a CLI/MCP tool."""
-        from mdclaw.md_simulation_server import TOOLS
+        from mdclaw.simulation import TOOLS
 
         assert "inspect_openmm_platforms" in TOOLS
         assert callable(TOOLS["inspect_openmm_platforms"])
@@ -122,7 +123,7 @@ class TestImportServers:
         CLI-registered tool so that status and job-param edits stay consistent
         across node.json and the progress.json index. It consolidates the
         former update_node_status and update_job_params tools."""
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
 
         assert "update_workflow_state" in TOOLS
         assert callable(TOOLS["update_workflow_state"])
@@ -132,7 +133,7 @@ class TestImportServers:
 
     def test_node_server_exposes_manage_node_need(self):
         """Open-need management is consolidated behind manage_node_need."""
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
 
         assert "manage_node_need" in TOOLS
         assert callable(TOOLS["manage_node_need"])
@@ -142,7 +143,7 @@ class TestImportServers:
 
     def test_node_server_exposes_read_only_inspection_tools(self):
         """Weak-agent re-entry uses read-only node inspection tools."""
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
 
         assert "inspect_job" in TOOLS
         assert callable(TOOLS["inspect_job"])
@@ -155,7 +156,7 @@ class TestImportServers:
         """continue_from must remain an exposed parameter of create_node
         so skill docs that call `--continue-from` keep working."""
         import inspect
-        from mdclaw.node_server import TOOLS
+        from mdclaw.node import TOOLS
 
         sig = inspect.signature(TOOLS["create_node"])
         assert "continue_from" in sig.parameters

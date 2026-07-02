@@ -19,9 +19,9 @@ def test_standard_nucleic_pdb_builds_real_topology(
     tmp_path, pdb_id, expected_subtype, expected_library
 ):
     from mdclaw._node import create_node, read_node
-    from mdclaw.amber_server import build_amber_system
-    from mdclaw.research_server import inspect_molecules
-    from mdclaw.structure_server import prepare_complex
+    from mdclaw.amber.build_system import build_amber_system
+    from mdclaw.research.inspection import inspect_molecules
+    from mdclaw.structure.prepare_complex import prepare_complex
     from tests.pipeline_helpers import node_artifact
 
     require_topology_builder_stack()

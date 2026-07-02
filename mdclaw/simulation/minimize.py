@@ -213,7 +213,10 @@ def run_minimization(
         result["code"] = "minimization_restraint_atoms_invalid"
         return _fail_node_if_running(job_dir, node_id, result)
 
-    from mdclaw.research_server import COMMON_IONS, WATER_NAMES
+    from mdclaw.chemistry_constants import (
+        COMMON_IONS,
+        WATER_NAMES,
+    )
     _NON_SOLUTE_RESNAMES = WATER_NAMES | COMMON_IONS
 
     def _is_solute_atom(atom) -> bool:

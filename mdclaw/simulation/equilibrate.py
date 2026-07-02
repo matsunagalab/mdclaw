@@ -452,7 +452,10 @@ def run_equilibration(
     # sites) would otherwise wrongly restrain the bulk water oxygens or
     # crash on virtual particles whose `element` is None. Filter by
     # residue name against the standard solvent set.
-    from mdclaw.research_server import WATER_NAMES, COMMON_IONS
+    from mdclaw.chemistry_constants import (
+        COMMON_IONS,
+        WATER_NAMES,
+    )
     _NON_SOLUTE_RESNAMES = WATER_NAMES | COMMON_IONS
 
     def _is_solute_atom(atom) -> bool:

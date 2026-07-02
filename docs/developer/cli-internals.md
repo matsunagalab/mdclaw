@@ -23,12 +23,13 @@ TOOLS = {
 
 ```python
 SERVER_REGISTRY = {
-    "research": "mdclaw.research_server",
-    "structure": "mdclaw.structure_server",
+    "research": "mdclaw.research",
+    "structure": "mdclaw.structure",
 }
 ```
 
-The CLI imports each module and collects its `TOOLS` dict.
+Each entry points to a `mdclaw/<tool>/` package. The CLI imports each package
+and collects the `TOOLS` dict assembled in its `__init__.py`.
 
 ## Parameter Mapping
 
@@ -134,7 +135,7 @@ Guardrails carry stable `code` strings. Skills and agents should branch on
 
 Current enforcement points include:
 
-- `amber_server.build_amber_system`: forcefield/water compatibility.
-- `solvation_server.solvate_structure`: OpenMM fallback water-model limits.
-- `metal_server.parameterize_metal_ion`: Amber ion set and water-model mapping.
-- `slurm_server.submit_job`: partition, GPU, CPU, node, time, and memory policy.
+- `amber.build_amber_system`: forcefield/water compatibility.
+- `solvation.solvate_structure`: OpenMM fallback water-model limits.
+- `metal.parameterize_metal_ion`: Amber ion set and water-model mapping.
+- `slurm.submit_job`: partition, GPU, CPU, node, time, and memory policy.

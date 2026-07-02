@@ -837,7 +837,7 @@ def prepare_complex(
         # on a branched prep node, and lets `build_amber_system` decide
         # whether to add the matching ``amber/phosaa*.xml`` to the
         # ``openmmforcefields.SystemGenerator`` bundle.
-        from mdclaw.research_server import detect_ptm_sites
+        from mdclaw.research.inspection import detect_ptm_sites
         detected_ptm_residues = detect_ptm_sites(str(structure_file))
         detected_glycan_linkages = _parse_glycan_link_records(Path(structure_file))
 
@@ -877,9 +877,9 @@ def prepare_complex(
             )
             disulfide_source = "user_override"
         else:
-            from mdclaw.research_server import (
-                _parse_ssbond_records,
+            from mdclaw.research.structure_analysis import (
                 _detect_disulfide_candidates,
+                _parse_ssbond_records,
             )
             ssbond_pairs = _parse_ssbond_records(structure_path)
             distance_pairs = _detect_disulfide_candidates(structure_path)

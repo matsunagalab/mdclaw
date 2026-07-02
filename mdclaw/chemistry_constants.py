@@ -1,12 +1,10 @@
 """Shared chemistry residue/element constants for MDClaw.
 
 This module is the single source of truth for residue-name and element sets
-that several server modules need (``research_server``, ``structure_server``,
-``md_simulation_server``, ``amber_server``). Historically these were duplicated
-across modules; importing them from here keeps the values consistent.
-
-Server modules re-export the names they previously defined, so existing import
-paths such as ``from mdclaw.research_server import WATER_NAMES`` keep working.
+that several tool packages need (``research``, ``structure``, ``simulation``,
+``amber``). Historically these were duplicated across modules; importing them
+from here keeps the values consistent. Consumers import directly from
+``mdclaw.chemistry_constants``.
 """
 
 # Standard amino-acid residue names (includes SEC/PYL).

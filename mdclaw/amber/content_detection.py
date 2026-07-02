@@ -40,7 +40,7 @@ from mdclaw._common import (  # noqa: E402
     ensure_directory, BaseToolWrapper, guess_pdb_element,
     is_glycan_residue_name,
 )
-from mdclaw.research_server import (  # noqa: E402
+from mdclaw.chemistry_constants import (  # noqa: E402
     PHOSPHO_RESNAMES,
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,

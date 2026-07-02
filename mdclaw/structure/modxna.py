@@ -32,7 +32,7 @@ from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
     tail_for_agent,
 )
-from mdclaw.research_server import (  # noqa: E402
+from mdclaw.research.nucleic import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
     modified_nucleic_support_report,
 )

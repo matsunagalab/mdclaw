@@ -92,7 +92,7 @@ def main(argv: list[str]) -> int:
         patch_equilibration_params,
     )
     from mdclaw.solvation.patch_membrane import ensure_membrane_patch
-    from mdclaw.solvation_server import (
+    from mdclaw.solvation.membrane import (
         _equilibrate_membrane_patch,
         _packmol_memgen_version,
         _resolve_patch_builder_timeout,

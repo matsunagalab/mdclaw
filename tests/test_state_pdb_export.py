@@ -13,7 +13,7 @@ def test_export_state_pdb_uses_state_positions(tmp_path: Path):
 
     from openmm import Context, System, VerletIntegrator, XmlSerializer, unit
     from openmm.app import Element, PDBFile, Topology
-    from mdclaw.md_simulation_server import export_state_pdb
+    from mdclaw.simulation.platform import export_state_pdb
 
     topology = Topology()
     chain = topology.addChain("A")
@@ -62,7 +62,7 @@ def test_run_minimization_writes_state_structure_and_report(tmp_path: Path):
 
     from openmm import Context, System, VerletIntegrator, XmlSerializer, unit
     from openmm.app import Element, PDBFile, Topology
-    from mdclaw.md_simulation_server import run_minimization
+    from mdclaw.simulation.minimize import run_minimization
 
     topology = Topology()
     chain = topology.addChain("A")

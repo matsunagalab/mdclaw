@@ -13,6 +13,18 @@ from unittest.mock import patch
 
 import pytest
 
+from mdclaw.structure.prepare_complex import prepare_complex
+from mdclaw.structure.pdb_utils import (
+    _exclude_deuterium_atoms_from_pdb,
+    _pdb_noncap_protein_hydrogen_signature,
+)
+from mdclaw.structure.terminal_caps import (
+    _classify_terminal_cap_noncap_hydrogen_changes,
+    _complete_terminal_cap_hydrogens_with_modeller,
+    _resolve_terminal_cap_settings,
+    _restore_noncap_terminal_h_aliases,
+)
+
 
 SSBOND_MINI_PDB = textwrap.dedent("""\
 SSBOND   1 CYS A   10    CYS A   20                          1555   1555  2.04
@@ -51,7 +63,6 @@ def _short_circuit_heavy_steps(monkeypatch):
     """
     import importlib
 
-    from mdclaw import structure_server as ss
     _pc = importlib.import_module("mdclaw.structure.prepare_complex")
 
     def fake_split(*args, **kwargs):
@@ -76,14 +87,14 @@ def _short_circuit_heavy_steps(monkeypatch):
     monkeypatch.setattr(_pc, "split_molecules", fake_split)
     monkeypatch.setattr(_pc, "clean_protein", fake_clean)
     monkeypatch.setattr(_pc, "merge_structures", fake_merge)
-    return ss
+    return _pc
 
 
 class TestDisulfideOverride:
 
     def test_auto_detect_marks_source_as_auto(self, mini_pdb, monkeypatch, tmp_path):
-        ss = _short_circuit_heavy_steps(monkeypatch)
-        result = ss.prepare_complex(
+        _short_circuit_heavy_steps(monkeypatch)
+        result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
             select_chains=["A"],
@@ -99,8 +110,8 @@ class TestDisulfideOverride:
         assert len(cn["disulfide_bonds"]["pairs"]) == 1
 
     def test_empty_override_disables_disulfides(self, mini_pdb, monkeypatch, tmp_path):
-        ss = _short_circuit_heavy_steps(monkeypatch)
-        result = ss.prepare_complex(
+        _short_circuit_heavy_steps(monkeypatch)
+        result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
             select_chains=["A"],
@@ -112,9 +123,9 @@ class TestDisulfideOverride:
         assert "confirmation_needed" not in result
 
     def test_user_list_replaces_auto_detection(self, mini_pdb, monkeypatch, tmp_path):
-        ss = _short_circuit_heavy_steps(monkeypatch)
+        _short_circuit_heavy_steps(monkeypatch)
         user_pair = {"cys1": {"chain": "A", "resnum": 5}, "cys2": {"chain": "A", "resnum": 45}}
-        result = ss.prepare_complex(
+        result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
             select_chains=["A"],
@@ -130,10 +141,10 @@ class TestDisulfideOverride:
 
     def test_disulfide_bonds_json_reflects_override(self, mini_pdb, monkeypatch, tmp_path):
         """The disulfide_bonds.json persisted under the node should match the override."""
-        ss = _short_circuit_heavy_steps(monkeypatch)
+        _short_circuit_heavy_steps(monkeypatch)
         out_dir = tmp_path / "out"
         user_pair = {"cys1": {"chain": "A", "resnum": 10}, "cys2": {"chain": "A", "resnum": 20}}
-        ss.prepare_complex(
+        prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(out_dir),
             select_chains=["A"],
@@ -151,7 +162,6 @@ class TestDisulfideOverride:
 class TestComponentDisposition:
 
     def test_exclude_deuterium_atoms_records_disposition(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         pdb = tmp_path / "deuterated.pdb"
         pdb.write_text(textwrap.dedent("""\
@@ -162,7 +172,7 @@ class TestComponentDisposition:
             """))
         out = tmp_path / "deuterium_stripped.pdb"
 
-        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+        disposition = _exclude_deuterium_atoms_from_pdb(pdb, out)
 
         assert out.exists()
         assert " D1 " not in out.read_text()
@@ -172,7 +182,6 @@ class TestComponentDisposition:
         assert disposition["entries"][0]["action_taken"] == "excluded"
 
     def test_exclude_deuterium_atoms_zero_summary_for_standard_pdb(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         pdb = tmp_path / "standard.pdb"
         pdb.write_text(textwrap.dedent("""\
@@ -181,7 +190,7 @@ class TestComponentDisposition:
             """))
         out = tmp_path / "unused.pdb"
 
-        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+        disposition = _exclude_deuterium_atoms_from_pdb(pdb, out)
 
         assert not out.exists()
         assert disposition["summary"]["experimental_isotope_atoms_excluded"] == 0
@@ -189,7 +198,6 @@ class TestComponentDisposition:
         assert disposition["entries"] == []
 
     def test_exclude_deuterium_atoms_keeps_deoxy_atom_names(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         pdb = tmp_path / "deoxy_names.pdb"
         pdb.write_text(textwrap.dedent("""\
@@ -199,7 +207,7 @@ class TestComponentDisposition:
             """))
         out = tmp_path / "unused.pdb"
 
-        disposition = ss._exclude_deuterium_atoms_from_pdb(pdb, out)
+        disposition = _exclude_deuterium_atoms_from_pdb(pdb, out)
 
         assert not out.exists()
         assert disposition["summary"]["experimental_isotope_atoms_excluded"] == 0
@@ -261,33 +269,31 @@ class TestTerminalCaps:
         output.write_text("\n".join(lines) + "\n")
 
     def test_resolve_terminal_cap_settings_supports_one_sided_caps(self):
-        from mdclaw import structure_server as ss
 
-        assert ss._resolve_terminal_cap_settings(
+        assert _resolve_terminal_cap_settings(
             cap_termini=False,
             n_terminal_cap="ACE",
             c_terminal_cap=None,
         ) == ("ACE", None)
-        assert ss._resolve_terminal_cap_settings(
+        assert _resolve_terminal_cap_settings(
             cap_termini=False,
             n_terminal_cap=None,
             c_terminal_cap="NME",
         ) == (None, "NME")
-        assert ss._resolve_terminal_cap_settings(
+        assert _resolve_terminal_cap_settings(
             cap_termini=True,
             n_terminal_cap=None,
             c_terminal_cap=None,
         ) == ("ACE", "NME")
 
         with pytest.raises(ValueError):
-            ss._resolve_terminal_cap_settings(
+            _resolve_terminal_cap_settings(
                 cap_termini=False,
                 n_terminal_cap="NME",
                 c_terminal_cap=None,
             )
 
     def test_noncap_hydrogen_signature_ignores_hetatm_caps(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         pdb = tmp_path / "hetatm_caps.pdb"
         pdb.write_text(textwrap.dedent("""\
@@ -299,12 +305,11 @@ class TestTerminalCaps:
             END
             """))
 
-        signature = ss._pdb_noncap_protein_hydrogen_signature(pdb)
+        signature = _pdb_noncap_protein_hydrogen_signature(pdb)
 
         assert signature == {"A:2::ALA": ("HA",)}
 
     def test_noncap_hydrogen_signature_includes_noncap_hetatm(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         pdb = tmp_path / "hetatm_noncap.pdb"
         pdb.write_text(textwrap.dedent("""\
@@ -313,14 +318,13 @@ class TestTerminalCaps:
             END
             """))
 
-        signature = ss._pdb_noncap_protein_hydrogen_signature(pdb)
+        signature = _pdb_noncap_protein_hydrogen_signature(pdb)
 
         assert signature == {"A:7::MSE": ("H1",)}
 
     def test_terminal_cap_guard_accepts_cyx_without_hg_completion(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:34::CYX": ("H", "HA", "HB2", "HB3")},
         )
@@ -329,9 +333,8 @@ class TestTerminalCaps:
         assert accepted == ["A:34::CYX"]
 
     def test_terminal_cap_guard_rejects_cyx_hg_completion(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:34::CYX": ("H", "HA", "HB2", "HB3", "HG")},
         )
@@ -340,9 +343,8 @@ class TestTerminalCaps:
         assert accepted == []
 
     def test_terminal_cap_guard_accepts_uncapped_terminal_heavy_only_completion(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:1::THR": ("H1", "H2", "H3", "HA", "HB", "HG1", "HG21", "HG22", "HG23")},
             safe_terminal_residue_keys={"A:1::THR"},
@@ -352,9 +354,8 @@ class TestTerminalCaps:
         assert accepted == ["A:1::THR"]
 
     def test_terminal_cap_guard_rejects_existing_terminal_h_change(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {"A:1::THR": ("H1",)},
             {"A:1::THR": ("H1", "H2", "H3", "HA")},
             safe_terminal_residue_keys={"A:1::THR"},
@@ -364,12 +365,11 @@ class TestTerminalCaps:
         assert accepted == []
 
     def test_terminal_cap_guard_accepts_terminal_h1_h_alias(self):
-        from mdclaw import structure_server as ss
 
         before = {"A:1::THR": ("H1", "H2", "H3", "HA", "HB")}
         after = {"A:1::THR": ("H", "H2", "H3", "HA", "HB")}
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             before,
             after,
             safe_terminal_residue_keys={"A:1::THR"},
@@ -379,7 +379,6 @@ class TestTerminalCaps:
         assert accepted == ["A:1::THR"]
 
     def test_terminal_cap_restores_terminal_h1_name_alias(self, tmp_path):
-        from mdclaw import structure_server as ss
 
         input_pdb = tmp_path / "input.pdb"
         input_pdb.write_text(textwrap.dedent("""\
@@ -397,7 +396,7 @@ class TestTerminalCaps:
             END
             """)
 
-        restored, keys = ss._restore_noncap_terminal_h_aliases(
+        restored, keys = _restore_noncap_terminal_h_aliases(
             output_text,
             input_pdb,
             safe_terminal_residue_keys={"A:1::THR"},
@@ -412,9 +411,8 @@ class TestTerminalCaps:
         assert atom_names[:3] == ["H1", "H2", "H3"]
 
     def test_terminal_cap_guard_rejects_internal_h1_h_alias(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {"A:2::THR": ("H1", "H2", "H3", "HA", "HB")},
             {"A:2::THR": ("H", "H2", "H3", "HA", "HB")},
             safe_terminal_residue_keys={"A:1::ALA"},
@@ -424,9 +422,8 @@ class TestTerminalCaps:
         assert accepted == []
 
     def test_terminal_cap_guard_still_rejects_internal_non_cyx_completion(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:2::ALA": ("H", "HA", "HB1", "HB2", "HB3")},
             safe_terminal_residue_keys={"A:1::THR"},
@@ -436,9 +433,8 @@ class TestTerminalCaps:
         assert accepted == []
 
     def test_terminal_cap_guard_rejects_terminal_cyx_hg_completion(self):
-        from mdclaw import structure_server as ss
 
-        unsafe, accepted = ss._classify_terminal_cap_noncap_hydrogen_changes(
+        unsafe, accepted = _classify_terminal_cap_noncap_hydrogen_changes(
             {},
             {"A:1::CYX": ("H", "HA", "HB2", "HB3", "HG")},
             safe_terminal_residue_keys={"A:1::CYX"},
@@ -449,7 +445,6 @@ class TestTerminalCaps:
 
     def test_terminal_cap_hydrogen_completion_adds_cap_hydrogens(self, tmp_path):
         pytest.importorskip("openmmforcefields")
-        from mdclaw import structure_server as ss
 
         heavy = tmp_path / "ace_ala_nme_heavy.pdb"
         capped = tmp_path / "ace_ala_nme_missing_nme_h.pdb"
@@ -460,7 +455,7 @@ class TestTerminalCaps:
             cap_resname="NME",
         )
 
-        result = ss._complete_terminal_cap_hydrogens_with_modeller(
+        result = _complete_terminal_cap_hydrogens_with_modeller(
             capped,
             expected_caps={"NME"},
             forcefield_name="ff19SB",
@@ -485,12 +480,11 @@ class TestTerminalCaps:
 
     def test_terminal_cap_hydrogen_completion_rejects_noncap_repair(self, tmp_path):
         pytest.importorskip("openmmforcefields")
-        from mdclaw import structure_server as ss
 
         capped = tmp_path / "ace_ala_nme_noncap_h_incomplete.pdb"
         self._write_terminal_cap_fixture(capped)
 
-        result = ss._complete_terminal_cap_hydrogens_with_modeller(
+        result = _complete_terminal_cap_hydrogens_with_modeller(
             capped,
             expected_caps={"NME"},
             forcefield_name="ff19SB",
@@ -516,7 +510,6 @@ class TestPrepareComplexComponentFailure:
     ):
         import importlib
 
-        from mdclaw import structure_server as ss
 
         _pc = importlib.import_module("mdclaw.structure.prepare_complex")
         out_dir = tmp_path / "out"
@@ -574,7 +567,7 @@ class TestPrepareComplexComponentFailure:
         monkeypatch.setattr(_pc, "clean_protein", fake_clean)
         monkeypatch.setattr(_pc, "merge_structures", fake_merge)
 
-        result = ss.prepare_complex(
+        result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(out_dir),
             select_chains=["A", "B"],
@@ -593,8 +586,8 @@ class TestHistidineOverride:
     def test_histidine_states_override_flagged_in_confirmation(
         self, mini_pdb, monkeypatch, tmp_path
     ):
-        ss = _short_circuit_heavy_steps(monkeypatch)
-        result = ss.prepare_complex(
+        _short_circuit_heavy_steps(monkeypatch)
+        result = prepare_complex(
             structure_file=str(mini_pdb),
             output_dir=str(tmp_path / "out"),
             select_chains=["A"],
@@ -623,7 +616,6 @@ def test_prepare_complex_propagates_large_missing_gap_recommendation(
 ):
     import importlib
 
-    from mdclaw import structure_server as ss
 
     _pc = importlib.import_module("mdclaw.structure.prepare_complex")
     protein_file = tmp_path / "protein_A.pdb"
@@ -683,7 +675,7 @@ def test_prepare_complex_propagates_large_missing_gap_recommendation(
     monkeypatch.setattr(_pc, "split_molecules", fake_split)
     monkeypatch.setattr(_pc, "clean_protein", fake_clean)
 
-    result = ss.prepare_complex(
+    result = prepare_complex(
         structure_file=str(mini_pdb),
         output_dir=str(tmp_path / "out"),
         select_chains=["A"],
@@ -702,7 +694,7 @@ class TestPrecedence:
 
     def test_direct_args_win_over_structure_analysis(self, mini_pdb, monkeypatch, tmp_path):
         """Direct --disulfide-pairs must override structure_analysis.disulfide_bonds."""
-        ss = _short_circuit_heavy_steps(monkeypatch)
+        _short_circuit_heavy_steps(monkeypatch)
         with patch("mdclaw.structure.prepare_complex.clean_protein") as mock_clean:
             mock_clean.return_value = {"success": True, "output_file": None, "operations": [], "warnings": [], "errors": [], "statistics": {}, "disulfide_bonds": []}
             sa = {
@@ -712,7 +704,7 @@ class TestPrecedence:
                 "histidine_states": [{"chain": "A", "resnum": 50, "state": "HIE"}],
             }
             direct = [{"cys1": {"chain": "A", "resnum": 99}, "cys2": {"chain": "A", "resnum": 100}}]
-            ss.prepare_complex(
+            prepare_complex(
                 structure_file=str(mini_pdb),
                 output_dir=str(tmp_path / "out"),
                 select_chains=["A"],

@@ -1,10 +1,11 @@
 # Tool Reference
 
-This file is the developer-maintained index of MDClaw tool modules. When adding
-or changing a tool signature, update the relevant section here and the matching
-skill examples.
+This file is the developer-maintained index of MDClaw tool packages. Each tool
+is a `mdclaw/<name>/` package whose `__init__.py` assembles the public `TOOLS`
+dict from responsibility-scoped submodules. When adding or changing a tool
+signature, update the relevant section here and the matching skill examples.
 
-## `research_server.py`
+## `research/`
 
 - `fetch_structure(...)`: preferred structure acquisition entry point for PDB,
   AlphaFold, and local files. In node mode it records `source_bundle.json`.
@@ -26,7 +27,7 @@ skill examples.
 - `search_structures(...)`, `search_proteins(...)`, `get_protein_info(...)`,
   `analyze_structure_details(...)`: external database helpers.
 
-## `structure_server.py`
+## `structure/`
 
 - `prepare_complex(...)`: full structure preparation pipeline. In node mode it
   resolves the source bundle from the `source` ancestor, selects one normalized
@@ -79,7 +80,7 @@ skill examples.
 - `phosphorylate_residues(...)`: restore or apply SEP/TPO/PTR sites for Amber
   phosaa topology generation.
 
-## `genesis_server.py`
+## `genesis/`
 
 - `boltz2_protein_from_seq(...)`: Boltz-2 structure prediction. In node mode,
   all predicted structures are registered in the source bundle. Protein-only
@@ -91,8 +92,9 @@ skill examples.
   `boltz_msa_file_missing`, `boltz_custom_msa_multimer_unsupported`,
   `boltz_backend_not_installed`, `boltz_execution_failed`, and
   `boltz_no_structure_output`. Boltz-2 runs from an isolated backend venv
-  resolved through `mdclaw.surrogate_server.MODEL_BACKENDS["boltz"]`, installed
+  resolved through `mdclaw.surrogate.MODEL_BACKENDS["boltz"]`, installed
   with `setup_model_backend --model boltz`, not from the conda `mdclaw` env.
+  (Boltz resolves its venv through `mdclaw.surrogate.MODEL_BACKENDS["boltz"]`.)
 - `modeller_from_alignment(...)`: MODELLER comparative modeling from a template
   PDB plus one of: a single `target_sequence`, per-chain `target_sequences`
   (multi-chain complexes such as heterodimers), or a full PIR/ALI
@@ -116,7 +118,7 @@ skill examples.
 - `pubchem_get_smiles_from_name(...)`: PubChem name lookup.
 - `analyze_plip_interactions(...)`: protein-ligand interaction analysis.
 
-## `surrogate_server.py`
+## `surrogate/`
 
 - `setup_model_backend(...)`: create or update an isolated venv for a heavy
   model backend. Supported models: `bioemu` (MD surrogate ensembles) and
@@ -137,7 +139,7 @@ skill examples.
   `source_bundle.json` with `source_type="surrogate"` and
   `origin.kind="bioemu"` for BioEmu candidates.
 
-## `solvation_server.py`
+## `solvation/`
 
 - `solvate_structure(...)`: explicit water box generation. In node mode the PDB
   resolves from the nearest prep ancestor. It first tries the requested salt
@@ -162,7 +164,7 @@ skill examples.
   `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`. See `scripts/warmup_membrane_cache.py`.
 - `list_available_lipids(...)`: lipid inventory.
 
-## `amber_server.py`
+## `amber/`
 
 - `build_amber_system(...)`: openmmforcefields-based topology builder
   (`SystemGenerator` and `GAFFTemplateGenerator`,
@@ -190,6 +192,8 @@ skill examples.
   the run-side topology guard. Failure codes:
   `implicit_solvent_model_unsupported`, `implicit_solvent_explicit_box_conflict`,
   `implicit_solvent_force_missing`.
+## `openmm_system/`
+
 - `build_openmm_system(...)`: research-mode escape hatch — accepts
   arbitrary OpenMM ForceField XML files plus optional ligand SMILES and
   emits the same modern artifact triple. No FF×water guardrail matrix;
@@ -208,7 +212,7 @@ skill examples.
   build/run consistency. Out-of-version checks (e.g. `GB99dms.xml`
   needs OpenMM ≥ 8.0) still fire via existing guards.
 
-## `md_simulation_server.py`
+## `simulation/` (registry name `md_simulation`)
 
 - `inspect_openmm_platforms(...)`: lightweight OpenMM platform inventory and
   atom-count feasibility guidance before local explicit-water runs.
@@ -241,7 +245,7 @@ skill examples.
   `mdclaw/simulation/custom_forces.py`. (The legacy `restraint_file` argument
   is deprecated and ignored.)
 
-## `visualization_server.py`
+## `visualization/`
 
 - `render_structure_preview(...)`: PyMOL headless PNG rendering for PDB/mmCIF
   structure artifacts. In node mode it resolves a representative structure
@@ -260,18 +264,18 @@ skill examples.
   `limitations`). This is not scientific validation and high-severity findings
   request user confirmation without marking the DAG node failed.
 
-## `literature_server.py`
+## `literature/`
 
 - `pubmed_search(...)`: PubMed search.
 - `pubmed_fetch(...)`: article metadata fetch.
 
-## `metal_server.py`
+## `metal/`
 
 - `detect_metal_ions(...)`: scan structures for metal ions.
 - `parameterize_metal_ion(...)`: Amber ion parameter selection with water-model
   and ion-set guardrails.
 
-## `slurm_server.py`
+## `slurm/`
 
 - `inspect_cluster(...)`: discover partitions, GPUs, and local policy.
 - `submit_job(...)`: submit one SLURM job and link it to an optional DAG node.
@@ -290,7 +294,7 @@ skill examples.
   sync state.
 - `configure_container(...)`: configure Singularity wrapping for SLURM jobs.
 
-## `node_server.py`
+## `node/`
 
 - `create_node(...)`: create a DAG node. `continue_from=<prod_id>` is restricted
   to production continuation and records explicit extension intent. Analyze nodes
@@ -321,7 +325,7 @@ skill examples.
   selector (`add` / `clear` / `record_attempt`). Merges the former
   `add_node_need` / `clear_node_need` / `record_node_need_attempt` tools.
 
-## `study_server.py`
+## `study/`
 
 - `init_study(...)`: create a study directory used by both direct runs and
   campaigns.
@@ -338,7 +342,7 @@ skill examples.
   former `record_study_decision` / `record_study_question` / `record_token_usage`
   tools.
 
-## `evidence_server.py`
+## `evidence/`
 
 - `generate_md_evidence_report(...)`: JSON evidence summary for one job.
 

@@ -4,13 +4,13 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import mdclaw.solvation_server as solvation_server
-from mdclaw.solvation_server import (
-    _auto_nucleic_packmol_charge_pdb_delta,
-    _record_packmol_memgen_output,
-    embed_in_membrane,
-    extract_box_size_from_packmol_inp,
-)
+import mdclaw.solvation._base as solv_base  # noqa: F401
+import mdclaw.solvation.water as solv_water
+import mdclaw.solvation.membrane as solv_membrane
+from mdclaw.solvation.pdb_identity import _auto_nucleic_packmol_charge_pdb_delta
+from mdclaw.solvation._base import _record_packmol_memgen_output
+from mdclaw.solvation.box import extract_box_size_from_packmol_inp
+from mdclaw.solvation.membrane import embed_in_membrane
 
 
 def _pdb_atom(serial, atom, resname, chain, resseq, element, x=0.0):
@@ -130,15 +130,15 @@ def test_solvate_structure_passes_auto_nucleic_charge_delta(
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
         fake_run,
     )
 
-    result = solvation_server.solvate_structure(
+    result = solv_water.solvate_structure(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         output_name="solvated",
@@ -196,16 +196,16 @@ def test_openmm_fallback_preserves_requested_salt_species(tmp_path, monkeypatch)
         return result
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: False,
     )
     monkeypatch.setattr(
-        solvation_server,
+        solv_water,
         "_solvate_with_openmm",
         fake_solvate_with_openmm,
     )
 
-    result = solvation_server.solvate_structure(
+    result = solv_water.solvate_structure(
         pdb_file=str(pdb),
         output_dir=str(tmp_path),
         salt=True,
@@ -461,11 +461,11 @@ def test_embed_in_membrane_restores_packmol_solute_identity(tmp_path, monkeypatc
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
         fake_run,
     )
 
@@ -635,14 +635,14 @@ def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeyp
         return SimpleNamespace(stdout="", stderr="", returncode=0)
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
-    monkeypatch.setattr("mdclaw.solvation_server._run_packmol_memgen_noninteractive", fake_run)
+    monkeypatch.setattr("mdclaw.solvation.membrane._run_packmol_memgen_noninteractive", fake_run)
     # Skip the internal OpenMM equilibration and exact charge build in unit tests;
     # cache the packed patch directly and skip protein-charge neutralization.
-    monkeypatch.setattr("mdclaw.solvation_server._equilibrate_membrane_patch", None)
-    monkeypatch.setattr("mdclaw.solvation_server._compute_membrane_net_charge", None)
+    monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
+    monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", None)
 
     common = dict(
         pdb_file=str(input_pdb),
@@ -691,14 +691,14 @@ def test_embed_in_membrane_patch_tile_tiles_cover_large_protein(tmp_path, monkey
 
     lipids_by_group = [("PA", "P", "P"), ("PC", "N", "N"), ("OL", "C1", "C")]
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available", lambda: True
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available", lambda: True
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server._run_packmol_memgen_noninteractive",
+        "mdclaw.solvation.membrane._run_packmol_memgen_noninteractive",
         _fake_patch_packmol(lipids_by_group),
     )
-    monkeypatch.setattr("mdclaw.solvation_server._equilibrate_membrane_patch", None)
-    monkeypatch.setattr("mdclaw.solvation_server._compute_membrane_net_charge", None)
+    monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
+    monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", None)
 
     result = embed_in_membrane(
         pdb_file=str(input_pdb),
@@ -731,19 +731,19 @@ def test_embed_in_membrane_patch_tile_neutralizes_net_charge(tmp_path, monkeypat
     )
     lipids_by_group = [("PA", "P", "P"), ("PC", "N", "N"), ("OL", "C1", "C")]
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available", lambda: True
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available", lambda: True
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server._run_packmol_memgen_noninteractive",
+        "mdclaw.solvation.membrane._run_packmol_memgen_noninteractive",
         _fake_patch_packmol(lipids_by_group * 2),
     )
-    monkeypatch.setattr("mdclaw.solvation_server._equilibrate_membrane_patch", None)
+    monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
 
     # Stub the exact-charge evaluation to report a +2 net charge.
     def fake_charge(pdb_file, box_dims):
         return {"success": True, "net_charge": 2, "warnings": [], "errors": []}
 
-    monkeypatch.setattr("mdclaw.solvation_server._compute_membrane_net_charge", fake_charge)
+    monkeypatch.setattr("mdclaw.solvation.membrane._compute_membrane_net_charge", fake_charge)
 
     result = embed_in_membrane(
         pdb_file=str(input_pdb),
@@ -790,10 +790,10 @@ def test_embed_in_membrane_patch_tile_read_only_miss_falls_back(tmp_path, monkey
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available", lambda: True
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available", lambda: True
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run", fake_full_run
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run", fake_full_run
     )
 
     result = embed_in_membrane(
@@ -862,11 +862,11 @@ def test_embed_in_membrane_retries_before_reporting_packmol_failure(
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
         fake_run,
     )
 
@@ -929,11 +929,11 @@ def test_embed_in_membrane_accepts_imperfect_primary_before_lateral_retry(
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.run",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
         fake_run,
     )
 
@@ -999,11 +999,11 @@ def test_embed_in_membrane_runs_parallel_packmol_race(tmp_path, monkeypatch):
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server._run_packmol_memgen_cancellable",
+        "mdclaw.solvation.membrane._run_packmol_memgen_cancellable",
         fake_run,
     )
 
@@ -1074,7 +1074,7 @@ def test_embed_in_membrane_cancels_pending_parallel_race_lanes(tmp_path, monkeyp
             while time.monotonic() < deadline:
                 if cancel_event.is_set():
                     cancelled_lanes.append(lane)
-                    raise solvation_server._PackmolRaceCancelled("lane cancelled")
+                    raise solv_membrane._PackmolRaceCancelled("lane cancelled")
                 time.sleep(0.01)
             raise AssertionError("slow lane was not cancelled")
 
@@ -1084,11 +1084,11 @@ def test_embed_in_membrane_cancels_pending_parallel_race_lanes(tmp_path, monkeyp
         return SimpleNamespace(stdout="", stderr="")
 
     monkeypatch.setattr(
-        "mdclaw.solvation_server.packmol_memgen_wrapper.is_available",
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
         lambda: True,
     )
     monkeypatch.setattr(
-        "mdclaw.solvation_server._run_packmol_memgen_cancellable",
+        "mdclaw.solvation.membrane._run_packmol_memgen_cancellable",
         fake_run,
     )
 

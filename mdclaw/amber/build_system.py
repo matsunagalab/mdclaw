@@ -1137,7 +1137,7 @@ def build_amber_system(
     # protein force field so the SystemGenerator can apply the phospho-
     # residue templates against the OG / OG1 / OH oxygen retained by
     # ``phosphorylate_residues``.
-    from mdclaw.research_server import detect_ptm_sites
+    from mdclaw.research.inspection import detect_ptm_sites
     if _gemmi_available():
         ptm_residues_in_input = detect_ptm_sites(str(pdb_path))
     else:

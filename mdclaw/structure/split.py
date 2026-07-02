@@ -32,7 +32,7 @@ from mdclaw._common import (  # noqa: E402
     create_unique_subdir,
     generate_job_id,
 )
-from mdclaw.research_server import (  # noqa: E402
+from mdclaw.research.nucleic import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
     classify_nucleic_residues,
     modified_nucleic_support_report,
