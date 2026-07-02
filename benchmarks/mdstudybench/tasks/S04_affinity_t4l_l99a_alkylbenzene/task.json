@@ -52,6 +52,33 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "sign_to_direction": {
+          "increase": "stronger_binding",
+          "decrease": "weaker_binding"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "tolerance_fraction": 0.5,
+        "weight": 0.3
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
@@ -91,7 +118,7 @@
         "truth_path": "expected_direction",
         "submission_file": "evidence_report.json",
         "submission_path": "effect.direction",
-        "weight": 1.0
+        "weight": 0.35
       }
     ],
     "integrity_checks": [
@@ -157,7 +184,7 @@
     ],
     "integrity_policy": "reject",
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]
@@ -167,5 +194,5 @@
   ],
   "task_id": "S04_affinity_t4l_l99a_alkylbenzene",
   "task_intent": "Scientific-answer test: compare binding of two apolar ligands to the engineered T4 lysozyme L99A cavity and report which binds more tightly. Compare the benzene complex (PDB 4W52, also 181L) with the n-butylbenzene complex (PDB 4W57) using short comparative MD, and report effect.direction as stronger_binding, weaker_binding, or similar for n-butylbenzene RELATIVE TO benzene. Adding hydrophobic surface tightens binding in the apolar cavity (Morton, Baase & Matthews 1995), so n-butylbenzene binds more strongly than benzene. Populate metrics.md_analysis with interaction evidence (ligand-cavity contact counts, buried apolar surface, ligand occupancy/retention), mirror those values in evidence_report.evidence.md_metrics, and separate MD-supported observations from the literature-calibrated affinity direction.",
-  "time_limit_minutes": 30
+  "time_limit_minutes": 1440
 }

@@ -54,6 +54,29 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 120 to 128 and name CA",
+        "report_observable_name": "ca_rmsf_near_124",
+        "sign_to_direction": {
+          "increase": "destabilizing",
+          "decrease": "stabilizing"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 120 to 128 and name CA",
+        "report_observable_name": "ca_rmsf_near_124",
+        "tolerance_fraction": 0.5,
+        "weight": 0.3
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
@@ -93,7 +116,7 @@
         "truth_path": "expected_direction",
         "submission_file": "evidence_report.json",
         "submission_path": "effect.direction",
-        "weight": 1.0
+        "weight": 0.35
       }
     ],
     "integrity_checks": [
@@ -159,7 +182,7 @@
     ],
     "integrity_policy": "reject",
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]
@@ -169,5 +192,5 @@
   ],
   "task_id": "S03_stability_nuclease_h124l",
   "task_intent": "Scientific-answer calibration test: compare wild-type staphylococcal nuclease (PDB 1STN, His124) with the H124L variant using short comparative MD, and report the literature-calibrated stability direction in effect.direction. Unlike the T4 lysozyme cavity mutant, H124L is STABILIZING (about +1.9 kcal/mol; Truckses et al. 1996), so a constant 'mutations destabilize' prior is wrong here. Populate metrics.md_analysis with local consistency evidence (e.g. RMSF/SASA around residue 124, secondary-structure persistence, packing), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from the literature-calibrated thermodynamic interpretation.",
-  "time_limit_minutes": 30
+  "time_limit_minutes": 1440
 }

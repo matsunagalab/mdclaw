@@ -363,14 +363,30 @@ Implemented (`MDStudyBench-v0.2`):
 - Scientific-answer correctness is bound to real artifacts: `trajectory_rescan`
   (WT + mutant) and `paired_mutation_topology` are weight-0 hard-fail gates, so
   garbage/copied trajectories or an absent/wrong mutation clamp the score to 0
-  even when the declared direction is correct. The implemented `scientific_answer`
-  axis is the ground-truth direction gated behind those checks (the 25/20/20/20/15
-  split above is the original design intent, not the v0.2 weighting).
+  even when the declared direction is correct.
+- The `scientific_answer` axis is a three-way weighted mean rather than a bare
+  direction match: ground-truth direction (0.35), `direction_grounding` (0.35),
+  and `observable_recompute_consistency` (0.30). The scorer recomputes each
+  task's discriminating observable (Cα RMSF or interface/ligand-cavity contact
+  count) from the submitted trajectories; grounding compares the sign of that
+  observable against the agent's *claimed* direction (internal consistency, not
+  the hidden truth), with an inconclusive band that gives neutral credit for
+  honestly reporting a non-separating result, while consistency verifies the
+  agent's reported observable values against the recomputed ones. Effect: a
+  data-faithful conclusion that disagrees with the literature keeps grounding +
+  consistency credit (~0.65), whereas a literature guess with fabricated numbers
+  and unsupported sign is capped near the 0.35 direction-match weight. Magnitude
+  is intentionally not scored.
 - S02 corrected to mutate barstar D39 (barnase residue 39 is a lysine).
 - S01 truth corrected to the pH-3.0 folding ΔΔG ≈ 5.0 kcal/mol (the earlier 4.6
   was the benzene→cavity binding ΔG; 2.6–2.7 belongs to L46A/L121A).
-- LLM-judge rubric scores are aggregated into the secondary axis (previously
-  read by axis name and silently dropped).
+- The LLM judge is refocused onto qualitative rubrics (`reasoning_logic`,
+  `confidence_calibration`, `overclaim_detection`); numeric grounding moved to
+  the deterministic checks above. Its rubric scores are aggregated into the
+  secondary `evidence_communication` axis.
+- Uniform 24 h (`time_limit_minutes: 1440`) wall-clock budget with no prescribed
+  simulation length: MD planning (production length, replicate count) is part of
+  the task.
 - Trajectory signatures accept DCD/XTC/TRR/HDF5/NetCDF, not DCD only.
 - A `study_literature_guess_no_md` fabrication baseline establishes the
   discrimination floor; honest/wrong/fabricated fixtures and per-gate tests cover
@@ -380,8 +396,9 @@ Still to do:
 
 - Run real MDClaw reference submissions for S01-S04 (real comparative MD)
   and record them as runnable evidence.
-- Optionally reward a calibrated magnitude (the truth files carry ddG ranges and
-  `magnitude_class`) once the direction-gated scoring is stable.
+- Tune the per-task observable selections and the `inconclusive_sigma` /
+  `tolerance_fraction` thresholds against real MDClaw runs (they ship at sensible
+  defaults, editable per task in `task_specs`).
 
 ## What Not To Do Yet
 

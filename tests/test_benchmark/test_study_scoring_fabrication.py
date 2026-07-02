@@ -82,8 +82,11 @@ def test_missing_mutation_is_hard_failed(tmp_path: Path, task_id: str):
 
 
 @pytest.mark.parametrize("task_id", COMPARATIVE_TASKS)
-def test_real_md_wrong_direction_scores_zero_answer(tmp_path: Path, task_id: str):
-    """Real correct-mutation MD but the wrong direction -> gates pass, answer 0."""
+def test_real_md_wrong_direction_scores_partial_answer(tmp_path: Path, task_id: str):
+    """Real correct-mutation MD whose observable supports the literature
+    direction, but the agent claims the opposite. The literature match (0.35)
+    and direction_grounding (0.35) are both lost (the claim contradicts the
+    agent's own MD); only the recompute-consistency credit (0.30) remains."""
     sub_dir = _make(tmp_path, task_id)
     evidence = json.loads((sub_dir / "evidence_report.json").read_text())
     truth = json.loads(
@@ -105,7 +108,7 @@ def test_real_md_wrong_direction_scores_zero_answer(tmp_path: Path, task_id: str
     evidence["effect"]["direction"] = wrong
     (sub_dir / "evidence_report.json").write_text(json.dumps(evidence))
     score = _score(task_id, sub_dir)
-    assert score["scores"]["scientific_answer"] == pytest.approx(0.0)
+    assert score["scores"]["scientific_answer"] == pytest.approx(0.30)
     # gates passed (real MD + real mutation), so this is a wrong answer, not a
     # hard failure: status is partial, not failed.
     assert score["status"] == "partial"

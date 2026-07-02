@@ -35,11 +35,28 @@ StudyBench is scored by the same engine as MDPrepBench (`mdclaw.benchmark`), wit
 a study-specific check set. Like the prep suite, it is **artifact-as-truth**: the
 scientific answer is bound to recomputed evidence, not to self-reported JSON.
 
-Every task (S01–S04) is scored the same way:
+Every task (S01–S04) scores the `scientific_answer` axis from three graded
+components, so a correct answer must be both right AND grounded in the agent's
+own comparative MD, not just a recall of the textbook direction:
 
-- **Ground-truth direction** (weight 1.0) — `evidence_report.effect.direction`
-  must equal the hidden experimental direction. This is the only graded score on
-  the `scientific_answer` axis.
+- **Ground-truth direction** (weight 0.35) — `evidence_report.effect.direction`
+  must equal the hidden experimental direction.
+- **Direction grounding** (weight 0.35, `direction_grounding`) — the scorer
+  recomputes the task's discriminating observable (Cα RMSF near the mutation, or
+  an interface / ligand-cavity contact count) from the two submitted
+  trajectories and checks that the sign of (variant − reference) is consistent
+  with the direction the agent *claimed*. This is an **internal-consistency**
+  check: it compares the claim against the agent's own MD, NOT against the hidden
+  truth, so a data-faithful conclusion that disagrees with the literature still
+  earns this credit. If the observable separation is small relative to its
+  block-average noise (`|Δ| < inconclusive_sigma·σ`) the result is treated as
+  inconclusive and given neutral partial credit rather than being penalized, so
+  honest "the MD is inconclusive" reporting is not punished.
+- **Observable recompute consistency** (weight 0.30,
+  `observable_recompute_consistency`) — the `wt_value`/`mutant_value` the agent
+  reports in `evidence_report.observables` must match the scorer's recomputed
+  values within `tolerance_fraction`; fabricated or copied numbers degrade this
+  score toward 0.
 - **Hard-fail gates (weight 0)** — these clamp `weighted_total` to 0 on a
   `completed` submission if they fail, but do not inflate the score when they
   pass:
@@ -56,19 +73,29 @@ Every task (S01–S04) is scored the same way:
   evidence across `source/prep/prod/analysis/report`.
 - **LLM judge (mandatory, auto-run)** feeds the secondary `evidence_communication`
   axis. `mdclaw run_llm_judge` (Claude sonnet by default) is run automatically on
-  the host by `score_benchmark_run` / `run_benchmark_agent` for every study task,
-  scoring the rubrics `evidence_grounding` (the conclusion is derived from and
-  consistent with the submission's OWN MD metrics, not merely the known literature
-  answer), `confidence_calibration`, and `overclaim_detection`. The scorer itself
-  stays offline; the judge is a separate host step. A study task scored without
-  its judge is marked **incomplete** (it does not count as passed). This is what
-  separates a data-grounded answer from an agent that just states the known
-  direction — the deterministic gates cannot see that difference.
+  the host by `score_benchmark_run` / `run_benchmark_agent` for every study task.
+  Because the numeric truth is now verified deterministically (grounding +
+  recompute-consistency), the judge scores only the qualitative rubrics
+  `reasoning_logic` (the written argument correctly connects the reported
+  observables to the conclusion), `confidence_calibration`, and
+  `overclaim_detection`. The scorer itself stays offline; the judge is a separate
+  host step. A study task scored without its judge is marked **incomplete** (it
+  does not count as passed).
 
 Net effect: a literature guess with no real comparative MD, garbage/copied
-trajectories, or a wrong/absent mutation scores **0** even if the declared
-direction is correct — exactly the gamed submissions the
-`study_literature_guess_no_md` baseline demonstrates.
+trajectories, or a wrong/absent mutation scores **0** (hard-fail gates) — exactly
+the gamed submissions the `study_literature_guess_no_md` baseline demonstrates.
+A weaker gaming attempt that runs real MD but only recalls the textbook direction
+without grounding it (its own observable points the other way and its reported
+numbers are fabricated) is capped near **0.35** — it keeps only the
+literature-match weight and loses both grounding and recompute-consistency.
+
+### Time budget
+
+Every task carries a uniform `time_limit_minutes: 1440` (24 h wall-clock). The
+prompts prescribe no simulation length: the agent must plan the production
+length and any replicate count itself so the full workflow fits in 24 h. This MD
+planning is part of the task.
 
 ## Submission contract
 
@@ -112,7 +139,7 @@ mdclaw export_benchmark_private_package \
   --dataset-dir benchmarks/mdstudybench \
   --output-dir benchmark_private/mdstudybench
 
-# 3. prepare a run (S03 is dry_run; S01/S02/S04/S05 need real comparative MD)
+# 3. prepare a run (all four tasks need real comparative MD of two systems)
 mdclaw prepare_benchmark_run \
   --output-dir benchmark_runs \
   --run-id <run_id> \
@@ -145,12 +172,15 @@ subset (`--task-ids S01_stability_t4l_l99a`).
 `run_benchmark_agent` enforces a per-task walltime and kills the agent process
 group on timeout. The study batch runner defaults to
 `--max-walltime-minutes-per-task 0`, which means "use each task's declared
-`time_limit_minutes`" (all four tasks = 120 min). Pass an explicit positive value
-to override with a fixed cap for slow local MD.
+`time_limit_minutes`" (all four tasks = 1440 min / 24 h). Pass an explicit
+positive value to override with a smaller fixed cap for quick local smoke runs.
 
-Compute note: every task requires real comparative MD of two systems (S02 a
-solvated complex; S04 needs a parameterized ligand), so plan GPU walltime for
-≥1 ns × 2 systems per task at minimum.
+The prompts deliberately prescribe no target simulation length: the agent gets a
+24 h wall-clock budget and must plan the production length and any replicate
+count itself (this MD planning is part of the task). Compute note: every task
+requires real comparative MD of two systems (S02 a solvated complex; S04 needs a
+parameterized ligand), so provision a GPU that can turn around meaningful
+WT-versus-mutant sampling for two systems within 24 h.
 
 Reference runner under `benchmarks/baselines/` establishes the discrimination
 floor: `study_literature_guess_no_md.py` (must score 0 — a confident literature

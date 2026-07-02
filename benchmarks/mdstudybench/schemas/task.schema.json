@@ -271,7 +271,9 @@
             "minimization_report_check",
             "minimized_structure_component_rescan",
             "structure_geometry_quality",
-            "metrics_caption_consistency"
+            "metrics_caption_consistency",
+            "direction_grounding",
+            "observable_recompute_consistency"
           ],
           "title": "Check Type",
           "type": "string"
@@ -281,10 +283,20 @@
           "title": "Clash Overlap Fraction",
           "type": "number"
         },
+        "contact_cutoff_nm": {
+          "default": 0.45,
+          "title": "Contact Cutoff Nm",
+          "type": "number"
+        },
         "count_polymer_chains_only": {
           "default": true,
           "title": "Count Polymer Chains Only",
           "type": "boolean"
+        },
+        "direction_field": {
+          "default": "effect.direction",
+          "title": "Direction Field",
+          "type": "string"
         },
         "disulfide_distance_cutoff_angstrom": {
           "default": 2.4,
@@ -388,6 +400,16 @@
           "default": false,
           "title": "Image Molecules Before Rmsd",
           "type": "boolean"
+        },
+        "inconclusive_score": {
+          "default": 0.5,
+          "title": "Inconclusive Score",
+          "type": "number"
+        },
+        "inconclusive_sigma": {
+          "default": 1.0,
+          "title": "Inconclusive Sigma",
+          "type": "number"
         },
         "insertion_code": {
           "default": "",
@@ -761,6 +783,46 @@
           "default": null,
           "title": "Mutant Topology Manifest Path"
         },
+        "observable_metric": {
+          "anyOf": [
+            {
+              "enum": [
+                "ca_rmsf",
+                "contact_count"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observable Metric"
+        },
+        "observable_selection": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observable Selection"
+        },
+        "observable_selection_b": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Observable Selection B"
+        },
         "reference_pdb": {
           "anyOf": [
             {
@@ -777,6 +839,18 @@
           "default": 0.01,
           "title": "Relative Tolerance",
           "type": "number"
+        },
+        "report_observable_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Report Observable Name"
         },
         "require_min_frames": {
           "anyOf": [
@@ -1080,6 +1154,21 @@
           "default": null,
           "title": "Selection"
         },
+        "sign_to_direction": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sign To Direction"
+        },
         "sites_per_water": {
           "anyOf": [
             {
@@ -1206,6 +1295,11 @@
         "tolerance_angstrom": {
           "default": 0.05,
           "title": "Tolerance Angstrom",
+          "type": "number"
+        },
+        "tolerance_fraction": {
+          "default": 0.5,
+          "title": "Tolerance Fraction",
           "type": "number"
         },
         "topology_backend_json_file": {

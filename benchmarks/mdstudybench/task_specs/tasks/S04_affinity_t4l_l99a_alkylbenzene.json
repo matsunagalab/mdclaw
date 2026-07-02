@@ -39,11 +39,38 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "sign_to_direction": {
+          "increase": "stronger_binding",
+          "decrease": "weaker_binding"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "contact_count",
+        "observable_selection": "not protein and not water and not resname NA CL K MG ZN CA",
+        "observable_selection_b": "protein and resSeq 78 to 121",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "ligand_cavity_contacts",
+        "tolerance_fraction": 0.5,
+        "weight": 0.30
+      },
+      {
         "$bundle": "comparative_md_evidence"
       }
     ],
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]

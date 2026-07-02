@@ -54,6 +54,29 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 95 to 103 and name CA",
+        "report_observable_name": "ca_rmsf_near_99",
+        "sign_to_direction": {
+          "increase": "destabilizing",
+          "decrease": "stabilizing"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 95 to 103 and name CA",
+        "report_observable_name": "ca_rmsf_near_99",
+        "tolerance_fraction": 0.5,
+        "weight": 0.3
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
@@ -93,7 +116,7 @@
         "truth_path": "expected_direction",
         "submission_file": "evidence_report.json",
         "submission_path": "effect.direction",
-        "weight": 1.0
+        "weight": 0.35
       }
     ],
     "integrity_checks": [
@@ -159,7 +182,7 @@
     ],
     "integrity_policy": "reject",
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]
@@ -169,5 +192,5 @@
   ],
   "task_id": "S01_stability_t4l_l99a",
   "task_intent": "Scientific-answer calibration test: compare WT T4 lysozyme (PDB 2LZM) with the L99A cavity mutant using short comparative MD, but do not claim that short MD alone proves a folding-stability delta-delta-G. Report the literature-calibrated stability direction in effect.direction, populate metrics.md_analysis with local consistency evidence (core SASA, cavity or packing proxy, C-alpha RMSF near residue 99, hydrophobic contact count, etc.), mirror those values in evidence_report.evidence.md_metrics, and explicitly separate MD-supported observations from literature-calibrated thermodynamic interpretation.",
-  "time_limit_minutes": 30
+  "time_limit_minutes": 1440
 }

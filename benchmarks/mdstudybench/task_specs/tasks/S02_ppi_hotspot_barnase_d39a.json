@@ -41,11 +41,38 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "contact_count",
+        "observable_selection": "chainid 0 and protein",
+        "observable_selection_b": "chainid 1 and protein",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "interface_contacts",
+        "sign_to_direction": {
+          "increase": "strengthened_binding",
+          "decrease": "weakened_binding"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "contact_count",
+        "observable_selection": "chainid 0 and protein",
+        "observable_selection_b": "chainid 1 and protein",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "interface_contacts",
+        "tolerance_fraction": 0.5,
+        "weight": 0.30
+      },
+      {
         "$bundle": "comparative_md_evidence"
       }
     ],
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]

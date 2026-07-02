@@ -2487,3 +2487,32 @@ def test_ground_truth_check_uses_separate_truth_file(tmp_path: Path):
         task, sub_dir2, task_dir=tmp_path / "task")
     assert score_wrong.ground_truth_checks[0].passed is False
     assert score_wrong.weighted_total == 0.0
+
+
+# --- study observable helpers (direction_grounding / recompute) --------------
+
+
+def test_sign_label_classifies_separation():
+    # decisive positive separation
+    assert scoring._sign_label(1.0, 0.1, inconclusive_sigma=1.0) == "increase"
+    # decisive negative separation
+    assert scoring._sign_label(-1.0, 0.1, inconclusive_sigma=1.0) == "decrease"
+    # |delta| < sigma -> inconclusive band
+    assert scoring._sign_label(0.05, 0.1, inconclusive_sigma=1.0) == "inconclusive"
+    # zero-noise, nonzero delta stays decisive
+    assert scoring._sign_label(0.2, 0.0, inconclusive_sigma=1.0) == "increase"
+
+
+def test_frame_blocks_partition_is_contiguous_and_complete():
+    spans = scoring._frame_blocks(10, 5)
+    assert spans[0][0] == 0 and spans[-1][1] == 10
+    # contiguous, non-overlapping
+    for (lo, hi), (nlo, _nhi) in zip(spans, spans[1:]):
+        assert hi == nlo and hi > lo
+    # never more blocks than frames
+    assert len(scoring._frame_blocks(3, 5)) == 3
+
+
+def test_pooled_block_sigma_is_zero_for_flat_series():
+    assert scoring._pooled_block_sigma([1.0, 1.0, 1.0], [2.0, 2.0]) == 0.0
+    assert scoring._pooled_block_sigma([1.0, 3.0], [2.0, 4.0]) > 0.0

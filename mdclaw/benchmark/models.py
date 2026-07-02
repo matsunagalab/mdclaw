@@ -160,6 +160,8 @@ DeterministicCheckType = Literal[
     "minimized_structure_component_rescan",
     "structure_geometry_quality",
     "metrics_caption_consistency",
+    "direction_grounding",
+    "observable_recompute_consistency",
 ]
 
 # Capability axis a deterministic check contributes to. The scorer groups
@@ -211,6 +213,8 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "minimized_structure_component_rescan": "identity",
     "structure_geometry_quality": "physical_validity",
     "metrics_caption_consistency": "provenance",
+    "direction_grounding": "fidelity",
+    "observable_recompute_consistency": "fidelity",
     "minimized_structure_required": "physical_validity",
 }
 
@@ -479,6 +483,42 @@ class DeterministicCheck(BaseModel):
     # promote a task-specific check (e.g. a required protonation state) to a
     # gate without making that check_type a gate for every task.
     hard_fail: bool = False
+
+    # ----- study-level scientific-answer checks (MDStudyBench) -----
+    # These recompute a single per-task "discriminating observable" from the
+    # submitted comparative trajectories (outputs.trajectories[0/1] loaded
+    # against outputs.topology[0/1]) and use it to (a) reward a conclusion that
+    # is grounded in the agent's OWN data (direction_grounding) and (b) verify
+    # that the numbers the agent reports are the real recomputed values
+    # (observable_recompute_consistency). Neither reads the hidden truth: the
+    # literature direction is scored separately by a GroundTruthCheck.
+    #
+    # observable_metric selects how the observable is computed from each system:
+    #   - "ca_rmsf": mean C-alpha RMSF over ``observable_selection``.
+    #   - "contact_count": mean number of heavy-atom contacts within
+    #     ``contact_cutoff_nm`` between ``observable_selection`` and
+    #     ``observable_selection_b`` (interface / ligand-cavity contacts).
+    observable_metric: Optional[Literal["ca_rmsf", "contact_count"]] = None
+    observable_selection: Optional[str] = None  # mdtraj selection (group A)
+    observable_selection_b: Optional[str] = None  # mdtraj selection (group B)
+    contact_cutoff_nm: float = 0.45
+    # sign_to_direction maps the sign of (mutant - reference) for the observable
+    # onto an effect.direction value, e.g.
+    # {"increase": "destabilizing", "decrease": "stabilizing"}.
+    sign_to_direction: Optional[dict[str, str]] = None
+    # direction_grounding: separation (|delta| / sigma) below this is treated as
+    # inconclusive and scored at the neutral partial credit below, so an honest
+    # "the data are inconclusive" report is not penalized.
+    inconclusive_sigma: float = 1.0
+    inconclusive_score: float = 0.5
+    # Which submission field holds the agent's claimed direction.
+    direction_field: str = "effect.direction"
+    # observable_recompute_consistency: name of the entry in
+    # ``evidence_report.observables`` whose wt_value/mutant_value are compared to
+    # the recomputed values; agreement within tolerance_fraction scores 1.0 and
+    # degrades linearly with relative error.
+    report_observable_name: Optional[str] = None
+    tolerance_fraction: float = 0.5
 
 
 class GroundTruthCheck(BaseModel):

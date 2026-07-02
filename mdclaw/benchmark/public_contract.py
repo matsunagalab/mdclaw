@@ -765,6 +765,14 @@ def submission_checklist(task: Task) -> list[str]:
             "evidence_report.json contains required evidence keys: "
             + ", ".join(evidence_keys)
         )
+    observable_names = _reported_observable_names(task)
+    if observable_names:
+        checks.append(
+            "evidence_report.observables reports wt_value/mutant_value (and an "
+            "uncertainty) for the discriminating observable(s) the scorer "
+            "recomputes: " + ", ".join(observable_names)
+            + "; the reported numbers must match your submitted trajectories"
+        )
     if task.primary_score == PREPARATION_SCORE_AXIS:
         checks.extend([
             "use the exact submission_dir from task_instructions.json; do not "
@@ -1094,9 +1102,66 @@ def _evidence_report_blueprint(task: Task) -> dict[str, Any]:
                 check.json_path,
                 {"one_of": check.allowed_values or []},
             )
+    observables = _observables_blueprint(task)
+    if observables:
+        evidence["observables"] = observables
+        evidence["reasoning"] = (
+            "<how the observable values above lead to effect.direction, "
+            "including whether the separation is significant given the "
+            "uncertainty>"
+        )
     for key in _evidence_required_keys(task):
         _set_nested(evidence, key, _evidence_placeholder(key))
     return evidence
+
+
+def _observables_blueprint(task: Task) -> list[dict[str, Any]]:
+    """Blueprint for the discriminating observables the scorer recomputes.
+
+    Study tasks that carry a direction_grounding / observable_recompute_consistency
+    check expect the agent to report the observable it used with wild-type and
+    mutant/variant values and an uncertainty, so the scorer can cross-check the
+    reported numbers against the recomputed ones.
+    """
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for check in task.scoring.deterministic_checks:
+        if check.check_type not in (
+            "direction_grounding",
+            "observable_recompute_consistency",
+        ):
+            continue
+        name = check.report_observable_name or check.observable_metric or "observable"
+        if name in seen:
+            continue
+        seen.add(name)
+        entries.append({
+            "name": name,
+            "metric": check.observable_metric,
+            "selection": check.observable_selection,
+            "wt_value": "<mean value for the wild-type/reference system>",
+            "mutant_value": "<mean value for the mutant/variant system>",
+            "unit": "<unit>",
+            "uncertainty": "<standard error / block-average spread>",
+            "uncertainty_method": "<e.g. block_average across frames or replicas>",
+            "supports_direction": "<the effect.direction this observable supports>",
+            "source": "recomputed_from_trajectory",
+        })
+    return entries
+
+
+def _reported_observable_names(task: Task) -> list[str]:
+    names: list[str] = []
+    for check in task.scoring.deterministic_checks:
+        if check.check_type not in (
+            "direction_grounding",
+            "observable_recompute_consistency",
+        ):
+            continue
+        name = check.report_observable_name or check.observable_metric
+        if name and name not in names:
+            names.append(name)
+    return names
 
 
 def _evidence_required_keys(task: Task) -> list[str]:

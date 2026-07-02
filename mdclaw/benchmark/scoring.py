@@ -611,6 +611,251 @@ def _check_paired_mutation_topology(check: DeterministicCheck,
     )
 
 
+# ---------------------------------------------------------------------------
+# Study-level scientific-answer checks (MDStudyBench)
+#
+# A single per-task "discriminating observable" is recomputed from the two
+# submitted comparative trajectories and used to (a) reward a conclusion that is
+# grounded in the agent's OWN data and (b) verify that the numbers the agent
+# reports are the real recomputed values. Neither reads the hidden truth.
+
+
+def _recompute_paired_observable(check: DeterministicCheck, submission_dir: Path,
+                                 manifest: dict, n_blocks: int = 5):
+    """Recompute the task's discriminating observable for the reference (WT)
+    and variant (mutant) systems from the submitted comparative trajectories.
+
+    The observable is computed per contiguous frame block, so the spread across
+    blocks yields a real uncertainty estimate. Returns
+    ``(reference_value, variant_value, sigma, message)`` where ``sigma`` is a
+    pooled block-average standard error of the reference-variant difference. On
+    any failure returns ``(None, None, None, message)``.
+    """
+    metric = check.observable_metric
+    if metric is None:
+        return None, None, None, "observable_metric not configured"
+    if not check.observable_selection:
+        return None, None, None, "observable_selection not configured"
+    if metric == "contact_count" and not check.observable_selection_b:
+        return None, None, None, "observable_selection_b required for contact_count"
+
+    try:
+        import mdtraj as md
+    except ImportError:
+        return None, None, None, "mdtraj not available; cannot recompute observable"
+
+    values: dict[str, float] = {}
+    blocks: dict[str, list[float]] = {}
+    for label, traj_default, top_default in (
+        ("reference", "outputs.trajectories.0", "outputs.topology.0"),
+        ("variant", "outputs.trajectories.1", "outputs.topology.1"),
+    ):
+        traj_rel = _manifest_artifact_path(manifest, None, traj_default)
+        top_rel = _manifest_artifact_path(manifest, None, top_default)
+        if not traj_rel or not top_rel:
+            return None, None, None, f"{label} trajectory/topology path missing"
+        traj_path = _resolve_relative(submission_dir, traj_rel)
+        top_path = _resolve_relative(submission_dir, top_rel)
+        try:
+            traj = md.load(str(traj_path), top=str(top_path))
+        except Exception as exc:  # pragma: no cover -- depends on file content
+            return None, None, None, f"{label} trajectory load failed: {exc}"
+        if traj.n_frames < 1:
+            return None, None, None, f"{label} trajectory has no frames"
+        try:
+            block_values = _observable_block_values(md, traj, check, metric, n_blocks)
+        except Exception as exc:  # pragma: no cover -- selection/compute errors
+            return None, None, None, f"{label} observable compute failed: {exc}"
+        if not block_values:
+            return None, None, None, f"{label} observable selection matched nothing"
+        values[label] = float(sum(block_values) / len(block_values))
+        blocks[label] = block_values
+
+    sigma = _pooled_block_sigma(blocks["reference"], blocks["variant"])
+    return (
+        values["reference"], values["variant"], sigma,
+        f"reference={values['reference']:.4g} variant={values['variant']:.4g} "
+        f"sigma={sigma:.4g}",
+    )
+
+
+def _frame_blocks(n_frames: int, n_blocks: int) -> list[tuple[int, int]]:
+    """Contiguous (lo, hi) frame index ranges splitting ``n_frames``."""
+    k = max(1, min(n_blocks, n_frames))
+    size = n_frames / k
+    spans: list[tuple[int, int]] = []
+    for b in range(k):
+        lo = int(round(b * size))
+        hi = int(round((b + 1) * size))
+        if hi > lo:
+            spans.append((lo, hi))
+    return spans
+
+
+def _observable_block_values(md, traj, check: DeterministicCheck, metric: str,
+                             n_blocks: int):
+    """Compute the observable once per contiguous frame block.
+
+    Returns a list of per-block scalar values (mean CA RMSF in angstrom, or mean
+    heavy-atom contact count), or an empty list when the selection matches
+    nothing.
+    """
+    if metric == "ca_rmsf":
+        sel = traj.topology.select(check.observable_selection)
+        if len(sel) == 0:
+            return []
+        sub = traj.atom_slice(sel)
+        out: list[float] = []
+        for lo, hi in _frame_blocks(sub.n_frames, n_blocks):
+            block = sub[lo:hi]
+            block.superpose(block, 0)
+            rmsf = md.rmsf(block, block, 0)  # nm, per atom
+            out.append(float(sum(rmsf) / len(rmsf)) * 10.0)  # mean, angstrom
+        return out
+    if metric == "contact_count":
+        import numpy as np
+
+        group_a = traj.topology.select(check.observable_selection)
+        group_b = traj.topology.select(check.observable_selection_b)
+        if len(group_a) == 0 or len(group_b) == 0:
+            return []
+        # Heavy atoms only, so hydrogen naming does not skew contact counts.
+        heavy = set(int(i) for i in traj.topology.select("not element H"))
+        group_a = [int(i) for i in group_a if int(i) in heavy]
+        group_b = [int(i) for i in group_b if int(i) in heavy]
+        if not group_a or not group_b:
+            return []
+        pairs = np.array([(i, j) for i in group_a for j in group_b], dtype=int)
+        dists = md.compute_distances(traj, pairs)  # (n_frames, n_pairs), nm
+        cutoff = float(check.contact_cutoff_nm)
+        per_frame = [float(row) for row in (dists < cutoff).sum(axis=1)]
+        out = []
+        for lo, hi in _frame_blocks(len(per_frame), n_blocks):
+            chunk = per_frame[lo:hi]
+            out.append(float(sum(chunk) / len(chunk)))
+        return out
+    raise ValueError(f"unsupported observable_metric {metric!r}")
+
+
+def _pooled_block_sigma(ref_blocks: list[float], var_blocks: list[float]) -> float:
+    """Standard error of the reference-variant difference from block values."""
+    def _sem(blocks: list[float]) -> float:
+        if len(blocks) < 2:
+            return 0.0
+        mean = sum(blocks) / len(blocks)
+        var = sum((b - mean) ** 2 for b in blocks) / (len(blocks) - 1)
+        return (var / len(blocks)) ** 0.5
+
+    return (_sem(ref_blocks) ** 2 + _sem(var_blocks) ** 2) ** 0.5
+
+
+def _sign_label(delta: float, sigma: float, inconclusive_sigma: float) -> str:
+    """Classify the sign of ``delta`` given noise ``sigma``."""
+    if sigma > 0 and abs(delta) < inconclusive_sigma * sigma:
+        return "inconclusive"
+    if delta > 0:
+        return "increase"
+    if delta < 0:
+        return "decrease"
+    return "inconclusive"
+
+
+def _check_direction_grounding(check: DeterministicCheck, submission_dir: Path,
+                               manifest: dict, evidence: dict, **_):
+    """Reward a conclusion grounded in the agent's OWN comparative MD.
+
+    Recomputes the discriminating observable for both systems, classifies the
+    sign of (variant - reference), and compares it to the direction the agent
+    claimed in ``evidence_report``. The hidden experimental truth is NOT used
+    here (a separate GroundTruthCheck scores literature agreement), so a
+    data-faithful answer that disagrees with the literature can still earn full
+    grounding credit. An inconclusive separation is not penalized.
+    """
+    if not check.sign_to_direction:
+        return False, 0.0, "sign_to_direction not configured"
+    claimed = integrity._safe_path(evidence, check.direction_field)
+    if not isinstance(claimed, str) or not claimed.strip():
+        return False, 0.0, (
+            f"claimed direction {check.direction_field!r} missing in evidence_report"
+        )
+    claimed = claimed.strip()
+
+    ref, var, sigma, msg = _recompute_paired_observable(check, submission_dir, manifest)
+    if ref is None:
+        return False, 0.0, msg
+
+    delta = var - ref
+    label = _sign_label(delta, sigma or 0.0, check.inconclusive_sigma)
+    if label == "inconclusive":
+        score = max(0.0, min(1.0, float(check.inconclusive_score)))
+        return score >= 1.0, score, (
+            f"observable separation inconclusive ({msg}); neutral credit "
+            f"{score:.2f} for honest reporting"
+        )
+    supported_direction = check.sign_to_direction.get(label)
+    if supported_direction is None:
+        return False, 0.0, f"no direction mapped for observed {label!r}"
+    if supported_direction == claimed:
+        return True, 1.0, (
+            f"own MD {label} supports claimed direction {claimed!r} ({msg})"
+        )
+    return False, 0.0, (
+        f"own MD {label} maps to {supported_direction!r} but agent claimed "
+        f"{claimed!r} ({msg})"
+    )
+
+
+def _check_observable_recompute_consistency(check: DeterministicCheck,
+                                            submission_dir: Path,
+                                            manifest: dict, evidence: dict, **_):
+    """Verify the observable values the agent REPORTS match the recomputed ones.
+
+    Reads ``evidence_report.observables`` for the entry named
+    ``report_observable_name`` (or the first entry) and compares its
+    ``wt_value``/``mutant_value`` against the values recomputed from the
+    trajectories. Agreement within ``tolerance_fraction`` scores 1.0; larger
+    relative error degrades linearly to 0 (catches fabricated or copied
+    numbers). Missing observables score 0 but do not hard-fail the submission.
+    """
+    observables = integrity._safe_path(evidence, "observables")
+    if not isinstance(observables, list) or not observables:
+        return False, 0.0, "evidence_report.observables missing or empty"
+
+    target = None
+    if check.report_observable_name:
+        for obs in observables:
+            if isinstance(obs, dict) and str(obs.get("name")) == check.report_observable_name:
+                target = obs
+                break
+        if target is None:
+            return False, 0.0, (
+                f"observables entry named {check.report_observable_name!r} not found"
+            )
+    else:
+        target = observables[0] if isinstance(observables[0], dict) else None
+    if not isinstance(target, dict):
+        return False, 0.0, "observable entry is not an object"
+
+    reported_wt = target.get("wt_value")
+    reported_mut = target.get("mutant_value")
+    if not isinstance(reported_wt, (int, float)) or not isinstance(reported_mut, (int, float)):
+        return False, 0.0, "reported wt_value/mutant_value must be numbers"
+
+    ref, var, _sigma, msg = _recompute_paired_observable(check, submission_dir, manifest)
+    if ref is None:
+        return False, 0.0, msg
+
+    scale = max(abs(ref), abs(var), 1e-9)
+    err = (abs(reported_wt - ref) + abs(reported_mut - var)) / (2.0 * scale)
+    tol = max(1e-6, float(check.tolerance_fraction))
+    score = max(0.0, min(1.0, 1.0 - err / tol))
+    passed = err <= tol
+    return passed, score, (
+        f"reported (wt={reported_wt:.4g}, mut={reported_mut:.4g}) vs recomputed "
+        f"({msg}); mean relative error {err:.3f}, tol {tol:.3f}, score {score:.2f}"
+    )
+
+
 def _check_topology_solvent_rescan(check: DeterministicCheck,
                                    submission_dir: Path,
                                    manifest: dict, **_):
@@ -2993,6 +3238,8 @@ _DETERMINISTIC_DISPATCH = {
     "minimized_structure_component_rescan": _check_minimized_structure_component_rescan,
     "structure_geometry_quality": _check_structure_geometry_quality,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
+    "direction_grounding": _check_direction_grounding,
+    "observable_recompute_consistency": _check_observable_recompute_consistency,
 }
 
 

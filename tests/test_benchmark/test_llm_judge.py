@@ -32,10 +32,10 @@ def test_run_llm_judge_writes_consumable_file(tmp_path: Path, monkeypatch):
 
     # stub the LLM: return rubric-keyed scores like a real judge would
     def fake_call(prompt, model, timeout=180):
-        assert "evidence_grounding" in prompt  # rubrics embedded
+        assert "reasoning_logic" in prompt  # rubrics embedded
         return (
             'Here is my assessment:\n'
-            '{"scores": {"evidence_grounding": 0.7, "confidence_calibration": 0.8,'
+            '{"scores": {"reasoning_logic": 0.7, "confidence_calibration": 0.8,'
             ' "overclaim_detection": 0.9},'
             ' "violations": [], "rationale": {"confidence_calibration": "ok"}}'
         )

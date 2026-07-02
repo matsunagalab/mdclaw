@@ -7,8 +7,8 @@ Thin study-suite entry point over the shared all-agents driver
 a compact operator summary, exactly like the prep driver.
 
 By default the per-task walltime is ``0``, which means "use each task's declared
-``time_limit_minutes``" (S01/S02/S04/S05 = 120 min, S03 = 60 min). Pass an
-explicit ``--max-walltime-minutes-per-task`` to override with a fixed cap.
+``time_limit_minutes``" (all four tasks = 1440 min / 24 h). Pass an explicit
+``--max-walltime-minutes-per-task`` to override with a smaller fixed cap.
 
 Example:
 

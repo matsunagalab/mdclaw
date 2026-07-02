@@ -54,6 +54,33 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "contact_count",
+        "observable_selection": "chainid 0 and protein",
+        "observable_selection_b": "chainid 1 and protein",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "interface_contacts",
+        "sign_to_direction": {
+          "increase": "strengthened_binding",
+          "decrease": "weakened_binding"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "contact_count",
+        "observable_selection": "chainid 0 and protein",
+        "observable_selection_b": "chainid 1 and protein",
+        "contact_cutoff_nm": 0.45,
+        "report_observable_name": "interface_contacts",
+        "tolerance_fraction": 0.5,
+        "weight": 0.3
+      },
+      {
         "check_id": "md_trajectories_present",
         "check_type": "json_min_length",
         "json_file": "manifest.json",
@@ -93,7 +120,7 @@
         "truth_path": "expected_direction",
         "submission_file": "evidence_report.json",
         "submission_path": "effect.direction",
-        "weight": 1.0
+        "weight": 0.35
       }
     ],
     "integrity_checks": [
@@ -159,7 +186,7 @@
     ],
     "integrity_policy": "reject",
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]
@@ -169,5 +196,5 @@
   ],
   "task_id": "S02_ppi_hotspot_barnase_d39a",
   "task_intent": "Scientific-answer test: predict the experimental binding-effect direction for barstar D39A (the interface hotspot residue; barstar is chain D in PDB 1BRS, paired with barnase chain A) in the barnase-barstar complex from MD-derived evidence. Run short comparative MD of the WT complex and the D39A mutant complex, populate metrics.md_analysis with quantitative interface differences (delta interface SASA, delta inter-chain contact count, delta hydrogen-bond count, delta salt-bridge count, delta water occupancy at the interface, etc.), populate evidence_report.evidence.md_metrics, and report effect.direction with calibrated confidence and explicit limitations. Literature citations are admissible for confidence calibration only; the direction itself must be defended by the MD numbers.",
-  "time_limit_minutes": 30
+  "time_limit_minutes": 1440
 }

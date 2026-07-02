@@ -41,11 +41,34 @@
         "weight": 0.0
       },
       {
+        "check_id": "direction_grounded_in_own_md",
+        "check_type": "direction_grounding",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 95 to 103 and name CA",
+        "report_observable_name": "ca_rmsf_near_99",
+        "sign_to_direction": {
+          "increase": "destabilizing",
+          "decrease": "stabilizing"
+        },
+        "inconclusive_sigma": 1.0,
+        "inconclusive_score": 0.5,
+        "weight": 0.35
+      },
+      {
+        "check_id": "reported_observable_matches_recompute",
+        "check_type": "observable_recompute_consistency",
+        "observable_metric": "ca_rmsf",
+        "observable_selection": "resSeq 95 to 103 and name CA",
+        "report_observable_name": "ca_rmsf_near_99",
+        "tolerance_fraction": 0.5,
+        "weight": 0.30
+      },
+      {
         "$bundle": "comparative_md_evidence"
       }
     ],
     "llm_judge_rubrics": [
-      "evidence_grounding",
+      "reasoning_logic",
       "confidence_calibration",
       "overclaim_detection"
     ]
