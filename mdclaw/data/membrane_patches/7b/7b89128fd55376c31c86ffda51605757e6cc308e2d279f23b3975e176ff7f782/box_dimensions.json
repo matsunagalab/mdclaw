@@ -1,9 +1,9 @@
 {
   "alpha": 90.0,
   "beta": 90.0,
-  "box_a": 40.0,
-  "box_b": 40.0,
-  "box_c": 81.0,
+  "box_a": 42.0,
+  "box_b": 42.0,
+  "box_c": 83.0,
   "gamma": 90.0,
   "is_cubic": false
 }

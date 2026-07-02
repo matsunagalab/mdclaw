@@ -2,9 +2,9 @@
   "box_dimensions": {
     "alpha": 90.0,
     "beta": 90.0,
-    "box_a": 40.0,
-    "box_b": 40.0,
-    "box_c": 81.0,
+    "box_a": 42.0,
+    "box_b": 42.0,
+    "box_c": 83.0,
     "gamma": 90.0,
     "is_cubic": false
   },
@@ -34,9 +34,11 @@
     "water_model": "opc"
   },
   "patch_pdb": "patch.pdb",
-  "patch_sha256": "6fedf9af9cbf2a3106b20614395ae9873fa8594368730339eb1ae10118dca98e",
+  "patch_sha256": "bea101d206bb9f680cd1ab7a1974cb58bc281edd1172e268a24a7cb22de2ac27",
   "schema_version": 2,
   "stderr_tail": "PMEMD not found. Setting path to SANDER\n\n\n _____           _                    _\n|  __ \\         | |                  | |\n| |__) |_ _  ___| | ___ __ ___   ___ | |\n|  ___/ _` |/ __| |/ / '_ ` _ \\ / _ \\| |\n| |  | (_| | (__|   <| | | | | | (_) | |\n|_|   \\__,_|\\___|_|\\_\\_| |_| |_|\\___/|_|\n                                         ___\n                  /\\/\\   ___ _ __ ___   / _ \\___ _ __\n                 /    \\ / _ \\ '_ ` _ \\ / /_\\/ _ \\ '_ \\ \n                / /\\/\\ \\  __/ | | | | / /_ \\  __/ | | |\n                \\/    \\/\\___|_| |_| |_\\____/\\___|_| |_| \n\n\n###############################################################\nStephan Schott-Verdugo 2016-11-07        VERSION: 2025.1.29\nGenerated at CPCLab at Heinrich Heine University Duesseldorf\n      &      CBCLab at Forschungszentrum Juelich\n###############################################################\n\n--verbose for details of the packing process\n\n     Information for packing:\n    \n     Input PDB(s)                     = None     \n     Output PDB                       = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/e0/e0a0f4ce8b3371403262a9da250fbf02edb7c578c1b7ca8b18858b00315b7797/.build.91294/packed.pdb\n     Packmol output and log prefix    = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/e0/e0a0f4ce8b3371403262a9da250fbf02edb7c578c1b7ca8b18858b00315b7797/.build.91294/patch_packmol\n     Lipids                           = ['POPC:CHL1']\n     Lipid ratio                      = ['4:1']  \n     Solvents                         = WAT      \n     Solvent ratio                    = 1        \n     Salt concentration            (M)= 0.15     \n     Distance to boundaries        (A)= 15.0     \n     Minimum water distance        (A)= 17.5     \n     Packmol loops                    = 20       \n     Packmol loops for All-together   = 100      \nSterols are used, and the concentration is too high or the system too small to add proper side padding. Check that your system doesn't have pierced sterols in the periodic boundary once the packing is finished\nSterols are used, and the concentration is too high or the system too small to add proper side padding. Check that your system doesn't have pierced sterols in the periodic boundary once the packing is finished\n\nRunning Packmol...\nTransforming to AMBER\nSterols were packed. Potential piercing lipid tails will be searched\nLipid piercing finder failed. Check your structure manually in case of clashing lipid tails!\n#Packing process finished. Check your final structure, particularly for lipids inserted in proteins, protein tunnels or piercing rings!#\n",
   "stdout_tail": "\nProcessing segment 1 of 10..\nProcessing segment 2 of 10\nProcessing segment 3 of 10..\nProcessing segment 4 of 10\nProcessing segment 5 of 10\nProcessing segment 6 of 10\nProcessing segment 7 of 10\nProcessing segment 8 of 10\nProcessing segment 9 of 10\nProcessing segment 10 of 10\u001b[F\nAll-together Packing..........\n########################################################################################################################################\n########################################################################################################################################\nDONE!\n",
-  "warnings": []
+  "warnings": [
+    "migrated: adopted equilibrated CRYST1 box and PBC-wrapped whole molecules for seamless tiling"
+  ]
 }

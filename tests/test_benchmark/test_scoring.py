@@ -106,6 +106,7 @@ def _write_openmm_bundle(
     include_water: bool = False,
     extra_residues: list[tuple[str, int]] | None = None,
     clash: bool = False,
+    placeholder_clash: bool = False,
 ) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
@@ -164,14 +165,38 @@ def _write_openmm_bundle(
             positions.append(Vec3(x, 0.0, 0.0))
             pdb_positions.append(Vec3(x, 0.0, 0.0))
     if clash:
-        # A second non-bonded atom placed 0.05 nm from the first, well inside
-        # the VDW r_min for these sigmas, with no NonbondedForce exception.
+        # Two non-bonded, LJ-interacting atoms placed 0.05 nm apart, well inside
+        # the VDW r_min for these sigmas, with no NonbondedForce exception. Both
+        # carry epsilon > 0 so the clash is physically meaningful (zero-epsilon
+        # placeholder atoms have no excluded volume and are not counted).
         clash_res = topology.addResidue("LIG", chain, "99")
         topology.addAtom("X1", Element.getBySymbol("C"), clash_res)
         system.addParticle(12.0)
         nonbonded.addParticle(0.0, 0.3, 0.1)
-        positions.append(Vec3(0.05, 0.0, 0.0))
-        pdb_positions.append(Vec3(0.05, 0.0, 0.0))
+        positions.append(Vec3(5.0, 0.0, 0.0))
+        pdb_positions.append(Vec3(5.0, 0.0, 0.0))
+        topology.addAtom("X2", Element.getBySymbol("C"), clash_res)
+        system.addParticle(12.0)
+        nonbonded.addParticle(0.0, 0.3, 0.1)
+        positions.append(Vec3(5.05, 0.0, 0.0))
+        pdb_positions.append(Vec3(5.05, 0.0, 0.0))
+    if placeholder_clash:
+        # A real LJ atom next to a non-interacting placeholder atom
+        # (epsilon == 0, sigma == 1.0 nm, the OpenMM default for Amber polar
+        # hydrogens). Their separation is well inside the placeholder's huge
+        # nominal r_min, but the placeholder has no excluded volume, so a
+        # correct scorer must not count this as a steric clash.
+        ph_res = topology.addResidue("PHH", chain, "77")
+        topology.addAtom("HR", Element.getBySymbol("O"), ph_res)
+        system.addParticle(16.0)
+        nonbonded.addParticle(0.0, 0.3, 0.5)
+        positions.append(Vec3(7.0, 0.0, 0.0))
+        pdb_positions.append(Vec3(7.0, 0.0, 0.0))
+        topology.addAtom("HP", Element.getBySymbol("H"), ph_res)
+        system.addParticle(1.0)
+        nonbonded.addParticle(0.0, 1.0, 0.0)
+        positions.append(Vec3(7.1, 0.0, 0.0))
+        pdb_positions.append(Vec3(7.1, 0.0, 0.0))
     positions_q = positions * unit.nanometer
     pdb_positions_q = pdb_positions * unit.nanometer
     system.addForce(nonbonded)
@@ -1837,6 +1862,36 @@ def test_structure_geometry_quality_passes_clean_system(tmp_path: Path):
         )],
     )
     _write_openmm_bundle(tmp_path, include_water=True)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+    assert "clashes=0" in score.deterministic_checks[0].message
+
+
+def test_structure_geometry_quality_ignores_zero_epsilon_placeholder(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="geometry",
+            check_type="structure_geometry_quality",
+            topology_manifest_path="outputs.topology",
+            weight=1.0,
+        )],
+    )
+    _write_openmm_bundle(tmp_path, placeholder_clash=True)
     _write_submission(
         tmp_path,
         manifest={

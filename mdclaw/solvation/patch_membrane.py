@@ -44,7 +44,6 @@ from mdclaw.solvation.constants import (
     PATCH_CACHE_SCHEMA_VERSION,
     PATCH_LIPID21_FRAGMENT_RESNAMES,
     PATCH_LIPID_ALIAS_RESNAMES,
-    PATCH_STEROL_RESNAMES,
     PATCH_WATER_RESNAMES,
 )
 
@@ -196,20 +195,6 @@ def _near_protein(
     return False
 
 
-def _residue_group_key(atom: PDBAtom, tile_index: int = 0) -> tuple:
-    """Return a residue-group key that is unique per tile.
-
-    Lipid21 phospholipids are split into head/tail fragments that share a
-    residue number; they must be grouped so carving removes the whole lipid.
-    ``tile_index`` disambiguates identical residue numbers across tiles.
-    """
-    if atom.resname in PATCH_LIPID21_FRAGMENT_RESNAMES:
-        return ("lipid21", tile_index, atom.chain_id, atom.resseq, atom.insertion_code)
-    if atom.resname in PATCH_STEROL_RESNAMES:
-        return ("sterol", tile_index, atom.chain_id, atom.resseq, atom.insertion_code)
-    return ("residue", tile_index, atom.chain_id, atom.resseq, atom.insertion_code, atom.resname)
-
-
 def _split_composition(value: str) -> list[str]:
     parts: list[str] = []
     for leaflet in str(value).replace("//", ":").split(":"):
@@ -306,6 +291,91 @@ def _write_box_dimensions_json(out_dir: Path, box_dims: dict[str, Any]) -> Path:
     path = Path(out_dir) / "box_dimensions.json"
     _atomic_write_json(path, box_dims)
     return path
+
+
+def _patch_molecule_ids(atoms: list[PDBAtom]) -> list[int]:
+    """Assign a molecule id per atom for whole-molecule PBC wrapping.
+
+    packmol-memgen writes one Lipid21 lipid as consecutive PA/PC/OL fragments
+    sharing a PDB chain, then gives every water/ion its own (reused) chain
+    letter. So: start a new molecule whenever the chain letter changes, and also
+    treat each solvent/ion residue as its own molecule (consecutive Lipid21
+    fragments on the same chain stay merged as one lipid).
+    """
+    ids: list[int] = []
+    current = -1
+    prev_chain: Optional[str] = None
+    prev_residue: Optional[tuple] = None
+    prev_is_lipid = False
+    for atom in atoms:
+        is_lipid_fragment = atom.resname in PATCH_LIPID21_FRAGMENT_RESNAMES
+        residue_key = (atom.chain_id, atom.resseq, atom.insertion_code)
+        if current < 0 or atom.chain_id != prev_chain:
+            # Chain boundary always separates molecules.
+            new_molecule = True
+        elif residue_key == prev_residue:
+            # Same residue (e.g. the 4 atoms of one water) -> same molecule.
+            new_molecule = False
+        else:
+            # Residue changed within a chain: merge only consecutive Lipid21
+            # fragments (head + acyl tails of one lipid); otherwise split.
+            new_molecule = not (is_lipid_fragment and prev_is_lipid)
+        if new_molecule:
+            current += 1
+        ids.append(current)
+        prev_chain = atom.chain_id
+        prev_residue = residue_key
+        prev_is_lipid = is_lipid_fragment
+    return ids
+
+
+def wrap_patch_pdb(src: Path, dst: Path, *, box_dims: dict[str, Any]) -> dict[str, Any]:
+    """Image whole molecules of an equilibrated patch back into one periodic cell.
+
+    OpenMM equilibration writes *unwrapped* coordinates: molecules diffuse across
+    periodic images, so the patch atoms can span several box lengths. Tiling such
+    a patch (translating by one box length per tile) then interleaves sprawling
+    copies, leaving lateral gaps and overlaps. Wrapping each whole molecule so its
+    centroid lands in ``[0, box)`` restores a compact, seamless periodic tile.
+
+    Molecules are grouped by :func:`_patch_molecule_ids` (each maximal run of
+    atoms sharing a PDB chain is one molecule), so a Lipid21 lipid written as
+    consecutive PA/PC/OL fragments moves as a unit and every water/ion stays
+    intact even though packmol reuses the 26 chain letters across thousands of
+    waters. Atom order is preserved. Returns ``box_dims``.
+    """
+    _lines, atoms = _parse_pdb_atoms(src)
+    box_a = float(box_dims["box_a"])
+    box_b = float(box_dims["box_b"])
+    box_c = float(box_dims["box_c"])
+
+    mol_ids = _patch_molecule_ids(atoms)
+    groups: dict[int, list[PDBAtom]] = {}
+    for atom, mol_id in zip(atoms, mol_ids):
+        groups.setdefault(mol_id, []).append(atom)
+
+    shift_by_index: dict[int, tuple[float, float, float]] = {}
+    for members in groups.values():
+        inv = 1.0 / len(members)
+        cx = sum(a.x for a in members) * inv
+        cy = sum(a.y for a in members) * inv
+        cz = sum(a.z for a in members) * inv
+        sx = -math.floor(cx / box_a) * box_a if box_a > 0 else 0.0
+        sy = -math.floor(cy / box_b) * box_b if box_b > 0 else 0.0
+        sz = -math.floor(cz / box_c) * box_c if box_c > 0 else 0.0
+        for a in members:
+            shift_by_index[a.index] = (sx, sy, sz)
+
+    out_lines: list[str] = []
+    cryst1 = _format_cryst1_box(box_dims)
+    if cryst1:
+        out_lines.append(cryst1)
+    for atom in atoms:
+        sx, sy, sz = shift_by_index.get(atom.index, (0.0, 0.0, 0.0))
+        out_lines.append(_translated_line(atom, sx, sy, sz))
+    out_lines.append("END")
+    _atomic_write_text(Path(dst), "\n".join(out_lines) + "\n")
+    return box_dims
 
 
 def _tail_text(value: Any, limit: int = 4000) -> str:
@@ -878,9 +948,16 @@ def ensure_membrane_patch(
                 }
             equilibration_ran = True
             final_patch = Path(str(eq_result["equilibrated_pdb"]))
-            if eq_result.get("box_dimensions"):
-                box_dims = eq_result["box_dimensions"]
             warnings.extend(eq_result.get("warnings", []))
+            # Adopt the *equilibrated* box (NPT relaxes it away from the packed
+            # size) and image whole molecules back into one cell. Equilibration
+            # emits unwrapped coordinates; caching them as-is makes tiling leave
+            # gaps/overlaps, so wrap before storing the patch.
+            eq_box = _extract_cryst1_box(final_patch) or eq_result.get("box_dimensions") or box_dims
+            box_dims = eq_box
+            wrapped_patch = build_dir / "patch_wrapped.pdb"
+            wrap_patch_pdb(final_patch, wrapped_patch, box_dims=box_dims)
+            final_patch = wrapped_patch
         else:
             warnings.append(
                 "membrane patch cached without equilibration; tiling seams are "
@@ -964,12 +1041,14 @@ def build_tiled_membrane(
     box_b: float,
     nx: int,
     ny: int,
-) -> list[tuple[PDBAtom, str, float, float, float]]:
+) -> list[tuple[PDBAtom, str, float, float, float, tuple]]:
     """Tile patch atoms nx x ny in XY, centered at origin.
 
     Each tile gets a distinct chain label and per-tile residue renumbering so
     OpenMM/OpenFF do not merge residues across tile boundaries.  Returns a list
-    of ``(atom, rewritten_line, x, y, z)`` in the tiled frame.
+    of ``(atom, rewritten_line, x, y, z, carve_key)`` in the tiled frame, where
+    ``carve_key`` identifies the whole molecule (per tile) the atom belongs to
+    so downstream carving removes intact molecules rather than lipid fragments.
     """
     patch_center = _center(patch_atoms)
     total_x = nx * float(box_a)
@@ -978,7 +1057,14 @@ def build_tiled_membrane(
     origin_x = -total_x / 2.0
     origin_y = -total_y / 2.0
 
-    tiled: list[tuple[PDBAtom, str, float, float, float]] = []
+    # Whole-molecule id per patch atom, in file order. Used for both residue
+    # renumbering (so distinct molecules that happen to reuse a (chain, resseq)
+    # pair never merge) and carving (so an entire lipid is kept or dropped
+    # together). A Lipid21 lipid spans consecutive PA/PC/OL fragments under one
+    # id; every water/ion/sterol is its own molecule.
+    mol_ids = _patch_molecule_ids(patch_atoms)
+
+    tiled: list[tuple[PDBAtom, str, float, float, float, tuple]] = []
     tile_index = 0
     for ix in range(nx):
         for iy in range(ny):
@@ -987,15 +1073,20 @@ def build_tiled_membrane(
             dx = origin_x + ix * float(box_a) - (patch_center[0] - float(box_a) / 2.0)
             dy = origin_y + iy * float(box_b) - (patch_center[1] - float(box_b) / 2.0)
             dz = 0.0
-            # Per-tile residue renumbering (group-aware, 1-based).
+            # Per-tile residue renumbering (molecule-aware, 1-based). One
+            # molecule may span several residues (Lipid21 head + tails), each of
+            # which is numbered distinctly, while different molecules never share
+            # a number even when their patch (chain, resseq) collides.
             resseq_map: dict[tuple, int] = {}
             next_resseq = 0
-            for atom in patch_atoms:
-                group = _residue_group_key(atom, tile_index)
-                if group not in resseq_map:
+            for atom, mol_id in zip(patch_atoms, mol_ids):
+                residue_key = (
+                    mol_id, atom.resseq, atom.insertion_code, atom.resname,
+                )
+                if residue_key not in resseq_map:
                     next_resseq += 1
-                    resseq_map[group] = next_resseq
-                new_resseq = resseq_map[group]
+                    resseq_map[residue_key] = next_resseq
+                new_resseq = resseq_map[residue_key]
                 line = _rewrite_line(
                     atom,
                     dx=dx,
@@ -1004,7 +1095,10 @@ def build_tiled_membrane(
                     chain_id=chain_label,
                     resseq=new_resseq,
                 )
-                tiled.append((atom, line, atom.x + dx, atom.y + dy, atom.z + dz))
+                carve_key = (tile_index, mol_id)
+                tiled.append(
+                    (atom, line, atom.x + dx, atom.y + dy, atom.z + dz, carve_key)
+                )
             tile_index += 1
     return tiled
 
@@ -1202,31 +1296,35 @@ def embed_with_membrane_patch_tiles(
     # 4) Align tiled membrane center (XY) to protein center; keep membrane at z~0.
     protein_center = _center(protein_atoms)
     tiled_center = (
-        sum(x for _a, _l, x, _y, _z in tiled) / len(tiled),
-        sum(y for _a, _l, _x, y, _z in tiled) / len(tiled),
-        sum(z for _a, _l, _x, _y, z in tiled) / len(tiled),
+        sum(t[2] for t in tiled) / len(tiled),
+        sum(t[3] for t in tiled) / len(tiled),
+        sum(t[4] for t in tiled) / len(tiled),
     )
     shift_x = protein_center[0] - tiled_center[0]
     shift_y = protein_center[1] - tiled_center[1]
     shift_z = 0.0
 
     shifted: list[tuple[PDBAtom, str, float, float, float]] = []
-    for atom, line, x, y, z in tiled:
+    carve_keys: list[tuple] = []
+    for atom, line, x, y, z, carve_key in tiled:
         nx_, ny_, nz_ = x + shift_x, y + shift_y, z + shift_z
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
+        carve_keys.append(carve_key)
 
-    # 5) Carve tiled residues that overlap the protein.
+    # 5) Carve tiled molecules that overlap the protein. Removal is by whole
+    # molecule (carve_key), so a Lipid21 lipid whose tail brushes the protein is
+    # dropped together with its head instead of leaving an orphaned head whose
+    # external bonds can no longer be satisfied.
     cutoff = max(float(carve_padding), 0.5)
     grid = _protein_grid(protein_atoms, cutoff)
     removed_groups: set[tuple] = set()
-    # Assign a stable tile index per atom by chain label (tiles have unique chains).
-    for atom, _line, x, y, z in shifted:
+    for (atom, _line, x, y, z), carve_key in zip(shifted, carve_keys):
         if _near_protein(x, y, z, grid=grid, cutoff=cutoff):
-            removed_groups.add((atom.chain_id, atom.resseq, atom.insertion_code, atom.resname, _fragment_tag(atom)))
+            removed_groups.add(carve_key)
 
     retained = [
-        item for item in shifted
-        if (item[0].chain_id, item[0].resseq, item[0].insertion_code, item[0].resname, _fragment_tag(item[0])) not in removed_groups
+        item for item, carve_key in zip(shifted, carve_keys)
+        if carve_key not in removed_groups
     ]
 
     retained_resnames = {atom.resname for atom, _l, _x, _y, _z in retained}
@@ -1342,14 +1440,6 @@ def embed_with_membrane_patch_tiles(
             "neutralization": neutralization,
         },
     }
-
-
-def _fragment_tag(atom: PDBAtom) -> str:
-    if atom.resname in PATCH_LIPID21_FRAGMENT_RESNAMES:
-        return "lipid21"
-    if atom.resname in PATCH_STEROL_RESNAMES:
-        return "sterol"
-    return "other"
 
 
 def _rewrite_line_coords(line: str, x: float, y: float, z: float) -> str:

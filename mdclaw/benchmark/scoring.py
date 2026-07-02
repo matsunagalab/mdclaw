@@ -2857,8 +2857,21 @@ def _count_nonbonded_clashes(
         return -1, [f"particle/coord count mismatch: {n} vs {len(coords)}"]
 
     sigmas = [float(row["sigma"]) for row in rows]
+    epsilons = [float(row["epsilon"]) for row in rows]
     virtual = [bool(row["is_virtual"]) for row in rows]
-    max_sigma = max((s for s in sigmas), default=0.0)
+    # Atoms with a zero Lennard-Jones well depth (epsilon == 0) have no van der
+    # Waals excluded volume, so they cannot produce a physically meaningful
+    # steric clash. This is the Amber convention for polar hydrogens (H bonded
+    # to N/O), which carry a zero vdW radius but receive an OpenMM placeholder
+    # sigma of 1.0 nm on conversion. Counting those placeholders as clashes
+    # yields false positives on essentially every prepared system, so exclude
+    # non-interacting particles alongside virtual sites and zero-sigma atoms.
+    interacting = [
+        (not virtual[idx]) and sigmas[idx] > 0.0 and epsilons[idx] > 0.0
+        for idx in range(n)
+    ]
+    max_sigma = max((sigmas[idx] for idx in range(n) if interacting[idx]),
+                    default=0.0)
     cell = overlap_fraction * max_sigma * _TWO_TO_ONE_SIXTH
     if cell <= 0.0:
         return 0, []
@@ -2868,7 +2881,7 @@ def _count_nonbonded_clashes(
     grid: dict[tuple[int, int, int], list[int]] = {}
     inv = 1.0 / cell
     for idx in range(n):
-        if virtual[idx] or sigmas[idx] <= 0.0:
+        if not interacting[idx]:
             continue
         x, y, z = coords[idx]
         key = (int(math.floor(x * inv)), int(math.floor(y * inv)),

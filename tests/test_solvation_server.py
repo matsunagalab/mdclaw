@@ -549,6 +549,71 @@ def test_patch_membrane_fingerprint_ignores_packmol_memgen_version():
     ).parameters
 
 
+def test_patch_molecule_ids_group_lipid_fragments_and_split_solvent():
+    from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, _patch_molecule_ids
+
+    pdb = (
+        # One Lipid21 lipid: PA/PC/OL fragments sharing chain A, distinct resseq.
+        _pdb_hetatm(1, "C12", "PA", "A", 1, "C")
+        + _pdb_hetatm(2, "P", "PC", "A", 2, "P")
+        + _pdb_hetatm(3, "C12", "OL", "A", 3, "C")
+        # Two waters, each on its own (reused) chain letter.
+        + _pdb_hetatm(4, "O", "HOH", "B", 1, "O")
+        + _pdb_hetatm(5, "H1", "HOH", "B", 1, "H")
+        + _pdb_hetatm(6, "O", "HOH", "C", 1, "O")
+        + _pdb_hetatm(7, "H1", "HOH", "C", 1, "H")
+    )
+    path = Path("/tmp/mdclaw_wrap_ids.pdb")
+    path.write_text(pdb)
+    _lines, atoms = _parse_pdb_atoms(path)
+    ids = _patch_molecule_ids(atoms)
+    # 3 molecules: one lipid (3 fragment atoms) + two waters (2 atoms each).
+    assert ids == [0, 0, 0, 1, 1, 2, 2]
+
+
+def test_wrap_patch_pdb_images_whole_molecules_into_box(tmp_path):
+    from mdclaw.solvation.patch_membrane import (
+        _bounds,
+        _parse_pdb_atoms,
+        wrap_patch_pdb,
+    )
+
+    box = {"box_a": 40.0, "box_b": 40.0, "box_c": 80.0,
+           "alpha": 90.0, "beta": 90.0, "gamma": 90.0, "is_cubic": False}
+    # A lipid that has drifted a full box out in x (centroid ~ +91) and a water
+    # that drifted below the box in y (centroid ~ -5). Wrapping must move each
+    # molecule as a rigid unit, never splitting a lipid across the boundary.
+    pdb = (
+        _pdb_hetatm(1, "C12", "PA", "A", 1, "C", x=90.0, y=10.0, z=40.0)
+        + _pdb_hetatm(2, "P", "PC", "A", 2, "P", x=92.0, y=11.0, z=41.0)
+        + _pdb_hetatm(3, "C12", "OL", "A", 3, "C", x=91.0, y=10.0, z=39.0)
+        + _pdb_hetatm(4, "O", "HOH", "B", 1, "O", x=5.0, y=-5.0, z=10.0)
+        + _pdb_hetatm(5, "H1", "HOH", "B", 1, "H", x=6.0, y=-4.0, z=10.0)
+    )
+    src = tmp_path / "patch.pdb"
+    src.write_text(pdb)
+    dst = tmp_path / "wrapped.pdb"
+    wrap_patch_pdb(src, dst, box_dims=box)
+
+    _lines, atoms = _parse_pdb_atoms(dst)
+    assert len(atoms) == 5
+    # Lipid fragments all shift by the same -80 in x (floor(91/40)=2 -> -80),
+    # so the lipid stays intact and its centroid lands in [0, 40).
+    lipid = [a for a in atoms if a.resname in {"PA", "PC", "OL"}]
+    cx = sum(a.x for a in lipid) / len(lipid)
+    assert 0.0 <= cx < 40.0
+    # Intra-lipid geometry preserved (max pairwise x-gap unchanged ~2 A).
+    assert max(a.x for a in lipid) - min(a.x for a in lipid) < 3.0
+    # Water shifted +40 in y into the cell.
+    water = [a for a in atoms if a.resname == "HOH"]
+    cy = sum(a.y for a in water) / len(water)
+    assert 0.0 <= cy < 40.0
+    # Everything sits within roughly one cell laterally now.
+    minx, maxx, miny, maxy, _minz, _maxz = _bounds(atoms)
+    assert maxx - minx < 40.0
+    assert maxy - miny < 40.0
+
+
 def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeypatch):
     input_pdb = tmp_path / "input.pdb"
     input_pdb.write_text(
