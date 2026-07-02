@@ -167,7 +167,7 @@ def build_amber_system(
     implicit_solvent: Optional[str] = None,
     output_name: str = "system",
     output_dir: Optional[str] = None,
-    minimize_max_iterations: int = 1000,
+    minimize_max_iterations: int = 10,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -254,12 +254,15 @@ def build_amber_system(
                      ``{output_name}.state.xml``, and
                      ``{output_name}.minimization_report.json``.
         minimize_max_iterations: L-BFGS iteration cap for the build-time
-                     energy minimization (default 1000; 0 = run to
-                     convergence). A single short pass (the old default of
-                     200) can leave freshly solvated systems at a high
-                     positive potential energy when solvation places close
-                     contacts; ~1000 iterations relaxes them to a strongly
-                     negative (physically settled) energy.
+                     energy minimization (default 10; 0 = run to
+                     convergence). This is intentionally a short fail-fast
+                     pass: it only confirms the built System minimizes with
+                     finite forces and settles the worst solvation close
+                     contacts. Full relaxation of the solvated system is the
+                     downstream ``min`` node's job, so the build-time
+                     artifact may still sit at a mildly positive potential
+                     energy. Raise this only if you want the topo artifact
+                     itself pre-relaxed.
         output_dir / job_dir / node_id: Standard mdclaw I/O knobs. In
                      node mode, the topo node's metadata is stamped with
                      ``system_artifact_kind="openmm_system_xml"`` and a

@@ -594,7 +594,7 @@ def _run_openmmforcefields_build(
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
-    minimize_max_iterations: int = 1000,
+    minimize_max_iterations: int = 10,
 ) -> Dict[str, Any]:
     """Build an OpenMM ``System`` for the given prepared PDB.
 
@@ -1515,11 +1515,38 @@ def _run_openmmforcefields_build(
             initial_state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
         simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
+        if box_dimensions:
+            # Re-image so the solute sits at the box center and solvent wraps
+            # around it, instead of OpenMM's corner-origin per-atom wrap that
+            # splits the solute across the boundary (a PyMOL/VMD artifact). A
+            # rigid translation is PBC-invariant, so energy/forces are unchanged.
+            from mdclaw.structure.imaging import center_solute_and_wrap_solvent
+
+            raw_state = simulation.context.getState(
+                getPositions=True, enforcePeriodicBox=False
+            )
+            box_vectors_nm = raw_state.getPeriodicBoxVectors(
+                asNumpy=True
+            ).value_in_unit(unit.nanometer)
+            box_lengths_nm = (
+                box_vectors_nm[0][0],
+                box_vectors_nm[1][1],
+                box_vectors_nm[2][2],
+            )
+            raw_positions_nm = raw_state.getPositions(asNumpy=True).value_in_unit(
+                unit.nanometer
+            )
+            imaged_positions_nm = center_solute_and_wrap_solvent(
+                modeller.topology, raw_positions_nm, box_lengths_nm
+            )
+            simulation.context.setPositions(
+                unit.Quantity(imaged_positions_nm, unit.nanometer)
+            )
         state = simulation.context.getState(
             getEnergy=True,
             getPositions=True,
             getVelocities=True,
-            enforcePeriodicBox=bool(box_dimensions),
+            enforcePeriodicBox=False,
         )
         energy_final_kj_mol = float(
             state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)

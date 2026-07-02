@@ -186,7 +186,7 @@ def build_openmm_system(
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
     minimize: bool = True,
-    minimize_max_iterations: int = 1000,
+    minimize_max_iterations: int = 10,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     job_dir: Optional[str] = None,
@@ -244,11 +244,13 @@ def build_openmm_system(
         minimize: Run a LocalEnergyMinimizer pass before serializing the
             state. Disable for debugging.
         minimize_max_iterations: L-BFGS iteration cap for the minimization
-            (default 1000; 0 = run to convergence). A single short pass
-            (the old default of 200) can leave freshly solvated systems at a
-            high positive potential energy when packing places close
-            contacts; ~1000 iterations relaxes them to a strongly negative
-            (physically settled) energy.
+            (default 10; 0 = run to convergence). This is intentionally a
+            short fail-fast pass: it only confirms the built System minimizes
+            with finite forces and settles the worst packing close contacts.
+            Full relaxation is the downstream ``min`` node's job, so the
+            build-time artifact may still sit at a mildly positive potential
+            energy. Raise this only if you want the artifact itself
+            pre-relaxed.
         output_name: Stem for the artifact file names.
         output_dir / job_dir / node_id: Standard mdclaw I/O knobs.
 
@@ -604,11 +606,38 @@ def build_openmm_system(
         )
         if minimize:
             simulation.minimizeEnergy(maxIterations=minimize_max_iterations)
+        if nonbonded_method == "PME":
+            # Re-image so the solute sits at the box center and solvent wraps
+            # around it, instead of OpenMM's corner-origin per-atom wrap that
+            # splits the solute across the boundary (a PyMOL/VMD artifact). A
+            # rigid translation is PBC-invariant, so energy/forces are unchanged.
+            from mdclaw.structure.imaging import center_solute_and_wrap_solvent
+
+            raw_state = simulation.context.getState(
+                getPositions=True, enforcePeriodicBox=False
+            )
+            box_vectors_nm = raw_state.getPeriodicBoxVectors(
+                asNumpy=True
+            ).value_in_unit(unit.nanometer)
+            box_lengths_nm = (
+                box_vectors_nm[0][0],
+                box_vectors_nm[1][1],
+                box_vectors_nm[2][2],
+            )
+            raw_positions_nm = raw_state.getPositions(asNumpy=True).value_in_unit(
+                unit.nanometer
+            )
+            imaged_positions_nm = center_solute_and_wrap_solvent(
+                modeller.topology, raw_positions_nm, box_lengths_nm
+            )
+            simulation.context.setPositions(
+                unit.Quantity(imaged_positions_nm, unit.nanometer)
+            )
         state = simulation.context.getState(
             getEnergy=True,
             getPositions=True,
             getVelocities=True,
-            enforcePeriodicBox=(nonbonded_method == "PME"),
+            enforcePeriodicBox=False,
         )
         energy_final_kj_mol = float(
             state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
