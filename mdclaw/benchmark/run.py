@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -1776,6 +1777,8 @@ def run_benchmark_agent(
     model_provider: str = "unknown",
     model_version: str = "",
     max_walltime_minutes_per_task: int = 30,
+    jobs: int = 1,
+    gpus: int = 0,
     require_validation_success: bool = True,
     summarize: bool = True,
     tooling_condition: str = "unknown",
@@ -1799,6 +1802,13 @@ def run_benchmark_agent(
     ablations. The default automated-agent timeout is 30 minutes per task;
     raise ``max_walltime_minutes_per_task`` for slow local MD or exploratory
     debugging runs.
+
+    ``jobs`` runs that many tasks concurrently within one run (default ``1`` =
+    sequential). All tasks write to disjoint ``run_dir/tasks/<task_id>`` dirs and
+    the run is scored once after every task finishes, so a parallel run yields
+    the same single ``summary.json`` as a sequential one. ``gpus`` (when > 0)
+    round-robins ``CUDA_VISIBLE_DEVICES`` across tasks by task index, so N
+    concurrent tasks land on N distinct GPUs.
 
     If ``agent_command`` is omitted, ``agent_profile`` selects a built-in
     command template. ``auto`` maps common ``agent_name`` values such as
@@ -1978,11 +1988,12 @@ def run_benchmark_agent(
         public_package_sha256=_directory_sha256(public_dir),
     )
 
-    task_records: list[dict[str, Any]] = []
-    agent_tasks: list[dict[str, Any]] = []
-    harness_tasks: list[dict[str, Any]] = []
-    for task_id in task_ids:
-        task_result = _run_one_benchmark_agent_task(
+    max_workers = max(1, int(jobs))
+    n_gpus = max(0, int(gpus))
+
+    def _run_indexed(index: int, task_id: str) -> tuple[int, dict[str, Any]]:
+        cuda = str(index % n_gpus) if n_gpus > 0 else None
+        return index, _run_one_benchmark_agent_task(
             run_id=run_id,
             run_dir=run_dir,
             solver_workspace=solver_workspace,
@@ -2000,10 +2011,26 @@ def run_benchmark_agent(
             mdclaw_cli_policy=mdclaw_cli_policy,
             mdclaw_runtime=resolved_mdclaw_runtime,
             agent_skills=agent_skills,
+            cuda_visible_devices=cuda,
         )
-        task_records.append(task_result)
-        agent_tasks.append(task_result["agent_instruction"])
-        harness_tasks.append(task_result["harness_instruction"])
+
+    results_by_index: dict[int, dict[str, Any]] = {}
+    if max_workers == 1:
+        for index, task_id in enumerate(task_ids):
+            _, results_by_index[index] = _run_indexed(index, task_id)
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(_run_indexed, index, task_id)
+                for index, task_id in enumerate(task_ids)
+            ]
+            for future in as_completed(futures):
+                index, task_result = future.result()
+                results_by_index[index] = task_result
+
+    task_records = [results_by_index[i] for i in range(len(task_ids))]
+    agent_tasks = [record["agent_instruction"] for record in task_records]
+    harness_tasks = [record["harness_instruction"] for record in task_records]
 
     _write_json(
         solver_workspace / "agent_tasks.json",
@@ -2128,6 +2155,7 @@ def _run_one_benchmark_agent_task(
     mdclaw_cli_policy: str,
     mdclaw_runtime: str,
     agent_skills: Optional[dict[str, Any]] = None,
+    cuda_visible_devices: Optional[str] = None,
 ) -> dict[str, Any]:
     solver_task_dir = solver_workspace / "tasks" / task_id
     solver_submission = solver_task_dir / "submission"
@@ -2234,7 +2262,9 @@ def _run_one_benchmark_agent_task(
         "task_id": task_id,
         "run_id": run_id,
         "run_dir": run_dir,
-        "agent_session_dir": run_dir / "agent_sessions" / agent_name,
+        # Per-task session dir so concurrent tasks of the same agent do not race
+        # on a shared agent_sessions/<agent_name> directory.
+        "agent_session_dir": run_dir / "agent_sessions" / agent_name / task_id,
         "agent_model": agent_model,
         "repo_root": _REPO_ROOT,
     }
@@ -2264,6 +2294,8 @@ def _run_one_benchmark_agent_task(
         + os.pathsep
         + run_env.get("PATH", "")
     )
+    if cuda_visible_devices is not None:
+        run_env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
 
     started_wall = time.monotonic()
     started_at = _now_utc()

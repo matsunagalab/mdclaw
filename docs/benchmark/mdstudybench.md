@@ -164,8 +164,10 @@ python benchmarks/tools/run_mdstudybench_all_agents.py \
 ```
 
 This wraps `mdclaw run_benchmark_agent` per agent (built-in agent profiles) and
-writes an operator summary. Smoke-test the wiring with `--dry-run` and a task
-subset (`--task-ids S01_stability_t4l_l99a`).
+writes an operator summary. It accepts the same `--jobs N` / `--gpus M`
+parallelism flags as the MDPrepBench wrapper (study tasks are long, so parallel
+GPUs help). Smoke-test the wiring with `--dry-run` and a task subset
+(`--task-ids S01_stability_t4l_l99a`).
 
 ### Time limits
 

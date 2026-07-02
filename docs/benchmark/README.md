@@ -150,22 +150,26 @@ By default, `pi`, `claude-code`, and `codex` select plain non-interactive
 profiles that read only the generated task prompt. Add `--agent-model <model>`
 for a model override, or pass `--agent-command` for a fully custom invocation.
 
-To run the full MDPrepBench suite for Pi, Claude Code, and Codex sequentially
-and score each run, use the operator script:
+To run the full MDPrepBench suite for Pi, Claude Code, and Codex and score each
+run, use the operator script:
 
 ```bash
 conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
   --output-dir benchmark_runs \
-  --run-id-prefix 20260613_mdprepbench_all
+  --run-id-prefix 20260613_mdprepbench_all \
+  --jobs 5 --gpus 4
 ```
 
 This creates three runs:
 `20260613_mdprepbench_all_pi`,
 `20260613_mdprepbench_all_claude_code`, and
 `20260613_mdprepbench_all_codex`, plus an
-`*_all_agents_operator_summary.json` file. Omit `--run-id-prefix` to use a
-timestamped prefix. For a quick command check without launching agents, add
-`--dry-run`; for smoke tests, add `--task-ids <task_id>`.
+`*_all_agents_operator_summary.json` file. `--jobs N` runs N tasks per agent
+concurrently and `--gpus M` (when > 0) round-robins `CUDA_VISIBLE_DEVICES`
+across them; both pass through to `mdclaw run_benchmark_agent`, which still
+scores each agent as one run. The agents themselves run sequentially. Omit
+`--run-id-prefix` to use a timestamped prefix. For a quick command check without
+launching agents, add `--dry-run`; for smoke tests, add `--task-ids <task_id>`.
 
 **2. Manual MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
 task, then score:

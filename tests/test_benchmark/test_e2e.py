@@ -317,6 +317,90 @@ _fake_submissions.GENERATORS[args.task_id](
     )
 
 
+def test_run_benchmark_agent_runs_tasks_in_parallel_and_pins_gpus(
+    tmp_path: Path,
+):
+    """jobs>1 scores every task in one run and gpus>0 pins CUDA per task."""
+    fake_agent = tmp_path / "fake_agent_parallel.py"
+    fake_agent.write_text(
+        """
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+work_dir = Path(os.environ["MDCLAW_BENCHMARK_WORK_DIR"])
+work_dir.mkdir(parents=True, exist_ok=True)
+(work_dir / "cuda.txt").write_text(os.environ.get("CUDA_VISIBLE_DEVICES", ""))
+
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+    task_ids = ["P01_prep_simple_monomer_t4l", TASK_ID]
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_parallel",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=task_ids,
+        agent_name="fake-agent",
+        agent_command=command,
+        agent_model="test-provider/test-model",
+        execution_mode="dry_run",
+        jobs=2,
+        gpus=2,
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    run_dir = output_dir / "agent_runner_parallel"
+    # Both tasks were run and scored in the single run.
+    assert result["task_count"] == 2
+    assert {t["task_id"] for t in result["tasks"]} == set(task_ids)
+    for task_id in task_ids:
+        assert (run_dir / "tasks" / task_id / "score.json").is_file()
+    assert (run_dir / "summary.json").is_file()
+
+    # gpus=2 round-robins CUDA_VISIBLE_DEVICES across the two tasks by index.
+    cuda_by_task = {
+        task_id: (
+            run_dir / "solver_workspace" / "tasks" / task_id / "work" / "cuda.txt"
+        ).read_text()
+        for task_id in task_ids
+    }
+    assert cuda_by_task[task_ids[0]] == "0"
+    assert cuda_by_task[task_ids[1]] == "1"
+
+
 def test_run_benchmark_agent_folds_solver_local_harness_jsonl(
     tmp_path: Path,
 ):

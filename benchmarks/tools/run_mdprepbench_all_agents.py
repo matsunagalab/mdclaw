@@ -103,6 +103,8 @@ def _build_command(
     judge_mode: str,
     max_walltime_minutes_per_task: int,
     mdclaw_cli_policy: str,
+    jobs: int,
+    gpus: int,
     agent_profile: str | None,
     agent_model: str | None,
 ) -> list[str]:
@@ -125,6 +127,10 @@ def _build_command(
         str(max_walltime_minutes_per_task),
         "--mdclaw-cli-policy",
         mdclaw_cli_policy,
+        "--jobs",
+        str(jobs),
+        "--gpus",
+        str(gpus),
     ]
     if task_ids:
         command.extend(["--task-ids", *task_ids])
@@ -218,6 +224,8 @@ def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, An
         "task_ids": args.task_ids or "all",
         "repeats": args.repeats,
         "max_walltime_minutes_per_task": args.max_walltime_minutes_per_task,
+        "jobs": args.jobs,
+        "gpus": args.gpus,
         "execution_mode": args.execution_mode,
         "judge_mode": args.judge_mode,
         "mdclaw_cmd": args.mdclaw_cmd,
@@ -291,6 +299,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-walltime-minutes-per-task", type=int, default=30)
     parser.add_argument("--mdclaw-cli-policy", default="forbid-without-skill")
     parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Tasks to run concurrently within each agent run. Default 1 (sequential).",
+    )
+    parser.add_argument(
+        "--gpus",
+        type=int,
+        default=0,
+        help="If > 0, round-robin CUDA_VISIBLE_DEVICES across concurrent tasks.",
+    )
+    parser.add_argument(
         "--mdclaw-cmd",
         default=os.environ.get("MDCLAW_BENCHMARK_MDCLAW_CMD", "mdclaw"),
         help='Command used to invoke MDClaw, e.g. "conda run -n mdclaw mdclaw".',
@@ -328,6 +348,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.repeats < 1:
         parser.error("--repeats must be >= 1")
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
+    if args.gpus < 0:
+        parser.error("--gpus must be >= 0")
 
     try:
         agent_profiles = _parse_agent_map(args.agent_profile, option_name="--agent-profile")
@@ -386,6 +410,8 @@ def main(argv: list[str] | None = None) -> int:
                 judge_mode=args.judge_mode,
                 max_walltime_minutes_per_task=args.max_walltime_minutes_per_task,
                 mdclaw_cli_policy=args.mdclaw_cli_policy,
+                jobs=args.jobs,
+                gpus=args.gpus,
                 agent_profile=agent_profiles.get(agent),
                 agent_model=agent_models.get(agent),
             )

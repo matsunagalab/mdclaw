@@ -56,6 +56,13 @@ The automated runner defaults to 30 minutes per task. Increase
 `--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
 runs.
 
+The runner is sequential by default. Pass `--jobs N` to run N tasks
+concurrently within one run; all tasks write to disjoint
+`run_dir/tasks/<task_id>` directories and the run is scored once after every
+task finishes, so a parallel run yields the same single `summary.json` as a
+sequential one. Add `--gpus M` (when > 0) to round-robin `CUDA_VISIBLE_DEVICES`
+across tasks by task index, so N concurrent tasks land on N distinct GPUs.
+
 Built-in profiles set explicit model flags by default: Pi uses
 `spark1-vllm/deepseek-v4-flash`, Claude Code uses `sonnet`, and Codex
 uses `gpt-5.4-mini`. Override this with `--agent-model <model>`; the resolved
