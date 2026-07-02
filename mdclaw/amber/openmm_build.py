@@ -334,13 +334,21 @@ from mdclaw.amber.topology_bonds import _patch_ligand_molecule_internal_bonds, _
 from mdclaw.amber.topology_validation import _build_topology_validation_report, _unique_messages  # noqa: E402
 
 
-_LIPID21_EXTERNAL_PAIR_KEYS = {
-    frozenset((("PC", "C11"), ("PA", "C12"))),
-    frozenset((("PE", "C11"), ("PA", "C12"))),
-    frozenset((("PC", "C21"), ("OL", "C12"))),
-    frozenset((("PE", "C21"), ("OL", "C12"))),
+# Lipid21 builds each glycerophospholipid from a head-group residue plus two
+# acyl-tail residues. The head group dangles two external bonds (``C11`` for the
+# sn-1 tail, ``C21`` for the sn-2 tail), and every acyl tail dangles one
+# external bond from its ``C12``. A valid inter-residue lipid bond therefore
+# connects a head-group link atom to a tail link atom, regardless of which
+# specific acyl tail sits at sn-1/sn-2. Enumerating only the POPC/POPE
+# combinations (PA at sn-1, OL at sn-2) wrongly rejected single-tail-type
+# lipids such as DPPC (PA/PA), DOPC (OL/OL) and PG/PS head groups.
+_LIPID21_HEAD_RESNAMES = {"PC", "PE", "PGR", "PS", "PH-", "PA-"}
+_LIPID21_HEAD_LINK_ATOMS = {"C11", "C21"}
+_LIPID21_TAIL_RESNAMES = {
+    "PA", "OL", "ST", "MY", "LAL", "DHA", "AR", "SA", "LEO", "LEN"
 }
-_LIPID21_EXTERNAL_RESNAMES = {"PC", "PE", "PA", "OL"}
+_LIPID21_TAIL_LINK_ATOMS = {"C12"}
+_LIPID21_EXTERNAL_RESNAMES = _LIPID21_HEAD_RESNAMES | _LIPID21_TAIL_RESNAMES
 _LIPID21_MODULAR_RESNAMES = _LIPID21_EXTERNAL_RESNAMES | {"CHL"}
 _LIPID21_FULL_RESNAMES = {"POPC", "POPE", "CHL1"}
 
@@ -400,7 +408,25 @@ def _lipid21_external_pair_allowed(atom_a: Any, atom_b: Any) -> bool:
         return True
     if key_a is None or key_b is None:
         return False
-    return frozenset((key_a, key_b)) in _LIPID21_EXTERNAL_PAIR_KEYS
+    return _lipid21_head_tail_link(key_a, key_b) or _lipid21_head_tail_link(key_b, key_a)
+
+
+def _lipid21_head_tail_link(
+    head_key: tuple[str, str], tail_key: tuple[str, str]
+) -> bool:
+    """Return whether ``head_key`` -> ``tail_key`` is a valid lipid21 link.
+
+    A glycerophospholipid head group bonds each of its sn-1/sn-2 glycerol
+    carbons (``C11``/``C21``) to an acyl tail's ``C12``. Any acyl tail may sit
+    at either position, so the rule is structural rather than an enumeration of
+    specific head/tail residue pairs.
+    """
+    return (
+        head_key[0] in _LIPID21_HEAD_RESNAMES
+        and head_key[1] in _LIPID21_HEAD_LINK_ATOMS
+        and tail_key[0] in _LIPID21_TAIL_RESNAMES
+        and tail_key[1] in _LIPID21_TAIL_LINK_ATOMS
+    )
 
 
 def _same_residue_identity(atom_a: Any, atom_b: Any) -> bool:
