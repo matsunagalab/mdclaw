@@ -1750,6 +1750,13 @@ def prepare_complex(
             result["overall_status"] = "success"
         elif proteins_ok and not ligands_ok:
             result["overall_status"] = "completed_with_blocking_ligand_failure"
+            # A protein-only artifact was produced; the only failure is ligand
+            # chemistry. Stamp a stable code so the error contract does not
+            # flatten this into the generic ``unhandled_error`` ("fix and
+            # retry") advice, which is wrong here: the agent must instead follow
+            # workflow_recommendation.options (provide SMILES, exclude, stop).
+            if not result.get("code"):
+                result["code"] = "blocking_ligand_failure"
         else:
             result["overall_status"] = "failed"
 

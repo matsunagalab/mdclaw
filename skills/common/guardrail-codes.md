@@ -17,6 +17,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `analyze_requires_parent` | analyze needs a parent node; create it with a valid parent. |
 | `associated_ligand_chain_auto_included` | An associated ligand chain was auto-included; confirm intent. |
 | `associated_ligands_require_selection` | Select ligands explicitly with --include-ligand-resnames or the recommended IDs. |
+| `blocking_ligand_failure` | Ligand chemistry failed but a protein-only artifact exists; follow workflow_recommendation.options (provide SMILES, exclude the ligand, or stop). Do not blindly retry. |
 | `boltz_affinity_requires_ligand` | Provide a ligand SMILES or omit --affinity. |
 | `boltz_backend_not_installed` | Install the isolated Boltz-2 backend venv: `mdclaw setup_model_backend --model boltz --device cuda`. |
 | `boltz_chain_count_exceeded` | Reduce protein/ligand chains or split the prediction. |

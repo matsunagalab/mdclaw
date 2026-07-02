@@ -97,6 +97,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "associated_ligand_chain_auto_included": "An associated ligand chain was auto-included; confirm intent.",
     "associated_ligands_require_selection": "Select ligands explicitly with --include-ligand-resnames or the recommended IDs.",
     "unparametrizable_ligand_selected": "Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand.",
+    "blocking_ligand_failure": "Ligand chemistry failed but a protein-only artifact exists; follow workflow_recommendation.options (provide SMILES, exclude the ligand, or stop). Do not blindly retry.",
     "empty_ligand_resname_selection": "Provide at least one ligand resname or drop ligand from --include-types.",
     "requested_ligand_ids_not_found": "Requested ligand IDs are absent; use IDs from ligand_selection.",
     "requested_ligand_resnames_not_found": "Requested ligand resnames are absent in the structure.",

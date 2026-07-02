@@ -96,13 +96,26 @@ topology and ligand partial charges.
 If ligand chemistry preparation returns a blocking structured result, do not
 retry the same command. Follow `workflow_recommendation.options`.
 
+When a ligand fails chemistry but the protein/nucleic/glycan side succeeded,
+`prepare_complex` returns `overall_status="completed_with_blocking_ligand_failure"`
+with `code="blocking_ligand_failure"` and a protein-only `merged_pdb`. This is
+**not** an `unhandled_error`: do not "fix and retry" the same command. Branch on
+`workflow_recommendation.options` — provide the ligand SMILES/SDF and rerun a new
+prep node, exclude the ligand (`ligand` omitted from `--include-types`) and
+continue protein-only, or stop. A common trigger is a crystallization additive
+(e.g. `EOH`, `GOL`) that has no CCD/SMILES match and cannot be templated; the
+right move is almost always to exclude it.
+
 `prepare_complex` preflights the retained ligands against a curated additive
 list. Placeholder residues (`UNX`/`UNL`/`UNK`) have no chemistry and block with
 `code="unparametrizable_ligand_selected"`; follow
 `workflow_recommendation.options` (drop `ligand`, or name the real target).
-Known additives/buffers (glycerol, PEG, sulfate, ...) do not block but populate
-`warnings` and `likely_additive_ligands`; rerun with `ligand` omitted from
-`--include-types` unless the additive is intentional.
+Known additives/buffers (glycerol, PEG, sulfate, ...) do not block the preflight
+but populate `warnings` and `likely_additive_ligands`. If you keep them anyway
+and their chemistry cannot be resolved, the run ends in
+`code="blocking_ligand_failure"` (above). Rerun with `ligand` omitted from
+`--include-types` unless the additive is intentional and you can supply its
+chemistry.
 
 After `prepare_complex` succeeds, verify the completed node before solvation:
 

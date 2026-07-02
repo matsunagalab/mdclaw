@@ -8,6 +8,7 @@
   "analyze_requires_parent",
   "associated_ligand_chain_auto_included",
   "associated_ligands_require_selection",
+  "blocking_ligand_failure",
   "boltz_affinity_requires_ligand",
   "boltz_backend_not_installed",
   "boltz_chain_count_exceeded",

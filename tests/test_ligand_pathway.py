@@ -338,6 +338,11 @@ class TestPrepareComplexWorkflowStatus:
         assert result["overall_status"] == "completed_with_blocking_ligand_failure"
         assert result["protein_preparation_success"] is True
         assert result["ligand_preparation_success"] is False
+        # A protein-only artifact exists, so the error contract must not flatten
+        # this into the generic ``unhandled_error`` ("fix and retry") advice.
+        # It must carry the dedicated ``blocking_ligand_failure`` code so the
+        # agent branches to workflow_recommendation.options instead.
+        assert result["code"] == "blocking_ligand_failure"
         recommendation = result.get("workflow_recommendation")
         assert recommendation is not None
         assert recommendation["blocking_ligands"][0]["ligand_id"] == "AP5"
