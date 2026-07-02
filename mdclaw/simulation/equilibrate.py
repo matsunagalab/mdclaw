@@ -14,6 +14,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -37,6 +38,7 @@ from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_s
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
+@node_tool
 def run_equilibration(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,

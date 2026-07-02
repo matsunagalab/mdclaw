@@ -575,6 +575,54 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
     return {"success": True, "node_id": node_id, "status": canonical_status}
 
 
+def update_workflow_state(
+    job_dir: str,
+    node_id: Optional[str] = None,
+    status: Optional[str] = None,
+    params: Optional[dict] = None,
+) -> dict:
+    """Update node status and/or job-level params in one tool.
+
+    Consolidates the former ``update_node_status`` (per-node status) and
+    ``update_job_params`` (job-level params, e.g. ``execution_mode``) tools:
+
+    - Pass ``node_id`` + ``status`` to set a node's status.
+    - Pass ``params`` to merge job-level params.
+    - Both may be given together; at least one target is required.
+    """
+    if status is None and params is None:
+        return {
+            "success": False,
+            "code": "update_state_no_target",
+            "errors": ["Provide status (with node_id) and/or params."],
+            "warnings": [],
+        }
+
+    result: dict = {"success": True, "warnings": [], "errors": []}
+
+    if status is not None:
+        if not node_id:
+            return {
+                "success": False,
+                "code": "update_state_status_requires_node_id",
+                "errors": ["status requires node_id."],
+                "warnings": [],
+            }
+        status_result = update_node_status(job_dir, node_id, status)
+        result["status_result"] = status_result
+        if not status_result.get("success"):
+            return status_result
+
+    if params is not None:
+        from mdclaw.node.progress import update_job_params
+        params_result = update_job_params(job_dir, params)
+        result["params_result"] = params_result
+        if not params_result.get("success", True):
+            return params_result
+
+    return result
+
+
 def claim_node(
     job_dir: str,
     node_id: str,

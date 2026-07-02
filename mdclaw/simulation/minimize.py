@@ -14,6 +14,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -37,6 +38,7 @@ from mdclaw.simulation.restart import _save_state_atomic  # noqa: E402
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
+@node_tool
 def run_minimization(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,

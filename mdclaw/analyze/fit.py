@@ -17,11 +17,13 @@ from mdclaw._common import (
     ensure_directory,
     setup_logger,
 )
+from mdclaw._tool_meta import node_tool
 from mdclaw.analyze.inputs import _rel_to_node_root, _resolve_analyze_branches, _resolve_analyze_parent_inputs, _stream_dcd_chunks
 
 logger = setup_logger(__name__)
 
 
+@node_tool
 def fit_trajectory(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,

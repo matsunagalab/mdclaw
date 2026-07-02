@@ -49,10 +49,12 @@ logger = setup_logger(__name__)
 WORKING_DIR = Path("outputs")
 ensure_directory(WORKING_DIR)
 
+from mdclaw._tool_meta import node_tool  # noqa: E402
 from mdclaw.research.fetch import _fetch_local_structure  # noqa: E402
 from mdclaw.research.source_core import _resolve_source_bundle_file  # noqa: E402
 
 
+@node_tool
 def register_local_structure(
     file_path: str,
     job_dir: str,

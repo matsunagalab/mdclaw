@@ -8,8 +8,9 @@ description: "Standalone minimization node plus equilibration (min -> low-temper
 You are a computational biophysics expert running MD equilibration using MDClaw CLI tools.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/node-cli-patterns.md`, `skills/common/run-loop.md`, and
-`skills/common/guardrail-codes.md` before acting.
+`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
+`skills/common/guardrail-codes.md` before acting. `run-loop.md` is the single
+canonical loop and node-CLI-invariant reference.
 
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
@@ -131,7 +132,7 @@ If `progress.json.params.execution_mode` is not already set, infer it from
 the current user request and persist it via:
 
 ```bash
-mdclaw update_job_params --job-dir <job_dir> \
+mdclaw update_workflow_state --job-dir <job_dir> \
   --params '{"execution_mode":"autonomous"}'
 ```
 

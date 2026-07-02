@@ -8,7 +8,8 @@ description: "AI-driven protein structure prediction using Boltz-2 for single pr
 You are a computational biophysics expert helping users predict protein structures using Boltz-2.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/node-cli-patterns.md` before acting.
+`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
+reference) before acting.
 
 ## Prediction Modes
 

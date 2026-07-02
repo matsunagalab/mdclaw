@@ -289,8 +289,13 @@ skill examples.
   diagnosis. Reads `metadata.errors`, the latest failure artifact, recent
   events, and parent/dependency status, then returns `recovery_options` and
   `next_commands` for explicit branch creation.
-- `update_job_params(...)`: merge workflow-level metadata into `progress.json`.
-- `update_node_status(...)`: synchronized node and progress status update path.
+- `update_workflow_state(...)`: unified writer for node status (`--node-id` +
+  `--status`) and/or job-level params (`--params`, e.g. `execution_mode`). Merges
+  the former `update_node_status` and `update_job_params` tools; the underlying
+  `update_node_status` / `update_job_params` functions remain importable.
+- `manage_node_need(...)`: manage a node's open needs behind an `--action`
+  selector (`add` / `clear` / `record_attempt`). Merges the former
+  `add_node_need` / `clear_node_need` / `record_node_need_attempt` tools.
 
 ## `study_server.py`
 
@@ -304,8 +309,10 @@ skill examples.
 - `record_study_plan(...)`, `get_study_plan(...)`, `list_study_plans(...)`:
   persist and inspect a lightweight scientific-question-to-MD-plan record. The
   plan is study-level intent only; job DAGs remain the execution source of truth.
-- `record_study_decision(...)`, `record_study_question(...)`,
-  `record_token_usage(...)`: append study-level JSONL logs.
+- `record_study_log(...)`: append study-level JSONL logs behind a
+  `--record-type` selector (`decision` / `question` / `token_usage`). Merges the
+  former `record_study_decision` / `record_study_question` / `record_token_usage`
+  tools.
 
 ## `evidence_server.py`
 

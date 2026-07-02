@@ -1,35 +1,15 @@
 # Explicit Water: Solvation & Topology
 
-## Decision Defaults
+Solvent-regime mapping, the explicit-water constant defaults (`ff19SB + opc`,
+15 Å buffer, 0.15 M salt, box/HMR), the `ff19SB + tip3p` guardrail, the
+supported-ion policy, and the local-run/platform preflight all live in
+`skills/common/solvent-regimes.md`. Read it once; this page only covers the
+prepare-stage solvation and topology steps.
 
-Quick reference only; Python tool signatures and guardrails are authoritative.
-
-| Parameter | Default | User Cues |
-|---|---|---|
-| Water model | OPC | "tip3p", "spce" |
-| Buffer size | 15 Å | "buffer 20", "20A" |
-| Salt concentration | 0.15 M NaCl | "0.3M", "no salt" |
-| Cubic box | true | "octahedral", "truncated octahedron" |
-| Force field | ff19SB | "ff14SB" |
-
-**Standard explicit-water pair**: default to `ff19SB + opc`. This pair is
-the Amber Manual 2024 recommendation — ff19SB was parameterized against
-OPC and behaves incorrectly with TIP3P (guardrail rejects this
-combination). Use `ff14SB + tip3p` only to reproduce pre-2019 results.
-
-Prepare-time details (source acquisition, inspection, chain/ligand
-selection, metals, PTMs, mutations, and confirmation policy) live in
-`setup.md` and apply identically for explicit and implicit solvent.
-
-Supported crystallographic ions are part of the explicit-solvent default: keep
-ions requested by the user or detected as supported source ions during
-`prepare_complex`, then solvate with the requested/default salt concentration.
-Do not call `parameterize_metal_ion` for common supported monatomic ions such
-as CA, MG, NA, K, or CL unless a structured tool result reports missing or
-coordination-specific metal parameters.
-Do not relabel an ion-containing non-periodic topology as implicit; explicit
-ions require either the explicit-solvent path or a deliberate vacuum/no-solvent
-topology.
+Prepare-time details (source acquisition, inspection, chain/ligand selection,
+metals, PTMs, mutations, and confirmation policy) live in `setup.md` and apply
+identically for explicit and implicit solvent. Continue here only after a
+completed `prep` node exists.
 
 ---
 

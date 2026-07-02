@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from mdclaw._common import ensure_directory, setup_logger
+from mdclaw._tool_meta import job_dir_data_tool
 from mdclaw._lock import file_lock
 from mdclaw.node.progress import update_job_params
 
@@ -472,6 +473,7 @@ def bootstrap_md_workflow(
         return result
 
 
+@job_dir_data_tool
 def add_study_job(
     study_dir: str,
     job_id: str,
@@ -666,6 +668,108 @@ def record_token_usage(
             "agent_id": agent_id,
             "metadata": metadata or {},
         },
+    )
+
+
+_STUDY_RECORD_TYPES = ("decision", "question", "token_usage")
+_STUDY_RECORD_REQUIRED_FIELDS = {
+    "decision": ("phase", "decision", "reason"),
+    "question": ("question",),
+    "token_usage": ("phase", "purpose", "tokens"),
+}
+
+
+def record_study_log(
+    study_dir: str,
+    record_type: str,
+    agent_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    phase: Optional[str] = None,
+    decision: Optional[str] = None,
+    reason: Optional[str] = None,
+    inputs: Optional[list[str]] = None,
+    outputs: Optional[list[str]] = None,
+    question: Optional[str] = None,
+    status: str = "active",
+    parent_question_id: Optional[str] = None,
+    rationale: Optional[str] = None,
+    purpose: Optional[str] = None,
+    tokens: Optional[int] = None,
+    result: Optional[str] = None,
+) -> dict:
+    """Append one harness-independent study log record.
+
+    Consolidates the former ``record_study_decision`` / ``record_study_question``
+    / ``record_token_usage`` tools behind a single ``record_type`` selector so
+    the agent-facing tool surface stays small. ``record_type`` chooses the log
+    file and the required fields:
+
+    - ``decision``: requires ``phase``, ``decision``, ``reason``.
+    - ``question``: requires ``question``.
+    - ``token_usage``: requires ``phase``, ``purpose``, ``tokens``.
+    """
+    if record_type not in _STUDY_RECORD_TYPES:
+        return {
+            "success": False,
+            "code": "invalid_study_record_type",
+            "errors": [
+                f"record_type must be one of {list(_STUDY_RECORD_TYPES)}, got {record_type!r}"
+            ],
+            "warnings": [],
+        }
+
+    local_values = {
+        "phase": phase,
+        "decision": decision,
+        "reason": reason,
+        "question": question,
+        "purpose": purpose,
+        "tokens": tokens,
+    }
+    missing = [
+        field
+        for field in _STUDY_RECORD_REQUIRED_FIELDS[record_type]
+        if local_values.get(field) is None
+    ]
+    if missing:
+        return {
+            "success": False,
+            "code": "study_record_fields_missing",
+            "errors": [
+                f"record_type={record_type} requires: {', '.join(missing)}"
+            ],
+            "warnings": [],
+        }
+
+    if record_type == "decision":
+        return record_study_decision(
+            study_dir,
+            phase=phase,
+            decision=decision,
+            reason=reason,
+            inputs=inputs,
+            outputs=outputs,
+            agent_id=agent_id,
+            metadata=metadata,
+        )
+    if record_type == "question":
+        return record_study_question(
+            study_dir,
+            question=question,
+            status=status,
+            parent_question_id=parent_question_id,
+            rationale=rationale,
+            agent_id=agent_id,
+            metadata=metadata,
+        )
+    return record_token_usage(
+        study_dir,
+        phase=phase,
+        purpose=purpose,
+        tokens=int(tokens),
+        result=result,
+        agent_id=agent_id,
+        metadata=metadata,
     )
 
 
@@ -878,11 +982,9 @@ TOOLS = {
     "bootstrap_md_workflow": bootstrap_md_workflow,
     "add_study_job": add_study_job,
     "list_study_jobs": list_study_jobs,
-    "record_study_decision": record_study_decision,
-    "record_study_question": record_study_question,
+    "record_study_log": record_study_log,
     "record_study_plan": record_study_plan,
     "get_study_plan": get_study_plan,
     "list_study_plans": list_study_plans,
-    "record_token_usage": record_token_usage,
     "summarize_study": summarize_study,
 }

@@ -15,7 +15,7 @@ Loop:
 5. Use per-node `submit_job` plus dependencies for heterogeneous systems or
    expected upstream failures.
 6. Monitor with `list_tracked_jobs --sync --job-dir <job_dir>` per job.
-7. Record scientific or operational decisions with `record_study_decision`.
+7. Record scientific or operational decisions with `record_study_log --record-type decision`.
 
 Keep SLURM state in each job's node metadata. The study is an index, not a
 replacement for per-system DAG state.

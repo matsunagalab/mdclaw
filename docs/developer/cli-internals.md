@@ -56,9 +56,17 @@ Global `--job-dir` and `--node-id` flags provide schema v3 state tracking.
 Workflow tools require both flags. The CLI injects them into tool kwargs before
 execution.
 
+Which tools require node context is declared on the tool functions themselves
+via the `@node_tool` decorator (`mdclaw/_tool_meta.py`), not a hand-maintained
+list. `_discover_tools()` reads that marker into each tool's `requires_node`
+flag (also surfaced by `--list-json`). The module-level
+`_NODE_REQUIRED_TOOLS` / `_JOB_DIR_DATA_TOOLS` names in `mdclaw/_cli.py` are
+computed on access from the decorators for backward compatibility.
+
 `add_study_job` is intentionally excluded because its `job_dir` argument is data
 registered under a `study_dir`; relative paths such as `jobs/wt` must remain
-relative to the study.
+relative to the study. It carries the `@job_dir_data_tool` marker so the CLI
+treats `job_dir` as data rather than execution context.
 
 ## Structured Preflight Errors
 
@@ -68,8 +76,10 @@ stable `code`:
 
 - `missing_required_arguments`: a required tool flag was omitted.
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
-- `node_context_required`: a workflow tool (`_NODE_REQUIRED_TOOLS`) ran without
-  both `--job-dir` and `--node-id`.
+- `node_context_required`: a node-required workflow tool (one marked with
+  `@node_tool`) ran without both `--job-dir` and `--node-id`.
+- `tool_renamed`: a consolidated/renamed tool name was invoked; the message and
+  `context.replacement` name the current tool.
 
 ## Recovery Hint Envelope
 

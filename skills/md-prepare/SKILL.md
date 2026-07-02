@@ -8,14 +8,14 @@ description: "Molecular dynamics simulation preparation using MDClaw CLI tools. 
 You are a computational biophysics expert helping users set up MD simulations using the MDClaw CLI tools.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/defaults.md`, `skills/common/node-cli-patterns.md`,
-`skills/common/run-loop.md`, `skills/common/autonomous-checklist.md`, and
+`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
 `skills/common/guardrail-codes.md` before acting.
 
-`skills/common/run-loop.md` is the per-step loop: inspect the job DAG, create
-the node for the current stage, validate it with `explain_node`, then run the
-tool with node context. Use IDs returned by `inspect_job`, `explain_node`, and
-`create_node`, never literal example IDs.
+`skills/common/run-loop.md` is the single canonical loop (it now also carries
+the node-CLI invariants and the explicit-water/resume checklists): inspect the
+job DAG, create the node for the current stage, validate it with `explain_node`,
+then run the tool with node context. Use IDs returned by `inspect_job`,
+`explain_node`, and `create_node`, never literal example IDs.
 
 ## Defaults — Source of Truth
 
@@ -107,7 +107,7 @@ use the HPacker-based `create_mutated_structure` branch in
    - Persistence to `progress.json` normally happens in
      `bootstrap_md_workflow`. If you are repairing an older study, write it via:
      ```bash
-     mdclaw update_job_params --job-dir <job_dir> \
+     mdclaw update_workflow_state --job-dir <job_dir> \
        --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
      ```
 3. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
@@ -117,8 +117,8 @@ use the HPacker-based `create_mutated_structure` branch in
    open only the task-specific guidance pages tagged by `setup.md`.
 4. Determine the effective `solvent_regime` from the study plan / job params.
    Then read the matching guidance page. If the current job lacks
-   `solvent_regime`, repair the bootstrap with `update_job_params` before
-   running `prepare_complex`.
+   `solvent_regime`, repair the bootstrap with `update_workflow_state --params ...`
+   before running `prepare_complex`.
 5. **Read the solvation-specific guidance page** — required before stating
    any forcefield / water / box default to the user:
    - Explicit water (default) → `skills/md-prepare/explicit-water.md`
@@ -174,14 +174,14 @@ use the HPacker-based `create_mutated_structure` branch in
    When creating the `topo` node, use the correct completed parent node and let
    `build_amber_system` auto-resolve its input; do not supply a free-standing
    `--pdb-file` or re-enter the workflow from a raw PDB.
-7. After each completed structural node where human inspection is useful
+8. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), perform Visual QA per
    `skills/common/visual-qa.md` and register it with `register_visual_review`.
    Visual QA is only an obvious-accident check; never infer force-field,
    protonation, parameter, or chemistry correctness from the image. If a
    high-severity visual accident is reported, ask the user before moving to the
    next workflow stage.
-8. After the `topo` node completes, hand off to the equilibration skill on the
+9. After the `topo` node completes, hand off to the equilibration skill on the
    same `job_dir` (use the node id from `create_node`, not a literal copied
    from an example). In harnesses with slash commands, `/md-equilibration` is the
    shortcut. This skill does not auto-chain into equilibration — each stage is

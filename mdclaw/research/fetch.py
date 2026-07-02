@@ -53,6 +53,7 @@ logger = setup_logger(__name__)
 WORKING_DIR = Path("outputs")
 ensure_directory(WORKING_DIR)
 
+from mdclaw._tool_meta import node_tool  # noqa: E402
 from mdclaw.research.pdb_client import _fetch_pdb_structure  # noqa: E402
 from mdclaw.research.source_core import _complete_source_node, _resolve_source_artifacts_dir, _source_bundle_inputs_with_assemblies, _validate_source_node  # noqa: E402
 
@@ -336,6 +337,7 @@ def _fetch_local_structure(
     return result
 
 
+@node_tool
 async def fetch_structure(
     source: str,
     pdb_id: Optional[str] = None,
@@ -498,6 +500,7 @@ async def fetch_structure(
     return result
 
 
+@node_tool
 async def download_structure(
     pdb_id: str,
     format: str = "cif",
@@ -519,6 +522,7 @@ async def download_structure(
     )
 
 
+@node_tool
 async def get_alphafold_structure(
     uniprot_id: str,
     format: str = "pdb",

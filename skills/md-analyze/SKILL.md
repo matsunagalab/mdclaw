@@ -5,8 +5,9 @@ description: "Molecular dynamics trajectory analysis using MDClaw CLI tools. Rou
 
 # MD Analyze
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/node-cli-patterns.md`, and `skills/common/run-loop.md` before
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
+`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
+reference) before
 acting. Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
 and identify the production or analysis node(s) that answer the analysis
 question.

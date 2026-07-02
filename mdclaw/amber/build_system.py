@@ -30,6 +30,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -147,6 +148,7 @@ def _resolve_build_amber_node_inputs(
     }
 
 
+@node_tool
 def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_chemistry: Optional[List[Dict[str, Any]]] = None,

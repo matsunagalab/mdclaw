@@ -6,7 +6,8 @@ description: "SLURM-based HPC submission for MDClaw workflow nodes. Handles clus
 # HPC Run Skill
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
-`skills/common/node-cli-patterns.md` before acting.
+`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
+reference) before acting.
 
 Use this skill when the user wants to run equilibration or production nodes on
 SLURM, submit multiple replicates or systems, monitor/recover jobs, configure

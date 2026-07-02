@@ -117,22 +117,28 @@ class TestImportServers:
         assert "run_minimization" in TOOLS
         assert callable(TOOLS["run_minimization"])
 
-    def test_node_server_exposes_update_node_status(self):
-        """Batch workflows depend on `mdclaw update_node_status` being a
-        CLI-registered tool so that status edits stay consistent across
-        node.json and the progress.json index."""
+    def test_node_server_exposes_update_workflow_state(self):
+        """Batch workflows depend on `mdclaw update_workflow_state` being a
+        CLI-registered tool so that status and job-param edits stay consistent
+        across node.json and the progress.json index. It consolidates the
+        former update_node_status and update_job_params tools."""
         from mdclaw.node_server import TOOLS
 
-        assert "update_node_status" in TOOLS
-        assert callable(TOOLS["update_node_status"])
+        assert "update_workflow_state" in TOOLS
+        assert callable(TOOLS["update_workflow_state"])
+        # The merged tool replaced these; they must not linger on the surface.
+        assert "update_node_status" not in TOOLS
+        assert "update_job_params" not in TOOLS
 
-    def test_node_server_exposes_update_job_params(self):
-        """Mode persistence relies on a CLI-registered tool that writes
-        progress.json.params without hand-editing job state."""
+    def test_node_server_exposes_manage_node_need(self):
+        """Open-need management is consolidated behind manage_node_need."""
         from mdclaw.node_server import TOOLS
 
-        assert "update_job_params" in TOOLS
-        assert callable(TOOLS["update_job_params"])
+        assert "manage_node_need" in TOOLS
+        assert callable(TOOLS["manage_node_need"])
+        assert "add_node_need" not in TOOLS
+        assert "clear_node_need" not in TOOLS
+        assert "record_node_need_attempt" not in TOOLS
 
     def test_node_server_exposes_read_only_inspection_tools(self):
         """Weak-agent re-entry uses read-only node inspection tools."""

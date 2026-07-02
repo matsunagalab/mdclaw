@@ -8,9 +8,9 @@ description: "Study-level planning for MDClaw. Turns scientific questions into a
 You are a computational biophysics expert helping users turn scientific
 questions into MDClaw studies.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/node-cli-patterns.md`, and
-`skills/common/autonomous-checklist.md` before acting.
+Read `skills/common/preamble.md`, `skills/common/tool-output.md`, and
+`skills/common/run-loop.md` (the single canonical loop and node-CLI-invariant
+reference) before acting.
 
 ## When To Use This Skill
 
@@ -202,89 +202,13 @@ skipped.
 
 ## Compute Budget
 
-Always record a `budget` block so MD length is never left undetermined. If the
-user named GPUs, wall time, queues, or an ns budget, parse that; if a harness
-imposes a per-task time limit (e.g. a benchmark prompt), use that limit;
-otherwise **default to ~1 day of wall time on 1 local GPU**
-(`compute_target: "local"`, `gpu_count: 1`, `wall_time_hours: 24`,
-`notes: "default assumption; no budget stated"`). Do not auto-detect compute via
-`inspect_openmm_platforms`/`inspect_cluster` (those stay out of `md-study`).
-Then, before recording the plan:
-
-1. **Parse from the user's request** into a working budget object:
-   - `compute_target`: one of `local`, `hpc`, `none`.
-   - `gpu_type`: free-text GPU label (`"A100"`, `"RTX 4090"`, `"H100 PCIe"`,
-     `"M2 Max"`, etc.). May be `null` if the user said CPU only.
-   - `gpu_count`: positive integer; default `1` when the user said
-     "an A100" without naming a count.
-   - `wall_time_hours`: total wall-clock budget the user authorized.
-   - `notes`: free-text echo of what the user said (e.g. "RIKEN GPU
-     partition, 7-day max").
-2. **Estimate throughput** with the dedicated tool. Use a coarse
-   pre-prepare atom-count estimate from the planned system:
-   `atoms ≈ protein_residues * 130` for explicit-water OPC, or a tighter
-   number if the user provided one. Then:
-
-   ```bash
-   mdclaw estimate_md_throughput \
-     --atom-count <est_atoms> \
-     --gpu-type "<gpu_type>"
-   ```
-
-   Capture `ns_per_day`, `source`, and `confidence` from the JSON. Carry
-   `confidence` through — do not upgrade it.
-
-3. **Derive a feasible (replicates × length) plan** that fits the budget
-   with 15 % headroom:
-
-   - `usable_gpu_hours = wall_time_hours * gpu_count * 0.85`
-   - `total_simulation_ns = ns_per_day * usable_gpu_hours / 24`
-   - Split `total_simulation_ns` across the planned jobs, choosing
-     `target_replicates_per_job` and `target_ns_per_replicate` that match
-     the scientific design (typically ≥ 2 replicates per job; trim
-     replicates before trimming length).
-   - `expected_wallclock_hours = (total_simulation_ns / ns_per_day) * 24
-     / gpu_count`
-   - `headroom_hours = wall_time_hours - expected_wallclock_hours`
-
-4. **Tier the plan to the budget.** If `total_simulation_ns >= 50 * len(jobs)`,
-   plan research-scale replicates × length as above. If it is smaller (a short
-   benchmark-style budget), drop to a **consistency-evidence** tier: plan the
-   longest feasible run down to ~1 ns per replicate, set
-   `"evidence_tier": "consistency"` in `derived`, and note in `budget.notes`
-   that this is local consistency evidence, not a converged free energy. Only
-   prefix `"INSUFFICIENT_BUDGET: "` when the budget cannot fit even ~1 ns per
-   job, and surface the gap so the user can raise the budget or drop a job.
-
-5. **Record** the budget block on `study_plan.json`:
-
-   ```json
-   "budget": {
-     "compute_target": "hpc",
-     "gpu_type": "A100",
-     "gpu_count": 1,
-     "wall_time_hours": 168.0,
-     "notes": "RIKEN GPU partition, 7-day max",
-     "throughput": {
-       "ns_per_day_per_gpu": 870.0,
-       "source": "estimate_md_throughput",
-       "confidence": "medium"
-     },
-     "derived": {
-       "target_ns_per_replicate": 500,
-       "target_replicates_per_job": 3,
-       "total_simulation_ns": 3000,
-       "expected_wallclock_hours": 82.8,
-       "headroom_hours": 85.2
-     }
-   }
-   ```
-
-The `budget` block is intent + derivation. Downstream skills
-(`md-prepare`, `md-equilibration`, `md-production`, `hpc-run`) do
-**not** read it as a contract today — they continue to take their own
-parameters. The block exists so that the planner's reasoning stays
-attached to the study and is auditable when results come back.
+When the user mentions compute (GPUs, wall time, queues, or an ns budget), or a
+harness imposes a per-task time limit, record a `budget` block on
+`study_plan.json`. Otherwise omit the `budget` key but still fix MD length via
+the default assumption (~1 day on 1 local GPU). The full parse → estimate →
+derive → tier → record procedure and JSON schema live in
+`skills/md-study/compute-budget.md`; follow it whenever this step applies. Do not
+auto-detect compute via `inspect_openmm_platforms` / `inspect_cluster`.
 
 ## Workflow
 
@@ -313,16 +237,16 @@ attached to the study and is auditable when results come back.
 8. Propose a short analysis list tied to the question. Avoid long generic
    metric catalogs.
 9. State decision criteria for support, against, and inconclusive outcomes.
-9.5. **Compute budget (only if the user mentioned compute).** Follow the
-   "Compute Budget" section above: parse the user-stated budget, call
-   `estimate_md_throughput`, derive `(replicates × length)` with 15 %
-   headroom, run the INSUFFICIENT_BUDGET guardrail, and stage the
-   `budget` block for inclusion in the plan JSON. If the user did not
-   mention compute, skip this step and omit the `budget` block.
-10. **HIL only**: confirm the restated question, solvent regime, jobs, analysis, and decision
+10. **Compute budget (only if the user mentioned compute).** Follow
+   `skills/md-study/compute-budget.md`: parse the user-stated budget, call
+   `estimate_md_throughput`, derive `(replicates × length)` with 15 % headroom,
+   run the INSUFFICIENT_BUDGET guardrail, and stage the `budget` block for
+   inclusion in the plan JSON. If the user did not mention compute, skip this
+   step and omit the `budget` block.
+11. **HIL only**: confirm the restated question, solvent regime, jobs, analysis, and decision
    criteria with the user before writing them. In autonomous mode, skip this
    confirmation unless a required value is missing or genuinely ambiguous.
-11. Create or reuse a `study_dir` and record the plan. For one-job workflows,
+12. Create or reuse a `study_dir` and record the plan. For one-job workflows,
     prefer `bootstrap_md_workflow`; for richer multi-job plans, use the
     lower-level commands below so every job can be registered explicitly:
 
@@ -341,7 +265,7 @@ attached to the study and is auditable when results come back.
     mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
     ```
 
-12. Register planned jobs and propagate `execution_mode` and `solvent_regime`
+13. Register planned jobs and propagate `execution_mode` and `solvent_regime`
     so downstream skills inherit them:
 
     ```bash
@@ -351,14 +275,14 @@ attached to the study and is auditable when results come back.
       --label "<short label>" --description "<one-line purpose>" \
       --create-job-dir
 
-    mdclaw update_job_params --job-dir <study_dir>/jobs/<id> \
+    mdclaw update_workflow_state --job-dir <study_dir>/jobs/<id> \
       --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
     ```
 
     Register jobs only when the job IDs are clear. Otherwise leave job
     creation to the downstream prepare step.
 
-13. Handoff:
+14. Handoff:
 
     - **`autonomous`**: Invoke the next-stage skill on the first registered
       structural-setup job. Determine the current job state with

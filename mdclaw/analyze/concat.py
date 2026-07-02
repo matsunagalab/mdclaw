@@ -17,11 +17,13 @@ from mdclaw._common import (
     ensure_directory,
     setup_logger,
 )
+from mdclaw._tool_meta import node_tool
 from mdclaw.analyze.registry import _finalize_concat_node
 
 logger = setup_logger(__name__)
 
 
+@node_tool
 def concat_trajectory(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,

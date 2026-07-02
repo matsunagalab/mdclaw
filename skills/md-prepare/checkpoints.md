@@ -16,6 +16,6 @@ missing, the target is ambiguous, or a structured failure requires a decision.
 Persist the mode after source creation:
 
 ```bash
-mdclaw update_job_params --job-dir <job_dir> \
+mdclaw update_workflow_state --job-dir <job_dir> \
   --params '{"execution_mode":"autonomous"}'
 ```

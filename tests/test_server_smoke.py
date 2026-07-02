@@ -26,15 +26,15 @@ pytestmark = pytest.mark.slow
 class TestNodeServer:
     """Smoke tests for node_server.py tools."""
 
-    def test_update_job_params(self, tmp_path):
-        from node_server import update_job_params
+    def test_update_workflow_state_params(self, tmp_path):
+        from node_server import update_workflow_state
 
-        result = update_job_params(
+        result = update_workflow_state(
             str(tmp_path / "job_modes"),
-            {"execution_mode": "autonomous"},
+            params={"execution_mode": "autonomous"},
         )
         assert result["success"] is True
-        assert result["params"]["execution_mode"] == "autonomous"
+        assert result["params_result"]["params"]["execution_mode"] == "autonomous"
 
 
 # ---------------------------------------------------------------------------

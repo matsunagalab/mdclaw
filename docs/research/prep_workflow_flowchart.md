@@ -200,14 +200,14 @@ flowchart TD
 
 Implementation anchors:
 
-- `solvate_structure(...)` starts at `mdclaw/solvation_server.py:627`.
-- `embed_in_membrane(...)` starts at `mdclaw/solvation_server.py:1096`.
+- `solvate_structure(...)` and `embed_in_membrane(...)` live in
+  `mdclaw/solvation_server.py`.
 - Salt override fallback is implemented in
-  `_record_salt_override_fallback(...)` near
-  `mdclaw/solvation_server.py:413`.
-- Solute identity restoration is implemented in
-  `_restore_packmol_solute_identity(...)` near
-  `mdclaw/solvation_server.py:459`.
+  `_record_salt_override_fallback(...)` in `mdclaw/solvation_server.py`.
+- Box extraction (`extract_box_size`, `_write_box_dimensions_json`) lives in
+  `mdclaw/solvation/box.py`.
+- Solute identity restoration (`_restore_packmol_solute_identity(...)`) and
+  nucleic charge-delta estimation live in `mdclaw/solvation/pdb_identity.py`.
 
 ## Curated Topology Layer: `build_amber_system`
 

@@ -42,6 +42,7 @@ from mdclaw._common import (  # noqa: E402
     setup_logger,
 )
 from mdclaw import _topology_pablo  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -172,6 +173,7 @@ def _check_gb99_openmm_version_compatible(forcefield_xml: List[str]) -> Optional
 # ---------------------------------------------------------------------------
 
 
+@node_tool
 def build_openmm_system(
     pdb_file: Optional[str] = None,
     forcefield_xml: Optional[List[str]] = None,

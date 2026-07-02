@@ -1,29 +1,11 @@
 # Production MD: Explicit Water
 
-## System Configuration
-
-| Parameter | Value | Notes |
-|---|---|---|
-| Electrostatics | **PME** (periodic) | Cutoff 1.0 nm |
-| Force field | ff19SB | `amber19-all.xml` |
-| Water model | OPC (default) | Also: TIP3P-FB, SPC/E, TIP4P-Ew |
-| Integrator | LangevinMiddleIntegrator | Friction 1/ps |
-| Barostat | MonteCarloBarostat | Temperature must match integrator |
-| Constraints | HBonds | Allows 4 fs timestep |
-| Ensemble | NPT (300K, 1 bar) | |
-
-### Timestep Guide
-
-The MDClaw default is HBonds + HMR=True at 4 fs. HMR is a build-time
-choice — it must match what `build_amber_system` /
-`build_openmm_system` baked into `system.xml`, otherwise the run-side
-XML system validator raises `modern_system_hmr_mismatch`.
-
-| Constraints | HMR   | Max Timestep | Recommended                                |
-|-------------|-------|--------------|--------------------------------------------|
-| HBonds      | True  | 4 fs         | **4 fs** (MDClaw default; `hydrogenMass=4`) |
-| HBonds      | False | 2 fs         | 2 fs (no HMR baked into `system.xml`)      |
-| AllBonds    | True  | 4 fs         | 4 fs (rare; needs `hydrogenMass=4`)        |
+Force field / water / integrator / HMR / PME constant defaults and the
+local-run platform preflight live in `skills/common/solvent-regimes.md`.
+Production runs NPT (300 K, 1 bar) with a `MonteCarloBarostat` whose temperature
+must match the integrator. HMR is baked into `system.xml` at build time; a
+run-side mismatch raises `modern_system_hmr_mismatch` (use `--no-hmr
+--timestep-fs 2.0` only when the system was built without HMR).
 
 ---
 
@@ -31,23 +13,10 @@ XML system validator raises `modern_system_hmr_mismatch`.
 
 ### Local Execution
 
-Before launching local explicit-water production, check whether OpenMM has a
-GPU platform and whether the atom count is reasonable for local execution:
-
-```bash
-mdclaw inspect_openmm_platforms \
-  --atom-count <solv.statistics.total_atoms> \
-  --solvent-type explicit
-```
-
-The autonomous `0.1 ns` sanity default is a production-length policy, not a
-wall-time guarantee. If the preflight returns `slow_on_cpu` or
-`not_recommended`, use `/hpc-run` or make an explicit short smoke-test choice
-instead of silently waiting on local CPU.
-
-Platform policy: do not pass `--platform CPU` unless the user explicitly asks
-for CPU-only debugging. Prefer the tool default `--platform auto`; if an
-explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
+Run the local-execution / platform preflight from
+`skills/common/solvent-regimes.md` first. The autonomous `0.1 ns` sanity default
+is a production-length policy, not a wall-time guarantee; a `slow_on_cpu` /
+`not_recommended` system should go to `/hpc-run` or an explicit short smoke test.
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \

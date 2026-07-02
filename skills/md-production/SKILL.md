@@ -8,8 +8,9 @@ description: "Production molecular dynamics simulation using MDClaw CLI tools an
 You are a computational biophysics expert running production MD simulations using MDClaw CLI tools.
 
 Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/node-cli-patterns.md`, `skills/common/run-loop.md`, and
-`skills/common/guardrail-codes.md` before acting.
+`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
+`skills/common/guardrail-codes.md` before acting. `run-loop.md` is the single
+canonical loop and node-CLI-invariant reference.
 
 Respond in the user's language. Use English for tool parameter values.
 All MDClaw tools are invoked via Bash with the `mdclaw` command. Output is JSON on stdout.
@@ -97,7 +98,7 @@ replicates or alternate conditions, and use `--continue-from` when extending
 an existing production branch.
 
 If mode metadata is missing, infer it from the current request and persist it
-with `mdclaw update_job_params` before creating new prod nodes.
+with `mdclaw update_workflow_state --params ...` before creating new prod nodes.
 
 1. Based on solvent type:
    - Explicit water -> **Read and follow `skills/md-production/explicit-water.md`**

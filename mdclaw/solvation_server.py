@@ -15,11 +15,11 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
 import json  # noqa: E402
-import logging  # noqa: E402
 import shutil  # noqa: E402
 import signal  # noqa: E402
 import subprocess  # noqa: E402
@@ -33,7 +33,6 @@ from mdclaw._common import (  # noqa: E402
     CANONICAL_WATER_MODELS,
     BaseToolWrapper,
     count_atoms_in_pdb,
-    create_guardrail_result,
     create_unique_subdir,
     create_validation_error,
     create_validation_error_from_guardrails,
@@ -44,10 +43,6 @@ from mdclaw._common import (  # noqa: E402
     split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
-from mdclaw.chemistry_constants import (  # noqa: E402
-    STANDARD_DNA_RESNAMES,
-    STANDARD_RNA_RESNAMES,
-)
 from mdclaw.membrane_cache import embed_with_membrane_slab_cache  # noqa: E402
 
 
@@ -80,218 +75,65 @@ def _setup_amber_environment():
 
 _setup_amber_environment()
 
-OPENMM_FALLBACK_WATER_MAP = {
-    "tip3p": "tip3p.xml",
-    "tip4pew": "tip4pew.xml",
-    "spce": "spce.xml",
-}
-OPENMM_FALLBACK_WATER_MODELS = set(OPENMM_FALLBACK_WATER_MAP)
+# Constants, water-model helpers, box extraction, and PDB-identity helpers now
+# live in the ``mdclaw.solvation`` subpackage. They are imported here so the
+# public ``from mdclaw.solvation_server import ...`` surface (used by tests and
+# other modules) and the internal call sites below stay unchanged. Names that
+# are only re-exported (not referenced in this module) are listed in
+# ``__all__`` so linters treat them as intentional re-exports.
+from mdclaw.solvation.box import (  # noqa: E402
+    _write_box_dimensions_json,
+    extract_box_size,
+    extract_box_size_from_cryst1,
+    extract_box_size_from_packmol_inp,
+)
+from mdclaw.solvation.constants import (  # noqa: E402
+    MEMBRANE_BACKENDS,
+    MEMBRANE_CACHE_MODES,
+    NUCLEIC_RESNAME_KIND,
+    OPENMM_FALLBACK_WATER_MAP,
+    OPENMM_FALLBACK_WATER_MODELS,
+    TERMINAL_DNA_RESNAMES,
+    TERMINAL_RNA_RESNAMES,
+    _evaluate_solvation_water_model_guardrails,
+    _normalize_water_model_name,
+)
+from mdclaw.solvation.pdb_identity import (  # noqa: E402
+    _auto_nucleic_packmol_charge_pdb_delta,
+    _flush_nucleic_segment,
+    _iter_pdb_residues,
+    _pdb_atom_lines,
+    _pdb_atom_name,
+    _pdb_element,
+    _pdb_residue_key,
+    _pdb_residue_label,
+    _restore_packmol_solute_identity,
+)
 
-TERMINAL_DNA_RESNAMES = {
-    f"{base}{suffix}"
-    for base in STANDARD_DNA_RESNAMES
-    for suffix in ("3", "5", "N")
-}
-TERMINAL_RNA_RESNAMES = {
-    f"{base}{suffix}"
-    for base in STANDARD_RNA_RESNAMES
-    for suffix in ("3", "5", "N")
-}
-NUCLEIC_RESNAME_KIND = {
-    **{resname: "DNA" for resname in STANDARD_DNA_RESNAMES | TERMINAL_DNA_RESNAMES},
-    **{resname: "RNA" for resname in STANDARD_RNA_RESNAMES | TERMINAL_RNA_RESNAMES},
-}
-MEMBRANE_BACKENDS = {
-    "packmol-memgen": "packmol-memgen",
-    "packmol_memgen": "packmol-memgen",
-    "packmol": "packmol-memgen",
-    "slab-cache": "slab-cache",
-    "slab_cache": "slab-cache",
-    "cache": "slab-cache",
-    "auto": "auto",
-}
-MEMBRANE_CACHE_MODES = {
-    "off": "off",
-    "read-only": "read-only",
-    "read_only": "read-only",
-    "auto": "auto",
-    "refresh": "refresh",
-}
-
-
-def _normalize_water_model_name(water_model: Optional[str]) -> Optional[str]:
-    """Normalize water model aliases used by MDClaw's explicit-solvent pipeline."""
-    return normalize_choice(water_model, CANONICAL_WATER_MODELS)
-
-
-def _evaluate_solvation_water_model_guardrails(
-    water_model: str,
-    *,
-    backend: str,
-) -> list[dict]:
-    """Return backend-specific guardrail results for solvation water models."""
-    results = []
-
-    if backend == "openmm_fallback" and water_model not in OPENMM_FALLBACK_WATER_MODELS:
-        results.append(create_guardrail_result(
-            "water_model",
-            (
-                f"OpenMM fallback cannot safely produce '{water_model}' water without changing models. "
-                "MDClaw blocks this path instead of silently falling back to TIP3P."
-            ),
-            severity="error",
-            actual=water_model,
-            expected=f"One of: {sorted(OPENMM_FALLBACK_WATER_MODELS)}",
-            suggested_fix=(
-                "Install AmberTools/packmol-memgen to use opc or opc3, "
-                "or choose tip3p, tip4pew, or spce when relying on the OpenMM fallback."
-            ),
-            code="openmm_fallback_unsupported_water_model",
-        ))
-
-    return results
-
-
-def extract_box_size_from_cryst1(pdb_file: str) -> Optional[dict]:
-    """Extract box dimensions from PDB CRYST1 record.
-    
-    The CRYST1 record contains unit cell parameters:
-    CRYST1   a       b       c      alpha  beta   gamma space_group Z
-    
-    Args:
-        pdb_file: Path to PDB file
-        
-    Returns:
-        Dict with box dimensions, or None if CRYST1 not found
-    """
-    try:
-        with open(pdb_file, 'r') as f:
-            for line in f:
-                if line.startswith('CRYST1'):
-                    # CRYST1   86.320   86.320   86.320  90.00  90.00  90.00 P 1
-                    a = float(line[6:15].strip())
-                    b = float(line[15:24].strip())
-                    c = float(line[24:33].strip())
-                    alpha = float(line[33:40].strip())
-                    beta = float(line[40:47].strip())
-                    gamma = float(line[47:54].strip())
-                    
-                    is_cubic = (
-                        abs(a - b) < 0.01 and 
-                        abs(b - c) < 0.01 and
-                        abs(alpha - 90.0) < 0.01 and 
-                        abs(beta - 90.0) < 0.01 and 
-                        abs(gamma - 90.0) < 0.01
-                    )
-                    
-                    return {
-                        "box_a": a,
-                        "box_b": b,
-                        "box_c": c,
-                        "alpha": alpha,
-                        "beta": beta,
-                        "gamma": gamma,
-                        "is_cubic": is_cubic
-                    }
-    except Exception as e:
-        logging.warning(f"Could not extract box size from CRYST1 in {pdb_file}: {e}")
-    return None
-
-
-def extract_box_size_from_packmol_inp(inp_file: str) -> Optional[dict]:
-    """Extract box dimensions from packmol input file.
-
-    Parses 'inside box' lines like:
-    inside box -35.7 -35.7 -35.7 35.7 35.7 35.7
-
-    Args:
-        inp_file: Path to packmol .inp file
-
-    Returns:
-        Dict with box dimensions, or None if not found
-    """
-    import re
-    try:
-        with open(inp_file, 'r') as f:
-            content = f.read()
-
-        # Match all 'inside box xmin ymin zmin xmax ymax zmax' regions.
-        # Membrane packmol inputs contain separate leaflet/water/ion boxes; the
-        # downstream periodic box must cover their union, not just the first
-        # leaflet region.
-        matches = list(re.finditer(
-            r'inside\s+box\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)',
-            content
-        ))
-        if matches:
-            xmins: list[float] = []
-            ymins: list[float] = []
-            zmins: list[float] = []
-            xmaxs: list[float] = []
-            ymaxs: list[float] = []
-            zmaxs: list[float] = []
-            for match in matches:
-                xmins.append(float(match.group(1)))
-                ymins.append(float(match.group(2)))
-                zmins.append(float(match.group(3)))
-                xmaxs.append(float(match.group(4)))
-                ymaxs.append(float(match.group(5)))
-                zmaxs.append(float(match.group(6)))
-
-            xmin, ymin, zmin = min(xmins), min(ymins), min(zmins)
-            xmax, ymax, zmax = max(xmaxs), max(ymaxs), max(zmaxs)
-
-            a = xmax - xmin
-            b = ymax - ymin
-            c = zmax - zmin
-
-            is_cubic = (
-                abs(a - b) < 0.01 and
-                abs(b - c) < 0.01
-            )
-
-            return {
-                "box_a": a,
-                "box_b": b,
-                "box_c": c,
-                "alpha": 90.0,
-                "beta": 90.0,
-                "gamma": 90.0,
-                "is_cubic": is_cubic
-            }
-    except Exception as e:
-        logging.warning(f"Could not extract box size from packmol inp {inp_file}: {e}")
-    return None
-
-
-def extract_box_size(pdb_file: str, packmol_inp: Optional[str] = None) -> Optional[dict]:
-    """Extract box dimensions from PDB CRYST1 record or packmol input file.
-    
-    Tries CRYST1 first, falls back to packmol .inp file if provided.
-    
-    Args:
-        pdb_file: Path to PDB file
-        packmol_inp: Optional path to packmol .inp file (fallback)
-        
-    Returns:
-        Dict with box dimensions, or None if not found:
-        - box_a, box_b, box_c: Box dimensions in Angstroms
-        - alpha, beta, gamma: Box angles in degrees
-        - is_cubic: True if all sides equal and all angles 90°
-    """
-    # Try CRYST1 first
-    result = extract_box_size_from_cryst1(pdb_file)
-    if result:
-        return result
-    
-    # Fall back to packmol inp file
-    if packmol_inp:
-        result = extract_box_size_from_packmol_inp(packmol_inp)
-        if result:
-            return result
-    
-    return None
-
+__all__ = [
+    "extract_box_size",
+    "extract_box_size_from_cryst1",
+    "extract_box_size_from_packmol_inp",
+    "_write_box_dimensions_json",
+    "MEMBRANE_BACKENDS",
+    "MEMBRANE_CACHE_MODES",
+    "NUCLEIC_RESNAME_KIND",
+    "OPENMM_FALLBACK_WATER_MAP",
+    "OPENMM_FALLBACK_WATER_MODELS",
+    "TERMINAL_DNA_RESNAMES",
+    "TERMINAL_RNA_RESNAMES",
+    "_evaluate_solvation_water_model_guardrails",
+    "_normalize_water_model_name",
+    "_auto_nucleic_packmol_charge_pdb_delta",
+    "_flush_nucleic_segment",
+    "_iter_pdb_residues",
+    "_pdb_atom_lines",
+    "_pdb_atom_name",
+    "_pdb_element",
+    "_pdb_residue_key",
+    "_pdb_residue_label",
+    "_restore_packmol_solute_identity",
+]
 
 logger = setup_logger(__name__)
 
@@ -343,24 +185,6 @@ def _run_packmol_memgen_for_slab_cache(
         timeout=timeout,
         cancel_event=threading.Event(),
     )
-
-
-def _write_box_dimensions_json(out_dir: Path, box_dims: dict) -> Optional[Path]:
-    """Persist solvated-box dimensions next to the PDB.
-
-    Both the packmol-memgen path and the OpenMM fallback call this so the
-    on-disk artifact layout is uniform: ``<out_dir>/box_dimensions.json`` is
-    the single canonical location downstream tools (e.g.
-    ``build_amber_system``) resolve. Returns the path on success, ``None`` on
-    OSError so the caller can decide whether to fail or warn.
-    """
-    box_json_path = out_dir / "box_dimensions.json"
-    try:
-        box_json_path.write_text(json.dumps(box_dims, indent=2))
-        return box_json_path
-    except OSError as exc:
-        logger.warning(f"Could not save box_dimensions.json at {box_json_path}: {exc}")
-        return None
 
 
 def _run_packmol_if_needed(
@@ -1324,252 +1148,6 @@ def _record_salt_override_fallback(
     logger.warning(message)
 
 
-def _pdb_atom_lines(path: Path) -> list[str]:
-    return [
-        line.rstrip("\n")
-        for line in path.read_text(encoding="utf-8", errors="ignore").splitlines()
-        if line.startswith(("ATOM", "HETATM"))
-    ]
-
-
-def _pdb_atom_name(line: str) -> str:
-    return line[12:16].strip() if len(line) >= 16 else ""
-
-
-def _pdb_element(line: str) -> str:
-    if len(line) >= 78 and line[76:78].strip():
-        return line[76:78].strip().upper()
-    atom = _pdb_atom_name(line)
-    return "".join(ch for ch in atom if ch.isalpha())[:1].upper()
-
-
-def _pdb_residue_key(line: str) -> tuple[str, str, str]:
-    chain_id = line[21:22].strip() if len(line) >= 22 else ""
-    resseq = line[22:26].strip() if len(line) >= 26 else ""
-    icode = line[26:27].strip() if len(line) >= 27 else ""
-    return chain_id, resseq, icode
-
-
-def _pdb_residue_label(residue: dict) -> str:
-    chain_id = residue["chain_id"] or "-"
-    insertion = residue["insertion_code"]
-    suffix = insertion if insertion else ""
-    return f"{chain_id}:{residue['residue_number']}{suffix}:{residue['resname']}"
-
-
-def _iter_pdb_residues(path: Path) -> list[dict]:
-    residues: list[dict] = []
-    current_key: tuple[str, str, str] | None = None
-    current: dict | None = None
-    segment_break_before_next = False
-
-    for line in path.read_text(encoding="utf-8", errors="ignore").splitlines():
-        if line.startswith("TER"):
-            if current is not None:
-                residues.append(current)
-            current_key = None
-            current = None
-            segment_break_before_next = True
-            continue
-        if not line.startswith(("ATOM", "HETATM")):
-            continue
-        key = _pdb_residue_key(line)
-        if key != current_key:
-            if current is not None:
-                residues.append(current)
-            chain_id, resseq, icode = key
-            current_key = key
-            current = {
-                "chain_id": chain_id,
-                "residue_number": resseq,
-                "insertion_code": icode,
-                "resname": line[17:20].strip() if len(line) >= 20 else "",
-                "atom_count": 0,
-                "segment_break_before": segment_break_before_next,
-            }
-            segment_break_before_next = False
-        if current is not None:
-            current["atom_count"] += 1
-
-    if current is not None:
-        residues.append(current)
-    return residues
-
-
-def _flush_nucleic_segment(
-    segment: list[dict],
-    *,
-    kind: str,
-    segments: list[dict],
-) -> int:
-    if not segment:
-        return 0
-
-    resnames = [residue["resname"] for residue in segment]
-    terminal_resnames = (
-        TERMINAL_DNA_RESNAMES if kind == "DNA" else TERMINAL_RNA_RESNAMES
-    )
-    standard_resnames = STANDARD_DNA_RESNAMES if kind == "DNA" else STANDARD_RNA_RESNAMES
-    terminal_names_present = sorted({name for name in resnames if name in terminal_resnames})
-
-    correction = 0
-    skipped_reason: str | None = None
-    if len(segment) < 2:
-        skipped_reason = "short_nucleic_segment"
-    elif terminal_names_present:
-        skipped_reason = "terminal_residue_names_present"
-    elif all(name in standard_resnames for name in resnames):
-        correction = 1
-    else:
-        skipped_reason = "nonstandard_nucleic_residue_names"
-
-    entry = {
-        "kind": kind,
-        "chain_id": segment[0]["chain_id"],
-        "start": _pdb_residue_label(segment[0]),
-        "end": _pdb_residue_label(segment[-1]),
-        "length": len(segment),
-        "residue_names": resnames,
-        "charge_pdb_delta": correction,
-    }
-    if terminal_names_present:
-        entry["terminal_residue_names_present"] = terminal_names_present
-    if skipped_reason:
-        entry["skipped_reason"] = skipped_reason
-    segments.append(entry)
-    return correction
-
-
-def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
-    """Return packmol-memgen charge delta needed for standard nucleic termini.
-
-    packmol-memgen estimates standard DA/DC/DG/DT/A/C/G/U residues as -1 each.
-    Amber terminal templates make each ordinary linear nucleic-acid segment one
-    charge unit less negative overall. Pass that difference through
-    ``--charge_pdb_delta`` instead of rewriting final PDB residue names.
-    """
-    residues = _iter_pdb_residues(pdb_path)
-    segments: list[dict] = []
-    current_segment: list[dict] = []
-    current_kind: str | None = None
-    current_chain: str | None = None
-    charge_delta = 0
-
-    for residue in residues:
-        kind = NUCLEIC_RESNAME_KIND.get(residue["resname"])
-        if (
-            kind is None
-            or current_kind is None
-            or kind != current_kind
-            or residue["chain_id"] != current_chain
-            or residue.get("segment_break_before")
-        ):
-            if current_segment and current_kind is not None:
-                charge_delta += _flush_nucleic_segment(
-                    current_segment,
-                    kind=current_kind,
-                    segments=segments,
-                )
-            current_segment = []
-            current_kind = None
-            current_chain = None
-
-        if kind is None:
-            continue
-
-        current_segment.append(residue)
-        current_kind = kind
-        current_chain = residue["chain_id"]
-
-    if current_segment and current_kind is not None:
-        charge_delta += _flush_nucleic_segment(
-            current_segment,
-            kind=current_kind,
-            segments=segments,
-        )
-
-    applied_segments = [
-        segment for segment in segments if int(segment.get("charge_pdb_delta", 0)) != 0
-    ]
-    return {
-        "charge_pdb_delta": int(charge_delta),
-        "segments": segments,
-        "applied_segment_count": len(applied_segments),
-        "reason": (
-            f"standard nucleic termini: {len(applied_segments)} segment(s) x +1"
-            if applied_segments
-            else "no standard nucleic terminal correction needed"
-        ),
-    }
-
-
-def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
-    """Restore solute PDB identity columns after packmol-memgen renumbering."""
-    report = {
-        "solute_identity_restored": False,
-        "solute_identity_restored_atom_count": 0,
-        "solute_identity_restore_warnings": [],
-    }
-    try:
-        input_atoms = _pdb_atom_lines(input_pdb)
-        output_lines = output_pdb.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError as exc:
-        report["solute_identity_restore_warnings"].append(f"Could not read PDB for solute identity restore: {exc}")
-        return report
-
-    if not input_atoms:
-        report["solute_identity_restore_warnings"].append("Input PDB has no ATOM/HETATM records")
-        return report
-
-    output_atom_indices = [
-        idx for idx, line in enumerate(output_lines)
-        if line.startswith(("ATOM", "HETATM"))
-    ]
-    if len(output_atom_indices) < len(input_atoms):
-        report["solute_identity_restore_warnings"].append(
-            f"Packmol output has fewer atom records ({len(output_atom_indices)}) than input solute ({len(input_atoms)})"
-        )
-        return report
-
-    mismatches: list[str] = []
-    for atom_i, (src, out_idx) in enumerate(zip(input_atoms, output_atom_indices), start=1):
-        dst = output_lines[out_idx]
-        src_name = _pdb_atom_name(src)
-        dst_name = _pdb_atom_name(dst)
-        src_element = _pdb_element(src)
-        dst_element = _pdb_element(dst)
-        if src_name != dst_name or (src_element and dst_element and src_element != dst_element):
-            mismatches.append(
-                f"atom {atom_i}: {src_name}/{src_element} != {dst_name}/{dst_element}"
-            )
-            if len(mismatches) >= 3:
-                break
-    if mismatches:
-        report["solute_identity_restore_warnings"].append(
-            "Skipped solute identity restore because packmol output prefix did not match input solute: "
-            + "; ".join(mismatches)
-        )
-        return report
-
-    restored_lines = list(output_lines)
-    for src, out_idx in zip(input_atoms, output_atom_indices):
-        dst = restored_lines[out_idx].ljust(80)
-        src_padded = src.ljust(80)
-        restored_lines[out_idx] = (
-            src_padded[:6]
-            + dst[6:12]
-            + src_padded[12:27]
-            + dst[27:76]
-            + src_padded[76:78]
-            + dst[78:]
-        ).rstrip()
-
-    output_pdb.write_text("\n".join(restored_lines) + "\n", encoding="utf-8")
-    report["solute_identity_restored"] = True
-    report["solute_identity_restored_atom_count"] = len(input_atoms)
-    return report
-
-
 def _solvate_with_openmm(
     pdb_path: Path,
     result: dict,
@@ -1685,6 +1263,7 @@ def _solvate_with_openmm(
     return result
 
 
+@node_tool
 def solvate_structure(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,
@@ -2188,6 +1767,7 @@ def solvate_structure(
     return result
 
 
+@node_tool
 def embed_in_membrane(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,

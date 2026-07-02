@@ -27,6 +27,43 @@ from typing import TextIO, Union, get_args, get_origin
 
 from mdclaw import __version__
 from mdclaw._registry import SERVER_REGISTRY
+from mdclaw._tool_meta import tool_job_dir_is_data, tool_requires_node
+
+# Tools consolidated during the schema-v3 refactor. Old names are no longer
+# registered as CLI subcommands; invoking one returns a structured
+# ``tool_renamed`` error pointing at the replacement so weak agents get a
+# deterministic recovery signal instead of an argparse "invalid choice" dump.
+# The underlying Python functions still exist for direct importers.
+_RENAMED_TOOLS = {
+    "record_study_decision": "record_study_log --record-type decision",
+    "record_study_question": "record_study_log --record-type question",
+    "record_token_usage": "record_study_log --record-type token_usage",
+    "add_node_need": "manage_node_need --action add",
+    "clear_node_need": "manage_node_need --action clear",
+    "record_node_need_attempt": "manage_node_need --action record_attempt",
+    "update_node_status": "update_workflow_state (--node-id/--status)",
+    "update_job_params": "update_workflow_state (--params)",
+}
+
+# Global options that consume a following value, used to locate the subcommand
+# token when scanning argv for a renamed tool.
+_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id"}
+
+
+def _detect_subcommand(argv: list[str]) -> str | None:
+    """Return the subcommand token from ``argv``, skipping global options."""
+    skip_next = False
+    for tok in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if tok.startswith("-"):
+            option = tok.split("=", 1)[0]
+            if option in _GLOBAL_VALUE_OPTIONS and "=" not in tok:
+                skip_next = True
+            continue
+        return tok
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +168,8 @@ def _discover_tools() -> dict[str, dict]:
                 "is_async": inspect.iscoroutinefunction(fn),
                 "server": server_name,
                 "description": inspect.getdoc(fn) or "",
+                "requires_node": tool_requires_node(fn),
+                "job_dir_is_data": tool_job_dir_is_data(fn),
             }
     return tools
 
@@ -733,7 +772,7 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
             entry["nargs"] = "+"
         elif _takes_json(inner):
             entry["expects_json"] = True
-        if tool_name in _JOB_DIR_DATA_TOOLS and pname == "job_dir":
+        if tool_job_dir_is_data(fn) and pname == "job_dir":
             entry["job_dir_role"] = "data"
         params.append(entry)
     return params
@@ -756,8 +795,8 @@ def _tool_list_json(tools: dict[str, dict]) -> dict:
             "summary": summary,
             "description": description,
             "is_async": info["is_async"],
-            "requires_node": tool_name in _NODE_REQUIRED_TOOLS,
-            "job_dir_is_data": tool_name in _JOB_DIR_DATA_TOOLS,
+            "requires_node": info.get("requires_node", tool_requires_node(info["fn"])),
+            "job_dir_is_data": info.get("job_dir_is_data", tool_job_dir_is_data(info["fn"])),
             "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
         })
     return payload
@@ -782,43 +821,74 @@ def _print_tool_list(tools: dict[str, dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 
-# Tools that represent DAG workflow nodes must always run with node context.
-_NODE_REQUIRED_TOOLS = frozenset({
-    "fetch_structure",
-    "download_structure",
-    "get_alphafold_structure",
-    "register_local_structure",
-    "prepare_complex",
-    "create_mutated_structure",
-    "phosphorylate_residues",
-    "prepare_modified_nucleic",
-    "solvate_structure",
-    "embed_in_membrane",
-    "build_amber_system",
-    "build_openmm_system",
-    "run_minimization",
-    "run_equilibration",
-    "run_production",
-    "concat_trajectory",
-    "fit_trajectory",
-    "analyze_rmsd",
-    "analyze_distance",
-    "analyze_q_value",
-    "analyze_rmsf",
-    "analyze_contact_frequency",
-})
+# Node-context and job-dir-is-data requirements are declared at each tool's
+# definition site via the ``@node_tool`` / ``@job_dir_data_tool`` markers in
+# ``mdclaw._tool_meta`` and read during ``_discover_tools`` (see the
+# ``requires_node`` / ``job_dir_is_data`` fields). This removes the old
+# hardcoded frozensets that had to be kept in sync by hand.
+#
+# ``_NODE_REQUIRED_TOOLS`` / ``_JOB_DIR_DATA_TOOLS`` remain available as derived,
+# lazily-computed module attributes for backward compatibility (tests and any
+# external callers that import them). They are computed from the declarative
+# markers, so they can never desync from the tools themselves.
 
-# For these tools, ``job_dir`` is data being registered or inspected rather
-# than the active schema-v3 execution context. Preserve it exactly as provided.
-_JOB_DIR_DATA_TOOLS = frozenset({
-    "add_study_job",
-})
+
+def _node_required_tools() -> frozenset[str]:
+    return frozenset(
+        name for name, info in _discover_tools().items()
+        if info.get("requires_node")
+    )
+
+
+def _job_dir_data_tools() -> frozenset[str]:
+    return frozenset(
+        name for name, info in _discover_tools().items()
+        if info.get("job_dir_is_data")
+    )
+
+
+def __getattr__(name: str):
+    # PEP 562 module-level lazy attributes. Kept for import/monkeypatch
+    # compatibility; the runtime gate below uses the per-tool discovery flags.
+    if name == "_NODE_REQUIRED_TOOLS":
+        return _node_required_tools()
+    if name == "_JOB_DIR_DATA_TOOLS":
+        return _job_dir_data_tools()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def main(argv: list[str] | None = None) -> None:
     _configure_logging()
 
     tools = _discover_tools()
+
+    # Intercept consolidated tool names before argparse so the agent gets a
+    # structured ``tool_renamed`` code instead of an "invalid choice" error.
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    subcommand = _detect_subcommand(raw_argv)
+    if subcommand in _RENAMED_TOOLS:
+        replacement = _RENAMED_TOOLS[subcommand]
+        _json_error_and_exit({
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "tool_renamed",
+            "message": (
+                f"Tool '{subcommand}' was consolidated. Use: {replacement}."
+            ),
+            "errors": [f"{subcommand} was renamed/merged into {replacement}"],
+            "warnings": [],
+            "hints": [
+                f"Run 'mdclaw {replacement.split()[0]} --help' for the new interface.",
+                "See `mdclaw --list-json` for the current tool surface.",
+            ],
+            "context": {
+                "tool": subcommand,
+                "replacement": replacement,
+                "code": "tool_renamed",
+            },
+            "recoverable": True,
+        })
+
     parser = _build_parser(tools)
     args = parser.parse_args(argv)
 
@@ -939,7 +1009,7 @@ def main(argv: list[str] | None = None) -> None:
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
     effective_job_dir = (
         None
-        if tool_name in _JOB_DIR_DATA_TOOLS
+        if info.get("job_dir_is_data", tool_job_dir_is_data(fn))
         else _global_job_dir or kwargs.get("job_dir")
     )
     effective_node_id = _global_node_id or kwargs.get("node_id")
@@ -956,7 +1026,9 @@ def main(argv: list[str] | None = None) -> None:
             "context": {"tool": tool_name, "code": "node_id_requires_job_dir"},
             "recoverable": True,
         })
-    if tool_name in _NODE_REQUIRED_TOOLS and (not effective_job_dir or not effective_node_id):
+    if info.get("requires_node", tool_requires_node(fn)) and (
+        not effective_job_dir or not effective_node_id
+    ):
         _json_error_and_exit({
             "success": False,
             "error_type": "ValidationError",

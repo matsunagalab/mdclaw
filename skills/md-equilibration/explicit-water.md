@@ -10,23 +10,11 @@ the final checkpoint is compatible with production settings.
 
 ### Run Equilibration
 
-Before local execution of an explicit-water system, verify the post-solvation
-atom count and available OpenMM platforms:
-
-```bash
-mdclaw inspect_openmm_platforms \
-  --atom-count <solv.statistics.total_atoms> \
-  --solvent-type explicit
-```
-
-If no CUDA/OpenCL platform is available and the system is classified
-`not_recommended` or `slow_on_cpu`, do not start the default local
-equilibration automatically. Use `/hpc-run`, or deliberately choose a shorter
-smoke-test protocol such as `--nvt-time-ns 0.01 --npt-time-ns 0.01`.
-
-Platform policy: do not pass `--platform CPU` unless the user explicitly asks
-for CPU-only debugging. Prefer the tool default `--platform auto`; if an
-explicit platform is needed, choose `CUDA` when available, otherwise `OpenCL`.
+Run the local-execution / platform preflight from
+`skills/common/solvent-regimes.md` before starting a local explicit-water
+equilibration (a `slow_on_cpu` / `not_recommended` system should go to
+`/hpc-run` or a short smoke-test such as `--nvt-time-ns 0.01 --npt-time-ns
+0.01`).
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization \

@@ -1,0 +1,793 @@
+{
+  "add_study_job": {
+    "job_dir_is_data": true,
+    "required_params": [
+      "job_dir",
+      "job_id",
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "analyze_contact_frequency": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "analyze_distance": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "analyze_plip_interactions": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_file"
+    ],
+    "requires_node": false,
+    "server": "genesis"
+  },
+  "analyze_q_value": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "analyze_rmsd": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "analyze_rmsf": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "analyze_structure_details": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "structure_file"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "boltz2_protein_from_seq": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "amino_acid_sequence_list"
+    ],
+    "requires_node": false,
+    "server": "genesis"
+  },
+  "bootstrap_md_workflow": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "question",
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "build_amber_system": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "amber"
+  },
+  "build_openmm_system": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "openmm_system"
+  },
+  "cancel_job": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_id"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "check_job": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_id"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "check_job_log": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_id"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "check_surrogate_backend": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "model"
+    ],
+    "requires_node": false,
+    "server": "surrogate"
+  },
+  "claim_node": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "agent_id",
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "clean_ligand": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "ligand_id",
+      "ligand_pdb"
+    ],
+    "requires_node": false,
+    "server": "structure"
+  },
+  "clean_protein": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_file"
+    ],
+    "requires_node": false,
+    "server": "structure"
+  },
+  "concat_trajectory": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "configure_container": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "create_mutated_structure": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "structure"
+  },
+  "create_node": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_type"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "detect_equilibration": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "analyze"
+  },
+  "detect_metal_ions": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_file"
+    ],
+    "requires_node": false,
+    "server": "metal"
+  },
+  "download_structure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_id"
+    ],
+    "requires_node": true,
+    "server": "research"
+  },
+  "embed_in_membrane": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "solvation"
+  },
+  "estimate_md_throughput": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "atom_count",
+      "gpu_type"
+    ],
+    "requires_node": false,
+    "server": "throughput"
+  },
+  "explain_failure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "explain_node": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "export_benchmark_private_package": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "export_benchmark_public_package": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "export_state_pdb": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "output_pdb_file",
+      "state_xml_file",
+      "topology_pdb_file"
+    ],
+    "requires_node": false,
+    "server": "md_simulation"
+  },
+  "fetch_structure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "source"
+    ],
+    "requires_node": true,
+    "server": "research"
+  },
+  "fit_trajectory": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "analyze"
+  },
+  "generate_md_evidence_report": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir"
+    ],
+    "requires_node": false,
+    "server": "evidence"
+  },
+  "generate_md_methods_report": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir"
+    ],
+    "requires_node": false,
+    "server": "evidence"
+  },
+  "generate_study_evidence_report": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "evidence"
+  },
+  "generate_study_methods_report": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "evidence"
+  },
+  "generate_surrogate_candidates": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "amino_acid_sequence"
+    ],
+    "requires_node": false,
+    "server": "surrogate"
+  },
+  "get_alphafold_structure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "uniprot_id"
+    ],
+    "requires_node": true,
+    "server": "research"
+  },
+  "get_protein_info": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "accession"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "get_structure_info": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_id"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "get_study_plan": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "init_benchmark_run": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "init_study": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "inspect_cluster": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "inspect_job": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "inspect_molecules": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "research"
+  },
+  "inspect_openmm_platforms": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "md_simulation"
+  },
+  "list_available_lipids": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "solvation"
+  },
+  "list_benchmark_tasks": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "list_jobs": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "list_source_candidates": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "list_study_jobs": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "list_study_plans": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "list_tracked_jobs": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "manage_node_need": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "action",
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "merge_structures": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pdb_files"
+    ],
+    "requires_node": false,
+    "server": "structure"
+  },
+  "modeller_from_alignment": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "template_pdb"
+    ],
+    "requires_node": false,
+    "server": "genesis"
+  },
+  "package_mdprep_submission": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id",
+      "submission_dir",
+      "task_id"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "package_openmm_submission": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "state_xml_file",
+      "submission_dir",
+      "system_xml_file",
+      "task_id",
+      "topology_pdb_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "parameterize_metal_ion": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "metal"
+  },
+  "phosphorylate_residues": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "structure"
+  },
+  "prepare_benchmark_run": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "prepare_complex": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "structure"
+  },
+  "prepare_modified_nucleic": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "structure"
+  },
+  "pubchem_get_smiles_from_name": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "chemical_name"
+    ],
+    "requires_node": false,
+    "server": "genesis"
+  },
+  "pubmed_fetch": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "pmids"
+    ],
+    "requires_node": false,
+    "server": "literature"
+  },
+  "pubmed_search": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "query"
+    ],
+    "requires_node": false,
+    "server": "literature"
+  },
+  "rdkit_validate_smiles": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "smiles"
+    ],
+    "requires_node": false,
+    "server": "genesis"
+  },
+  "rebuild_progress_index": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "record_study_log": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "record_type",
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "record_study_plan": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "plan",
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "register_analysis_result": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "analyze"
+  },
+  "register_local_structure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "file_path",
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": true,
+    "server": "research"
+  },
+  "register_visual_review": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "visualization"
+  },
+  "release_node_claim": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "render_structure_preview": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "visualization"
+  },
+  "run_benchmark_agent": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "run_equilibration": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "md_simulation"
+  },
+  "run_llm_judge": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "output_file",
+      "submission_dir",
+      "task_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "run_minimization": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "md_simulation"
+  },
+  "run_production": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "md_simulation"
+  },
+  "score_benchmark_run": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "run_dir"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "score_benchmark_submission": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "submission_dir",
+      "task_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "search_proteins": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "query"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "search_structures": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "query"
+    ],
+    "requires_node": false,
+    "server": "research"
+  },
+  "set_policy": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "setup_surrogate_backend": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "model"
+    ],
+    "requires_node": false,
+    "server": "surrogate"
+  },
+  "show_policy": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "solvate_structure": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": true,
+    "server": "solvation"
+  },
+  "split_molecules": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "structure_file"
+    ],
+    "requires_node": false,
+    "server": "structure"
+  },
+  "submit_array_job": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "tasks"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "submit_job": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "script"
+    ],
+    "requires_node": false,
+    "server": "slurm"
+  },
+  "summarize_benchmark_run": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "run_dir"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "summarize_study": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "study_dir"
+    ],
+    "requires_node": false,
+    "server": "study"
+  },
+  "trace_failure": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "update_workflow_state": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "validate_and_score_benchmark_submission": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "submission_dir",
+      "task_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "validate_benchmark_submission": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "submission_dir",
+      "task_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "validate_benchmark_task": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "task_file"
+    ],
+    "requires_node": false,
+    "server": "benchmark"
+  },
+  "wait_node": {
+    "job_dir_is_data": false,
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
+    "requires_node": false,
+    "server": "node"
+  },
+  "write_benchmark_schemas": {
+    "job_dir_is_data": false,
+    "required_params": [],
+    "requires_node": false,
+    "server": "benchmark"
+  }
+}

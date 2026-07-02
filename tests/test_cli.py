@@ -537,7 +537,7 @@ class TestArgparseConstruction:
 
         with pytest.raises(SystemExit) as exc_info:
             main([
-                "update_job_params",
+                "update_workflow_state",
                 "--job-dir", str(tmp_path),
                 "--params", "{bad",
             ])
@@ -1068,7 +1068,7 @@ class TestNodeCLIParameters:
     """Argparse-level regression guards for the node-server CLI tools.
 
     ``mdclaw create_node --continue-from prod_001`` and
-    ``mdclaw update_node_status --job-dir ... --node-id ... --status ...``
+    ``mdclaw update_workflow_state --job-dir ... --node-id ... --status ...``
     are user-facing contracts referenced by skill docs. These tests make
     sure the parser round-trip stays stable even if the underlying
     function signatures are refactored.
@@ -1175,41 +1175,53 @@ class TestNodeCLIParameters:
         assert payload["success"] is False
         assert "analysis_data_scope" in payload["error"]
 
-    def test_update_node_status_accepts_required_flags(self):
+    def test_update_workflow_state_accepts_status_flags(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "update_node_status",
+            "update_workflow_state",
             "--job-dir", "/tmp/job",
             "--node-id", "prod_001",
             "--status", "submitted",
         ])
-        assert args.tool_name == "update_node_status"
+        assert args.tool_name == "update_workflow_state"
         assert args.job_dir == "/tmp/job"
         assert args.node_id == "prod_001"
         assert args.status == "submitted"
 
-    def test_update_node_status_requires_all_three_fields(self):
-        """Missing any of job-dir / node-id / status exits non-zero."""
+    def test_update_workflow_state_status_requires_node_id(self, tmp_path, capsys):
+        """Passing --status without --node-id returns a structured code."""
         from mdclaw._cli import main
 
-        for missing in (
-            ["update_node_status", "--node-id", "x", "--status", "s"],
-            ["update_node_status", "--job-dir", "/tmp/j", "--status", "s"],
-            ["update_node_status", "--job-dir", "/tmp/j", "--node-id", "x"],
-        ):
-            with pytest.raises(SystemExit) as exc_info:
-                main(missing)
-            assert exc_info.value.code != 0, f"expected failure for: {missing}"
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_workflow_state",
+                "--job-dir", str(tmp_path),
+                "--status", "queued",
+            ])
+        assert exc_info.value.code != 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "update_state_status_requires_node_id"
 
-    def test_update_node_status_end_to_end(self, tmp_path):
-        """Smoke test the full CLI path for update_node_status against a
-        real temp job directory: create a node, flip its status via the
-        CLI entry point, then confirm both node.json and progress.json
-        agree.
+    def test_update_workflow_state_requires_a_target(self, tmp_path, capsys):
+        """Neither status nor params yields update_state_no_target."""
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_workflow_state",
+                "--job-dir", str(tmp_path),
+            ])
+        assert exc_info.value.code != 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "update_state_no_target"
+
+    def test_update_workflow_state_status_end_to_end(self, tmp_path):
+        """Create a node, flip its status via the CLI, then confirm node.json
+        and progress.json agree.
         """
         import json
         from mdclaw._cli import main
@@ -1217,10 +1229,9 @@ class TestNodeCLIParameters:
 
         create_node(str(tmp_path), "prod")
 
-        # main() always raises SystemExit (exit_code=0 on success)
         with pytest.raises(SystemExit) as exc_info:
             main([
-                "update_node_status",
+                "update_workflow_state",
                 "--job-dir", str(tmp_path),
                 "--node-id", "prod_001",
                 "--status", "submitted",
@@ -1234,28 +1245,28 @@ class TestNodeCLIParameters:
         assert node["status"] == "queued"
         assert progress["nodes"]["prod_001"]["status"] == "queued"
 
-    def test_update_job_params_accepts_json_dict(self):
+    def test_update_workflow_state_accepts_params_json_dict(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "update_job_params",
+            "update_workflow_state",
             "--job-dir", "/tmp/job",
             "--params", '{"execution_mode":"autonomous"}',
         ])
-        assert args.tool_name == "update_job_params"
+        assert args.tool_name == "update_workflow_state"
         assert args.job_dir == "/tmp/job"
         assert args.params == '{"execution_mode":"autonomous"}'
 
-    def test_update_job_params_end_to_end(self, tmp_path):
+    def test_update_workflow_state_params_end_to_end(self, tmp_path):
         import json
         from mdclaw._cli import main
 
         with pytest.raises(SystemExit) as exc_info:
             main([
-                "update_job_params",
+                "update_workflow_state",
                 "--job-dir", str(tmp_path),
                 "--params", '{"execution_mode":"autonomous"}',
             ])
@@ -1263,6 +1274,22 @@ class TestNodeCLIParameters:
 
         progress = json.loads((tmp_path / "progress.json").read_text())
         assert progress["params"]["execution_mode"] == "autonomous"
+
+    def test_renamed_tool_returns_structured_code(self, capsys):
+        """Old consolidated tool names emit a structured tool_renamed code."""
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "update_node_status",
+                "--job-dir", "/tmp/job",
+                "--node-id", "prod_001",
+                "--status", "queued",
+            ])
+        assert exc_info.value.code != 0
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "tool_renamed"
+        assert "update_workflow_state" in payload["context"]["replacement"]
 
     def test_global_job_dir_node_id_satisfy_subparser_required_params(self, tmp_path):
         """Skill docs invoke node tools with global flags placed BEFORE the
@@ -1353,21 +1380,23 @@ class TestStudyAndEvidenceCLIParameters:
         assert args.title == "screen"
         assert args.metadata == '{"owner":"lab"}'
 
-    def test_record_study_decision_accepts_list_args(self):
+    def test_record_study_log_accepts_list_args(self):
         from mdclaw._cli import _build_parser, _discover_tools
 
         tools = _discover_tools()
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "record_study_decision",
+            "record_study_log",
             "--study-dir", "/tmp/study",
+            "--record-type", "decision",
             "--phase", "plan",
             "--decision", "run",
             "--reason", "test",
             "--inputs", "study.json", "progress.json",
             "--outputs", "plan.json",
         ])
+        assert args.record_type == "decision"
         assert args.inputs == ["study.json", "progress.json"]
         assert args.outputs == ["plan.json"]
 

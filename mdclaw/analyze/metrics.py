@@ -18,11 +18,13 @@ from mdclaw._common import (
     setup_logger,
 )
 from mdclaw.analyze.inputs import _rel_to_node_root, _resolve_analyze_branches, _resolve_analyze_parent_inputs, _selected_residue_atom_groups, _stream_dcd_chunks
+from mdclaw._tool_meta import node_tool
 from mdclaw.analyze.plots import _save_matrix_plot, _save_overlay_plot, _save_timeseries_plot, _time_axis_ns
 
 logger = setup_logger(__name__)
 
 
+@node_tool
 def analyze_rmsd(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -245,6 +247,7 @@ def analyze_rmsd(
     return result
 
 
+@node_tool
 def analyze_distance(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -495,6 +498,7 @@ def analyze_distance(
     return result
 
 
+@node_tool
 def analyze_q_value(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -746,6 +750,7 @@ def analyze_q_value(
     return result
 
 
+@node_tool
 def analyze_rmsf(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,
@@ -960,6 +965,7 @@ def analyze_rmsf(
     return result
 
 
+@node_tool
 def analyze_contact_frequency(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,

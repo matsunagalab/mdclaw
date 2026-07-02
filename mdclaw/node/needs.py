@@ -260,4 +260,61 @@ def record_node_need_attempt(
     }
 
 
+_NODE_NEED_ACTIONS = ("add", "clear", "record_attempt")
+
+
+def manage_node_need(
+    job_dir: str,
+    node_id: str,
+    action: str,
+    need: Optional[dict] = None,
+    need_index: Optional[int] = None,
+    attempt: Optional[dict] = None,
+) -> dict:
+    """Manage a node's open needs behind a single ``action`` selector.
+
+    Consolidates the former ``add_node_need`` / ``clear_node_need`` /
+    ``record_node_need_attempt`` tools so the agent-facing surface stays small.
+
+    - ``action="add"``: append ``need`` (dict with ``need_type`` /``query`` /
+      ``rationale``).
+    - ``action="clear"``: clear the need at ``need_index``, or all open needs
+      when ``need_index`` is omitted.
+    - ``action="record_attempt"``: append ``attempt`` to the need at
+      ``need_index`` without resolving it.
+    """
+    if action not in _NODE_NEED_ACTIONS:
+        return {
+            "success": False,
+            "code": "invalid_node_need_action",
+            "error": f"action must be one of {list(_NODE_NEED_ACTIONS)}, got {action!r}",
+        }
+
+    if action == "add":
+        if need is None:
+            return {
+                "success": False,
+                "code": "invalid_need",
+                "error": "action=add requires a need payload",
+            }
+        return add_node_need(job_dir, node_id, need)
+
+    if action == "clear":
+        return clear_node_need(job_dir, node_id, need_index=need_index)
+
+    if need_index is None:
+        return {
+            "success": False,
+            "code": "invalid_need_attempt",
+            "error": "action=record_attempt requires need_index",
+        }
+    if attempt is None:
+        return {
+            "success": False,
+            "code": "invalid_need_attempt",
+            "error": "action=record_attempt requires an attempt payload",
+        }
+    return record_node_need_attempt(job_dir, node_id, need_index, attempt)
+
+
 # ── State transitions (tools call these) ───────────────────────────────────

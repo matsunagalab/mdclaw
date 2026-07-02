@@ -17,6 +17,7 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw._tool_meta import node_tool  # noqa: E402
 
 logger = setup_logger(__name__)
 
@@ -49,6 +50,7 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 
+@node_tool
 def create_mutated_structure(
     pdb_file: Optional[str] = None,
     mutations: Optional[List[str]] = None,

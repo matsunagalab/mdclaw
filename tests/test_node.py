@@ -3725,11 +3725,12 @@ class TestNodeServerRegistration:
             "rebuild_progress_index",
             "claim_node",
             "release_node_claim",
-            "add_node_need",
-            "clear_node_need",
-            "record_node_need_attempt",
+            "manage_node_need",
         ):
             assert tool_name in TOOLS
+        # The open-need verbs were consolidated into manage_node_need.
+        for removed in ("add_node_need", "clear_node_need", "record_node_need_attempt"):
+            assert removed not in TOOLS
 
     def test_registry_has_node(self):
         from mdclaw._registry import SERVER_REGISTRY

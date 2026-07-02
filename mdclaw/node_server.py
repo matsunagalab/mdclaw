@@ -1,19 +1,16 @@
 """Node management tools exposed as ``mdclaw create_node`` and friends."""
 
 from mdclaw._node import (
-    add_node_need,
     claim_node,
-    clear_node_need,
     create_node,
     explain_failure,
     explain_node,
     inspect_job,
+    manage_node_need,
     rebuild_progress_index,
-    record_node_need_attempt,
     release_node_claim,
     trace_failure,
-    update_job_params,
-    update_node_status,
+    update_workflow_state,
     wait_node,
 )
 
@@ -24,12 +21,9 @@ TOOLS = {
     "explain_node": explain_node,
     "trace_failure": trace_failure,
     "explain_failure": explain_failure,
-    "update_job_params": update_job_params,
-    "update_node_status": update_node_status,
+    "update_workflow_state": update_workflow_state,
     "rebuild_progress_index": rebuild_progress_index,
     "claim_node": claim_node,
     "release_node_claim": release_node_claim,
-    "add_node_need": add_node_need,
-    "clear_node_need": clear_node_need,
-    "record_node_need_attempt": record_node_need_attempt,
+    "manage_node_need": manage_node_need,
 }

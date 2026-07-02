@@ -78,21 +78,24 @@ instead. The `study_dir` is for grouping jobs, not replacing the DAG.
 Use study logs for cross-job reasoning that should survive across sessions:
 
 ```bash
-mdclaw record_study_question \
+mdclaw record_study_log \
   --study-dir study_mutation_screen \
+  --record-type question \
   --question "Does V148A stabilize the active conformation relative to WT?" \
   --status active
 
-mdclaw record_study_decision \
+mdclaw record_study_log \
   --study-dir study_mutation_screen \
+  --record-type decision \
   --phase plan \
   --decision "Run WT and V148A with three production replicates each." \
   --reason "Replicates are needed before comparing stability metrics." \
   --inputs study.json \
   --outputs jobs/wt/progress.json jobs/v148a/progress.json
 
-mdclaw record_token_usage \
+mdclaw record_study_log \
   --study-dir study_mutation_screen \
+  --record-type token_usage \
   --phase critique \
   --purpose "Review replicate convergence and choose whether to extend runs." \
   --tokens 32000 \

@@ -33,22 +33,25 @@ mdclaw add_study_job \
   --create-job-dir \
   --metadata '{"system":"V148A","planned_replicates":3}'
 
-mdclaw record_study_question \
+mdclaw record_study_log \
   --study-dir "$STUDY_DIR" \
+  --record-type question \
   --question "Does V148A stabilize the active conformation relative to WT?" \
   --status active \
   --rationale "The study has two planned systems and should compare replicate-level MD evidence."
 
-mdclaw record_study_decision \
+mdclaw record_study_log \
   --study-dir "$STUDY_DIR" \
+  --record-type decision \
   --phase plan \
   --decision "Prepare WT and V148A as separate job_dirs under one study_dir." \
   --reason "Each job_dir keeps a single source root while the study_dir captures the cross-system comparison." \
   --inputs study.json \
   --outputs jobs/wt jobs/v148a
 
-mdclaw record_token_usage \
+mdclaw record_study_log \
   --study-dir "$STUDY_DIR" \
+  --record-type token_usage \
   --phase plan \
   --purpose "Draft initial WT/mutant campaign plan." \
   --tokens 12000 \
