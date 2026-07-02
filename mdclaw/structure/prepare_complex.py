@@ -37,6 +37,7 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     AMBER_PROTEIN_RESIDUES,
     AMINO_ACIDS,
 )
+from mdclaw.selection_utils import likely_additive_ligands  # noqa: E402
 
 # Default working directory for prepare_complex when output_dir is not specified
 WORKING_DIR = Path(".")
@@ -1006,7 +1007,81 @@ def prepare_complex(
                 **info,
                 "all_chain_data": all_chains_lookup.get(chain_id, {})
             }
-        
+
+        # Preflight: catch crystallization additives / placeholder residues that
+        # the default ``ligand`` selection swept in, before they fail much later
+        # at build_amber_system with "No template found for residue <RESNAME>".
+        retained_ligand_chains = [
+            all_chains_lookup[info["chain_id"]]
+            for info in split_result.get("chain_file_info", [])
+            if info.get("chain_type") == "ligand"
+            and info.get("chain_id") in all_chains_lookup
+        ]
+        additive_ligands = likely_additive_ligands(retained_ligand_chains)
+        if additive_ligands:
+            additive_names = sorted(
+                {
+                    name
+                    for item in additive_ligands
+                    for name in item.get("residue_names", [])
+                }
+            )
+            placeholder_ligands = [
+                item for item in additive_ligands if item.get("unparametrizable")
+            ]
+            recommendation = {
+                "summary": (
+                    "Selected ligand(s) look like crystallization additives or "
+                    "placeholder residues, not biological cofactors: "
+                    f"{', '.join(additive_names)}."
+                ),
+                "options": [
+                    {
+                        "action": "drop_additive_ligands",
+                        "detail": (
+                            "Rerun a new prep node with `ligand` omitted from "
+                            "`--include-types` (keep protein/nucleic/glycan/ion)."
+                        ),
+                    },
+                    {
+                        "action": "name_target_ligand",
+                        "detail": (
+                            "If one of these is the intended target, keep it with "
+                            "`--include-ligand-resnames <RESNAME>` and drop the rest."
+                        ),
+                    },
+                ],
+            }
+            if placeholder_ligands:
+                # UNX/UNL/UNK carry no chemistry and can never be parameterized;
+                # block now instead of proceeding to a guaranteed topology failure.
+                placeholder_names = sorted(
+                    {
+                        name
+                        for item in placeholder_ligands
+                        for name in item.get("residue_names", [])
+                    }
+                )
+                result["likely_additive_ligands"] = additive_ligands
+                result["errors"].append(
+                    "Selected unparameterizable placeholder ligand(s): "
+                    f"{', '.join(placeholder_names)}. These residues have no "
+                    "defined chemistry and cannot be parameterized."
+                )
+                result["code"] = "unparametrizable_ligand_selected"
+                result["workflow_recommendation"] = recommendation
+                result["overall_status"] = "failed"
+                return result
+            # Known additives are chemically valid, so warn (do not block): the
+            # user may deliberately want to model e.g. glycerol.
+            result["likely_additive_ligands"] = additive_ligands
+            result["warnings"].append(
+                "Retained likely crystallization additive/buffer ligand(s): "
+                f"{', '.join(additive_names)}. If unintended, rerun prep with "
+                "`ligand` omitted from `--include-types`."
+            )
+            result.setdefault("workflow_recommendation", recommendation)
+
         # Step 3: Process proteins
         if process_proteins and split_result.get("protein_files"):
             logger.info(f"Step 3: Processing {len(split_result['protein_files'])} protein(s)...")

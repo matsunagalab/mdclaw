@@ -49,6 +49,7 @@ from mdclaw.chemistry_constants import (  # noqa: E402
 from mdclaw.selection_utils import (  # noqa: E402
     associated_ligand_candidates,
     associated_ligands_by_author_chain,
+    likely_additive_ligands,
 )
 
 logger = setup_logger(__name__)
@@ -627,6 +628,14 @@ def inspect_molecules(
             ptm["chain"] = chain_id_map.get(sub_id, sub_id)
         associated_ligands = associated_ligand_candidates(chains_info)
         result["associated_ligand_candidates"] = associated_ligands
+        additive_ligands = likely_additive_ligands(chains_info)
+        flagged_ids = {
+            item.get("unique_id") for item in additive_ligands if item.get("unique_id")
+        }
+        for chain in chains_info:
+            if chain.get("chain_type") == "ligand":
+                chain["likely_additive"] = chain.get("unique_id") in flagged_ids
+        result["likely_additive_ligands"] = additive_ligands
         result["summary"] = {
             "num_protein_chains": len(protein_author_chains),
             "num_nucleic_chains": len(nucleic_author_chains),
@@ -652,6 +661,7 @@ def inspect_molecules(
             "associated_ligands_by_author_chain": associated_ligands_by_author_chain(
                 associated_ligands
             ),
+            "likely_additive_ligands": additive_ligands,
             "multivalent_metal_residues": multivalent_metal_residues,
             "ptm_residues": ptm_residues,
             "nucleic_subtypes": nucleic_subtypes,
@@ -666,6 +676,22 @@ def inspect_molecules(
         )
         if modified_support["detected"]:
             result["warnings"].append(MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE)
+
+        if additive_ligands:
+            names = sorted(
+                {
+                    name
+                    for item in additive_ligands
+                    for name in item.get("residue_names", [])
+                }
+            )
+            result["warnings"].append(
+                "Detected likely crystallization additive / placeholder ligand(s): "
+                f"{', '.join(names)}. These are not part of the biological system "
+                "and will fail GAFF/template parameterization. Omit `ligand` from "
+                "`--include-types` (keep protein/nucleic/glycan/ion) unless the "
+                "task names one as the target."
+            )
 
         result["notes"] = {
             "metal_parameterization_required": bool(multivalent_metal_residues),

@@ -51,6 +51,13 @@ the returned `ligand_selection.recommended_include_ligand_ids` with
 same-author ligand candidates should be included. Omit `ligand` from
 `--include-types` for a ligand-free task. Do not retry unchanged.
 
+Crystallization additives (`EOH`, `GOL`, `PEG`/`2PE`/`PG4`, `MPD`, `SO4`,
+`ACT`, ...) and unknown residues (`UNX`, `UNL`, `UNK`) are swept into `ligand`
+by the default `--include-types` and then fail here or at topology with
+`No template found for residue <RESNAME>`. Triage them first
+(`skills/md-prepare/inspection-and-chains.md`); the safe default is to omit
+`ligand` and keep only `protein`/`nucleic`/`glycan`/`ion`.
+
 Ligand-free systems:
 
 ```bash
@@ -88,6 +95,14 @@ topology and ligand partial charges.
 
 If ligand chemistry preparation returns a blocking structured result, do not
 retry the same command. Follow `workflow_recommendation.options`.
+
+`prepare_complex` preflights the retained ligands against a curated additive
+list. Placeholder residues (`UNX`/`UNL`/`UNK`) have no chemistry and block with
+`code="unparametrizable_ligand_selected"`; follow
+`workflow_recommendation.options` (drop `ligand`, or name the real target).
+Known additives/buffers (glycerol, PEG, sulfate, ...) do not block but populate
+`warnings` and `likely_additive_ligands`; rerun with `ligand` omitted from
+`--include-types` unless the additive is intentional.
 
 After `prepare_complex` succeeds, verify the completed node before solvation:
 

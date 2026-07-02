@@ -38,6 +38,29 @@ Chain ID rule:
   (`component_id`, source label/auth IDs, topology chain index, atom/residue
   ranges).
 
+Crystallization-additive / unknown-HETATM triage (do this first):
+
+- `split_molecules` classifies every non-water HETATM as `ligand` by default and
+  tries to parameterize it. Crystallization additives, cryoprotectants, and
+  buffer components are *not* part of the biological system and will either fail
+  `prepare_complex` (GAFF/ligand read errors) or blow up much later at topology
+  with `No template found for residue <RESNAME>`.
+- `inspect_molecules` flags these for you: read `likely_additive_ligands`
+  (also under `summary`) and the per-ligand-chain `likely_additive` boolean.
+  Each entry lists `residue_names`, a coarse `reason`
+  (`cryoprotectant`/`solvent`/`buffer`/`unknown`), and `unparametrizable`
+  (true for `UNX`/`UNL`/`UNK`). Drop everything flagged unless the task
+  explicitly names one as the target.
+- Common droppable resnames include `EOH`, `GOL`, `EDO`, `PEG`, `PG4`, `1PE`,
+  `2PE`, `MPD`, `SO4`, `PO4`, `ACT`, `DMS`, `FMT`, `MES`, `TRS`, `IMD`, `BME`,
+  `NH4`, and unknown/placeholder residues `UNX`, `UNL`, `UNK`.
+- The safe default for a "just simulate this protein" task is to omit `ligand`
+  from `--include-types` entirely (e.g. `--include-types protein ion`), keeping
+  only supported ions. Add `ligand` back only when the task names a real
+  cofactor/substrate, and scope it with `--include-ligand-resnames <RESNAME>`.
+- Selenomethionine (`MSE`) is a modified protein residue, not a ligand; keep it
+  under `protein` (do not select it as a ligand).
+
 Ligand selection rule:
 
 - Use `inspect_molecules.associated_ligand_candidates` for chain-associated

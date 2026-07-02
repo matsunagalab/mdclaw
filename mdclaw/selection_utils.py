@@ -8,6 +8,43 @@ from typing import Any
 
 ASSOCIATED_LIGAND_ANCHOR_TYPES = {"protein", "nucleic", "glycan"}
 
+# Curated PDB ligand (HETATM) codes that are crystallization additives,
+# cryoprotectants, buffer components, or unknown/placeholder residues rather
+# than biologically meaningful cofactors or substrates. When one of these is
+# swept into the ``ligand`` selection it almost always fails GAFF / template
+# parameterization -- either in ``prepare_complex`` (ligand read/chemistry) or
+# much later at ``build_amber_system`` with ``No template found for residue
+# <RESNAME>``. They are surfaced so agents can drop them (omit ``ligand`` from
+# ``--include-types``) unless the task explicitly names one as the target.
+# Real cofactors/substrates (ATP, NAD, HEM, FAD, retinal, heme, ...) are
+# deliberately absent from this map.
+LIKELY_ADDITIVE_RESNAMES: dict[str, str] = {
+    # polyols / cryoprotectants
+    "GOL": "cryoprotectant", "EDO": "cryoprotectant", "PEG": "cryoprotectant",
+    "PG4": "cryoprotectant", "1PE": "cryoprotectant", "2PE": "cryoprotectant",
+    "PGE": "cryoprotectant", "P6G": "cryoprotectant", "PE4": "cryoprotectant",
+    "XPE": "cryoprotectant", "7PE": "cryoprotectant", "12P": "cryoprotectant",
+    "15P": "cryoprotectant", "MPD": "cryoprotectant", "MRD": "cryoprotectant",
+    "BU3": "cryoprotectant", "PDO": "cryoprotectant", "DIO": "cryoprotectant",
+    # organic solvents
+    "EOH": "solvent", "MOH": "solvent", "IPA": "solvent", "DMS": "solvent",
+    "ACN": "solvent", "ACT": "solvent", "ACY": "solvent", "FMT": "solvent",
+    "TFA": "solvent", "EEE": "solvent", "BME": "solvent", "DTT": "solvent",
+    # buffers / small counter-species
+    "MES": "buffer", "EPE": "buffer", "TRS": "buffer", "BTB": "buffer",
+    "IMD": "buffer", "BIS": "buffer", "CIT": "buffer", "FLC": "buffer",
+    "TLA": "buffer", "MLA": "buffer", "MLI": "buffer", "POP": "buffer",
+    "SO4": "buffer", "PO4": "buffer", "2HP": "buffer", "PI": "buffer",
+    "NO3": "buffer", "AZI": "buffer", "NH4": "buffer", "GAI": "buffer",
+    "CO3": "buffer", "BCT": "buffer",
+    # unknown / placeholder residues (never parameterizable)
+    "UNX": "unknown", "UNL": "unknown", "UNK": "unknown",
+}
+
+# Placeholder residues that carry no defined chemistry and therefore can never
+# be parameterized; selecting them should block rather than warn.
+UNPARAMETRIZABLE_PLACEHOLDER_RESNAMES = frozenset({"UNX", "UNL", "UNK"})
+
 
 def _residue_names(chain: dict[str, Any]) -> list[str]:
     names = chain.get("residue_names")
@@ -82,6 +119,71 @@ def associated_ligand_candidates(
             str(item.get("unique_id") or ""),
         ),
     )
+
+
+def classify_additive_resnames(resnames: Iterable[str]) -> dict[str, Any]:
+    """Classify a set of ligand residue names into additive / placeholder buckets.
+
+    Returns a dict with ``likely_additive`` resnames (mapped to a coarse reason)
+    and the subset that are unparameterizable placeholders (``UNX``/``UNL``/
+    ``UNK``). A ligand chain whose residue names fall entirely in these buckets
+    is not part of the biological system.
+    """
+    names = [str(name).strip().upper() for name in resnames if str(name).strip()]
+    additives = {
+        name: LIKELY_ADDITIVE_RESNAMES[name]
+        for name in names
+        if name in LIKELY_ADDITIVE_RESNAMES
+    }
+    placeholders = sorted(
+        {name for name in names if name in UNPARAMETRIZABLE_PLACEHOLDER_RESNAMES}
+    )
+    return {
+        "likely_additive": additives,
+        "unparametrizable_placeholders": placeholders,
+    }
+
+
+def likely_additive_ligands(
+    chains: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return ligand-type chains whose residues are all additives/placeholders.
+
+    Each entry carries enough identity (``chain_id``, ``author_chain``,
+    ``unique_id``, ``resname``) plus a coarse ``reason`` and an
+    ``unparametrizable`` flag so callers can either drop the component or, for
+    placeholder residues, block before topology.
+    """
+    flagged: list[dict[str, Any]] = []
+    for chain in chains:
+        if str(chain.get("chain_type") or "") != "ligand":
+            continue
+        residues = _residue_names(chain)
+        if not residues:
+            continue
+        classified = classify_additive_resnames(residues)
+        additive = classified["likely_additive"]
+        placeholders = classified["unparametrizable_placeholders"]
+        # Only flag chains that are *entirely* additive/placeholder; a real
+        # cofactor sharing a chain with an additive should not be dropped.
+        residue_set = {str(name).strip().upper() for name in residues}
+        if not residue_set <= set(additive):
+            continue
+        reasons = sorted(set(additive.values()))
+        flagged.append(
+            {
+                "chain_id": str(chain.get("chain_id") or "").strip() or None,
+                "author_chain": str(chain.get("author_chain") or "").strip()
+                or None,
+                "unique_id": str(chain.get("unique_id") or "").strip() or None,
+                "residue_names": sorted(residue_set),
+                "resname": sorted(residue_set)[0] if len(residue_set) == 1 else None,
+                "reason": reasons[0] if len(reasons) == 1 else "additive",
+                "reasons": reasons,
+                "unparametrizable": bool(placeholders),
+            }
+        )
+    return sorted(flagged, key=lambda item: str(item.get("unique_id") or ""))
 
 
 def associated_ligands_by_author_chain(
