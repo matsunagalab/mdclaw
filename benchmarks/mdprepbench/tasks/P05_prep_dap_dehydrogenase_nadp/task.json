@@ -89,6 +89,14 @@
         "weight": 1.0
       },
       {
+        "check_id": "structure_geometry_is_clash_free",
+        "check_type": "structure_geometry_quality",
+        "topology_manifest_path": "outputs.topology",
+        "clash_overlap_fraction": 0.6,
+        "max_clashes": 0,
+        "weight": 1.0
+      },
+      {
         "allowed_nonstandard_residue_names": [
           "NDP"
         ],

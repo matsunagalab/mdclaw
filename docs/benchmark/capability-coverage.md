@@ -23,10 +23,20 @@ The scorer treats the submitted artifact as the source of truth:
 Every completed preparation task must clear the **physical-validity gate** (it
 appears in every task): the OpenMM system loads (`openmm_system_load`), has
 finite energy (`openmm_energy_rescan`), has a force field applied to every atom
-(`forcefield_applied_rescan`), and ships the required minimized structure with a
-completed-minimization report (`minimization_report_check`). Failing the gate
-scores the task zero. Everything below is graded partial credit on top of the
-gate.
+(`forcefield_applied_rescan`), passes a geometric sanity scan with no steric
+clashes (`structure_geometry_quality`), and ships the required minimized
+structure with a completed-minimization report (`minimization_report_check`).
+Failing the gate scores the task zero. Everything below is graded partial credit
+on top of the gate.
+
+A finite energy alone is not enough: `structure_geometry_quality` reloads the
+`system.xml` + `state.xml` bundle and flags non-bonded atom pairs that overlap
+inside a fraction of their VDW `r_min` (bonded/exception pairs and virtual sites
+excluded). Optional per-task settings extend it to bond-length outliers,
+bond-angle outliers, cis non-proline peptide bonds, and inverted (D) CA
+chirality, so a system that minimizes to a finite energy but still contains a
+severe clash or bad geometry does not pass. A task can also promote any
+deterministic check to the gate with `hard_fail: true`.
 
 ## Check-type glossary
 
@@ -36,12 +46,13 @@ gate.
 | `openmm_energy_rescan` | Single-point energy is finite and physically plausible (physical_validity) |
 | `forcefield_applied_rescan` | Every particle has nonbonded params; bonded terms exist; no NaNs (physical_validity) |
 | `minimization_report_check` | Minimization attempted/completed with finite energies/positions (physical_validity) |
+| `structure_geometry_quality` | No steric clashes (+ optional bond/angle outliers, cis non-proline, D-chirality) recomputed from the OpenMM bundle (physical_validity) |
 | `net_charge_check` | Sum of recomputed particle charges is near-integer / neutral (physical_validity) |
 | `water_model_fingerprint` | Particles-per-water + virtual sites classify the water model (fidelity) |
 | `ion_concentration_recompute` | Ion residue count + box volume → molarity vs request (fidelity) |
 | `structure_component_rescan` | Required residues/components present in prepared structure (identity) |
 | `minimized_structure_component_rescan` | Same, in the minimized structure (identity) |
-| `pdb_residue_state` | Specific residue name/atoms (mutation, PTM, protonation, capping) (identity) |
+| `pdb_residue_state` | Specific residue name/atoms (mutation, PTM, protonation, capping); supports multiple accepted names/atom sets (e.g. HID vs HIE tautomers) for deterministic multi-answer scoring (identity) |
 | `rmsd_recompute` | Ligand pose, NMR model, or assembly coordinates vs a scorer-side reference (fidelity) |
 | `assembly_identity_check` | Chain/copy count matches the requested biological assembly (identity) |
 | `pdb_no_deuterium_atoms` | No stray deuterium atoms left in the structure (identity) |

@@ -4,6 +4,24 @@
       "additionalProperties": false,
       "description": "One deterministic, re-runnable check.\n\nEach check_type interprets the optional fields differently. The scoring\nlayer dispatches on ``check_type`` and applies the relevant fields.",
       "properties": {
+        "accepted_atom_name_sets": {
+          "anyOf": [
+            {
+              "items": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Accepted Atom Name Sets"
+        },
         "align_selection": {
           "anyOf": [
             {
@@ -46,6 +64,21 @@
           "default": null,
           "title": "Allowed Nonstandard Residue Names"
         },
+        "allowed_residue_names": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Residue Names"
+        },
         "allowed_values": {
           "anyOf": [
             {
@@ -58,6 +91,11 @@
           ],
           "default": null,
           "title": "Allowed Values"
+        },
+        "angle_tolerance_degrees": {
+          "default": 35.0,
+          "title": "Angle Tolerance Degrees",
+          "type": "number"
         },
         "anion_residue_names": {
           "anyOf": [
@@ -97,6 +135,11 @@
           ],
           "default": null,
           "title": "Assembly Id Json Path"
+        },
+        "bond_length_tolerance_fraction": {
+          "default": 0.35,
+          "title": "Bond Length Tolerance Fraction",
+          "type": "number"
         },
         "capability": {
           "anyOf": [
@@ -184,6 +227,11 @@
           "title": "Charge Tolerance",
           "type": "number"
         },
+        "check_chirality": {
+          "default": false,
+          "title": "Check Chirality",
+          "type": "boolean"
+        },
         "check_id": {
           "title": "Check Id",
           "type": "string"
@@ -198,6 +246,7 @@
             "json_min_length",
             "json_allowed_values",
             "trajectory_rescan",
+            "paired_mutation_topology",
             "topology_solvent_rescan",
             "structure_component_rescan",
             "topology_component_rescan",
@@ -221,10 +270,16 @@
             "ion_concentration_recompute",
             "minimization_report_check",
             "minimized_structure_component_rescan",
+            "structure_geometry_quality",
             "metrics_caption_consistency"
           ],
           "title": "Check Type",
           "type": "string"
+        },
+        "clash_overlap_fraction": {
+          "default": 0.6,
+          "title": "Clash Overlap Fraction",
+          "type": "number"
         },
         "count_polymer_chains_only": {
           "default": true,
@@ -309,6 +364,11 @@
           "default": null,
           "title": "Forbidden Outputs"
         },
+        "hard_fail": {
+          "default": false,
+          "title": "Hard Fail",
+          "type": "boolean"
+        },
         "ignored_residue_names": {
           "anyOf": [
             {
@@ -372,6 +432,47 @@
           ],
           "default": null,
           "title": "Lipid Residue Names"
+        },
+        "max_angle_outliers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Angle Outliers"
+        },
+        "max_bond_length_outliers": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Bond Length Outliers"
+        },
+        "max_cis_nonproline": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cis Nonproline"
+        },
+        "max_clashes": {
+          "default": 0,
+          "title": "Max Clashes",
+          "type": "integer"
         },
         "max_rescan_minimization_steps": {
           "anyOf": [
@@ -647,6 +748,18 @@
           "default": 0.05,
           "title": "Molar Tolerance",
           "type": "number"
+        },
+        "mutant_topology_manifest_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mutant Topology Manifest Path"
         },
         "reference_pdb": {
           "anyOf": [
@@ -1200,6 +1313,18 @@
           "minimum": 0.0,
           "title": "Weight",
           "type": "number"
+        },
+        "wild_type_residue_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Wild Type Residue Name"
         }
       },
       "required": [
@@ -1311,6 +1436,8 @@
             "status_artifact_floor",
             "manifest_artifact_floor",
             "trajectory_file_signature",
+            "submission_artifact_hashes",
+            "openmm_minimized_state_consistency",
             "provenance_execution_evidence"
           ],
           "title": "Check Type",
@@ -1327,6 +1454,18 @@
           ],
           "default": null,
           "title": "Citation Field"
+        },
+        "coordinate_tolerance_nm": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coordinate Tolerance Nm"
         },
         "figures_manifest_path": {
           "anyOf": [
@@ -1454,6 +1593,11 @@
         "require_harness_record": {
           "default": false,
           "title": "Require Harness Record",
+          "type": "boolean"
+        },
+        "require_manifest_output_hashes": {
+          "default": true,
+          "title": "Require Manifest Output Hashes",
           "type": "boolean"
         },
         "required_keys": {

@@ -105,6 +105,7 @@ def _write_openmm_bundle(
     huge_energy: bool = False,
     include_water: bool = False,
     extra_residues: list[tuple[str, int]] | None = None,
+    clash: bool = False,
 ) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
@@ -162,6 +163,15 @@ def _write_openmm_bundle(
             x = 0.8 + 0.1 * atom_i
             positions.append(Vec3(x, 0.0, 0.0))
             pdb_positions.append(Vec3(x, 0.0, 0.0))
+    if clash:
+        # A second non-bonded atom placed 0.05 nm from the first, well inside
+        # the VDW r_min for these sigmas, with no NonbondedForce exception.
+        clash_res = topology.addResidue("LIG", chain, "99")
+        topology.addAtom("X1", Element.getBySymbol("C"), clash_res)
+        system.addParticle(12.0)
+        nonbonded.addParticle(0.0, 0.3, 0.1)
+        positions.append(Vec3(0.05, 0.0, 0.0))
+        pdb_positions.append(Vec3(0.05, 0.0, 0.0))
     positions_q = positions * unit.nanometer
     pdb_positions_q = pdb_positions * unit.nanometer
     system.addForce(nonbonded)
@@ -1761,7 +1771,156 @@ def test_pdb_residue_state_check_requires_variant_and_hydrogen(tmp_path: Path):
     failed_score = scoring.score_submission(task, tmp_path)
     failed = failed_score.deterministic_checks[0]
     assert failed.passed is False
-    assert "do not include GLH" in failed.message
+    assert "do not include" in failed.message
+
+
+def test_pdb_residue_state_accepts_alternate_residue_and_atom_sets(tmp_path: Path):
+    # Multiple-accepted-answer form: HID (with ND1 proton) and HIE (with NE2
+    # proton) are both valid neutral-His tautomers; either should pass.
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="his_tautomer",
+            check_type="pdb_residue_state",
+            structure_manifest_path="outputs.prepared_structure",
+            residue_chain="A",
+            residue_number="31",
+            allowed_residue_names=["HID", "HIE"],
+            accepted_atom_name_sets=[["HD1"], ["HE2"]],
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    # HIE tautomer: NE2-protonated.
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   HIE A  31       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  HIE A  31       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  HE2 HIE A  31       2.000   0.000   0.000  1.00  0.00           H\n"
+        "END\n"
+    )
+    assert scoring.score_submission(task, tmp_path).deterministic_checks[0].passed is True
+
+    # HID tautomer: ND1-protonated. Also accepted.
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   HID A  31       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  HID A  31       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  HD1 HID A  31       2.000   0.000   0.000  1.00  0.00           H\n"
+        "END\n"
+    )
+    assert scoring.score_submission(task, tmp_path).deterministic_checks[0].passed is True
+
+    # HIP (doubly protonated) is not in the accepted set -> fail.
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  N   HIP A  31       0.000   0.000   0.000  1.00  0.00           N\n"
+        "ATOM      2  CA  HIP A  31       1.000   0.000   0.000  1.00  0.00           C\n"
+        "ATOM      3  HD1 HIP A  31       2.000   0.000   0.000  1.00  0.00           H\n"
+        "END\n"
+    )
+    assert scoring.score_submission(task, tmp_path).deterministic_checks[0].passed is False
+
+
+def test_structure_geometry_quality_passes_clean_system(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="geometry",
+            check_type="structure_geometry_quality",
+            topology_manifest_path="outputs.topology",
+            weight=1.0,
+        )],
+    )
+    _write_openmm_bundle(tmp_path, include_water=True)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+    assert "clashes=0" in score.deterministic_checks[0].message
+
+
+def test_structure_geometry_quality_flags_clash_and_is_hard_gate(tmp_path: Path):
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="geometry",
+            check_type="structure_geometry_quality",
+            topology_manifest_path="outputs.topology",
+            weight=1.0,
+        )],
+    )
+    _write_openmm_bundle(tmp_path, clash=True)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    geometry = score.deterministic_checks[0]
+    assert geometry.passed is False
+    assert "clash" in geometry.message
+    # structure_geometry_quality is in the physical-validity gate, so a
+    # completed submission that fails it is clamped to zero.
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+
+
+def test_hard_fail_override_promotes_check_to_gate(tmp_path: Path):
+    # structure_component_rescan is not a built-in gate; hard_fail=True makes a
+    # failing instance clamp the completed submission to zero anyway.
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="required_ligand",
+            check_type="structure_component_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            min_residue_counts={"AP5": 1},
+            hard_fail=True,
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is False
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
 
 
 def test_structure_component_rescan_counts_required_and_forbidden_residues(tmp_path: Path):

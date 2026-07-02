@@ -109,12 +109,14 @@ The standardized metrics fields are:
   `minimization.atom_count_preserved`, and `minimization.backend`.
 
 All tasks include common deterministic checks for `topology_artifact_bundle`,
-`openmm_system_load`, `openmm_energy_rescan`, and
-`minimization_report_check`. Task-specific structure/component checks are also
-mirrored onto the minimized structure when applicable. If a submission declares
-`manifest.status = "completed"` but fails a topology/minimization critical
-check, the scorer treats it as a failed prep submission rather than a partial
-success.
+`openmm_system_load`, `openmm_energy_rescan`, `forcefield_applied_rescan`,
+`minimization_report_check`, and `structure_geometry_quality` (a steric-clash /
+geometry sanity scan recomputed from the artifact). Task-specific
+structure/component checks are also mirrored onto the minimized structure when
+applicable. If a submission declares `manifest.status = "completed"` but fails a
+topology/minimization/geometry critical check, the scorer treats it as a failed
+prep submission rather than a partial success. Any deterministic check can also
+be promoted to this gate per task with `hard_fail: true`.
 
 ### Current Prep Tasks
 
@@ -208,7 +210,14 @@ check types include:
   decisions, and termini/capping decisions.
 - `protonation_state_check`: verify user-specified residue protonation states
   where the artifact format makes that possible, including named residue sites
-  rather than only global pH defaults.
+  rather than only global pH defaults. Implemented via `pdb_residue_state`,
+  which now accepts multiple valid answers (`allowed_residue_names` /
+  `accepted_atom_name_sets`) so judgment-type protonation/tautomer/capping tasks
+  stay deterministic instead of needing an LLM judge.
+- `structure_geometry_quality`: recompute steric clashes from the OpenMM bundle
+  (VDW `r_min` overlap, bonded/exception pairs and virtual sites excluded), with
+  optional bond-length/angle outlier, cis non-proline, and D-chirality checks.
+  This is part of the physical-validity gate on every task.
 - `rmsd_recompute`: verify ligand pose, NMR model selection, or assembly choice
   against scorer-private references when source-selection self-report would be
   too easy to fabricate.

@@ -158,6 +158,7 @@ DeterministicCheckType = Literal[
     "ion_concentration_recompute",
     "minimization_report_check",
     "minimized_structure_component_rescan",
+    "structure_geometry_quality",
     "metrics_caption_consistency",
 ]
 
@@ -208,6 +209,7 @@ DEFAULT_CHECK_CAPABILITY: dict[str, str] = {
     "ion_concentration_recompute": "fidelity",
     "minimization_report_check": "physical_validity",
     "minimized_structure_component_rescan": "identity",
+    "structure_geometry_quality": "physical_validity",
     "metrics_caption_consistency": "provenance",
     "minimized_structure_required": "physical_validity",
 }
@@ -442,6 +444,41 @@ class DeterministicCheck(BaseModel):
     target_molar: Optional[float] = None
     molar_tolerance: float = 0.05
     min_ion_count: Optional[int] = None
+
+    # structure_geometry_quality: recompute geometric sanity from the OpenMM
+    # bundle (system.xml sigma + bonds/exceptions and state.xml coordinates).
+    # A well-minimized system passes; severe clashes/outliers indicate a bad
+    # starting structure that a finite-energy check alone would not catch.
+    # - clash_overlap_fraction: two non-bonded atoms clash when their center
+    #   distance is below this fraction of (sigma_i + sigma_j)/2 * 2^(1/6).
+    # - max_clashes / max_bond_length_outliers / max_angle_outliers /
+    #   max_cis_nonproline: tolerated counts before the check fails.
+    # - bond_length_tolerance_fraction / angle_tolerance_degrees: outlier
+    #   thresholds relative to the ideal geometry from the force field.
+    # - check_chirality: flag D-amino-acid CA centers (inverted chirality).
+    clash_overlap_fraction: float = 0.6
+    max_clashes: int = 0
+    max_bond_length_outliers: Optional[int] = None
+    bond_length_tolerance_fraction: float = 0.35
+    max_angle_outliers: Optional[int] = None
+    angle_tolerance_degrees: float = 35.0
+    max_cis_nonproline: Optional[int] = None
+    check_chirality: bool = False
+
+    # Multiple-accepted-answer variants for pdb_residue_state (deterministic,
+    # no LLM judge). When set, the residue passes if it matches ANY of the
+    # allowed residue names and (optionally) ANY of the accepted atom-name sets.
+    # This lets judgment-type tasks (protonation/tautomer/capping) accept more
+    # than one valid preparation without falling back to a subjective judge.
+    allowed_residue_names: Optional[list[str]] = None
+    accepted_atom_name_sets: Optional[list[list[str]]] = None
+
+    # Per-check hard-fail override. When True, a failing check clamps the
+    # completed submission to 0 like the built-in physical-validity gate, even
+    # if its check_type is not in scoring._HARD_FAIL_CHECK_TYPES. Lets a task
+    # promote a task-specific check (e.g. a required protonation state) to a
+    # gate without making that check_type a gate for every task.
+    hard_fail: bool = False
 
 
 class GroundTruthCheck(BaseModel):

@@ -90,8 +90,60 @@ print(json.dumps({
     assert result.returncode == 0, result.stderr
     summary = json.loads((tmp_path / "exec_all_agents_operator_summary.json").read_text())
     assert summary["success"] is True
+    assert summary["repeats"] == 1
     run = summary["runs"][0]
     assert run["success"] is True
     assert run["runner_payload"]["run_id"] == "exec_pi"
     assert run["runner_payload"]["agent_model"] == "pi-model"
     assert Path(run["stdout_log"]).is_file()
+
+
+def test_run_mdprepbench_all_agents_repeats_run_ids_and_aggregates(tmp_path: Path):
+    fake_mdclaw = tmp_path / "fake_mdclaw.py"
+    fake_mdclaw.write_text(
+        """
+import json
+import sys
+
+args = sys.argv[1:]
+run_id = args[args.index("--run-id") + 1]
+print(json.dumps({
+    "success": True,
+    "run_id": run_id,
+    "score": {"summary": {"summary": {"overall_score": 0.5}}},
+}))
+""".lstrip()
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--output-dir",
+            str(tmp_path),
+            "--run-id-prefix",
+            "rep",
+            "--agents",
+            "pi",
+            "--repeats",
+            "2",
+            "--task-ids",
+            TASK_ID,
+            "--mdclaw-cmd",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_mdclaw))}",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    summary = json.loads((tmp_path / "rep_all_agents_operator_summary.json").read_text())
+    assert summary["repeats"] == 2
+    run_ids = [run["runner_payload"]["run_id"] for run in summary["runs"]]
+    assert run_ids == ["rep_pi_rep1", "rep_pi_rep2"]
+    assert [run["repeat"] for run in summary["runs"]] == [1, 2]
+    aggregates = summary["aggregates"]["pi"]
+    assert aggregates["n"] == 2
+    assert aggregates["scores"] == [0.5, 0.5]
+    assert aggregates["mean"] == 0.5
+    assert aggregates["stdev"] == 0.0

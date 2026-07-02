@@ -13,11 +13,16 @@
   "scoring": {
     "deterministic_checks": [
       {
+        "accepted_atom_name_sets": [
+          [
+            "HE2"
+          ],
+          [
+            "HE1"
+          ]
+        ],
         "check_id": "glu11_is_glh_with_he2",
         "check_type": "pdb_residue_state",
-        "required_atom_names": [
-          "HE2"
-        ],
         "required_residue_name": "GLH",
         "residue_chain": "A",
         "residue_number": "11",
@@ -45,11 +50,16 @@
         "weight": 0.5
       },
       {
+        "accepted_atom_name_sets": [
+          [
+            "HE2"
+          ],
+          [
+            "HE1"
+          ]
+        ],
         "check_id": "minimized_glu11_is_glh_with_he2",
         "check_type": "pdb_residue_state",
-        "required_atom_names": [
-          "HE2"
-        ],
         "required_residue_name": "GLH",
         "residue_chain": "A",
         "residue_number": "11",

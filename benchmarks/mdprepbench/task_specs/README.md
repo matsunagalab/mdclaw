@@ -8,8 +8,14 @@ Shared preparation requirements live in `defaults.json`:
 
 - common required outputs
 - artifact-integrity checks
-- the OpenMM topology / minimization deterministic check bundle
+- the OpenMM topology / minimization deterministic check bundle (which also
+  includes `structure_geometry_quality`, a steric-clash / geometry sanity gate)
 - common score axes, tool tags, and rubrics
+
+Task-specific checks can accept multiple valid answers deterministically. For
+example `pdb_residue_state` supports `allowed_residue_names` and
+`accepted_atom_name_sets` (e.g. HID vs HIE tautomers), and any check can be
+promoted to the physical-validity gate with `hard_fail: true`.
 
 Each `tasks/<task_id>.json` contains only the task-specific metadata and
 deterministic checks. The `{"$bundle": "topology_minimization"}` placeholder is

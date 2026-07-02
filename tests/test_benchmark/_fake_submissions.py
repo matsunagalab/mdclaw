@@ -195,6 +195,25 @@ def _unique_atom_names(atom_names: list[Any]) -> list[str]:
     return unique
 
 
+def _residue_state_target(check: dict[str, Any]) -> tuple[str, list[str]]:
+    """Honest residue name + extra atom names for a pdb_residue_state check.
+
+    Supports both the single required_residue_name/required_atom_names form and
+    the multiple-accepted allowed_residue_names/accepted_atom_name_sets form
+    (an honest fixture just satisfies the first accepted option).
+    """
+    resname = (
+        check.get("required_residue_name")
+        or next(iter(check.get("allowed_residue_names") or []), None)
+        or "ALA"
+    )
+    extra_atoms = list(check.get("required_atom_names") or [])
+    accepted_sets = check.get("accepted_atom_name_sets") or []
+    if accepted_sets:
+        extra_atoms.extend(accepted_sets[0])
+    return str(resname), [str(atom) for atom in extra_atoms]
+
+
 def _check_targets_topology(check: dict[str, Any]) -> bool:
     target = str(
         check.get("structure_manifest_path")
@@ -539,18 +558,12 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
             resseq_required = int(
                 str(check.get("residue_number") or "1").strip() or 1
             )
-            resname = check.get("required_residue_name") or "ALA"
+            resname, extra_atoms = _residue_state_target(check)
             residue_state_key = (str(chain_id), resseq_required, str(resname))
             if residue_state_key in residue_state_keys:
                 continue
             residue_state_keys.add(residue_state_key)
-            atoms = _unique_atom_names([
-                "N",
-                "CA",
-                "C",
-                "O",
-                *(check.get("required_atom_names") or []),
-            ])
+            atoms = _unique_atom_names(["N", "CA", "C", "O", *extra_atoms])
             chain_for_residue = topology.addChain(str(chain_id))
             residue = topology.addResidue(
                 str(resname),
@@ -719,14 +732,8 @@ def _prepared_structure(
         elif check_type == "pdb_residue_state":
             chain = check.get("residue_chain") or "A"
             number = int(str(check.get("residue_number") or "1").strip() or 1)
-            resname = check.get("required_residue_name") or "ALA"
-            atoms = _unique_atom_names([
-                "N",
-                "CA",
-                "C",
-                "O",
-                *(check.get("required_atom_names") or []),
-            ])
+            resname, extra_atoms = _residue_state_target(check)
+            atoms = _unique_atom_names(["N", "CA", "C", "O", *extra_atoms])
             if mode != "honest":
                 resname = "GLY"
                 atoms = ["N", "CA", "C", "O"]

@@ -45,6 +45,7 @@ _HARD_FAIL_CHECK_TYPES = {
     "openmm_energy_rescan",
     "forcefield_applied_rescan",
     "topology_component_rescan",
+    "structure_geometry_quality",
     "minimized_structure_required",
     # StudyBench comparative-MD gates: a completed scientific-answer submission
     # must include real, loadable trajectories and a correctly built paired
@@ -159,9 +160,17 @@ def score_submission(
 
     # Physical-validity gate: a completed submission that fails to load, has a
     # non-finite energy, or has no force field applied is not a valid MD system.
+    # A task may also promote a task-specific check to a gate via hard_fail=True.
+    hard_fail_check_ids = {
+        check.check_id
+        for check in task.scoring.deterministic_checks
+        if getattr(check, "hard_fail", False)
+    }
     hard_failures = [
         result for result in deterministic_results
-        if result.check_type in _HARD_FAIL_CHECK_TYPES and not result.passed
+        if (result.check_type in _HARD_FAIL_CHECK_TYPES
+            or result.check_id in hard_fail_check_ids)
+        and not result.passed
     ]
 
     # 4. ground-truth checks
@@ -2009,18 +2018,38 @@ def _check_pdb_residue_state(check: DeterministicCheck,
     structure_path = _resolve_relative(submission_dir, structure_rel)
     if not structure_path.is_file():
         return False, 0.0, f"structure file not found: {structure_path}"
-    if not check.residue_number or not check.required_residue_name:
-        return False, 0.0, "residue_number and required_residue_name are required"
+    # Accepted residue names: single required_residue_name and/or the
+    # multiple-accepted allowed_residue_names variant (deterministic, no judge).
+    accepted_resnames = {
+        name.strip().upper()
+        for name in ([check.required_residue_name] if check.required_residue_name else [])
+        + (check.allowed_residue_names or [])
+        if name and name.strip()
+    }
+    if not check.residue_number or not accepted_resnames:
+        return (
+            False,
+            0.0,
+            "residue_number and required_residue_name/allowed_residue_names are required",
+        )
 
     expected_chain = (check.residue_chain or "").strip()
     expected_number = str(check.residue_number).strip()
     expected_icode = (check.insertion_code or "").strip()
-    expected_resname = check.required_residue_name.strip().upper()
-    required_atoms = {
-        atom.strip().upper()
-        for atom in (check.required_atom_names or [])
-        if atom.strip()
-    }
+    # Atom-name requirement: either a single required set, or any-of accepted
+    # sets (e.g. HID vs HIE tautomer proton placement).
+    accepted_atom_sets: list[set[str]] = []
+    if check.accepted_atom_name_sets:
+        for atom_set in check.accepted_atom_name_sets:
+            accepted_atom_sets.append({
+                atom.strip().upper() for atom in atom_set if atom.strip()
+            })
+    if check.required_atom_names:
+        accepted_atom_sets.append({
+            atom.strip().upper()
+            for atom in check.required_atom_names
+            if atom.strip()
+        })
     forbidden_atoms = {
         atom.strip().upper()
         for atom in (check.forbidden_atom_names or [])
@@ -2064,17 +2093,28 @@ def _check_pdb_residue_state(check: DeterministicCheck,
     residue_label = f"{expected_chain}:{expected_number}{expected_icode}"
     if not residue_names:
         return False, 0.0, f"residue {residue_label} not found"
-    if expected_resname not in residue_names:
+    matched_resname = sorted(accepted_resnames & residue_names)
+    if not matched_resname:
         return (
             False,
             0.0,
             f"residue {residue_label} names {sorted(residue_names)} "
-            f"do not include {expected_resname}",
+            f"do not include any of {sorted(accepted_resnames)}",
         )
 
-    missing = sorted(required_atoms - atom_names)
-    if missing:
-        return False, 0.0, f"residue {residue_label} missing atoms {missing}"
+    # Atom-name requirement passes if ANY accepted set is fully present.
+    if accepted_atom_sets:
+        satisfied = any(atom_set <= atom_names for atom_set in accepted_atom_sets)
+        if not satisfied:
+            missing_per_set = [
+                sorted(atom_set - atom_names) for atom_set in accepted_atom_sets
+            ]
+            return (
+                False,
+                0.0,
+                f"residue {residue_label} does not satisfy any accepted atom set "
+                f"(missing per set: {missing_per_set})",
+            )
     forbidden_present = sorted(forbidden_atoms & atom_names)
     if forbidden_present:
         return (
@@ -2085,7 +2125,7 @@ def _check_pdb_residue_state(check: DeterministicCheck,
     return (
         True,
         1.0,
-        f"residue {residue_label} is {expected_resname} with required atoms present",
+        f"residue {residue_label} is {matched_resname[0]} with required atoms present",
     )
 
 
@@ -2522,6 +2562,385 @@ def _check_rmsd_recompute(check: DeterministicCheck, submission_dir: Path,
         f"recomputed rmsd={rmsd:.3f} Å <= {bound} ({msg})")
 
 
+_TWO_TO_ONE_SIXTH = 2.0 ** (1.0 / 6.0)
+
+
+def _positions_nm(state: Any) -> Optional[list[tuple[float, float, float]]]:
+    try:
+        from openmm import unit
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        raw = state.getPositions().value_in_unit(unit.nanometer)
+    except Exception:  # noqa: BLE001
+        return None
+    coords: list[tuple[float, float, float]] = []
+    for vec in raw:
+        coords.append((float(vec[0]), float(vec[1]), float(vec[2])))
+    return coords
+
+
+def _nonbonded_exception_pairs(system: Any) -> set[tuple[int, int]]:
+    """1-2/1-3/1-4 particle pairs excluded from nonbonded clash detection."""
+    nonbonded = _nonbonded_force(system)
+    pairs: set[tuple[int, int]] = set()
+    if nonbonded is None:
+        return pairs
+    for i in range(nonbonded.getNumExceptions()):
+        p1, p2, *_rest = nonbonded.getExceptionParameters(i)
+        a, b = int(p1), int(p2)
+        pairs.add((a, b) if a < b else (b, a))
+    return pairs
+
+
+def _count_nonbonded_clashes(
+    system: Any,
+    coords: list[tuple[float, float, float]],
+    overlap_fraction: float,
+    limit: int,
+) -> tuple[int, list[str]]:
+    """Count non-bonded atom pairs closer than a fraction of their VDW r_min.
+
+    Uses a uniform spatial grid so the scan is near-linear even for solvated
+    systems. Bonded (exception) pairs and virtual sites are excluded.
+    """
+    rows = _particle_parameter_rows(system)
+    if rows is None:
+        return -1, ["NonbondedForce particle parameters unavailable"]
+    n = len(rows)
+    if n != len(coords):
+        return -1, [f"particle/coord count mismatch: {n} vs {len(coords)}"]
+
+    sigmas = [float(row["sigma"]) for row in rows]
+    virtual = [bool(row["is_virtual"]) for row in rows]
+    max_sigma = max((s for s in sigmas), default=0.0)
+    cell = overlap_fraction * max_sigma * _TWO_TO_ONE_SIXTH
+    if cell <= 0.0:
+        return 0, []
+
+    exceptions = _nonbonded_exception_pairs(system)
+
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    inv = 1.0 / cell
+    for idx in range(n):
+        if virtual[idx] or sigmas[idx] <= 0.0:
+            continue
+        x, y, z = coords[idx]
+        key = (int(math.floor(x * inv)), int(math.floor(y * inv)),
+               int(math.floor(z * inv)))
+        grid.setdefault(key, []).append(idx)
+
+    clashes = 0
+    examples: list[str] = []
+    neighbor_offsets = [
+        (dx, dy, dz)
+        for dx in (-1, 0, 1)
+        for dy in (-1, 0, 1)
+        for dz in (-1, 0, 1)
+    ]
+    for (cx, cy, cz), members in grid.items():
+        for off in neighbor_offsets:
+            nkey = (cx + off[0], cy + off[1], cz + off[2])
+            neighbors = grid.get(nkey)
+            if not neighbors:
+                continue
+            for i in members:
+                for j in neighbors:
+                    if j <= i:
+                        continue
+                    pair = (i, j)
+                    if pair in exceptions:
+                        continue
+                    xi, yi, zi = coords[i]
+                    xj, yj, zj = coords[j]
+                    dist2 = (xi - xj) ** 2 + (yi - yj) ** 2 + (zi - zj) ** 2
+                    r_min = ((sigmas[i] + sigmas[j]) * 0.5) * _TWO_TO_ONE_SIXTH
+                    threshold = overlap_fraction * r_min
+                    if dist2 < threshold * threshold:
+                        clashes += 1
+                        if len(examples) < 5:
+                            examples.append(
+                                f"{i}-{j} at {math.sqrt(dist2) * 10:.2f} A "
+                                f"(< {threshold * 10:.2f} A)"
+                            )
+                        if clashes > limit + 1:
+                            return clashes, examples
+    return clashes, examples
+
+
+def _bonded_force(system: Any, class_name: str) -> Any:
+    for i in range(system.getNumForces()):
+        force = system.getForce(i)
+        if type(force).__name__ == class_name:
+            return force
+    return None
+
+
+def _count_bond_length_outliers(
+    system: Any,
+    coords: list[tuple[float, float, float]],
+    tolerance_fraction: float,
+) -> tuple[int, list[str]]:
+    force = _bonded_force(system, "HarmonicBondForce")
+    if force is None:
+        return 0, []
+    try:
+        from openmm import unit
+    except Exception:  # noqa: BLE001
+        return 0, []
+    outliers = 0
+    examples: list[str] = []
+    for i in range(force.getNumBonds()):
+        p1, p2, length, _k = force.getBondParameters(i)
+        r0 = float(length.value_in_unit(unit.nanometer))
+        if r0 <= 0.0:
+            continue
+        a, b = int(p1), int(p2)
+        xa, ya, za = coords[a]
+        xb, yb, zb = coords[b]
+        r = math.sqrt((xa - xb) ** 2 + (ya - yb) ** 2 + (za - zb) ** 2)
+        if abs(r - r0) > tolerance_fraction * r0:
+            outliers += 1
+            if len(examples) < 5:
+                examples.append(f"{a}-{b}: {r * 10:.2f} A vs {r0 * 10:.2f} A")
+    return outliers, examples
+
+
+def _count_angle_outliers(
+    system: Any,
+    coords: list[tuple[float, float, float]],
+    tolerance_degrees: float,
+) -> tuple[int, list[str]]:
+    force = _bonded_force(system, "HarmonicAngleForce")
+    if force is None:
+        return 0, []
+    try:
+        from openmm import unit
+    except Exception:  # noqa: BLE001
+        return 0, []
+    tol = math.radians(tolerance_degrees)
+    outliers = 0
+    examples: list[str] = []
+    for i in range(force.getNumAngles()):
+        p1, p2, p3, angle, _k = force.getAngleParameters(i)
+        theta0 = float(angle.value_in_unit(unit.radian))
+        a, b, c = int(p1), int(p2), int(p3)
+        theta = _angle_between(coords[a], coords[b], coords[c])
+        if theta is None:
+            continue
+        if abs(theta - theta0) > tol:
+            outliers += 1
+            if len(examples) < 5:
+                examples.append(
+                    f"{a}-{b}-{c}: {math.degrees(theta):.0f} deg vs "
+                    f"{math.degrees(theta0):.0f} deg"
+                )
+    return outliers, examples
+
+
+def _vec_sub(u, v):
+    return (u[0] - v[0], u[1] - v[1], u[2] - v[2])
+
+
+def _dot(u, v):
+    return u[0] * v[0] + u[1] * v[1] + u[2] * v[2]
+
+
+def _cross(u, v):
+    return (
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    )
+
+
+def _angle_between(a, b, c) -> Optional[float]:
+    ba = _vec_sub(a, b)
+    bc = _vec_sub(c, b)
+    nba = math.sqrt(_dot(ba, ba))
+    nbc = math.sqrt(_dot(bc, bc))
+    if nba == 0.0 or nbc == 0.0:
+        return None
+    cos = max(-1.0, min(1.0, _dot(ba, bc) / (nba * nbc)))
+    return math.acos(cos)
+
+
+def _dihedral(a, b, c, d) -> Optional[float]:
+    b1 = _vec_sub(b, a)
+    b2 = _vec_sub(c, b)
+    b3 = _vec_sub(d, c)
+    n1 = _cross(b1, b2)
+    n2 = _cross(b2, b3)
+    m = _cross(n1, b2)
+    nb2 = math.sqrt(_dot(b2, b2))
+    if nb2 == 0.0:
+        return None
+    x = _dot(n1, n2)
+    y = _dot(m, n2) / nb2
+    if x == 0.0 and y == 0.0:
+        return None
+    return math.atan2(y, x)
+
+
+def _backbone_residue_atoms(
+    topology: Any, coords: list[tuple[float, float, float]]
+) -> list[dict[str, Any]]:
+    """Per-residue backbone atom coordinates in chain order."""
+    residues: list[dict[str, Any]] = []
+    for chain in topology.chains():
+        for residue in chain.residues():
+            atoms: dict[str, tuple[float, float, float]] = {}
+            for atom in residue.atoms():
+                name = atom.name.strip().upper()
+                if name in {"N", "CA", "C", "O", "CB"}:
+                    idx = atom.index
+                    if 0 <= idx < len(coords):
+                        atoms[name] = coords[idx]
+            residues.append({
+                "chain": id(chain),
+                "resname": residue.name.strip().upper(),
+                "atoms": atoms,
+            })
+    return residues
+
+
+def _count_cis_nonproline(residues: list[dict[str, Any]]) -> tuple[int, list[str]]:
+    """Count cis peptide bonds (|omega| < 90 deg) that are not X-Pro."""
+    cis = 0
+    examples: list[str] = []
+    for prev, cur in zip(residues, residues[1:]):
+        if prev["chain"] != cur["chain"]:
+            continue
+        if cur["resname"] in {"PRO", "HYP"}:
+            continue
+        ca_prev = prev["atoms"].get("CA")
+        c_prev = prev["atoms"].get("C")
+        n_cur = cur["atoms"].get("N")
+        ca_cur = cur["atoms"].get("CA")
+        if None in (ca_prev, c_prev, n_cur, ca_cur):
+            continue
+        omega = _dihedral(ca_prev, c_prev, n_cur, ca_cur)
+        if omega is None:
+            continue
+        if abs(omega) < math.radians(90.0):
+            cis += 1
+            if len(examples) < 5:
+                examples.append(
+                    f"{prev['resname']}-{cur['resname']}: "
+                    f"omega={math.degrees(omega):.0f} deg"
+                )
+    return cis, examples
+
+
+def _count_inverted_chirality(residues: list[dict[str, Any]]) -> tuple[int, list[str]]:
+    """Count CA centers with D-amino-acid (inverted) chirality.
+
+    L-amino acids have a positive signed volume for the ordered triple
+    (N-CA, C-CA, CB-CA). Glycine has no CB and is skipped.
+    """
+    inverted = 0
+    examples: list[str] = []
+    for res in residues:
+        atoms = res["atoms"]
+        if res["resname"] in {"GLY"}:
+            continue
+        ca = atoms.get("CA")
+        n = atoms.get("N")
+        c = atoms.get("C")
+        cb = atoms.get("CB")
+        if None in (ca, n, c, cb):
+            continue
+        v1 = _vec_sub(n, ca)
+        v2 = _vec_sub(c, ca)
+        v3 = _vec_sub(cb, ca)
+        signed = _dot(_cross(v1, v2), v3)
+        if signed > 0.0:
+            inverted += 1
+            if len(examples) < 5:
+                examples.append(f"{res['resname']} CA signed_vol={signed:.3f}")
+    return inverted, examples
+
+
+def _check_structure_geometry_quality(check: DeterministicCheck,
+                                      submission_dir: Path,
+                                      manifest: dict, **_):
+    loaded = _load_openmm_bundle(check, submission_dir, manifest)
+    if not loaded["success"]:
+        return (
+            False,
+            0.0,
+            "geometry quality requires a loadable OpenMM bundle: "
+            f"{loaded['message']}",
+        )
+    system = loaded["system"]
+    coords = _positions_nm(loaded["state"])
+    if coords is None:
+        return False, 0.0, "could not read state.xml positions"
+    if not _positions_are_finite(coords):
+        return False, 0.0, "state.xml has non-finite positions"
+
+    failures: list[str] = []
+    notes: list[str] = []
+
+    clashes, clash_examples = _count_nonbonded_clashes(
+        system, coords, float(check.clash_overlap_fraction), int(check.max_clashes),
+    )
+    if clashes < 0:
+        return False, 0.0, f"clash scan failed: {clash_examples}"
+    notes.append(f"clashes={clashes}")
+    if clashes > int(check.max_clashes):
+        failures.append(
+            f"{clashes} steric clash(es) > {check.max_clashes} "
+            f"(e.g. {clash_examples})"
+        )
+
+    if check.max_bond_length_outliers is not None:
+        outliers, examples = _count_bond_length_outliers(
+            system, coords, float(check.bond_length_tolerance_fraction),
+        )
+        notes.append(f"bond_outliers={outliers}")
+        if outliers > int(check.max_bond_length_outliers):
+            failures.append(
+                f"{outliers} bond-length outlier(s) > "
+                f"{check.max_bond_length_outliers} (e.g. {examples})"
+            )
+
+    if check.max_angle_outliers is not None:
+        outliers, examples = _count_angle_outliers(
+            system, coords, float(check.angle_tolerance_degrees),
+        )
+        notes.append(f"angle_outliers={outliers}")
+        if outliers > int(check.max_angle_outliers):
+            failures.append(
+                f"{outliers} bond-angle outlier(s) > "
+                f"{check.max_angle_outliers} (e.g. {examples})"
+            )
+
+    need_backbone = check.max_cis_nonproline is not None or check.check_chirality
+    if need_backbone:
+        residues = _backbone_residue_atoms(loaded["topology"], coords)
+        if check.max_cis_nonproline is not None:
+            cis, examples = _count_cis_nonproline(residues)
+            notes.append(f"cis_nonproline={cis}")
+            if cis > int(check.max_cis_nonproline):
+                failures.append(
+                    f"{cis} cis non-proline peptide bond(s) > "
+                    f"{check.max_cis_nonproline} (e.g. {examples})"
+                )
+        if check.check_chirality:
+            inverted, examples = _count_inverted_chirality(residues)
+            notes.append(f"inverted_chirality={inverted}")
+            if inverted > 0:
+                failures.append(
+                    f"{inverted} inverted (D) CA chirality center(s) "
+                    f"(e.g. {examples})"
+                )
+
+    if failures:
+        return False, 0.0, "; ".join(failures)
+    return True, 1.0, "geometry quality OK: " + ", ".join(notes)
+
+
 def _check_metrics_caption_consistency(check: DeterministicCheck,
                                        submission_dir: Path,
                                        metrics: dict, evidence: dict, **_):
@@ -2572,6 +2991,7 @@ _DETERMINISTIC_DISPATCH = {
     "ion_concentration_recompute": _check_ion_concentration_recompute,
     "minimization_report_check": _check_minimization_report,
     "minimized_structure_component_rescan": _check_minimized_structure_component_rescan,
+    "structure_geometry_quality": _check_structure_geometry_quality,
     "metrics_caption_consistency": _check_metrics_caption_consistency,
 }
 

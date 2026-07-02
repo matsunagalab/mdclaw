@@ -20,11 +20,12 @@ import json
 import os
 import re
 import shlex
+import statistics
 import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 DEFAULT_AGENTS = ("pi", "claude-code", "codex")
 DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
@@ -215,6 +216,7 @@ def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, An
         "dataset_dir": args.dataset_dir,
         "agents": list(args.agents),
         "task_ids": args.task_ids or "all",
+        "repeats": args.repeats,
         "max_walltime_minutes_per_task": args.max_walltime_minutes_per_task,
         "execution_mode": args.execution_mode,
         "judge_mode": args.judge_mode,
@@ -222,6 +224,44 @@ def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, An
         "dry_run": args.dry_run,
         "runs": [],
     }
+
+
+def _run_overall_score(record: dict[str, Any]) -> Optional[float]:
+    """Pull the overall score from a per-run record, if the runner reported it."""
+    payload = record.get("runner_payload") or {}
+    summary = payload.get("score")
+    if isinstance(summary, dict):
+        value = summary.get("overall_score")
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _aggregate_repeats(runs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Per-agent mean/stdev of overall score across repeats.
+
+    Only real (non-dry-run) records with a numeric overall_score contribute.
+    """
+    by_agent: dict[str, list[float]] = {}
+    for record in runs:
+        if record.get("dry_run"):
+            continue
+        score = _run_overall_score(record)
+        if score is None:
+            continue
+        by_agent.setdefault(record.get("agent_name", "unknown"), []).append(score)
+
+    aggregates: dict[str, Any] = {}
+    for agent, scores in by_agent.items():
+        aggregates[agent] = {
+            "n": len(scores),
+            "scores": [round(s, 4) for s in scores],
+            "mean": round(statistics.fmean(scores), 4) if scores else None,
+            "stdev": (
+                round(statistics.stdev(scores), 4) if len(scores) > 1 else 0.0
+            ),
+        }
+    return aggregates
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -239,6 +279,12 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         default=[],
         help="Optional task subset for smoke tests. Omit for all MDPrepBench tasks.",
+    )
+    parser.add_argument(
+        "--repeats",
+        type=int,
+        default=1,
+        help="Number of repeat runs per agent for run-to-run variance. Default 1.",
     )
     parser.add_argument("--execution-mode", default="lite")
     parser.add_argument("--judge-mode", default="deterministic")
@@ -280,6 +326,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    if args.repeats < 1:
+        parser.error("--repeats must be >= 1")
+
     try:
         agent_profiles = _parse_agent_map(args.agent_profile, option_name="--agent-profile")
         agent_models = _parse_agent_map(args.agent_model, option_name="--agent-model")
@@ -296,63 +345,75 @@ def main(argv: list[str] | None = None) -> int:
     summary = _build_summary(args, run_id_prefix)
 
     exit_code = 0
+    stop = False
     for agent in args.agents:
-        run_id = f"{run_id_prefix}_{_safe_token(agent)}"
-        if (output_dir / run_id).exists() and not args.allow_existing_runs:
-            record = {
-                "agent_name": agent,
-                "run_id": run_id,
-                "run_dir": str(output_dir / run_id),
-                "command": "",
-                "success": False,
-                "exit_code": None,
-                "errors": [
-                    f"run directory already exists: {output_dir / run_id}; "
-                    "pass --allow-existing-runs or choose a new --run-id-prefix"
-                ],
-            }
+        for rep in range(1, args.repeats + 1):
+            agent_token = _safe_token(agent)
+            run_id = f"{run_id_prefix}_{agent_token}"
+            if args.repeats > 1:
+                run_id = f"{run_id}_rep{rep}"
+            if (output_dir / run_id).exists() and not args.allow_existing_runs:
+                record = {
+                    "agent_name": agent,
+                    "repeat": rep,
+                    "run_id": run_id,
+                    "run_dir": str(output_dir / run_id),
+                    "command": "",
+                    "success": False,
+                    "exit_code": None,
+                    "errors": [
+                        f"run directory already exists: {output_dir / run_id}; "
+                        "pass --allow-existing-runs or choose a new --run-id-prefix"
+                    ],
+                }
+                summary["runs"].append(record)
+                _write_json(summary_path, summary)
+                print(f"[benchmark-all-agents] {agent} rep{rep}: skipped existing {run_id}")
+                exit_code = 1
+                if args.stop_on_failure:
+                    stop = True
+                    break
+                continue
+
+            command = _build_command(
+                mdclaw_cmd=args.mdclaw_cmd,
+                output_dir=output_dir,
+                dataset_dir=args.dataset_dir,
+                run_id=run_id,
+                agent=agent,
+                task_ids=args.task_ids,
+                execution_mode=args.execution_mode,
+                judge_mode=args.judge_mode,
+                max_walltime_minutes_per_task=args.max_walltime_minutes_per_task,
+                mdclaw_cli_policy=args.mdclaw_cli_policy,
+                agent_profile=agent_profiles.get(agent),
+                agent_model=agent_models.get(agent),
+            )
+            print(f"[benchmark-all-agents] {agent} rep{rep}: {shlex.join(command)}")
+            record = _run_agent(
+                command=command,
+                agent=agent,
+                run_id=run_id,
+                output_dir=output_dir,
+                dry_run=args.dry_run,
+            )
+            record["repeat"] = rep
             summary["runs"].append(record)
             _write_json(summary_path, summary)
-            print(f"[benchmark-all-agents] {agent}: skipped existing {run_id}")
-            exit_code = 1
-            if args.stop_on_failure:
-                break
-            continue
-
-        command = _build_command(
-            mdclaw_cmd=args.mdclaw_cmd,
-            output_dir=output_dir,
-            dataset_dir=args.dataset_dir,
-            run_id=run_id,
-            agent=agent,
-            task_ids=args.task_ids,
-            execution_mode=args.execution_mode,
-            judge_mode=args.judge_mode,
-            max_walltime_minutes_per_task=args.max_walltime_minutes_per_task,
-            mdclaw_cli_policy=args.mdclaw_cli_policy,
-            agent_profile=agent_profiles.get(agent),
-            agent_model=agent_models.get(agent),
-        )
-        print(f"[benchmark-all-agents] {agent}: {shlex.join(command)}")
-        record = _run_agent(
-            command=command,
-            agent=agent,
-            run_id=run_id,
-            output_dir=output_dir,
-            dry_run=args.dry_run,
-        )
-        summary["runs"].append(record)
-        _write_json(summary_path, summary)
-        if not record["success"]:
-            exit_code = 1
-            print(f"[benchmark-all-agents] {agent}: FAILED")
-            if args.stop_on_failure:
-                break
-        else:
-            print(f"[benchmark-all-agents] {agent}: ok")
+            if not record["success"]:
+                exit_code = 1
+                print(f"[benchmark-all-agents] {agent} rep{rep}: FAILED")
+                if args.stop_on_failure:
+                    stop = True
+                    break
+            else:
+                print(f"[benchmark-all-agents] {agent} rep{rep}: ok")
+        if stop:
+            break
 
     summary["completed_at"] = _now_utc()
     summary["success"] = all(record.get("success") for record in summary["runs"])
+    summary["aggregates"] = _aggregate_repeats(summary["runs"])
     _write_json(summary_path, summary)
     print(f"[benchmark-all-agents] summary: {summary_path}")
     return exit_code
