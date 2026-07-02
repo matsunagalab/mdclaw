@@ -61,6 +61,8 @@ outputs/
 ref/
 slide/
 *.pdb
+# but ship the prebuilt bundled membrane patch cache (equilibrated patch PDBs)
+!mdclaw/data/membrane_patches/**/*.pdb
 *.mol2
 *.prmtop
 *.inpcrd
