@@ -213,6 +213,17 @@ ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
 ENV MDCLAW_SURROGATE_DIR="/opt/mdclaw/surrogates"
 
+# Pre-build representative membrane patches (patch-tile backend) into a
+# read-only bundled cache so common compositions (single lipids, POPC:CHL1,
+# POPC:POPE:CHL1, raft mixtures) hit at runtime instead of triggering a cold
+# packmol pack + OpenMM equilibration. MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR tells
+# the runtime patch-tile backend where to find them.
+ENV MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR="/opt/mdclaw/share/membrane_patches"
+COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
+RUN /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
+        --out "$MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR" \
+    || echo "WARNING: membrane patch warm-up incomplete; runtime will cold-build on miss."
+
 # Install BioEmu into an isolated venv, never into the conda-packed mdclaw env.
 # Use --build-arg BIOEMU_DEVICE=cuda to install bioemu[cuda] in GPU images.
 RUN /opt/mdclaw/bin/python -m venv /opt/mdclaw/surrogates/bioemu/venv && \

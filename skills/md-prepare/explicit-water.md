@@ -75,9 +75,32 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
 Pass `--pdb-file` only to override (e.g., to use a manually oriented PDB).
 On success, the solv node records `is_membrane=true` for downstream topology,
 equilibration, and production.
-Membrane embedding with packmol-memgen is a long-running operation. For large
-or mixed membrane systems, tens of minutes are normal, and CPU runs may take
-more than an hour. Do not assume a running membrane `solv` node is hung only
+
+Membrane embedding defaults to the `patch-tile` backend
+(`--membrane-backend patch-tile`). Instead of packing the full protein box with
+packmol every time, patch-tile builds a small composition-keyed lipid patch
+once, equilibrates it under PBC, caches it, then tiles it around the oriented
+protein and neutralizes the net charge by swapping bulk waters for ions. This
+converges reliably for cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`) that
+full-box packing struggles with. Use `--membrane-backend packmol-memgen` to
+force the legacy full packing path, or `--membrane-backend auto` to try
+patch-tile first and fall back to packmol-memgen.
+
+Cold-build notice: the **first** time a given lipid composition is requested
+(and it is not in the writable or bundled patch cache), the `solv` step runs a
+one-time OpenMM equilibration of the patch (energy minimization + a few hundred
+ps of MD). This can take several minutes on CPU. When this happens the tool
+prints a `[mdclaw] patch-tile: ...` notice to stderr, adds it to `warnings`, and
+sets `patch_cold_build_notice` on the result; the result's `patch_build` field
+and `parameters.patch_equilibration_ran` report whether equilibration ran. Tell
+the user up front that the first build of a new composition will take a few
+extra minutes and is cached for reuse. Common compositions are pre-built into a
+read-only bundled cache in the container, so they hit without equilibration.
+
+Membrane embedding is a long-running operation. For large or mixed membrane
+systems, tens of minutes are normal, and CPU runs (including a cold patch
+equilibration) may take more than an hour. Do not assume a running membrane
+`solv` node is hung only
 because it has been running for 10-30 minutes. Continue monitoring or explain
 the same node until it completes, fails, or reaches the configured timeout; do
 not create a sibling `solv` node just to retry an in-progress membrane build.

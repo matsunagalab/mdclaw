@@ -43,7 +43,15 @@ from mdclaw._common import (  # noqa: E402
     split_guardrail_results,
 )
 from mdclaw._common import get_timeout  # noqa: E402
-from mdclaw.membrane_cache import embed_with_membrane_slab_cache  # noqa: E402
+from mdclaw.solvation.constants import (  # noqa: E402
+    PATCH_EQUIL_FORCEFIELD,
+    PATCH_SIDE_ANGSTROM,
+    patch_equilibration_params,
+)
+from mdclaw.solvation.patch_membrane import (  # noqa: E402
+    embed_with_membrane_patch_tiles,
+    probe_patch_cache,
+)
 
 
 # =============================================================================
@@ -143,29 +151,29 @@ ensure_directory(WORKING_DIR)
 
 # Initialize tool wrappers
 packmol_memgen_wrapper = BaseToolWrapper("packmol-memgen")
-DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT = 300
+DEFAULT_MEMBRANE_PATCH_BUILDER_TIMEOUT = 1800
 
 
-def _resolve_membrane_slab_builder_timeout(value: Optional[int]) -> int:
-    """Return the slab-cache builder timeout in seconds.
+def _resolve_patch_builder_timeout(value: Optional[int]) -> int:
+    """Return the patch-tile cold packmol build timeout in seconds.
 
-    The slab-cache backend is opt-in, so it can use a shorter cold-build budget
-    than the legacy full membrane packing path.  Passing 0 or a negative value
-    keeps the broader membrane timeout.
+    The patch-tile backend only ever packs a small membrane patch, so it can use
+    a shorter cold-build budget than a full-box membrane build. Passing 0 or a
+    negative value keeps the broader membrane timeout.
     """
     if value is None:
-        raw = os.environ.get("MDCLAW_MEMBRANE_SLAB_BUILDER_TIMEOUT")
+        raw = os.environ.get("MDCLAW_MEMBRANE_PATCH_BUILDER_TIMEOUT")
         if raw:
             try:
                 value = int(raw)
             except ValueError:
                 logger.warning(
-                    "Ignoring invalid MDCLAW_MEMBRANE_SLAB_BUILDER_TIMEOUT=%r",
+                    "Ignoring invalid MDCLAW_MEMBRANE_PATCH_BUILDER_TIMEOUT=%r",
                     raw,
                 )
-                value = DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT
+                value = DEFAULT_MEMBRANE_PATCH_BUILDER_TIMEOUT
         else:
-            value = DEFAULT_MEMBRANE_SLAB_BUILDER_TIMEOUT
+            value = DEFAULT_MEMBRANE_PATCH_BUILDER_TIMEOUT
 
     timeout = int(value)
     if timeout <= 0:
@@ -173,7 +181,39 @@ def _resolve_membrane_slab_builder_timeout(value: Optional[int]) -> int:
     return timeout
 
 
-def _run_packmol_memgen_for_slab_cache(
+_PACKMOL_MEMGEN_VERSION_CACHE: Optional[str] = None
+
+
+def _packmol_memgen_version() -> str:
+    """Return a cached packmol-memgen version string (best effort).
+
+    Part of the patch fingerprint so patches built by different packmol-memgen
+    versions do not collide. Falls back to ``"unknown"`` when unavailable.
+    """
+    global _PACKMOL_MEMGEN_VERSION_CACHE
+    if _PACKMOL_MEMGEN_VERSION_CACHE is not None:
+        return _PACKMOL_MEMGEN_VERSION_CACHE
+    version = "unknown"
+    exe = shutil.which("packmol-memgen")
+    if exe:
+        try:
+            proc = subprocess.run(
+                [exe, "--version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=30,
+            )
+            text = (proc.stdout or "").strip()
+            if text:
+                version = text.splitlines()[-1].strip()[:80]
+        except Exception:  # noqa: BLE001
+            version = "unknown"
+    _PACKMOL_MEMGEN_VERSION_CACHE = version
+    return version
+
+
+def _run_packmol_memgen_noninteractive(
     args: list[str],
     *,
     cwd: Path,
@@ -185,6 +225,216 @@ def _run_packmol_memgen_for_slab_cache(
         timeout=timeout,
         cancel_event=threading.Event(),
     )
+
+
+def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
+    """Orient a protein into the membrane frame (normal = z) using MEMEMBED.
+
+    Returns ``{success, oriented_pdb, warnings, errors}``. Membrane dummy atoms
+    that MEMEMBED adds (resname ``DUM``) are stripped so only the oriented solute
+    is handed to the patch-tile assembler.
+    """
+    result: dict = {"success": False, "warnings": [], "errors": []}
+    memembed_path = shutil.which("memembed")
+    if not memembed_path:
+        result["code"] = "memembed_unavailable"
+        result["errors"].append(
+            "memembed not found in PATH; cannot orient protein for membrane "
+            "embedding. Pass a pre-oriented structure with --preoriented."
+        )
+        return result
+
+    out_dir = Path(out_dir)
+    raw_oriented = out_dir / "memembed_oriented.pdb"
+    cmd = [memembed_path, "-o", str(raw_oriented), str(Path(protein_pdb).resolve())]
+    logger.info("Orienting protein with memembed: %s", " ".join(cmd))
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(out_dir),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=get_timeout("membrane"),
+        )
+    except subprocess.TimeoutExpired:
+        result["code"] = "memembed_timeout"
+        result["errors"].append("memembed orientation timed out")
+        return result
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "memembed_failed"
+        result["errors"].append(f"memembed failed: {type(exc).__name__}: {exc}")
+        return result
+
+    if not raw_oriented.exists():
+        result["code"] = "memembed_no_output"
+        result["errors"].append(
+            "memembed did not write an oriented PDB. stderr tail: "
+            + (proc.stderr or "")[-500:]
+        )
+        return result
+
+    # Strip membrane dummy atoms so downstream sees only the oriented solute.
+    cleaned = out_dir / "oriented_protein.pdb"
+    kept: list[str] = []
+    for line in raw_oriented.read_text(encoding="utf-8", errors="ignore").splitlines():
+        if line.startswith(("ATOM", "HETATM")):
+            resname = line[17:21].strip().upper()
+            if resname == "DUM":
+                continue
+            kept.append(line)
+    if not kept:
+        result["code"] = "memembed_empty_output"
+        result["errors"].append("memembed output had no solute atoms after cleanup")
+        return result
+    cleaned.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
+
+    result["success"] = True
+    result["oriented_pdb"] = str(cleaned)
+    result["raw_oriented_pdb"] = str(raw_oriented)
+    return result
+
+
+def _equilibrate_membrane_patch(
+    *,
+    patch_pdb: Path,
+    box_dims: dict,
+    out_dir: Path,
+    equil_params: dict,
+) -> dict:
+    """Build topology + minimize + short PBC equilibration of a lipid patch.
+
+    Returns ``{success, equilibrated_pdb, box_dimensions, warnings, errors}``.
+    Uses the same build_amber_system -> run_minimization -> run_equilibration
+    tools as the main workflow so the patch force field matches the run side.
+    """
+    from mdclaw.amber.build_system import build_amber_system
+    from mdclaw.simulation.equilibrate import run_equilibration
+    from mdclaw.simulation.minimize import run_minimization
+    from mdclaw.solvation.constants import PATCH_EQUIL_FORCEFIELD
+
+    out_dir = Path(out_dir)
+    water_model = str(equil_params.get("water_model", "opc"))
+    forcefield = str(equil_params.get("forcefield", PATCH_EQUIL_FORCEFIELD))
+    temperature = float(equil_params.get("temperature_k", 303.15))
+    pressure = float(equil_params.get("pressure_bar", 1.0))
+    nvt_ns = float(equil_params.get("nvt_ns", 0.2))
+    npt_ns = float(equil_params.get("npt_ns", 0.2))
+
+    topo = build_amber_system(
+        pdb_file=str(patch_pdb),
+        box_dimensions=box_dims,
+        forcefield=forcefield,
+        water_model=water_model,
+        is_membrane=True,
+        hmr=True,
+        output_dir=str(out_dir / "patch_topo"),
+    )
+    if not topo.get("success") or not topo.get("system_xml"):
+        return {
+            "success": False,
+            "code": topo.get("code", "membrane_patch_topology_failed"),
+            "errors": topo.get("errors", ["patch topology build failed"]),
+            "warnings": topo.get("warnings", []),
+        }
+
+    minimized = run_minimization(
+        system_xml_file=topo["system_xml"],
+        topology_pdb_file=topo["topology_pdb"],
+        state_xml_file=topo["state_xml"],
+        is_membrane=True,
+        hmr=True,
+        output_dir=str(out_dir / "patch_min"),
+    )
+    if not minimized.get("success") or not minimized.get("state_file"):
+        return {
+            "success": False,
+            "code": minimized.get("code", "membrane_patch_minimization_failed"),
+            "errors": minimized.get("errors", ["patch minimization failed"]),
+            "warnings": minimized.get("warnings", []),
+        }
+
+    equilibrated = run_equilibration(
+        system_xml_file=topo["system_xml"],
+        topology_pdb_file=topo["topology_pdb"],
+        state_xml_file=minimized["state_file"],
+        temperature_kelvin=temperature,
+        pressure_bar=pressure,
+        nvt_time_ns=nvt_ns,
+        npt_time_ns=npt_ns,
+        restraint_atoms="CA",
+        restraint_force_constant=0.0,
+        is_membrane=True,
+        hmr=True,
+        output_dir=str(out_dir / "patch_eq"),
+    )
+    if not equilibrated.get("success") or not equilibrated.get("final_structure"):
+        return {
+            "success": False,
+            "code": equilibrated.get("code", "membrane_patch_equilibration_failed"),
+            "errors": equilibrated.get("errors", ["patch equilibration failed"]),
+            "warnings": equilibrated.get("warnings", []),
+        }
+
+    return {
+        "success": True,
+        "equilibrated_pdb": equilibrated["final_structure"],
+        "box_dimensions": box_dims,
+        "warnings": equilibrated.get("warnings", []),
+        "errors": [],
+    }
+
+
+def _compute_membrane_net_charge(*, pdb_file: Path, box_dims: dict) -> dict:
+    """Return the exact integer net charge of an assembled membrane system.
+
+    Builds an OpenMM System with the same force field the run side uses and sums
+    the NonbondedForce particle charges. Returns
+    ``{success, net_charge, warnings, errors}``.
+    """
+    from mdclaw.amber.build_system import build_amber_system
+    from mdclaw.solvation.constants import PATCH_EQUIL_FORCEFIELD
+
+    result: dict = {"success": False, "warnings": [], "errors": []}
+    try:
+        import tempfile
+
+        from openmm import NonbondedForce, XmlSerializer
+
+        with tempfile.TemporaryDirectory(prefix="mdclaw_charge_") as tmp:
+            built = build_amber_system(
+                pdb_file=str(pdb_file),
+                box_dimensions=box_dims,
+                forcefield=PATCH_EQUIL_FORCEFIELD,
+                water_model="opc",
+                is_membrane=True,
+                hmr=True,
+                output_dir=tmp,
+            )
+            if not built.get("success") or not built.get("system_xml"):
+                result["code"] = built.get("code", "net_charge_build_failed")
+                result["errors"].extend(
+                    built.get("errors", ["net-charge system build failed"])
+                )
+                return result
+            system = XmlSerializer.deserialize(
+                Path(built["system_xml"]).read_text()
+            )
+            total = 0.0
+            for force in system.getForces():
+                if isinstance(force, NonbondedForce):
+                    for i in range(force.getNumParticles()):
+                        charge, _sigma, _eps = force.getParticleParameters(i)
+                        total += charge.value_in_unit(charge.unit)
+                    break
+            result["success"] = True
+            result["net_charge"] = int(round(total))
+            result["net_charge_raw"] = total
+            return result
+    except Exception as exc:  # noqa: BLE001
+        result["code"] = "net_charge_exception"
+        result["errors"].append(f"{type(exc).__name__}: {exc}")
+        return result
 
 
 def _run_packmol_if_needed(
@@ -1792,13 +2042,12 @@ def embed_in_membrane(
     allow_forced_output: bool = False,
     allow_imperfect_primary_output: bool = True,
     packmol_race_lanes: int = 4,
-    membrane_backend: str = "packmol-memgen",
+    membrane_backend: str = "patch-tile",
     membrane_cache_mode: str = "auto",
     membrane_cache_dir: Optional[str] = None,
-    membrane_slab_bin_size: float = 10.0,
     membrane_carve_padding: float = 2.5,
-    membrane_slab_builder_timeout: Optional[int] = None,
-    membrane_cache_strict: bool = False,
+    membrane_patch_side: float = PATCH_SIDE_ANGSTROM,
+    membrane_patch_builder_timeout: Optional[int] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -1867,25 +2116,26 @@ def embed_in_membrane(
         packmol_race_lanes: Number of adaptive Packmol attempts to run in
                      parallel (default: 4). Set to 1 for the previous
                      sequential retry behavior on CPU-constrained hosts.
-        membrane_backend: Membrane construction backend. ``packmol-memgen``
-                     preserves the previous full packing behavior. ``slab-cache``
-                     reuses/builds a protein-free membrane slab and carves it
-                     around the input protein. ``auto`` tries slab-cache first
-                     and falls back to full packmol-memgen.
-        membrane_cache_mode: Slab cache policy: ``off``, ``read-only``,
+        membrane_backend: Membrane construction backend (default:
+                     ``patch-tile``). ``patch-tile`` builds a small
+                     composition-keyed membrane patch once, equilibrates it under
+                     PBC, caches it, and tiles it to cover the protein.
+                     ``packmol-memgen`` runs the full-box packing path.
+                     ``auto`` tries patch-tile first and falls back to
+                     full packmol-memgen.
+        membrane_cache_mode: Patch cache policy: ``off``, ``read-only``,
                      ``auto`` (build on miss), or ``refresh`` (rebuild).
-        membrane_cache_dir: Optional slab cache root. Defaults to
+        membrane_cache_dir: Optional patch cache root. Defaults to
                      ``MDCLAW_MEMBRANE_CACHE_DIR`` or
-                     ``MDCLAW_CACHE_DIR/membranes``.
-        membrane_slab_bin_size: XY side length bin size in Angstroms for slab
-                     reuse (default: 10.0).
-        membrane_carve_padding: Protein-slab contact cutoff in Angstroms used
-                     to remove overlapping slab residues/groups.
-        membrane_slab_builder_timeout: Slab-cache cold-build timeout in
-                     seconds (default: 300). Use 0 to keep the broader
+                     ``MDCLAW_CACHE_DIR/membrane_patches``. Read-only bundled
+                     caches are searched via ``MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR``.
+        membrane_carve_padding: Protein-membrane contact cutoff in Angstroms used
+                     to remove overlapping tiled lipid/water/ion residues.
+        membrane_patch_side: Square patch side length in Angstroms for the
+                     patch-tile backend (default: 40.0).
+        membrane_patch_builder_timeout: patch-tile cold packmol build timeout in
+                     seconds (default: 1800). Use 0 to keep the broader
                      membrane timeout.
-        membrane_cache_strict: If true, ``auto`` does not fall back after a
-                     slab-cache validation failure.
     
     Returns:
         Dict with:
@@ -1959,10 +2209,9 @@ def embed_in_membrane(
             "membrane_backend": membrane_backend,
             "membrane_cache_mode": membrane_cache_mode,
             "membrane_cache_dir": membrane_cache_dir,
-            "membrane_slab_bin_size": membrane_slab_bin_size,
             "membrane_carve_padding": membrane_carve_padding,
-            "membrane_slab_builder_timeout": membrane_slab_builder_timeout,
-            "membrane_cache_strict": membrane_cache_strict,
+            "membrane_patch_side": membrane_patch_side,
+            "membrane_patch_builder_timeout": membrane_patch_builder_timeout,
         },
         "packmol_log": None,
         "statistics": {},
@@ -2031,10 +2280,10 @@ def embed_in_membrane(
     if membrane_backend == "packmol-memgen":
         membrane_cache_mode = "off"
     result["parameters"]["membrane_cache_mode"] = membrane_cache_mode
-    slab_builder_timeout = _resolve_membrane_slab_builder_timeout(
-        membrane_slab_builder_timeout
+    patch_builder_timeout = _resolve_patch_builder_timeout(
+        membrane_patch_builder_timeout
     )
-    result["parameters"]["membrane_slab_builder_timeout"] = slab_builder_timeout
+    result["parameters"]["membrane_patch_builder_timeout"] = patch_builder_timeout
 
     if job_dir and node_id:
         from mdclaw._node import validate_node_execution_context
@@ -2061,10 +2310,9 @@ def embed_in_membrane(
                 "membrane_backend": membrane_backend,
                 "membrane_cache_mode": membrane_cache_mode,
                 "membrane_cache_dir": membrane_cache_dir,
-                "membrane_slab_bin_size": membrane_slab_bin_size,
                 "membrane_carve_padding": membrane_carve_padding,
-                "membrane_slab_builder_timeout": slab_builder_timeout,
-                "membrane_cache_strict": membrane_cache_strict,
+                "membrane_patch_side": membrane_patch_side,
+                "membrane_patch_builder_timeout": patch_builder_timeout,
             },
         )
         if not _ctx["success"]:
@@ -2109,8 +2357,9 @@ def embed_in_membrane(
             fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
     
-    # Check packmol-memgen availability.  A warm slab-cache hit can still run
-    # without the builder, but the legacy full-packing backend cannot.
+    # Check packmol-memgen availability.  A warm patch-cache hit can still build
+    # a membrane without the packer, but a cold patch build (and the full
+    # packmol-memgen backend) cannot.
     packmol_memgen_available = packmol_memgen_wrapper.is_available()
     if not packmol_memgen_available and membrane_backend == "packmol-memgen":
         result["errors"].append("packmol-memgen not found in PATH")
@@ -2146,8 +2395,47 @@ def embed_in_membrane(
     if packmol_path:
         logger.info(f"Using packmol: {packmol_path}")
 
-    if membrane_backend in {"slab-cache", "auto"} and membrane_cache_mode != "off":
-        slab_result = embed_with_membrane_slab_cache(
+    if membrane_backend in {"patch-tile", "auto"} and membrane_cache_mode != "off":
+        equil_params = {
+            **patch_equilibration_params(),
+            "water_model": water_model,
+            "forcefield": PATCH_EQUIL_FORCEFIELD,
+        }
+        packmol_memgen_version = _packmol_memgen_version()
+
+        # Pre-run notice: if this composition is not cached, a one-time patch
+        # equilibration (energy minimization + short MD) will run in this step.
+        cache_probe = probe_patch_cache(
+            lipids=lipids,
+            ratio=ratio,
+            water_model=water_model,
+            salt=salt,
+            salt_c=salt_c,
+            salt_a=salt_a,
+            saltcon=saltcon,
+            dist_wat=dist_wat,
+            leaflet=leaflet,
+            patch_side=membrane_patch_side,
+            nloop=nloop,
+            nloop_all=nloop_all,
+            equil_params=equil_params,
+            forcefield=PATCH_EQUIL_FORCEFIELD,
+            cache_dir=membrane_cache_dir,
+            packmol_memgen_version=packmol_memgen_version,
+        )
+        if not cache_probe["hit"] and membrane_cache_mode != "read-only":
+            notice = (
+                f"patch-tile: no cached membrane patch for lipids={lipids} "
+                f"ratio={ratio}; building it once now. This runs a short OpenMM "
+                "equilibration (energy minimization + a few hundred ps of MD) "
+                "that can take several minutes, and the result is cached for reuse."
+            )
+            logger.warning(notice)
+            print(f"[mdclaw] {notice}", file=sys.stderr, flush=True)
+            result["warnings"].append(notice)
+            result["patch_cold_build_notice"] = notice
+
+        patch_result = embed_with_membrane_patch_tiles(
             protein_pdb=input_copy,
             output_file=output_file,
             output_dir=out_dir,
@@ -2161,52 +2449,58 @@ def embed_in_membrane(
             dist=dist,
             dist_wat=dist_wat,
             leaflet=leaflet,
+            patch_side=membrane_patch_side,
             nloop=nloop,
             nloop_all=nloop_all,
+            equil_params=equil_params,
+            forcefield=PATCH_EQUIL_FORCEFIELD,
             cache_mode=membrane_cache_mode,
             cache_dir=membrane_cache_dir,
-            slab_bin_size=membrane_slab_bin_size,
             carve_padding=membrane_carve_padding,
+            preoriented=preoriented,
             packmol_memgen_runner=(
-                _run_packmol_memgen_for_slab_cache
+                _run_packmol_memgen_noninteractive
                 if packmol_memgen_available
                 else None
             ),
             packmol_path=packmol_path,
-            timeout=slab_builder_timeout,
+            equilibrate_fn=_equilibrate_membrane_patch,
+            orient_fn=_orient_protein_with_memembed,
+            net_charge_fn=_compute_membrane_net_charge,
+            timeout=patch_builder_timeout,
+            packmol_memgen_version=packmol_memgen_version,
         )
-        result["membrane_cache"] = {
+        result["membrane_patch"] = {
             key: value
-            for key, value in slab_result.items()
-            if key not in {"cache_manifest"}
+            for key, value in patch_result.items()
+            if key not in {"manifest"}
         }
-        if slab_result.get("cache_manifest") is not None:
-            result["membrane_cache_manifest"] = slab_result.get("cache_manifest")
 
-        if slab_result.get("success"):
+        if patch_result.get("success"):
             result["success"] = True
-            result["code"] = slab_result.get("code")
-            result["output_file"] = slab_result.get("output_file")
-            result["box_dimensions"] = slab_result.get("box_dimensions") or {}
-            result["box_dimensions_file"] = slab_result.get("box_dimensions_file")
-            result["statistics"].update(slab_result.get("statistics") or {})
-            result["statistics"]["method"] = "slab_cache"
+            result["code"] = patch_result.get("code")
+            result["output_file"] = patch_result.get("output_file")
+            result["box_dimensions"] = patch_result.get("box_dimensions") or {}
+            result["box_dimensions_file"] = patch_result.get("box_dimensions_file")
+            result["statistics"].update(patch_result.get("statistics") or {})
+            result["statistics"]["method"] = "patch_tile"
             result["packing_quality"] = {
                 "passed": True,
-                "backend": "slab-cache",
+                "backend": "patch-tile",
                 "primary_output_accepted": False,
             }
+            result["patch_build"] = patch_result.get("patch_build")
             result["parameters"]["effective_dist"] = dist
             result["parameters"]["effective_nloop"] = nloop
             result["parameters"]["effective_nloop_all"] = nloop_all
-            result["parameters"]["membrane_backend_used"] = "slab-cache"
+            result["parameters"]["membrane_backend_used"] = "patch-tile"
             result["parameters"]["membrane_cache_hit"] = bool(
-                slab_result.get("cache_hit")
+                patch_result.get("cache_hit")
             )
-            result["membrane_cache_metadata_file"] = slab_result.get(
-                "cache_metadata_file"
+            result["parameters"]["patch_equilibration_ran"] = bool(
+                patch_result.get("equilibration_ran")
             )
-            result["warnings"].extend(slab_result.get("warnings", []))
+            result["warnings"].extend(patch_result.get("warnings", []))
 
             metadata_file = out_dir / "membrane_metadata.json"
             with open(metadata_file, "w") as f:
@@ -2219,9 +2513,9 @@ def embed_in_membrane(
                     "solvated_pdb": f"artifacts/{artifact_output.name}",
                     "box_dimensions": "artifacts/box_dimensions.json",
                 }
-                if result.get("membrane_cache_metadata_file"):
-                    artifacts["membrane_cache_metadata"] = (
-                        "artifacts/membrane_cache_metadata.json"
+                if patch_result.get("metadata_file"):
+                    artifacts["membrane_patch_metadata"] = (
+                        "artifacts/membrane_patch_metadata.json"
                     )
                 complete_node(job_dir, node_id,
                     artifacts=artifacts,
@@ -2232,9 +2526,12 @@ def embed_in_membrane(
                         "salt_concentration_M": saltcon,
                         "salt_override": salt_override,
                         "packing_quality": result.get("packing_quality"),
-                        "membrane_backend": "slab-cache",
-                        "membrane_cache_hit": bool(slab_result.get("cache_hit")),
-                        "membrane_cache_key": slab_result.get("cache_key"),
+                        "membrane_backend": "patch-tile",
+                        "membrane_cache_hit": bool(patch_result.get("cache_hit")),
+                        "membrane_cache_key": patch_result.get("cache_key"),
+                        "patch_equilibration_ran": bool(
+                            patch_result.get("equilibration_ran")
+                        ),
                         "forced_output_accepted": False,
                         "imperfect_primary_output_accepted": False,
                     },
@@ -2245,11 +2542,11 @@ def embed_in_membrane(
                 })
             return result
 
-        if membrane_backend == "slab-cache" or membrane_cache_strict:
+        if membrane_backend == "patch-tile":
             result["success"] = False
-            result["code"] = slab_result.get("code", "membrane_slab_cache_failed")
-            result["errors"].extend(slab_result.get("errors", []))
-            result["warnings"].extend(slab_result.get("warnings", []))
+            result["code"] = patch_result.get("code", "membrane_patch_failed")
+            result["errors"].extend(patch_result.get("errors", []))
+            result["warnings"].extend(patch_result.get("warnings", []))
             metadata_file = out_dir / "membrane_metadata.json"
             with open(metadata_file, "w") as f:
                 json.dump(result, f, indent=2, default=str)
@@ -2263,15 +2560,15 @@ def embed_in_membrane(
                 )
             return result
 
-        fallback_reason = slab_result.get("code", "membrane_slab_cache_failed")
-        result["membrane_cache_fallback"] = {
-            "backend_attempted": "slab-cache",
+        fallback_reason = patch_result.get("code", "membrane_patch_failed")
+        result["membrane_patch_fallback"] = {
+            "backend_attempted": "patch-tile",
             "fallback_backend": "packmol-memgen",
             "reason": fallback_reason,
-            "errors": slab_result.get("errors", []),
+            "errors": patch_result.get("errors", []),
         }
         result["warnings"].append(
-            "slab-cache membrane backend failed "
+            "patch-tile membrane backend failed "
             f"({fallback_reason}); falling back to full packmol-memgen."
         )
 
@@ -2688,7 +2985,7 @@ def embed_in_membrane(
                         "membrane_backend_used",
                         "packmol-memgen",
                     ),
-                    "membrane_cache_fallback": result.get("membrane_cache_fallback"),
+                    "membrane_patch_fallback": result.get("membrane_patch_fallback"),
                     "forced_output_accepted": bool(
                         result.get("forced_output_accepted")
                     ),

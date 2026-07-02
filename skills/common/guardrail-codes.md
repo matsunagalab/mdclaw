@@ -98,15 +98,20 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `ligand_resname_chain_auto_included` | A ligand resname's chain was auto-included; confirm intent. |
 | `ligand_template_coverage_failed` | Ligand template coverage failed; provide parameters or SMILES. |
 | `lipid21_external_bond_patching_failed` | Lipid21 external bond patching failed; inspect the lipid topology. |
-| `membrane_slab_build_failed` | Membrane slab build failed; inspect the structured error. |
-| `membrane_slab_build_invalid_output` | Membrane slab build produced invalid output. |
-| `membrane_slab_builder_unavailable` | Membrane slab builder is unavailable in this runtime. |
-| `membrane_slab_cache_invalid_input` | Membrane slab cache input is invalid. |
-| `membrane_slab_cache_invalid_slab` | Cached membrane slab is invalid; refresh the cache. |
-| `membrane_slab_cache_lipid_missing_after_carve` | Lipids missing after slab carve; rebuild the slab. |
-| `membrane_slab_cache_miss` | Membrane slab cache miss; build the slab or enable build. |
-| `membrane_slab_cache_overlap_remaining` | Overlaps remain after carve; adjust and rebuild the slab. |
-| `membrane_slab_cache_used` | Cached membrane slab was used; confirm it is appropriate. |
+| `membrane_patch_build_failed` | Membrane patch packmol build failed; inspect the structured error. |
+| `membrane_patch_build_invalid_output` | Membrane patch packmol build output is missing requested lipids. |
+| `membrane_patch_build_no_output` | Membrane patch packmol build produced no output PDB. |
+| `membrane_patch_builder_unavailable` | packmol-memgen is required to build a membrane patch cache miss. |
+| `membrane_patch_cache_miss` | No cached membrane patch found in read-only mode; enable build or warm the cache. |
+| `membrane_patch_invalid_input` | Input protein PDB for membrane embedding has no atoms. |
+| `membrane_patch_invalid_patch` | Cached membrane patch PDB has no atoms; refresh the cache. |
+| `membrane_patch_lipid_missing_after_carve` | Tiled patch insertion removed all requested lipids; adjust carve padding. |
+| `membrane_patch_tiles_used` | Patch-tile membrane was assembled from a cached lipid patch; confirm it is appropriate. |
+| `memembed_empty_output` | memembed output had no solute atoms after cleanup. |
+| `memembed_failed` | memembed orientation failed; inspect the structured error. |
+| `memembed_no_output` | memembed did not write an oriented PDB. |
+| `memembed_timeout` | memembed orientation timed out. |
+| `memembed_unavailable` | memembed not found in PATH; pass a pre-oriented structure with --preoriented. |
 | `metal_1264_requires_parmed` | Install ParmEd to use the 12-6-4 metal model. |
 | `metal_ions_not_found` | No metal ions found; check the structure/selection. |
 | `metal_openmm_xml_required` | Provide the OpenMM XML required for metal parameterization. |
@@ -147,6 +152,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `mutation_spec_invalid` | Fix the mutation spec format (e.g. A:GLU123ALA). |
 | `mutation_validation_failed` | Mutation validation failed; inspect the reported residues. |
 | `need_index_out_of_range` | Use a need index that exists on the node. |
+| `net_charge_exception` | Exact net-charge evaluation raised; membrane written without protein-charge neutralization. |
 | `node_already_claimed` | Another worker holds the claim; wait, or override only if stale. |
 | `node_context_required` | Create the node, then run it with both --job-dir and --node-id. |
 | `node_id_requires_job_dir` | --node-id was passed without --job-dir; pass both together. |

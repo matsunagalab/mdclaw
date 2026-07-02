@@ -75,6 +75,8 @@ class TestPipelineMembraneDag:
         assert solv_node["artifacts"]["box_dimensions"] == "artifacts/box_dimensions.json"
         assert solv_node["metadata"]["is_membrane"] is True
         assert solv_node["metadata"]["lipid_type"] == "POPC"
+        # Default membrane backend is patch-tile (build once, cache, tile).
+        assert solv_node["metadata"]["membrane_backend"] == "patch-tile"
 
     def test_step4_membrane_topology(self, job_dir):
         from mdclaw._node import create_node, read_node

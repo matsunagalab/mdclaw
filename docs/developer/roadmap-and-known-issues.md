@@ -21,6 +21,27 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 
 ## Resolved
 
+### Membrane Building: patch-tile Backend
+
+`embed_in_membrane` no longer packs the full protein box with packmol-memgen on
+every run. The default `membrane_backend="patch-tile"` builds a small
+composition-keyed lipid patch once, equilibrates it under PBC, caches it under a
+protein-size-independent fingerprint, then tiles the equilibrated patch around
+the MEMEMBED-oriented protein, carves overlaps, and neutralizes by swapping bulk
+waters for ions. This resolves the slow / non-converging full-box packing for
+cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`, MDPrepBench P18).
+
+- Cold build cost (packmol pack + OpenMM min/eq) is paid once per composition;
+  `scripts/warmup_membrane_cache.py` pre-builds representative compositions into
+  a read-only bundled cache (`MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`, populated in
+  the container build) so runtime hits without equilibration.
+- Bundled cache hits require fingerprint agreement (defaults, packmol-memgen
+  version). On a miss the runtime cold-builds into the writable cache
+  (`MDCLAW_MEMBRANE_CACHE_DIR` / `MDCLAW_CACHE_DIR/membrane_patches`).
+- The removed `slab-cache` backend's low-level PDB/geometry/carve helpers were
+  moved to `mdclaw/solvation/patch_membrane.py`; `mdclaw/membrane_cache.py` was
+  deleted.
+
 ### Benchmark Integrity Rollout
 
 MDPrepBench v0.1 now uses `integrity_policy="reject"` for the prep task set and

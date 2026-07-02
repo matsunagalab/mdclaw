@@ -45,9 +45,10 @@ MEMBRANE_BACKENDS = {
     "packmol-memgen": "packmol-memgen",
     "packmol_memgen": "packmol-memgen",
     "packmol": "packmol-memgen",
-    "slab-cache": "slab-cache",
-    "slab_cache": "slab-cache",
-    "cache": "slab-cache",
+    "patch-tile": "patch-tile",
+    "patch_tile": "patch-tile",
+    "patch": "patch-tile",
+    "tile": "patch-tile",
     "auto": "auto",
 }
 MEMBRANE_CACHE_MODES = {
@@ -57,6 +58,52 @@ MEMBRANE_CACHE_MODES = {
     "auto": "auto",
     "refresh": "refresh",
 }
+
+# ---------------------------------------------------------------------------
+# patch-tile membrane backend
+# ---------------------------------------------------------------------------
+# The patch-tile backend builds a small, composition-keyed membrane patch,
+# equilibrates it under PBC, caches it, then tiles it to cover the protein.
+# These defaults are the single source of truth shared by the runtime path and
+# the warm-up script, so bundled cache fingerprints match at runtime.
+
+PATCH_CACHE_SCHEMA_VERSION = 1
+
+# packmol-memgen Lipid21 phospholipids are split into head/tail fragments that
+# share a residue number and must be carved as one lipid.
+PATCH_LIPID21_FRAGMENT_RESNAMES = {"PA", "PC", "PE", "OL"}
+PATCH_STEROL_RESNAMES = {"CHL", "CHL1"}
+PATCH_WATER_RESNAMES = {"HOH", "WAT", "SOL", "TIP3", "OPC", "T3P", "T4E"}
+PATCH_ION_RESNAMES = {"NA", "K", "CL", "Na+", "Cl-", "K+"}
+PATCH_LIPID_ALIAS_RESNAMES = {
+    "POPC": {"POPC", "PC"},
+    "POPE": {"POPE", "PE"},
+    "CHL1": {"CHL1", "CHL"},
+}
+
+# Small patch defaults. A ~40 A square patch converges fast in packmol even for
+# cholesterol mixtures and tiles cleanly after PBC equilibration.
+PATCH_SIDE_ANGSTROM = 40.0
+PATCH_NLOOP = 20
+PATCH_NLOOP_ALL = 100
+PATCH_CARVE_PADDING = 2.5
+
+# One-time cold equilibration of the pure lipid/water/ion patch under PBC.
+PATCH_EQUIL_NVT_NS = 0.2
+PATCH_EQUIL_NPT_NS = 0.2
+PATCH_EQUIL_TEMPERATURE_K = 303.15
+PATCH_EQUIL_PRESSURE_BAR = 1.0
+PATCH_EQUIL_FORCEFIELD = "ff19SB"
+
+
+def patch_equilibration_params() -> dict:
+    """Return the canonical patch equilibration parameter dict."""
+    return {
+        "nvt_ns": PATCH_EQUIL_NVT_NS,
+        "npt_ns": PATCH_EQUIL_NPT_NS,
+        "temperature_k": PATCH_EQUIL_TEMPERATURE_K,
+        "pressure_bar": PATCH_EQUIL_PRESSURE_BAR,
+    }
 
 
 def _normalize_water_model_name(water_model: Optional[str]) -> Optional[str]:

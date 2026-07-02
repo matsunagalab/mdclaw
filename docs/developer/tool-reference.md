@@ -133,9 +133,20 @@ skill examples.
   concentration and records a warning if it must rerun packmol-memgen with
   `--salt_override` to satisfy neutralization.
 - `embed_in_membrane(...)`: membrane embedding and solvation.
-  Runs the bounded adaptive Packmol membrane plan as a 4-lane parallel race by
-  default; set `packmol_race_lanes=1` / `--packmol-race-lanes 1` for the
-  previous sequential retry behavior on CPU-constrained hosts.
+  Defaults to `membrane_backend="patch-tile"`: build a small composition-keyed
+  lipid patch once, equilibrate it under PBC (`build_amber_system` +
+  `run_minimization` + `run_equilibration`, called in non-node mode), cache it
+  under a protein-size-independent fingerprint, then orient the protein with
+  MEMEMBED, tile the patch to cover it, carve overlaps, and neutralize by
+  swapping bulk waters for ions. The cold build runs once per composition and is
+  surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
+  `membrane_backend="packmol-memgen"` runs the legacy full-box packing path
+  (bounded adaptive Packmol as a 4-lane parallel race; set
+  `packmol_race_lanes=1` for sequential retries). `membrane_backend="auto"`
+  tries patch-tile then falls back to packmol-memgen. Patch caching honors
+  `membrane_cache_mode` (`off` / `read-only` / `auto` / `refresh`),
+  `membrane_cache_dir`, and the read-only bundled cache root
+  `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`. See `scripts/warmup_membrane_cache.py`.
 - `list_available_lipids(...)`: lipid inventory.
 
 ## `amber_server.py`
