@@ -75,10 +75,33 @@ PATCH_LIPID21_FRAGMENT_RESNAMES = {"PA", "PC", "PE", "OL"}
 PATCH_STEROL_RESNAMES = {"CHL", "CHL1"}
 PATCH_WATER_RESNAMES = {"HOH", "WAT", "SOL", "TIP3", "OPC", "T3P", "T4E"}
 PATCH_ION_RESNAMES = {"NA", "K", "CL", "Na+", "Cl-", "K+"}
+# Lipid21 splits each lipid into head-group + acyl-tail fragment residues, so a
+# packed patch never contains a residue literally named e.g. "DPPC".  Patch
+# validation checks that the discriminating head-group fragment for each
+# requested lipid is present, so map lipid names to their Lipid21 head-group
+# residue(s).  Unlisted names fall back to matching their own name.
 PATCH_LIPID_ALIAS_RESNAMES = {
+    # phosphatidylcholine (PC head)
     "POPC": {"POPC", "PC"},
+    "DOPC": {"DOPC", "PC"},
+    "DPPC": {"DPPC", "PC"},
+    "DMPC": {"DMPC", "PC"},
+    "DSPC": {"DSPC", "PC"},
+    "DLPC": {"DLPC", "PC"},
+    # phosphatidylethanolamine (PE head)
     "POPE": {"POPE", "PE"},
+    "DOPE": {"DOPE", "PE"},
+    "DPPE": {"DPPE", "PE"},
+    # phosphatidylglycerol (PGR head)
+    "POPG": {"POPG", "PGR", "PG"},
+    "DOPG": {"DOPG", "PGR", "PG"},
+    "DPPG": {"DPPG", "PGR", "PG"},
+    # phosphatidylserine (PS head)
+    "POPS": {"POPS", "PS"},
+    "DOPS": {"DOPS", "PS"},
+    # cholesterol
     "CHL1": {"CHL1", "CHL"},
+    "CHL": {"CHL", "CHL1"},
 }
 
 # Small patch defaults. A ~40 A square patch converges fast in packmol even for
