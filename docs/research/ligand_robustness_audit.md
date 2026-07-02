@@ -163,21 +163,32 @@ Recommended invariant:
 
 ### 5. Charge Contract Should Stay Graph-Derived
 
-The ligand pathway should not infer a new ligand charge from free text,
-physiological-pH heuristics, or an integer override. `clean_ligand` should
-derive formal charge from the charged SMILES/SDF graph, and topology should
-validate that OpenFF `Molecule.total_charge` matches the recorded prep
-metadata before assigning NAGL partial charges.
+The charged SMILES/SDF graph remains the source of truth for ligand formal
+charge: `clean_ligand` derives `net_charge` from the graph and topology
+validates that OpenFF `Molecule.total_charge` matches before assigning NAGL
+partial charges. The graph itself is now allowed to be produced by a
+pH-dependent protonation step (Dimorphite-DL) for *neutral* input SMILES, but
+that step never invents a charge outside the explicit selection policy below.
+
+> **Update (2026-07)**: Dimorphite-DL was reintroduced as an optional
+> SMILES-graph protonator in `clean_ligand` (`protonate_ligands=True`,
+> `ligand_ph` defaulting to the protein pH). It replaces neither the graph
+> contract nor the removed SMARTS charge heuristic (`_estimate_physiological_charge`
+> stays deleted). Precedence: explicit charged SMILES (user or curated
+> dictionary) bypass Dimorphite-DL; `expected_net_charge` selects the matching
+> protonation state and fail-fasts (`ligand_protonation_charge_unreachable`)
+> when no state matches; a missing Dimorphite-DL install keeps the input SMILES.
 
 Audit severity: medium.
 
 Recommended invariant:
 
 - `net_charge` is graph-derived metadata, not an override.
-- `expected_net_charge` is validation-only and must fail on mismatch.
+- `expected_net_charge` is a selector among Dimorphite-DL states and a final
+  validation value; it must fail on unreachable/mismatched charge.
 - Partial-charge sums should match OpenFF `Molecule.total_charge`.
-- If a user wants a different ligand charge, they must provide a charged
-  SMILES/SDF graph, e.g. `[O-]` or `[NH3+]`.
+- An explicitly charged SMILES/SDF graph (e.g. `[O-]` or `[NH3+]`) is
+  authoritative and bypasses pH protonation.
 
 ### 6. Coverage Is Not Yet a Scientific Regression Suite
 

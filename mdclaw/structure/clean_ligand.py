@@ -47,7 +47,7 @@ SUPPORTED_PREP_SOLVENT_TYPES = {"explicit", "implicit", "vacuum"}
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
-from mdclaw.structure.ligand_chemistry import _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit  # noqa: E402
+from mdclaw.structure.ligand_chemistry import _assign_bond_orders_from_smiles, _fetch_smiles_from_ccd, _get_ligand_smiles, _optimize_ligand_rdkit, _protonate_smiles_dimorphite, _select_protonation_state, _smiles_has_explicit_charge  # noqa: E402
 
 
 def clean_ligand(
@@ -59,6 +59,8 @@ def clean_ligand(
     max_opt_iters: int = 200,
     fetch_smiles: bool = True,
     expected_net_charge: Optional[int] = None,
+    ligand_ph: Optional[float] = None,
+    protonate: bool = True,
 ) -> dict:
     """Clean ligand chemistry using SMILES template matching.
     
@@ -81,9 +83,18 @@ def clean_ligand(
         optimize: Whether to run MMFF94 optimization
         max_opt_iters: Maximum optimization iterations
         fetch_smiles: Whether to fetch SMILES from PDB CCD API
-        expected_net_charge: Optional validation-only integer charge. If the
+        expected_net_charge: Optional integer charge. Used both as a selector
+            among Dimorphite-DL protonation candidates (pick the state matching
+            this charge) and as a final validation value. If the resulting
             charged SMILES/SDF graph has a different formal charge, ligand
             cleaning fails and asks for a corrected charged SMILES/SDF.
+        ligand_ph: pH used for Dimorphite-DL protonation of neutral SMILES. When
+            None, the caller's protein pH is used (prepare_complex passes it).
+        protonate: When True (default), neutral CCD/dictionary SMILES are passed
+            through Dimorphite-DL at ``ligand_ph`` to assign a pH-appropriate
+            protonation state. SMILES that already carry an explicit formal
+            charge (user-provided or curated charged dictionary entries) are
+            authoritative and bypass Dimorphite-DL.
     
     Returns:
         Dict with:
@@ -132,6 +143,10 @@ def clean_ligand(
         "smiles_used": None,
         "smiles_original": None,
         "smiles_source": None,
+        "protonation_method": None,
+        "protonation_ph": None,
+        "smiles_protonated": None,
+        "protonation_candidates": None,
         "num_atoms": 0,
         "num_heavy_atoms": 0,
         "optimized": optimize,
@@ -198,6 +213,72 @@ def clean_ligand(
         result["smiles_original"] = smiles_original
         result["smiles_source"] = smiles_source
         result["smiles_used"] = smiles_used
+
+        # Step 2: Assign a pH-appropriate protonation state (Dimorphite-DL).
+        # Dimorphite-DL works on the 2D SMILES graph only; the 3D hydrogens that
+        # match the chosen state are added later by Chem.AddHs(addCoords=True).
+        # Policy (graph-as-contract preserving):
+        #  - SMILES that already encode an explicit formal charge are
+        #    authoritative and bypass Dimorphite-DL.
+        #  - expected_net_charge selects the matching candidate; no match is a
+        #    fail-fast that asks for a charged SMILES/SDF.
+        effective_ph = ligand_ph if ligand_ph is not None else 7.4
+        if not protonate:
+            result["protonation_method"] = "disabled"
+        elif _smiles_has_explicit_charge(smiles_used):
+            result["protonation_method"] = "bypass_explicit_charge"
+            logger.info(
+                f"SMILES for {ligand_id} already carries an explicit charge; "
+                f"bypassing Dimorphite-DL and respecting the input state."
+            )
+        else:
+            result["protonation_ph"] = effective_ph
+            candidates = _protonate_smiles_dimorphite(smiles_used, effective_ph)
+            if not candidates:
+                result["protonation_method"] = "unavailable"
+                result["warnings"].append(
+                    "Dimorphite-DL unavailable or produced no protonation "
+                    f"state at pH {effective_ph}; keeping the input SMILES for "
+                    f"{ligand_id}. Provide a charged SMILES/SDF to set the "
+                    "intended protonation state explicitly."
+                )
+            else:
+                selected_smiles, selected_charge, candidate_meta = (
+                    _select_protonation_state(candidates, expected_net_charge)
+                )
+                result["protonation_candidates"] = candidate_meta
+                if selected_smiles is None:
+                    result["errors"].append(
+                        f"No Dimorphite-DL protonation state at pH "
+                        f"{effective_ph} matches the requested net charge "
+                        f"{expected_net_charge} for {ligand_id}. "
+                        f"Available states: {candidate_meta}."
+                    )
+                    result["errors"].append(
+                        "Hint: provide a charged SMILES/SDF that encodes the "
+                        "intended protonation state (e.g. [O-] or [NH3+]), or "
+                        "adjust the expected net charge / pH."
+                    )
+                    result["code"] = "ligand_protonation_charge_unreachable"
+                    logger.error(result["errors"][-2])
+                    return result
+                if len(candidate_meta) > 1 and expected_net_charge is None:
+                    result["warnings"].append(
+                        f"Dimorphite-DL returned {len(candidate_meta)} "
+                        f"protonation states for {ligand_id} at pH "
+                        f"{effective_ph}; selected the dominant state "
+                        f"(charge {selected_charge}). Candidates: "
+                        f"{candidate_meta}."
+                    )
+                result["protonation_method"] = "dimorphite"
+                result["smiles_protonated"] = selected_smiles
+                smiles_used = selected_smiles
+                result["smiles_used"] = smiles_used
+                logger.info(
+                    f"Dimorphite-DL protonated {ligand_id} at pH "
+                    f"{effective_ph}: {smiles_original[:30]}... -> "
+                    f"{smiles_used[:30]}... (charge {selected_charge})"
+                )
 
         template_mol = Chem.MolFromSmiles(smiles_used)
         if template_mol is None:

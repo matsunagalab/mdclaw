@@ -174,6 +174,8 @@ class TestCleanLigand:
     def test_clean_ligand_expected_charge_mismatch_requires_charged_graph(
         self, acetic_acid_pdb, tmp_path,
     ):
+        # With protonation disabled the graph-as-contract path still applies:
+        # a neutral SMILES cannot satisfy expected_net_charge=-1.
         pytest.importorskip("rdkit")
         from mdclaw.structure_server import clean_ligand
 
@@ -184,11 +186,59 @@ class TestCleanLigand:
             output_dir=str(tmp_path),
             optimize=False,
             expected_net_charge=-1,
+            protonate=False,
         )
 
         assert result["success"] is False
         assert result["code"] == "ligand_formal_charge_mismatch"
         assert any("charged SMILES/SDF" in error for error in result["errors"])
+
+    def test_clean_ligand_protonation_selects_expected_charge(
+        self, acetic_acid_pdb, tmp_path,
+    ):
+        # Default protonation lets Dimorphite-DL reach the requested charge:
+        # neutral CC(=O)O + expected -1 selects the deprotonated carboxylate.
+        pytest.importorskip("rdkit")
+        pytest.importorskip("dimorphite_dl")
+        from mdclaw.structure_server import clean_ligand
+
+        result = clean_ligand(
+            ligand_pdb=acetic_acid_pdb,
+            ligand_id="ACE",
+            smiles="CC(=O)O",
+            output_dir=str(tmp_path),
+            optimize=False,
+            expected_net_charge=-1,
+            ligand_ph=7.4,
+        )
+
+        assert result["success"], result.get("errors")
+        assert result["net_charge"] == -1
+        assert result["protonation_method"] == "dimorphite"
+        assert result["protonation_ph"] == 7.4
+        assert result["smiles_protonated"]
+
+    def test_clean_ligand_unreachable_charge_fails_fast(
+        self, acetic_acid_pdb, tmp_path,
+    ):
+        # An unreachable expected charge fail-fasts rather than silently
+        # picking a different protonation state.
+        pytest.importorskip("rdkit")
+        pytest.importorskip("dimorphite_dl")
+        from mdclaw.structure_server import clean_ligand
+
+        result = clean_ligand(
+            ligand_pdb=acetic_acid_pdb,
+            ligand_id="ACE",
+            smiles="CC(=O)O",
+            output_dir=str(tmp_path),
+            optimize=False,
+            expected_net_charge=+3,
+            ligand_ph=7.4,
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "ligand_protonation_charge_unreachable"
 
     def test_clean_ligand_known_smiles_lookup(self):
         from mdclaw.structure_server import _get_ligand_smiles

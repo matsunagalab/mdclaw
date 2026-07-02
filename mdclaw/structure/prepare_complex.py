@@ -483,6 +483,8 @@ def prepare_complex(
     process_proteins: bool = True,
     process_ligands: bool = True,
     ligand_smiles: Optional[Dict[str, str]] = None,
+    ligand_ph: Optional[float] = None,
+    protonate_ligands: bool = True,
     include_types: Optional[List[str]] = None,
     include_ligand_ids: Optional[List[str]] = None,
     include_ligand_resnames: Optional[List[str]] = None,
@@ -550,8 +552,13 @@ def prepare_complex(
         ligand_smiles: Dict mapping ligand_id to charged SMILES
                        (e.g., {"ACE": "CC(=O)[O-]"}). If not provided,
                        SMILES will be fetched from PDB CCD and used as-is.
-                       Integer charge metadata is validation-only; encode the
-                       intended protonation state in SMILES/SDF.
+                       A SMILES that already carries an explicit formal charge
+                       is authoritative and bypasses Dimorphite-DL protonation.
+        ligand_ph: pH used for Dimorphite-DL ligand protonation of neutral
+                   SMILES. Defaults to the protein ``ph`` when None.
+        protonate_ligands: When True (default), neutral CCD/dictionary ligand
+                           SMILES are protonated to a pH-appropriate state via
+                           Dimorphite-DL. Set False to keep SMILES as-is.
         include_types: List of molecular types to include: "protein", "nucleic", "glycan", "ligand", "ion", "water".
                        Default (None) includes ["protein", "nucleic", "glycan", "ligand", "ion"].
         keep_crystal_waters: If True, retain crystal waters when "water" is in include_types.
@@ -1348,13 +1355,16 @@ def prepare_complex(
                                 f"{expected_net_charge} for {ligand_id}"
                             )
 
-                    # Clean ligand
+                    # Clean ligand. Ligand protonation uses the protein pH by
+                    # default; an explicit ligand_ph overrides it.
                     clean_result = clean_ligand(
                         ligand_pdb=ligand_file,
                         ligand_id=ligand_id,
                         smiles=user_smiles,
                         optimize=optimize_ligands,
                         expected_net_charge=expected_net_charge,
+                        ligand_ph=ligand_ph if ligand_ph is not None else ph,
+                        protonate=protonate_ligands,
                     )
                     
                     if clean_result["success"]:
@@ -1368,6 +1378,10 @@ def prepare_complex(
                         ligand_result["smiles_used"] = clean_result.get("smiles_used")
                         ligand_result["smiles_original"] = clean_result.get("smiles_original")
                         ligand_result["smiles_source"] = clean_result.get("smiles_source")
+                        ligand_result["protonation_method"] = clean_result.get("protonation_method")
+                        ligand_result["protonation_ph"] = clean_result.get("protonation_ph")
+                        ligand_result["smiles_protonated"] = clean_result.get("smiles_protonated")
+                        ligand_result["protonation_candidates"] = clean_result.get("protonation_candidates")
                         logger.info(
                             f"  ✓ Ligand {ligand_id} ({chain_id}): cleaned, "
                             f"graph charge={clean_result['net_charge']}"
@@ -1944,6 +1958,10 @@ def prepare_complex(
                     "smiles": lig.get("smiles_used"),
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
+                    "protonation_method": lig.get("protonation_method"),
+                    "protonation_ph": lig.get("protonation_ph"),
+                    "smiles_protonated": lig.get("smiles_protonated"),
+                    "protonation_candidates": lig.get("protonation_candidates"),
                 }
                 for lig in result["ligands"]
                 if lig.get("success") and lig.get("sdf_file")
@@ -2017,6 +2035,10 @@ def prepare_complex(
                     "smiles": lig.get("smiles_used"),
                     "smiles_original": lig.get("smiles_original"),
                     "smiles_source": lig.get("smiles_source"),
+                    "protonation_method": lig.get("protonation_method"),
+                    "protonation_ph": lig.get("protonation_ph"),
+                    "smiles_protonated": lig.get("smiles_protonated"),
+                    "protonation_candidates": lig.get("protonation_candidates"),
                 }
                 for lig in ligands if lig.get("success") and lig.get("sdf_file")
             ]

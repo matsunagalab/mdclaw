@@ -220,6 +220,11 @@ research / comparison choice, not a "legacy artifact format" toggle.
 - pH 7.4 is physiological default
 - pdb2pqr + propka assigns pH-dependent HIS states (HID/HIE/HIP)
 - Fallback to pdb4amber + reduce (geometry-based) if pdb2pqr unavailable
+- Ligands: neutral SMILES are protonated to a pH-appropriate state via
+  Dimorphite-DL (defaults to the same `--ph` as the protein). Override with
+  `--ligand-ph`, disable with `--no-protonate-ligands`, or force a specific
+  state by passing a charged SMILES (`[O-]`/`[NH3+]`) or a known `net_charge`
+  (used to select the matching protonation state)
 
 ---
 

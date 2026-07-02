@@ -11,6 +11,7 @@ dependencies = [
     # See environment.yml for full setup.
     "pdb2pqr>=3.1.0",
     "propka>=3.5.0",
+    "dimorphite-dl>=2.0",
     "gemmi>=0.6.0",
     "pubchempy>=1.0.4",
     "e3nn==0.5.0",

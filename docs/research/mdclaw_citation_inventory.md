@@ -57,6 +57,9 @@ Primary repository sources checked:
 - PDBFixer: no separate DOI-confirmed PDBFixer paper was found; cite the OpenMM paper for the software family and mention PDBFixer as an OpenMM-associated tool if needed.
 - PDB2PQR: cite for structure protonation/PQR preparation, especially when `prepare_complex` used `pdb2pqr`.
 - PROPKA3: cite for empirical pKa/protonation-state assignment.
+- Dimorphite-DL: cite when small-molecule ligand ionization/protonation state
+  is assigned at a target pH (`prepare_complex` ligand protonation with
+  `protonate_ligands=True`).
 - RDKit: cite the RDKit Zenodo concept DOI for cheminformatics operations.
 - Gemmi: cite for mmCIF/PDB parsing and structural biology file handling.
 - PubChemPy: normally do not cite in MD Methods; record only in software provenance if needed.
@@ -387,6 +390,17 @@ Primary repository sources checked:
   number = {73},
   pages = {4200},
   doi = {10.21105/joss.04200}
+}
+
+@article{Ropp2019DimorphiteDL,
+  author = {Ropp, Patrick J. and Kaminsky, Jacob C. and Yablonski, Sara and Durrant, Jacob D.},
+  title = {{Dimorphite-DL}: An Open-Source Program for Enumerating the Ionization States of Drug-Like Small Molecules},
+  journal = {Journal of Cheminformatics},
+  volume = {11},
+  number = {1},
+  pages = {14},
+  year = {2019},
+  doi = {10.1186/s13321-019-0336-9}
 }
 
 @inproceedings{Visani2024HPacker,

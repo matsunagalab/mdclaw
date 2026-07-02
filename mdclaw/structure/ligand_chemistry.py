@@ -172,7 +172,7 @@ def _get_ligand_smiles(ligand_id: str, user_smiles: Optional[str] = None,
         return user_smiles
 
     known_smiles = KNOWN_LIGAND_SMILES.get(ligand_id)
-    if known_smiles and re.search(r"\[[^\]]*[+-]", known_smiles):
+    if known_smiles and _smiles_has_explicit_charge(known_smiles):
         logger.info(f"Using curated charged SMILES for {ligand_id} from dictionary")
         return known_smiles
     
@@ -294,3 +294,97 @@ def _optimize_ligand_rdkit(mol, max_iters: int = 200, force_field: str = "MMFF94
             success = False
     
     return mol, success
+
+
+# =============================================================================
+# Ligand Protonation (Dimorphite-DL)
+# =============================================================================
+
+# A bracket atom carrying an explicit formal charge, e.g. ``[O-]`` / ``[NH3+]``
+# / ``[S+]``. Presence of any such token means the SMILES already encodes an
+# intended protonation state, so it is authoritative and Dimorphite-DL is
+# bypassed (see the graph-as-contract policy in
+# docs/research/ligand_robustness_audit.md).
+_EXPLICIT_CHARGE_RE = re.compile(r"\[[^\]]*[+-]")
+
+
+def _smiles_has_explicit_charge(smiles: Optional[str]) -> bool:
+    """Return True when the SMILES contains an explicit formal-charge token."""
+    if not smiles:
+        return False
+    return bool(_EXPLICIT_CHARGE_RE.search(smiles))
+
+
+def _protonate_smiles_dimorphite(smiles: str, ph: float) -> list[Tuple[str, int]]:
+    """Enumerate protonation states for a SMILES at a single pH via Dimorphite-DL.
+
+    Returns a list of ``(protonated_smiles, formal_charge)`` candidates, ordered
+    as Dimorphite-DL returns them (the first is the dominant/most-probable
+    state). Returns an empty list when Dimorphite-DL is unavailable or fails, so
+    callers can fall back to the neutral input SMILES without reintroducing the
+    removed SMARTS charge heuristic.
+    """
+    try:
+        from dimorphite_dl import protonate_smiles
+    except ImportError:
+        logger.warning(
+            "Dimorphite-DL not installed; skipping pH protonation and keeping "
+            "the input SMILES. Install dimorphite-dl>=2.0 or provide a charged "
+            "SMILES/SDF to set the intended protonation state."
+        )
+        return []
+
+    try:
+        from rdkit import Chem
+    except ImportError:
+        return []
+
+    try:
+        # Narrow pH window (ph_min == ph_max) yields the dominant state(s) at the
+        # requested pH; multiple entries can still be returned for groups that
+        # straddle the window (each is a distinct protonation microstate).
+        protonated = protonate_smiles(smiles, ph_min=ph, ph_max=ph)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Dimorphite-DL protonation failed (%s: %s); keeping input SMILES",
+            type(exc).__name__, exc,
+        )
+        return []
+
+    candidates: list[Tuple[str, int]] = []
+    for candidate_smiles in protonated or []:
+        mol = Chem.MolFromSmiles(candidate_smiles)
+        if mol is None:
+            continue
+        candidates.append((candidate_smiles, int(Chem.GetFormalCharge(mol))))
+    return candidates
+
+
+def _select_protonation_state(
+    candidates: list[Tuple[str, int]],
+    expected_net_charge: Optional[int],
+) -> Tuple[Optional[str], Optional[int], list[dict]]:
+    """Choose one protonation state from Dimorphite-DL candidates.
+
+    Selection policy:
+    - If ``expected_net_charge`` is given, pick the candidate whose formal charge
+      matches it; return ``(None, None, meta)`` when no candidate matches so the
+      caller can fail-fast and ask for a charged SMILES/SDF.
+    - Otherwise pick the first (dominant) candidate.
+
+    Returns ``(selected_smiles, selected_charge, candidate_meta)`` where
+    ``candidate_meta`` is a JSON-friendly list of ``{"smiles", "charge"}`` dicts.
+    """
+    meta = [{"smiles": smi, "charge": charge} for smi, charge in candidates]
+    if not candidates:
+        return None, None, meta
+
+    if expected_net_charge is not None:
+        target = int(expected_net_charge)
+        for smi, charge in candidates:
+            if charge == target:
+                return smi, charge, meta
+        return None, None, meta
+
+    selected_smiles, selected_charge = candidates[0]
+    return selected_smiles, selected_charge, meta

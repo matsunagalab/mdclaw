@@ -74,8 +74,12 @@ Important outputs:
 
 - `merged_pdb`: downstream structure for solvation or topology.
 - `split/`: extracted components.
-- `ligand_chemistry`: ligand SDF/SMILES/provenance. Ligand charge comes from
-  the charged graph, so use `[O-]` / `[NH3+]` in SMILES when needed.
+- `ligand_chemistry`: ligand SDF/SMILES/provenance, including protonation
+  provenance (`protonation_method`, `protonation_ph`, `smiles_protonated`).
+  Neutral ligand SMILES are protonated at the protein `--ph` via Dimorphite-DL
+  by default; override with `--ligand-ph`, disable with
+  `--no-protonate-ligands`. An explicitly charged SMILES (`[O-]`/`[NH3+]`) or a
+  known `net_charge` takes precedence (charge selects the matching state).
 - `residue_mapping`: source-to-merged nucleic residue mapping.
 - `glycan_metadata` and `glycan_linkages`: GLYCAM topology inputs.
 
