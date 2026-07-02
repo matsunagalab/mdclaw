@@ -29,7 +29,8 @@ ForceField XML.
 
 ## Where Things Live
 
-- `mdclaw/`: Python package and CLI tool implementations.
+- `mdclaw/`: Python package and CLI dispatch. Each tool server is a
+ `mdclaw/<tool>/` package whose `__init__.py` assembles its `TOOLS` dict.
 - `skills/`: platform-agnostic MDClaw skill instructions.
 - `.agents/skills/`, `.claude/skills/`: skill discovery mirrors of `skills/`.
 - `.claude-plugin/`, `bin/`, `hooks/`: plugin distribution and runtime wrapper.
@@ -41,6 +42,8 @@ ForceField XML.
 Developer references:
 
 - `docs/developer/architecture.md`: repository map and schema v3 DAG details.
+- `docs/developer/analysis-node-contract.md`: `analyze` node condition contract
+ (scope, subjects, comparison mapping, validation).
 - `docs/developer/skill-conventions.md`: how to author/refactor `skills/**` so
  weak LLMs can follow them (spine + routed leaf pages, single canonical home).
 - `docs/developer/tool-reference.md`: tool modules and signatures index.

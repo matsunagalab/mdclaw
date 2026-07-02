@@ -63,7 +63,7 @@ Important boundaries:
 | `.claude-plugin/` | Claude plugin marketplace metadata. |
 | `hooks/` | Plugin lifecycle hooks, including packaged runtime setup. |
 | `bin/mdclaw` | Runtime wrapper that selects conda, SIF, Docker, or local CLI. |
-| `mdclaw/` | Python package, CLI dispatch, server tools, state helpers. |
+| `mdclaw/` | Python package: CLI dispatch, one `mdclaw/<tool>/` package per tool server, and shared state helpers. |
 | `container/` | Docker image and Singularity/Apptainer SIF build assets for the packaged MD runtime. |
 | `scripts/` | Setup, doctor, release, and maintenance scripts. |
 | `benchmarks/mdprepbench/` | Preparation benchmark prompts, scorer-only metadata, and truth artifacts. |
@@ -78,7 +78,7 @@ Important boundaries:
 | `_common.py` | Logging, directories, command wrappers, guardrails, shared helpers. |
 | `_registry.py` | Server registry used by CLI discovery. |
 | `_cli.py` | CLI entry point, JSON input handling, global `--job-dir` / `--node-id` injection. |
-| `_node.py` | Schema v3 node DAG management, artifact registration, status transitions. |
+| `_node.py` | Re-export shim for the schema v3 node DAG API; the implementation lives in the `node/` package (`lifecycle`, `graph`, `progress`, `inputs`, `failure`, ...). |
 | `_event.py` | Append-only JSON event log. |
 | `_lock.py` | File-based locking with `fcntl.flock`. |
 | `<tool>/` | Public tool packages (e.g. `structure/`, `solvation/`, `amber/`, `simulation/`, `study/`, `evidence/`). Each package `__init__.py` assembles a `TOOLS` dict from responsibility-scoped submodules. |
@@ -138,61 +138,15 @@ Production continuations are represented as new Production Nodes in the same
 Production Chain. The timeline metadata continues from the selected ancestor,
 but each Production Segment writes its own node-owned artifacts.
 
-Analysis nodes declare an Analysis Data Scope. The condition field is
-`analysis_data_scope`, with supported values `segment`, `production_chain`, and
-`comparison`. A single production parent can mean either the parent Production
-Segment or the full Production Chain ending at that leaf, depending on the
-analysis intent. A comparison node consumes exactly two analyze parent nodes;
-create one `production_chain` analyze node per branch first, then compare those
-analysis artifacts. The comparison node owns `analysis_subjects` and
-`comparison_mapping` in its own conditions; parent analyze nodes describe their
-own data scope, not the cross-branch subject namespace or correspondence. The
-resolver continues to expose multi-parent analyze inputs as `branches_input`;
-that internal name is kept for existing tools even when the data scope is
-`comparison`.
-Cross-topology comparisons are allowed only when the Analysis Subjects and
-Comparison Mapping are explicit; the same-topology path may use one shared
-topology file, but different-topology comparisons need per-branch topology and
-mapping data rather than atom-index assumptions. Initial support should not
-infer mappings automatically from sequence or residue similarity. Initial
-mapping types are limited to `residue_number` and `atom_selection`.
-Analysis tools should apply lightweight validation before execution: required
-condition fields, supported scope and mapping type values, subject labels, and
-mapping references should be syntactically consistent. Topology-backed checks
-such as referenced residue/atom existence and per-branch compatibility are
-metric-specific checks, not a global gate.
-For `analysis_data_scope="comparison"`, `analysis_subjects` and
-`comparison_mapping` are required. For `segment` and `production_chain`,
-`analysis_subjects` is optional unless a metric-specific tool requires a
-subject. Subject entries only require a unique `label` at this layer; descriptor
-fields such as `chain_id`, `selection`, `residue_range`, or `resname` remain
-metric-specific. Initial comparison support is binary/pairwise: exactly two
-analyze parents and exactly two subjects per comparison node. Residue-number
-mapping keeps the lightweight string form `subject_label:residue_id` in `pairs`,
-with each pair referencing both subjects exactly once. The `residue_id` part is
-an opaque string, not a number, so insertion codes and source-specific residue
-identifiers remain representable. Atom-selection mapping uses a `selections`
-object keyed by the two subject labels. Selection values are mdtraj selection
-strings; lightweight validation only checks that they are present and non-empty.
-
-Recommended comparison conditions:
-
-```json
-{
-  "analysis_data_scope": "comparison",
-  "analysis_subjects": [
-    {"label": "apo"},
-    {"label": "holo"}
-  ],
-  "comparison_mapping": {
-    "type": "residue_number",
-    "pairs": [
-      ["apo:10", "holo:10"],
-      ["apo:11", "holo:11"]
-    ]
-  }
-}
-```
+Analysis nodes declare an Analysis Data Scope (`segment`, `production_chain`, or
+`comparison`) so a single production parent can mean the parent Production
+Segment or the full Production Chain, and a comparison node consumes exactly two
+analyze parents. The field-level condition contract — allowed values,
+`analysis_subjects` / `comparison_mapping` ownership, the `residue_number` and
+`atom_selection` mapping formats, and the pre-execution validation rules — lives
+in [Analysis Node Condition Contract](analysis-node-contract.md). The rationale
+for requiring explicit cross-topology mappings is
+[ADR 0003](../adr/0003-cross-topology-analysis-requires-explicit-mapping.md).
 
 ```mermaid
 flowchart LR
