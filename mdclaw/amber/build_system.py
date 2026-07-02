@@ -614,6 +614,7 @@ def build_amber_system(
                 expected=f"One of: {sorted(CANONICAL_PROTEIN_FORCEFIELDS.values())}",
                 actual=forcefield,
                 warnings=result["warnings"],
+                code="unknown_forcefield",
             ),
         }
         if job_dir and node_id:
@@ -640,6 +641,7 @@ def build_amber_system(
                 expected=f"One of: {sorted(CANONICAL_WATER_MODELS.values())}",
                 actual=water_model,
                 warnings=result["warnings"],
+                code="unknown_water_model",
             ),
         }
         if job_dir and node_id:

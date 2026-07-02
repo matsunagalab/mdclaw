@@ -46,6 +46,7 @@ from typing import Callable, Optional, Dict, Any, Tuple  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     atomic_write_text_group,
     ensure_directory, BaseToolWrapper,
+    tail_for_agent,
 )
 from mdclaw._lock import file_lock  # noqa: E402
 from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
@@ -1051,8 +1052,8 @@ def _run_openmmforcefields_build(
         )
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
-            f"SystemGenerator init failed: {type(exc).__name__}: {exc}. "
-            f"Bundle: {xml_bundle}"
+            f"SystemGenerator init failed: {type(exc).__name__}: "
+            f"{tail_for_agent(exc)}. Bundle: {xml_bundle}"
         )
         return result
 
@@ -1471,7 +1472,8 @@ def _run_openmmforcefields_build(
         raise
     except Exception as exc:  # noqa: BLE001
         result["errors"].append(
-            f"SystemGenerator.create_system failed: {type(exc).__name__}: {exc}"
+            f"SystemGenerator.create_system failed: {type(exc).__name__}: "
+            f"{tail_for_agent(exc)}"
         )
         return result
 

@@ -12,6 +12,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Optional, Union
 
+from mdclaw.guardrail_codes import guardrail_action
+
 logger = logging.getLogger(__name__)
 
 
@@ -518,6 +520,99 @@ def _dedupe_strings(items: list[str]) -> list[str]:
 # Error helpers
 # ---------------------------------------------------------------------------
 
+# Context-window budget for failure envelopes. Long output belongs in on-disk
+# failure artifacts, never in the JSON an agent reads on stdout.
+ERROR_TAIL_CHARS = 1500
+MAX_HINTS = 8
+MAX_ERRORS = 5
+
+
+def tail_for_agent(
+    text: Any,
+    *,
+    limit: int = ERROR_TAIL_CHARS,
+    log_path: Optional[str] = None,
+) -> str:
+    """Return the trailing ``limit`` characters of ``text`` for agent output.
+
+    Keeps the end of the text (where actionable errors usually live) and, when
+    truncated, prefixes a marker that points at the full on-disk log so the
+    agent knows where to look without the bytes entering its context window.
+    """
+    if text is None:
+        return ""
+    text = str(text)
+    if len(text) <= limit:
+        return text
+    marker = "...[truncated"
+    if log_path:
+        marker += f", full log at {log_path}"
+    marker += "]"
+    return f"{marker}\n{text[-limit:]}"
+
+
+def finalize_error(
+    result: Any,
+    *,
+    job_dir: Optional[str] = None,
+    node_id: Optional[str] = None,
+) -> dict:
+    """Normalize any failure into the single MDClaw error contract.
+
+    Idempotent and safe to call on already-structured envelopes. Guarantees a
+    uniform, weak-LLM-friendly shape across every CLI tool:
+
+    - ``success`` is ``False``
+    - ``code`` is present (defaults to ``unhandled_error``)
+    - ``message`` is a one-line human summary
+    - ``hints`` is non-empty and its first entry is ``guardrail_action(code)``
+    - ``next_action`` is one concrete command/step to try next
+    - ``errors`` / ``warnings`` are bounded lists (tail-truncated)
+    - ``recoverable`` is a bool
+
+    ``job_dir`` / ``node_id`` (when known) drive a ``trace_failure`` next step.
+    """
+    if not isinstance(result, dict):
+        text = str(result)
+        result = {"message": text, "errors": [text]}
+
+    result["success"] = False
+
+    code = result.get("code") or "unhandled_error"
+    result["code"] = code
+    result.setdefault("error_type", "Error")
+
+    action = guardrail_action(code)
+
+    message = result.get("message")
+    if not message:
+        errors = result.get("errors") or []
+        message = str(errors[0]) if errors else action
+    result["message"] = message
+
+    existing_hints = [h for h in (result.get("hints") or []) if h]
+    hints = _dedupe_strings([action, *existing_hints])
+    result["hints"] = hints[:MAX_HINTS]
+
+    errors = [e for e in (result.get("errors") or []) if e]
+    if not errors:
+        errors = [message]
+    result["errors"] = [tail_for_agent(str(e)) for e in errors[:MAX_ERRORS]]
+
+    result.setdefault("warnings", [])
+    result.setdefault("recoverable", True)
+
+    if not result.get("next_action"):
+        if job_dir and node_id:
+            result["next_action"] = (
+                f"Run: mdclaw trace_failure --job-dir {job_dir} "
+                f"--node-id {node_id}"
+            )
+        else:
+            result["next_action"] = action
+
+    return result
+
 
 def create_validation_error(
     field: str, message: str,
@@ -551,7 +646,7 @@ def create_validation_error(
     }
     if code:
         error["code"] = code
-    return error
+    return finalize_error(error)
 
 
 def create_validation_error_from_guardrails(
@@ -594,7 +689,7 @@ def create_validation_error_from_guardrails(
 def create_file_not_found_error(file_path: str, file_type: str = "file") -> dict:
     """Standardized file-not-found error dict."""
     error_msg = f"{file_type} not found: {file_path}"
-    return {
+    return finalize_error({
         "success": False, "error_type": "FileNotFoundError",
         "code": "file_not_found",
         "message": error_msg,
@@ -605,7 +700,7 @@ def create_file_not_found_error(file_path: str, file_type: str = "file") -> dict
             "code": "file_not_found",
         },
         "recoverable": True, "errors": [error_msg], "warnings": [],
-    }
+    })
 
 
 def create_tool_not_available_error(
@@ -614,10 +709,10 @@ def create_tool_not_available_error(
     """Standardized tool-not-available error dict."""
     hints = [f"Tool '{tool_name}' is not available in PATH"]
     hints.append(install_hint or "Ensure AmberTools is installed and conda environment is activated")
-    return {
+    return finalize_error({
         "success": False, "error_type": "ToolNotAvailableError",
         "code": "tool_not_available",
         "message": f"Required tool '{tool_name}' not found",
         "hints": hints, "context": {"tool_name": tool_name, "code": "tool_not_available"},
         "recoverable": False, "errors": [f"Tool not found: {tool_name}"], "warnings": [],
-    }
+    })

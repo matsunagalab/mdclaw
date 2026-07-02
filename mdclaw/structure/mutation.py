@@ -168,6 +168,10 @@ def create_mutated_structure(
             "Provide exactly one of `mutations`, `sequence`, or `seq_file`."
         )
         result["code"] = "mutation_input_invalid"
+        result["hints"] = [
+            "Pass exactly one mutation specifier: --mutations (e.g. 'A:L99A'), "
+            "--sequence, or --seq-file. Not zero, not more than one.",
+        ]
         if job_dir and node_id:
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(
@@ -183,6 +187,7 @@ def create_mutated_structure(
             "pdb_file is required (or pass --job-dir/--node-id with a prep "
             "ancestor that provides a merged_pdb artifact)."
         )
+        result["code"] = "missing_pdb_file"
         if job_dir and node_id:
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(
@@ -196,6 +201,7 @@ def create_mutated_structure(
     pdb_path = Path(pdb_file).resolve()
     if not pdb_path.is_file():
         result["errors"].append(f"Input PDB file not found: {pdb_file}")
+        result["code"] = "file_not_found"
         if job_dir and node_id:
             from mdclaw._node import fail_node_from_result
             return fail_node_from_result(

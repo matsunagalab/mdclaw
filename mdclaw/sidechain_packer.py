@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
+from mdclaw._common import tail_for_agent
+
 
 AA_ONE_TO_THREE = {
     "A": "ALA",
@@ -587,7 +589,7 @@ def run_hpacker(
         except Exception as exc:
             return HPackerRunResult(
                 success=False,
-                errors=[f"HPacker failed: {type(exc).__name__}: {exc}"],
+                errors=[f"HPacker failed: {type(exc).__name__}: {tail_for_agent(exc)}"],
                 code="hpacker_failed",
             )
         if not hpacker_output.exists():
@@ -605,7 +607,10 @@ def run_hpacker(
         except Exception as exc:
             return HPackerRunResult(
                 success=False,
-                errors=[f"Protein hydrogen rebuild after HPacker failed: {type(exc).__name__}: {exc}"],
+                errors=[
+                    "Protein hydrogen rebuild after HPacker failed: "
+                    f"{type(exc).__name__}: {tail_for_agent(exc)}"
+                ],
                 code="hpacker_hydrogen_rebuild_failed",
             )
         merged_lines = _split_hpacker_and_nonprotein_lines(hydrogenated_output, original_lines)

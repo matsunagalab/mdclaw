@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TextIO, Union, get_args, get_origin
 
 from mdclaw import __version__
+from mdclaw._common import finalize_error
 from mdclaw._registry import SERVER_REGISTRY
 from mdclaw._tool_meta import tool_job_dir_is_data, tool_requires_node
 
@@ -628,7 +629,7 @@ def _json_stdout_tail(payload: dict) -> str:
 
 
 def _json_error_and_exit(error: dict) -> None:
-    json.dump(error, sys.stdout, indent=2, default=str)
+    json.dump(finalize_error(error), sys.stdout, indent=2, default=str)
     print()
     sys.exit(1)
 
@@ -1096,6 +1097,14 @@ def main(argv: list[str] | None = None) -> None:
         exit_code = 0
         if isinstance(result, dict) and result.get("success") is False:
             exit_code = 1
+            # Normalize every failure to the single error contract so weak
+            # agents always see a stable code, a next_action, and a non-empty
+            # hint list, regardless of which tool produced the failure.
+            result = finalize_error(
+                result,
+                job_dir=effective_job_dir,
+                node_id=effective_node_id,
+            )
         # Failure counterpart: when a workflow tool is blocked by a non-completed
         # parent, tell the agent to create a new node of the blocking parent's
         # stage rather than re-running this same blocked node.
@@ -1140,15 +1149,16 @@ def main(argv: list[str] | None = None) -> None:
             exit_code=1,
             started_at=started_at,
         )
-        error_out = {
-            "success": False,
-            "error": str(e),
-            "message": str(e),
-            "error_type": type(e).__name__,
-            "code": "unhandled_exception",
-            "errors": [str(e)],
-            "warnings": [],
-        }
+        error_out = finalize_error(
+            {
+                "message": f"{tool_name} raised {type(e).__name__}: {e}",
+                "error_type": type(e).__name__,
+                "code": "unhandled_exception",
+                "errors": [str(e)],
+            },
+            job_dir=effective_job_dir,
+            node_id=effective_node_id,
+        )
         stdout_tail = (
             f"{tool_stdout_tail}\n--- mdclaw final JSON ---\n"
             f"{_json_stdout_tail(error_out)}"

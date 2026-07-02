@@ -923,6 +923,11 @@ def validate_node_execution_context(
             "success": False,
             "code": "node_missing",
             "blocking_codes": ["node_missing"],
+            "hints": [
+                "List existing node IDs with 'mdclaw inspect_job --job-dir "
+                f"{job_dir}', or create the node with 'mdclaw create_node' "
+                "before running it.",
+            ],
             "errors": [f"Node '{node_id}' does not exist under {job_dir}"],
         }
 

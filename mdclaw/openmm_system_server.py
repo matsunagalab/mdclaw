@@ -40,6 +40,7 @@ from mdclaw._common import (  # noqa: E402
     create_validation_error,
     ensure_directory,
     setup_logger,
+    tail_for_agent,
 )
 from mdclaw import _topology_pablo  # noqa: E402
 from mdclaw._tool_meta import node_tool  # noqa: E402
@@ -368,6 +369,7 @@ def build_openmm_system(
         return _emit_failure(create_file_not_found_error(str(pdb_path), file_type="pdb_file"))
 
     if not forcefield_xml:
+        result["code"] = "missing_forcefield_xml"
         result["errors"].append(
             "forcefield_xml is required: supply at least one OpenMM ForceField XML."
         )
@@ -490,6 +492,7 @@ def build_openmm_system(
         "CutoffPeriodic": app.CutoffPeriodic,
     }
     if nonbonded_method not in nb_method_map:
+        result["code"] = "invalid_nonbonded_method"
         result["errors"].append(
             f"nonbonded_method={nonbonded_method!r} not recognized; "
             f"choose from {sorted(nb_method_map)}."
@@ -503,6 +506,7 @@ def build_openmm_system(
         None: None,
     }
     if constraints not in constraints_map:
+        result["code"] = "invalid_constraints"
         result["errors"].append(
             f"constraints={constraints!r} not recognized; "
             f"choose from HBonds | AllBonds | None."
@@ -512,9 +516,10 @@ def build_openmm_system(
     try:
         ff = ForceField(*forcefield_xml)
     except Exception as exc:  # noqa: BLE001
+        result["code"] = "openmm_forcefield_init_failed"
         result["errors"].append(
-            f"ForceField init failed: {type(exc).__name__}: {exc}. "
-            f"Bundle: {forcefield_xml}"
+            f"ForceField init failed: {type(exc).__name__}: "
+            f"{tail_for_agent(exc)}. Bundle: {forcefield_xml}"
         )
         return _emit_failure(result)
 
@@ -543,8 +548,10 @@ def build_openmm_system(
     try:
         system = ff.createSystem(modeller.topology, **create_system_kwargs)
     except Exception as exc:  # noqa: BLE001
+        result["code"] = "openmm_create_system_failed"
         result["errors"].append(
-            f"ForceField.createSystem failed: {type(exc).__name__}: {exc}"
+            f"ForceField.createSystem failed: {type(exc).__name__}: "
+            f"{tail_for_agent(exc)}"
         )
         return _emit_failure(result)
 
@@ -607,8 +614,10 @@ def build_openmm_system(
             state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
         )
     except Exception as exc:  # noqa: BLE001
+        result["code"] = "openmm_minimization_failed"
         result["errors"].append(
-            f"Energy minimization/state capture failed: {type(exc).__name__}: {exc}"
+            f"Energy minimization/state capture failed: {type(exc).__name__}: "
+            f"{tail_for_agent(exc)}"
         )
         return _emit_failure(result)
 
@@ -665,8 +674,9 @@ def build_openmm_system(
             (minimization_report_file, json.dumps(minimization_report, indent=2)),
         ])
     except Exception as exc:  # noqa: BLE001
+        result["code"] = "openmm_serialization_failed"
         result["errors"].append(
-            f"Serialization failed: {type(exc).__name__}: {exc}"
+            f"Serialization failed: {type(exc).__name__}: {tail_for_agent(exc)}"
         )
         return _emit_failure(result)
 

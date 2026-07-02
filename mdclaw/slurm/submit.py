@@ -26,6 +26,7 @@ from mdclaw._common import (
     guardrail_messages,
     get_timeout,
     split_guardrail_results,
+    tail_for_agent,
 )
 
 from mdclaw.slurm import _base
@@ -394,7 +395,9 @@ def submit_job(
             result["errors"].append(f"Could not parse sbatch output: {proc.stdout}")
 
     except subprocess.CalledProcessError as e:
-        result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
+        result["errors"].append(
+            f"sbatch failed: {tail_for_agent(e.stderr or e.stdout or str(e))}"
+        )
     except subprocess.TimeoutExpired:
         result["errors"].append(f"sbatch timed out after {timeout}s")
     finally:
@@ -798,7 +801,9 @@ def submit_array_job(
 
         result["success"] = True
     except subprocess.CalledProcessError as e:
-        result["errors"].append(f"sbatch failed: {e.stderr or e.stdout or str(e)}")
+        result["errors"].append(
+            f"sbatch failed: {tail_for_agent(e.stderr or e.stdout or str(e))}"
+        )
     except subprocess.TimeoutExpired:
         result["errors"].append(f"sbatch timed out after {timeout}s")
     finally:

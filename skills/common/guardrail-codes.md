@@ -50,6 +50,8 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `glycam_bond_plan_unit_index_out_of_range_but_identity_resolved` | GLYCAM unit index out of range but identity resolved; verify the plan. |
 | `glycam_hydrogen_completion_failed` | GLYCAM hydrogen completion failed; inspect glycan hydrogens. |
 | `glycam_normalization_changed_protein_hydrogens` | GLYCAM normalization changed protein hydrogens; review before continuing. |
+| `glycam_prepareforleap_failed` | cpptraj prepareforleap failed; inspect the glycan linkage inputs. |
+| `glycam_topology_normalization_failed` | GLYCAM topology normalization failed; inspect the structured error. |
 | `glycan_forcefield_disabled` | Enable the glycan forcefield path to model glycans. |
 | `glycan_linkage_mapping_failed` | Glycan linkage mapping failed; check glycosidic connectivity. |
 | `hpacker_failed` | HPacker failed; inspect the structured error. |
@@ -69,6 +71,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_agent_skills_dir` | Point to a valid agent skills directory. |
 | `invalid_atom_count` | Structure atom count is invalid; inspect the input structure. |
 | `invalid_claim_expiry` | Provide a valid claim expiry timestamp. |
+| `invalid_constraints` | Use a supported constraints value: HBonds, AllBonds, or None. |
 | `invalid_coordinate_frame` | Provide valid coordinates/frame for this operation. |
 | `invalid_json_input` | Fix the JSON string or pass valid JSON via --json-input. |
 | `invalid_lease_seconds` | Provide a positive integer for lease seconds. |
@@ -82,6 +85,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_node_need_action` | Use manage_node_need --action one of: add, clear, record_attempt. |
 | `invalid_node_status` | Use a valid node status value. |
 | `invalid_node_type` | Use one of: source, prep, solv, topo, min, eq, prod, analyze. |
+| `invalid_nonbonded_method` | Use a supported nonbonded_method (e.g. PME, NoCutoff, CutoffPeriodic). |
 | `invalid_openmm_bundle` | OpenMM bundle is invalid; rebuild the system triple. |
 | `invalid_prep_solvent_type` | Use a supported solvent type for prep. |
 | `invalid_protonation_state` | Use a valid protonation state specification. |
@@ -95,6 +99,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `ligand_formal_charge_mismatch` | Fix the ligand formal charge to match its chemistry. |
 | `ligand_id_resname_mismatch` | Ligand ID and resname disagree; align the selection. |
 | `ligand_molecule_load_failed` | Failed to load the ligand molecule; verify inputs. |
+| `ligand_protonation_charge_unreachable` | Requested ligand protonation/charge is unreachable; adjust the target state. |
 | `ligand_resname_chain_auto_included` | A ligand resname's chain was auto-included; confirm intent. |
 | `ligand_template_coverage_failed` | Ligand template coverage failed; provide parameters or SMILES. |
 | `lipid21_external_bond_patching_failed` | Lipid21 external bond patching failed; inspect the lipid topology. |
@@ -120,6 +125,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `metal_unsupported_water_model` | Choose a water model supported by the metal model. |
 | `minimization_iterations_invalid` | Use a valid (non-negative) minimization iteration count. |
 | `minimization_restraint_atoms_invalid` | Provide a valid restraint atom selection. |
+| `missing_forcefield_xml` | Supply at least one OpenMM ForceField XML in forcefield_xml. |
 | `missing_local_file_path` | Provide a valid local file path for the input. |
 | `missing_node_context` | Pass both --job-dir and --node-id for this workflow tool. |
 | `missing_pdb_file` | Use DAG auto-resolution or provide a valid PDB/mmCIF path. |
@@ -155,6 +161,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `net_charge_exception` | Exact net-charge evaluation raised; membrane written without protein-charge neutralization. |
 | `node_already_claimed` | Another worker holds the claim; wait, or override only if stale. |
 | `node_context_required` | Create the node, then run it with both --job-dir and --node-id. |
+| `node_execution_context_invalid` | Node context is invalid; fix node type/conditions or branch a new node. |
 | `node_id_requires_job_dir` | --node-id was passed without --job-dir; pass both together. |
 | `node_json_invalid` | node.json is corrupt; inspect the node directory and repair or recreate. |
 | `node_missing` | Node id does not exist; use IDs from inspect_job/explain_node. |
@@ -164,11 +171,16 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `nucleic_hydrogen_rebuild_failed` | Nucleic hydrogen rebuild failed; inspect residues. |
 | `nucleic_hydrogen_rebuild_unavailable` | Nucleic hydrogen rebuild tool is unavailable in this runtime. |
 | `ok` | Success; proceed to the next step. |
+| `openmm_create_system_failed` | createSystem failed; inspect the error for missing templates/parameters. |
 | `openmm_fallback_unsupported_water_model` | OpenMM fallback cannot make this water; install AmberTools or pick tip3p/tip4pew/spce. |
+| `openmm_forcefield_init_failed` | ForceField init failed; check the XML bundle and residue templates. |
 | `openmm_import_failed` | OpenMM import failed; run in a runtime with OpenMM installed. |
+| `openmm_minimization_failed` | Energy minimization failed; inspect geometry/parameters in the error. |
 | `openmm_platform_inspection_failed` | Platform inspection failed; report the runtime/GPU state. |
+| `openmm_serialization_failed` | Serializing the system/state failed; inspect the structured error. |
 | `openmm_system_built` | System build succeeded; continue to min/eq/prod. |
 | `openmm_version_too_old` | Upgrade OpenMM to the required minimum version. |
+| `openmmforcefields_build_failed` | System build failed; inspect the structured error before retrying. |
 | `openmmforcefields_build_memory_error` | System build ran out of memory; use a larger-memory runtime. |
 | `openmmforcefields_build_timeout` | System build timed out; increase timeout or reduce system size. |
 | `packmol_imperfect_primary_output_candidate` | Packmol primary output is imperfect; inspect candidates. |
@@ -229,7 +241,9 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `tool_renamed` | The tool was consolidated; call the replacement tool named in the message. |
 | `topology_pdb_not_found` | topology.pdb not found; rebuild the topo node. |
 | `topology_validation_failed` | Topology validation failed; inspect the structured error. |
+| `unhandled_error` | Read the message and errors, fix the reported cause, then retry. |
 | `unhandled_exception` | Report the structured error; do not retry blindly. |
+| `unknown_forcefield` | Use a supported protein force field (e.g. ff19SB or ff14SB). |
 | `unknown_gpu_type` | GPU type is unknown; report the platform for scheduling. |
 | `unknown_metal_ion_parameter_set` | Use a known metal-ion parameter set. |
 | `unknown_water_model` | Use a known water model (e.g. opc, tip3p, tip4pew, spce). |

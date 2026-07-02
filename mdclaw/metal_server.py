@@ -29,6 +29,7 @@ from mdclaw._common import (  # noqa: E402
     create_validation_error_from_guardrails,
     ensure_directory,
     normalize_choice,
+    tail_for_agent,
 )
 
 
@@ -252,7 +253,9 @@ def _run_metalpdb2mol2(pdb_file: str, mol2_file: str, charge: int, timeout: int 
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"metalpdb2mol2.py failed: {result.stderr}")
+        raise RuntimeError(
+            f"metalpdb2mol2.py failed: {tail_for_agent(result.stderr)}"
+        )
 
     return {"mol2_file": mol2_file, "success": True}
 
@@ -556,6 +559,12 @@ def parameterize_metal_ion(
             "error_type": "ValidationError",
             "code": "metal_ions_not_found",
             "message": "No metal ions found in PDB file",
+            "hints": [
+                "Confirm the structure actually contains metal HETATM records "
+                "(e.g. ZN, MG, MN, CA, FE, CU, NA, K).",
+                "If metals were stripped during cleaning, re-run prep keeping "
+                "the metal ions, then retry parameterization.",
+            ],
             "errors": ["pdb_file: No metal ions found in PDB file"],
             "warnings": [],
             "metals_parameterized": [],
@@ -570,6 +579,11 @@ def parameterize_metal_ion(
                 "error_type": "ValidationError",
                 "code": "requested_metal_residue_not_found",
                 "message": f"No metal with residue name '{metal_resname}' found",
+                "hints": [
+                    "List the metal residue names present in the structure and "
+                    "pass one of those to --metal-resname, or omit it to "
+                    "parameterize all detected metals.",
+                ],
                 "errors": [f"metal_resname: No metal with residue name '{metal_resname}' found"],
                 "warnings": [],
                 "metals_parameterized": [],

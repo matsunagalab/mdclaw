@@ -33,12 +33,39 @@ def _looks_like_code(value: str) -> bool:
     )
 
 
+def _iter_string_literals(node: ast.AST) -> list[str]:
+    """Yield candidate code strings reachable from a ``code`` value expression.
+
+    Handles plain string constants as well as the two conditional shapes that
+    ship codes in practice:
+
+    - ternary: ``"code": "a" if cond else "ok"`` (``ast.IfExp``)
+    - fallback: ``code = build_code() or "openmmforcefields_build_failed"``
+      (``ast.BoolOp``)
+
+    Recurses through both so a code hidden in a branch is never missed.
+    """
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, str) and _looks_like_code(node.value):
+            return [node.value]
+        return []
+    if isinstance(node, ast.IfExp):
+        return _iter_string_literals(node.body) + _iter_string_literals(node.orelse)
+    if isinstance(node, ast.BoolOp):
+        found: list[str] = []
+        for value in node.values:
+            found.extend(_iter_string_literals(value))
+        return found
+    return []
+
+
 def iter_guardrail_codes(root: Path = PACKAGE_ROOT) -> set[str]:
     """Return the set of guardrail ``code`` literals defined under ``root``.
 
-    Matches two shapes:
+    Matches these shapes (each also across ternary/fallback expressions):
     - ``"code": "<literal>"`` dictionary entries
     - ``code="<literal>"`` keyword arguments and ``code = "<literal>"`` assigns
+    - ``x["code"] = "<literal>"`` subscript assignments
     """
     codes: set[str] = set()
     for path in sorted(root.rglob("*.py")):
@@ -53,29 +80,24 @@ def iter_guardrail_codes(root: Path = PACKAGE_ROOT) -> set[str]:
                     if (
                         isinstance(key, ast.Constant)
                         and key.value == "code"
-                        and isinstance(val, ast.Constant)
-                        and isinstance(val.value, str)
-                        and _looks_like_code(val.value)
                     ):
-                        codes.add(val.value)
+                        codes.update(_iter_string_literals(val))
             # keyword: code="..."
             if isinstance(node, ast.keyword) and node.arg == "code":
-                val = node.value
-                if isinstance(val, ast.Constant) and isinstance(val.value, str):
-                    if _looks_like_code(val.value):
-                        codes.add(val.value)
+                codes.update(_iter_string_literals(node.value))
             # assignment: code = "..."  /  x["code"] = "..."
-            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
-                if isinstance(node.value.value, str) and _looks_like_code(node.value.value):
+            if isinstance(node, ast.Assign):
+                literals = _iter_string_literals(node.value)
+                if literals:
                     for target in node.targets:
                         if isinstance(target, ast.Name) and target.id == "code":
-                            codes.add(node.value.value)
+                            codes.update(literals)
                         elif (
                             isinstance(target, ast.Subscript)
                             and isinstance(target.slice, ast.Constant)
                             and target.slice.value == "code"
                         ):
-                            codes.add(node.value.value)
+                            codes.update(literals)
     return codes
 
 

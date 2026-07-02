@@ -32,7 +32,7 @@ import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from pubchempy import get_compounds  # noqa: E402
 
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper, tail_for_agent  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
@@ -339,7 +339,7 @@ def boltz2_protein_from_seq(
 
     except subprocess.CalledProcessError as e:
         logger.error(f"Boltz-2 prediction failed: {e.stderr}")
-        result["errors"].append(f"Boltz-2 prediction failed: {e.stderr[:500]}")
+        result["errors"].append(f"Boltz-2 prediction failed: {tail_for_agent(e.stderr)}")
         result["code"] = "boltz_execution_failed"
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
@@ -1047,11 +1047,19 @@ def modeller_from_alignment(
     except subprocess.CalledProcessError as e:
         stderr = e.stderr or ""
         stdout = e.stdout or ""
+        # Persist full logs to disk so the agent-facing error can stay short.
+        stdout_log = out_dir / "modeller.stdout"
+        stderr_log = out_dir / "modeller.stderr"
+        if stdout:
+            stdout_log.write_text(stdout)
+        if stderr:
+            stderr_log.write_text(stderr)
         msg = (
             "MODELLER modeling failed. "
-            f"stdout: {stdout[:1000]} stderr: {stderr[:2000]}"
+            f"stderr tail: {tail_for_agent(stderr, log_path=str(stderr_log))}"
         )
         result["errors"].append(msg)
+        result.setdefault("context", {})["log_artifact"] = str(stderr_log)
         if "No module named 'modeller'" in stderr:
             result["code"] = "modeller_not_installed"
             result["errors"].append(

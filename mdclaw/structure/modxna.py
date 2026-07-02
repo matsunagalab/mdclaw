@@ -30,6 +30,7 @@ from typing import List, Optional, Dict, Any  # noqa: E402
 
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
+    tail_for_agent,
 )
 from mdclaw.research_server import (  # noqa: E402
     MODIFIED_NUCLEIC_UNSUPPORTED_MESSAGE,
@@ -229,6 +230,10 @@ def prepare_modified_nucleic(
             **result,
             "error_type": "ValidationError",
             "code": "node_mode_required",
+            "hints": [
+                "prepare_modified_nucleic is a workflow tool: create a prep "
+                "node, then run it with both --job-dir and --node-id.",
+            ],
             "errors": ["prepare_modified_nucleic requires job_dir and node_id."],
         }
     if not modifications:
@@ -236,6 +241,10 @@ def prepare_modified_nucleic(
             **result,
             "error_type": "ValidationError",
             "code": "modxna_modifications_required",
+            "hints": [
+                "Pass a non-empty modifications list, e.g. "
+                '[{"chain": "A", "resnum": 5, "target": "OMC"}].',
+            ],
             "errors": ["modifications must be a non-empty list."],
         }
 
@@ -269,6 +278,10 @@ def prepare_modified_nucleic(
         result.update({
             "error_type": "ValidationError",
             "code": "modxna_missing_parent_merged_pdb",
+            "hints": [
+                "Run a prep node to completion first so it produces the "
+                "merged_pdb artifact, then create this prep node from it.",
+            ],
             "errors": ["No merged_pdb artifact found on a completed prep ancestor."],
         })
         fail_node(job_dir, node_id, errors=result["errors"])
@@ -449,11 +462,17 @@ def prepare_modified_nucleic(
         stdout_parts.append(completed.stdout)
         stderr_parts.append(completed.stderr)
         if completed.returncode != 0:
+            stderr_log = run_dir / "modxna.stderr"
+            stderr_log.write_text(completed.stderr or "")
             result.update({
                 "error_type": "ToolExecutionError",
                 "code": "modxna_execution_failed",
-                "errors": [f"modXNA exited with code {completed.returncode}", completed.stderr.strip()],
+                "errors": [
+                    f"modXNA exited with code {completed.returncode}",
+                    tail_for_agent(completed.stderr, log_path=str(stderr_log)),
+                ],
             })
+            result.setdefault("context", {})["log_artifact"] = str(stderr_log)
             fail_node(job_dir, node_id, errors=result["errors"])
             return result
 
