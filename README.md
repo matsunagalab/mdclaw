@@ -12,14 +12,13 @@ package evidence with provenance.
 
 ## What MDClaw Can Do
 
-- Turn a scientific question into a study plan with observables and
-  decision criteria, then run the planned MD jobs end-to-end.
+- Turn a scientific question into a study plan (observables and decision
+  criteria) that organizes one or more job DAGs, then run those MD jobs
+  end-to-end.
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
 - Generate monomer conformational source ensembles from MD surrogate models
   such as BioEmu, then hand selected candidates to the standard MD workflow.
-- Start from a study-level scientific question, translate it into a small MD
-  plan, then organize one or more job DAGs under that study.
 - Inspect chains, ligands, waters, ions, glycans, DNA/RNA, and modified
   residues before committing to a setup.
 - Clean structures, preserve selected ligands when safe, solvate systems, and
@@ -231,20 +230,26 @@ evidence.
 MDClaw includes two artifact-based benchmark suites under the MDAgentBench
 family:
 
-- `MDPrepBench-v0.1` in `benchmarks/mdprepbench/`: preparation workflow tasks.
-- `MDStudyBench-v0.2` in `benchmarks/mdstudybench/`: scientific-answer and
-  auditable study-bundle tasks.
+- `MDPrepBench-v0.1` in `benchmarks/mdprepbench/`: a 25-task preparation
+  workflow battery covering ligand/chain selection, residue protonation, PTMs,
+  glycans, nucleic acids, membranes, assemblies, ion concentration, and
+  backend-neutral provenance.
+- `MDStudyBench-v0.2` in `benchmarks/mdstudybench/`: four uniform-load
+  scientific-answer and auditable study-bundle comparisons spanning
+  destabilizing, weakened-binding, stabilizing, and ligand-affinity directions,
+  so a constant prior cannot win.
 
 Both suites are agent-agnostic: evaluated agents read `prompt.md` and write
 `submission/`; the scorer reads `task.json`, scorer-only truth files, and
-submitted artifacts.
-For MDPrepBench, this is deliberately MDClaw-free on the solve side: an agent
-may use MDClaw, direct OpenMM scripts, another MD-prep stack, or a custom
+submitted artifacts. This is deliberately MDClaw-free on the solve side: an
+agent may use MDClaw, direct OpenMM scripts, another MD-prep stack, or a custom
 runner, as long as the submitted artifacts satisfy the public contract. Keep
 submissions slim. The scorer derives properties such as model/assembly choice,
 net charge, ion molarity, water model, and component presence from the submitted
 OpenMM bundle and structures instead of trusting self-reported metrics or
-free-form explanations.
+free-form explanations. Public benchmark tasks do not require MDClaw-specific
+guardrail codes; scientific MD reasoning lives in MDStudyBench, kept small and
+curated rather than mixed back into MDPrepBench.
 
 User-facing benchmark requests should stay short:
 
@@ -423,31 +428,14 @@ mdclaw export_benchmark_public_package \
 The exported package contains prompts, submission contracts, and
 submission-facing schemas only; it omits `task.json`, `truth/`, and `scorer/`.
 
-The main preparation task set is `MDPrepBench-v0.1`, a 25-task preparation
-workflow battery:
-
-| Family | What It Tests | Example Tasks |
-|---|---|---|
-| Preparation Workflow Battery | MD-ready preparation artifacts, ligand/chain selection, residue protonation, PTMs, glycans, nucleic acids, membranes, assemblies, ion concentration, and backend-neutral provenance. | 1AKE + AP5 selection; T4L Glu11 GLH protonation; mixed-lipid membrane prep |
-
-`MDStudyBench-v0.2` seeds the study-level suite with four uniform-load
-scientific-answer comparisons spanning destabilizing, weakened-binding,
-stabilizing, and ligand-affinity directions, so a constant prior cannot win.
-
-Public benchmark tasks do not require MDClaw-specific guardrail codes; those
-remain ordinary MDClaw regression tests. Scientific MD reasoning tasks now live
-in MDStudyBench; keep that suite small and curated rather than mixing study
-tasks back into MDPrepBench.
-
 See `benchmarks/README.md` for suite layout, `docs/benchmark/README.md` for
 MDPrepBench details, and `docs/benchmark/mdstudybench.md` for StudyBench tasks.
 
 ## Developer Quickstart
 
 ```bash
-conda env create -f environment.yml
+conda env create -f environment.yml   # installs the mdclaw CLI editable (-e .)
 conda activate mdclaw
-pip install -e .
 ruff check mdclaw/
 pytest tests/test_mcp_server.py tests/test_cli.py tests/test_guardrails.py tests/test_slurm_server.py -v
 ```
