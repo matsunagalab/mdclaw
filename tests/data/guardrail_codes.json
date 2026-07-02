@@ -222,6 +222,7 @@
   "state_topology_atom_count_mismatch",
   "state_xml_missing_positions",
   "state_xml_not_found",
+  "study_context_missing",
   "study_record_fields_missing",
   "terminal_cap_hydrogen_completion_changed_noncap_hydrogens",
   "terminal_cap_hydrogen_completion_failed",

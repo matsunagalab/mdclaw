@@ -35,6 +35,33 @@ def _seq_of(node_id: str) -> int:
         return 0
 
 
+_STUDY_CONTEXT_WARNING = (
+    "study_context_missing: this job is not linked to a study (no study_dir in "
+    "job params and no study.json in the canonical <study>/jobs/<job_id> "
+    "layout). MDClaw expects every MD workflow to start from a study so that "
+    "provenance, re-entry (inspect_job/trace_failure), and evidence tools all "
+    "share one canonical layout. Run `mdclaw bootstrap_md_workflow --study-dir "
+    "<study_dir> --question \"...\"` and create the source node under the "
+    "returned job_dir."
+)
+
+
+def _job_has_study_context(job_dir: Path, params: dict) -> bool:
+    """Return True when *job_dir* is linked to a study.
+
+    Detected via the bootstrap-written job params (``study_dir`` /
+    ``study_job_id``) or the canonical ``<study>/jobs/<job_id>/`` filesystem
+    layout. Deliberately params- and filesystem-based so the DAG core stays
+    decoupled from the study package (no import of ``mdclaw.study``).
+    """
+    if params.get("study_dir") or params.get("study_job_id"):
+        return True
+    parent = job_dir.parent
+    if parent.name == "jobs" and (parent.parent / "study.json").exists():
+        return True
+    return False
+
+
 def _auto_resolve_parent(node_type: str, nodes_index: dict) -> Optional[str]:
     """Pick the canonical forward parent when none was supplied.
 
@@ -157,6 +184,16 @@ def create_node(
         pj = jd / "progress.json"
         progress = _load_progress_v3(pj, create_if_missing=True)
         nodes_index = progress.get("nodes", {})
+
+        # Soft study-first check: the source node is the entry point of a job
+        # DAG, so this is the one place to flag a job created outside a study.
+        # Non-blocking by design — bare job_dirs remain valid for tests, repair,
+        # and advanced use — but weak agents get an actionable, branchable signal
+        # instead of a silent convention violation. See the study-first design
+        # decision in docs/developer/architecture.md.
+        study_context_missing = node_type == "source" and not _job_has_study_context(
+            jd, progress.get("params", {}) or {}
+        )
 
         # Auto-resolve the canonical forward parent when none was supplied.
         # Removes the most common weak-agent failure: hardcoding a literal
@@ -341,7 +378,7 @@ def create_node(
             "conditions": conditions or {},
             "artifacts": {},
             "metadata": node_metadata,
-            "warnings": [],
+            "warnings": [_STUDY_CONTEXT_WARNING] if study_context_missing else [],
         }
         _atomic_write_json(node_dir / "node.json", node_data)
 
@@ -367,6 +404,16 @@ def create_node(
     }
     if auto_parent_node_id is not None:
         result["auto_resolved_parent"] = auto_parent_node_id
+    if study_context_missing:
+        result["warnings"] = [_STUDY_CONTEXT_WARNING]
+        result["study_context"] = {
+            "code": "study_context_missing",
+            "linked": False,
+            "recommendation": (
+                "Bootstrap a study with `mdclaw bootstrap_md_workflow` and create "
+                "the source node under the returned job_dir."
+            ),
+        }
     return result
 
 

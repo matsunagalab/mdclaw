@@ -3426,6 +3426,45 @@ class TestSourceNode:
         node = read_node(str(job_dir), result["node_id"])
         assert node["parent_node_ids"] == []
 
+
+class TestSourceStudyContext:
+    """Soft study-first signal on source-node creation (non-blocking)."""
+
+    def test_bare_job_dir_source_flags_missing_study_context(self, job_dir):
+        # job_dir fixture is a bare tmp dir, not under a study.
+        result = create_node(str(job_dir), "source")
+        assert result["success"] is True
+        assert result["study_context"]["code"] == "study_context_missing"
+        assert result["study_context"]["linked"] is False
+        # Warning is durable on the node so inspect_job surfaces it.
+        node = read_node(str(job_dir), result["node_id"])
+        assert any("study_context_missing" in w for w in node["warnings"])
+
+    def test_source_under_study_job_params_is_clean(self, job_dir):
+        # Simulate what bootstrap_md_workflow writes into job params.
+        update_job_params(str(job_dir), {"study_dir": "/some/study", "study_job_id": "main"})
+        result = create_node(str(job_dir), "source")
+        assert result["success"] is True
+        assert "study_context" not in result
+        node = read_node(str(job_dir), result["node_id"])
+        assert node["warnings"] == []
+
+    def test_source_under_canonical_study_layout_is_clean(self, tmp_path):
+        # Canonical <study>/jobs/<job_id>/ filesystem layout, no params yet.
+        study_dir = tmp_path / "study_abc"
+        (study_dir / "jobs" / "main").mkdir(parents=True)
+        (study_dir / "study.json").write_text("{}")
+        jd = study_dir / "jobs" / "main"
+        result = create_node(str(jd), "source")
+        assert result["success"] is True
+        assert "study_context" not in result
+
+    def test_non_source_nodes_never_flag_study_context(self, job_dir):
+        create_node(str(job_dir), "source")
+        result = create_node(str(job_dir), "prep", parent_node_ids=["source_001"])
+        assert result["success"] is True
+        assert "study_context" not in result
+
     def test_source_rejects_parent_node_ids(self, job_dir):
         """source is the DAG root — parents are forbidden by invariant."""
         jd = str(job_dir)

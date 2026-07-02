@@ -500,6 +500,19 @@ multi-step ritual. The trade-off accepted here is: pay one fixed, automatable
 setup call so that *every* downstream read, recovery, and evidence path can
 assume a single canonical shape.
 
+Enforcement is intentionally *soft*, at the boundary rather than in the DAG
+core. `_node.py` / `mdclaw/node/` stays study-agnostic — a job DAG is
+self-contained, and bare `job_dir`s remain valid for tests, repair, and
+advanced use. Instead, `create_node` emits a non-blocking `study_context_missing`
+signal (a `warnings` entry plus a `study_context` block, and the same warning
+seeded onto the `source` node so `inspect_job` surfaces it) when a `source` node
+is created in a `job_dir` that is neither linked to a study via job params
+(`study_dir` / `study_job_id`) nor under the canonical `<study>/jobs/<job_id>`
+layout. This turns a silent convention violation into an actionable, branchable
+code without coupling the node layer to the study layer or hard-failing
+legitimate bare-job flows. Hard enforcement (an override-gated failure) is
+deferred until real deviations are observed.
+
 ## Adding Tools
 
 To add a new CLI tool:

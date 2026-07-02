@@ -231,6 +231,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `state_topology_atom_count_mismatch` | state and topology atom counts differ; rebuild the triple. |
 | `state_xml_missing_positions` | state.xml lacks positions; regenerate the state. |
 | `state_xml_not_found` | state.xml not found; run/repair the producing node. |
+| `study_context_missing` | Job is not under a study; run bootstrap_md_workflow and create the source node in the returned job_dir. |
 | `study_record_fields_missing` | Provide the fields required by the chosen study record_type. |
 | `terminal_cap_hydrogen_completion_changed_noncap_hydrogens` | Hydrogen completion altered non-cap hydrogens; review before continuing. |
 | `terminal_cap_hydrogen_completion_failed` | Terminal-cap hydrogen completion failed; inspect capped residues. |

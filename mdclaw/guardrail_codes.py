@@ -49,6 +49,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "completed_node_sealed": "Completed nodes are immutable; branch a new node to change anything.",
     "parent_node_not_completed": "Complete or repair the parent node before running this node.",
     "referenced_node_missing": "A parent/dependency id does not exist; use IDs from inspect_job.",
+    "study_context_missing": "Job is not under a study; run bootstrap_md_workflow and create the source node in the returned job_dir.",
     "progress_missing_or_invalid": "progress.json is missing/invalid; reinspect the job to rebuild.",
     "claim_owner_mismatch": "Claim is owned by another agent; do not force-release without cause.",
     "invalid_claim_expiry": "Provide a valid claim expiry timestamp.",
