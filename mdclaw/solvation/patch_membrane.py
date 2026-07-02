@@ -31,6 +31,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -329,6 +330,33 @@ def _process_stdout_stderr(proc_result: Any) -> tuple[str, str]:
         if stderr is None:
             stderr = proc_result.stderr
     return _tail_text(stdout), _tail_text(stderr)
+
+
+_ION_CONCENTRATION_RE = re.compile(
+    r"(?:Positive|Negative)\s+ion\s+concentration:\s*([0-9]*\.?[0-9]+)",
+    re.IGNORECASE,
+)
+
+
+def _required_neutralizing_saltcon(text: str) -> Optional[float]:
+    """Return the counter-ion concentration packmol-memgen needs to neutralize.
+
+    Anionic/cationic lipids (PG, PS, ...) carry a net charge, and packmol-memgen
+    refuses to write output when the salt concentration required to neutralize
+    the system exceeds the requested ``--saltcon``, printing e.g.::
+
+        The concentration of ions required to neutralize the system is higher
+        than the concentration specified.
+        Positive ion concentration: 0.356
+        Negative ion concentration: 0.0
+
+    Return the larger reported ion concentration when that shortfall message is
+    present, else ``None``.
+    """
+    if "required to neutralize" not in text.lower():
+        return None
+    values = [float(m) for m in _ION_CONCENTRATION_RE.findall(text)]
+    return max(values) if values else None
 
 
 # ---------------------------------------------------------------------------
@@ -722,37 +750,60 @@ def ensure_membrane_patch(
 
         packed_file = build_dir / "packed.pdb"
         packlog = build_dir / "patch_packmol"
-        args = _build_patch_packmol_args(
-            lipids=lipids,
-            ratio=ratio,
-            patch_side=patch_side,
-            dist_wat=dist_wat,
-            leaflet=leaflet,
-            water_model=water_model,
-            nloop=nloop,
-            nloop_all=nloop_all,
-            salt=salt,
-            salt_c=salt_c,
-            salt_a=salt_a,
-            saltcon=saltcon,
-            output_file=packed_file,
-            packlog=packlog,
-            packmol_path=packmol_path,
-        )
+        warnings: list[str] = []
+        effective_saltcon = saltcon
 
-        proc_result = None
-        build_exception: Optional[Exception] = None
-        try:
-            proc_result = packmol_memgen_runner(args, cwd=build_dir, timeout=timeout)
-        except Exception as exc:  # noqa: BLE001
-            build_exception = exc
-            proc_result = exc
+        def _invoke_packmol(salt_conc: float) -> tuple[Any, Optional[Exception]]:
+            args = _build_patch_packmol_args(
+                lipids=lipids,
+                ratio=ratio,
+                patch_side=patch_side,
+                dist_wat=dist_wat,
+                leaflet=leaflet,
+                water_model=water_model,
+                nloop=nloop,
+                nloop_all=nloop_all,
+                salt=salt,
+                salt_c=salt_c,
+                salt_a=salt_a,
+                saltcon=salt_conc,
+                output_file=packed_file,
+                packlog=packlog,
+                packmol_path=packmol_path,
+            )
+            try:
+                return packmol_memgen_runner(args, cwd=build_dir, timeout=timeout), None
+            except Exception as exc:  # noqa: BLE001
+                return exc, exc
 
-        acceptable_partial = isinstance(
-            build_exception,
-            (subprocess.CalledProcessError, subprocess.TimeoutExpired),
-        )
-        if build_exception is not None and not acceptable_partial:
+        def _is_hard_failure(exc: Optional[Exception]) -> bool:
+            return exc is not None and not isinstance(
+                exc, (subprocess.CalledProcessError, subprocess.TimeoutExpired)
+            )
+
+        proc_result, build_exception = _invoke_packmol(effective_saltcon)
+
+        # Charged lipids (PG, PS, ...) can need more counter-ions to neutralize
+        # than the requested salt concentration provides; packmol-memgen then
+        # exits without writing output. Bump --saltcon to cover neutralization
+        # and retry once so anionic/cationic compositions still build.
+        if (
+            salt
+            and not _is_hard_failure(build_exception)
+            and not packed_file.exists()
+        ):
+            stdout_tail, stderr_tail = _process_stdout_stderr(proc_result)
+            required = _required_neutralizing_saltcon(f"{stdout_tail}\n{stderr_tail}")
+            if required is not None and required > effective_saltcon:
+                effective_saltcon = round(required + 0.02, 3)
+                warnings.append(
+                    f"charged lipid neutralization needed saltcon>={required:.3f} M; "
+                    f"retried packmol-memgen with --saltcon {effective_saltcon} "
+                    f"(requested {saltcon})."
+                )
+                proc_result, build_exception = _invoke_packmol(effective_saltcon)
+
+        if _is_hard_failure(build_exception):
             shutil.rmtree(build_dir, ignore_errors=True)
             return {
                 "success": False,
@@ -760,7 +811,7 @@ def ensure_membrane_patch(
                 "cache_hit": False,
                 "fingerprint": fingerprint,
                 "parameters": payload,
-                "warnings": [],
+                "warnings": warnings,
                 "errors": [
                     f"packmol-memgen patch build failed: "
                     f"{type(build_exception).__name__}: {build_exception}"
@@ -775,7 +826,7 @@ def ensure_membrane_patch(
                 "cache_hit": False,
                 "fingerprint": fingerprint,
                 "parameters": payload,
-                "warnings": [],
+                "warnings": warnings,
                 "errors": ["packmol-memgen did not write the membrane patch PDB"],
             }
 
@@ -798,7 +849,6 @@ def ensure_membrane_patch(
             leaflet=leaflet,
         )
 
-        warnings: list[str] = []
         equilibration_ran = False
         final_patch = packed_file
         if equilibrate_fn is not None:
@@ -841,6 +891,7 @@ def ensure_membrane_patch(
             "box_dimensions": box_dims,
             "builder": "packmol-memgen+equilibrate" if equilibration_ran else "packmol-memgen",
             "equilibration_ran": equilibration_ran,
+            "effective_saltcon": effective_saltcon,
             "builder_exit_code": getattr(proc_result, "returncode", None),
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
