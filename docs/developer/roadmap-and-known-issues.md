@@ -19,6 +19,16 @@ sed -i.bak "s/np\.float)/float)/g; s/np\.int)/int)/g" \
 1. Primary: `pdb2pqr` + propka for pH-aware protonation.
 2. Fallback: `pdb4amber` + reduce for geometry-based protonation.
 
+### Anionic Lipid Patch Equilibration Segfault
+
+Anionic mixtures such as `DOPE:DOPG 3:1` now pack (via the charged-lipid
+`--saltcon` neutralization retry in `ensure_membrane_patch`) and build a valid
+Lipid21 topology, but the subsequent OpenMM patch equilibration segfaults
+(SIGSEGV) during NVT heating. They are excluded from the default warm-up set in
+`scripts/warmup_membrane_cache.py` so container builds stay green. PC/PE/CHL1
+compositions are unaffected. Root-causing the crash (likely a bad packed
+contact or PGR-specific topology issue feeding NaN forces) is deferred.
+
 ## Resolved
 
 ### Membrane Building: patch-tile Backend

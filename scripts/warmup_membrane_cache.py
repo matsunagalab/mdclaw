@@ -33,8 +33,12 @@ DEFAULT_COMPOSITIONS: list[tuple[str, str]] = [
     ("DOPC", "1"),
     ("POPC:CHL1", "4:1"),
     ("POPC:POPE:CHL1", "2:1:1"),  # MDPrepBench P18
-    ("DOPE:DOPG", "3:1"),
     ("DPPC:DOPC:CHL1", "1:1:1"),  # raft-like
+    # NOTE: anionic mixtures such as DOPE:DOPG pack + build topology (via the
+    # charged-lipid saltcon retry) but currently segfault inside the OpenMM
+    # patch equilibration; see docs/developer/roadmap-and-known-issues.md.
+    # Keep them out of the default warm-up set until that crash is resolved so
+    # container builds stay green.
 ]
 
 
