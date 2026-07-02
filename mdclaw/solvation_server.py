@@ -20,6 +20,7 @@ from mdclaw._tool_meta import node_tool  # noqa: E402
 logger = setup_logger(__name__)
 
 import json  # noqa: E402
+import re  # noqa: E402
 import shutil  # noqa: E402
 import signal  # noqa: E402
 import subprocess  # noqa: E402
@@ -197,16 +198,19 @@ def _packmol_memgen_version() -> str:
     exe = shutil.which("packmol-memgen")
     if exe:
         try:
+            # packmol-memgen has no --version flag, but it prints a startup
+            # banner containing e.g. "VERSION: 2025.1.29" on any invocation.
             proc = subprocess.run(
-                [exe, "--version"],
+                [exe, "--help"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 timeout=30,
             )
-            text = (proc.stdout or "").strip()
-            if text:
-                version = text.splitlines()[-1].strip()[:80]
+            text = proc.stdout or ""
+            match = re.search(r"VERSION:\s*(\S+)", text)
+            if match:
+                version = match.group(1).strip()[:80]
         except Exception:  # noqa: BLE001
             version = "unknown"
     _PACKMOL_MEMGEN_VERSION_CACHE = version
