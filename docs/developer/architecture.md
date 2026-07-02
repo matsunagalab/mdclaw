@@ -88,7 +88,9 @@ Important boundaries:
 The study layer is the normal outer record for every MD workflow. A simple
 one-system request is still represented as a study with one job, usually
 `jobs/main`, and it still has a minimal `study_plan.json`. Broader
-investigations register multiple job DAGs under the same study.
+investigations register multiple job DAGs under the same study. See
+[Design Decision: study-first even for single-system runs](#design-decision-study-first-even-for-single-system-runs)
+for why this holds even when it adds a step for the simple case.
 
 Node type names are short on disk and in the CLI, while design discussions use
 the formal names from `CONTEXT.md`:
@@ -461,6 +463,42 @@ the minimum needed to reconnect results to intent:
 For clear one-system requests such as "simulate 1AKE chain A", the direct path
 through `md-prepare` remains valid, but it still bootstraps the canonical study
 layout and records a minimal `study_plan.json` before creating DAG nodes.
+
+### Design Decision: study-first even for single-system runs
+
+There is a real tension between two stated goals. MDClaw wants to be
+weak-agent-friendly and reduce agent steps, yet it also requires that *every*
+workflow — including an unambiguous single-system request — begin by creating a
+`study.json` + `study_plan.json` + `jobs/main` layout before the first `prep`.
+Inserting a study-bootstrap step ahead of the actual scientific work adds
+handling for the simple case, which pulls against "fewer steps".
+
+This is resolved deliberately in favor of **provenance and structural
+consistency over minimizing steps**, for the following reasons:
+
+- **One layout, one re-entry contract.** `inspect_job`, `trace_failure`,
+  `explain_node`, and the evidence/report tools all assume the study/job/node
+  layout exists. Allowing a "bare run" special case would fork every read and
+  recovery path into "study present" vs "study absent" branches — which raises
+  the total cognitive load on weak agents far more than a single bootstrap call
+  ever saves. Uniformity is itself the weak-agent affordance.
+- **Provenance must not be retrofitted.** The scientific question, MD goal, and
+  decision criteria are cheapest to capture at the start and effectively
+  impossible to reconstruct faithfully after results exist. A run that begins
+  without a study has no home for that intent, so its results are harder to
+  interpret and compare later.
+- **Simple runs grow into studies.** A one-off "simulate X" frequently becomes
+  "now compare wild-type vs mutant" or "add a replicate". Starting inside a
+  study means that growth is `add_study_job`, not a migration of an orphaned
+  job into a study after the fact.
+
+The mitigation for the step-count cost is `bootstrap_md_workflow`: it collapses
+study creation, plan recording, `jobs/main` registration, and job→study linkage
+into a single idempotent CLI call (it reuses an existing study/plan rather than
+erroring), so the "ceremony" is one command with sensible defaults rather than a
+multi-step ritual. The trade-off accepted here is: pay one fixed, automatable
+setup call so that *every* downstream read, recovery, and evidence path can
+assume a single canonical shape.
 
 ## Adding Tools
 
