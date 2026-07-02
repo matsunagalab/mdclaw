@@ -42,6 +42,7 @@ from mdclaw._common import (  # noqa: E402
     guardrail_messages,
     normalize_choice,
     split_guardrail_results,
+    tail_for_agent,
 )
 from mdclaw._common import get_timeout  # noqa: E402
 from mdclaw.solvation.constants import (  # noqa: E402
@@ -188,8 +189,10 @@ _PACKMOL_MEMGEN_VERSION_CACHE: Optional[str] = None
 def _packmol_memgen_version() -> str:
     """Return a cached packmol-memgen version string (best effort).
 
-    Part of the patch fingerprint so patches built by different packmol-memgen
-    versions do not collide. Falls back to ``"unknown"`` when unavailable.
+    Recorded in the patch manifest as build provenance only; it is deliberately
+    NOT part of the patch fingerprint (see ``membrane_patch_fingerprint``) so
+    patches remain reusable across environments with different packmol-memgen
+    builds. Falls back to ``"unknown"`` when unavailable.
     """
     global _PACKMOL_MEMGEN_VERSION_CACHE
     if _PACKMOL_MEMGEN_VERSION_CACHE is not None:
@@ -274,7 +277,7 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
         result["code"] = "memembed_no_output"
         result["errors"].append(
             "memembed did not write an oriented PDB. stderr tail: "
-            + (proc.stderr or "")[-500:]
+            + tail_for_agent(proc.stderr)
         )
         return result
 
@@ -477,7 +480,7 @@ def _run_packmol_if_needed(
         packmol_log.write_text(packmol_result.stdout)
         logger.info(f"Packmol completed, log saved to {packmol_log}")
     except subprocess.CalledProcessError as e:
-        result["errors"].append(f"Packmol failed: {e.stderr[:500]}")
+        result["errors"].append(f"Packmol failed: {tail_for_agent(e.stderr)}")
         logger.error(f"Packmol failed: {e.stderr}")
     except subprocess.TimeoutExpired:
         result["errors"].append(f"Packmol timed out after {timeout}s")
@@ -523,7 +526,7 @@ def _record_packmol_memgen_output(
         result["errors"].append("Hint: Check packmol log for details")
         logger.error("Output file not created")
         if proc_result.stderr:
-            result["errors"].append(f"stderr: {proc_result.stderr[:500]}")
+            result["errors"].append(f"stderr: {tail_for_agent(proc_result.stderr)}")
         return
 
     result["output_file"] = str(recorded_output)

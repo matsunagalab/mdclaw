@@ -136,7 +136,9 @@ skill examples.
   Defaults to `membrane_backend="patch-tile"`: build a small composition-keyed
   lipid patch once, equilibrate it under PBC (`build_amber_system` +
   `run_minimization` + `run_equilibration`, called in non-node mode), cache it
-  under a protein-size-independent fingerprint, then orient the protein with
+  under a protein-size-independent fingerprint (composition + build defaults;
+  the packmol-memgen version is excluded so patches are reusable across conda
+  and container environments), then orient the protein with
   MEMEMBED, tile the patch to cover it, carve overlaps, and neutralize by
   swapping bulk waters for ions. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.

@@ -45,9 +45,14 @@ cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`, MDPrepBench P18).
   `scripts/warmup_membrane_cache.py` pre-builds representative compositions into
   a read-only bundled cache (`MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`, populated in
   the container build) so runtime hits without equilibration.
-- Bundled cache hits require fingerprint agreement (defaults, packmol-memgen
-  version). On a miss the runtime cold-builds into the writable cache
-  (`MDCLAW_MEMBRANE_CACHE_DIR` / `MDCLAW_CACHE_DIR/membrane_patches`).
+- Bundled cache hits require fingerprint agreement on composition + defaults
+  (patch size, salt, water model, equilibration params, force field). The
+  fingerprint deliberately excludes the packmol-memgen version (schema v2), so a
+  patch built in one environment (local conda) still hits in another (the
+  source-built container) even when their AmberTools builds differ. On a miss
+  the runtime cold-builds into the writable cache (`MDCLAW_MEMBRANE_CACHE_DIR` /
+  `MDCLAW_CACHE_DIR/membrane_patches`). The packer version is kept in the patch
+  manifest as provenance only.
 - The removed `slab-cache` backend's low-level PDB/geometry/carve helpers were
   moved to `mdclaw/solvation/patch_membrane.py`; `mdclaw/membrane_cache.py` was
   deleted.

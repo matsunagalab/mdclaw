@@ -67,7 +67,10 @@ MEMBRANE_CACHE_MODES = {
 # These defaults are the single source of truth shared by the runtime path and
 # the warm-up script, so bundled cache fingerprints match at runtime.
 
-PATCH_CACHE_SCHEMA_VERSION = 1
+# v2 dropped packmol_memgen_version from the fingerprint payload so patches are
+# reusable across environments with different AmberTools / packmol-memgen builds
+# (e.g. local conda vs. the source-built container).
+PATCH_CACHE_SCHEMA_VERSION = 2
 
 # packmol-memgen Lipid21 phospholipids are split into head/tail fragments that
 # share a residue number and must be carved as one lipid.

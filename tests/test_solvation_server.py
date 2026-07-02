@@ -529,11 +529,24 @@ def test_patch_membrane_fingerprint_is_protein_size_independent():
         nloop=20, nloop_all=100, equil_nvt_ns=0.2, equil_npt_ns=0.2,
         equil_temperature_k=303.15, equil_pressure_bar=1.0, forcefield="ff19SB",
     )
-    fp1, _ = membrane_patch_fingerprint(**kwargs)
+    fp1, payload1 = membrane_patch_fingerprint(**kwargs)
     fp2, _ = membrane_patch_fingerprint(**kwargs)
     fp3, _ = membrane_patch_fingerprint(**{**kwargs, "patch_side": 50.0})
     assert fp1 == fp2
     assert fp1 != fp3
+    # The packer version must not participate in the fingerprint, so patches
+    # stay reusable across environments with different packmol-memgen builds.
+    assert "packmol_memgen_version" not in payload1
+
+
+def test_patch_membrane_fingerprint_ignores_packmol_memgen_version():
+    import inspect
+
+    from mdclaw.solvation.patch_membrane import membrane_patch_fingerprint
+
+    assert "packmol_memgen_version" not in inspect.signature(
+        membrane_patch_fingerprint
+    ).parameters
 
 
 def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeypatch):

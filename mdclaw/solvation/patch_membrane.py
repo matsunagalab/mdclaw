@@ -421,9 +421,19 @@ def membrane_patch_fingerprint(
     equil_pressure_bar: float,
     forcefield: str,
     tolerance: float = 2.0,
-    packmol_memgen_version: str = "unknown",
 ) -> tuple[str, dict[str, Any]]:
-    """Return a stable ``(fingerprint, payload)`` that is protein-size independent."""
+    """Return a stable ``(fingerprint, payload)`` that is protein-size independent.
+
+    The fingerprint intentionally excludes the packmol-memgen version. packmol
+    only provides the *initial* lipid packing; the cached artifact is the
+    OpenMM/Lipid21-equilibrated patch, whose chemistry is pinned by the force
+    field and equilibration parameters (already in the payload). Keeping the
+    packer version out of the hash lets a patch built in one environment (local
+    conda) still hit in another (the container) even when their AmberTools /
+    packmol-memgen builds differ, which is the common case since the container
+    source-builds its own stack. The version is still recorded in the manifest
+    as build provenance.
+    """
     def _r(value: float, ndigits: int = 6) -> float:
         return round(float(value), ndigits)
 
@@ -447,7 +457,6 @@ def membrane_patch_fingerprint(
         "equil_pressure_bar": _r(equil_pressure_bar),
         "forcefield": str(forcefield),
         "tolerance": _r(tolerance),
-        "packmol_memgen_version": str(packmol_memgen_version),
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest(), payload
@@ -495,7 +504,6 @@ def probe_patch_cache(
         equil_temperature_k=float(equil_params.get("temperature_k", 0.0)),
         equil_pressure_bar=float(equil_params.get("pressure_bar", 0.0)),
         forcefield=forcefield,
-        packmol_memgen_version=packmol_memgen_version,
     )
     hit = _lookup_cached_patch(
         fingerprint,
@@ -675,7 +683,6 @@ def ensure_membrane_patch(
         equil_temperature_k=float(equil_params.get("temperature_k", 0.0)),
         equil_pressure_bar=float(equil_params.get("pressure_bar", 0.0)),
         forcefield=forcefield,
-        packmol_memgen_version=packmol_memgen_version,
     )
 
     writable_root = resolve_patch_cache_root(cache_dir)
@@ -892,6 +899,9 @@ def ensure_membrane_patch(
             "builder": "packmol-memgen+equilibrate" if equilibration_ran else "packmol-memgen",
             "equilibration_ran": equilibration_ran,
             "effective_saltcon": effective_saltcon,
+            # Provenance only: NOT part of the fingerprint (see
+            # membrane_patch_fingerprint) so patches stay cross-environment reusable.
+            "packmol_memgen_version": str(packmol_memgen_version),
             "builder_exit_code": getattr(proc_result, "returncode", None),
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
