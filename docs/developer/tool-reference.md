@@ -89,8 +89,10 @@ skill examples.
   Boltz writes confidence output. Failure returns carry stable `code` values
   such as `boltz_sequence_required`, `boltz_affinity_requires_ligand`,
   `boltz_msa_file_missing`, `boltz_custom_msa_multimer_unsupported`,
-  `boltz_executable_not_found`, `boltz_execution_failed`, and
-  `boltz_no_structure_output`.
+  `boltz_backend_not_installed`, `boltz_execution_failed`, and
+  `boltz_no_structure_output`. Boltz-2 runs from an isolated backend venv
+  resolved through `mdclaw.surrogate_server.MODEL_BACKENDS["boltz"]`, installed
+  with `setup_model_backend --model boltz`, not from the conda `mdclaw` env.
 - `modeller_from_alignment(...)`: MODELLER comparative modeling from a template
   PDB plus one of: a single `target_sequence`, per-chain `target_sequences`
   (multi-chain complexes such as heterodimers), or a full PIR/ALI
@@ -116,13 +118,22 @@ skill examples.
 
 ## `surrogate_server.py`
 
-- `setup_surrogate_backend(...)`: create or update an isolated venv for a
-  surrogate backend. BioEmu is installed here, never in the conda `mdclaw`
-  environment.
-- `check_surrogate_backend(...)`: import/version check for a surrogate backend
-  venv without running sampling.
+- `setup_model_backend(...)`: create or update an isolated venv for a heavy
+  model backend. Supported models: `bioemu` (MD surrogate ensembles) and
+  `boltz` (structure prediction, pinned to `BOLTZ_VERSION`). Backends live under
+  `$MDCLAW_SURROGATE_DIR/<model>/venv` and never touch the conda `mdclaw`
+  environment. `MODEL_BACKENDS` is the registry; `boltz2_protein_from_seq`
+  resolves the boltz venv through it.
+- `check_model_backend(...)`: import/version check for a model backend venv
+  without running the model.
+- Backends declare capabilities (`supports_sampling`, `supports_prediction`);
+  callers dispatch via `models_with_capability(...)` /
+  `resolve_prediction_backend(...)`, so models are swappable without touching
+  callers. See `docs/developer/model-backends.md` to add or swap a backend.
+- `setup_surrogate_backend(...)` / `check_surrogate_backend(...)`: backward-
+  compatible aliases that default to `model="bioemu"`.
 - `generate_surrogate_candidates(...)`: generate monomer source candidates with
-  a surrogate backend such as BioEmu. In node mode it writes
+  a sampling backend (currently BioEmu only). In node mode it writes
   `source_bundle.json` with `source_type="surrogate"` and
   `origin.kind="bioemu"` for BioEmu candidates.
 

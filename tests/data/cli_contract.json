@@ -108,11 +108,17 @@
     "requires_node": false,
     "server": "slurm"
   },
-  "check_surrogate_backend": {
+  "check_model_backend": {
     "job_dir_is_data": false,
     "required_params": [
       "model"
     ],
+    "requires_node": false,
+    "server": "surrogate"
+  },
+  "check_surrogate_backend": {
+    "job_dir_is_data": false,
+    "required_params": [],
     "requires_node": false,
     "server": "surrogate"
   },
@@ -672,11 +678,17 @@
     "requires_node": false,
     "server": "slurm"
   },
-  "setup_surrogate_backend": {
+  "setup_model_backend": {
     "job_dir_is_data": false,
     "required_params": [
       "model"
     ],
+    "requires_node": false,
+    "server": "surrogate"
+  },
+  "setup_surrogate_backend": {
+    "job_dir_is_data": false,
+    "required_params": [],
     "requires_node": false,
     "server": "surrogate"
   },

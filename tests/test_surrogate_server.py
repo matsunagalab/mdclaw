@@ -82,16 +82,63 @@ def test_setup_surrogate_backend_constructs_managed_venv_commands(monkeypatch, t
     assert result["version"] == "1.3.0"
 
 
-def test_check_surrogate_backend_reports_missing_venv(tmp_path):
+def test_setup_model_backend_boltz_pins_version(monkeypatch, tmp_path):
     from mdclaw import surrogate_server
 
-    result = surrogate_server.check_surrogate_backend(
+    calls = []
+
+    monkeypatch.setattr(surrogate_server.shutil, "which", lambda name: None)
+
+    def fake_run(cmd, *, cwd=None, timeout=None):
+        calls.append(cmd)
+        if cmd[:3] == [surrogate_server.sys.executable, "-m", "venv"]:
+            python = Path(cmd[3]) / "bin" / "python"
+            python.parent.mkdir(parents=True, exist_ok=True)
+            python.write_text("# fake python\n")
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"version": surrogate_server.BOLTZ_VERSION}),
+            stderr="",
+        )
+
+    monkeypatch.setattr(surrogate_server, "_run_command", fake_run)
+
+    result = surrogate_server.setup_model_backend(
+        model="boltz",
+        device="cuda",
+        prefix=str(tmp_path / "boltz"),
+    )
+
+    assert result["success"], result["errors"]
+    assert any(cmd[-1] == f"boltz=={surrogate_server.BOLTZ_VERSION}" for cmd in calls)
+    assert result["version"] == surrogate_server.BOLTZ_VERSION
+
+
+def test_setup_surrogate_backend_is_alias_for_model_backend(monkeypatch):
+    from mdclaw import surrogate_server
+
+    seen = {}
+
+    def fake_setup(model, device="cpu", prefix=None, reinstall=False):
+        seen.update(model=model, device=device, prefix=prefix, reinstall=reinstall)
+        return {"success": True}
+
+    monkeypatch.setattr(surrogate_server, "setup_model_backend", fake_setup)
+    result = surrogate_server.setup_surrogate_backend(model="bioemu", device="cuda")
+    assert result["success"]
+    assert seen == {"model": "bioemu", "device": "cuda", "prefix": None, "reinstall": False}
+
+
+def test_check_model_backend_reports_missing_venv(tmp_path):
+    from mdclaw import surrogate_server
+
+    result = surrogate_server.check_model_backend(
         model="bioemu",
         prefix=str(tmp_path / "missing"),
     )
 
     assert result["success"] is False
-    assert "setup_surrogate_backend" in result["errors"][0]
+    assert "setup_model_backend" in result["errors"][0]
 
 
 def test_generate_surrogate_candidates_completes_source_node(
@@ -182,7 +229,44 @@ def test_generate_surrogate_candidates_rejects_invalid_model():
     )
 
     assert result["success"] is False
-    assert "Unsupported surrogate model" in result["errors"][0]
+    assert "Unsupported model backend" in result["errors"][0]
+
+
+def test_generate_surrogate_candidates_rejects_non_sampling_backend():
+    from mdclaw import surrogate_server
+
+    result = surrogate_server.generate_surrogate_candidates(
+        amino_acid_sequence="GYDPETGTWG",
+        model="boltz",
+    )
+
+    assert result["success"] is False
+    assert "does not support surrogate sampling" in result["errors"][0]
+
+
+def test_capability_dispatch_reflects_backend_declarations():
+    from mdclaw import surrogate_server
+
+    assert surrogate_server.models_with_capability("sampling") == ["bioemu"]
+    assert surrogate_server.models_with_capability("prediction") == ["boltz"]
+
+
+def test_resolve_prediction_backend_reports_missing_venv(tmp_path):
+    from mdclaw import surrogate_server
+
+    entry, check = surrogate_server.resolve_prediction_backend(
+        model="boltz",
+        prefix=str(tmp_path / "missing"),
+    )
+    assert entry is None
+    assert check["success"] is False
+
+
+def test_resolve_prediction_backend_rejects_non_predictor():
+    from mdclaw import surrogate_server
+
+    with pytest.raises(ValueError, match="does not support structure prediction"):
+        surrogate_server.resolve_prediction_backend(model="bioemu")
 
 
 def test_generate_surrogate_candidates_rejects_multimer_sequence():

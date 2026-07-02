@@ -179,8 +179,6 @@ RUN /opt/mdclaw/bin/python -c "import openmmtorch; assert hasattr(openmmtorch, '
 # =============================================================================
 FROM --platform=linux/amd64 nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
-ARG BIOEMU_DEVICE=cpu
-
 LABEL org.opencontainers.image.title="MDClaw" \
       org.opencontainers.image.description="Packaged Amber/OpenMM runtime for MDClaw skills and CLIs: vibe-MD simulations, autonomous scientific investigation, and reproducible atomistic evidence." \
       org.opencontainers.image.source="https://github.com/matsunagalab/mdclaw" \
@@ -211,7 +209,14 @@ ENV AMBERHOME="/opt/mdclaw"
 ENV PYTHONPATH="/opt/mdclaw/lib/python3.12/site-packages"
 ENV OPENMM_PLUGIN_DIR="/opt/mdclaw/lib/plugins"
 ENV LD_LIBRARY_PATH="/opt/mdclaw/lib:${LD_LIBRARY_PATH}"
-ENV MDCLAW_SURROGATE_DIR="/opt/mdclaw/surrogates"
+
+# Heavy AI model backends (BioEmu, Boltz-2) are NOT baked into the image.
+# They ship their own Torch/CUDA stacks that conflict with the OpenMM cu118
+# pin, so they install into isolated venvs at runtime via
+# `mdclaw setup_model_backend --model <bioemu|boltz>`. Because the SIF is
+# read-only, point MDCLAW_SURROGATE_DIR at a writable (ideally shared)
+# filesystem and bind-mount it; otherwise it defaults to
+# ~/.cache/mdclaw/surrogates on the host bind.
 
 # Pre-build representative membrane patches (patch-tile backend) into a
 # read-only bundled cache so common compositions (single lipids, POPC:CHL1,
@@ -223,16 +228,6 @@ COPY scripts/warmup_membrane_cache.py /opt/mdclaw/share/warmup_membrane_cache.py
 RUN /opt/mdclaw/bin/python /opt/mdclaw/share/warmup_membrane_cache.py \
         --out "$MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR" \
     || echo "WARNING: membrane patch warm-up incomplete; runtime will cold-build on miss."
-
-# Install BioEmu into an isolated venv, never into the conda-packed mdclaw env.
-# Use --build-arg BIOEMU_DEVICE=cuda to install bioemu[cuda] in GPU images.
-RUN /opt/mdclaw/bin/python -m venv /opt/mdclaw/surrogates/bioemu/venv && \
-    /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir --upgrade pip && \
-    if [ "$BIOEMU_DEVICE" = "cuda" ]; then \
-        /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir "bioemu[cuda]"; \
-    else \
-        /opt/mdclaw/surrogates/bioemu/venv/bin/python -m pip install --no-cache-dir bioemu; \
-    fi
 
 # Copy entrypoint
 COPY container/scripts/entrypoint.sh /opt/mdclaw/bin/entrypoint.sh

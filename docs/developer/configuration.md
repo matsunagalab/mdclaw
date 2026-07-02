@@ -53,26 +53,42 @@ Notes:
 - `MDCLAW_MODXNA_DIR` is a legacy/experimental modXNA hook only. Modified
   DNA/RNA is not supported by the standard MD-ready topology path.
 - `MDCLAW_MODULE_LOADS` and `MDCLAW_MODULE_INIT` are used for HPC module setup.
-- `MDCLAW_SURROGATE_DIR` controls where isolated surrogate backend venvs are
-  stored. BioEmu is never installed into the conda `mdclaw` environment.
+- `MDCLAW_SURROGATE_DIR` controls where isolated model backend venvs are
+  stored (`$MDCLAW_SURROGATE_DIR/<model>/venv`). BioEmu and Boltz-2 are never
+  installed into the conda `mdclaw` environment.
 
-## Surrogate Backend Runtime
+## Model Backend Runtime
 
-MD surrogate backends run outside the main conda `mdclaw` environment. The first
-backend is BioEmu:
+Heavy AI model backends (BioEmu for MD surrogate ensembles, Boltz-2 for
+structure prediction) run outside the conda `mdclaw` environment in isolated
+venvs, because they ship their own Torch/CUDA stacks that conflict with the
+OpenMM `cu118` pin:
 
 ```bash
-mdclaw setup_surrogate_backend --model bioemu --device cuda
-mdclaw check_surrogate_backend --model bioemu
+mdclaw setup_model_backend --model bioemu --device cuda
+mdclaw setup_model_backend --model boltz  --device cuda
+mdclaw check_model_backend  --model bioemu
+mdclaw check_model_backend  --model boltz
 ```
 
-Local installs use an isolated venv under
-`$MDCLAW_SURROGATE_DIR/bioemu/venv` (default:
-`~/.cache/mdclaw/surrogates/bioemu/venv`). Container images include the same
-kind of isolated venv inside the image. This keeps BioEmu's JAX/Torch stack out
-of the main Amber/OpenMM runtime.
+`setup_surrogate_backend` / `check_surrogate_backend` remain as
+`bioemu`-defaulted aliases.
 
-Candidate generation uses the backend venv through subprocess:
+Installs use an isolated venv under `$MDCLAW_SURROGATE_DIR/<model>/venv`
+(default: `~/.cache/mdclaw/surrogates/<model>/venv`). Backends are installed at
+runtime, not baked into the container image. On a read-only SIF, point
+`MDCLAW_SURROGATE_DIR` at a writable (ideally shared) filesystem and bind-mount
+it so the venv and model weight caches persist across runs:
+
+```bash
+export MDCLAW_SURROGATE_DIR=/shared/fs/mdclaw-model-backends
+singularity exec --nv --bind "$MDCLAW_SURROGATE_DIR:$MDCLAW_SURROGATE_DIR" \
+  mdclaw.sif mdclaw setup_model_backend --model boltz --device cuda
+```
+
+Boltz is pinned to `mdclaw.surrogate_server.BOLTZ_VERSION`.
+
+BioEmu candidate generation uses the backend venv through subprocess:
 
 ```bash
 mdclaw generate_surrogate_candidates \

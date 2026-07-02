@@ -12,7 +12,7 @@ Branch on the structured `code`; never parse stderr.
 | `boltz_msa_file_missing` | Verify the MSA path or omit `--msa-path` to use the MSA server |
 | `boltz_custom_msa_multimer_unsupported` | Use the MSA server for multimers or prepare Boltz YAML manually |
 | `boltz_chain_count_exceeded` | Split the prediction or reduce the number of protein/ligand chains |
-| `boltz_executable_not_found` | Stop local execution and report that Boltz-2 is unavailable in the runtime |
+| `boltz_backend_not_installed` | Install the isolated Boltz-2 backend venv with `mdclaw setup_model_backend --model boltz --device cuda`, then retry |
 | `boltz_execution_failed` | Report the structured error and check sequence/SMILES/MSA inputs |
 | `boltz_no_structure_output` | Treat as a failed prediction; do not continue to prep without a source candidate |
 | `boltz_source_attach_failed` | Preserve the Boltz output directory and repair source-bundle registration before continuing |

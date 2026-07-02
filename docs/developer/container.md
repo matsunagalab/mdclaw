@@ -1,9 +1,13 @@
 # Container Runtime Build And Distribution
 
 The container is MDClaw's packaged scientific runtime. It contains the `mdclaw`
-CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, Boltz-2, PyMOL
-(`pymol-open-source`, for headless structure previews), and an isolated BioEmu
-surrogate backend venv.
+CLI plus CUDA runtime, PyTorch, AmberTools, OpenMM, and PyMOL
+(`pymol-open-source`, for headless structure previews).
+
+Heavy AI model backends (BioEmu, Boltz-2) are intentionally **not** baked into
+the image. They ship their own Torch/CUDA stacks that conflict with the OpenMM
+`cu118` pin, so they install into isolated venvs at runtime via
+`mdclaw setup_model_backend --model <bioemu|boltz>`. See "Model backends" below.
 
 It is not a separate skill distribution. Agent-facing skill text stays in
 `skills/`; Docker and Singularity/Apptainer only provide the execution
@@ -61,10 +65,40 @@ singularity exec --nv \
   (the master commit that added `PythonTorchForce`, #179) because no tagged
   release ships it yet. Bumping `openmm`, `pytorch`, or `OPENMM_TORCH_COMMIT`
   requires a container rebuild + push (container contents changed).
-- BioEmu is installed into `/opt/mdclaw/surrogates/bioemu/venv`, not into the
-  conda-packed `/opt/mdclaw` environment. Use `BIOEMU_DEVICE=cuda` at build time
-  to install `bioemu[cuda]`; the default installs CPU BioEmu for import and
-  metadata checks.
 - `ruff` is installed in the conda-packed `/opt/mdclaw` environment so
   Singularity/Apptainer SIF workflows can run repository lint checks without a
   separate host conda environment.
+
+## Model Backends (BioEmu, Boltz-2)
+
+BioEmu and Boltz-2 are not part of the image. They are installed on first use
+into isolated venvs, keeping their independent Torch/CUDA stacks out of the
+OpenMM `cu118` runtime:
+
+```bash
+mdclaw setup_model_backend --model bioemu --device cuda
+mdclaw setup_model_backend --model boltz  --device cuda
+mdclaw check_model_backend  --model bioemu
+mdclaw check_model_backend  --model boltz
+```
+
+Runtime install rules for containers:
+
+- A SIF is read-only, so the venv cannot be written under `/opt/mdclaw`. Point
+  `MDCLAW_SURROGATE_DIR` at a writable, ideally shared, filesystem and
+  bind-mount it. Weight caches (BioEmu / ColabFold / Boltz) should live on the
+  same shared filesystem so they are downloaded once.
+
+```bash
+export MDCLAW_SURROGATE_DIR=/shared/fs/mdclaw-model-backends
+singularity exec --nv \
+  --bind "$MDCLAW_SURROGATE_DIR:$MDCLAW_SURROGATE_DIR" \
+  mdclaw.sif mdclaw setup_model_backend --model boltz --device cuda
+```
+
+- These venvs pull their own Torch and have CUDA/driver requirements
+  independent of the OpenMM `cu118` build. Verify each with
+  `mdclaw check_model_backend --model <name>`.
+- Boltz is pinned to `surrogate_server.BOLTZ_VERSION`; bump deliberately.
+- `setup_surrogate_backend` / `check_surrogate_backend` remain as
+  `bioemu`-defaulted aliases.

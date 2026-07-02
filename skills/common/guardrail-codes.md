@@ -18,9 +18,9 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `associated_ligand_chain_auto_included` | An associated ligand chain was auto-included; confirm intent. |
 | `associated_ligands_require_selection` | Select ligands explicitly with --include-ligand-resnames or the recommended IDs. |
 | `boltz_affinity_requires_ligand` | Provide a ligand SMILES or omit --affinity. |
+| `boltz_backend_not_installed` | Install the isolated Boltz-2 backend venv: `mdclaw setup_model_backend --model boltz --device cuda`. |
 | `boltz_chain_count_exceeded` | Reduce protein/ligand chains or split the prediction. |
 | `boltz_custom_msa_multimer_unsupported` | Use the MSA server for multimers, or prepare a Boltz YAML manually. |
-| `boltz_executable_not_found` | Boltz-2 is unavailable in this runtime; report it. |
 | `boltz_execution_failed` | Report the structured error; check sequence, SMILES, MSA, runtime. |
 | `boltz_msa_file_missing` | Verify the custom MSA path or omit --msa-path. |
 | `boltz_no_structure_output` | Prediction produced no structure; do not continue to prep. |
@@ -247,6 +247,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `unknown_gpu_type` | GPU type is unknown; report the platform for scheduling. |
 | `unknown_metal_ion_parameter_set` | Use a known metal-ion parameter set. |
 | `unknown_water_model` | Use a known water model (e.g. opc, tip3p, tip4pew, spce). |
+| `unparametrizable_ligand_selected` | Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand. |
 | `unsupported_assembly_source` | Use a supported assembly source type. |
 | `unsupported_glycan_residue` | Glycan residue is unsupported; use a supported residue set. |
 | `unsupported_modified_nucleic_residue` | Modified nucleic residue is unsupported. |

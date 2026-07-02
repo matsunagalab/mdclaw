@@ -40,8 +40,12 @@ def _stub_boltz(
     """Patch boltz2 module so it writes a fake predicted PDB instead of running."""
     from mdclaw import genesis_server
 
-    # Pretend the boltz executable exists
-    monkeypatch.setattr(genesis_server.boltz_wrapper, "executable", "/fake/boltz")
+    # Pretend the isolated boltz backend venv is installed
+    monkeypatch.setattr(
+        genesis_server,
+        "_resolve_boltz_backend",
+        lambda prefix=None: ("/fake/boltz", {"success": True, "errors": []}),
+    )
 
     def fake_run(cmd, cwd=None, env=None, capture_output=False, text=False, check=False):
         # cwd is the boltz subdir; boltz would produce boltz_results_<ts>/**/*.pdb
@@ -303,7 +307,11 @@ class TestBoltz2SourceNodeIntegration:
         out.mkdir()
         msa = tmp_path / "custom_alignment.a3m"
         msa.write_text(">query\nMVLSPADK\n")
-        monkeypatch.setattr(gs.boltz_wrapper, "executable", "/fake/boltz")
+        monkeypatch.setattr(
+            gs,
+            "_resolve_boltz_backend",
+            lambda prefix=None: ("/fake/boltz", {"success": True, "errors": []}),
+        )
 
         captured = {}
 

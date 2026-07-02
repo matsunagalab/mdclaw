@@ -1,7 +1,16 @@
-"""MD surrogate source generation tools.
+"""Isolated model-backend management plus MD surrogate source generation.
 
-BioEmu is the first backend. It is intentionally executed from an isolated
-venv so its JAX/Torch stack does not modify the main mdclaw environment.
+Heavy AI model backends (BioEmu, Boltz-2) ship their own Torch/CUDA stacks
+that conflict with the main mdclaw environment's OpenMM ``cu118`` pin, so each
+one runs from its own isolated venv. ``setup_model_backend`` /
+``check_model_backend`` create and inspect those venvs; ``setup_surrogate_backend``
+/ ``check_surrogate_backend`` remain as ``bioemu``-oriented aliases for
+backward compatibility.
+
+BioEmu additionally supports conformational sampling via
+``generate_surrogate_candidates``; Boltz-2 prediction is driven from
+``mdclaw.genesis_server`` but resolves its venv through the backend registry
+here.
 """
 
 from __future__ import annotations
@@ -25,6 +34,10 @@ WORKING_DIR = Path(os.getenv("MDCLAW_OUTPUT_DIR", "outputs")).resolve()
 ensure_directory(WORKING_DIR)
 
 _AA_ALPHABET = set("ACDEFGHIKLMNPQRSTVWY")
+
+# Pinned Boltz release for the isolated backend venv (reproducibility). Bump
+# deliberately; do not float to "latest".
+BOLTZ_VERSION = "2.2.1"
 
 
 def _default_surrogate_root() -> Path:
@@ -60,8 +73,39 @@ def _run_command(cmd: list[str], *, cwd: Path | None = None, timeout: int | None
 
 
 @dataclass
-class BioEmuBackend:
-    name: str = "bioemu"
+class VenvBackend:
+    """Common isolated-venv lifecycle shared by heavy model backends.
+
+    Subclasses provide ``install_spec`` (pip requirement strings) and
+    ``import_check_code`` (a Python snippet that prints a JSON line with at
+    least a ``version`` field). ``entry_point`` resolves a console script inside
+    the venv (used by callers that shell out to a backend CLI).
+
+    Capabilities are declared as class attributes so callers dispatch on what a
+    backend *can do* rather than on its name. This is what makes models
+    swappable: a new predictor only needs ``supports_prediction = True`` (plus
+    ``entry_script``) to be usable everywhere the boltz predictor is, and a new
+    sampler only needs ``supports_sampling = True``. See
+    ``docs/developer/model-backends.md``.
+    """
+
+    name: str = ""
+
+    # --- capabilities (class-level, not dataclass fields) ---
+    # "sampling":   conformational ensemble generation (generate_surrogate_candidates)
+    # "prediction": structure prediction from sequence (e.g. boltz2_protein_from_seq)
+    supports_sampling = False
+    supports_prediction = False
+    # Console script inside the venv used by prediction callers (e.g. "boltz").
+    entry_script = None
+
+    def capabilities(self) -> list[str]:
+        caps: list[str] = []
+        if self.supports_sampling:
+            caps.append("sampling")
+        if self.supports_prediction:
+            caps.append("prediction")
+        return caps
 
     def root(self, prefix: str | None = None) -> Path:
         return _model_root(self.name, prefix)
@@ -72,18 +116,27 @@ class BioEmuBackend:
     def python(self, prefix: str | None = None) -> Path:
         return _venv_python(self.venv_dir(prefix))
 
-    def install_package(self, device: str) -> str:
-        if device == "cpu":
-            return "bioemu"
-        if device == "cuda":
-            return "bioemu[cuda]"
-        raise ValueError("device must be one of: cpu, cuda")
+    def entry_point(self, script: str, prefix: str | None = None) -> Path:
+        bin_dir = self.venv_dir(prefix) / ("Scripts" if os.name == "nt" else "bin")
+        name = f"{script}.exe" if os.name == "nt" else script
+        return bin_dir / name
 
+    def setup_hint(self, device: str = "cuda") -> str:
+        return f"mdclaw setup_model_backend --model {self.name} --device {device}"
+
+    # --- backend-specific hooks ---
+    def install_spec(self, device: str) -> list[str]:
+        raise NotImplementedError
+
+    def import_check_code(self) -> str:
+        raise NotImplementedError
+
+    # --- generic lifecycle ---
     def setup(self, *, device: str = "cpu", prefix: str | None = None, reinstall: bool = False) -> dict:
         root = self.root(prefix)
         venv_dir = self.venv_dir(prefix)
         python = self.python(prefix)
-        package = self.install_package(device)
+        packages = self.install_spec(device)
         commands: list[list[str]] = []
 
         if reinstall and venv_dir.exists():
@@ -94,12 +147,12 @@ class BioEmuBackend:
         if uv:
             if not python.exists():
                 commands.append([uv, "venv", str(venv_dir)])
-            commands.append([uv, "pip", "install", "--python", str(python), package])
+            commands.append([uv, "pip", "install", "--python", str(python), *packages])
         else:
             if not python.exists():
                 commands.append([sys.executable, "-m", "venv", str(venv_dir)])
             commands.append([str(python), "-m", "pip", "install", "--upgrade", "pip"])
-            commands.append([str(python), "-m", "pip", "install", package])
+            commands.append([str(python), "-m", "pip", "install", *packages])
 
         executed = []
         for cmd in commands:
@@ -133,21 +186,12 @@ class BioEmuBackend:
                 "python": str(python),
                 "installed": False,
                 "errors": [
-                    "BioEmu backend venv is not installed. Run: "
-                    "mdclaw setup_surrogate_backend --model bioemu --device cuda"
+                    f"{self.name} backend venv is not installed. Run: {self.setup_hint()}"
                 ],
                 "warnings": [],
             }
 
-        code = (
-            "import json, pathlib\n"
-            "import bioemu\n"
-            "print(json.dumps({"
-            "'version': getattr(bioemu, '__version__', 'unknown'), "
-            "'cache_home': str(pathlib.Path.home() / '.cache')"
-            "}))\n"
-        )
-        proc = _run_command([str(python), "-c", code])
+        proc = _run_command([str(python), "-c", self.import_check_code()])
         if proc.returncode != 0:
             return {
                 "success": False,
@@ -155,7 +199,7 @@ class BioEmuBackend:
                 "venv": str(venv_dir),
                 "python": str(python),
                 "installed": True,
-                "errors": [proc.stderr.strip() or proc.stdout.strip() or "BioEmu import failed"],
+                "errors": [proc.stderr.strip() or proc.stdout.strip() or f"{self.name} import failed"],
                 "warnings": [],
             }
 
@@ -175,6 +219,29 @@ class BioEmuBackend:
             "errors": [],
             "warnings": [],
         }
+
+
+@dataclass
+class BioEmuBackend(VenvBackend):
+    name: str = "bioemu"
+    supports_sampling = True
+
+    def install_spec(self, device: str) -> list[str]:
+        if device == "cpu":
+            return ["bioemu"]
+        if device == "cuda":
+            return ["bioemu[cuda]"]
+        raise ValueError("device must be one of: cpu, cuda")
+
+    def import_check_code(self) -> str:
+        return (
+            "import json, pathlib\n"
+            "import bioemu\n"
+            "print(json.dumps({"
+            "'version': getattr(bioemu, '__version__', 'unknown'), "
+            "'cache_home': str(pathlib.Path.home() / '.cache')"
+            "}))\n"
+        )
 
     def sample(
         self,
@@ -213,18 +280,103 @@ class BioEmuBackend:
         return _run_command(cmd, timeout=timeout)
 
 
-SURROGATE_BACKENDS = {
+@dataclass
+class BoltzBackend(VenvBackend):
+    """Boltz-2 structure predictor in an isolated venv.
+
+    Boltz manages its own Torch build, so ``device`` is advisory: the pinned
+    ``boltz`` wheel pulls a CUDA-capable Torch on Linux by default. Prediction
+    itself is invoked from :mod:`mdclaw.genesis_server` via the venv ``boltz``
+    console script (see :func:`entry_point`).
+    """
+
+    name: str = "boltz"
+    supports_prediction = True
+    entry_script = "boltz"
+
+    def install_spec(self, device: str) -> list[str]:
+        if device not in ("cpu", "cuda"):
+            raise ValueError("device must be one of: cpu, cuda")
+        return [f"boltz=={BOLTZ_VERSION}"]
+
+    def import_check_code(self) -> str:
+        return (
+            "import json\n"
+            "from importlib import metadata\n"
+            "try:\n"
+            "    version = metadata.version('boltz')\n"
+            "except metadata.PackageNotFoundError:\n"
+            "    import boltz\n"
+            "    version = getattr(boltz, '__version__', 'unknown')\n"
+            "print(json.dumps({'version': version}))\n"
+        )
+
+
+# Registry of isolated model backends. ``MODEL_BACKENDS`` is the source of
+# truth; ``SURROGATE_BACKENDS`` is a backward-compatible alias for callers and
+# tests that predate the generic naming.
+MODEL_BACKENDS = {
     "bioemu": BioEmuBackend(),
+    "boltz": BoltzBackend(),
 }
+SURROGATE_BACKENDS = MODEL_BACKENDS
+
+
+def models_with_capability(capability: str) -> list[str]:
+    """Names of registered backends that declare ``capability``.
+
+    ``capability`` is one of ``"sampling"`` or ``"prediction"``. Callers should
+    dispatch on capability, not on backend name, so models stay swappable.
+    """
+    return sorted(
+        name for name, backend in MODEL_BACKENDS.items()
+        if capability in backend.capabilities()
+    )
 
 
 def _get_backend(model: str):
-    backend = SURROGATE_BACKENDS.get(model)
+    backend = MODEL_BACKENDS.get(model)
     if backend is None:
         raise ValueError(
-            f"Unsupported surrogate model {model!r}. Available models: {sorted(SURROGATE_BACKENDS)}"
+            f"Unsupported model backend {model!r}. Available models: {sorted(MODEL_BACKENDS)}"
         )
     return backend
+
+
+def _get_capable_backend(model: str, capability: str, action: str):
+    backend = _get_backend(model)
+    if capability not in backend.capabilities():
+        raise ValueError(
+            f"Model backend {model!r} does not support {action}. "
+            f"{capability.capitalize()} backends: {models_with_capability(capability)}"
+        )
+    return backend
+
+
+def _get_sampling_backend(model: str):
+    return _get_capable_backend(model, "sampling", "surrogate sampling")
+
+
+def resolve_prediction_backend(model: str = "boltz", prefix: str | None = None):
+    """Resolve an installed structure-prediction backend for a caller.
+
+    Returns ``(entry_point_path, check)`` where ``entry_point_path`` is the
+    venv console script to invoke, or ``None`` when the backend is missing,
+    not importable, or lacks a declared ``entry_script``. This is the
+    capability-based entry used by ``genesis_server`` so a predictor can be
+    swapped (boltz -> alphafold3 -> ...) without touching the caller.
+    """
+    backend = _get_capable_backend(model, "prediction", "structure prediction")
+    check = backend.check(prefix=prefix)
+    if not check.get("success"):
+        return None, check
+    if not backend.entry_script:
+        check["success"] = False
+        check.setdefault("errors", []).append(
+            f"Backend {model!r} declares no entry_script for prediction callers."
+        )
+        return None, check
+    return str(backend.entry_point(backend.entry_script, prefix=prefix)), check
 
 
 def _validate_bioemu_sequence(sequence: str) -> str | None:
@@ -355,13 +507,19 @@ def _find_bioemu_outputs(output_dir: Path) -> tuple[Path | None, Path | None, li
     return topology, trajectory, structures
 
 
-def setup_surrogate_backend(
+def setup_model_backend(
     model: str,
     device: str = "cpu",
     prefix: str | None = None,
     reinstall: bool = False,
 ) -> dict:
-    """Create or update an isolated venv for a surrogate backend."""
+    """Create or update an isolated venv for a heavy model backend.
+
+    Supported models: ``bioemu`` (MD surrogate ensembles) and ``boltz``
+    (structure prediction). The venv is created under
+    ``$MDCLAW_SURROGATE_DIR/<model>/venv`` and never touches the conda
+    ``mdclaw`` environment.
+    """
     try:
         backend = _get_backend(model)
         return backend.setup(device=device, prefix=prefix, reinstall=reinstall)
@@ -374,11 +532,11 @@ def setup_surrogate_backend(
         }
 
 
-def check_surrogate_backend(
+def check_model_backend(
     model: str,
     prefix: str | None = None,
 ) -> dict:
-    """Check whether a surrogate backend is installed and importable."""
+    """Check whether a model backend venv is installed and importable."""
     try:
         backend = _get_backend(model)
         return backend.check(prefix=prefix)
@@ -389,6 +547,24 @@ def check_surrogate_backend(
             "errors": [f"{type(exc).__name__}: {exc}"],
             "warnings": [],
         }
+
+
+def setup_surrogate_backend(
+    model: str = "bioemu",
+    device: str = "cpu",
+    prefix: str | None = None,
+    reinstall: bool = False,
+) -> dict:
+    """Backward-compatible alias for :func:`setup_model_backend`."""
+    return setup_model_backend(model, device=device, prefix=prefix, reinstall=reinstall)
+
+
+def check_surrogate_backend(
+    model: str = "bioemu",
+    prefix: str | None = None,
+) -> dict:
+    """Backward-compatible alias for :func:`check_model_backend`."""
+    return check_model_backend(model, prefix=prefix)
 
 
 def generate_surrogate_candidates(
@@ -433,7 +609,7 @@ def generate_surrogate_candidates(
     }
 
     try:
-        backend = _get_backend(model)
+        backend = _get_sampling_backend(model)
     except ValueError as exc:
         result["errors"].append(str(exc))
         return result
@@ -608,6 +784,8 @@ def generate_surrogate_candidates(
 
 
 TOOLS = {
+    "setup_model_backend": setup_model_backend,
+    "check_model_backend": check_model_backend,
     "setup_surrogate_backend": setup_surrogate_backend,
     "check_surrogate_backend": check_surrogate_backend,
     "generate_surrogate_candidates": generate_surrogate_candidates,

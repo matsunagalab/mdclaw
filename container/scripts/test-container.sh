@@ -30,7 +30,9 @@ echo ""
 echo "[CLI]"
 check "mdclaw --version" mdclaw --version
 check "mdclaw --list" mdclaw --list
-check "BioEmu surrogate backend" mdclaw check_surrogate_backend --model bioemu
+# Model backends (BioEmu, Boltz-2) are installed at runtime into isolated
+# venvs, not baked into the image, so only verify the management CLI exists.
+check "model-backend CLI discoverable" bash -c "mdclaw --list | grep -q setup_model_backend"
 check "ruff" python -m ruff --version
 
 # --- Python imports ---

@@ -33,18 +33,24 @@ non-standard residue codes.
 ## Step 1: Check Backend
 
 ```bash
-mdclaw check_surrogate_backend --model bioemu
+mdclaw check_model_backend --model bioemu
 ```
 
 If the backend is missing, ask the user before installing, then run one of:
 
 ```bash
-mdclaw setup_surrogate_backend --model bioemu --device cpu
-mdclaw setup_surrogate_backend --model bioemu --device cuda
+mdclaw setup_model_backend --model bioemu --device cpu
+mdclaw setup_model_backend --model bioemu --device cuda
 ```
 
-BioEmu is installed in an isolated venv, never in the conda `mdclaw`
-environment.
+BioEmu is installed at runtime into an isolated venv, never in the conda
+`mdclaw` environment and never baked into the container image.
+(`setup_surrogate_backend` / `check_surrogate_backend` remain as
+`bioemu`-defaulted aliases.)
+
+On a read-only SIF the venv cannot be written under `/opt/mdclaw`. Point
+`MDCLAW_SURROGATE_DIR` at a writable (ideally shared) filesystem and bind-mount
+it so the venv and model-weight cache persist across runs.
 
 ## Step 2: Generate Candidates
 

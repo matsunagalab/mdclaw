@@ -32,15 +32,26 @@ import yaml  # noqa: E402
 from rdkit import Chem  # noqa: E402
 from pubchempy import get_compounds  # noqa: E402
 
-from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, BaseToolWrapper, tail_for_agent  # noqa: E402
+from mdclaw._common import ensure_directory, create_unique_subdir, generate_job_id, tail_for_agent  # noqa: E402
 
 # Initialize working directory (use absolute path for conda run compatibility)
 WORKING_DIR = Path("outputs").resolve()
 ensure_directory(WORKING_DIR)
 
-# Initialize Boltz-2 wrapper
-CORRECT_CONDA_ENV = "mdclaw"
-boltz_wrapper = BaseToolWrapper("boltz", conda_env=CORRECT_CONDA_ENV, warn_missing=False)
+
+def _resolve_boltz_backend(prefix: str | None = None):
+    """Resolve the isolated structure-prediction backend venv console script.
+
+    Prediction backends ship their own Torch/CUDA stacks, so they live in
+    isolated venvs managed by ``setup_model_backend --model <name>`` rather
+    than in the conda ``mdclaw`` environment. Dispatch is capability-based
+    (``resolve_prediction_backend``), so the predictor can be swapped without
+    changing this caller. Returns ``(executable_path, check)`` where the
+    executable is ``None`` when the backend venv is missing or not importable.
+    """
+    from mdclaw.surrogate_server import resolve_prediction_backend
+
+    return resolve_prediction_backend(model="boltz", prefix=prefix)
 
 _BOLTZ_MODEL_RE = re.compile(r"(?:^|_)model_(\d+)(?:$|[_.-])")
 
@@ -297,12 +308,15 @@ def boltz2_protein_from_seq(
 
     logger.info(f"Created Boltz-2 input YAML: {yaml_path}")
 
-    # Check Boltz-2 availability
-    boltz_executable_path = boltz_wrapper.executable
+    # Resolve the isolated Boltz-2 backend venv
+    boltz_executable_path, boltz_check = _resolve_boltz_backend()
     if not boltz_executable_path:
-        result["errors"].append("Boltz executable not found")
-        result["errors"].append("Hint: Install Boltz-2 or activate the mdclaw conda environment")
-        result["code"] = "boltz_executable_not_found"
+        result["errors"].append("Boltz-2 backend venv is not installed or not importable")
+        result["errors"].extend(boltz_check.get("errors", []))
+        result["errors"].append(
+            "Install it with: mdclaw setup_model_backend --model boltz --device cuda"
+        )
+        result["code"] = "boltz_backend_not_installed"
         if _node_mode:
             fail_node(job_dir, node_id, errors=result["errors"])
         return result

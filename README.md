@@ -51,11 +51,15 @@ Deploying MDClaw means setting up two things:
 
 1. **Skill discovery**: how your agent reads the MDClaw instructions in
    `skills/`.
-2. **MD runtime**: where `mdclaw <tool>` runs AmberTools, OpenMM, Boltz-2, and
-   the other scientific dependencies.
+2. **MD runtime**: where `mdclaw <tool>` runs AmberTools, OpenMM, and the other
+   core scientific dependencies.
 
 Most confusion comes from mixing those two layers. Pick the agent entrypoint
 first, then make sure one runtime is available.
+
+Heavy AI model backends (BioEmu, Boltz-2) are a third, optional concern. They
+are not part of the core runtime; they install into isolated venvs on first use
+(see [AI Model Backends](#ai-model-backends-bioemu-boltz-2)).
 
 | You are using | Start here | What still needs to work |
 |---|---|---|
@@ -162,6 +166,11 @@ bin/mdclaw --list
    otherwise `ghcr.io/matsunagalab/mdclaw:latest`.
 5. A local `mdclaw` on `PATH`.
 
+Policy note: an existing `mdclaw` conda env is preferred over a container, and
+`scripts/setup-container.sh` intentionally no-ops when that env exists. Set
+`MDCLAW_RUNTIME` to force a specific runtime, or
+`MDCLAW_FORCE_CONTAINER_SETUP=1` to pull the packaged runtime anyway.
+
 For container runtimes, `bin/mdclaw` binds the current working directory at the
 same absolute path inside the container. Paths under the current project or job
 directory therefore resolve consistently across local, Docker, and
@@ -172,18 +181,31 @@ directory and keep workflow files under that directory. Relative paths and
 absolute paths under the current tree will then refer to the same files across
 host, Docker, and Singularity/Apptainer.
 
-See `docs/agents/deployment.md` for the full deployment matrix and
-`docs/developer/container.md` for container details.
+`docs/agents/deployment.md` is the single source of truth for the full
+deployment matrix; see `docs/developer/container.md` for container details.
 
-### MD Surrogate Sources
+### AI Model Backends (BioEmu, Boltz-2)
 
-BioEmu can be used as a surrogate source generator for monomer conformational
-ensembles. BioEmu is installed in an isolated venv, not in the conda `mdclaw`
-environment:
+BioEmu (MD surrogate ensembles) and Boltz-2 (structure prediction) are heavy AI
+models with their own Torch/CUDA stacks. They are **not** part of the core
+runtime and are **not** baked into the container image. Each installs into an
+isolated venv on first use, keeping it out of the conda `mdclaw` environment:
 
 ```bash
-mdclaw setup_surrogate_backend --model bioemu --device cuda
-mdclaw check_surrogate_backend --model bioemu
+mdclaw setup_model_backend --model bioemu --device cuda
+mdclaw setup_model_backend --model boltz  --device cuda
+mdclaw check_model_backend  --model bioemu
+mdclaw check_model_backend  --model boltz
+```
+
+On a read-only SIF, point `MDCLAW_SURROGATE_DIR` at a writable (ideally shared)
+filesystem and bind-mount it so the venv and model weight caches persist.
+`setup_surrogate_backend` / `check_surrogate_backend` remain as
+`bioemu`-defaulted aliases.
+
+BioEmu can then generate a monomer conformational ensemble as a source bundle:
+
+```bash
 mdclaw generate_surrogate_candidates \
   --model bioemu \
   --amino-acid-sequence YYDPETGTWY \
@@ -195,7 +217,9 @@ mdclaw generate_surrogate_candidates \
 
 The generated candidates are recorded in the source node's `source_bundle.json`
 with `source_type="surrogate"` and can be consumed by
-`prepare_complex --source-candidate-id candidate_NNN`.
+`prepare_complex --source-candidate-id candidate_NNN`. Boltz-2 is driven through
+the `boltz-predict` skill / `boltz2_protein_from_seq` tool once its backend is
+installed.
 
 ## Ask In Plain Language
 
