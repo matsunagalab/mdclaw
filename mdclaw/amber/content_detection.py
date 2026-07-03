@@ -154,15 +154,27 @@ def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
     canonical_res = _canonical_pablo_ion_resname(raw_resname)
     if canonical_res is None:
         return line, False
+    # Operate on the record body only and re-append the original line
+    # terminator last. Some writers emit ion records shorter than the
+    # 80-column PDB width (e.g. a 66-column line with no element column); if
+    # the trailing newline is left inside the body, padding it out to the
+    # element columns splices the break into the middle of the record and
+    # drops every following atom on parse.
+    body = line.rstrip("\r\n")
+    terminator = line[len(body):]
     rn_key = raw_resname.strip().upper()
     an_key = raw_atom_name.strip().upper()
     new_resname = f"{canonical_res:>3}"
-    new_atom = raw_atom_name
+    new_atom = body[12:16]
     if an_key in {rn_key, canonical_res}:
         new_atom = f"{canonical_res:>4}"
-    rewritten = line[:12] + new_atom + line[16:17] + new_resname + line[20:]
+    rebuilt = body[:12] + new_atom + body[16:17] + new_resname + body[20:]
     element = _ion_element_symbol(canonical_res)
-    rewritten = f"{rewritten[:76]:<76}{element:>2}{rewritten[78:] if len(rewritten) > 78 else ''}"
+    # Write the element symbol in columns 77-78 (0-based 76:78), padding the
+    # record out when needed while preserving anything past column 78
+    # (e.g. the formal-charge columns).
+    rebuilt = f"{rebuilt[:76]:<76}{element:>2}{rebuilt[78:]}"
+    rewritten = rebuilt + terminator
     return rewritten, rewritten != line
 
 

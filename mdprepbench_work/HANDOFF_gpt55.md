@@ -48,9 +48,9 @@ PY
 
 ## issue 1: 金属/陰イオン脂質の電荷が中和カウントに入っていない（最優先・CLIバグ）
 
-> **STATUS (Fable が対応済み)**: **explicit-solvent 経路は修正完了**。P26/P30 の
-> `net_charge_neutral_recomputed` は 0.0 で PASS になった（残る失敗は issue 2 の
-> clash のみ）。**膜(P34)は未対応**（別経路 patch-tile の中和。下記「膜の残り」参照）。
+> **STATUS (Fable が対応済み)**: **explicit-solvent 経路・膜(P34)経路とも修正完了**。
+> P26/P30/P34 の `net_charge_neutral_recomputed` は PASS。膜(P34)は当初想定と別原因
+> （topo 段の短いイオン行破損）で、下記「膜の残り」に詳細。
 >
 > 何をしたか:
 > - `mdclaw/solvation/pdb_identity.py` に
@@ -73,17 +73,21 @@ PY
 > 検算: P26 delta=+2(ZN) → net 0.0 / P30 delta=+7(nucleic +2, ZN×3 +6, CYM -1) →
 > net -0.0。P06(Ca)/P17(DNA) も回帰なし(prep=1.0, delta は従来通り)。
 >
-> **膜の残り (P34, 要対応)**: `embed_in_membrane` は explicit の
-> `solvate_structure` とは別経路で、patch-tile backend
-> (`mdclaw/solvation/patch_membrane.py`) が「bulk water をイオンに swap」して中和する
-> (`plan_neutralizing_ions` / `_apply_neutralizing_swap`、正確電荷は `net_charge_fn`)。
-> 今回の water.py 修正はここには効かない。P34 の solv.stdout では
-> `neutralization: null` で最終組み上げ系が net +9 のまま。patch-tile の
-> 中和が最終タイル系に適用されていない/失敗している可能性がある。
-> → patch_membrane.py の `embed_with_membrane_patch_tiles` の中和分岐
-> (`net_charge_fn is not None` の所, L1356 付近)を調査し、POPG を含む陰イオン膜で
-> 中和 swap が走るようにする。加えて issue 3(POPG=`PGR` alias)も直すこと。
-> なお P34 は net だけでなく POPG カウントでも落ちている(issue 3)。
+> **膜の残り (P34)**: **解決済み**（当初の想定＝patch-tile 中和不発とは別原因だった）。
+> patch-tile 経路は既に正しく中和していた（`solvate_structure` の
+> `--saltcon` 自動引き上げ, commit 516a4f5）。solv 出力 `membrane.pdb` は
+> NA 48 / CL 10 で **中性**（PGR -48, protein +10, +48Na, -10Cl = 0）。
+> 真の原因は **topo 段の `build_amber_system` が短い CL 行を壊していた**こと:
+> `mdclaw/amber/content_detection.py` の `_rewrite_pablo_ion_pdb_line` が、
+> 80桁未満で element 列の無いイオン行（膜中和が書く 66桁の CL 行）を
+> パディングする際に **行末改行を行途中に巻き込み**、末尾改行を落としていた。
+> その結果 2 個目以降の CL レコードが直前レコードに連結され `ATOM` が
+> 0 桁目からズレて Pablo にドロップされ、10 本中 9 本の CL が消えて net +9 に
+> なっていた（`prepared.pdb` CL=10 → `pablo_input.pdb` CL=1）。
+> 修正: 行末終端子を退避してから element 列を書き、最後に終端子を戻す一般化
+> （短い行・CRLF も安全）。`tests/test_guardrails.py` に短行/CRLF 回帰テスト追加。
+> 検算: P34 再走で topology.pdb CL=10, net -0.0, `net_charge_neutral_recomputed`
+> PASS, stock_prep=1.0。issue 3(POPG alias)は別途対応済み。
 
 ### （以下は当初の問題説明。explicit は上記で解決済み）
 
@@ -249,14 +253,13 @@ P31 の HIP、P32 は無指定で補完される点）。
 
 ## 次担当の推奨作業順
 
-1. **issue 1（中和の formal charge 一般化）** を `water.py` + `membrane.py` で修正。
-   → P26/P30/P34 の net_charge を PASS に。最もインパクト大。
+1. ~~**issue 1（中和の formal charge 一般化）**~~ **対応済み**。explicit(P26/P30)は
+   `water.py`/`pdb_identity.py`、膜(P34)は topo 段の短いイオン行破損を
+   `content_detection.py` で修正。P26/P30/P34 の net_charge すべて PASS。
 2. ~~**issue 3（P34 alias=PGR 追加, atom_count調整, fixture更新）**~~ **対応済み**
    （alias に PGR 追加のみで PASS。atom_count 調整・fixture 更新は不要だった）。
-   残るのは issue 1 の膜(patch-tile)経路 net_charge +9。
-3. **issue 2（scorer の金属配位 clash 除外）**。P26/P30 の clash チェック PASS に。
-   既存金属タスク(P06)への回帰に注意、テスト追加。
-4. **issue 4（P27 ヘム）** はユーザー判断を仰いでから対応（保留/差し替え/実装）。
+3. ~~**issue 2（scorer の金属配位 clash 除外）**~~ **対応済み**。P26/P30 の clash PASS。
+4. **issue 4（P27 ヘム）** はユーザー判断を仰いでから対応（保留/差し替え/実装）。**唯一の残件**。
 5. 各修正後 `driver.py --task ...` で再走し score.json を確認。
    scorer を触った場合は
    `conda run -n mdclaw pytest tests/test_benchmark -q` を回す。

@@ -245,6 +245,39 @@ def test_pablo_ion_rewrite_covers_multivalent_ions():
     assert rewritten[76:78].strip() == "Mg"
 
 
+def test_pablo_ion_rewrite_preserves_short_records_and_newline():
+    # Some writers emit ion atoms as short records that stop after the
+    # temperature-factor column (no element column). The rewrite must keep the
+    # line terminator at the very end so consecutive records do not merge.
+    short_line = "ATOM      2 CL    CL I   2     -55.412 -22.344  24.816  1.00  0.00\n"
+
+    rewritten, changed = _rewrite_pablo_ion_pdb_line(short_line)
+
+    assert changed is True
+    assert rewritten.startswith("ATOM  ")
+    assert rewritten.endswith("\n")
+    assert rewritten.count("\n") == 1
+    assert rewritten[17:20].strip() == "CL"
+    assert rewritten[76:78].strip() == "Cl"
+    # A block of stacked short records must round-trip to one record per line.
+    block = short_line * 3
+    joined = "".join(
+        _rewrite_pablo_ion_pdb_line(part + "\n")[0]
+        for part in block.splitlines()
+    )
+    assert all(row.startswith("ATOM  ") for row in joined.splitlines())
+    assert len(joined.splitlines()) == 3
+
+
+def test_pablo_ion_rewrite_preserves_crlf_terminator():
+    line = "ATOM      1 CL    CL I   1     -24.576 -13.085  23.008  1.00  0.00\r\n"
+
+    rewritten, _ = _rewrite_pablo_ion_pdb_line(line)
+
+    assert rewritten.endswith("\r\n")
+    assert rewritten[76:78].strip() == "Cl"
+
+
 def test_blank_his_chain_ids_normalize_to_same_key():
     assert _normalize_pdb_chain_id(" ") == ""
     assert _normalize_pdb_chain_id("") == ""
