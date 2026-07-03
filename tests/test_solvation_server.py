@@ -7,7 +7,10 @@ from types import SimpleNamespace
 import mdclaw.solvation._base as solv_base  # noqa: F401
 import mdclaw.solvation.water as solv_water
 import mdclaw.solvation.membrane as solv_membrane
-from mdclaw.solvation.pdb_identity import _auto_nucleic_packmol_charge_pdb_delta
+from mdclaw.solvation.pdb_identity import (
+    _auto_metal_ion_packmol_charge_pdb_delta,
+    _auto_nucleic_packmol_charge_pdb_delta,
+)
 from mdclaw.solvation._base import _record_packmol_memgen_output
 from mdclaw.solvation.box import extract_box_size_from_packmol_inp
 from mdclaw.solvation.membrane import embed_in_membrane
@@ -96,6 +99,86 @@ def test_auto_nucleic_packmol_charge_delta_ignores_protein_only(tmp_path):
 
     assert report["charge_pdb_delta"] == 0
     assert report["segments"] == []
+
+
+def test_metal_ion_charge_delta_counts_uncounted_zinc(tmp_path):
+    pdb = tmp_path / "zn.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "CA", "ALA", "A", 1, "C")
+        + "TER\n"
+        + _pdb_hetatm(2, "ZN", "ZN", "B", 262, "Zn")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 2
+    assert report["applied_ion_count"] == 1
+    assert report["ions"][0]["resname"] == "ZN"
+    assert report["ions"][0]["kind"] == "metal_ion"
+
+
+def test_metal_ion_charge_delta_ignores_packmol_recognized_ions(tmp_path):
+    # packmol-memgen already counts CA/MG, so they contribute no extra delta.
+    pdb = tmp_path / "ca_mg.pdb"
+    pdb.write_text(
+        _pdb_hetatm(1, "CA", "CA", "A", 300, "Ca")
+        + "TER\n"
+        + _pdb_hetatm(2, "MG", "MG", "B", 301, "Mg")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 0
+
+
+def test_metal_ion_charge_delta_counts_deprotonated_cysteine(tmp_path):
+    # CYM is truly -1 but packmol-memgen counts it as neutral.
+    pdb = tmp_path / "cym.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "N", "CYM", "A", 5, "N")
+        + _pdb_atom(2, "CA", "CYM", "A", 5, "C")
+        + _pdb_atom(3, "SG", "CYM", "A", 5, "S")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == -1
+
+
+def test_metal_ion_charge_delta_combines_zinc_and_cym(tmp_path):
+    pdb = tmp_path / "zn_cym.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "N", "CYM", "A", 5, "N")
+        + _pdb_atom(2, "SG", "CYM", "A", 5, "S")
+        + "TER\n"
+        + _pdb_hetatm(3, "ZN", "ZN", "B", 262, "Zn")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    # +2 (Zn) + -1 (CYM) = +1
+    assert report["charge_pdb_delta"] == 1
+    assert report["applied_ion_count"] == 2
+
+
+def test_metal_ion_charge_delta_ignores_metal_inside_cofactor(tmp_path):
+    # A multi-atom residue (e.g. HEM) with an Fe atom is not a bare ion and
+    # must not be double-counted via the monoatomic ion path.
+    pdb = tmp_path / "hem.pdb"
+    pdb.write_text(
+        _pdb_hetatm(1, "FE", "HEM", "A", 155, "Fe")
+        + _pdb_hetatm(2, "NA", "HEM", "A", 155, "N")
+        + _pdb_hetatm(3, "C1A", "HEM", "A", 155, "C")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 0
 
 
 def test_solvate_structure_passes_auto_nucleic_charge_delta(

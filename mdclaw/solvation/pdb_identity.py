@@ -200,6 +200,101 @@ def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     }
 
 
+# Monoatomic ion residue names whose formal charge packmol-memgen already
+# accounts for during neutralization (see packmol_memgen/lib/utils.py `charged`).
+# For these, the solute charge is already counted, so they contribute no delta.
+_PACKMOL_RECOGNIZED_ION_CHARGES: dict[str, int] = {
+    "MG": 2,
+    "CA": 2,
+}
+
+# Non-monoatomic residues whose true formal charge packmol-memgen does not
+# recognize (its `charged` table only covers ASP/GLU/LYS/ARG/HIP and the
+# phospho variants). Deprotonated metal-coordinating cysteine (CYM) is the
+# common case: each CYM is truly -1 but packmol counts it as neutral, so the
+# system is left one charge too positive per CYM. Anionic-lipid head groups
+# (Lipid21 POPG head residue "PGR", POPS "PGR"/"PSER") are included so this
+# helper also corrects charged-lipid solutes when it runs on membrane inputs.
+# Values are (true_formal_charge - packmol_estimated_charge).
+_PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS: dict[str, int] = {
+    "CYM": -1,
+    "PGR": -1,
+    "PSER": -1,
+}
+
+
+def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
+    """Return the packmol-memgen charge delta for packmol-unrecognized charges.
+
+    packmol-memgen estimates the solute charge from a fixed residue-name table
+    that covers standard amino acids, nucleotides, and a few ions (MG, CA,
+    Na+, Cl-). Charged MD components it does not recognize therefore leave a
+    residual net charge after neutralization:
+
+    - Transition-metal / non-MG/CA ions kept as components (ZN, MN, FE, CO,
+      NI, CU, ...) are counted as neutral, so a catalytic Zn2+ leaves +2.
+    - Deprotonated metal-coordinating cysteine (CYM, truly -1) is counted as
+      neutral, so each CYM leaves +1.
+    - Anionic-lipid head groups (PGR/PSER, truly -1) are counted as neutral.
+
+    This sums ``true_formal_charge - packmol_estimate`` over every such
+    residue and returns it as a ``--charge_pdb_delta`` so neutralization adds
+    the missing counter-ions.
+    """
+    from mdclaw.metal._base import METAL_CHARGES
+
+    residues = _iter_pdb_residues(pdb_path)
+    ions: list[dict] = []
+    charge_delta = 0
+    for residue in residues:
+        resname = (residue.get("resname") or "").strip().upper()
+        atom_count = residue.get("atom_count", 0)
+
+        contribution: int | None = None
+        formal_charge: int | None = None
+        already_counted = 0
+        kind = None
+        # Monoatomic residues are treated as bare metal ions; this avoids
+        # misreading a metal atom that belongs to a larger cofactor residue.
+        if atom_count == 1 and resname in METAL_CHARGES:
+            formal_charge = int(METAL_CHARGES[resname])
+            already_counted = int(_PACKMOL_RECOGNIZED_ION_CHARGES.get(resname, 0))
+            contribution = formal_charge - already_counted
+            kind = "metal_ion"
+        elif resname in _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS:
+            contribution = int(_PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS[resname])
+            formal_charge = contribution
+            kind = "charged_residue"
+
+        if contribution is None:
+            continue
+
+        entry = {
+            "residue": _pdb_residue_label(residue),
+            "resname": resname,
+            "kind": kind,
+            "formal_charge": formal_charge,
+            "packmol_recognized_charge": already_counted,
+            "charge_pdb_delta": contribution,
+        }
+        ions.append(entry)
+        charge_delta += contribution
+
+    applied_ions = [ion for ion in ions if int(ion.get("charge_pdb_delta", 0)) != 0]
+    return {
+        "charge_pdb_delta": int(charge_delta),
+        "ions": ions,
+        "applied_ion_count": len(applied_ions),
+        "reason": (
+            "charges not counted by packmol-memgen: "
+            + ", ".join(f"{ion['resname']}({ion['charge_pdb_delta']:+d})"
+                        for ion in applied_ions)
+            if applied_ions
+            else "no uncounted metal/charged-residue correction needed"
+        ),
+    }
+
+
 def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
     """Restore solute PDB identity columns after packmol-memgen renumbering."""
     report = {

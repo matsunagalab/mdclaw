@@ -28,6 +28,7 @@ from mdclaw.solvation.constants import (
     _normalize_water_model_name,
 )
 from mdclaw.solvation.pdb_identity import (
+    _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
 )
@@ -476,12 +477,38 @@ def solvate_structure(
             "Could not evaluate automatic nucleic-acid charge_pdb_delta "
             f"for packmol-memgen: {type(exc).__name__}: {exc}"
         )
-    auto_charge_delta = int(auto_charge_delta_report.get("charge_pdb_delta", 0))
+    nucleic_charge_delta = int(auto_charge_delta_report.get("charge_pdb_delta", 0))
+
+    metal_charge_delta_report = {
+        "charge_pdb_delta": 0,
+        "ions": [],
+        "applied_ion_count": 0,
+        "reason": "not evaluated",
+    }
+    try:
+        metal_charge_delta_report = _auto_metal_ion_packmol_charge_pdb_delta(input_copy)
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            "Could not evaluate automatic metal-ion charge_pdb_delta "
+            f"for packmol-memgen: {type(exc).__name__}: {exc}"
+        )
+    metal_charge_delta = int(metal_charge_delta_report.get("charge_pdb_delta", 0))
+
+    auto_charge_delta = nucleic_charge_delta + metal_charge_delta
     auto_charge_delta_applied = bool(salt and auto_charge_delta)
+    _reasons = [
+        r for r in (
+            auto_charge_delta_report.get("reason"),
+            metal_charge_delta_report.get("reason"),
+        )
+        if r
+    ]
     result["auto_charge_pdb_delta"] = auto_charge_delta
     result["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
-    result["auto_charge_pdb_delta_reason"] = auto_charge_delta_report.get("reason")
+    result["auto_charge_pdb_delta_reason"] = "; ".join(_reasons) or None
     result["nucleic_charge_segments"] = auto_charge_delta_report.get("segments", [])
+    result["metal_ion_charge_delta"] = metal_charge_delta
+    result["metal_ion_charge_entries"] = metal_charge_delta_report.get("ions", [])
     result["parameters"]["auto_charge_pdb_delta"] = auto_charge_delta
     result["parameters"]["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
 
