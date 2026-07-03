@@ -1,0 +1,94 @@
+{
+  "capability_tags_extra": [
+    "membrane",
+    "ion_channel_membrane_protein",
+    "oligomeric_membrane_protein",
+    "structural_ion"
+  ],
+  "public_source": "PDB 1BL8",
+  "references": [
+    {
+      "source": "PDB 1BL8",
+      "url": "https://www.rcsb.org/structure/1BL8"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "membrane_regime_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "lipid_residue_names": [
+          "POPC",
+          "PC",
+          "PA",
+          "OL"
+        ],
+        "min_lipid_residues": 4,
+        "required_solvent_regime": "membrane",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "check_id": "potassium_channel_tetramer_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 4,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "pore_potassium_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "K": 2
+        },
+        "residue_aliases": {
+          "K": [
+            "K+",
+            "POT"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_potassium_channel_tetramer_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 4,
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "minimized_pore_potassium_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "K": 2
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "K": [
+            "K+",
+            "POT"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.4
+      }
+    ]
+  },
+  "task_id": "P39_prep_potassium_channel_membrane_1bl8",
+  "task_intent": "Oligomeric ion-channel membrane preparation: prepare the biological tetramer of the KcsA potassium channel from PDB 1BL8 embedded in a POPC lipid bilayer, retaining the deposited pore K+ ions and neutralizing the membrane system. This exercises an oligomeric alpha-helical membrane-channel system with functional pore ions, complementing the single-chain TMEM14A and beta-barrel OmpA membrane tasks."
+}

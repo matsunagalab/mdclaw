@@ -1,0 +1,66 @@
+{
+  "capability_tags_extra": [
+    "implicit_solvent",
+    "protein_peptide_complex",
+    "implicit_association"
+  ],
+  "public_source": "PDB 1YCR",
+  "references": [
+    {
+      "source": "PDB 1YCR",
+      "url": "https://www.rcsb.org/structure/1YCR"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "implicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "max_water_residues": 0,
+        "required_solvent_regime": "implicit",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.4
+      },
+      {
+        "check_id": "both_partners_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 2,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "no_explicit_water_box",
+        "check_type": "structure_component_rescan",
+        "max_residue_counts": {
+          "HOH": 0,
+          "WAT": 0
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_both_partners_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 2,
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.4
+      }
+    ]
+  },
+  "task_id": "P38_prep_implicit_complex_mdm2_p53_1ycr",
+  "task_intent": "Implicit-solvent complex preparation: prepare the MDM2-p53 transactivation-peptide complex from PDB 1YCR in implicit (generalized-Born) solvent, keeping both the MDM2 protein and the bound p53 peptide as two distinct chains and avoiding any explicit water box. This exercises implicit-solvent setup for an associated two-partner system rather than a single monomer."
+}

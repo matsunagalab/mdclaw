@@ -1,0 +1,65 @@
+{
+  "capability_tags_extra": [
+    "membrane",
+    "beta_barrel_membrane_protein"
+  ],
+  "public_source": "PDB 1BXW",
+  "references": [
+    {
+      "source": "PDB 1BXW",
+      "url": "https://www.rcsb.org/structure/1BXW"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "membrane_regime_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "lipid_residue_names": [
+          "POPC",
+          "PC",
+          "PA",
+          "OL"
+        ],
+        "min_lipid_residues": 4,
+        "required_solvent_regime": "membrane",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "check_id": "barrel_protein_retained",
+        "check_type": "assembly_identity_check",
+        "min_chain_count": 1,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "detergent_excluded",
+        "check_type": "unexpected_residue_rescan",
+        "ignored_residue_names": [
+          "POPC",
+          "PC",
+          "PA",
+          "OL"
+        ],
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      }
+    ]
+  },
+  "task_id": "P37_prep_beta_barrel_membrane_1bxw",
+  "task_intent": "Beta-barrel membrane protein preparation: prepare the transmembrane domain of outer-membrane protein A (OmpA) from PDB 1BXW embedded in a POPC lipid bilayer, excluding the crystallographic detergent (C8E), and neutralizing the system. This exercises membrane embedding for a beta-barrel architecture rather than an alpha-helical membrane protein."
+}

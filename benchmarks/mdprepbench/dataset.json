@@ -42,7 +42,13 @@
         "P31_prep_his_protonation_hip_t4l",
         "P32_prep_sidechain_completion_1csp",
         "P33_prep_physiological_nacl_ubiquitin",
-        "P34_prep_anionic_lipid_membrane_2lop"
+        "P34_prep_anionic_lipid_membrane_2lop",
+        "P35_prep_rna_structural_mg_1y26",
+        "P36_prep_protein_rna_complex_1a1t",
+        "P37_prep_beta_barrel_membrane_1bxw",
+        "P38_prep_implicit_complex_mdm2_p53_1ycr",
+        "P39_prep_potassium_channel_membrane_1bl8",
+        "P40_prep_tip3p_water_fidelity_2lzm"
       ]
     }
   },
@@ -69,7 +75,7 @@
   },
   "released": "2026-05-16",
   "schema_version": "1.0",
-  "task_count": 34,
+  "task_count": 40,
   "task_ids": [
     "P01_prep_simple_monomer_t4l",
     "P02_prep_1ake_chain_ap5",
@@ -104,6 +110,12 @@
     "P31_prep_his_protonation_hip_t4l",
     "P32_prep_sidechain_completion_1csp",
     "P33_prep_physiological_nacl_ubiquitin",
-    "P34_prep_anionic_lipid_membrane_2lop"
+    "P34_prep_anionic_lipid_membrane_2lop",
+    "P35_prep_rna_structural_mg_1y26",
+    "P36_prep_protein_rna_complex_1a1t",
+    "P37_prep_beta_barrel_membrane_1bxw",
+    "P38_prep_implicit_complex_mdm2_p53_1ycr",
+    "P39_prep_potassium_channel_membrane_1bl8",
+    "P40_prep_tip3p_water_fidelity_2lzm"
   ]
 }

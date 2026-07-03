@@ -56,6 +56,7 @@ from mdclaw.solvation._base import (
 )
 
 _PACKMOL_MEMGEN_VERSION_CACHE: Optional[str] = None
+_MEMEMBED_DROPPABLE_HETATM_RESNAMES = {"DUM", "HOH", "WAT", "SOL", "TIP3", "TIP4"}
 
 
 def _resolve_patch_builder_timeout(value: Optional[int]) -> int:
@@ -133,6 +134,101 @@ def _run_packmol_memgen_noninteractive(
     )
 
 
+def _pdb_xyz(line: str) -> Optional[tuple[float, float, float]]:
+    padded = line.ljust(80)
+    try:
+        return (
+            float(padded[30:38]),
+            float(padded[38:46]),
+            float(padded[46:54]),
+        )
+    except ValueError:
+        return None
+
+
+def _rewrite_pdb_xyz(line: str, xyz: tuple[float, float, float]) -> str:
+    padded = line.rstrip("\n").ljust(80)
+    x, y, z = xyz
+    return f"{padded[:30]}{x:8.3f}{y:8.3f}{z:8.3f}{padded[54:]}"
+
+
+def _retained_memembed_heterogen_lines(input_lines: list[str]) -> list[str]:
+    retained: list[str] = []
+    for line in input_lines:
+        if not line.startswith("HETATM"):
+            continue
+        resname = line[17:21].strip().upper()
+        if resname in _MEMEMBED_DROPPABLE_HETATM_RESNAMES:
+            continue
+        if _pdb_xyz(line) is None:
+            continue
+        retained.append(line)
+    return retained
+
+
+def _transform_heterogen_lines_like_memembed(
+    *,
+    input_lines: list[str],
+    oriented_lines: list[str],
+) -> tuple[list[str], list[str]]:
+    """Transform input HETATM solutes into MEMEMBED's oriented frame.
+
+    MEMEMBED orients protein atoms but may drop non-water HETATM solutes such
+    as crystallographic pore ions or bound cofactors.  Estimate the rigid-body
+    transform from input ATOM records to oriented ATOM records and apply it to
+    retained HETATM records.  If the transform cannot be inferred, return no
+    added records and a warning rather than appending wrongly oriented solutes.
+    """
+    heterogens = _retained_memembed_heterogen_lines(input_lines)
+    if not heterogens:
+        return [], []
+
+    src_lines = [line for line in input_lines if line.startswith("ATOM")]
+    dst_lines = [line for line in oriented_lines if line.startswith("ATOM")]
+    if len(src_lines) != len(dst_lines) or len(src_lines) < 3:
+        return [], [
+            "MEMEMBED dropped non-water HETATM solutes, but MDClaw could not "
+            "infer a rigid-body transform to restore them because input and "
+            "oriented ATOM counts differ"
+        ]
+
+    src_coords = [_pdb_xyz(line) for line in src_lines]
+    dst_coords = [_pdb_xyz(line) for line in dst_lines]
+    if any(coord is None for coord in src_coords + dst_coords):
+        return [], [
+            "MEMEMBED dropped non-water HETATM solutes, but MDClaw could not "
+            "restore them because some ATOM coordinates were unparsable"
+        ]
+
+    try:
+        import numpy as np
+
+        src = np.asarray(src_coords, dtype=float)
+        dst = np.asarray(dst_coords, dtype=float)
+        src_center = src.mean(axis=0)
+        dst_center = dst.mean(axis=0)
+        h = (src - src_center).T @ (dst - dst_center)
+        u, _s, vt = np.linalg.svd(h)
+        rotation = vt.T @ u.T
+        if np.linalg.det(rotation) < 0:
+            vt[-1, :] *= -1
+            rotation = vt.T @ u.T
+        transformed: list[str] = []
+        for line in heterogens:
+            coord = np.asarray(_pdb_xyz(line), dtype=float)
+            new_coord = tuple((coord - src_center) @ rotation + dst_center)
+            transformed.append(_rewrite_pdb_xyz(line, new_coord))
+    except Exception as exc:  # noqa: BLE001
+        return [], [
+            "MEMEMBED dropped non-water HETATM solutes, but MDClaw could not "
+            f"restore them: {type(exc).__name__}: {exc}"
+        ]
+
+    return transformed, [
+        f"restored {len(transformed)} non-water HETATM solute atom(s) dropped by MEMEMBED"
+    ]
+
+
 def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
     """Orient a protein into the membrane frame (normal = z) using MEMEMBED.
 
@@ -182,8 +278,16 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
 
     # Strip membrane dummy atoms so downstream sees only the oriented solute.
     cleaned = out_dir / "oriented_protein.pdb"
+    input_lines = Path(protein_pdb).read_text(
+        encoding="utf-8",
+        errors="ignore",
+    ).splitlines()
+    oriented_lines = raw_oriented.read_text(
+        encoding="utf-8",
+        errors="ignore",
+    ).splitlines()
     kept: list[str] = []
-    for line in raw_oriented.read_text(encoding="utf-8", errors="ignore").splitlines():
+    for line in oriented_lines:
         if line.startswith(("ATOM", "HETATM")):
             resname = line[17:21].strip().upper()
             if resname == "DUM":
@@ -193,6 +297,12 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
         result["code"] = "memembed_empty_output"
         result["errors"].append("memembed output had no solute atoms after cleanup")
         return result
+    restored_heterogens, restore_warnings = _transform_heterogen_lines_like_memembed(
+        input_lines=input_lines,
+        oriented_lines=oriented_lines,
+    )
+    kept.extend(restored_heterogens)
+    result["warnings"].extend(restore_warnings)
     cleaned.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
 
     result["success"] = True

@@ -151,9 +151,11 @@ signature, update the relevant section here and the matching skill examples.
   `run_minimization` + `run_equilibration`, called in non-node mode), cache it
   under a protein-size-independent fingerprint (composition + build defaults;
   the packmol-memgen version is excluded so patches are reusable across conda
-  and container environments), then orient the protein with
-  MEMEMBED, tile the patch to cover it, carve overlaps, and neutralize by
-  swapping bulk waters for ions. The cold build runs once per composition and is
+  and container environments), then orient the protein with MEMEMBED, restore
+  non-water HETATM solutes that MEMEMBED drops (e.g. pore ions/cofactors), tile
+  the patch to cover it, carve overlaps with periodic-boundary awareness, and
+  neutralize by swapping bulk waters for ions. The cold build runs once per
+  composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
   Patch cold-build topology generation disables Pablo CCD auto-download
   (`pablo_auto_download=False`) because the patch contains known local

@@ -98,6 +98,12 @@ deterministic check to the gate with `hard_fail: true`.
 | Missing side-chain reconstruction | P32 | `pdb_residue_state` (rebuilt Glu CG/CD/OE1/OE2 heavy atoms) |
 | Physiological NaCl concentration + neutrality | P33 | `ion_concentration_recompute` (0.15 M NaCl), `net_charge_check`, `structure_component_rescan` (Na/Cl) |
 | Anionic-lipid membrane + neutralization | P34 | `solvent_regime_rescan` (membrane), `structure_component_rescan` (POPC/POPG), `net_charge_check` |
+| RNA structural Mg2+ retention | P35 | `nucleic_content_rescan` (RNA aptamer), `structure_component_rescan` (Mg2+), `net_charge_check` |
+| Protein-RNA complex + zinc knuckles | P36 | `nucleic_content_rescan` (RNA), `assembly_identity_check`, `structure_component_rescan` (2x Zn2+), `net_charge_check` |
+| Beta-barrel membrane protein | P37 | `solvent_regime_rescan` (membrane), `assembly_identity_check`, `unexpected_residue_rescan` (detergent excluded), `net_charge_check` |
+| Implicit protein-peptide complex | P38 | `solvent_regime_rescan` (implicit), `assembly_identity_check` (two partners), `structure_component_rescan` (no explicit waters) |
+| Oligomeric potassium-channel membrane | P39 | `solvent_regime_rescan` (membrane), `assembly_identity_check` (tetramer), `structure_component_rescan` (pore K+), `net_charge_check` |
+| TIP3P water-model fidelity | P40 | `water_model_fingerprint` (TIP3P), `solvent_regime_rescan` (explicit), common topology/minimization checks |
 
 ## Capability axes
 
@@ -118,7 +124,8 @@ noted only as candidates for a later pass (adding tasks is out of scope here):
 
 - RNA + small-molecule ligand complexes (e.g. a riboswitch aptamer + ligand).
 - Non-standard / modified nucleotides (methylated DNA, modified RNA bases).
-- Alternate water-model families beyond OPC (TIP3P/TIP4P-Ew/SPC/E fingerprints).
+- Alternate water-model families beyond OPC/TIP3P (TIP4P-Ew/SPC/E
+  fingerprints).
 
 Protein–protein interface retention (P29), protein–nucleic complexes with
 structural metals (P30), and custom drug-like ligand GAFF/OpenFF

@@ -463,16 +463,31 @@ def _rewrite_line(
 def _protein_grid(
     protein_atoms: list[PDBAtom],
     cutoff: float,
+    box_lengths: Optional[tuple[float, float, float]] = None,
 ) -> dict[tuple[int, int, int], list[tuple[float, float, float]]]:
     grid: dict[tuple[int, int, int], list[tuple[float, float, float]]] = {}
     inv = 1.0 / cutoff
+    shifts = [(0.0, 0.0, 0.0)]
+    if box_lengths is not None:
+        lengths = tuple(float(value) for value in box_lengths)
+        if all(math.isfinite(value) and value > 0.0 for value in lengths):
+            shifts = [
+                (sx * lengths[0], sy * lengths[1], sz * lengths[2])
+                for sx in (-1.0, 0.0, 1.0)
+                for sy in (-1.0, 0.0, 1.0)
+                for sz in (-1.0, 0.0, 1.0)
+            ]
     for atom in protein_atoms:
-        cell = (
-            math.floor(atom.x * inv),
-            math.floor(atom.y * inv),
-            math.floor(atom.z * inv),
-        )
-        grid.setdefault(cell, []).append((atom.x, atom.y, atom.z))
+        for dx, dy, dz in shifts:
+            x = atom.x + dx
+            y = atom.y + dy
+            z = atom.z + dz
+            cell = (
+                math.floor(x * inv),
+                math.floor(y * inv),
+                math.floor(z * inv),
+            )
+            grid.setdefault(cell, []).append((x, y, z))
     return grid
 
 
@@ -1691,12 +1706,30 @@ def embed_with_membrane_patch_tiles(
         shifted.append((atom, _rewrite_line_coords(line, nx_, ny_, nz_), nx_, ny_, nz_))
         carve_keys.append(carve_key)
 
+    total_box = {
+        "box_a": nx * box_a,
+        "box_b": ny * box_b,
+        "box_c": box_c,
+        "alpha": 90.0,
+        "beta": 90.0,
+        "gamma": 90.0,
+        "is_cubic": False,
+    }
+
     # 5) Carve tiled molecules that overlap the protein. Removal is by whole
     # molecule (carve_key), so a Lipid21 lipid whose tail brushes the protein is
     # dropped together with its head instead of leaving an orphaned head whose
-    # external bonds can no longer be satisfied.
+    # external bonds can no longer be satisfied.  The check is PBC-aware because
+    # a membrane protein can sit close to a periodic boundary in z after
+    # orientation; direct Euclidean distance would miss lipid tails that clash
+    # through the nearest periodic image and then reappear after topology
+    # imaging.
     cutoff = max(float(carve_padding), 0.5)
-    grid = _protein_grid(protein_atoms, cutoff)
+    grid = _protein_grid(
+        protein_atoms,
+        cutoff,
+        box_lengths=(total_box["box_a"], total_box["box_b"], total_box["box_c"]),
+    )
     removed_groups: set[tuple] = set()
     for (atom, _line, x, y, z), carve_key in zip(shifted, carve_keys):
         if _near_protein(x, y, z, grid=grid, cutoff=cutoff):
@@ -1722,16 +1755,6 @@ def embed_with_membrane_patch_tiles(
             ],
             "warnings": warnings + patch.get("warnings", []),
         }
-
-    total_box = {
-        "box_a": nx * box_a,
-        "box_b": ny * box_b,
-        "box_c": box_c,
-        "alpha": 90.0,
-        "beta": 90.0,
-        "gamma": 90.0,
-        "is_cubic": False,
-    }
 
     # 6) Neutralize by swapping bulk waters for ions.
     neutralization = {"applied": False}

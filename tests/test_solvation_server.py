@@ -31,6 +31,34 @@ def _pdb_hetatm(serial, atom, resname, chain, resseq, element, x=0.0, y=0.0, z=0
     )
 
 
+def test_memembed_restore_transforms_dropped_nonwater_heterogens():
+    input_lines = [
+        _pdb_atom(1, "CA", "ALA", "A", 1, "C", x=0.0).rstrip(),
+        "ATOM      2  C   ALA A   1       1.000   0.000   0.000  1.00  0.00           C",
+        "ATOM      3  N   ALA A   1       0.000   1.000   0.000  1.00  0.00           N",
+        _pdb_hetatm(4, "K", "K", "E", 401, "K", x=0.0, y=0.0, z=1.0).rstrip(),
+        _pdb_hetatm(5, "O", "HOH", "W", 1, "O", x=5.0, y=5.0, z=5.0).rstrip(),
+    ]
+    oriented_lines = [
+        "ATOM      1  CA  ALA A   1      10.000   2.000   3.000  1.00  0.00           C",
+        "ATOM      2  C   ALA A   1      11.000   2.000   3.000  1.00  0.00           C",
+        "ATOM      3  N   ALA A   1      10.000   3.000   3.000  1.00  0.00           N",
+    ]
+
+    restored, warnings = solv_membrane._transform_heterogen_lines_like_memembed(
+        input_lines=input_lines,
+        oriented_lines=oriented_lines,
+    )
+
+    assert len(restored) == 1
+    assert restored[0].startswith("HETATM")
+    assert restored[0][17:21].strip() == "K"
+    assert float(restored[0][30:38]) == 10.0
+    assert float(restored[0][38:46]) == 2.0
+    assert float(restored[0][46:54]) == 4.0
+    assert warnings == ["restored 1 non-water HETATM solute atom(s) dropped by MEMEMBED"]
+
+
 def test_auto_nucleic_packmol_charge_delta_counts_standard_segments(tmp_path):
     pdb = tmp_path / "dna.pdb"
     lines = []
@@ -761,6 +789,33 @@ def test_validate_membrane_patch_quality_rejects_pbc_water_overlap(tmp_path):
     assert quality["water_oxygen_overlap_count"] == 1
     assert quality["min_water_oxygen_distance_angstrom"] < 0.1
     assert any("water O-O overlaps" in error for error in errors)
+
+
+def test_patch_tile_protein_grid_detects_periodic_boundary_contacts():
+    from mdclaw.solvation.patch_membrane import PDBAtom, _near_protein, _protein_grid
+
+    atom = PDBAtom(
+        line=(
+            "ATOM      1  CA  ALA A   1       0.000   0.000 -16.000"
+            "  1.00  0.00           C"
+        ),
+        index=0,
+        record="ATOM",
+        atom_name="CA",
+        resname="ALA",
+        chain_id="A",
+        resseq="1",
+        insertion_code="",
+        x=0.0,
+        y=0.0,
+        z=-16.0,
+    )
+
+    nonperiodic_grid = _protein_grid([atom], 3.0)
+    periodic_grid = _protein_grid([atom], 3.0, box_lengths=(100.0, 100.0, 77.0))
+
+    assert not _near_protein(0.0, 0.0, 63.0, grid=nonperiodic_grid, cutoff=3.0)
+    assert _near_protein(0.0, 0.0, 63.0, grid=periodic_grid, cutoff=3.0)
 
 
 def test_lookup_cached_patch_skips_invalid_geometry_cache(tmp_path):

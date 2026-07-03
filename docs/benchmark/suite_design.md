@@ -30,7 +30,7 @@ This keeps experimental truth as the anchor while avoiding a brittle
 
 ## Suite A: Preparation Workflow Battery
 
-The current prep implementation has **34 tasks, P01-P34**. Each task exposes
+The current prep implementation has **40 tasks, P01-P40**. Each task exposes
 only `prompt.md` and `submission_contract.json` to the evaluated agent. The
 scorer keeps `task.json`, reference structures, hidden ligand poses, expected
 component truth, and any truth/rescan material private.
@@ -156,9 +156,15 @@ be promoted to this gate per task with `hard_fail: true`.
 | P32 | Missing side-chain reconstruction | PDB 1CSP | Task: prepare CspB and rebuild truncated surface-glutamate side chains (Glu3/21/36/66 missing CG/CD/OE1/OE2). | A:3 and A:66 GLU with full CG/CD/OE1/OE2 (prepared/minimized), common topology/minimization checks. | 2 |
 | P33 | Physiological NaCl concentration | PDB 1UBQ | Task: build an explicit-solvent ubiquitin system at 0.15 M NaCl, net neutral. | explicit solvent, NA/CL retained (topology/minimized), 0.15 M NaCl recomputed from ion count and box volume, net neutral, common topology/minimization checks. | 1 |
 | P34 | Anionic-lipid membrane | PDB 2LOP | Task: embed TMEM14A model 1 in a mixed POPC:POPG membrane with anionic lipids and neutralize. | membrane regime, POPC/POPG species present (topology/minimized), net neutral, common topology/minimization checks. | 2 |
+| P35 | RNA structural Mg2+ retention | PDB 1Y26 | Task: prepare the adenine riboswitch aptamer RNA while retaining structural Mg2+ and excluding the adenine ligand. | RNA aptamer retained, Mg2+ retained (prepared/minimized), net neutral, common topology/minimization checks. | 2 |
+| P36 | Protein-RNA complex with zinc knuckles | PDB 1A1T | Task: prepare model 1 of HIV-1 NCp7 bound to SL3 RNA, retaining both RNA and Zn2+ zinc-knuckle ions. | RNA retained, protein/RNA partners retained, two Zn2+ retained, net neutral, common topology/minimization checks. | 2 |
+| P37 | Beta-barrel membrane protein | PDB 1BXW | Task: embed OmpA in POPC, excluding crystallographic detergent. | membrane regime, beta-barrel protein retained, detergent excluded, net neutral, common topology/minimization checks. | 1 |
+| P38 | Implicit protein-peptide complex | PDB 1YCR | Task: prepare the MDM2-p53 peptide complex in implicit solvent. | implicit regime, two partners retained, no explicit water box, common topology/minimization checks. | 2 |
+| P39 | Oligomeric potassium-channel membrane | PDB 1BL8 | Task: embed biological tetrameric KcsA in POPC while retaining deposited pore K+ ions. | membrane regime, four protein chains retained, pore K+ retained (prepared/minimized), net neutral, common topology/minimization checks. | 1 |
+| P40 | TIP3P water-model fidelity | PDB 2LZM | Task: honor an ff14SB + TIP3P explicit-solvent request. | explicit solvent, TIP3P water fingerprint, no unrequested nonstandard residues, common topology/minimization checks. | 1 |
 
 Priority now indicates the preferred order for real MDClaw baseline smoke runs
-and further curation. All 34 tasks are part of the active prep battery.
+and further curation. All 40 tasks are part of the active prep battery.
 
 ### Coverage Refinements
 
@@ -331,11 +337,13 @@ agent tasks.
 
 Implemented:
 
-- P01-P34 task IDs are part of `MDPrepBench-v0.1`. P26-P34 extend coverage to
+- P01-P40 task IDs are part of `MDPrepBench-v0.1`. P26-P40 extend coverage to
   zinc and non-zinc multi-metal cofactors, custom drug-like ligand
   parameterization, protein-protein and protein-DNA complexes, histidine
   protonation, missing side-chain reconstruction, physiological NaCl, and
-  anionic-lipid membranes.
+  anionic-lipid membranes, RNA metal-ion systems, protein-RNA complexes,
+  beta-barrel and oligomeric channel membrane proteins, implicit complexes, and
+  TIP3P water-model fidelity.
 - The common prep contract now includes topology artifacts and minimization
   evidence.
 - P17 is the standard DNA duplex/neutralization task; modified DNA/RNA is not

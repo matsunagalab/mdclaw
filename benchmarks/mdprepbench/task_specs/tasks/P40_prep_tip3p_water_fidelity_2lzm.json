@@ -1,0 +1,55 @@
+{
+  "capability_tags_extra": [
+    "forcefield_selection",
+    "water_model",
+    "non_opc_water"
+  ],
+  "public_source": "PDB 2LZM",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "explicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "min_water_residues": 1,
+        "required_solvent_regime": "explicit",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "check_id": "water_model_fingerprint_matches_tip3p",
+        "check_type": "water_model_fingerprint",
+        "required_water_model": "TIP3P",
+        "sites_per_water": 3,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.7
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      }
+    ]
+  },
+  "task_id": "P40_prep_tip3p_water_fidelity_2lzm",
+  "task_intent": "Water-model fidelity (non-OPC): honor a supported user-specified force-field/water pair using ff14SB with the 3-site TIP3P water model, rather than silently falling back to a different water model such as OPC."
+}

@@ -83,7 +83,7 @@ def test_list_benchmark_tasks_surfaces_family_and_intent_summary():
 
     assert result["success"], result
     assert result["families"]
-    assert result["task_count"] == 34
+    assert result["task_count"] == 40
 
     for task in result["tasks"]:
         assert task["family"]
@@ -633,6 +633,39 @@ def test_p24_scores_assembly_from_coordinates_and_chain_count():
     minimized_chains = checks["minimized_assembly_four_chains"]
     assert minimized_chains["structure_manifest_path"] == "outputs.minimized_structure"
     assert minimized_chains["exact_chain_count"] == 4
+
+
+def test_p39_scores_oligomeric_channel_membrane_and_pore_ions():
+    task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P39_prep_potassium_channel_membrane_1bl8"
+            / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    membrane = checks["membrane_regime_rescanned"]
+    assert membrane["check_type"] == "solvent_regime_rescan"
+    assert membrane["required_solvent_regime"] == "membrane"
+    assert membrane["topology_manifest_path"] == "outputs.topology"
+
+    prepared_chains = checks["potassium_channel_tetramer_retained"]
+    assert prepared_chains["check_type"] == "assembly_identity_check"
+    assert prepared_chains["exact_chain_count"] == 4
+
+    prepared_k = checks["pore_potassium_retained"]
+    assert prepared_k["check_type"] == "structure_component_rescan"
+    assert prepared_k["min_residue_counts"] == {"K": 2}
+    assert "POT" in prepared_k["residue_aliases"]["K"]
+
+    minimized_k = checks["minimized_pore_potassium_retained"]
+    assert minimized_k["check_type"] == "minimized_structure_component_rescan"
+    assert minimized_k["min_residue_counts"] == {"K": 2}
 
 
 def test_coordinate_reference_truth_files_are_mdtraj_loadable():
