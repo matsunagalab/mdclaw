@@ -97,6 +97,42 @@ def test_load_topology_falls_back_on_unknown_residue(tmp_path):
     assert result.topology.getNumAtoms() == 2
 
 
+def test_load_topology_can_disable_and_restore_pablo_auto_download(
+    tmp_path,
+    monkeypatch,
+):
+    """Offline callers must not leave Pablo's process-global CCD cache mutated."""
+    import openff.pablo as pablo
+
+    pdb = tmp_path / "fallback.pdb"
+    pdb.write_text(textwrap.dedent("""\
+        ATOM      1  N   XXX A   1       0.000   0.000   0.000  1.00  0.00           N
+        ATOM      2  C   XXX A   1       1.000   0.000   0.000  1.00  0.00           C
+        END
+        """))
+
+    seen: dict[str, bool] = {}
+
+    def fake_topology_from_pdb(*_args, **_kwargs):
+        seen["auto_download"] = bool(pablo.STD_CCD_CACHE.auto_download)
+        raise RuntimeError("forced fallback")
+
+    previous = pablo.STD_CCD_CACHE.auto_download
+    pablo.STD_CCD_CACHE.auto_download = True
+    monkeypatch.setattr(pablo, "topology_from_pdb", fake_topology_from_pdb)
+    try:
+        result = tp.load_topology(pdb, auto_download=False)
+        restored = bool(pablo.STD_CCD_CACHE.auto_download)
+    finally:
+        pablo.STD_CCD_CACHE.auto_download = previous
+
+    assert result.used_pablo is False
+    assert result.auto_download is False
+    assert seen["auto_download"] is False
+    # The helper restores Pablo's process-global setting before returning.
+    assert restored is True
+
+
 def test_build_modaa_residue_definitions_returns_definitions():
     defs = tp.build_modaa_residue_definitions(
         [("BNZ", "c1ccccc1")],  # benzene as a stand-in

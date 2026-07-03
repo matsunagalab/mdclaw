@@ -592,6 +592,7 @@ def _run_openmmforcefields_build(
     implicit_solvent: Optional[str] = None,
     extra_xml: Optional[list[str]] = None,
     extra_smiles: Optional[list[Tuple[str, str]]] = None,
+    pablo_auto_download: bool = True,
     stage_callback: Optional[Callable[[str], None]] = None,
     minimization_report_file: Optional[Path] = None,
     minimize_max_iterations: int = 10,
@@ -908,7 +909,9 @@ def _run_openmmforcefields_build(
 
     _stage("pablo_load")
     pablo_result = _topology_pablo.load_topology(
-        sanitized_input, extra_smiles=pablo_smiles
+        sanitized_input,
+        extra_smiles=pablo_smiles,
+        auto_download=pablo_auto_download,
     )
     for warning in pablo_result.warnings:
         _record_demotable_warning(warning)
@@ -1728,6 +1731,11 @@ def _run_openmmforcefields_build(
             "includes_restraints": False,
         },
         "addExtraParticles": True,
+        "pablo": {
+            "used": bool(pablo_result.used_pablo),
+            "auto_download": bool(pablo_result.auto_download),
+            "guardrail_codes": list(pablo_result.guardrail_codes),
+        },
         "manual_bonds": {
             "disulfides": list(disulfide_bonds or []),
             "glycam": glycam_bond_plan if has_explicit_glycam_plan else None,

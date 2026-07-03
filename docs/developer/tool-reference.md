@@ -155,6 +155,12 @@ signature, update the relevant section here and the matching skill examples.
   MEMEMBED, tile the patch to cover it, carve overlaps, and neutralize by
   swapping bulk waters for ions. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
+  Patch cold-build topology generation disables Pablo CCD auto-download
+  (`pablo_auto_download=False`) because the patch contains known local
+  Lipid21/water/ion chemistry and should not block on network fetches. The
+  cached patch PDB is exported from the equilibrated `state.xml`; the state
+  periodic box is authoritative, and the final cache validation rejects
+  CRYST1/manifest/box mismatches plus PBC close-contact overlaps.
   `membrane_backend="packmol-memgen"` runs the legacy full-box packing path
   (bounded adaptive Packmol as a 4-lane parallel race; set
   `packmol_race_lanes=1` for sequential retries). `membrane_backend="auto"`
@@ -184,6 +190,10 @@ signature, update the relevant section here and the matching skill examples.
   `system.glycam_bond_plan.json` and `system.glycam_normalization.json` while
   applying GLYCAM bonds and glycan-only hydrogen completion inside the topo
   node.
+  `pablo_auto_download` defaults to `True` for general prepared structures so
+  Pablo can fetch missing CCD definitions; set it to `False` only for known
+  local/offline topology loads where PDBFile fallback plus template-bond
+  patching is preferred to a network wait.
   Implicit solvent: `implicit_solvent="HCT" / "OBC1" / "OBC2" / "GBn" /
   "GBn2"` (case-insensitive; `gbneck2` / `igb1`–`igb8` aliases). The
   matching `implicit/*.xml` is added to the SystemGenerator bundle so
@@ -210,7 +220,9 @@ signature, update the relevant section here and the matching skill examples.
   `None` and the run-side topology guard cannot validate the build vs
   runtime match; the user owns XML correctness, GB-force presence, and
   build/run consistency. Out-of-version checks (e.g. `GB99dms.xml`
-  needs OpenMM ≥ 8.0) still fire via existing guards.
+  needs OpenMM ≥ 8.0) still fire via existing guards. Like
+  `build_amber_system`, this builder accepts `pablo_auto_download=False` for
+  known local/offline topology loads.
 
 ## `simulation/` (registry name `md_simulation`)
 

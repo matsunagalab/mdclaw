@@ -149,6 +149,7 @@ def build_openmm_system(
     rigid_water: bool = True,
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
+    pablo_auto_download: bool = True,
     minimize: bool = True,
     minimize_max_iterations: int = 10,
     output_name: str = "system",
@@ -205,6 +206,10 @@ def build_openmm_system(
              shipped XML is also in ``forcefield_xml``; for purely
              custom GB XML, leave the metadata as ``None`` and accept
              that the run-side topology guard cannot match.
+        pablo_auto_download: Allow OpenFF Pablo to auto-download missing CCD
+            definitions during topology loading. Pass ``False`` for known
+            local/offline systems where PDBFile fallback is preferable to a
+            network wait.
         minimize: Run a LocalEnergyMinimizer pass before serializing the
             state. Disable for debugging.
         minimize_max_iterations: L-BFGS iteration cap for the minimization
@@ -235,6 +240,7 @@ def build_openmm_system(
             "rigid_water": rigid_water,
             "hmr": hmr,
             "implicit_solvent": None,    # filled in after canonicalization
+            "pablo_auto_download": bool(pablo_auto_download),
             "minimize": minimize,
         },
     }
@@ -279,6 +285,7 @@ def build_openmm_system(
                 "rigid_water": rigid_water,
                 "hmr": hmr,
                 "implicit_solvent": implicit_solvent,
+                "pablo_auto_download": pablo_auto_download,
                 "output_name": output_name,
             },
         )
@@ -444,7 +451,9 @@ def build_openmm_system(
         extra_smiles_pairs.append((str(item[0]), str(item[1])))
 
     pablo_result = _topology_pablo.load_topology(
-        pdb_path, extra_smiles=extra_smiles_pairs
+        pdb_path,
+        extra_smiles=extra_smiles_pairs,
+        auto_download=pablo_auto_download,
     )
     result["warnings"].extend(pablo_result.warnings)
     omm_topology = pablo_result.topology
@@ -710,6 +719,11 @@ def build_openmm_system(
             "includes_restraints": False,
         },
         "addExtraParticles": True,
+        "pablo": {
+            "used": bool(pablo_result.used_pablo),
+            "auto_download": bool(pablo_result.auto_download),
+            "guardrail_codes": list(pablo_result.guardrail_codes),
+        },
     }
     try:
         import openmm
@@ -770,4 +784,3 @@ def build_openmm_system(
         num_atoms, num_residues, forcefield_xml,
     )
     return result
-

@@ -165,6 +165,7 @@ def build_amber_system(
     is_membrane: Optional[bool] = None,
     hmr: bool = True,
     implicit_solvent: Optional[str] = None,
+    pablo_auto_download: bool = True,
     output_name: str = "system",
     output_dir: Optional[str] = None,
     minimize_max_iterations: int = 10,
@@ -248,6 +249,12 @@ def build_amber_system(
                           ``forcefield="ff14SB"`` is auto-substituted to
                           ``"ff14SBonlysc"`` (the GBneck2-tuned variant)
                           when ``implicit_solvent`` is set.
+        pablo_auto_download: Allow OpenFF Pablo to auto-download missing CCD
+                     residue definitions while loading the topology. Keep the
+                     default ``True`` for general prepared structures; known
+                     local systems such as membrane patch caches can pass
+                     ``False`` to avoid blocking on network fetches and use
+                     the PDBFile fallback when Pablo lacks a local definition.
         output_name: Stem for the artifact filenames; emits
                      ``{output_name}.system.xml``,
                      ``{output_name}.topology.pdb``,
@@ -329,6 +336,7 @@ def build_amber_system(
                 "is_membrane": is_membrane,
                 "hmr": hmr,
                 "implicit_solvent": implicit_solvent,
+                "pablo_auto_download": pablo_auto_download,
                 "output_name": output_name,
             },
             pdb_file=pdb_file,
@@ -591,7 +599,8 @@ def build_amber_system(
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
             "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
-            "metal_count": len(metal_params) if metal_params else 0
+            "metal_count": len(metal_params) if metal_params else 0,
+            "pablo_auto_download": bool(pablo_auto_download),
         },
         "statistics": {},
         "errors": [],
@@ -1357,6 +1366,7 @@ def build_amber_system(
             glycam_normalization_file=out_dir / f"{output_name}.glycam_normalization.json",
             hmr=hmr,
             implicit_solvent=canonical_implicit_solvent,
+            pablo_auto_download=bool(pablo_auto_download),
             minimize_max_iterations=minimize_max_iterations,
             stage_callback=(
                 (lambda stage: _record_topology_build_stage(job_dir, node_id, stage))

@@ -49,6 +49,11 @@ from mdclaw.solvation.constants import (
 
 CallableRunner = Callable[..., Any]
 
+PATCH_BOX_TOLERANCE_ANGSTROM = 0.05
+PATCH_MIN_INTERMOLECULE_HEAVY_DISTANCE_ANGSTROM = 1.0
+PATCH_MIN_WATER_OXYGEN_DISTANCE_ANGSTROM = 1.8
+PATCH_VALIDATION_EXAMPLE_LIMIT = 5
+
 
 # ---------------------------------------------------------------------------
 # PDB atom model + geometry helpers (moved from the removed membrane_cache.py)
@@ -119,6 +124,307 @@ def _bounds(atoms: list[PDBAtom]) -> tuple[float, float, float, float, float, fl
     ys = [atom.y for atom in atoms]
     zs = [atom.z for atom in atoms]
     return min(xs), max(xs), min(ys), max(ys), min(zs), max(zs)
+
+
+def _atom_element(atom: PDBAtom) -> str:
+    padded = atom.line.ljust(80)
+    element = padded[76:78].strip()
+    if element:
+        return element.upper()
+    letters = "".join(ch for ch in atom.atom_name if ch.isalpha())
+    if not letters:
+        return ""
+    if len(letters) >= 2 and letters[:2].upper() in {"CL", "NA", "MG", "CA", "ZN", "FE"}:
+        return letters[:2].upper()
+    return letters[0].upper()
+
+
+def _is_heavy_patch_atom(atom: PDBAtom) -> bool:
+    element = _atom_element(atom)
+    return bool(element) and element not in {"H", "D", "M", "EP", "LP"}
+
+
+def _is_water_oxygen(atom: PDBAtom) -> bool:
+    return (
+        atom.resname in PATCH_WATER_RESNAMES
+        and _atom_element(atom) == "O"
+        and atom.atom_name.upper() in {"O", "OW", "OH2"}
+    )
+
+
+def _atom_ref(atom: PDBAtom) -> str:
+    serial = atom.line[6:11].strip() or str(atom.index + 1)
+    chain = atom.chain_id or "_"
+    return f"{serial}:{atom.atom_name}/{atom.resname}{atom.resseq}{chain}"
+
+
+def _box_lengths(box_dims: dict[str, Any]) -> Optional[tuple[float, float, float]]:
+    try:
+        box = (
+            float(box_dims["box_a"]),
+            float(box_dims["box_b"]),
+            float(box_dims["box_c"]),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not all(math.isfinite(value) and value > 0.0 for value in box):
+        return None
+    return box
+
+
+def _box_mismatch_errors(
+    *,
+    pdb_box: Optional[dict[str, Any]],
+    declared_box: Optional[dict[str, Any]],
+    declared_label: str,
+) -> list[str]:
+    if not pdb_box or not declared_box:
+        return []
+    errors: list[str] = []
+    for key in ("box_a", "box_b", "box_c"):
+        try:
+            lhs = float(pdb_box[key])
+            rhs = float(declared_box[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if abs(lhs - rhs) > PATCH_BOX_TOLERANCE_ANGSTROM:
+            errors.append(
+                "membrane patch CRYST1 box conflicts with "
+                f"{declared_label}: {key}={lhs:.3f} A vs {rhs:.3f} A"
+            )
+    return errors
+
+
+def _patch_quality_box(
+    path: Path,
+    *,
+    manifest: Optional[dict[str, Any]] = None,
+    box_dims: Optional[dict[str, Any]] = None,
+) -> tuple[Optional[dict[str, Any]], list[str]]:
+    errors: list[str] = []
+    pdb_box = _extract_cryst1_box(path)
+    manifest_box = (manifest or {}).get("box_dimensions")
+    if isinstance(manifest_box, dict):
+        errors.extend(
+            _box_mismatch_errors(
+                pdb_box=pdb_box,
+                declared_box=manifest_box,
+                declared_label="manifest box_dimensions",
+            )
+        )
+    else:
+        manifest_box = None
+    if box_dims is not None:
+        errors.extend(
+            _box_mismatch_errors(
+                pdb_box=pdb_box,
+                declared_box=box_dims,
+                declared_label="requested box_dimensions",
+            )
+        )
+    resolved = pdb_box or box_dims or manifest_box
+    if not resolved:
+        errors.append("membrane patch PDB has no usable CRYST1/box_dimensions")
+        return None, errors
+    if _box_lengths(resolved) is None:
+        errors.append("membrane patch box_dimensions are invalid")
+        return None, errors
+    return resolved, errors
+
+
+def _minimum_image_delta(delta: float, box_length: float) -> float:
+    return delta - round(delta / box_length) * box_length
+
+
+def _canonical_coord(value: float, box_length: float) -> float:
+    coord = value % box_length
+    # Avoid occasionally placing a rounded value exactly at the upper edge.
+    return 0.0 if math.isclose(coord, box_length) else coord
+
+
+def _patch_geometry_report(
+    atoms: list[PDBAtom],
+    *,
+    box_dims: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]]:
+    box = _box_lengths(box_dims)
+    if box is None:
+        return {}, ["membrane patch box_dimensions are invalid"]
+
+    mol_ids = _patch_molecule_ids(atoms)
+    cutoff = max(
+        PATCH_MIN_INTERMOLECULE_HEAVY_DISTANCE_ANGSTROM,
+        PATCH_MIN_WATER_OXYGEN_DISTANCE_ANGSTROM,
+    )
+    n_cells = tuple(max(1, int(math.ceil(length / cutoff))) for length in box)
+    bins: dict[tuple[int, int, int], list[int]] = {}
+    records: list[dict[str, Any]] = []
+    for atom_index, atom in enumerate(atoms):
+        if not _is_heavy_patch_atom(atom):
+            continue
+        x = _canonical_coord(atom.x, box[0])
+        y = _canonical_coord(atom.y, box[1])
+        z = _canonical_coord(atom.z, box[2])
+        cell = (
+            min(n_cells[0] - 1, int(math.floor(x / cutoff))),
+            min(n_cells[1] - 1, int(math.floor(y / cutoff))),
+            min(n_cells[2] - 1, int(math.floor(z / cutoff))),
+        )
+        record = {
+            "atom": atom,
+            "atom_index": atom_index,
+            "mol_id": mol_ids[atom_index],
+            "is_water_oxygen": _is_water_oxygen(atom),
+        }
+        records.append(record)
+        bins.setdefault(cell, []).append(len(records) - 1)
+
+    min_heavy = math.inf
+    min_water_oxygen = math.inf
+    heavy_overlaps: list[tuple[float, PDBAtom, PDBAtom]] = []
+    water_overlaps: list[tuple[float, PDBAtom, PDBAtom]] = []
+    seen: set[tuple[int, int]] = set()
+    for cell, indices in bins.items():
+        for dx_cell in (-1, 0, 1):
+            for dy_cell in (-1, 0, 1):
+                for dz_cell in (-1, 0, 1):
+                    neighbor = (
+                        (cell[0] + dx_cell) % n_cells[0],
+                        (cell[1] + dy_cell) % n_cells[1],
+                        (cell[2] + dz_cell) % n_cells[2],
+                    )
+                    for left_index in indices:
+                        left = records[left_index]
+                        left_atom = left["atom"]
+                        for right_index in bins.get(neighbor, []):
+                            if right_index <= left_index:
+                                continue
+                            pair_key = (left_index, right_index)
+                            if pair_key in seen:
+                                continue
+                            seen.add(pair_key)
+                            right = records[right_index]
+                            if left["mol_id"] == right["mol_id"]:
+                                continue
+                            right_atom = right["atom"]
+                            dx = _minimum_image_delta(left_atom.x - right_atom.x, box[0])
+                            dy = _minimum_image_delta(left_atom.y - right_atom.y, box[1])
+                            dz = _minimum_image_delta(left_atom.z - right_atom.z, box[2])
+                            dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+                            min_heavy = min(min_heavy, dist)
+                            both_water_oxygen = (
+                                bool(left["is_water_oxygen"])
+                                and bool(right["is_water_oxygen"])
+                            )
+                            if both_water_oxygen:
+                                min_water_oxygen = min(min_water_oxygen, dist)
+                                if dist < PATCH_MIN_WATER_OXYGEN_DISTANCE_ANGSTROM:
+                                    water_overlaps.append((dist, left_atom, right_atom))
+                            elif dist < PATCH_MIN_INTERMOLECULE_HEAVY_DISTANCE_ANGSTROM:
+                                heavy_overlaps.append((dist, left_atom, right_atom))
+
+    water_overlaps.sort(key=lambda item: item[0])
+    heavy_overlaps.sort(key=lambda item: item[0])
+    errors: list[str] = []
+    if water_overlaps:
+        examples = [
+            f"{_atom_ref(a)}--{_atom_ref(b)} at {dist:.3f} A"
+            for dist, a, b in water_overlaps[:PATCH_VALIDATION_EXAMPLE_LIMIT]
+        ]
+        errors.append(
+            "membrane patch has intermolecular water O-O overlaps under PBC: "
+            f"{len(water_overlaps)} pair(s), minimum "
+            f"{water_overlaps[0][0]:.3f} A "
+            f"(< {PATCH_MIN_WATER_OXYGEN_DISTANCE_ANGSTROM:.1f} A); "
+            f"examples={examples}"
+        )
+    if heavy_overlaps:
+        examples = [
+            f"{_atom_ref(a)}--{_atom_ref(b)} at {dist:.3f} A"
+            for dist, a, b in heavy_overlaps[:PATCH_VALIDATION_EXAMPLE_LIMIT]
+        ]
+        errors.append(
+            "membrane patch has catastrophic intermolecular heavy-atom "
+            f"overlaps under PBC: {len(heavy_overlaps)} pair(s), minimum "
+            f"{heavy_overlaps[0][0]:.3f} A "
+            f"(< {PATCH_MIN_INTERMOLECULE_HEAVY_DISTANCE_ANGSTROM:.1f} A); "
+            f"examples={examples}"
+        )
+
+    report = {
+        "atom_count": len(atoms),
+        "heavy_atom_count": len(records),
+        "min_inter_molecule_heavy_distance_angstrom": (
+            None if math.isinf(min_heavy) else round(min_heavy, 4)
+        ),
+        "min_water_oxygen_distance_angstrom": (
+            None if math.isinf(min_water_oxygen) else round(min_water_oxygen, 4)
+        ),
+        "water_oxygen_overlap_count": len(water_overlaps),
+        "heavy_atom_overlap_count": len(heavy_overlaps),
+        "min_water_oxygen_threshold_angstrom": PATCH_MIN_WATER_OXYGEN_DISTANCE_ANGSTROM,
+        "min_heavy_atom_threshold_angstrom": PATCH_MIN_INTERMOLECULE_HEAVY_DISTANCE_ANGSTROM,
+    }
+    return report, errors
+
+
+def validate_membrane_patch_quality(
+    path: Path,
+    *,
+    lipids: Optional[str] = None,
+    box_dims: Optional[dict[str, Any]] = None,
+    manifest: Optional[dict[str, Any]] = None,
+    check_geometry: bool = True,
+) -> tuple[bool, list[str], dict[str, Any]]:
+    """Validate a reusable patch artifact before caching or tiling it.
+
+    The quality gate deliberately checks geometry under periodic boundary
+    conditions.  A patch that is fine as an unwrapped trajectory frame can still
+    become physically impossible once cached as a compact tile; those artifacts
+    must be rejected before they poison every protein-specific membrane build.
+    """
+    _lines, atoms = _parse_pdb_atoms(path)
+    errors: list[str] = []
+    if not atoms:
+        return False, ["membrane patch PDB has no atom records"], {"atom_count": 0}
+    if any(
+        not (math.isfinite(atom.x) and math.isfinite(atom.y) and math.isfinite(atom.z))
+        for atom in atoms
+    ):
+        errors.append("membrane patch PDB contains non-finite coordinates")
+
+    requested_lipids = lipids
+    if requested_lipids is None:
+        params = (manifest or {}).get("parameters")
+        if isinstance(params, dict):
+            requested_lipids = params.get("lipids")
+    if requested_lipids:
+        resnames = {atom.resname for atom in atoms}
+        missing = [
+            lipid
+            for lipid, aliases in _requested_lipid_resnames(str(requested_lipids)).items()
+            if not resnames.intersection(aliases)
+        ]
+        if missing:
+            errors.append(
+                "membrane patch PDB is missing requested lipid residues for: "
+                + ", ".join(missing)
+            )
+
+    resolved_box, box_errors = _patch_quality_box(
+        path, manifest=manifest, box_dims=box_dims
+    )
+    errors.extend(box_errors)
+    report: dict[str, Any] = {"atom_count": len(atoms)}
+    if resolved_box and check_geometry:
+        geometry_report, geometry_errors = _patch_geometry_report(
+            atoms, box_dims=resolved_box
+        )
+        report.update(geometry_report)
+        errors.extend(geometry_errors)
+    if resolved_box:
+        report["box_dimensions"] = resolved_box
+    return not errors, errors, report
 
 
 def _translated_line(atom: PDBAtom, dx: float, dy: float, dz: float) -> str:
@@ -575,30 +881,45 @@ def probe_patch_cache(
         equil_pressure_bar=float(equil_params.get("pressure_bar", 0.0)),
         forcefield=forcefield,
     )
+    invalid_cache_warnings: list[str] = []
     hit = _lookup_cached_patch(
         fingerprint,
         writable_root=resolve_patch_cache_root(cache_dir),
         bundled_roots=resolve_bundled_patch_cache_roots(),
+        invalid_cache_warnings=invalid_cache_warnings,
     )
     return {
         "hit": hit is not None,
         "source": (hit or {}).get("cache_source"),
         "fingerprint": fingerprint,
+        "warnings": invalid_cache_warnings,
     }
 
 
-def _patch_manifest_valid(entry_dir: Path) -> tuple[bool, Optional[dict[str, Any]]]:
+def _patch_manifest_valid(
+    entry_dir: Path,
+) -> tuple[bool, Optional[dict[str, Any]], list[str]]:
     manifest = _read_json(entry_dir / "manifest.json")
     patch = entry_dir / "patch.pdb"
     if not manifest or not patch.exists():
-        return False, manifest
+        return False, manifest, []
     expected = manifest.get("patch_sha256")
     if not expected:
-        return False, manifest
+        return False, manifest, ["membrane patch manifest lacks patch_sha256"]
     try:
-        return sha256_file(patch) == expected, manifest
+        if sha256_file(patch) != expected:
+            return False, manifest, ["membrane patch sha256 does not match manifest"]
     except OSError:
-        return False, manifest
+        return False, manifest, ["membrane patch sha256 could not be computed"]
+    valid, errors, quality = validate_membrane_patch_quality(
+        patch,
+        manifest=manifest,
+    )
+    if valid:
+        if isinstance(manifest, dict):
+            manifest.setdefault("patch_quality", quality)
+        return True, manifest, []
+    return False, manifest, errors
 
 
 def _lookup_cached_patch(
@@ -606,10 +927,19 @@ def _lookup_cached_patch(
     *,
     writable_root: Path,
     bundled_roots: list[Path],
+    invalid_cache_warnings: Optional[list[str]] = None,
 ) -> Optional[dict[str, Any]]:
     """Return cache hit metadata from writable then bundled roots, or None."""
+    def _record_invalid(source: str, entry: Path, errors: list[str]) -> None:
+        if invalid_cache_warnings is None or not errors:
+            return
+        joined = "; ".join(errors[:PATCH_VALIDATION_EXAMPLE_LIMIT])
+        invalid_cache_warnings.append(
+            f"Skipped invalid {source} membrane patch cache {entry}: {joined}"
+        )
+
     writable_entry = patch_cache_entry_dir(writable_root, fingerprint)
-    valid, manifest = _patch_manifest_valid(writable_entry)
+    valid, manifest, errors = _patch_manifest_valid(writable_entry)
     if valid:
         return {
             "cache_source": "writable",
@@ -618,9 +948,10 @@ def _lookup_cached_patch(
             "box_dimensions": (manifest or {}).get("box_dimensions", {}),
             "manifest": manifest,
         }
+    _record_invalid("writable", writable_entry, errors)
     for bundled in bundled_roots:
         entry = patch_cache_entry_dir(bundled, fingerprint)
-        valid, manifest = _patch_manifest_valid(entry)
+        valid, manifest, errors = _patch_manifest_valid(entry)
         if valid:
             return {
                 "cache_source": "bundled",
@@ -629,6 +960,7 @@ def _lookup_cached_patch(
                 "box_dimensions": (manifest or {}).get("box_dimensions", {}),
                 "manifest": manifest,
             }
+        _record_invalid("bundled", entry, errors)
     return None
 
 
@@ -638,21 +970,8 @@ def _lookup_cached_patch(
 
 
 def _patch_pdb_valid_for_request(path: Path, lipids: str) -> tuple[bool, list[str]]:
-    _lines, atoms = _parse_pdb_atoms(path)
-    if not atoms:
-        return False, ["membrane patch PDB has no atom records"]
-    resnames = {atom.resname for atom in atoms}
-    missing = [
-        lipid
-        for lipid, aliases in _requested_lipid_resnames(lipids).items()
-        if not resnames.intersection(aliases)
-    ]
-    if missing:
-        return False, [
-            "membrane patch PDB is missing requested lipid residues for: "
-            + ", ".join(missing)
-        ]
-    return True, []
+    valid, errors, _quality = validate_membrane_patch_quality(path, lipids=lipids)
+    return valid, errors
 
 
 # ---------------------------------------------------------------------------
@@ -758,11 +1077,13 @@ def ensure_membrane_patch(
     writable_root = resolve_patch_cache_root(cache_dir)
     bundled_roots = resolve_bundled_patch_cache_roots()
 
+    cache_warnings: list[str] = []
     if cache_mode != "refresh":
         hit = _lookup_cached_patch(
             fingerprint,
             writable_root=writable_root,
             bundled_roots=bundled_roots,
+            invalid_cache_warnings=cache_warnings,
         )
         if hit is not None:
             return {
@@ -771,7 +1092,7 @@ def ensure_membrane_patch(
                 "equilibration_ran": False,
                 "fingerprint": fingerprint,
                 "parameters": payload,
-                "warnings": [],
+                "warnings": cache_warnings,
                 "errors": [],
                 **hit,
             }
@@ -783,7 +1104,7 @@ def ensure_membrane_patch(
             "cache_hit": False,
             "fingerprint": fingerprint,
             "parameters": payload,
-            "warnings": [],
+            "warnings": cache_warnings,
             "errors": ["No valid cached membrane patch was found (read-only cache mode)"],
         }
 
@@ -794,7 +1115,7 @@ def ensure_membrane_patch(
             "cache_hit": False,
             "fingerprint": fingerprint,
             "parameters": payload,
-            "warnings": [],
+            "warnings": cache_warnings,
             "errors": ["packmol-memgen is required to build a membrane patch cache miss"],
         }
 
@@ -803,7 +1124,7 @@ def ensure_membrane_patch(
 
     with file_lock(entry_dir / ".lock"):
         # Re-check inside the lock: another process may have built it.
-        valid, manifest = _patch_manifest_valid(entry_dir)
+        valid, manifest, recheck_errors = _patch_manifest_valid(entry_dir)
         if valid and cache_mode != "refresh":
             return {
                 "success": True,
@@ -816,9 +1137,14 @@ def ensure_membrane_patch(
                 "manifest": manifest,
                 "fingerprint": fingerprint,
                 "parameters": payload,
-                "warnings": [],
+                "warnings": cache_warnings,
                 "errors": [],
             }
+        if recheck_errors:
+            cache_warnings.append(
+                "Skipped invalid writable membrane patch cache after lock: "
+                + "; ".join(recheck_errors[:PATCH_VALIDATION_EXAMPLE_LIMIT])
+            )
 
         build_dir = entry_dir / f".build.{os.getpid()}"
         if build_dir.exists():
@@ -827,7 +1153,7 @@ def ensure_membrane_patch(
 
         packed_file = build_dir / "packed.pdb"
         packlog = build_dir / "patch_packmol"
-        warnings: list[str] = []
+        warnings: list[str] = list(cache_warnings)
         effective_saltcon = saltcon
 
         def _invoke_packmol(salt_conc: float) -> tuple[Any, Optional[Exception]]:
@@ -907,7 +1233,18 @@ def ensure_membrane_patch(
                 "errors": ["packmol-memgen did not write the membrane patch PDB"],
             }
 
-        valid_patch, validation_errors = _patch_pdb_valid_for_request(packed_file, lipids)
+        box_dims = _extract_cryst1_box(packed_file) or _derived_box_dimensions(
+            xy_side=patch_side,
+            dist_wat=dist_wat,
+            leaflet=leaflet,
+        )
+
+        valid_patch, validation_errors, packed_quality = validate_membrane_patch_quality(
+            packed_file,
+            lipids=lipids,
+            box_dims=box_dims,
+            check_geometry=False,
+        )
         if not valid_patch:
             shutil.rmtree(build_dir, ignore_errors=True)
             return {
@@ -917,14 +1254,11 @@ def ensure_membrane_patch(
                 "fingerprint": fingerprint,
                 "parameters": payload,
                 "warnings": [],
-                "errors": validation_errors,
+                "errors": [
+                    "packed membrane patch failed quality validation: " + err
+                    for err in validation_errors
+                ],
             }
-
-        box_dims = _extract_cryst1_box(packed_file) or _derived_box_dimensions(
-            xy_side=patch_side,
-            dist_wat=dist_wat,
-            leaflet=leaflet,
-        )
 
         equilibration_ran = False
         final_patch = packed_file
@@ -953,8 +1287,29 @@ def ensure_membrane_patch(
             # size) and image whole molecules back into one cell. Equilibration
             # emits unwrapped coordinates; caching them as-is makes tiling leave
             # gaps/overlaps, so wrap before storing the patch.
-            eq_box = _extract_cryst1_box(final_patch) or eq_result.get("box_dimensions") or box_dims
+            eq_box = eq_result.get("box_dimensions") or _extract_cryst1_box(final_patch) or box_dims
             box_dims = eq_box
+            valid_eq_patch, eq_validation_errors, eq_quality = validate_membrane_patch_quality(
+                final_patch,
+                lipids=lipids,
+                box_dims=box_dims,
+            )
+            if not valid_eq_patch:
+                shutil.rmtree(build_dir, ignore_errors=True)
+                return {
+                    "success": False,
+                    "code": "membrane_patch_build_invalid_output",
+                    "cache_hit": False,
+                    "fingerprint": fingerprint,
+                    "parameters": payload,
+                    "warnings": warnings,
+                    "errors": [
+                        "equilibrated membrane patch failed quality validation: "
+                        + err
+                        for err in eq_validation_errors
+                    ],
+                    "patch_quality": eq_quality,
+                }
             wrapped_patch = build_dir / "patch_wrapped.pdb"
             wrap_patch_pdb(final_patch, wrapped_patch, box_dims=box_dims)
             final_patch = wrapped_patch
@@ -963,6 +1318,29 @@ def ensure_membrane_patch(
                 "membrane patch cached without equilibration; tiling seams are "
                 "not relaxed (interim mode)."
             )
+
+        valid_final_patch, final_validation_errors, final_quality = (
+            validate_membrane_patch_quality(
+                final_patch,
+                lipids=lipids,
+                box_dims=box_dims,
+            )
+        )
+        if not valid_final_patch:
+            shutil.rmtree(build_dir, ignore_errors=True)
+            return {
+                "success": False,
+                "code": "membrane_patch_build_invalid_output",
+                "cache_hit": False,
+                "fingerprint": fingerprint,
+                "parameters": payload,
+                "warnings": warnings,
+                "errors": [
+                    "final membrane patch failed quality validation: " + err
+                    for err in final_validation_errors
+                ],
+                "patch_quality": final_quality,
+            }
 
         patch_sha = sha256_file(final_patch)
         stdout_tail, stderr_tail = _process_stdout_stderr(proc_result)
@@ -983,6 +1361,8 @@ def ensure_membrane_patch(
             "stdout_tail": stdout_tail,
             "stderr_tail": stderr_tail,
             "warnings": warnings,
+            "patch_quality": final_quality,
+            "packed_patch_quality": packed_quality,
         }
 
         shutil.copy2(final_patch, entry_dir / "patch.pdb")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -628,7 +629,8 @@ def _patch_pdb_text(lipids_by_group, waters=8, box=(40.0, 40.0, 81.0)):
         # Bulk waters well outside the membrane core (|z| large).
         z = 30.0 if widx % 2 == 0 else -30.0
         x = float((widx % 4) * 5)
-        lines.append(_pdb_hetatm(serial, "O", "HOH", "W", widx, "O", x=x, y=0.0, z=z).rstrip())
+        y = float((widx // 4) * 5)
+        lines.append(_pdb_hetatm(serial, "O", "HOH", "W", widx, "O", x=x, y=y, z=z).rstrip())
         serial += 1
     lines.append("END")
     return "\n".join(lines) + "\n"
@@ -739,6 +741,238 @@ def test_wrap_patch_pdb_images_whole_molecules_into_box(tmp_path):
     assert maxy - miny < 40.0
 
 
+def test_validate_membrane_patch_quality_rejects_pbc_water_overlap(tmp_path):
+    from mdclaw.solvation.patch_membrane import validate_membrane_patch_quality
+
+    pdb = (
+        "CRYST1   42.000   42.000   83.000  90.00  90.00  90.00 P 1           1\n"
+        + _pdb_hetatm(1, "P", "PC", "A", 1, "P", x=12.0, y=12.0, z=40.0)
+        # Two distinct waters that are nearly identical under minimum image.
+        + _pdb_hetatm(2, "O", "HOH", "B", 1, "O", x=-9.496, y=5.496, z=27.322)
+        + _pdb_hetatm(3, "O", "HOH", "A", 1, "O", x=-9.570, y=47.476, z=27.371)
+        + "END\n"
+    )
+    path = tmp_path / "bad_patch.pdb"
+    path.write_text(pdb)
+
+    valid, errors, quality = validate_membrane_patch_quality(path, lipids="POPC")
+
+    assert valid is False
+    assert quality["water_oxygen_overlap_count"] == 1
+    assert quality["min_water_oxygen_distance_angstrom"] < 0.1
+    assert any("water O-O overlaps" in error for error in errors)
+
+
+def test_lookup_cached_patch_skips_invalid_geometry_cache(tmp_path):
+    from mdclaw._common import sha256_file
+    from mdclaw.solvation.patch_membrane import (
+        _lookup_cached_patch,
+        patch_cache_entry_dir,
+    )
+
+    fingerprint = "a" * 64
+    root = tmp_path / "cache"
+    entry = patch_cache_entry_dir(root, fingerprint)
+    entry.mkdir(parents=True)
+    patch = entry / "patch.pdb"
+    patch.write_text(
+        "CRYST1   42.000   42.000   83.000  90.00  90.00  90.00 P 1           1\n"
+        + _pdb_hetatm(1, "P", "PC", "A", 1, "P", x=12.0, y=12.0, z=40.0)
+        + _pdb_hetatm(2, "O", "HOH", "B", 1, "O", x=1.0, y=1.0, z=1.0)
+        + _pdb_hetatm(3, "O", "HOH", "C", 1, "O", x=1.1, y=1.0, z=1.0)
+        + "END\n"
+    )
+    (entry / "manifest.json").write_text(
+        json.dumps(
+            {
+                "patch_sha256": sha256_file(patch),
+                "box_dimensions": {
+                    "box_a": 42.0,
+                    "box_b": 42.0,
+                    "box_c": 83.0,
+                    "alpha": 90.0,
+                    "beta": 90.0,
+                    "gamma": 90.0,
+                    "is_cubic": False,
+                },
+                "parameters": {"lipids": "POPC"},
+            }
+        )
+    )
+    warnings = []
+
+    hit = _lookup_cached_patch(
+        fingerprint,
+        writable_root=root,
+        bundled_roots=[],
+        invalid_cache_warnings=warnings,
+    )
+
+    assert hit is None
+    assert warnings
+    assert "Skipped invalid writable membrane patch cache" in warnings[0]
+
+
+def test_ensure_membrane_patch_rejects_equilibrated_box_mismatch(tmp_path):
+    from mdclaw.solvation.patch_membrane import ensure_membrane_patch
+
+    lipids_by_group = [("PA", "P", "P"), ("PC", "N", "N"), ("OL", "C1", "C")]
+
+    def fake_packmol(args, cwd, timeout):
+        output_path = Path(args[args.index("-o") + 1])
+        output_path.write_text(_patch_pdb_text(lipids_by_group, box=(40.0, 40.0, 81.0)))
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    def fake_equilibrate(patch_pdb, box_dims, out_dir, equil_params):
+        out = Path(out_dir) / "equilibrated.pdb"
+        out.write_text(_patch_pdb_text(lipids_by_group, box=(42.0, 42.0, 83.0)))
+        return {
+            "success": True,
+            "equilibrated_pdb": str(out),
+            "box_dimensions": box_dims,
+            "warnings": [],
+            "errors": [],
+        }
+
+    result = ensure_membrane_patch(
+        lipids="POPC",
+        ratio="1",
+        water_model="opc",
+        salt=True,
+        salt_c="Na+",
+        salt_a="Cl-",
+        saltcon=0.15,
+        dist_wat=17.5,
+        leaflet=23.0,
+        patch_side=40.0,
+        nloop=20,
+        nloop_all=100,
+        equil_params={
+            "nvt_ns": 0.2,
+            "npt_ns": 0.2,
+            "temperature_k": 303.15,
+            "pressure_bar": 1.0,
+        },
+        forcefield="ff19SB",
+        cache_mode="refresh",
+        cache_dir=str(tmp_path / "cache"),
+        packmol_memgen_runner=fake_packmol,
+        packmol_path=None,
+        equilibrate_fn=fake_equilibrate,
+        timeout=30,
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "membrane_patch_build_invalid_output"
+    assert any("CRYST1 box conflicts" in error for error in result["errors"])
+
+
+def test_equilibrate_membrane_patch_disables_pablo_auto_download(
+    tmp_path,
+    monkeypatch,
+):
+    captured: dict = {}
+    patch = tmp_path / "patch.pdb"
+    patch.write_text(_patch_pdb_text([("PA", "P", "P"), ("PC", "N", "N")]))
+    state = tmp_path / "state.xml"
+    state.write_text("<State/>")
+
+    def fake_build_amber_system(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "system_xml": str(tmp_path / "system.xml"),
+            "topology_pdb": str(tmp_path / "topology.pdb"),
+            "state_xml": str(tmp_path / "initial_state.xml"),
+            "warnings": [],
+        }
+
+    def fake_minimize(**_kwargs):
+        return {"success": True, "state_file": str(state), "warnings": []}
+
+    def fake_equilibrate(**_kwargs):
+        return {
+            "success": True,
+            "state_file": str(state),
+            "final_structure": str(tmp_path / "final.pdb"),
+            "warnings": [],
+        }
+
+    def fake_export(**_kwargs):
+        return {
+            "success": True,
+            "output_pdb": str(tmp_path / "exported.pdb"),
+            "box_dimensions": {
+                "box_a": 42.0,
+                "box_b": 42.0,
+                "box_c": 83.0,
+                "alpha": 90.0,
+                "beta": 90.0,
+                "gamma": 90.0,
+                "is_cubic": False,
+            },
+            "warnings": [],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(
+        "mdclaw.amber.build_system.build_amber_system",
+        fake_build_amber_system,
+    )
+    monkeypatch.setattr(
+        "mdclaw.simulation.minimize.run_minimization",
+        fake_minimize,
+    )
+    monkeypatch.setattr(
+        "mdclaw.simulation.equilibrate.run_equilibration",
+        fake_equilibrate,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation.membrane._export_patch_pdb_from_state",
+        fake_export,
+    )
+
+    result = solv_membrane._equilibrate_membrane_patch(
+        patch_pdb=patch,
+        box_dims={"box_a": 40.0, "box_b": 40.0, "box_c": 81.0},
+        out_dir=tmp_path / "build",
+        equil_params={},
+    )
+
+    assert result["success"] is True
+    assert captured["pablo_auto_download"] is False
+
+
+def test_compute_membrane_net_charge_disables_pablo_auto_download(
+    tmp_path,
+    monkeypatch,
+):
+    captured: dict = {}
+    pdb = tmp_path / "assembled.pdb"
+    pdb.write_text(_patch_pdb_text([("PA", "P", "P"), ("PC", "N", "N")]))
+
+    def fake_build_amber_system(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": False,
+            "code": "fake_build_failed",
+            "errors": ["stop before OpenMM XML deserialize"],
+        }
+
+    monkeypatch.setattr(
+        "mdclaw.amber.build_system.build_amber_system",
+        fake_build_amber_system,
+    )
+
+    result = solv_membrane._compute_membrane_net_charge(
+        pdb_file=pdb,
+        box_dims={"box_a": 40.0, "box_b": 40.0, "box_c": 81.0},
+    )
+
+    assert result["success"] is False
+    assert captured["pablo_auto_download"] is False
+
+
 def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeypatch):
     input_pdb = tmp_path / "input.pdb"
     input_pdb.write_text(
@@ -764,6 +998,10 @@ def test_embed_in_membrane_patch_tile_builds_then_reuses_cache(tmp_path, monkeyp
         lambda: True,
     )
     monkeypatch.setattr("mdclaw.solvation.membrane._run_packmol_memgen_noninteractive", fake_run)
+    monkeypatch.setattr(
+        "mdclaw.solvation.patch_membrane.resolve_bundled_patch_cache_roots",
+        lambda: [],
+    )
     # Skip the internal OpenMM equilibration and exact charge build in unit tests;
     # cache the packed patch directly and skip protein-charge neutralization.
     monkeypatch.setattr("mdclaw.solvation.membrane._equilibrate_membrane_patch", None)
@@ -919,6 +1157,10 @@ def test_embed_in_membrane_patch_tile_read_only_miss_falls_back(tmp_path, monkey
     )
     monkeypatch.setattr(
         "mdclaw.solvation._base.packmol_memgen_wrapper.run", fake_full_run
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation.patch_membrane.resolve_bundled_patch_cache_roots",
+        lambda: [],
     )
 
     result = embed_in_membrane(

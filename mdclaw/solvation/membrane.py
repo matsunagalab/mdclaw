@@ -201,6 +201,121 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
     return result
 
 
+def _vector_to_nm_tuple(vector) -> tuple[float, float, float]:
+    from openmm.unit import nanometer
+
+    if hasattr(vector, "value_in_unit"):
+        value = vector.value_in_unit(nanometer)
+        return float(value[0]), float(value[1]), float(value[2])
+    values: list[float] = []
+    for component in vector:
+        if hasattr(component, "value_in_unit"):
+            component = component.value_in_unit(nanometer)
+        values.append(float(component))
+    return values[0], values[1], values[2]
+
+
+def _box_dimensions_from_openmm_vectors(box_vectors) -> dict:
+    a = _vector_to_nm_tuple(box_vectors[0])
+    b = _vector_to_nm_tuple(box_vectors[1])
+    c = _vector_to_nm_tuple(box_vectors[2])
+
+    def _norm(v: tuple[float, float, float]) -> float:
+        return (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) ** 0.5
+
+    def _angle(u: tuple[float, float, float], v: tuple[float, float, float]) -> float:
+        import math
+
+        denom = _norm(u) * _norm(v)
+        if denom <= 0:
+            return 90.0
+        cos_theta = (u[0] * v[0] + u[1] * v[1] + u[2] * v[2]) / denom
+        cos_theta = max(-1.0, min(1.0, cos_theta))
+        return math.degrees(math.acos(cos_theta))
+
+    box_a = _norm(a) * 10.0
+    box_b = _norm(b) * 10.0
+    box_c = _norm(c) * 10.0
+    return {
+        "box_a": box_a,
+        "box_b": box_b,
+        "box_c": box_c,
+        "alpha": _angle(b, c),
+        "beta": _angle(a, c),
+        "gamma": _angle(a, b),
+        "is_cubic": False,
+    }
+
+
+def _export_patch_pdb_from_state(
+    *,
+    topology_pdb: str,
+    state_xml: str,
+    output_pdb: Path,
+) -> dict:
+    """Write cache patch coordinates from the authoritative OpenMM state.
+
+    ``run_equilibration`` also writes a human-readable final PDB, but the cache
+    artifact must be driven by the saved state.xml: it carries the positions and
+    periodic box vectors that downstream tiling will actually assume.
+    """
+    try:
+        import io
+
+        from openmm import XmlSerializer
+        from openmm.app import PDBFile
+
+        from mdclaw.structure.pdb_utils import (
+            preserve_long_resnames_in_pdb_text,
+            restore_resnames_from_source_pdb,
+        )
+
+        pdb = PDBFile(str(topology_pdb))
+        state = XmlSerializer.deserialize(Path(state_xml).read_text())
+        positions = state.getPositions()
+        if positions is None:
+            return {
+                "success": False,
+                "code": "membrane_patch_state_missing_positions",
+                "errors": ["patch equilibration state.xml has no positions"],
+                "warnings": [],
+            }
+        box_vectors = state.getPeriodicBoxVectors()
+        if box_vectors is None:
+            return {
+                "success": False,
+                "code": "membrane_patch_state_missing_box",
+                "errors": ["patch equilibration state.xml has no periodic box vectors"],
+                "warnings": [],
+            }
+        box_dimensions = _box_dimensions_from_openmm_vectors(box_vectors)
+        pdb.topology.setPeriodicBoxVectors(box_vectors)
+
+        buffer = io.StringIO()
+        PDBFile.writeFile(pdb.topology, positions, buffer, keepIds=True)
+        text = restore_resnames_from_source_pdb(buffer.getvalue(), topology_pdb)
+        if text is None:
+            text = preserve_long_resnames_in_pdb_text(buffer.getvalue(), pdb.topology)
+        output_pdb.write_text(text, encoding="utf-8")
+        return {
+            "success": True,
+            "output_pdb": str(output_pdb),
+            "box_dimensions": box_dimensions,
+            "warnings": [],
+            "errors": [],
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "success": False,
+            "code": "membrane_patch_state_export_failed",
+            "errors": [
+                "patch state export failed: "
+                f"{type(exc).__name__}: {exc}"
+            ],
+            "warnings": [],
+        }
+
+
 def _equilibrate_membrane_patch(
     *,
     patch_pdb: Path,
@@ -234,6 +349,7 @@ def _equilibrate_membrane_patch(
         water_model=water_model,
         is_membrane=True,
         hmr=True,
+        pablo_auto_download=False,
         output_dir=str(out_dir / "patch_topo"),
     )
     if not topo.get("success") or not topo.get("system_xml"):
@@ -274,19 +390,33 @@ def _equilibrate_membrane_patch(
         hmr=True,
         output_dir=str(out_dir / "patch_eq"),
     )
-    if not equilibrated.get("success") or not equilibrated.get("final_structure"):
+    if not equilibrated.get("success") or not equilibrated.get("state_file"):
         return {
             "success": False,
             "code": equilibrated.get("code", "membrane_patch_equilibration_failed"),
             "errors": equilibrated.get("errors", ["patch equilibration failed"]),
             "warnings": equilibrated.get("warnings", []),
         }
+    state_export = _export_patch_pdb_from_state(
+        topology_pdb=topo["topology_pdb"],
+        state_xml=equilibrated["state_file"],
+        output_pdb=out_dir / "patch_equilibrated_state.pdb",
+    )
+    if not state_export.get("success"):
+        return {
+            "success": False,
+            "code": state_export.get("code", "membrane_patch_state_export_failed"),
+            "errors": state_export.get("errors", ["patch state export failed"]),
+            "warnings": equilibrated.get("warnings", []) + state_export.get("warnings", []),
+        }
 
     return {
         "success": True,
-        "equilibrated_pdb": equilibrated["final_structure"],
-        "box_dimensions": box_dims,
-        "warnings": equilibrated.get("warnings", []),
+        "equilibrated_pdb": state_export["output_pdb"],
+        "box_dimensions": state_export["box_dimensions"],
+        "display_equilibrated_pdb": equilibrated.get("final_structure"),
+        "state_file": equilibrated["state_file"],
+        "warnings": equilibrated.get("warnings", []) + state_export.get("warnings", []),
         "errors": [],
     }
 
@@ -315,6 +445,7 @@ def _compute_membrane_net_charge(*, pdb_file: Path, box_dims: dict) -> dict:
                 water_model="opc",
                 is_membrane=True,
                 hmr=True,
+                pablo_auto_download=False,
                 output_dir=tmp,
             )
             if not built.get("success") or not built.get("system_xml"):
@@ -2021,4 +2152,3 @@ def list_available_lipids() -> dict:
     }
     
     return result
-

@@ -2042,6 +2042,7 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             captured["implicit_solvent"] = kwargs.get("implicit_solvent")
             captured["water_model"] = kwargs.get("water_model")
             captured["pdb_path"] = kwargs.get("pdb_path")
+            captured["pablo_auto_download"] = kwargs.get("pablo_auto_download")
             kwargs["system_xml_file"].write_text("<System/>")
             kwargs["topology_pdb_file"].write_text("REMARK fake\nEND\n")
             kwargs["state_xml_file"].write_text("<State/>")
@@ -2126,6 +2127,34 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         assert result["success"] is True
         assert captured["hmr"] is True
         assert captured["implicit_solvent"] is None
+
+    def test_build_amber_system_passes_pablo_auto_download_to_helper(
+        self, tmp_path
+    ):
+        """Offline/local topology builds can disable Pablo CCD fetches."""
+        from unittest.mock import patch
+        from mdclaw.amber.build_system import build_amber_system
+
+        pdb = tmp_path / "input.pdb"
+        pdb.write_text(
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\nEND\n"
+        )
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                pablo_auto_download=False,
+                output_dir=str(tmp_path / "topo"),
+            )
+        assert result["success"] is True
+        assert captured["pablo_auto_download"] is False
+        assert result["parameters"]["pablo_auto_download"] is False
 
     def test_build_amber_system_rejects_unknown_implicit_model(self, tmp_path):
         """Unknown implicit-solvent names fail-fast with a structured code so

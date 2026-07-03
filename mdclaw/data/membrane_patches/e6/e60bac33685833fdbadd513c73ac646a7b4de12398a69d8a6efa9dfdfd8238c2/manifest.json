@@ -2,16 +2,30 @@
   "box_dimensions": {
     "alpha": 90.0,
     "beta": 90.0,
-    "box_a": 42.0,
-    "box_b": 42.0,
-    "box_c": 83.0,
+    "box_a": 39.447687307266534,
+    "box_b": 39.447687307266534,
+    "box_c": 78.35844364741081,
     "gamma": 90.0,
     "is_cubic": false
   },
   "builder": "packmol-memgen+equilibrate",
   "builder_exit_code": 0,
+  "effective_saltcon": 0.15,
   "equilibration_ran": true,
   "fingerprint": "e60bac33685833fdbadd513c73ac646a7b4de12398a69d8a6efa9dfdfd8238c2",
+  "packed_patch_quality": {
+    "atom_count": 12856,
+    "box_dimensions": {
+      "alpha": 90.0,
+      "beta": 90.0,
+      "box_a": 40.0,
+      "box_b": 40.0,
+      "box_c": 81.0,
+      "gamma": 90.0,
+      "is_cubic": false
+    }
+  },
+  "packmol_memgen_version": "2025.1.29",
   "parameters": {
     "dist_wat": 17.5,
     "equil_npt_ns": 0.2,
@@ -34,11 +48,30 @@
     "water_model": "opc"
   },
   "patch_pdb": "patch.pdb",
-  "patch_sha256": "e4f8572d1cad5fb2df319b5be02bac60468759c7e5dba487280301f12d28a737",
+  "patch_quality": {
+    "atom_count": 14722,
+    "box_dimensions": {
+      "alpha": 90.0,
+      "beta": 90.0,
+      "box_a": 39.448,
+      "box_b": 39.448,
+      "box_c": 78.358,
+      "gamma": 90.0,
+      "is_cubic": false
+    },
+    "heavy_atom_count": 4716,
+    "heavy_atom_overlap_count": 0,
+    "min_heavy_atom_threshold_angstrom": 1.0,
+    "min_inter_molecule_heavy_distance_angstrom": 2.1891,
+    "min_water_oxygen_distance_angstrom": 2.5432,
+    "min_water_oxygen_threshold_angstrom": 1.8,
+    "water_oxygen_overlap_count": 0
+  },
+  "patch_sha256": "16c5bd54d3934777582d7de93d6b54a9dd7756c865db608f74f0f29aa5b91165",
   "schema_version": 2,
-  "stderr_tail": "PMEMD not found. Setting path to SANDER\n\n\n _____           _                    _\n|  __ \\         | |                  | |\n| |__) |_ _  ___| | ___ __ ___   ___ | |\n|  ___/ _` |/ __| |/ / '_ ` _ \\ / _ \\| |\n| |  | (_| | (__|   <| | | | | | (_) | |\n|_|   \\__,_|\\___|_|\\_\\_| |_| |_|\\___/|_|\n                                         ___\n                  /\\/\\   ___ _ __ ___   / _ \\___ _ __\n                 /    \\ / _ \\ '_ ` _ \\ / /_\\/ _ \\ '_ \\ \n                / /\\/\\ \\  __/ | | | | / /_ \\  __/ | | |\n                \\/    \\/\\___|_| |_| |_\\____/\\___|_| |_| \n\n\n###############################################################\nStephan Schott-Verdugo 2016-11-07        VERSION: 2025.1.29\nGenerated at CPCLab at Heinrich Heine University Duesseldorf\n      &      CBCLab at Forschungszentrum Juelich\n###############################################################\n\n--verbose for details of the packing process\n\n     Information for packing:\n    \n     Input PDB(s)                     = None     \n     Output PDB                       = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/b7/b758137a805b8d33783c65a25cf8ca3cdfd878138ca50823c47b57c72ba8c589/.build.91294/packed.pdb\n     Packmol output and log prefix    = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/b7/b758137a805b8d33783c65a25cf8ca3cdfd878138ca50823c47b57c72ba8c589/.build.91294/patch_packmol\n     Lipids                           = ['POPE'] \n     Lipid ratio                      = ['1']    \n     Solvents                         = WAT      \n     Solvent ratio                    = 1        \n     Salt concentration            (M)= 0.15     \n     Distance to boundaries        (A)= 15.0     \n     Minimum water distance        (A)= 17.5     \n     Packmol loops                    = 20       \n     Packmol loops for All-together   = 100      \n\nRunning Packmol...\nTransforming to AMBER\n#Packing process finished. Check your final structure, particularly for lipids inserted in proteins, protein tunnels or piercing rings!#\n",
+  "stderr_tail": "PMEMD not found. Setting path to SANDER\n\n\n _____           _                    _\n|  __ \\         | |                  | |\n| |__) |_ _  ___| | ___ __ ___   ___ | |\n|  ___/ _` |/ __| |/ / '_ ` _ \\ / _ \\| |\n| |  | (_| | (__|   <| | | | | | (_) | |\n|_|   \\__,_|\\___|_|\\_\\_| |_| |_|\\___/|_|\n                                         ___\n                  /\\/\\   ___ _ __ ___   / _ \\___ _ __\n                 /    \\ / _ \\ '_ ` _ \\ / /_\\/ _ \\ '_ \\ \n                / /\\/\\ \\  __/ | | | | / /_ \\  __/ | | |\n                \\/    \\/\\___|_| |_| |_\\____/\\___|_| |_| \n\n\n###############################################################\nStephan Schott-Verdugo 2016-11-07        VERSION: 2025.1.29\nGenerated at CPCLab at Heinrich Heine University Duesseldorf\n      &      CBCLab at Forschungszentrum Juelich\n###############################################################\n\n--verbose for details of the packing process\n\n     Information for packing:\n    \n     Input PDB(s)                     = None     \n     Output PDB                       = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/e6/e60bac33685833fdbadd513c73ac646a7b4de12398a69d8a6efa9dfdfd8238c2/.build.99207/packed.pdb\n     Packmol output and log prefix    = /Users/yasu/gdrive/work/mdclaw/mdclaw/data/membrane_patches/e6/e60bac33685833fdbadd513c73ac646a7b4de12398a69d8a6efa9dfdfd8238c2/.build.99207/patch_packmol\n     Lipids                           = ['POPE'] \n     Lipid ratio                      = ['1']    \n     Solvents                         = WAT      \n     Solvent ratio                    = 1        \n     Salt concentration            (M)= 0.15     \n     Distance to boundaries        (A)= 15.0     \n     Minimum water distance        (A)= 17.5     \n     Packmol loops                    = 20       \n     Packmol loops for All-together   = 100      \n\nRunning Packmol...\nTransforming to AMBER\n#Packing process finished. Check your final structure, particularly for lipids inserted in proteins, protein tunnels or piercing rings!#\n",
   "stdout_tail": "\nProcessing segment 1 of 8..\nProcessing segment 2 of 8..\nProcessing segment 3 of 8\nProcessing segment 4 of 8\nProcessing segment 5 of 8\nProcessing segment 6 of 8\nProcessing segment 7 of 8\nProcessing segment 8 of 8\u001b[F\nAll-together Packing..........\n########################################################################################################################################\n########################################################################################################################################\nDONE!\n",
   "warnings": [
-    "migrated: adopted equilibrated CRYST1 box and PBC-wrapped whole molecules for seamless tiling"
+    "Skipped invalid writable membrane patch cache after lock: membrane patch has intermolecular water O-O overlaps under PBC: 158 pair(s), minimum 0.414 A (< 1.8 A); examples=['7549:O/HOH1C--14164:O/HOH1Z at 0.414 A', '8799:O/HOH1S--13274:O/HOH1D at 0.480 A', '13504:O/HOH1X--16334:O/HOH1R at 0.532 A', '12109:O/HOH1E--15819:O/HOH1S at 0.571 A', '8289:O/HOH1U--16569:O/HOH1M at 0.645 A']"
   ]
 }

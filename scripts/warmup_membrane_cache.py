@@ -66,6 +66,11 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Stop at the first composition that fails to build.",
     )
+    parser.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Rebuild patches even when a matching cache entry already exists.",
+    )
     return parser.parse_args(argv)
 
 
@@ -134,7 +139,7 @@ def main(argv: list[str]) -> int:
             nloop_all=PATCH_NLOOP_ALL,
             equil_params=equil_params,
             forcefield=PATCH_EQUIL_FORCEFIELD,
-            cache_mode="auto",
+            cache_mode="refresh" if args.refresh else "auto",
             cache_dir=str(out_root),
             packmol_memgen_runner=_run_packmol_memgen_noninteractive,
             packmol_path=shutil.which("packmol"),

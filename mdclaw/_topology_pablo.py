@@ -46,6 +46,9 @@ class PabloLoadResult:
             kicked in, missing-residue notices, etc.).
         guardrail_codes: Stable code identifiers the caller can branch on
             (``pablo_topology_fallback``, ``pablo_unknown_residue`` etc.).
+        auto_download: Whether Pablo CCD auto-download was enabled for this
+            load attempt. This is per-call provenance; the helper restores
+            Pablo's process-global cache setting before returning.
     """
 
     topology: Any
@@ -53,6 +56,7 @@ class PabloLoadResult:
     used_pablo: bool
     warnings: list[str] = field(default_factory=list)
     guardrail_codes: list[str] = field(default_factory=list)
+    auto_download: bool = True
 
 
 def build_modaa_residue_definitions(
@@ -134,18 +138,23 @@ def load_topology(
             used_pablo=False,
             warnings=warnings,
             guardrail_codes=codes,
+            auto_download=bool(auto_download),
         )
-
-    if auto_download:
-        STD_CCD_CACHE.auto_download = True
 
     additional_definitions = build_modaa_residue_definitions(extra_smiles)
+    previous_auto_download = getattr(STD_CCD_CACHE, "auto_download", None)
 
     try:
-        off_topology = topology_from_pdb(
-            str(pdb_path),
-            additional_definitions=tuple(additional_definitions),
-        )
+        if previous_auto_download is not None:
+            STD_CCD_CACHE.auto_download = bool(auto_download)
+        try:
+            off_topology = topology_from_pdb(
+                str(pdb_path),
+                additional_definitions=tuple(additional_definitions),
+            )
+        finally:
+            if previous_auto_download is not None:
+                STD_CCD_CACHE.auto_download = previous_auto_download
     except Exception as exc:  # noqa: BLE001
         # Pablo's failure modes (PdbResidueMatchError, etc.) all become
         # warnings; we keep the run alive on the openmm.app.PDBFile path.
@@ -160,6 +169,7 @@ def load_topology(
             used_pablo=False,
             warnings=warnings,
             guardrail_codes=codes,
+            auto_download=bool(auto_download),
         )
 
     return PabloLoadResult(
@@ -168,6 +178,7 @@ def load_topology(
         used_pablo=True,
         warnings=warnings,
         guardrail_codes=codes,
+        auto_download=bool(auto_download),
     )
 
 
