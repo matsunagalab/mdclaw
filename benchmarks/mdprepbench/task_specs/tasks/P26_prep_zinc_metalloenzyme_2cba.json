@@ -1,0 +1,94 @@
+{
+  "capability_tags_extra": [
+    "metal_ion_retention",
+    "zinc_metalloenzyme"
+  ],
+  "public_source": "PDB 2CBA",
+  "references": [
+    {
+      "source": "PDB 2CBA",
+      "url": "https://www.rcsb.org/structure/2CBA"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "catalytic_zinc_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "ZN": 1
+        },
+        "residue_aliases": {
+          "ZN": [
+            "ZN2+",
+            "Zn2+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.55
+      },
+      {
+        "allowed_residue_names": [
+          "HIS",
+          "HID",
+          "HIE",
+          "HIP"
+        ],
+        "check_id": "coordinating_his94_retained",
+        "check_type": "pdb_residue_state",
+        "residue_chain": "A",
+        "residue_number": "94",
+        "required_residue_name": "HIS",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_catalytic_zinc_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "ZN": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "ZN": [
+            "ZN2+",
+            "Zn2+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.55
+      }
+    ]
+  },
+  "task_id": "P26_prep_zinc_metalloenzyme_2cba",
+  "task_intent": "Zinc metalloenzyme preparation: prepare human carbonic anhydrase II (PDB 2CBA) while retaining the single catalytic Zn2+ as a supported metal ion and keeping its His94/His96/His119 coordination shell, rather than dropping the zinc or treating it as a generic ligand. Neutralize the resulting system."
+}

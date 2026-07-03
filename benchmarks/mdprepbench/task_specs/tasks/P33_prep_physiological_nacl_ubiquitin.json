@@ -1,0 +1,121 @@
+{
+  "capability_tags_extra": [
+    "ion_concentration",
+    "explicit_solvent"
+  ],
+  "public_source": "PDB 1UBQ",
+  "references": [
+    {
+      "source": "PDB 1UBQ",
+      "url": "https://www.rcsb.org/structure/1UBQ"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "nacl_ions_present",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "CL": 1,
+          "NA": 1
+        },
+        "residue_aliases": {
+          "CL": [
+            "CL-",
+            "Cl-",
+            "CLA"
+          ],
+          "NA": [
+            "NA+",
+            "Na+",
+            "SOD"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.3
+      },
+      {
+        "check_id": "explicit_solvent_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "min_water_residues": 1,
+        "required_solvent_regime": "explicit",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.2
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "anion_residue_names": [
+          "CL",
+          "CL-",
+          "Cl-",
+          "CLA"
+        ],
+        "cation_residue_names": [
+          "NA",
+          "NA+",
+          "Na+",
+          "SOD"
+        ],
+        "check_id": "nacl_molarity_recomputed",
+        "check_type": "ion_concentration_recompute",
+        "min_ion_count": 2,
+        "molar_tolerance": 0.05,
+        "target_molar": 0.15,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.4
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_nacl_ions_present",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "CL": 1,
+          "NA": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "CL": [
+            "CL-",
+            "Cl-",
+            "CLA"
+          ],
+          "NA": [
+            "NA+",
+            "Na+",
+            "SOD"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      }
+    ]
+  },
+  "task_id": "P33_prep_physiological_nacl_ubiquitin",
+  "task_intent": "Physiological salt concentration: build an explicit-solvent ubiquitin system (PDB 1UBQ) at a physiological 0.15 M NaCl concentration while preserving net neutrality, using NaCl (not KCl) as the requested salt."
+}

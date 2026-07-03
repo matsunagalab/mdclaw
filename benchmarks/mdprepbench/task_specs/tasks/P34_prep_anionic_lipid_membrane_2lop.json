@@ -1,0 +1,117 @@
+{
+  "capability_tags_extra": [
+    "membrane",
+    "anionic_lipids"
+  ],
+  "public_source": "PDB 2LOP",
+  "references": [
+    {
+      "source": "PDB 2LOP",
+      "url": "https://www.rcsb.org/structure/2LOP"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "membrane_regime_rescanned",
+        "check_type": "solvent_regime_rescan",
+        "lipid_residue_names": [
+          "POPC",
+          "POPG",
+          "PC",
+          "PG",
+          "OPC",
+          "OPG"
+        ],
+        "min_lipid_residues": 4,
+        "required_solvent_regime": "membrane",
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.2
+      },
+      {
+        "check_id": "anionic_lipid_species_present",
+        "check_type": "structure_component_rescan",
+        "min_residue_atom_count": 20,
+        "min_residue_counts": {
+          "POPC": 2,
+          "POPG": 2
+        },
+        "residue_aliases": {
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPG": [
+            "PG",
+            "OPG"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "POPC",
+          "POPG"
+        ],
+        "check_id": "topology_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "ignored_residue_names": [
+          "PA",
+          "OL",
+          "PGR"
+        ],
+        "min_residue_atom_count": 2,
+        "residue_aliases": {
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPG": [
+            "PG",
+            "OPG"
+          ]
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_anionic_lipid_species_present",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_atom_count": 20,
+        "min_residue_counts": {
+          "POPC": 2,
+          "POPG": 2
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "POPC": [
+            "PC",
+            "OPC"
+          ],
+          "POPG": [
+            "PG",
+            "OPG"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      }
+    ]
+  },
+  "task_id": "P34_prep_anionic_lipid_membrane_2lop",
+  "task_intent": "Anionic-lipid membrane preparation: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC:POPG membrane containing anionic POPG lipids (nominal 3:1 POPC:POPG or an equivalent membrane-builder setting), and add counterions so the anionic bilayer system is net neutral. Realized integer lipid counts may follow the builder's box-size and area-per-lipid behavior."
+}

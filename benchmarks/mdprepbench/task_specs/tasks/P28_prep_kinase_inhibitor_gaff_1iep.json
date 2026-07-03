@@ -1,0 +1,74 @@
+{
+  "capability_tags_extra": [
+    "custom_ligand_parameterization",
+    "drug_like_small_molecule",
+    "ligand_pose"
+  ],
+  "public_source": "PDB 1IEP",
+  "references": [
+    {
+      "source": "PDB 1IEP",
+      "url": "https://www.rcsb.org/structure/1IEP"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "align_selection": "protein and name CA",
+        "check_id": "inhibitor_pose_preserved",
+        "check_type": "rmsd_recompute",
+        "max_value": 1.0,
+        "reference_pdb": "truth/ligand_pose_reference.pdb",
+        "selection": "resname STI and not element H",
+        "tolerance_angstrom": 0.05,
+        "weight": 0.4
+      },
+      {
+        "check_id": "inhibitor_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "STI": 1
+        },
+        "structure_manifest_path": "outputs.topology",
+        "structure_path": "topology/topology.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "STI"
+        ],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [
+          "STI"
+        ],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_inhibitor_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "STI": 1
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.3
+      }
+    ]
+  },
+  "task_id": "P28_prep_kinase_inhibitor_gaff_1iep",
+  "task_intent": "Custom ligand parameterization: prepare the Abl kinase-imatinib complex from PDB 1IEP (protein chain A plus the deposited imatinib ligand STI), generate small-molecule force-field parameters for the drug-like ligand so every ligand atom is parameterized, and preserve the crystallographic imatinib binding pose. Do not drop the ligand or submit a ligand-only structure."
+}

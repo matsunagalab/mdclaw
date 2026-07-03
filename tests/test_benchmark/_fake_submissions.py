@@ -429,6 +429,41 @@ def _bundle_recompute_requirements(task: dict[str, Any] | None) -> dict[str, Any
     return req
 
 
+_CATION_ELEMENT_MASS = {
+    "K": ("K", 39.0), "NA": ("Na", 23.0), "LI": ("Li", 7.0),
+    "RB": ("Rb", 85.0), "CS": ("Cs", 133.0), "MG": ("Mg", 24.0),
+    "CA": ("Ca", 40.0), "ZN": ("Zn", 65.0), "SOD": ("Na", 23.0),
+    "POT": ("K", 39.0),
+}
+_ANION_ELEMENT_MASS = {
+    "CL": ("Cl", 35.0), "BR": ("Br", 80.0), "I": ("I", 127.0),
+    "F": ("F", 19.0), "CLA": ("Cl", 35.0),
+}
+
+
+def _salt_species(task: dict[str, Any] | None) -> tuple[str, str, float, str, str, float]:
+    """Salt cation/anion residue names for the honest fixture bundle.
+
+    Defaults to KCl but honors the ion_concentration_recompute cation/anion
+    residue names so NaCl (or other salt) tasks embed the requested species.
+    """
+    cation_name, anion_name = "K", "CL"
+    if task:
+        for check in task.get("scoring", {}).get("deterministic_checks", []):
+            if check.get("check_type") != "ion_concentration_recompute":
+                continue
+            cations = check.get("cation_residue_names") or []
+            anions = check.get("anion_residue_names") or []
+            if cations:
+                cation_name = str(cations[0]).strip().upper()
+            if anions:
+                anion_name = str(anions[0]).strip().upper()
+            break
+    cation_element, cation_mass = _CATION_ELEMENT_MASS.get(cation_name, ("Na", 23.0))
+    anion_element, anion_mass = _ANION_ELEMENT_MASS.get(anion_name, ("Cl", 35.0))
+    return cation_name, cation_element, cation_mass, anion_name, anion_element, anion_mass
+
+
 def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
                                  task: dict[str, Any] | None = None) -> list[str]:
     topo_dir = sub_dir / "topology"
@@ -539,12 +574,15 @@ def _write_openmm_fixture_bundle(sub_dir: Path, mode: str,
             resseq += 1
 
     salt_pairs = int(req["salt_pairs"] or 0)
+    cation_name, cation_element, cation_mass, anion_name, anion_element, anion_mass = (
+        _salt_species(task)
+    )
     for _ in range(salt_pairs):
-        cation = topology.addResidue("K", chain, str(resseq))
-        add_atom("K", "K", "K", cation, 1.0, 39.0)
+        cation = topology.addResidue(cation_name, chain, str(resseq))
+        add_atom(cation_name, cation_element, cation_name, cation, 1.0, cation_mass)
         resseq += 1
-        anion = topology.addResidue("CL", chain, str(resseq))
-        add_atom("CL", "Cl", "CL", anion, -1.0, 35.0)
+        anion = topology.addResidue(anion_name, chain, str(resseq))
+        add_atom(anion_name, anion_element, anion_name, anion, -1.0, anion_mass)
         resseq += 1
 
     # Embed component residues (e.g. lipids) for checks that read the OpenMM

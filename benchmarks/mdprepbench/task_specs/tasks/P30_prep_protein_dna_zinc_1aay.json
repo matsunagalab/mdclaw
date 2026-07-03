@@ -1,0 +1,73 @@
+{
+  "capability_tags_extra": [
+    "protein_nucleic_complex",
+    "metal_ion_retention",
+    "mixed_polymer_system"
+  ],
+  "public_source": "PDB 1AAY",
+  "references": [
+    {
+      "source": "PDB 1AAY",
+      "url": "https://www.rcsb.org/structure/1AAY"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "dna_duplex_retained",
+        "check_type": "nucleic_content_rescan",
+        "required_nucleic_acid_type": "DNA",
+        "min_nucleic_chain_count": 2,
+        "min_nucleic_residue_count": 6,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "zinc_fingers_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "ZN": 3
+        },
+        "residue_aliases": {
+          "ZN": [
+            "ZN2+",
+            "Zn2+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "check_id": "minimized_zinc_fingers_retained",
+        "check_type": "minimized_structure_component_rescan",
+        "min_residue_counts": {
+          "ZN": 3
+        },
+        "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "ZN": [
+            "ZN2+",
+            "Zn2+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.4
+      }
+    ]
+  },
+  "task_id": "P30_prep_protein_dna_zinc_1aay",
+  "task_intent": "Protein-DNA complex with metal: prepare the Zif268 zinc-finger-DNA complex from PDB 1AAY, keeping the DNA duplex (both strands), all three structural Zn2+ ions, and the protein together in one mixed-polymer system. Select DNA-compatible and metal-ion-compatible force-field libraries and neutralize the highly charged nucleic-acid system."
+}

@@ -1,0 +1,86 @@
+{
+  "capability_tags_extra": [
+    "missing_sidechain_atoms",
+    "structure_completion"
+  ],
+  "public_source": "PDB 1CSP",
+  "references": [
+    {
+      "source": "PDB 1CSP",
+      "url": "https://www.rcsb.org/structure/1CSP"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "glu3_sidechain_completed",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "GLU",
+        "required_atom_names": [
+          "CG",
+          "CD",
+          "OE1",
+          "OE2"
+        ],
+        "residue_chain": "A",
+        "residue_number": "3",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "check_id": "glu66_sidechain_completed",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "GLU",
+        "required_atom_names": [
+          "CG",
+          "CD",
+          "OE1",
+          "OE2"
+        ],
+        "residue_chain": "A",
+        "residue_number": "66",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.4
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_glu3_sidechain_completed",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "GLU",
+        "required_atom_names": [
+          "CG",
+          "CD",
+          "OE1",
+          "OE2"
+        ],
+        "residue_chain": "A",
+        "residue_number": "3",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.4
+      }
+    ]
+  },
+  "task_id": "P32_prep_sidechain_completion_1csp",
+  "task_intent": "Missing side-chain reconstruction: prepare cold-shock protein CspB (PDB 1CSP), whose deposited structure is missing side-chain atoms for several surface glutamates (Glu3, Glu21, Glu36, Glu66 lack CG/CD/OE1/OE2). Rebuild the truncated side chains to their full heavy-atom set before building the topology, rather than capping or deleting the incomplete residues."
+}

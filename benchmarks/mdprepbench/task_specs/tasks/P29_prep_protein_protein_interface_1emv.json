@@ -1,0 +1,59 @@
+{
+  "capability_tags_extra": [
+    "protein_protein_complex",
+    "interface_retention"
+  ],
+  "public_source": "PDB 1EMV",
+  "references": [
+    {
+      "source": "PDB 1EMV",
+      "url": "https://www.rcsb.org/structure/1EMV"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "both_partners_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 2,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "weight": 0.6
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_both_partners_retained",
+        "check_type": "assembly_identity_check",
+        "exact_chain_count": 2,
+        "structure_manifest_path": "outputs.minimized_structure",
+        "weight": 0.6
+      }
+    ]
+  },
+  "task_id": "P29_prep_protein_protein_interface_1emv",
+  "task_intent": "Protein-protein complex preparation: prepare the colicin E9 DNase domain in complex with its Im9 immunity protein from PDB 1EMV, keeping both binding partners as two distinct protein chains rather than dropping one partner or merging them. Exclude crystallographic buffer components and neutralize the system."
+}

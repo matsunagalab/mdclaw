@@ -1,0 +1,66 @@
+{
+  "capability_tags_extra": [
+    "site_specific_protonation",
+    "histidine_tautomer"
+  ],
+  "public_source": "PDB 2LZM",
+  "references": [
+    {
+      "source": "PDB 2LZM",
+      "url": "https://www.rcsb.org/structure/2LZM"
+    }
+  ],
+  "scoring": {
+    "deterministic_checks": [
+      {
+        "check_id": "his31_is_hip_doubly_protonated",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "HIP",
+        "required_atom_names": [
+          "HD1",
+          "HE2"
+        ],
+        "residue_chain": "A",
+        "residue_number": "31",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.7
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "$bundle": "topology_minimization"
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
+        "check_id": "minimized_no_unrequested_nonstandard_residues",
+        "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "minimized_his31_is_hip_doubly_protonated",
+        "check_type": "pdb_residue_state",
+        "required_residue_name": "HIP",
+        "required_atom_names": [
+          "HD1",
+          "HE2"
+        ],
+        "residue_chain": "A",
+        "residue_number": "31",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.7
+      }
+    ]
+  },
+  "task_id": "P31_prep_his_protonation_hip_t4l",
+  "task_intent": "Site-specific histidine protonation: prepare T4 lysozyme (PDB 2LZM) so chain A residue His31 is built as the doubly protonated HIP tautomer (both HD1 and HE2 present), overriding the default neutral-histidine tautomer assignment."
+}

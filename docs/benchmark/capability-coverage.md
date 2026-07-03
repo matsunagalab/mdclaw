@@ -89,6 +89,15 @@ deterministic check to the gate with `hard_fail: true`.
 | Implicit vs explicit solvent | P23 | `solvent_regime_rescan`, `structure_component_rescan` (no spurious water box) |
 | Biological assembly choice | P24 | `rmsd_recompute` vs assembly-1 reference, `assembly_identity_check` (four chains) |
 | Specified ion concentration + neutrality | P25 | `ion_concentration_recompute` (molarity from box), `net_charge_check`, `structure_component_rescan` |
+| Zinc metalloenzyme retention + His shell | P26 | `structure_component_rescan` (Zn2+ retained), `pdb_residue_state` (coordinating His), `net_charge_check` |
+| Heme (Fe) cofactor + full parameterization | P27 | `structure_component_rescan` (HEM retained), `forcefield_applied_rescan` (all heme atoms parameterized) |
+| Custom drug-like ligand parameterization + pose | P28 | `rmsd_recompute` vs imatinib pose reference, `forcefield_applied_rescan`, `structure_component_rescan` (STI) |
+| Protein-protein interface retention | P29 | `assembly_identity_check` (both partner chains), `net_charge_check` |
+| Protein-DNA complex + structural metals | P30 | `nucleic_content_rescan` (DNA duplex), `structure_component_rescan` (3x Zn2+), `net_charge_check` |
+| Histidine tautomer / protonation (HIP) | P31 | `pdb_residue_state` (HIP + HD1/HE2) |
+| Missing side-chain reconstruction | P32 | `pdb_residue_state` (rebuilt Glu CG/CD/OE1/OE2 heavy atoms) |
+| Physiological NaCl concentration + neutrality | P33 | `ion_concentration_recompute` (0.15 M NaCl), `net_charge_check`, `structure_component_rescan` (Na/Cl) |
+| Anionic-lipid membrane + neutralization | P34 | `solvent_regime_rescan` (membrane), `structure_component_rescan` (POPC/POPG), `net_charge_check` |
 
 ## Capability axes
 
@@ -107,9 +116,13 @@ Each check is tagged with a capability axis and rolled up into a per-run profile
 The following capabilities are **not** covered by the current task set and are
 noted only as candidates for a later pass (adding tasks is out of scope here):
 
-- Protein–protein complex preparation (interface retention across partners).
-- RNA + small-molecule ligand complexes.
-- Stressed custom-ligand GAFF parameterization for non-standard chemistries.
+- RNA + small-molecule ligand complexes (e.g. a riboswitch aptamer + ligand).
+- Non-standard / modified nucleotides (methylated DNA, modified RNA bases).
+- Alternate water-model families beyond OPC (TIP3P/TIP4P-Ew/SPC/E fingerprints).
+
+Protein–protein interface retention (P29), protein–nucleic complexes with
+structural metals (P30), and custom drug-like ligand GAFF/OpenFF
+parameterization (P28) were previously listed here and are now covered.
 
 These gaps do not affect the verification of the capabilities listed above; they
 mark where the coverage surface could be extended.

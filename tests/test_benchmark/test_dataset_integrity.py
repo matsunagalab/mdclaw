@@ -83,7 +83,7 @@ def test_list_benchmark_tasks_surfaces_family_and_intent_summary():
 
     assert result["success"], result
     assert result["families"]
-    assert result["task_count"] == 25
+    assert result["task_count"] == 34
 
     for task in result["tasks"]:
         assert task["family"]
@@ -653,6 +653,11 @@ def test_coordinate_reference_truth_files_are_mdtraj_loadable():
         / "P24_prep_biological_assembly"
         / "truth"
         / "assembly_1_reference.pdb",
+        DATASET_DIR
+        / "tasks"
+        / "P28_prep_kinase_inhibitor_gaff_1iep"
+        / "truth"
+        / "ligand_pose_reference.pdb",
     ]
 
     for path in references:

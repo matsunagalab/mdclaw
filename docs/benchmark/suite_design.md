@@ -30,7 +30,7 @@ This keeps experimental truth as the anchor while avoiding a brittle
 
 ## Suite A: Preparation Workflow Battery
 
-The current prep implementation has **25 tasks, P01-P25**. Each task exposes
+The current prep implementation has **34 tasks, P01-P34**. Each task exposes
 only `prompt.md` and `submission_contract.json` to the evaluated agent. The
 scorer keeps `task.json`, reference structures, hidden ligand poses, expected
 component truth, and any truth/rescan material private.
@@ -147,9 +147,18 @@ be promoted to this gate per task with `hard_fail: true`.
 | P23 | Implicit vs explicit solvent | PDB 5AWL | Task: Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box. | implicit solvent metadata, no explicit waters/ions in prepared/minimized structures, common topology/minimization checks. | 2 |
 | P24 | Assembly/biological unit choice | PDB 1STP, stress reference PDB 2MS2 | Task: Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. | assembly-1 coordinate RMSD, four submitted protein chains, common topology/minimization checks. | 1 |
 | P25 | Specified ion concentration | PDB 5AWL | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | explicit solvent, K/CL retained in topology/minimized structure, 0.30 M KCl recomputed from ion count and box volume, net charge recomputed from OpenMM charges, common topology/minimization checks. | 1 |
+| P26 | Zinc metalloenzyme retention | PDB 2CBA | Task: prepare human carbonic anhydrase II, keep the catalytic Zn2+ as a supported metal ion and its His94/96/119 shell, and neutralize. | Zn2+ retained (prepared/minimized), coordinating His94 present, net neutral, common topology/minimization checks. | 1 |
+| P27 | Heme (Fe) cofactor parameterization | PDB 1MBN | Task: prepare sperm-whale myoglobin, retain the b-type heme (HEM), and parameterize every heme atom. | HEM retained (prepared/minimized), force field applied to all atoms, common topology/minimization checks. | 1 |
+| P28 | Custom drug-like ligand parameterization | PDB 1IEP | Task: prepare the Abl kinase-imatinib complex (chain A + STI), generate small-molecule parameters, and preserve the imatinib pose. | hidden imatinib-pose RMSD reference, STI retained in topology/minimized structure, force field applied to all atoms, common topology/minimization checks. | 1 |
+| P29 | Protein-protein interface retention | PDB 1EMV | Task: prepare the colicin E9 DNase-Im9 complex keeping both partners as two chains, and neutralize. | two protein chains retained (prepared/minimized), net neutral, buffer excluded, common topology/minimization checks. | 1 |
+| P30 | Protein-DNA complex with structural metals | PDB 1AAY | Task: prepare the Zif268 zinc-finger-DNA complex keeping the DNA duplex, all three Zn2+, and the protein, and neutralize. | DNA duplex (>=2 chains), three Zn2+ retained (prepared/minimized), net neutral, common topology/minimization checks. | 2 |
+| P31 | Histidine tautomer / protonation | PDB 2LZM | Task: prepare T4 lysozyme with chain A His31 built as the doubly protonated HIP tautomer. | A:31 HIP with HD1+HE2 (prepared/minimized), common topology/minimization checks. | 1 |
+| P32 | Missing side-chain reconstruction | PDB 1CSP | Task: prepare CspB and rebuild truncated surface-glutamate side chains (Glu3/21/36/66 missing CG/CD/OE1/OE2). | A:3 and A:66 GLU with full CG/CD/OE1/OE2 (prepared/minimized), common topology/minimization checks. | 2 |
+| P33 | Physiological NaCl concentration | PDB 1UBQ | Task: build an explicit-solvent ubiquitin system at 0.15 M NaCl, net neutral. | explicit solvent, NA/CL retained (topology/minimized), 0.15 M NaCl recomputed from ion count and box volume, net neutral, common topology/minimization checks. | 1 |
+| P34 | Anionic-lipid membrane | PDB 2LOP | Task: embed TMEM14A model 1 in a mixed POPC:POPG membrane with anionic lipids and neutralize. | membrane regime, POPC/POPG species present (topology/minimized), net neutral, common topology/minimization checks. | 2 |
 
 Priority now indicates the preferred order for real MDClaw baseline smoke runs
-and further curation. All 25 tasks are part of the active prep battery.
+and further curation. All 34 tasks are part of the active prep battery.
 
 ### Coverage Refinements
 
@@ -322,7 +331,10 @@ agent tasks.
 
 Implemented:
 
-- P01-P25 task IDs are preserved under `MDPrepBench-v0.1`.
+- P01-P34 task IDs are part of `MDPrepBench-v0.1`. P26-P34 extend coverage to
+  zinc/heme metal cofactors, custom drug-like ligand parameterization,
+  protein-protein and protein-DNA complexes, histidine protonation, missing
+  side-chain reconstruction, physiological NaCl, and anionic-lipid membranes.
 - The common prep contract now includes topology artifacts and minimization
   evidence.
 - P17 is the standard DNA duplex/neutralization task; modified DNA/RNA is not

@@ -33,7 +33,16 @@
         "P22_prep_forcefield_water_fidelity",
         "P23_prep_implicit_solvent_chignolin",
         "P24_prep_biological_assembly",
-        "P25_prep_kcl_ion_concentration"
+        "P25_prep_kcl_ion_concentration",
+        "P26_prep_zinc_metalloenzyme_2cba",
+        "P27_prep_heme_protein_myoglobin",
+        "P28_prep_kinase_inhibitor_gaff_1iep",
+        "P29_prep_protein_protein_interface_1emv",
+        "P30_prep_protein_dna_zinc_1aay",
+        "P31_prep_his_protonation_hip_t4l",
+        "P32_prep_sidechain_completion_1csp",
+        "P33_prep_physiological_nacl_ubiquitin",
+        "P34_prep_anionic_lipid_membrane_2lop"
       ]
     }
   },
@@ -60,7 +69,7 @@
   },
   "released": "2026-05-16",
   "schema_version": "1.0",
-  "task_count": 25,
+  "task_count": 34,
   "task_ids": [
     "P01_prep_simple_monomer_t4l",
     "P02_prep_1ake_chain_ap5",
@@ -86,6 +95,15 @@
     "P22_prep_forcefield_water_fidelity",
     "P23_prep_implicit_solvent_chignolin",
     "P24_prep_biological_assembly",
-    "P25_prep_kcl_ion_concentration"
+    "P25_prep_kcl_ion_concentration",
+    "P26_prep_zinc_metalloenzyme_2cba",
+    "P27_prep_heme_protein_myoglobin",
+    "P28_prep_kinase_inhibitor_gaff_1iep",
+    "P29_prep_protein_protein_interface_1emv",
+    "P30_prep_protein_dna_zinc_1aay",
+    "P31_prep_his_protonation_hip_t4l",
+    "P32_prep_sidechain_completion_1csp",
+    "P33_prep_physiological_nacl_ubiquitin",
+    "P34_prep_anionic_lipid_membrane_2lop"
   ]
 }
