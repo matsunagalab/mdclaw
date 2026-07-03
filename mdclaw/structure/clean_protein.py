@@ -27,6 +27,7 @@ from typing import Optional, Dict, Any  # noqa: E402
 
 from pdbfixer import PDBFixer  # noqa: E402
 from openmm.app import PDBFile  # noqa: E402
+from mdclaw.chemistry_constants import STANDARD_NUCLEIC_RESNAMES  # noqa: E402
 from mdclaw._common import (  # noqa: E402
     BaseToolWrapper,
 )
@@ -55,9 +56,127 @@ PDBFIXER_MAX_MISSING_RESIDUE_SEGMENT_LENGTH = 5
 pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
+PDB_ATOM_RECORD_PREFIXES = ("ATOM  ", "HETATM")
+_NUCLEIC_5P_TERMINAL_PHOSPHATE_ATOMS = {
+    "P",
+    "OP1",
+    "OP2",
+    "OP3",
+    "O1P",
+    "O2P",
+    "O3P",
+    "HOP1",
+    "HOP2",
+    "HOP3",
+    "H1P",
+    "H2P",
+    "H3P",
+}
+_NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS = {
+    "OP1",
+    "OP2",
+    "OP3",
+    "O1P",
+    "O2P",
+    "O3P",
+}
+
 from mdclaw.structure.pdb_utils import _pdb_atom_count, _pdb_hydrogen_count, _pdb_residue_names, _read_pdb_unique_residues, restore_residue_numbering_from_reference  # noqa: E402
 from mdclaw.structure.protonation import _apply_protonation_states_with_modeller, _extract_histidine_states, _normalize_protonation_state_overrides  # noqa: E402
 from mdclaw.structure.terminal_caps import _complete_terminal_cap_hydrogens_with_modeller, _resolve_terminal_cap_settings  # noqa: E402
+
+
+def _pdb_atom_name(line: str) -> str:
+    return line[12:16].strip()
+
+
+def _pdb_residue_name(line: str) -> str:
+    return line[17:20].strip().upper()
+
+
+def _pdb_chain_residue_key(line: str) -> tuple[str, str, str]:
+    return (line[21:22], line[22:26], line[26:27])
+
+
+def _normalize_nucleic_input_for_openmm(
+    input_path: Path,
+) -> tuple[Path, dict[str, Any]]:
+    """Normalize standard nucleic termini to templates shipped with OpenMM.
+
+    OpenMM's Amber DNA/RNA XML bundles provide unphosphorylated 5' terminal
+    variants (A5/G5/...) and ordinary internal variants, but not a standalone
+    5'-phosphorylated terminal residue whose P atom lacks a previous-residue
+    O3' external bond. Many experimental PDB/mmCIF entries include that
+    terminal phosphate. Remove only that unsupported terminal phosphate group,
+    leaving residue identity/order intact, so Modeller can add hydrogens and
+    downstream topology generation can use standard templates.
+    """
+    report: dict[str, Any] = {
+        "applied": False,
+        "normalized_file": None,
+        "removed_atom_count": 0,
+        "removed_atoms": [],
+        "code": None,
+    }
+    lines = input_path.read_text(encoding="utf-8").splitlines()
+    first_residue_by_chain: dict[str, tuple[str, str, str]] = {}
+    first_residue_names: dict[tuple[str, str, str], str] = {}
+    first_residue_atoms: dict[tuple[str, str, str], set[str]] = {}
+
+    for line in lines:
+        if not line.startswith(PDB_ATOM_RECORD_PREFIXES):
+            continue
+        key = _pdb_chain_residue_key(line)
+        chain_id = key[0]
+        if chain_id not in first_residue_by_chain:
+            first_residue_by_chain[chain_id] = key
+            first_residue_names[key] = _pdb_residue_name(line)
+        if first_residue_by_chain[chain_id] == key:
+            first_residue_atoms.setdefault(key, set()).add(_pdb_atom_name(line).upper())
+
+    residues_to_normalize = {
+        key
+        for key, atom_names in first_residue_atoms.items()
+        if first_residue_names.get(key) in STANDARD_NUCLEIC_RESNAMES
+        and "P" in atom_names
+        and bool(atom_names & _NUCLEIC_5P_TERMINAL_PHOSPHATE_OXYGENS)
+    }
+    if not residues_to_normalize:
+        return input_path, report
+
+    normalized_lines: list[str] = []
+    removed_atoms: list[dict[str, str]] = []
+    for line in lines:
+        if line.startswith(PDB_ATOM_RECORD_PREFIXES):
+            key = _pdb_chain_residue_key(line)
+            atom_name = _pdb_atom_name(line).upper()
+            if (
+                key in residues_to_normalize
+                and atom_name in _NUCLEIC_5P_TERMINAL_PHOSPHATE_ATOMS
+            ):
+                removed_atoms.append({
+                    "chain": key[0].strip(),
+                    "resnum": key[1].strip(),
+                    "icode": key[2].strip(),
+                    "resname": _pdb_residue_name(line),
+                    "atom_name": atom_name,
+                })
+                continue
+        normalized_lines.append(line)
+
+    if not removed_atoms:
+        return input_path, report
+
+    normalized_path = input_path.with_name(f"{input_path.stem}.openmm_nucleic_input.pdb")
+    normalized_path.write_text("\n".join(normalized_lines) + "\n", encoding="utf-8")
+    report.update({
+        "applied": True,
+        "normalized_file": str(normalized_path),
+        "removed_atom_count": len(removed_atoms),
+        "removed_atoms": removed_atoms,
+        "code": "removed_unsupported_5prime_terminal_phosphate",
+    })
+    return normalized_path, report
 
 
 def _internal_missing_residue_records(
@@ -1018,7 +1137,24 @@ def _prepare_standard_nucleic(
     try:
         result["atom_count_before"] = _pdb_atom_count(input_path)
         result["hydrogen_count_before"] = _pdb_hydrogen_count(input_path)
-        pdb = PDBFile(str(input_path))
+        modeller_input_path, normalization_report = _normalize_nucleic_input_for_openmm(
+            input_path
+        )
+        result["input_normalization"] = normalization_report
+        if normalization_report.get("applied"):
+            result["operations"].append({
+                "step": "nucleic_input_normalization",
+                "status": "success",
+                "method": "openmm_terminal_template_compatibility",
+                "code": normalization_report.get("code"),
+                "removed_atom_count": normalization_report.get("removed_atom_count", 0),
+                "normalized_file": normalization_report.get("normalized_file"),
+            })
+            result["warnings"].append(
+                "Removed unsupported 5' terminal phosphate atom(s) from standard "
+                "nucleic input to match OpenMM Amber terminal templates."
+            )
+        pdb = PDBFile(str(modeller_input_path))
         forcefield = ForceField(forcefield_xml)
         modeller = Modeller(pdb.topology, pdb.positions)
         variants = modeller.addHydrogens(forcefield, pH=ph)
@@ -1065,7 +1201,11 @@ def _prepare_standard_nucleic(
             "Nucleic hydrogen rebuild changed residue identity/order."
         )
         return result
-    if result["atom_count_after"] < result["atom_count_before"]:
+    removed_atom_count = int(
+        (result.get("input_normalization") or {}).get("removed_atom_count") or 0
+    )
+    min_expected_atom_count = result["atom_count_before"] - removed_atom_count
+    if result["atom_count_after"] < min_expected_atom_count:
         result["code"] = "nucleic_hydrogen_rebuild_failed"
         result["errors"].append(
             "Nucleic hydrogen rebuild removed atom records unexpectedly."

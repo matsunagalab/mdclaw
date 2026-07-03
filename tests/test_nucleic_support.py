@@ -216,6 +216,56 @@ END
     assert result["code"] == "nucleic_hydrogen_rebuild_failed"
 
 
+def test_standard_rna_rebuild_normalizes_unsupported_5prime_phosphate(tmp_path):
+    from mdclaw.structure.clean_protein import _prepare_standard_nucleic
+
+    rna_with_5prime_phosphate = """\
+ATOM      1  P     A B   1       9.600   3.000 -41.200  1.00 20.00           P
+ATOM      2  OP1   A B   1       9.000   3.800 -40.200  1.00 20.00           O
+ATOM      3  OP2   A B   1       9.200   1.700 -41.500  1.00 20.00           O
+ATOM      4  O5'   A B   1      10.751   3.325 -41.079  1.00 29.78           O
+ATOM      5  C5'   A B   1       9.400   2.902 -41.189  1.00 28.67           C
+ATOM      6  C4'   A B   1       9.308   1.418 -41.432  1.00 26.37           C
+ATOM      7  O4'   A B   1       9.991   1.081 -42.670  1.00 22.63           O
+ATOM      8  C3'   A B   1       9.979   0.529 -40.397  1.00 27.52           C
+ATOM      9  O3'   A B   1       9.209   0.333 -39.226  1.00 31.63           O
+ATOM     10  C2'   A B   1      10.231  -0.745 -41.184  1.00 23.82           C
+ATOM     11  O2'   A B   1       9.032  -1.490 -41.347  1.00 23.53           O
+ATOM     12  C1'   A B   1      10.634  -0.170 -42.537  1.00 21.54           C
+ATOM     13  N9    A B   1      12.089   0.041 -42.619  1.00 19.19           N
+ATOM     14  C8    A B   1      12.784   1.224 -42.588  1.00 19.31           C
+ATOM     15  N7    A B   1      14.084   1.073 -42.683  1.00 18.78           N
+ATOM     16  C5    A B   1      14.254  -0.303 -42.776  1.00 17.46           C
+ATOM     17  C6    A B   1      15.393  -1.117 -42.901  1.00 16.65           C
+ATOM     18  N6    A B   1      16.644  -0.651 -42.954  1.00 17.63           N
+ATOM     19  N1    A B   1      15.202  -2.453 -42.977  1.00 15.99           N
+ATOM     20  C2    A B   1      13.952  -2.930 -42.926  1.00 15.57           C
+ATOM     21  N3    A B   1      12.804  -2.268 -42.809  1.00 15.87           N
+ATOM     22  C4    A B   1      13.031  -0.947 -42.740  1.00 17.48           C
+END
+"""
+    result = _prepare_standard_nucleic(
+        _write_pdb(tmp_path, rna_with_5prime_phosphate),
+        nucleic_subtype="rna",
+        ph=7.4,
+    )
+
+    assert result["success"], result.get("errors")
+    normalization = result["input_normalization"]
+    assert normalization["code"] == "removed_unsupported_5prime_terminal_phosphate"
+    assert normalization["removed_atom_count"] == 3
+    assert {a["atom_name"] for a in normalization["removed_atoms"]} == {
+        "P", "OP1", "OP2",
+    }
+    assert result["atom_count_after"] >= (
+        result["atom_count_before"] - normalization["removed_atom_count"]
+    )
+    output = Path(result["output_file"]).read_text()
+    assert " P     A B   1" not in output
+    assert " OP1   A B   1" not in output
+    assert " OP2   A B   1" not in output
+
+
 def test_build_amber_system_loads_standard_nucleic_leaprc(monkeypatch, tmp_path):
     """Standard DNA + RNA presence resolves DNA.OL15 + RNA.OL3 into the
     SystemGenerator XML bundle (PR3: tleap script inspection retired)."""

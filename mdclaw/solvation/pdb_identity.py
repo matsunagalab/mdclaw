@@ -82,11 +82,13 @@ def _iter_pdb_residues(path: Path) -> list[dict]:
                 "insertion_code": icode,
                 "resname": line[17:20].strip() if len(line) >= 20 else "",
                 "atom_count": 0,
+                "atom_names": [],
                 "segment_break_before": segment_break_before_next,
             }
             segment_break_before_next = False
         if current is not None:
             current["atom_count"] += 1
+            current["atom_names"].append(_pdb_atom_name(line))
 
     if current is not None:
         residues.append(current)
@@ -208,6 +210,21 @@ _PACKMOL_RECOGNIZED_ION_CHARGES: dict[str, int] = {
     "CA": 2,
 }
 
+_PACKMOL_RECOGNIZED_RESIDUE_CHARGES: dict[str, int] = {
+    "ASP": -1,
+    "GLU": -1,
+    "LYS": 1,
+    "ARG": 1,
+    "HIP": 1,
+}
+
+_CANONICAL_PROTONATED_ACID_HYDROGENS: dict[str, set[str]] = {
+    "ASP": {"HD", "HD1", "HD2"},
+    "GLU": {"HE", "HE1", "HE2"},
+}
+
+_NEUTRAL_HISTIDINE_RESNAMES = {"HIS", "HID", "HIE", "HSD", "HSE"}
+
 # Non-monoatomic residues whose true formal charge packmol-memgen does not
 # recognize (its `charged` table only covers ASP/GLU/LYS/ARG/HIP and the
 # phospho variants). Deprotonated metal-coordinating cysteine (CYM) is the
@@ -223,6 +240,10 @@ _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS: dict[str, int] = {
 }
 
 
+def _atom_names(residue: dict) -> set[str]:
+    return {str(name).strip().upper() for name in residue.get("atom_names", [])}
+
+
 def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     """Return the packmol-memgen charge delta for packmol-unrecognized charges.
 
@@ -233,6 +254,11 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
 
     - Transition-metal / non-MG/CA ions kept as components (ZN, MN, FE, CO,
       NI, CU, ...) are counted as neutral, so a catalytic Zn2+ leaves +2.
+    - Protonated ASP/GLU residues that have been restored to canonical residue
+      names are still counted as -1 by packmol-memgen, while OpenMM/Amber uses
+      the explicit side-chain proton and treats them as neutral.
+    - Doubly protonated canonical histidine names are counted as neutral, while
+      OpenMM/Amber treats them like HIP (+1).
     - Deprotonated metal-coordinating cysteine (CYM, truly -1) is counted as
       neutral, so each CYM leaves +1.
     - Anionic-lipid head groups (PGR/PSER, truly -1) are counted as neutral.
@@ -254,6 +280,7 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
         formal_charge: int | None = None
         already_counted = 0
         kind = None
+        atom_names = _atom_names(residue)
         # Monoatomic residues are treated as bare metal ions; this avoids
         # misreading a metal atom that belongs to a larger cofactor residue.
         if atom_count == 1 and resname in METAL_CHARGES:
@@ -261,6 +288,18 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
             already_counted = int(_PACKMOL_RECOGNIZED_ION_CHARGES.get(resname, 0))
             contribution = formal_charge - already_counted
             kind = "metal_ion"
+        elif resname in _CANONICAL_PROTONATED_ACID_HYDROGENS and (
+            atom_names & _CANONICAL_PROTONATED_ACID_HYDROGENS[resname]
+        ):
+            formal_charge = 0
+            already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES[resname])
+            contribution = formal_charge - already_counted
+            kind = "neutral_protonated_acid"
+        elif resname in _NEUTRAL_HISTIDINE_RESNAMES and {"HD1", "HE2"} <= atom_names:
+            formal_charge = 1
+            already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES.get(resname, 0))
+            contribution = formal_charge - already_counted
+            kind = "protonated_histidine"
         elif resname in _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS:
             contribution = int(_PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS[resname])
             formal_charge = contribution
@@ -277,6 +316,12 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
             "packmol_recognized_charge": already_counted,
             "charge_pdb_delta": contribution,
         }
+        if kind == "neutral_protonated_acid":
+            entry["sidechain_proton_atoms"] = sorted(
+                atom_names & _CANONICAL_PROTONATED_ACID_HYDROGENS[resname]
+            )
+        elif kind == "protonated_histidine":
+            entry["sidechain_proton_atoms"] = ["HD1", "HE2"]
         ions.append(entry)
         charge_delta += contribution
 

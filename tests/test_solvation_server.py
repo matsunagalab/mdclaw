@@ -148,6 +148,48 @@ def test_metal_ion_charge_delta_counts_deprotonated_cysteine(tmp_path):
     assert report["charge_pdb_delta"] == -1
 
 
+def test_charge_delta_counts_canonical_protonated_acids(tmp_path):
+    # Packmol-memgen counts canonical ASP/GLU as -1 by name, but Amber/OpenMM
+    # treats explicit side-chain acid protons as neutral ASH/GLH chemistry.
+    pdb = tmp_path / "neutral_acids.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "OE2", "GLU", "A", 21, "O")
+        + _pdb_atom(2, "HE2", "GLU", "A", 21, "H")
+        + "TER\n"
+        + _pdb_atom(3, "OD2", "ASP", "A", 48, "O")
+        + _pdb_atom(4, "HD2", "ASP", "A", 48, "H")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 2
+    assert [entry["kind"] for entry in report["ions"]] == [
+        "neutral_protonated_acid",
+        "neutral_protonated_acid",
+    ]
+    assert [entry["packmol_recognized_charge"] for entry in report["ions"]] == [-1, -1]
+    assert [entry["formal_charge"] for entry in report["ions"]] == [0, 0]
+
+
+def test_charge_delta_counts_canonical_doubly_protonated_histidine(tmp_path):
+    # A canonical HIS with both ring protons is HIP-like (+1), while
+    # packmol-memgen's fixed table counts HIS/HID/HIE as neutral.
+    pdb = tmp_path / "hip_like_his.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "ND1", "HIS", "A", 31, "N")
+        + _pdb_atom(2, "HD1", "HIS", "A", 31, "H")
+        + _pdb_atom(3, "NE2", "HIS", "A", 31, "N")
+        + _pdb_atom(4, "HE2", "HIS", "A", 31, "H")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 1
+    assert report["ions"][0]["kind"] == "protonated_histidine"
+
+
 def test_metal_ion_charge_delta_combines_zinc_and_cym(tmp_path):
     pdb = tmp_path / "zn_cym.pdb"
     pdb.write_text(
