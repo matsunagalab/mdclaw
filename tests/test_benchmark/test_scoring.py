@@ -107,6 +107,7 @@ def _write_openmm_bundle(
     extra_residues: list[tuple[str, int]] | None = None,
     clash: bool = False,
     placeholder_clash: bool = False,
+    metal_clash: bool = False,
 ) -> None:
     topo_dir = tmp / "topology"
     topo_dir.mkdir(parents=True, exist_ok=True)
@@ -197,6 +198,25 @@ def _write_openmm_bundle(
         nonbonded.addParticle(0.0, 1.0, 0.0)
         positions.append(Vec3(7.1, 0.0, 0.0))
         pdb_positions.append(Vec3(7.1, 0.0, 0.0))
+    if metal_clash:
+        # A bare, monoatomic Zn2+ ion sitting ~0.18 nm from a coordinating
+        # protein atom -- shorter than the LJ r_min by design for a non-bonded
+        # (12-6) metal model. The coordinating atom carries epsilon > 0 so it
+        # is a real LJ particle; without the metal-ion exclusion this pair
+        # would be counted as a steric clash. The ion is a single-atom residue
+        # (ZN) so the scorer treats it as a bare ion.
+        coord_res = topology.addResidue("CYM", chain, "88")
+        topology.addAtom("SG", Element.getBySymbol("S"), coord_res)
+        system.addParticle(32.0)
+        nonbonded.addParticle(-1.0, 0.35, 0.5)
+        positions.append(Vec3(9.0, 0.0, 0.0))
+        pdb_positions.append(Vec3(9.0, 0.0, 0.0))
+        zn_res = topology.addResidue("ZN", chain, "89")
+        topology.addAtom("ZN", Element.getBySymbol("Zn"), zn_res)
+        system.addParticle(65.0)
+        nonbonded.addParticle(2.0, 0.19, 0.01)
+        positions.append(Vec3(9.18, 0.0, 0.0))
+        pdb_positions.append(Vec3(9.18, 0.0, 0.0))
     positions_q = positions * unit.nanometer
     pdb_positions_q = pdb_positions * unit.nanometer
     system.addForce(nonbonded)
@@ -1944,6 +1964,40 @@ def test_structure_geometry_quality_flags_clash_and_is_hard_gate(tmp_path: Path)
     # completed submission that fails it is clamped to zero.
     assert score.status == "failed"
     assert score.weighted_total == 0.0
+
+
+def test_structure_geometry_quality_excludes_metal_coordination(tmp_path: Path):
+    # A bare Zn2+ ion coordinated to a protein atom at a non-bonded metal
+    # distance (~1.8 A) is the intended equilibrium of the 12-6 metal model,
+    # not a steric clash. The geometry check must not flag it.
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="geometry",
+            check_type="structure_geometry_quality",
+            topology_manifest_path="outputs.topology",
+            weight=1.0,
+        )],
+    )
+    _write_openmm_bundle(tmp_path, metal_clash=True)
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {
+                "topology": [
+                    "topology/system.xml",
+                    "topology/topology.pdb",
+                    "topology/state.xml",
+                ],
+            },
+        },
+    )
+    score = scoring.score_submission(task, tmp_path)
+    geometry = score.deterministic_checks[0]
+    assert geometry.passed is True, geometry.message
+    assert "clashes=0" in geometry.message
 
 
 def test_hard_fail_override_promotes_check_to_gate(tmp_path: Path):

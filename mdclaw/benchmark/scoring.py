@@ -2838,16 +2838,53 @@ def _nonbonded_exception_pairs(system: Any) -> set[tuple[int, int]]:
     return pairs
 
 
+def _monoatomic_metal_ion_indices(topology: Any) -> set[int]:
+    """Atom indices of bare (monoatomic) metal ions in an OpenMM topology.
+
+    A metal ion modeled with the standard non-bonded (12-6) point-charge
+    scheme sits *inside* its Lennard-Jones r_min against a coordinating
+    ligand atom, because the +q electrostatic attraction balances the LJ
+    repulsion. Those metal-ligand distances (Zn-N/Zn-S ~1.7-2.3 A) are the
+    intended equilibrium of the model, not steric clashes, so the geometry
+    check excludes any pair involving such an ion. Only single-atom residues
+    are treated as bare ions, so metals embedded in a larger cofactor
+    residue (e.g. the Fe in HEM) are left to the ordinary clash scan.
+    """
+    if topology is None:
+        return set()
+    try:
+        from mdclaw.metal._base import METAL_ELEMENTS
+    except Exception:  # noqa: BLE001
+        return set()
+    indices: set[int] = set()
+    try:
+        for residue in topology.residues():
+            atoms = list(residue.atoms())
+            if len(atoms) != 1:
+                continue
+            atom = atoms[0]
+            element = getattr(atom, "element", None)
+            symbol = getattr(element, "symbol", None)
+            if symbol and symbol in METAL_ELEMENTS:
+                indices.add(int(atom.index))
+    except Exception:  # noqa: BLE001
+        return set()
+    return indices
+
+
 def _count_nonbonded_clashes(
     system: Any,
     coords: list[tuple[float, float, float]],
     overlap_fraction: float,
     limit: int,
+    exclude_indices: Optional[set[int]] = None,
 ) -> tuple[int, list[str]]:
     """Count non-bonded atom pairs closer than a fraction of their VDW r_min.
 
     Uses a uniform spatial grid so the scan is near-linear even for solvated
-    systems. Bonded (exception) pairs and virtual sites are excluded.
+    systems. Bonded (exception) pairs and virtual sites are excluded, as are
+    any atoms in ``exclude_indices`` (e.g. non-bonded metal ions whose
+    coordination distances are shorter than a steric r_min by design).
     """
     rows = _particle_parameter_rows(system)
     if rows is None:
@@ -2856,6 +2893,7 @@ def _count_nonbonded_clashes(
     if n != len(coords):
         return -1, [f"particle/coord count mismatch: {n} vs {len(coords)}"]
 
+    excluded = exclude_indices or set()
     sigmas = [float(row["sigma"]) for row in rows]
     epsilons = [float(row["epsilon"]) for row in rows]
     virtual = [bool(row["is_virtual"]) for row in rows]
@@ -2868,6 +2906,7 @@ def _count_nonbonded_clashes(
     # non-interacting particles alongside virtual sites and zero-sigma atoms.
     interacting = [
         (not virtual[idx]) and sigmas[idx] > 0.0 and epsilons[idx] > 0.0
+        and idx not in excluded
         for idx in range(n)
     ]
     max_sigma = max((sigmas[idx] for idx in range(n) if interacting[idx]),
@@ -3140,8 +3179,10 @@ def _check_structure_geometry_quality(check: DeterministicCheck,
     failures: list[str] = []
     notes: list[str] = []
 
+    metal_ion_indices = _monoatomic_metal_ion_indices(loaded.get("topology"))
     clashes, clash_examples = _count_nonbonded_clashes(
         system, coords, float(check.clash_overlap_fraction), int(check.max_clashes),
+        exclude_indices=metal_ion_indices,
     )
     if clashes < 0:
         return False, 0.0, f"clash scan failed: {clash_examples}"
