@@ -21,7 +21,8 @@
           "PC",
           "PG",
           "OPC",
-          "OPG"
+          "OPG",
+          "PGR"
         ],
         "min_lipid_residues": 4,
         "required_solvent_regime": "membrane",
@@ -43,7 +44,8 @@
           ],
           "POPG": [
             "PG",
-            "OPG"
+            "OPG",
+            "PGR"
           ]
         },
         "structure_manifest_path": "outputs.topology",
@@ -70,7 +72,8 @@
           ],
           "POPG": [
             "PG",
-            "OPG"
+            "OPG",
+            "PGR"
           ]
         },
         "structure_manifest_path": "outputs.topology",
@@ -103,7 +106,8 @@
           ],
           "POPG": [
             "PG",
-            "OPG"
+            "OPG",
+            "PGR"
           ]
         },
         "structure_manifest_path": "outputs.prepared_structure",
