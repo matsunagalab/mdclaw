@@ -1,8 +1,9 @@
 {
   "capability_tags": [
     "preparation_workflow",
-    "heme_cofactor",
-    "metal_containing_cofactor"
+    "metal_ion_retention",
+    "non_zinc_metal",
+    "multi_metal_cofactor"
   ],
   "category": "system_preparation",
   "environment_type": "artifact_only",
@@ -13,11 +14,11 @@
     "insufficient_information_allowed": false
   },
   "primary_score": "preparation",
-  "public_source": "PDB 1MBN",
+  "public_source": "PDB 3CNA",
   "references": [
     {
-      "source": "PDB 1MBN",
-      "url": "https://www.rcsb.org/structure/1MBN"
+      "source": "PDB 3CNA",
+      "url": "https://www.rcsb.org/structure/3CNA"
     }
   ],
   "required_outputs": [
@@ -35,24 +36,67 @@
   "scoring": {
     "deterministic_checks": [
       {
-        "check_id": "heme_cofactor_retained",
+        "check_id": "structural_manganese_retained",
         "check_type": "structure_component_rescan",
         "min_residue_counts": {
-          "HEM": 1
+          "MN": 1
+        },
+        "residue_aliases": {
+          "MN": [
+            "MN2+",
+            "Mn2+"
+          ]
         },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
-        "weight": 0.55
+        "weight": 0.5
       },
       {
-        "allowed_nonstandard_residue_names": [
-          "HEM"
+        "check_id": "structural_calcium_retained",
+        "check_type": "structure_component_rescan",
+        "min_residue_counts": {
+          "CA": 1
+        },
+        "residue_aliases": {
+          "CA": [
+            "CA2+",
+            "Ca2+"
+          ]
+        },
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_residue_names": [
+          "HIS",
+          "HID",
+          "HIE",
+          "HIP"
         ],
+        "check_id": "coordinating_his24_retained",
+        "check_type": "pdb_residue_state",
+        "residue_chain": "A",
+        "residue_number": "24",
+        "required_residue_name": "HIS",
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.3
+      },
+      {
+        "allowed_nonstandard_residue_names": [],
         "check_id": "no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.5
+      },
+      {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
       },
       {
         "check_id": "topology_artifact_bundle_present",
@@ -97,9 +141,7 @@
         "weight": 1.0
       },
       {
-        "allowed_nonstandard_residue_names": [
-          "HEM"
-        ],
+        "allowed_nonstandard_residue_names": [],
         "check_id": "minimized_no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
         "structure_manifest_path": "outputs.minimized_structure",
@@ -107,15 +149,21 @@
         "weight": 0.5
       },
       {
-        "check_id": "minimized_heme_cofactor_retained",
+        "check_id": "minimized_structural_manganese_retained",
         "check_type": "minimized_structure_component_rescan",
         "min_residue_counts": {
-          "HEM": 1
+          "MN": 1
         },
         "minimized_structure_manifest_path": "outputs.minimized_structure",
+        "residue_aliases": {
+          "MN": [
+            "MN2+",
+            "Mn2+"
+          ]
+        },
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "minimized_structure.pdb",
-        "weight": 0.55
+        "weight": 0.5
       }
     ],
     "ground_truth_checks": [],
@@ -155,7 +203,7 @@
   "secondary_scores": [
     "evidence_communication"
   ],
-  "task_id": "P27_prep_heme_protein_myoglobin",
-  "task_intent": "Heme cofactor preparation: prepare sperm-whale myoglobin (PDB 1MBN) while retaining its non-covalent b-type heme (HEM) cofactor and building a topology in which every heme atom carries force-field parameters, rather than silently dropping the heme or leaving it unparameterized.",
+  "task_id": "P27_prep_manganese_metalloenzyme_3cna",
+  "task_intent": "Non-zinc metal cofactor preparation: prepare concanavalin A (PDB 3CNA) while retaining both its structural Mn2+ and Ca2+ ions as supported metal ions and keeping the Mn coordination shell (including His24), rather than dropping the metals or treating them as generic ligands. Neutralize the resulting system.",
   "time_limit_minutes": 60
 }

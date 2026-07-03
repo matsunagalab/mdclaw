@@ -2114,6 +2114,39 @@ def test_unexpected_residue_rescan_allows_requested_nonstandard_only(
     assert "AP5" not in failed.message
 
 
+def test_unexpected_residue_rescan_allows_retained_metal_ions(tmp_path: Path):
+    # Structural / catalytic metal ions retained with the nonbonded model
+    # (e.g. Mn2+, Fe2+) must not be flagged as unexpected nonstandard residues,
+    # even when the task allows no extra nonstandard residues of its own.
+    task = _make_task(
+        primary="preparation",
+        det_checks=[DeterministicCheck(
+            check_id="no_extra_nonstandard",
+            check_type="unexpected_residue_rescan",
+            structure_manifest_path="outputs.prepared_structure",
+            allowed_nonstandard_residue_names=[],
+            weight=1.0,
+        )],
+    )
+    _write_submission(
+        tmp_path,
+        manifest={
+            "task_id": "t",
+            "status": "completed",
+            "outputs": {"prepared_structure": "prepared_structure.pdb"},
+        },
+    )
+    (tmp_path / "prepared_structure.pdb").write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "HETATM    2 MN   MN  B   2       1.000   0.000   0.000  1.00  0.00          Mn\n"
+        "HETATM    3 CA   CA  C   3       2.000   0.000   0.000  1.00  0.00          Ca\n"
+        "HETATM    4 FE   FE  D   4       3.000   0.000   0.000  1.00  0.00          Fe\n"
+        "END\n"
+    )
+    score = scoring.score_submission(task, tmp_path)
+    assert score.deterministic_checks[0].passed is True
+
+
 def test_pdb_no_deuterium_atoms_check(tmp_path: Path):
     task = _make_task(
         primary="preparation",

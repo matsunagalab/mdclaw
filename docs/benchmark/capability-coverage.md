@@ -90,7 +90,7 @@ deterministic check to the gate with `hard_fail: true`.
 | Biological assembly choice | P24 | `rmsd_recompute` vs assembly-1 reference, `assembly_identity_check` (four chains) |
 | Specified ion concentration + neutrality | P25 | `ion_concentration_recompute` (molarity from box), `net_charge_check`, `structure_component_rescan` |
 | Zinc metalloenzyme retention + His shell | P26 | `structure_component_rescan` (Zn2+ retained), `pdb_residue_state` (coordinating His), `net_charge_check` |
-| Heme (Fe) cofactor + full parameterization | P27 | `structure_component_rescan` (HEM retained), `forcefield_applied_rescan` (all heme atoms parameterized) |
+| Non-zinc multi-metal cofactor retention (Mn2+/Ca2+) | P27 | `structure_component_rescan` (Mn2+ and Ca2+ retained), `pdb_residue_state` (coordinating His24), `net_charge_check` |
 | Custom drug-like ligand parameterization + pose | P28 | `rmsd_recompute` vs imatinib pose reference, `forcefield_applied_rescan`, `structure_component_rescan` (STI) |
 | Protein-protein interface retention | P29 | `assembly_identity_check` (both partner chains), `net_charge_check` |
 | Protein-DNA complex + structural metals | P30 | `nucleic_content_rescan` (DNA duplex), `structure_component_rescan` (3x Zn2+), `net_charge_check` |

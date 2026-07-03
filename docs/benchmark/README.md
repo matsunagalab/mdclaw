@@ -231,7 +231,7 @@ MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
 
 | Family | What It Tests | Scored By | Tasks |
 |---|---|---|---|
-| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, metal cofactors (zinc/heme), custom ligand parameterization, protein-protein and protein-DNA complexes, side-chain reconstruction, topology build, minimization, and provenance. | File presence, JSON metadata checks, PDB residue/component rescans, ligand-pose RMSD recomputation, topology/minimization rescans, and artifact integrity checks. | P01-P34 |
+| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, metal cofactors (zinc, non-zinc Mn/Ca), custom ligand parameterization, protein-protein and protein-DNA complexes, side-chain reconstruction, topology build, minimization, and provenance. | File presence, JSON metadata checks, PDB residue/component rescans, ligand-pose RMSD recomputation, topology/minimization rescans, and artifact integrity checks. | P01-P34 |
 
 The machine-readable scoring axis is still `preparation`. Secondary qualitative
 axes can be added later via LLM judge payloads, but deterministic artifact

@@ -1,12 +1,12 @@
-# P27_prep_heme_protein_myoglobin: Heme cofactor preparation
+# P27_prep_manganese_metalloenzyme_3cna: Non-zinc metal cofactor preparation
 
-You are evaluating an MD agent on `P27_prep_heme_protein_myoglobin`.
+You are evaluating an MD agent on `P27_prep_manganese_metalloenzyme_3cna`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Heme cofactor preparation: prepare sperm-whale myoglobin from PDB 1MBN while retaining its non-covalent b-type heme (HEM) cofactor and building a topology in which every heme atom carries force-field parameters, rather than silently dropping the heme or leaving it unparameterized.
+Task: Non-zinc metal cofactor preparation: prepare concanavalin A from PDB 3CNA while retaining both its structural Mn2+ and Ca2+ ions as supported metal ions and keeping the Mn coordination shell (including His24), rather than dropping the metals or treating them as generic ligands. Neutralize the resulting system.
 
-Public source anchors: PDB 1MBN.
+Public source anchors: PDB 3CNA.
 
 Your submission directory must contain:
 

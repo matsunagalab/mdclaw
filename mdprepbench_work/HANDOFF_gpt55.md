@@ -32,7 +32,7 @@ PY
 | task | 系 | 結果 | prep score | 落ちたチェック |
 |---|---|---|---|---|
 | P26 | 亜鉛CA-II 2CBA | FAIL | 0.0 | net_charge(+2), structure_geometry_is_clash_free(2) |
-| P27 | ヘム myoglobin 1MBN | FAIL(prep段階) | - | prep が `blocking_ligand_failure` で停止 |
+| P27 | ~~ヘム myoglobin 1MBN~~ → 非Zn金属 ConA 3CNA(Mn+Ca) | PASS(差し替え後) | 1.0 | - （ヘムは解けないため 3CNA へ差し替え済み） |
 | P28 | imatinib STI 1IEP | PASS | 1.0 | - （`--ligand-smiles STI=...` を渡せば通る） |
 | P29 | colicin–Im9 界面 1EMV | PASS | 1.0 | - |
 | P30 | Zif268–DNA–3Zn 1AAY | FAIL | 0.0 | net_charge(+5), structure_geometry_is_clash_free(2) |
@@ -207,6 +207,30 @@ POPC/POPG を表現するよう更新して、honest が PASS するか整合を
 
 ## issue 4: P27 ヘム — 現行 prep でヘム(Fe ポルフィリン)をパラメタライズできない（設計判断が必要）
 
+> **STATUS (Fable が対応済み)**: **選択肢 2（差し替え）を採用**。ユーザー判断で
+> P27 を **ヘム(1MBN)から非Zn多核金属系(3CNA コンカナバリンA, Mn²⁺+Ca²⁺)へ差し替え**。
+> 差し替え後 P27 は全チェック PASS（stock_prep=1.0）。ヘム専用パラメータ経路の
+> 実装は見送り（MCPB bonded=QM 依存 or ライブラリ注入が必要でコスト大、ベンチ方針
+> 「現行ツールで解ける」に合わない）。
+>
+> 何をしたか:
+> - task_id を `P27_prep_heme_protein_myoglobin` →
+>   `P27_prep_manganese_metalloenzyme_3cna` にリネーム
+>   （spec/tasks/dataset.json/driver.py/docs すべて更新、task.json 再生成）。
+> - 新チェック: Mn²⁺ 保持, Ca²⁺ 保持, 配位 His24, net neutral, 標準 topo/min 群。
+> - **scorer 一般修正**: `mdclaw/benchmark/scoring.py` の
+>   `_DEFAULT_CATION_RESIDUE_NAMES` が NA/K/MG/CA/ZN 等のみで **MN/FE/CO/NI/CU 等の
+>   保持金属を含んでいなかった**ため、`unexpected_residue_rescan` が Mn を
+>   「予期しない非標準残基」と誤判定していた。`METAL_CHARGES` と歩調を合わせて
+>   多価金属を既定カチオンに追加（P26 の Zn は元々含まれていた）。回帰テスト追加。
+> - 検算: P27 再走で 13/13 チェック PASS, net 0.0, stock_prep=1.0。
+>   `tests/test_benchmark` の全既存テストも PASS（1 件の e2e prompt 長テストは
+>   修正前から失敗する既存の別問題＝tmp_path 長依存、git stash で確認済み）。
+>
+> **これで P26–P34 は P27 含め全て通過。ベンチ側の残件なし。**
+
+### （以下は当初の問題説明。差し替えで解決済み）
+
 **症状**: prep が `overall_status=completed_with_blocking_ligand_failure`,
 `code=blocking_ligand_failure`。HEM の ligand cleaning が
 `Template matching failed ... Can't kekulize mol. Unkekulized atoms: 14 15 16 17 29` で失敗。
@@ -259,7 +283,8 @@ P31 の HIP、P32 は無指定で補完される点）。
 2. ~~**issue 3（P34 alias=PGR 追加, atom_count調整, fixture更新）**~~ **対応済み**
    （alias に PGR 追加のみで PASS。atom_count 調整・fixture 更新は不要だった）。
 3. ~~**issue 2（scorer の金属配位 clash 除外）**~~ **対応済み**。P26/P30 の clash PASS。
-4. **issue 4（P27 ヘム）** はユーザー判断を仰いでから対応（保留/差し替え/実装）。**唯一の残件**。
+4. ~~**issue 4（P27 ヘム）**~~ **対応済み**。P27 を非Zn金属系(3CNA Mn/Ca)へ差し替え、
+   scorer の既定カチオンに多価金属を追加。P26–P34 全て PASS で **残件なし**。
 5. 各修正後 `driver.py --task ...` で再走し score.json を確認。
    scorer を触った場合は
    `conda run -n mdclaw pytest tests/test_benchmark -q` を回す。

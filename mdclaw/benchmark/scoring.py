@@ -1112,9 +1112,20 @@ _DEFAULT_WATER_RESIDUE_NAMES = (
     "HOH", "WAT", "TIP", "TIP3", "TIP4", "TIP5", "TP3", "TP4", "TP5",
     "T3P", "T4P", "SPC", "SPCE", "OPC", "OPC3", "SOL",
 )
-_DEFAULT_CATION_RESIDUE_NAMES = ("NA", "NA+", "K", "K+", "LI", "LI+",
-                                 "MG", "MG2+", "CA", "CA2+", "ZN", "ZN2+",
-                                 "CS", "CS+", "RB", "RB+")
+# Monatomic cations recognized by every ion-aware check. This spans plain
+# monovalent counter-ions and the structural/catalytic metal ions MDClaw can
+# retain and parameterize with the nonbonded model (kept in sync with
+# ``mdclaw.metal._base.METAL_CHARGES``), so a retained Mn2+/Fe2+/etc. is not
+# mistaken for an unexpected nonstandard residue.
+_DEFAULT_CATION_RESIDUE_NAMES = (
+    # Monovalent counter-ions
+    "NA", "NA+", "K", "K+", "LI", "LI+", "CS", "CS+", "RB", "RB+",
+    # Multivalent structural / catalytic metal ions (nonbonded model)
+    "MG", "MG2+", "CA", "CA2+", "ZN", "ZN2+", "MN", "MN2+",
+    "FE", "FE2+", "FE3", "FE3+", "CO", "CO2+", "NI", "NI2+",
+    "CU", "CU2+", "CU1", "CU1+", "AG", "AG+",
+    "HG", "HG2+", "CD", "CD2+", "PB", "PB2+", "AL", "AL3+", "CR", "CR3+",
+)
 _DEFAULT_ANION_RESIDUE_NAMES = ("CL", "CL-", "BR", "BR-", "I", "I-",
                                 "F", "F-")
 _AVOGADRO_PER_NM3_TO_MOLAR = 1.0 / 0.6022140857  # ions per nm^3 -> mol/L

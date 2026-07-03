@@ -233,7 +233,7 @@ family:
 - `MDPrepBench-v0.1` in `benchmarks/mdprepbench/`: a 34-task preparation
   workflow battery covering ligand/chain selection, residue protonation, PTMs,
   glycans, nucleic acids, membranes, assemblies, ion concentration, metal
-  cofactors (zinc/heme), custom drug-like ligand parameterization,
+  cofactors (zinc, non-zinc Mn/Ca), custom drug-like ligand parameterization,
   protein-protein and protein-DNA complexes, side-chain reconstruction, and
   backend-neutral provenance.
 - `MDStudyBench-v0.2` in `benchmarks/mdstudybench/`: four uniform-load

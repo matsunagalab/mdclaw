@@ -148,7 +148,7 @@ be promoted to this gate per task with `hard_fail: true`.
 | P24 | Assembly/biological unit choice | PDB 1STP, stress reference PDB 2MS2 | Task: Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. | assembly-1 coordinate RMSD, four submitted protein chains, common topology/minimization checks. | 1 |
 | P25 | Specified ion concentration | PDB 5AWL | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | explicit solvent, K/CL retained in topology/minimized structure, 0.30 M KCl recomputed from ion count and box volume, net charge recomputed from OpenMM charges, common topology/minimization checks. | 1 |
 | P26 | Zinc metalloenzyme retention | PDB 2CBA | Task: prepare human carbonic anhydrase II, keep the catalytic Zn2+ as a supported metal ion and its His94/96/119 shell, and neutralize. | Zn2+ retained (prepared/minimized), coordinating His94 present, net neutral, common topology/minimization checks. | 1 |
-| P27 | Heme (Fe) cofactor parameterization | PDB 1MBN | Task: prepare sperm-whale myoglobin, retain the b-type heme (HEM), and parameterize every heme atom. | HEM retained (prepared/minimized), force field applied to all atoms, common topology/minimization checks. | 1 |
+| P27 | Non-zinc multi-metal cofactor retention | PDB 3CNA | Task: prepare concanavalin A, keep both the structural Mn2+ and Ca2+ as supported metal ions and the Mn shell (His24), and neutralize. | Mn2+ and Ca2+ retained (prepared/minimized), coordinating His24 present, net neutral, common topology/minimization checks. | 1 |
 | P28 | Custom drug-like ligand parameterization | PDB 1IEP | Task: prepare the Abl kinase-imatinib complex (chain A + STI), generate small-molecule parameters, and preserve the imatinib pose. | hidden imatinib-pose RMSD reference, STI retained in topology/minimized structure, force field applied to all atoms, common topology/minimization checks. | 1 |
 | P29 | Protein-protein interface retention | PDB 1EMV | Task: prepare the colicin E9 DNase-Im9 complex keeping both partners as two chains, and neutralize. | two protein chains retained (prepared/minimized), net neutral, buffer excluded, common topology/minimization checks. | 1 |
 | P30 | Protein-DNA complex with structural metals | PDB 1AAY | Task: prepare the Zif268 zinc-finger-DNA complex keeping the DNA duplex, all three Zn2+, and the protein, and neutralize. | DNA duplex (>=2 chains), three Zn2+ retained (prepared/minimized), net neutral, common topology/minimization checks. | 2 |
@@ -332,9 +332,10 @@ agent tasks.
 Implemented:
 
 - P01-P34 task IDs are part of `MDPrepBench-v0.1`. P26-P34 extend coverage to
-  zinc/heme metal cofactors, custom drug-like ligand parameterization,
-  protein-protein and protein-DNA complexes, histidine protonation, missing
-  side-chain reconstruction, physiological NaCl, and anionic-lipid membranes.
+  zinc and non-zinc multi-metal cofactors, custom drug-like ligand
+  parameterization, protein-protein and protein-DNA complexes, histidine
+  protonation, missing side-chain reconstruction, physiological NaCl, and
+  anionic-lipid membranes.
 - The common prep contract now includes topology artifacts and minimization
   evidence.
 - P17 is the standard DNA duplex/neutralization task; modified DNA/RNA is not
