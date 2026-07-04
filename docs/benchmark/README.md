@@ -78,6 +78,15 @@ The automated runner defaults to 30 minutes per task. Increase
 `--max-walltime-minutes-per-task` for slow local MD or exploratory debugging
 runs.
 
+If an agent exits cleanly before the public submission preflight passes,
+`run_benchmark_agent` makes one tool-neutral finalization retry by default. It
+reruns the same agent command with a finalize-only prompt and the same public
+task materials. The runner does not inspect MDClaw DAGs, choose artifacts, or
+call an MDClaw-specific packager on the agent's behalf. The retry is capped at
+10 minutes so it cannot become a second full MD attempt. Set
+`--finalization-retries 0` to disable this retry. Each retry is recorded in the
+task's `agent_run.json`, `harness_execution.json`, and `finalization.json`.
+
 The built-in profiles also set an explicit model unless `--agent-model` is
 provided: Pi uses `spark1-vllm/deepseek-v4-flash`, Claude Code uses
 `sonnet`, and Codex uses `gpt-5.4-mini`. The resolved model is written to
@@ -383,7 +392,8 @@ Automated runs additionally write `finalization.json` per task and aggregate
 `contract_status`, `harness_status`, `failure_class`, and
 `harness_evidence_status` report whether the harness saw a complete, auditable
 handoff or a control-plane failure such as `background_processes` or
-`incomplete_running_work`.
+`incomplete_running_work`. `agent_finalization_retry_count` records whether a
+tool-neutral finalization retry was needed.
 
 Individual tasks inspect submitted structures, OpenMM bundle contents, and
 scorer-side references under `truth/`. For example, P11 checks the submitted PDB

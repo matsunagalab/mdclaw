@@ -379,7 +379,8 @@ signature, update the relevant section here and the matching skill examples.
   `package.json` inside the solver workspace. Built-in `agent_profile` values
   provide practical Pi, Claude Code, and Codex command templates, including
   non-interactive approval-bypass flags for Claude Code / Codex, explicit
-  default model selection via `agent_model`, and process-group cleanup on
+  default model selection via `agent_model`, one tool-neutral finalization retry
+  for clean exits before public preflight passes, and process-group cleanup on
   timeout. `jobs` runs that many tasks concurrently in one run (scored once
   after all finish); `gpus` (when > 0) round-robins `CUDA_VISIBLE_DEVICES`
   across concurrent tasks by task index.

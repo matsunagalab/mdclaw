@@ -517,6 +517,88 @@ _fake_submissions.GENERATORS[args.task_id](
     assert score["status"] == "passed"
 
 
+def test_run_benchmark_agent_retries_tool_neutral_finalization(
+    tmp_path: Path,
+):
+    fake_agent = tmp_path / "fake_agent_finalization_retry.py"
+    fake_agent.write_text(
+        """
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from tests.test_benchmark import _fake_submissions
+
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--prompt", required=True)
+parser.add_argument("--submission-dir", required=True)
+parser.add_argument("--run-id", required=True)
+parser.add_argument("--task-id", required=True)
+args = parser.parse_args()
+
+prompt = Path(args.prompt).read_text()
+Path(args.submission_dir).mkdir(parents=True, exist_ok=True)
+if "Finalization Retry" not in prompt:
+    sys.exit(0)
+
+stage_wrapper = os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"]
+for stage in ("source", "prep", "topo", "min"):
+    subprocess.run(
+        [sys.executable, stage_wrapper, "--stage", stage, "--",
+         sys.executable, "-c", "pass"],
+        check=True,
+    )
+
+_fake_submissions.GENERATORS[args.task_id](
+    Path(args.submission_dir),
+    run_id=args.run_id,
+    mode="honest",
+)
+""".lstrip()
+    )
+    output_dir = tmp_path / "benchmark_runs"
+    command = (
+        f"{shlex.quote(sys.executable)} {shlex.quote(str(fake_agent))} "
+        "--prompt {{agent_prompt}} "
+        "--submission-dir {{submission_dir}} "
+        "--run-id {{run_id}} "
+        "--task-id {{task_id}}"
+    )
+
+    result = benchmark_run.run_benchmark_agent(
+        output_dir=str(output_dir),
+        run_id="agent_runner_finalization_retry",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        agent_name="fake-agent",
+        agent_command=command,
+        agent_model="test-provider/test-model",
+        execution_mode="dry_run",
+        finalization_retries=1,
+        env={"PYTHONPATH": str(REPO_ROOT)},
+    )
+
+    assert result["success"], result
+    task_run_dir = output_dir / "agent_runner_finalization_retry" / "tasks" / TASK_ID
+    agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
+    assert agent_run["agent_finalization_retry_count"] == 1
+    assert [attempt["phase"] for attempt in agent_run["agent_attempts"]] == [
+        "solve",
+        "finalization_retry",
+    ]
+    finalization = json.loads((task_run_dir / "finalization.json").read_text())
+    assert finalization["contract_status"] == "complete"
+    assert finalization["harness_status"] == "ok"
+    assert finalization["agent_finalization_retry_count"] == 1
+    assert (task_run_dir / "agent_finalization_prompt_1.md").is_file()
+    score_payload = json.loads((task_run_dir / "score.json").read_text())
+    score = score_payload.get("score", score_payload)
+    assert score["status"] == "passed"
+
+
 def test_run_benchmark_agent_classifies_running_mdclaw_work_as_incomplete(
     tmp_path: Path,
 ):

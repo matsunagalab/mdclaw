@@ -578,6 +578,10 @@ def _skill_context_allows_mdclaw_cli(solver_context: dict[str, Any]) -> bool:
     }
 
 
+def _mdclaw_cli_policy_allows(policy: str) -> bool:
+    return (policy or "").strip().lower() in {"allow", "allowed", "off", "none"}
+
+
 def _record_uses_mdclaw_cli(record: dict[str, Any]) -> bool:
     if record.get("tool"):
         return True
@@ -597,7 +601,7 @@ def _mdclaw_cli_policy_violations(
     mdclaw_cli_policy: str,
 ) -> list[str]:
     policy = (mdclaw_cli_policy or "forbid-without-skill").strip().lower()
-    if policy in {"allow", "allowed", "off", "none"}:
+    if _mdclaw_cli_policy_allows(policy):
         return []
     if _skill_context_allows_mdclaw_cli(solver_context):
         return []
@@ -955,6 +959,44 @@ def _task_agent_prompt(
         "Run public preflight after writing submission/. Exit after "
         "preflight passes or explicit incomplete failure. "
         "The evaluator scores separately.\n"
+    )
+
+
+def _task_agent_finalization_prompt(
+    task_id: str,
+    instruction_file: Path,
+    original_prompt_file: Path,
+    finalization_file: Path,
+) -> str:
+    """Prompt for a tool-neutral final packaging retry.
+
+    The benchmark runner must not select MD artifacts or call an MDClaw-only
+    packager on the agent's behalf. This retry gives every agent one identical
+    chance to finish the public submission contract using its own work products.
+    """
+    return (
+        f"# MD Benchmark Finalization Retry: {task_id}\n\n"
+        "The previous agent process exited before the public submission "
+        "preflight passed.\n\n"
+        "Do not inspect private evaluator files, sibling tasks, truth data, or "
+        "scorer internals. Do not fabricate artifacts.\n\n"
+        "Use this same agent-safe instruction file:\n\n"
+        f"{instruction_file}\n\n"
+        "Original task prompt, if needed for context:\n\n"
+        f"{original_prompt_file}\n\n"
+        "Previous finalization report:\n\n"
+        f"{finalization_file}\n\n"
+        "Your job in this retry is only final packaging/preflight. Inspect the "
+        "existing work_dir and submission_dir from task_instructions.json. If "
+        "the scientific/MD work is already complete, place the required raw "
+        "OpenMM artifacts and task-specific raw files in the exact "
+        "submission_dir, using any public packager or direct file export that "
+        "is appropriate for your workflow. If the work is incomplete, leave the "
+        "submission incomplete and exit with a clear nonzero failure.\n\n"
+        "Record any real commands with "
+        "`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- <command>`.\n\n"
+        "Run the public preflight from task_instructions.json before exiting. "
+        "Exit 0 only after preflight passes.\n"
     )
 
 
@@ -1463,6 +1505,36 @@ def _finalization_policy_violations(finalization: dict[str, Any]) -> list[str]:
     return [f"{task_id}: finalization failed ({failure_class})"]
 
 
+def _should_retry_agent_finalization(
+    finalization: dict[str, Any],
+    *,
+    exit_code: int,
+    timed_out: bool,
+    background_processes: list[dict[str, Any]],
+) -> bool:
+    if exit_code != 0 or timed_out or background_processes:
+        return False
+    if finalization.get("harness_status") != "failed":
+        return False
+    if finalization.get("failure_class") in {
+        "background_processes",
+        "incomplete_running_work",
+    }:
+        return False
+    progress = finalization.get("mdclaw_progress")
+    if isinstance(progress, dict) and progress.get("active_node_count"):
+        return False
+    preflight = finalization.get("preflight")
+    preflight_failure = (
+        preflight.get("failure_class") if isinstance(preflight, dict) else None
+    )
+    return preflight_failure in {
+        "missing_submission_dir",
+        "missing_raw_artifacts",
+        "contract_violation",
+    }
+
+
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> None:
     ensure_directory(path.parent)
     with path.open("w") as f:
@@ -1854,6 +1926,7 @@ def run_benchmark_agent(
     mdclaw_cli_policy: str = "forbid-without-skill",
     mdclaw_runtime: str = "auto",
     agent_skills_dir: Optional[str] = None,
+    finalization_retries: int = 1,
     env: Optional[dict[str, str]] = None,
 ) -> dict[str, Any]:
     """Run an external benchmark agent and score its submission.
@@ -1882,6 +1955,11 @@ def run_benchmark_agent(
     command template. ``auto`` maps common ``agent_name`` values such as
     ``pi``, ``claude-code``, and ``codex`` to practical plain, non-interactive
     profiles that read only the generated task prompt.
+
+    ``finalization_retries`` gives every agent the same tool-neutral chance to
+    recover from exiting before public preflight passes. The retry uses a
+    finalize-only prompt and the same public task materials; the runner never
+    selects MD artifacts or calls an MDClaw-specific packager.
 
     If ``agent_skills_dir`` is provided, its skills are copied into the solver
     workspace under ``skills/``, ``.agents/skills/``, ``.claude/skills/``, and
@@ -2045,6 +2123,7 @@ def run_benchmark_agent(
     cfg_payload["agent_command_template"] = agent_command
     cfg_payload["mdclaw_runtime"] = resolved_mdclaw_runtime
     cfg_payload["agent_skills"] = agent_skills
+    cfg_payload["finalization_retries"] = max(0, int(finalization_retries or 0))
     _write_json(cfg_path, cfg_payload)
     benchmark_version = _benchmark_version_for_dataset(str(dataset))
     attestation_payload = _write_attestation(
@@ -2079,6 +2158,7 @@ def run_benchmark_agent(
             mdclaw_cli_policy=mdclaw_cli_policy,
             mdclaw_runtime=resolved_mdclaw_runtime,
             agent_skills=agent_skills,
+            finalization_retries=max(0, int(finalization_retries or 0)),
             cuda_visible_devices=cuda,
         )
 
@@ -2171,6 +2251,7 @@ def run_benchmark_agent(
         "agent_command_template": agent_command,
         "mdclaw_cli_policy": mdclaw_cli_policy,
         "mdclaw_runtime": resolved_mdclaw_runtime,
+        "finalization_retries": max(0, int(finalization_retries or 0)),
         "task_count": len(task_records),
         "tasks": task_records,
         "score": score_result,
@@ -2223,6 +2304,7 @@ def _run_one_benchmark_agent_task(
     mdclaw_cli_policy: str,
     mdclaw_runtime: str,
     agent_skills: Optional[dict[str, Any]] = None,
+    finalization_retries: int = 0,
     cuda_visible_devices: Optional[str] = None,
 ) -> dict[str, Any]:
     solver_task_dir = solver_workspace / "tasks" / task_id
@@ -2365,8 +2447,6 @@ def _run_one_benchmark_agent_task(
     if cuda_visible_devices is not None:
         run_env["CUDA_VISIBLE_DEVICES"] = cuda_visible_devices
 
-    started_wall = time.monotonic()
-    started_at = _now_utc()
     # Effective per-task walltime. For MDStudyBench the task's declared limit is
     # authoritative and the operator cap is ignored (fixed, reproducible, and the
     # same number the prompt shows the agent). For other suites an explicit
@@ -2383,33 +2463,160 @@ def _run_one_benchmark_agent_task(
         if effective_walltime_minutes and effective_walltime_minutes > 0
         else None
     )
-    exit_code = 0
-    timed_out = False
-    with stdout_path.open("w") as stdout_f, stderr_path.open("w") as stderr_f:
+
+    def _execute_agent_attempt(
+        *,
+        command: str,
+        stdout_file: Path,
+        stderr_file: Path,
+        attempt_index: int,
+        phase: str,
+        timeout_override_seconds: Optional[int] = None,
+    ) -> dict[str, Any]:
+        started_wall = time.monotonic()
+        started_at = _now_utc()
+        exit_code = 0
+        timed_out = False
+        attempt_timeout_seconds = (
+            timeout_seconds
+            if timeout_override_seconds is None
+            else timeout_override_seconds
+        )
+        process_group_id: Optional[int] = None
         process_kwargs: dict[str, Any] = {}
         if os.name == "posix":
             process_kwargs["preexec_fn"] = os.setsid
-        process = subprocess.Popen(
-            rendered_command,
-            shell=True,
-            cwd=solver_workspace,
-            env=run_env,
-            stdout=stdout_f,
-            stderr=stderr_f,
-            **process_kwargs,
-        )
-        process_group_id = process.pid if os.name == "posix" else None
-        try:
-            exit_code = int(process.wait(timeout=timeout_seconds))
-        except subprocess.TimeoutExpired:
-            exit_code = 124
-            timed_out = True
-            _terminate_process_tree(process)
-            stderr_f.write(
-                "\n[mdclaw benchmark runner] agent command timed out after "
-                f"{timeout_seconds} seconds\n"
+        with stdout_file.open("w") as stdout_f, stderr_file.open("w") as stderr_f:
+            process = subprocess.Popen(
+                command,
+                shell=True,
+                cwd=solver_workspace,
+                env=run_env,
+                stdout=stdout_f,
+                stderr=stderr_f,
+                **process_kwargs,
             )
-    walltime = round(float(time.monotonic() - started_wall), 6)
+            process_group_id = process.pid if os.name == "posix" else None
+            try:
+                exit_code = int(process.wait(timeout=attempt_timeout_seconds))
+            except subprocess.TimeoutExpired:
+                exit_code = 124
+                timed_out = True
+                _terminate_process_tree(process)
+                stderr_f.write(
+                    "\n[mdclaw benchmark runner] agent command timed out after "
+                    f"{attempt_timeout_seconds} seconds\n"
+                )
+        walltime = round(float(time.monotonic() - started_wall), 6)
+        background_processes = _process_group_members(process_group_id)
+        if background_processes:
+            _terminate_process_group_id(process_group_id)
+        record = {
+            "stage": "agent_run",
+            "phase": phase,
+            "attempt_index": attempt_index,
+            "command": command,
+            "exit_code": exit_code,
+            "walltime_seconds": walltime,
+            "walltime_limit_minutes": (
+                round(attempt_timeout_seconds / 60, 6)
+                if attempt_timeout_seconds is not None
+                else None
+            ),
+            "started_at": started_at,
+            "completed_at": _now_utc(),
+        }
+        if timed_out:
+            record["status"] = "timeout"
+        return {
+            "record": record,
+            "exit_code": exit_code,
+            "timed_out": timed_out,
+            "walltime_seconds": walltime,
+            "background_processes": background_processes,
+        }
+
+    def _copy_submission_and_finalize(
+        *,
+        background_processes: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        if evaluator_submission.exists():
+            shutil.rmtree(evaluator_submission)
+        if solver_submission.exists():
+            shutil.copytree(solver_submission, evaluator_submission)
+        else:
+            ensure_directory(evaluator_submission)
+
+        solver_harness_jsonl = solver_task_dir / "harness_execution.jsonl"
+        records = _read_harness_jsonl_records(harness_jsonl, solver_harness_jsonl)
+        if records:
+            _write_jsonl(harness_jsonl, records)
+        finalization = _finalize_task_submission(
+            public_dir=public_dir,
+            task_id=task_id,
+            task_run_dir=task_run_dir,
+            task_workspace_dir=solver_task_dir,
+            evaluator_submission=evaluator_submission,
+            background_processes=background_processes,
+            harness_records=records,
+        )
+        return records, finalization
+
+    agent_attempts: list[dict[str, Any]] = [
+        _execute_agent_attempt(
+            command=rendered_command,
+            stdout_file=stdout_path,
+            stderr_file=stderr_path,
+            attempt_index=0,
+            phase="solve",
+        )
+    ]
+    records, finalization = _copy_submission_and_finalize(
+        background_processes=agent_attempts[-1]["background_processes"]
+    )
+    retry_limit = max(0, int(finalization_retries or 0))
+    retry_timeout_seconds = 600 if timeout_seconds is None else min(timeout_seconds, 600)
+    retry_count = 0
+    while retry_count < retry_limit and _should_retry_agent_finalization(
+        finalization,
+        exit_code=int(agent_attempts[-1]["exit_code"]),
+        timed_out=bool(agent_attempts[-1]["timed_out"]),
+        background_processes=agent_attempts[-1]["background_processes"],
+    ):
+        retry_count += 1
+        retry_prompt_path = task_run_dir / f"agent_finalization_prompt_{retry_count}.md"
+        _write_text(
+            retry_prompt_path,
+            _task_agent_finalization_prompt(
+                task_id,
+                task_instruction_path,
+                agent_prompt_path,
+                task_run_dir / "finalization.json",
+            ),
+        )
+        retry_values = dict(template_values)
+        retry_values["agent_prompt"] = retry_prompt_path
+        retry_command = _render_agent_command(agent_command, retry_values)
+        _write_text(
+            task_run_dir / f"agent_finalization_command_{retry_count}.txt",
+            retry_command + "\n",
+        )
+        agent_attempts.append(
+            _execute_agent_attempt(
+                command=retry_command,
+                stdout_file=task_run_dir
+                / f"agent.finalization_retry_{retry_count}.stdout.log",
+                stderr_file=task_run_dir
+                / f"agent.finalization_retry_{retry_count}.stderr.log",
+                attempt_index=retry_count,
+                phase="finalization_retry",
+                timeout_override_seconds=retry_timeout_seconds,
+            )
+        )
+        records, finalization = _copy_submission_and_finalize(
+            background_processes=agent_attempts[-1]["background_processes"]
+        )
+
     agent_session_transcripts = _copy_agent_session_files(
         session_dir=agent_session_dir,
         task_run_dir=task_run_dir,
@@ -2417,50 +2624,27 @@ def _run_one_benchmark_agent_task(
         run_id=run_id,
         task_id=task_id,
     )
+    if agent_session_transcripts:
+        agent_attempts[0]["record"]["agent_session_transcripts"] = (
+            agent_session_transcripts
+        )
+    finalization["agent_finalization_retry_count"] = retry_count
+    finalization["agent_finalization_retry_limit"] = retry_limit
+    _write_json(task_run_dir / "finalization.json", finalization)
 
-    background_processes = _process_group_members(process_group_id)
-    if background_processes:
-        _terminate_process_group_id(process_group_id)
-
-    if evaluator_submission.exists():
-        shutil.rmtree(evaluator_submission)
-    if solver_submission.exists():
-        shutil.copytree(solver_submission, evaluator_submission)
-    else:
-        ensure_directory(evaluator_submission)
-
-    solver_harness_jsonl = solver_task_dir / "harness_execution.jsonl"
-    records = _read_harness_jsonl_records(harness_jsonl, solver_harness_jsonl)
-    if records:
-        _write_jsonl(harness_jsonl, records)
     policy_violations = _mdclaw_cli_policy_violations(
         records,
         solver_context=solver_context,
         mdclaw_cli_policy=mdclaw_cli_policy,
     )
-    finalization = _finalize_task_submission(
-        public_dir=public_dir,
-        task_id=task_id,
-        task_run_dir=task_run_dir,
-        task_workspace_dir=solver_task_dir,
-        evaluator_submission=evaluator_submission,
-        background_processes=background_processes,
-        harness_records=records,
-    )
     policy_violations.extend(_finalization_policy_violations(finalization))
-    agent_record = {
-        "stage": "agent_run",
-        "command": rendered_command,
-        "exit_code": exit_code,
-        "walltime_seconds": walltime,
-        "walltime_limit_minutes": effective_walltime_minutes,
-        "started_at": started_at,
-        "completed_at": _now_utc(),
-    }
-    if timed_out:
-        agent_record["status"] = "timeout"
-    if agent_session_transcripts:
-        agent_record["agent_session_transcripts"] = agent_session_transcripts
+    agent_records = [attempt["record"] for attempt in agent_attempts]
+    exit_code = int(agent_attempts[-1]["exit_code"])
+    timed_out = any(bool(attempt["timed_out"]) for attempt in agent_attempts)
+    walltime = round(
+        sum(float(attempt["walltime_seconds"]) for attempt in agent_attempts),
+        6,
+    )
     harness_payload = {
         "schema_version": "1.0",
         "run_id": run_id,
@@ -2475,7 +2659,8 @@ def _run_one_benchmark_agent_task(
         "agent_skills": agent_skills,
         "policy_violations": policy_violations,
         "finalization": finalization,
-        "records": [*records, agent_record],
+        "agent_attempts": agent_records,
+        "records": [*records, *agent_records],
     }
     _write_json(harness_record_path, harness_payload)
     _write_json(
@@ -2492,6 +2677,9 @@ def _run_one_benchmark_agent_task(
             "agent_skills": agent_skills,
             "policy_violations": policy_violations,
             "finalization": finalization,
+            "agent_attempts": agent_records,
+            "agent_finalization_retry_count": retry_count,
+            "agent_finalization_retry_limit": retry_limit,
             "command": rendered_command,
             "exit_code": exit_code,
             "walltime_seconds": walltime,
@@ -2517,6 +2705,9 @@ def _run_one_benchmark_agent_task(
         "agent_skills": agent_skills,
         "policy_violations": policy_violations,
         "finalization": finalization,
+        "agent_attempts": agent_records,
+        "agent_finalization_retry_count": retry_count,
+        "agent_finalization_retry_limit": retry_limit,
         "command": rendered_command,
         "exit_code": exit_code,
         "walltime_seconds": walltime,
