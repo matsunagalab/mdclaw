@@ -4,7 +4,7 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from mdclaw._common import (
     CANONICAL_WATER_MODELS,
@@ -30,6 +30,7 @@ from mdclaw.solvation.constants import (
 from mdclaw.solvation.pdb_identity import (
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
+    _ligand_chemistry_packmol_charge_pdb_delta,
     _restore_packmol_solute_identity,
 )
 
@@ -178,6 +179,7 @@ def solvate_structure(
     preoriented: bool = True,
     keepligs: bool = True,
     water_model: str = "opc",
+    ligand_chemistry: Optional[list[dict[str, Any]]] = None,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -223,6 +225,10 @@ def solvate_structure(
                      IMPORTANT: Must match the water model used in build_amber_system for
                      topology generation. Using mismatched models causes severe atom clashes.
                      OPC is strongly recommended with ff19SB (Amber Manual 2024).
+        ligand_chemistry: Ligand chemistry records from prepare_complex. Formal
+                          charges are included in packmol-memgen's
+                          --charge_pdb_delta so arbitrary GAFF/OpenFF ligands
+                          are neutralized consistently with topology.
     
     Returns:
         Dict with:
@@ -327,8 +333,8 @@ def solvate_structure(
                 default_error="solvate_structure node execution context invalid",
             )
     
-    # Auto-resolve input from DAG when in node mode and pdb_file not provided
-    if job_dir and node_id and not pdb_file:
+    # Auto-resolve inputs from DAG when in node mode.
+    if job_dir and node_id and (not pdb_file or ligand_chemistry is None):
         from mdclaw._node import resolve_node_inputs
         _inputs = resolve_node_inputs(job_dir, node_id, "solv")
         if "input_resolution_error" in _inputs:
@@ -347,6 +353,8 @@ def solvate_structure(
             return blocked
         if "pdb_file" in _inputs:
             pdb_file = _inputs["pdb_file"]
+        if ligand_chemistry is None and "ligand_chemistry" in _inputs:
+            ligand_chemistry = _inputs["ligand_chemistry"]
 
     if not pdb_file:
         blocked = create_validation_error(
@@ -494,12 +502,30 @@ def solvate_structure(
         )
     metal_charge_delta = int(metal_charge_delta_report.get("charge_pdb_delta", 0))
 
-    auto_charge_delta = nucleic_charge_delta + metal_charge_delta
+    ligand_charge_delta_report = {
+        "charge_pdb_delta": 0,
+        "ligands": [],
+        "applied_ligand_count": 0,
+        "reason": "not evaluated",
+    }
+    try:
+        ligand_charge_delta_report = _ligand_chemistry_packmol_charge_pdb_delta(
+            ligand_chemistry
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["warnings"].append(
+            "Could not evaluate automatic ligand charge_pdb_delta "
+            f"for packmol-memgen: {type(exc).__name__}: {exc}"
+        )
+    ligand_charge_delta = int(ligand_charge_delta_report.get("charge_pdb_delta", 0))
+
+    auto_charge_delta = nucleic_charge_delta + metal_charge_delta + ligand_charge_delta
     auto_charge_delta_applied = bool(salt and auto_charge_delta)
     _reasons = [
         r for r in (
             auto_charge_delta_report.get("reason"),
             metal_charge_delta_report.get("reason"),
+            ligand_charge_delta_report.get("reason"),
         )
         if r
     ]
@@ -509,6 +535,8 @@ def solvate_structure(
     result["nucleic_charge_segments"] = auto_charge_delta_report.get("segments", [])
     result["metal_ion_charge_delta"] = metal_charge_delta
     result["metal_ion_charge_entries"] = metal_charge_delta_report.get("ions", [])
+    result["ligand_charge_delta"] = ligand_charge_delta
+    result["ligand_charge_delta_entries"] = ligand_charge_delta_report.get("ligands", [])
     result["parameters"]["auto_charge_pdb_delta"] = auto_charge_delta
     result["parameters"]["auto_charge_pdb_delta_applied"] = auto_charge_delta_applied
 
@@ -677,6 +705,7 @@ def solvate_structure(
                     "auto_charge_pdb_delta_applied": result.get(
                         "auto_charge_pdb_delta_applied"
                     ),
+                    "ligand_charge_delta": result.get("ligand_charge_delta"),
                     "total_atoms": result.get("statistics", {}).get("total_atoms"),
                 })
             update_job_summaries(job_dir, params={
@@ -687,4 +716,3 @@ def solvate_structure(
             fail_node(job_dir, node_id, errors=result.get("errors", []))
 
     return result
-

@@ -94,6 +94,13 @@
         "weight": 1.0
       },
       {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
         "check_id": "minimization_report_confirms_completion",
         "check_type": "minimization_report_check",
         "minimization_report_manifest_path": "outputs.minimization_report",

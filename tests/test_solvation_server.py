@@ -11,6 +11,7 @@ import mdclaw.solvation.membrane as solv_membrane
 from mdclaw.solvation.pdb_identity import (
     _auto_metal_ion_packmol_charge_pdb_delta,
     _auto_nucleic_packmol_charge_pdb_delta,
+    _ligand_chemistry_packmol_charge_pdb_delta,
 )
 from mdclaw.solvation._base import _record_packmol_memgen_output
 from mdclaw.solvation.box import extract_box_size_from_packmol_inp
@@ -273,6 +274,32 @@ def test_metal_ion_charge_delta_ignores_metal_inside_cofactor(tmp_path):
     assert report["charge_pdb_delta"] == 0
 
 
+def test_ligand_chemistry_charge_delta_counts_charged_ligands():
+    ligand_chemistry = [
+        {
+            "residue_name": "STI",
+            "ligand_instance_id": "A:STI:201",
+            "net_charge": 1,
+        },
+        {
+            "residue_name": "BEN",
+            "ligand_instance_id": "A:BEN:1",
+            "net_charge": 0,
+        },
+        {
+            "residue_name": "NEG",
+            "ligand_instance_id": "A:NEG:2",
+            "mol_formal_charge": -1,
+        },
+    ]
+
+    report = _ligand_chemistry_packmol_charge_pdb_delta(ligand_chemistry)
+
+    assert report["charge_pdb_delta"] == 0
+    assert report["applied_ligand_count"] == 2
+    assert [entry["charge_pdb_delta"] for entry in report["ligands"]] == [1, 0, -1]
+
+
 def test_solvate_structure_passes_auto_nucleic_charge_delta(
     tmp_path,
     monkeypatch,
@@ -337,6 +364,66 @@ def test_solvate_structure_passes_auto_nucleic_charge_delta(
     assert result["auto_charge_pdb_delta"] == 2
     assert result["auto_charge_pdb_delta_applied"] is True
     assert result["parameters"]["auto_charge_pdb_delta"] == 2
+
+
+def test_solvate_structure_includes_ligand_charge_delta(
+    tmp_path,
+    monkeypatch,
+):
+    pdb = tmp_path / "protein_ligand.pdb"
+    pdb.write_text(
+        _pdb_atom(1, "CA", "ALA", "A", 1, "C")
+        + _pdb_hetatm(2, "C1", "STI", "B", 201, "C")
+        + "END\n"
+    )
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        input_path = Path(args[args.index("--pdb") + 1])
+        output_path = Path(args[args.index("-o") + 1])
+        atom_lines = [
+            line
+            for line in input_path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+        output_path.write_text(
+            "CRYST1   40.000   40.000   40.000  90.00  90.00  90.00 P 1           1\n"
+            + "\n".join(atom_lines)
+            + "\nHETATM 9999  O   WAT W   1       9.000   0.000   0.000  1.00  0.00           O\n"
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        ligand_chemistry=[
+            {
+                "residue_name": "STI",
+                "ligand_instance_id": "A:STI:201",
+                "net_charge": 1,
+            }
+        ],
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=True,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "1"
+    assert result["auto_charge_pdb_delta"] == 1
+    assert result["ligand_charge_delta"] == 1
+    assert result["ligand_charge_delta_entries"][0]["residue_name"] == "STI"
 
 
 def test_solvate_structure_includes_duplicate_mg_resseq_charge_delta(

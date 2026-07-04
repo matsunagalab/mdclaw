@@ -47,6 +47,13 @@
         "$bundle": "topology_minimization"
       },
       {
+        "check_id": "net_charge_neutral_recomputed",
+        "check_type": "net_charge_check",
+        "require_neutral": true,
+        "topology_manifest_path": "outputs.topology",
+        "weight": 0.3
+      },
+      {
         "allowed_nonstandard_residue_names": [
           "STI"
         ],

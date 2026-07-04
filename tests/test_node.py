@@ -3342,6 +3342,14 @@ class TestStructuredArtifactPropagation:
         assert "box_dimensions" in inputs
         assert inputs["box_dimensions"] == box
 
+    def test_resolve_solv_inputs_includes_ligand_chemistry(self, dag_with_ligand):
+        """prep -> solv must carry ligand charge metadata before ionization."""
+        job_dir, lp, _box = dag_with_ligand
+        inputs = resolve_node_inputs(str(job_dir), "solv_001", "solv")
+
+        assert inputs["pdb_file"].endswith("merged.pdb")
+        assert inputs["ligand_chemistry"] == lp
+
     def test_resolve_topo_omits_keys_when_prep_has_no_params(self, job_dir):
         """If prep never wrote ligand params, resolve_node_inputs omits them."""
         jd = str(job_dir)

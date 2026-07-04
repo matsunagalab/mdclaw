@@ -603,6 +603,28 @@ def test_p25_scores_kcl_and_neutrality_from_topology_artifacts():
     assert "charge_json_file" not in net_charge
 
 
+def test_p28_scores_charged_ligand_neutrality_from_topology_artifacts():
+    task = json.loads(
+        (
+            DATASET_DIR
+            / "tasks"
+            / "P28_prep_kinase_inhibitor_gaff_1iep"
+            / "task.json"
+        ).read_text()
+    )
+    checks = {
+        check["check_id"]: check
+        for check in task["scoring"]["deterministic_checks"]
+    }
+
+    net_charge = checks["net_charge_neutral_recomputed"]
+    assert net_charge["check_type"] == "net_charge_check"
+    assert net_charge["require_neutral"] is True
+    assert net_charge["topology_manifest_path"] == "outputs.topology"
+    assert "charge_json_path" not in net_charge
+    assert "charge_json_file" not in net_charge
+
+
 def test_p24_scores_assembly_from_coordinates_and_chain_count():
     task = json.loads(
         (

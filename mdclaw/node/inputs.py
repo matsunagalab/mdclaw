@@ -451,7 +451,8 @@ def resolve_node_inputs(
 
     - ``prep``: selected structure from the job's source bundle, falling back
                 to legacy ``structure_file`` artifacts when needed.
-    - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
+    - ``solv``: ``merged_pdb`` plus ``ligand_chemistry`` from nearest ``prep``
+                ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
                 ancestor, plus ``ligand_chemistry`` from nearest ``prep``
                 ancestor
@@ -537,6 +538,9 @@ def resolve_node_inputs(
         if v:
             result["pdb_file"] = v
             result["pdb_resolved_from_node_id"] = prep_id
+        value = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_chemistry")
+        if value:
+            result["ligand_chemistry"] = value
 
     elif node_type == "topo":
         result.update(_resolve_topo_inputs(job_dir, node_id))

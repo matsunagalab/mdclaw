@@ -374,6 +374,82 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     }
 
 
+def _ligand_chemistry_packmol_charge_pdb_delta(ligand_chemistry: list[dict] | None) -> dict:
+    """Return charge delta for prepared ligands absent from packmol-memgen's table.
+
+    ``prepare_complex`` records ligand formal charge in ``ligand_chemistry``.
+    packmol-memgen does not read that artifact and estimates input PDB charge
+    from a fixed residue-name table, so arbitrary GAFF/OpenFF ligands are
+    counted as neutral unless their residue name happens to be a built-in
+    charged residue.  The topology step later uses the chemistry graph and
+    therefore sees the true formal charge.  This bridges that prep -> solv
+    contract by adding the ligand formal charge to ``--charge_pdb_delta``.
+    """
+    entries: list[dict] = []
+    charge_delta = 0
+    for index, ligand in enumerate(ligand_chemistry or []):
+        if not isinstance(ligand, dict):
+            entries.append({
+                "index": index,
+                "skipped_reason": "non_dict_ligand_chemistry_record",
+            })
+            continue
+
+        raw_charge = ligand.get("net_charge")
+        if raw_charge is None:
+            raw_charge = ligand.get("mol_formal_charge")
+        if raw_charge is None:
+            entries.append({
+                "index": index,
+                "residue_name": ligand.get("residue_name") or ligand.get("ligand_id"),
+                "ligand_instance_id": ligand.get("ligand_instance_id"),
+                "skipped_reason": "missing_formal_charge",
+            })
+            continue
+
+        try:
+            charge_float = float(raw_charge)
+        except (TypeError, ValueError):
+            entries.append({
+                "index": index,
+                "residue_name": ligand.get("residue_name") or ligand.get("ligand_id"),
+                "ligand_instance_id": ligand.get("ligand_instance_id"),
+                "raw_charge": raw_charge,
+                "skipped_reason": "non_numeric_formal_charge",
+            })
+            continue
+
+        formal_charge = int(round(charge_float))
+        entry = {
+            "index": index,
+            "residue_name": ligand.get("residue_name") or ligand.get("ligand_id"),
+            "ligand_instance_id": ligand.get("ligand_instance_id"),
+            "formal_charge": formal_charge,
+            "packmol_recognized_charge": 0,
+            "charge_pdb_delta": formal_charge,
+        }
+        if abs(charge_float - formal_charge) > 1.0e-6:
+            entry["charge_rounding_warning"] = charge_float
+        entries.append(entry)
+        charge_delta += formal_charge
+
+    applied = [entry for entry in entries if int(entry.get("charge_pdb_delta", 0)) != 0]
+    return {
+        "charge_pdb_delta": int(charge_delta),
+        "ligands": entries,
+        "applied_ligand_count": len(applied),
+        "reason": (
+            "ligand charges not counted by packmol-memgen: "
+            + ", ".join(
+                f"{entry.get('residue_name') or '?'}({entry['charge_pdb_delta']:+d})"
+                for entry in applied
+            )
+            if applied
+            else "no ligand charge correction needed"
+        ),
+    }
+
+
 def _restore_packmol_solute_identity(input_pdb: Path, output_pdb: Path) -> dict:
     """Restore solute PDB identity columns after packmol-memgen renumbering."""
     report = {
