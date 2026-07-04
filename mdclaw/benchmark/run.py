@@ -611,8 +611,17 @@ def _mdclaw_cli_policy_violations(
     ]
 
 
-def _write_stage_wrapper(path: Path) -> None:
+def _write_stage_wrapper(
+    path: Path,
+    *,
+    default_log_path: Optional[Path] = None,
+    default_run_id: str = "",
+    default_task_id: str = "",
+) -> None:
     """Write an agent-safe command wrapper for measured stage records."""
+    default_log_literal = json.dumps(str(default_log_path) if default_log_path else "")
+    default_run_id_literal = json.dumps(default_run_id)
+    default_task_id_literal = json.dumps(default_task_id)
     wrapper = '''#!/usr/bin/env python3
 import argparse
 import json
@@ -621,6 +630,11 @@ import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+
+
+DEFAULT_LOG_PATH = __DEFAULT_LOG_PATH__
+DEFAULT_RUN_ID = __DEFAULT_RUN_ID__
+DEFAULT_TASK_ID = __DEFAULT_TASK_ID__
 
 
 parser = argparse.ArgumentParser(
@@ -654,14 +668,24 @@ finally:
         ("MDCLAW_BENCHMARK_TASK_ID", "task_id"),
     ):
         value = os.environ.get(env_name)
+        if not value and key == "run_id":
+            value = DEFAULT_RUN_ID
+        if not value and key == "task_id":
+            value = DEFAULT_TASK_ID
         if value:
             record[key] = value
-    log_path = os.environ.get("MDCLAW_BENCHMARK_HARNESS_LOG")
+    log_path = os.environ.get("MDCLAW_BENCHMARK_HARNESS_LOG") or DEFAULT_LOG_PATH
     if log_path:
         with open(log_path, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\\n")
 sys.exit(exit_code)
 '''
+    wrapper = (
+        wrapper
+        .replace("__DEFAULT_LOG_PATH__", default_log_literal)
+        .replace("__DEFAULT_RUN_ID__", default_run_id_literal)
+        .replace("__DEFAULT_TASK_ID__", default_task_id_literal)
+    )
     _write_text(path, wrapper)
     path.chmod(0o755)
 
@@ -905,8 +929,8 @@ def _task_agent_prompt(
         artifact_guidance = (
             "For OpenMM prep tasks, put raw artifacts in submission/: "
             "topology/{system.xml,topology.pdb,state.xml}, prepared_structure.pdb, "
-            "and task-specific raw files. The evaluator generates metadata, hashes, "
-            "minimized_structure, and minimization_report. "
+            "and task-specific raw files. The evaluator generates metadata, "
+            "hashes, and minimized artifacts. "
             "Do not hand-write or edit evaluator-generated metadata files. "
         )
     return (
@@ -914,21 +938,21 @@ def _task_agent_prompt(
         "Use this agent-safe instruction file:\n\n"
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
-        "Read task_instructions.json paths: prompt_file, contract, checklist, "
-        "submission_dir, work_dir, submission_packaging, submission_preflight, "
-        "agent_skills. Use work_dir for study/job/work files; final outputs "
-        "only to exact submission_dir path, never work_dir/submission unless "
-        "exact.\n\n"
-        "Solve only this task. Do not inspect siblings, categorize the suite, "
+        "Read task_instructions.json: prompt_file, contract, checklist, "
+        "submission_dir, work_dir, stage_recording, submission_packaging, "
+        "submission_preflight, agent_skills. Use work_dir for study/job/work "
+        "files; final outputs "
+        "only to exact submission_dir path, never work_dir/submission.\n\n"
+        "Solve only this task. Do not inspect siblings, categorize suite, "
         "or write benchmark-wide solver scripts.\n\n"
         "Record commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- "
         "<command>`. Do not create/edit harness_execution.json.\n\n"
-        "Use mdclaw only if mdclaw_cli.allowed; call bare `mdclaw ...`.\n\n"
+        "Use bare `mdclaw ...` only if mdclaw_cli.allowed.\n\n"
         "Run IDs and directory names are labels only; infer no shortcuts.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
         "truth/, scorer/. Do not fabricate.\n\n"
         f"{artifact_guidance}\n\n"
-        "Run public preflight after writing submission/. Exit only after "
+        "Run public preflight after writing submission/. Exit after "
         "preflight passes or explicit incomplete failure. "
         "The evaluator scores separately.\n"
     )
@@ -1138,6 +1162,37 @@ def _process_group_members(process_group_id: Optional[int]) -> list[dict[str, An
     """Return live POSIX process-group members for background-work detection."""
     if os.name != "posix" or not process_group_id:
         return []
+
+    def parse_ps_lines(lines: list[str], *, pgid_column: bool) -> list[dict[str, Any]]:
+        current_pid = os.getpid()
+        members: list[dict[str, Any]] = []
+        for line in lines:
+            parts = line.strip().split(maxsplit=3 if pgid_column else 2)
+            min_parts = 3 if pgid_column else 2
+            if len(parts) < min_parts:
+                continue
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid == current_pid:
+                continue
+            if pgid_column:
+                try:
+                    pgid = int(parts[1])
+                except ValueError:
+                    continue
+                if pgid != process_group_id:
+                    continue
+                stat = parts[2]
+                command = parts[3] if len(parts) > 3 else ""
+            else:
+                stat = parts[1]
+                command = parts[2] if len(parts) > 2 else ""
+            members.append({"pid": pid, "stat": stat, "command": command})
+        return members
+
+    completed: Optional[subprocess.CompletedProcess[str]] = None
     try:
         completed = subprocess.run(
             ["ps", "-o", "pid=,stat=,command=", "-g", str(process_group_id)],
@@ -1147,27 +1202,25 @@ def _process_group_members(process_group_id: Optional[int]) -> list[dict[str, An
             timeout=5,
         )
     except Exception:
+        completed = None
+    if completed is not None and completed.returncode == 0:
+        members = parse_ps_lines(completed.stdout.splitlines(), pgid_column=False)
+        if members:
+            return members
+
+    try:
+        completed = subprocess.run(
+            ["ps", "-axo", "pid=,pgid=,stat=,command="],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception:
         return []
     if completed.returncode != 0:
         return []
-    current_pid = os.getpid()
-    members: list[dict[str, Any]] = []
-    for line in completed.stdout.splitlines():
-        parts = line.strip().split(maxsplit=2)
-        if len(parts) < 2:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        if pid == current_pid:
-            continue
-        members.append({
-            "pid": pid,
-            "stat": parts[1],
-            "command": parts[2] if len(parts) > 2 else "",
-        })
-    return members
+    return parse_ps_lines(completed.stdout.splitlines(), pgid_column=True)
 
 
 def _terminate_process_group_id(
@@ -1647,10 +1700,18 @@ def prepare_benchmark_run(
         task_run_dir = run_dir / "tasks" / task_id
         task_instruction_path = task_run_dir / "task_instructions.json"
         agent_prompt_path = task_run_dir / "agent_prompt.md"
+        harness_jsonl_path = task_run_dir / "harness_execution.jsonl"
         harness_record_path = task_run_dir / "harness_execution.json"
+        stage_wrapper_path = task_run_dir / "record_stage.py"
         ensure_directory(task_run_dir)
         ensure_directory(task_run_dir / "submission")
         ensure_directory(task_run_dir / "work")
+        _write_stage_wrapper(
+            stage_wrapper_path,
+            default_log_path=harness_jsonl_path,
+            default_run_id=init["run_id"],
+            default_task_id=task_id,
+        )
         mdclaw_wrapper_path = task_run_dir / "bin" / "mdclaw"
         _write_mdclaw_runtime_wrapper(
             mdclaw_wrapper_path,
@@ -1672,6 +1733,13 @@ def prepare_benchmark_run(
             ),
             "submission_dir": str(task_run_dir / "submission"),
             "work_dir": str(task_run_dir / "work"),
+            "stage_recording": {
+                "wrapper": str(stage_wrapper_path),
+                "usage": (
+                    f"{stage_wrapper_path} --stage source -- <command>; "
+                    "repeat with prep, topo, min, or run as applicable"
+                ),
+            },
             "mdclaw_cli": _mdclaw_cli_instruction(
                 mdclaw_runtime=resolved_mdclaw_runtime,
                 mdclaw_wrapper_path=mdclaw_wrapper_path,
@@ -2632,6 +2700,70 @@ def _task_has_rubrics(task_file: Path) -> bool:
     return bool(payload.get("scoring", {}).get("llm_judge_rubrics"))
 
 
+def _finalize_manual_harness_record(
+    task_run_dir: Path,
+    *,
+    run_id: str,
+    task_id: str,
+) -> dict[str, Any]:
+    """Materialize scorer-owned harness evidence for manual prepared runs.
+
+    ``prepare_benchmark_run`` gives task agents a wrapper that appends measured
+    command records to ``harness_execution.jsonl``. The scorer consumes
+    ``harness_execution.json``. Build that JSON file here so the manual flow has
+    the same evidence contract as ``run_benchmark_agent`` without asking the
+    evaluated agent to edit scorer-owned files.
+    """
+    record_path = task_run_dir / "harness_execution.json"
+    jsonl_path = task_run_dir / "harness_execution.jsonl"
+    existing = _read_json_dict(record_path)
+    existing_records = existing.get("records")
+    if isinstance(existing_records, list) and existing_records:
+        return {
+            "task_id": task_id,
+            "harness_status": "recorded",
+            "harness_evidence_status": _harness_evidence_status(existing_records),
+            "harness_record_file": str(record_path),
+            "record_source": "harness_execution.json",
+            "record_count": len(existing_records),
+        }
+
+    records = _read_harness_jsonl_records(jsonl_path)
+    if records:
+        payload = {
+            "schema_version": "1.0",
+            "run_id": run_id,
+            "task_id": task_id,
+            "recorded_by": "prepare_benchmark_run.record_stage",
+            "record_source": str(jsonl_path),
+            "records": records,
+        }
+        _write_json(record_path, payload)
+        finalization = {
+            "task_id": task_id,
+            "harness_status": "recorded",
+            "harness_evidence_status": _harness_evidence_status(records),
+            "harness_record_file": str(record_path),
+            "record_source": str(jsonl_path),
+            "record_count": len(records),
+        }
+        _write_json(task_run_dir / "finalization.json", finalization)
+        return finalization
+
+    finalization = {
+        "task_id": task_id,
+        "harness_status": "missing",
+        "harness_evidence_status": "missing",
+        "harness_record_file": str(record_path),
+        "record_source": str(jsonl_path),
+        "record_count": 0,
+        "failure_class": "missing_harness_execution",
+    }
+    if not (task_run_dir / "finalization.json").is_file():
+        _write_json(task_run_dir / "finalization.json", finalization)
+    return finalization
+
+
 def _autorun_run_judges(
     run_dir: str, dataset_dir: Optional[str], judge_model: str,
 ) -> None:
@@ -2742,6 +2874,7 @@ def score_benchmark_run(
         # to an operator-supplied file.
         judge_path = task_run_dir / "llm_judge.json"
         task_judge = str(judge_path) if judge_path.is_file() else llm_judge_file
+        _finalize_manual_harness_record(task_run_dir, run_id=run_id, task_id=task_id)
         result = benchmark_cli.validate_and_score_benchmark_submission(
             task_file=str(task_file),
             submission_dir=str(submission_dir),

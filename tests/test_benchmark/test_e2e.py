@@ -164,6 +164,53 @@ def test_prepare_and_score_benchmark_run_convenience_tools(tmp_path: Path):
     assert result["summary"]["summary"]["overall_score"] >= 0.9
 
 
+def test_prepare_run_scores_from_manual_stage_jsonl(tmp_path: Path):
+    output_dir = tmp_path / "benchmark_runs"
+    prepared = benchmark_run.prepare_benchmark_run(
+        output_dir=str(output_dir),
+        run_id="manual_jsonl_p11",
+        dataset_dir=str(DATASET_DIR),
+        task_ids=[TASK_ID],
+        execution_mode="dry_run",
+    )
+    assert prepared["success"], prepared
+
+    task_run_dir = output_dir / "manual_jsonl_p11" / "tasks" / TASK_ID
+    sub_dir = task_run_dir / "submission"
+    _fake_submissions.GENERATORS[TASK_ID](
+        sub_dir,
+        run_id="manual_jsonl_p11",
+        mode="honest",
+    )
+
+    harness_json = task_run_dir / "harness_execution.json"
+    harness_json.unlink()
+    task_instructions = json.loads((task_run_dir / "task_instructions.json").read_text())
+    stage_wrapper = Path(task_instructions["stage_recording"]["wrapper"])
+    for stage in ("source", "prep", "topo", "min"):
+        subprocess.run(
+            [str(stage_wrapper), "--stage", stage, "--", sys.executable, "-c", "pass"],
+            check=True,
+        )
+
+    result = benchmark_run.score_benchmark_run(
+        run_dir=str(output_dir / "manual_jsonl_p11"),
+        dataset_dir=str(DATASET_DIR),
+    )
+
+    assert result["success"], result
+    assert result["passed_task_count"] == 1
+    materialized = json.loads(harness_json.read_text())
+    assert materialized["recorded_by"] == "prepare_benchmark_run.record_stage"
+    assert len(materialized["records"]) >= 4
+    finalization = json.loads((task_run_dir / "finalization.json").read_text())
+    assert finalization["harness_status"] == "recorded"
+    harness_counts = result["summary"]["summary"]["harness_diagnostics"][
+        "harness_evidence_status_counts"
+    ]
+    assert harness_counts["present"] == 1
+
+
 def test_run_benchmark_agent_executes_agent_and_scores_with_harness_records(
     tmp_path: Path,
 ):
@@ -1088,6 +1135,7 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
         "submission_checklist",
         "submission_dir",
         "work_dir",
+        "stage_recording",
         "mdclaw_cli",
         "submission_packaging",
         "submission_preflight",
@@ -1114,6 +1162,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert len(agent_prompt) < 1550
     assert task_instructions["work_dir"].endswith("/work")
     assert Path(task_instructions["work_dir"]).is_dir()
+    assert task_instructions["stage_recording"]["wrapper"].endswith("record_stage.py")
+    assert Path(task_instructions["stage_recording"]["wrapper"]).is_file()
     assert task_instructions["mdclaw_cli"]["runtime"] == "auto"
     assert task_instructions["mdclaw_cli"]["command"] == "mdclaw"
     assert Path(task_instructions["mdclaw_cli"]["wrapper"]).is_file()

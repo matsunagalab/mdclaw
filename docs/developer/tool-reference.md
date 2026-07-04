@@ -366,7 +366,8 @@ signature, update the relevant section here and the matching skill examples.
   selected dataset directory, including family and intent summary.
 - `prepare_benchmark_run(...)`: create a run directory, export an agent-safe
   public task package, write per-task prompt/submission instructions for the
-  evaluated agent, and write separate harness scoring metadata.
+  evaluated agent, write manual stage-recording wrappers, and write separate
+  harness scoring metadata.
 - `run_benchmark_agent(...)`: SWE-bench-style external-agent runner. It
   creates public/private packages, runs a templated Pi / Claude Code / Codex
   command per selected task, records measured `harness_execution.json`, then

@@ -181,7 +181,8 @@ mdclaw prepare_benchmark_run \
 
 # For each task, hand the evaluated agent only:
 #   benchmark_runs/20260613_mdclaw_ref/tasks/<task_id>/agent_prompt.md
-# The agent writes tasks/<task_id>/submission/, then:
+# The agent writes tasks/<task_id>/submission/ and records real commands through
+# the task-local record_stage.py wrapper named in task_instructions.json, then:
 
 mdclaw score_benchmark_run \
   --run-dir benchmark_runs/20260613_mdclaw_ref \
@@ -189,9 +190,14 @@ mdclaw score_benchmark_run \
 ```
 
 `prepare_benchmark_run` writes `attestation.json` (public-package hash,
-`tooling_condition`) and `score_benchmark_run` produces `summary.json` with the
-per-axis scores, the per-capability profile, `tooling_condition`, and
-`verified`.
+`tooling_condition`), per-task `record_stage.py` wrappers, and scorer-side
+`harness_tasks.json`. The wrappers append measured records to
+`tasks/<task_id>/harness_execution.jsonl`; `score_benchmark_run` materializes
+that JSONL as the scorer-owned `harness_execution.json` before scoring. If the
+agent does not use the wrapper, strict provenance checks fail instead of
+silently accepting solver-written self-report. `score_benchmark_run` produces
+`summary.json` with the per-axis scores, the per-capability profile,
+`tooling_condition`, and `verified`.
 
 **3. MDClaw-free agent (e.g. MDCrow, `mdclaw-free`).** Init with
 `mdclaw init_benchmark_run --tooling-condition mdclaw-free`, hand the agent only
