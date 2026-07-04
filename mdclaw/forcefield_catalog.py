@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import Literal, Optional, Union
 
 from mdclaw._common import create_guardrail_result, normalize_choice
+from mdclaw.chemistry_constants import (
+    OPC_STANDARD_ION_RESNAMES,
+    OPC3_STANDARD_ION_RESNAMES,
+    SPCE_STANDARD_ION_RESNAMES,
+    TIP3PFB_STANDARD_ION_RESNAMES,
+    TIP3P_STANDARD_ION_RESNAMES,
+    TIP4PFB_STANDARD_ION_RESNAMES,
+    TIP4PEW_STANDARD_ION_RESNAMES,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -263,10 +272,10 @@ _PROTEIN_ALIASES.update(
 # ---------------------------------------------------------------------------
 
 WATER_MODELS: dict[str, WaterEntry] = {
-    # ``*_standard.xml`` bundles the water residue + Joung-Cheatham 12-6 ions
-    # in one file; ``*_HFE_multivalent.xml`` / ``*_IOD_multivalent.xml`` add
-    # Li-Merz 12-6 multivalent ion parameters when the system contains divalent
-    # / trivalent ions.
+    # ``*_standard.xml`` bundles the water residue plus standard bare monatomic
+    # ion templates. HFE/IOD multivalent XMLs are alternative parameter sets, not
+    # a prerequisite for common ions such as MG, CA, MN, or ZN on the default
+    # explicit path.
     "opc": WaterEntry(
         name="opc",
         openmm_xml="amber/opc_standard.xml",
@@ -321,6 +330,17 @@ WATER_MODELS: dict[str, WaterEntry] = {
         ions_multivalent_xml="amber/tip4pfb_HFE_multivalent.xml",
         notes="Force-balance 4-site.",
     ),
+}
+
+
+STANDARD_ION_RESNAMES_BY_WATER: dict[str, frozenset[str]] = {
+    "opc": OPC_STANDARD_ION_RESNAMES,
+    "opc3": OPC3_STANDARD_ION_RESNAMES,
+    "tip3p": TIP3P_STANDARD_ION_RESNAMES,
+    "spce": SPCE_STANDARD_ION_RESNAMES,
+    "tip4pew": TIP4PEW_STANDARD_ION_RESNAMES,
+    "tip3pfb": TIP3PFB_STANDARD_ION_RESNAMES,
+    "tip4pfb": TIP4PFB_STANDARD_ION_RESNAMES,
 }
 
 
@@ -719,6 +739,23 @@ def resolve_internal_frcmod_path(name: str) -> Optional[Path]:
     return candidate if candidate.is_file() else None
 
 
+def standard_ion_resnames_for_water(water: Optional[str]) -> frozenset[str]:
+    """Return bare monatomic ion template names bundled with a water XML.
+
+    The names are exact OpenMM ForceField residue-template names. They indicate
+    template coverage for nonbonded bare ions, not bonded metal-site chemistry.
+    """
+    canon = normalize_water(water)
+    if not canon:
+        return frozenset()
+    return STANDARD_ION_RESNAMES_BY_WATER.get(canon, frozenset())
+
+
+def water_model_supports_standard_ion(water: Optional[str], resname: str) -> bool:
+    """Return True when ``resname`` is a bare ion template for ``water``."""
+    return str(resname or "").strip() in standard_ion_resnames_for_water(water)
+
+
 __all__ = [
     "ProteinStatus",
     "CompatibilityVerdict",
@@ -726,6 +763,7 @@ __all__ = [
     "WaterEntry",
     "PROTEIN_FORCEFIELDS",
     "WATER_MODELS",
+    "STANDARD_ION_RESNAMES_BY_WATER",
     "PHOSAA_XML",
     "LIPID_XML",
     "OPENMM_APP_LIPID_XML",
@@ -742,4 +780,6 @@ __all__ = [
     "evaluate_protein_water",
     "resolve_xml_bundle",
     "resolve_internal_frcmod_path",
+    "standard_ion_resnames_for_water",
+    "water_model_supports_standard_ion",
 ]

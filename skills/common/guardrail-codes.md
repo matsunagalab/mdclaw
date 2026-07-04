@@ -78,7 +78,6 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_lease_seconds` | Provide a positive integer for lease seconds. |
 | `invalid_ligand_chemistry` | Ligand chemistry is invalid; check SMILES/formal charge. |
 | `invalid_mdclaw_runtime` | Run inside a valid MDClaw runtime (container/SIF or mdclaw conda env). |
-| `invalid_metal_parameters` | Provide valid metal parameters. |
 | `invalid_modxna_fragment_spec` | Fix the modxna fragment specification. |
 | `invalid_modxna_parameters` | Provide valid modxna parameters. |
 | `invalid_need` | Provide a well-formed node need payload. |
@@ -112,18 +111,16 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `membrane_patch_invalid_input` | Input protein PDB for membrane embedding has no atoms. |
 | `membrane_patch_invalid_patch` | Cached membrane patch PDB has no atoms; refresh the cache. |
 | `membrane_patch_lipid_missing_after_carve` | Tiled patch insertion removed all requested lipids; adjust carve padding. |
+| `membrane_patch_state_export_failed` | Membrane patch state export failed; inspect the patch state. |
+| `membrane_patch_state_missing_box` | Membrane patch state export has no box vectors; rebuild the patch. |
+| `membrane_patch_state_missing_positions` | Membrane patch state export has no positions; rebuild the patch. |
 | `membrane_patch_tiles_used` | Patch-tile membrane was assembled from a cached lipid patch; confirm it is appropriate. |
 | `memembed_empty_output` | memembed output had no solute atoms after cleanup. |
 | `memembed_failed` | memembed orientation failed; inspect the structured error. |
 | `memembed_no_output` | memembed did not write an oriented PDB. |
 | `memembed_timeout` | memembed orientation timed out. |
 | `memembed_unavailable` | memembed not found in PATH; pass a pre-oriented structure with --preoriented. |
-| `metal_1264_requires_parmed` | Install ParmEd to use the 12-6-4 metal model. |
-| `metal_ions_not_found` | No metal ions found; check the structure/selection. |
-| `metal_openmm_xml_required` | Provide the OpenMM XML required for metal parameterization. |
-| `metal_parameterization_failed` | Metal parameterization failed; inspect the structured error. |
 | `metal_pdb_file_not_found` | Metal PDB file not found; verify the path. |
-| `metal_unsupported_water_model` | Choose a water model supported by the metal model. |
 | `minimization_iterations_invalid` | Use a valid (non-negative) minimization iteration count. |
 | `minimization_restraint_atoms_invalid` | Provide a valid restraint atom selection. |
 | `missing_forcefield_xml` | Supply at least one OpenMM ForceField XML in forcefield_xml. |
@@ -213,13 +210,12 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `pymol_render_failed` | PyMOL render failed; inspect the structured error. |
 | `pymol_render_timeout` | PyMOL render timed out; simplify the scene or raise the timeout. |
 | `referenced_node_missing` | A parent/dependency id does not exist; use IDs from inspect_job. |
+| `removed_unsupported_5prime_terminal_phosphate` | A 5-prime terminal phosphate was removed; review the cleaned nucleic acid. |
 | `requested_ligand_ids_not_found` | Requested ligand IDs are absent; use IDs from ligand_selection. |
 | `requested_ligand_resnames_not_found` | Requested ligand resnames are absent in the structure. |
 | `requested_ligand_resnames_not_in_selected_scope` | Requested ligand resnames are outside the selected chains/scope. |
-| `requested_metal_residue_not_found` | Requested metal residue not found in the structure. |
 | `restart_from_unavailable` | Requested restart point is unavailable; pick a valid parent state. |
 | `sbatch_directive_injection` | Reject injected sbatch directives; sanitize the submission. |
-| `single_metal_charge_for_multiple_metals` | Provide per-metal charges when multiple metals are present. |
 | `slurm_completed_without_node_completion` | SLURM job completed but the node did not; inspect artifacts. |
 | `slurm_node_already_submitted` | This node was already submitted; do not resubmit. |
 | `slurm_node_submission_in_progress` | Submission is in progress; wait before resubmitting. |
@@ -247,11 +243,11 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `unhandled_exception` | Report the structured error; do not retry blindly. |
 | `unknown_forcefield` | Use a supported protein force field (e.g. ff19SB or ff14SB). |
 | `unknown_gpu_type` | GPU type is unknown; report the platform for scheduling. |
-| `unknown_metal_ion_parameter_set` | Use a known metal-ion parameter set. |
 | `unknown_water_model` | Use a known water model (e.g. opc, tip3p, tip4pew, spce). |
 | `unparametrizable_ligand_selected` | Placeholder residue (UNX/UNL/UNK) has no chemistry; drop it or predict a real ligand. |
 | `unsupported_assembly_source` | Use a supported assembly source type. |
 | `unsupported_glycan_residue` | Glycan residue is unsupported; use a supported residue set. |
+| `unsupported_ion_for_water_model` | Use a water model whose ion XML supports the retained bare ion. |
 | `unsupported_modified_nucleic_residue` | Modified nucleic residue is unsupported. |
 | `update_state_no_target` | Provide status (with node_id) and/or params to update_workflow_state. |
 | `update_state_status_requires_node_id` | Pass node_id together with status to update_workflow_state. |

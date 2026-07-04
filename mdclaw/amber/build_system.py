@@ -70,7 +70,7 @@ cpptraj_wrapper = BaseToolWrapper("cpptraj")
 from mdclaw.amber.content_detection import _gemmi_available, _scan_pdb_ion_residue_names, _scan_pdb_text_for_ptm_residues, detect_glycan_content, detect_nucleic_content, detect_water_type  # noqa: E402
 from mdclaw.amber.forcefield_constants import CANONICAL_PROTEIN_FORCEFIELDS, GLYCAN_FORCEFIELDS, NUCLEIC_FORCEFIELDS, PHOSAA_LIBRARY_FOR_FF  # noqa: E402
 from mdclaw.amber.glycam_topology import _prepare_glycam_pdb_with_cpptraj  # noqa: E402
-from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_metal_params, validate_modxna_params  # noqa: E402
+from mdclaw.amber.ligand_validation import implicit_ligand_diagnostics, validate_initial_ligand_contacts, validate_ligand_chemistry, validate_ligand_template_coverage, validate_modxna_params  # noqa: E402
 from mdclaw.amber.openmm_build import _record_topology_build_stage, _run_openmmforcefields_build  # noqa: E402
 from mdclaw.amber.topology_bonds import _plan_disulfide_topology_bonds, _plan_glycan_topology_bonds  # noqa: E402
 from mdclaw.amber.water_utils import _canonical_forcefield_name, _canonical_water_model_name, _evaluate_forcefield_water_guardrails, fix_histidine_protonation_consistency, fix_ligand_residue_names, strip_crystal_waters  # noqa: E402
@@ -84,7 +84,6 @@ def _resolve_build_amber_node_inputs(
     pdb_file: Optional[str],
     ligand_chemistry: Optional[List[Dict[str, Any]]],
     modxna_params: Optional[List[Dict[str, Any]]],
-    metal_params: Optional[List[Dict[str, str]]],
     disulfide_bonds: Optional[List[Dict[str, Any]]],
     glycan_metadata: Optional[Dict[str, Any]],
     glycan_linkages: Optional[List[Dict[str, Any]]],
@@ -138,7 +137,6 @@ def _resolve_build_amber_node_inputs(
             else inputs.get("ligand_chemistry")
         ),
         "modxna_params": modxna_params if modxna_params is not None else inputs.get("modxna_params"),
-        "metal_params": metal_params if metal_params is not None else inputs.get("metal_params"),
         "disulfide_bonds": disulfide_bonds if disulfide_bonds is not None else inputs.get("disulfide_bonds"),
         "glycan_metadata": glycan_metadata if glycan_metadata is not None else inputs.get("glycan_metadata"),
         "glycan_linkages": glycan_linkages if glycan_linkages is not None else inputs.get("glycan_linkages"),
@@ -153,7 +151,6 @@ def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_chemistry: Optional[List[Dict[str, Any]]] = None,
     modxna_params: Optional[List[Dict[str, Any]]] = None,
-    metal_params: Optional[List[Dict[str, str]]] = None,
     disulfide_bonds: Optional[List[Dict[str, Any]]] = None,
     glycan_metadata: Optional[Dict[str, Any]] = None,
     glycan_linkages: Optional[List[Dict[str, Any]]] = None,
@@ -195,6 +192,13 @@ def build_amber_system(
     - Neither set → vacuum NoCutoff System (research only; the run-side
       shim rejects vacuum for default eq/prod workflows).
 
+    Standard bare ions in explicit-solvent systems are matched by the active
+    water-model XML; exact residue-name mismatches return
+    ``unsupported_ion_for_water_model`` before System creation. Custom bonded
+    or coordination-specific metal-site chemistry is outside ``build_amber_system``; use
+    ``build_openmm_system(forcefield_xml=...)`` with a pre-converted OpenMM
+    ForceField XML.
+
     Example (explicit solvent, default HMR=True)::
 
         solvate_result = solvate_structure(pdb_file="merged.pdb", ...)
@@ -212,15 +216,9 @@ def build_amber_system(
                        ``prepare_complex``; each should carry ``sdf`` or
                        ``smiles`` plus ``residue_name``. Topology passes the
                        OpenFF ``Molecule`` objects to ``GAFFTemplateGenerator``.
-        modxna_params / metal_params: Currently unsupported under the
-                       openmmforcefields path; non-empty lists return
-                       structured codes ``modxna_openmm_xml_required`` /
-                       ``metal_openmm_xml_required``. Supply a
-                       pre-converted OpenMM ForceField XML for the
-                       residue through ``build_openmm_system`` (research
-                       escape hatch) or via the ``extra_xml`` follow-up
-                       in the catalog until the ParmEd → OpenMM XML
-                       bridge ships.
+        modxna_params: Legacy native modified-nucleic-acid parameter inputs
+                       that are unsupported under the openmmforcefields path;
+                       non-empty lists return ``modxna_openmm_xml_required``.
         box_dimensions: ``{"box_a", "box_b", "box_c"}`` in Å from
                         ``solvate_structure``; ``None`` selects implicit /
                         vacuum.
@@ -295,7 +293,6 @@ def build_amber_system(
               openff-toolkit.
             - ``statistics``: ``{"num_atoms", "num_residues"}``.
             - ``code``: structured failure code on failure (e.g.
-              ``metal_openmm_xml_required``,
               ``implicit_solvent_explicit_box_conflict``,
               ``implicit_solvent_model_unsupported``,
               ``implicit_solvent_force_missing``).
@@ -342,7 +339,6 @@ def build_amber_system(
             pdb_file=pdb_file,
             ligand_chemistry=ligand_chemistry,
             modxna_params=modxna_params,
-            metal_params=metal_params,
             disulfide_bonds=disulfide_bonds,
             glycan_metadata=glycan_metadata,
             glycan_linkages=glycan_linkages,
@@ -354,7 +350,6 @@ def build_amber_system(
         pdb_file = _resolved["pdb_file"]
         ligand_chemistry = _resolved["ligand_chemistry"]
         modxna_params = _resolved["modxna_params"]
-        metal_params = _resolved["metal_params"]
         disulfide_bonds = _resolved["disulfide_bonds"]
         glycan_metadata = _resolved["glycan_metadata"]
         glycan_linkages = _resolved["glycan_linkages"]
@@ -599,7 +594,6 @@ def build_amber_system(
             "modxna_param_count": len(modxna_params) if modxna_params else 0,
             "glycan_count": len((glycan_metadata or {}).get("glycans", [])) if isinstance(glycan_metadata, dict) else 0,
             "glycan_linkage_count": len(glycan_linkages) if glycan_linkages else 0,
-            "metal_count": len(metal_params) if metal_params else 0,
             "pablo_auto_download": bool(pablo_auto_download),
         },
         "statistics": {},
@@ -906,6 +900,59 @@ def build_amber_system(
                 "used_for_vacuum_ion_templates"
             )
 
+    if retained_ion_residue_names and solvent_type in {"explicit", "vacuum"}:
+        ion_water_model = _ff_catalog.normalize_water(actual_water_model)
+        supported_ion_resnames = _ff_catalog.standard_ion_resnames_for_water(
+            ion_water_model
+        )
+        result["parameters"]["ion_parameter_water_model"] = ion_water_model
+        unsupported_ion_resnames = sorted(
+            {
+                resname
+                for resname in retained_ion_residue_names
+                if resname not in supported_ion_resnames
+            }
+        )
+        if unsupported_ion_resnames:
+            blocked = {
+                **result,
+                **create_validation_error(
+                    "water_model",
+                    "Retained bare ion residue(s) are not covered by the "
+                    f"{ion_water_model!r} water-model XML.",
+                    expected=(
+                        "Every retained bare ion residue name must have an "
+                        "exact template in the active water-model XML."
+                    ),
+                    actual=(
+                        f"water_model={ion_water_model}, "
+                        f"unsupported_ions={unsupported_ion_resnames}"
+                    ),
+                    hints=[
+                        "Use a water model whose standard ion XML supports the retained ion residue name.",
+                        "Rename the bare ion residue to a template name supported by the selected water model when chemically equivalent.",
+                        "For coordination-specific metal-site chemistry, use build_openmm_system(forcefield_xml=...).",
+                    ],
+                    context_extra={
+                        "water_model": ion_water_model,
+                        "retained_ion_residue_names": retained_ion_residue_names,
+                        "unsupported_ion_residue_names": unsupported_ion_resnames,
+                        "supported_ion_residue_names": sorted(supported_ion_resnames),
+                    },
+                    warnings=result["warnings"],
+                    code="unsupported_ion_for_water_model",
+                ),
+            }
+            if job_dir and node_id:
+                from mdclaw._node import fail_node_from_result
+                return fail_node_from_result(
+                    job_dir,
+                    node_id,
+                    blocked,
+                    default_error="build_amber_system unsupported ion for water_model",
+                )
+            return blocked
+
     nucleic_mode = (nucleic_forcefield or "auto").lower()
     nucleic_libraries = []
     if nucleic_mode in {"none", "off", "false", "no"}:
@@ -1093,27 +1140,6 @@ def build_amber_system(
     # Use the residue-name-repaired PDB as the input to the
     # openmmforcefields build path below.
     pdb_path = working_pdb
-
-    valid_metal_params = []
-    if metal_params:
-        valid_metal_params, metal_errors = validate_metal_params(metal_params, pdb_path)
-        if metal_errors:
-            result["errors"].extend(metal_errors)
-            logger.error(f"Metal parameter validation failed: {metal_errors}")
-            blocked = {
-                **result,
-                "error_type": "ValidationError",
-                "code": "invalid_metal_parameters",
-                "message": (
-                    "Invalid metal parameter records; refusing to run "
-                    "openmmforcefields build."
-                ),
-            }
-            if _node_mode:
-                from mdclaw._node import fail_node
-                fail_node(job_dir, node_id, errors=blocked["errors"], warnings=blocked["warnings"])
-            return blocked
-    result["parameters"]["metal_params"] = valid_metal_params
 
     ligand_coverage_errors = validate_ligand_template_coverage(pdb_path, valid_ligands)
     if ligand_coverage_errors:
@@ -1357,7 +1383,6 @@ def build_amber_system(
             is_membrane=bool(is_membrane),
             box_dimensions=box_dimensions,
             valid_ligands=valid_ligands or [],
-            valid_metal_params=valid_metal_params or [],
             valid_modxna_params=valid_modxna_params or [],
             disulfide_bonds=disulfide_bonds,
             glycam_bond_plan=(
@@ -1420,7 +1445,7 @@ def build_amber_system(
             if om_result.get("topology_validation"):
                 result["topology_validation"] = om_result["topology_validation"]
             # Propagate the helper's structured ``code`` (e.g.
-            # ``metal_openmm_xml_required``) so callers can branch on the
+            # ``modxna_openmm_xml_required``) so callers can branch on the
             # specific failure mode instead of grepping the error string.
             if not result.get("code"):
                 result["code"] = (

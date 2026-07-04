@@ -30,6 +30,7 @@ from mdclaw.chemistry_constants import (  # noqa: E402
     METAL_ELEMENTS,
     PROTEIN_RESNAMES,
     WATER_NAMES,
+    is_standard_bare_ion_resname,
 )
 
 logger = setup_logger(__name__)
@@ -452,12 +453,14 @@ def _analyze_ligands(structure_path: Path) -> list[dict]:
                     continue
                 if resname in WATER_NAMES:
                     continue
-                if resname in COMMON_IONS:
-                    continue
-
                 # Count atoms and collect element information
                 atoms = list(res)
                 num_atoms = len(atoms)
+                if (
+                    resname in COMMON_IONS
+                    or (num_atoms == 1 and is_standard_bare_ion_resname(resname))
+                ):
+                    continue
                 if num_atoms < 3:
                     continue  # Too small to be a meaningful ligand
 

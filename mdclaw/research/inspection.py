@@ -28,12 +28,13 @@ from mdclaw._common import (  # noqa: E402
 )
 
 from mdclaw.chemistry_constants import (  # noqa: E402
-    COMMON_IONS,
     MULTIVALENT_METAL_IONS,
     PHOSPHO_RESNAMES,
     PROTEIN_RESNAMES,
     WATER_NAMES,
+    is_standard_bare_ion_resname,
 )
+from mdclaw import forcefield_catalog as _ff_catalog  # noqa: E402
 from mdclaw.selection_utils import (  # noqa: E402
     associated_ligand_candidates,
     associated_ligands_by_author_chain,
@@ -457,7 +458,8 @@ def inspect_molecules(
             for res in res_list:
                 res_name = res.name.strip()
                 residue_names.add(res_name)
-                num_atoms += len(list(res))
+                res_atoms = list(res)
+                num_atoms += len(res_atoms)
 
                 if res_name in PHOSPHO_RESNAMES:
                     # Capture before falling through to ligand classification —
@@ -487,7 +489,7 @@ def inspect_molecules(
                     sequence_parts.append(AA_CODE.get(base, "X"))
                 elif res_name in WATER_NAMES:
                     has_water = True
-                elif res_name in COMMON_IONS:
+                elif len(res_atoms) == 1 and is_standard_bare_ion_resname(res_name):
                     has_ion = True
                     if res_name in MULTIVALENT_METAL_IONS:
                         multivalent_metal_residues.append({
@@ -681,19 +683,24 @@ def inspect_molecules(
                 "task names one as the target."
             )
 
+        default_opc_ions = _ff_catalog.standard_ion_resnames_for_water("opc")
+        standard_bare_metal_residues = [
+            item for item in multivalent_metal_residues
+            if item["resname"] in default_opc_ions
+        ]
         result["notes"] = {
-            "metal_parameterization_required": bool(multivalent_metal_residues),
+            "metal_parameterization_required": False,
+            "standard_bare_metal_residues": standard_bare_metal_residues,
             "metal_handling": (
-                "Multivalent metal ion(s) detected. These are NOT parameterized "
-                "automatically by prepare_complex and are NOT covered by the "
-                "OpenMM water-model ion XML that build_amber_system loads "
-                "(e.g. amber14/tip3p_HFE_multivalent.xml). Before "
-                "build_amber_system, run "
-                "`mdclaw parameterize_metal_ion --pdb-file <merged.pdb> "
-                "--output-dir <prep_artifacts>` and pass its mol2/frcmod to "
-                "build_amber_system via --metal-params. "
-                "See skills/md-prepare/setup.md 'Metal ion handling' for details."
-            ) if multivalent_metal_residues else None,
+                "Standard bare metal ion(s) detected. The default explicit "
+                "OPC water XML loaded by build_amber_system already provides "
+                "nonbonded templates for these residue names, so keep them as "
+                "ions on the explicit path. Do not create extra parameter "
+                "artifacts for standard bare ions. If the scientific model needs bonded "
+                "or coordination-specific metal-site parameters, supply a "
+                "pre-converted OpenMM ForceField XML through "
+                "build_openmm_system(forcefield_xml=...)."
+            ) if standard_bare_metal_residues else None,
             "ptm_handling": (
                 "Phosphorylated residue(s) detected (SEP / TPO / PTR). "
                 "PDBFixer will replace these with SER/THR/TYR during "

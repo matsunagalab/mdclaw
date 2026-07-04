@@ -26,12 +26,15 @@ mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
 
-For the default explicit-solvent path, retain supported crystallographic ions
-when they are part of the requested system by including `ion` in
-`--include-types`. For implicit solvent, pass `--solvent-type implicit`;
-`prepare_complex` will exclude explicit ion components from `merged_pdb` and
-record them in `component_disposition.json`. For a deliberate
-vacuum/no-solvent topology, explicit ions may be retained.
+For the default explicit-solvent path, retain standard bare crystallographic
+ions when they are part of the requested system by including `ion` in
+`--include-types`. With the default OPC water XML this includes common ions such
+as NA, CL, K, MG, CA, MN, and ZN; non-OPC water models can differ and are
+checked later by `build_amber_system` against the active water XML. For implicit
+solvent, pass `--solvent-type implicit`; `prepare_complex` will exclude
+explicit ion components from `merged_pdb` and record them in
+`component_disposition.json`. For a deliberate vacuum/no-solvent topology,
+explicit ions may be retained.
 
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
 If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,

@@ -45,7 +45,7 @@ exclude ion residues during preparation.
 
 No solvation step is needed for implicit solvent. Proceed directly to topology.
 Before topology, verify the prep `merged_pdb` contains no explicit ion residues
-such as CA, K, NA, CL, MG, or ZN. If ions remain, create a new prep branch
+such as NA, CL, K, MG, CA, MN, or ZN. If ions remain, create a new prep branch
 without `ion` in `--include-types`; do not parameterize them or pass them into
 an implicit topology.
 

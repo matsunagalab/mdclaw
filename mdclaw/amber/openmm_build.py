@@ -583,7 +583,6 @@ def _run_openmmforcefields_build(
     is_membrane: bool,
     box_dimensions: Optional[Dict[str, float]],
     valid_ligands: list[Dict[str, Any]],
-    valid_metal_params: list[Dict[str, Any]],
     valid_modxna_params: list[Dict[str, Any]],
     disulfide_bonds: Optional[list[Dict[str, Any]]],
     glycam_bond_plan: Optional[dict[str, Any]] = None,
@@ -1058,26 +1057,6 @@ def _run_openmmforcefields_build(
             f"SystemGenerator init failed: {type(exc).__name__}: "
             f"{tail_for_agent(exc)}. Bundle: {xml_bundle}"
         )
-        return result
-
-    # Metal frcmod+mol2 and modXNA frcmod+lib are NOT yet routed through
-    # SystemGenerator: under the openmmforcefields path they would silently
-    # fall through to the ForceField unmatched, eventually crashing inside
-    # ``create_system`` with an opaque ``No template found`` error. Fail-fast
-    # with a structured ``code`` so callers can route the user toward
-    # ``build_openmm_system`` with a pre-built OpenMM ForceField XML port
-    # of the metal / modXNA parameters until the ParmEd → OpenMM XML
-    # bridge ships in ``forcefield_catalog``.
-    if valid_metal_params:
-        result["errors"].append(
-            f"Metal parameters detected ({len(valid_metal_params)} sets) but the "
-            f"openmmforcefields path does not yet provide a ParmEd → OpenMM XML "
-            f"bridge from frcmod+mol2. Use ``build_openmm_system`` with a "
-            f"pre-converted OpenMM ForceField XML for the metal residue "
-            f"(research escape hatch); the same system.xml + topology.pdb + "
-            f"state.xml triple flows to min/eq/prod."
-        )
-        result["code"] = "metal_openmm_xml_required"
         return result
 
     if valid_modxna_params:

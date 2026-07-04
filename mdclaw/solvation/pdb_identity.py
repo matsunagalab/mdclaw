@@ -288,7 +288,7 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     residue and returns it as a ``--charge_pdb_delta`` so neutralization adds
     the missing counter-ions.
     """
-    from mdclaw.metal._base import METAL_CHARGES
+    from mdclaw.chemistry_constants import METAL_CHARGES
 
     residues = _iter_pdb_residues(pdb_path)
     ions: list[dict] = []

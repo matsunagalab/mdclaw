@@ -1,14 +1,4 @@
-"""
-Metal Server - Metal ion parameterization tools.
-
-Provides tools for:
-- Parameterizing metal ions using MCPB.py step 4n2 (nonbonded model)
-- Converting metal ion PDB to mol2 format using metalpdb2mol2.py
-- Generating LEaP input files for metal-containing systems
-
-Uses AmberTools' pyMSMT (Python Metal Site Modeling Toolbox) for robust metal parameterization.
-No QM software (Gaussian/GAMESS) required for the nonbonded model approach.
-"""
+"""Shared helpers for metal-ion detection."""
 
 # Configure logging early to suppress noisy third-party logs
 import os
@@ -16,93 +6,9 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from mdclaw._common import setup_logger  # noqa: E402
+from mdclaw.chemistry_constants import METAL_CHARGES, METAL_ELEMENTS  # noqa: E402
 
 logger = setup_logger(__name__)
-
-
-
-
-# =============================================================================
-# Constants
-# =============================================================================
-
-# Common metal ions with their typical charges
-METAL_CHARGES: dict[str, int] = {
-    # +2 ions (most common in proteins)
-    "ZN": 2, "MG": 2, "CA": 2, "MN": 2, "FE": 2, "CO": 2, "NI": 2, "CU": 2,
-    # +3 ions
-    "FE3": 3, "AL": 3, "CR": 3,
-    # +1 ions
-    "NA": 1, "K": 1, "CU1": 1, "AG": 1,
-    # Special cases
-    "HG": 2, "CD": 2, "PB": 2,
-}
-
-# Metal element symbols
-METAL_ELEMENTS: set[str] = {
-    "Li", "Na", "K", "Rb", "Cs",  # Alkali metals
-    "Be", "Mg", "Ca", "Sr", "Ba",  # Alkaline earth metals
-    "Al", "Ga", "In", "Tl",  # Post-transition metals
-    "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn",  # First-row transition
-    "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd",  # Second-row transition
-    "La", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg",  # Third-row transition
-}
-
-# Li/Merz ion frcmods for metal cofactors. Amber's OPC/OPC3/FB files cover
-# -1 through +4 in one frcmod; TIP3P/SPC/E/TIP4PEW split +1 and +2..+4 ions.
-# The default "normal" set is Amber Manual's normal-MD recommendation.
-ION_PARAMETER_SET_ALIASES = {
-    "normal": "normal",
-    "12_6": "normal",
-    "126": "normal",
-    "cm": "normal",
-    "hfe": "hfe",
-    "iod": "iod",
-    "12_6_4": "12_6_4",
-    "1264": "12_6_4",
-}
-
-ION_FRCMODS_BY_SET = {
-    "normal": {
-        "tip3p": {1: "frcmod.ions1lm_126_tip3p", 2: "frcmod.ions234lm_126_tip3p"},
-        "spce": {1: "frcmod.ions1lm_126_spce", 2: "frcmod.ions234lm_126_spce"},
-        "tip4pew": {1: "frcmod.ions1lm_126_tip4pew", 2: "frcmod.ions234lm_126_tip4pew"},
-        "opc": "frcmod.ionslm_126_opc",
-        "opc3": "frcmod.ionslm_126_opc3",
-    },
-    "hfe": {
-        "tip3p": {1: "frcmod.ions1lm_126_tip3p", 2: "frcmod.ions234lm_hfe_tip3p"},
-        "spce": {1: "frcmod.ions1lm_126_spce", 2: "frcmod.ions234lm_hfe_spce"},
-        "tip4pew": {1: "frcmod.ions1lm_126_tip4pew", 2: "frcmod.ions234lm_hfe_tip4pew"},
-        "opc": "frcmod.ionslm_hfe_opc",
-        "opc3": "frcmod.ionslm_hfe_opc3",
-    },
-    "iod": {
-        "tip3p": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_tip3p"},
-        "spce": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_spce"},
-        "tip4pew": {1: "frcmod.ions1lm_iod", 2: "frcmod.ions234lm_iod_tip4pew"},
-        "opc": "frcmod.ionslm_iod_opc",
-        "opc3": "frcmod.ionslm_iod_opc3",
-    },
-    "12_6_4": {
-        "tip3p": {1: "frcmod.ions1lm_1264_tip3p", 2: "frcmod.ions234lm_1264_tip3p"},
-        "spce": {1: "frcmod.ions1lm_1264_spce", 2: "frcmod.ions234lm_1264_spce"},
-        "tip4pew": {1: "frcmod.ions1lm_1264_tip4pew", 2: "frcmod.ions234lm_1264_tip4pew"},
-        "opc": "frcmod.ionslm_1264_opc",
-        "opc3": "frcmod.ionslm_1264_opc3",
-    },
-}
-
-SUPPORTED_ION_WATER_MODELS = ION_FRCMODS_BY_SET["normal"]
-
-
-
-
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
 
 
 def _find_metal_atoms(pdb_file: str) -> list[dict]:
@@ -150,29 +56,3 @@ def _find_metal_atoms(pdb_file: str) -> list[dict]:
                         "z": z,
                     })
     return metals
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# =============================================================================
-# Tools
-# =============================================================================
-
-
-
-
-
-
-# =============================================================================
-# Tool Registry
-# =============================================================================

@@ -197,6 +197,24 @@ def test_resolve_xml_bundle_default_pair():
     assert xml_list == ["amber/protein.ff19SB.xml", "amber/opc_standard.xml"]
 
 
+def test_standard_ion_resnames_for_default_opc_include_common_metals():
+    opc_ions = fc.standard_ion_resnames_for_water("OPC")
+    tip3p_ions = fc.standard_ion_resnames_for_water("tip3p")
+
+    assert {"NA", "CL", "K", "MG", "CA", "MN", "ZN"} <= opc_ions
+    assert {"NA", "CL", "K", "MG", "CA", "MN", "ZN"} <= tip3p_ions
+    assert "CU1" in opc_ions
+    assert "I" in opc_ions
+    assert "I" not in tip3p_ions
+    assert "IOD" not in opc_ions
+    assert "IOD" in tip3p_ions
+    assert fc.standard_ion_resnames_for_water("tip3p-fb") == tip3p_ions
+    assert fc.standard_ion_resnames_for_water("tip4p-fb") == tip3p_ions
+    assert fc.water_model_supports_standard_ion("opc", "ZN") is True
+    assert fc.water_model_supports_standard_ion("tip3p", "IOD") is True
+    assert fc.water_model_supports_standard_ion("opc", "MCO") is False
+
+
 def test_resolve_xml_bundle_with_phosaa_and_lipid():
     xml_list = fc.resolve_xml_bundle(
         protein="ff19SB",

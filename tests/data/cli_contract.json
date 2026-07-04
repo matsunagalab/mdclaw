@@ -477,12 +477,6 @@
     "requires_node": false,
     "server": "benchmark"
   },
-  "parameterize_metal_ion": {
-    "job_dir_is_data": false,
-    "required_params": [],
-    "requires_node": false,
-    "server": "metal"
-  },
   "phosphorylate_residues": {
     "job_dir_is_data": false,
     "required_params": [],

@@ -302,13 +302,9 @@ def _resolve_topo_inputs(job_dir: str, node_id: str) -> dict:
             result["pdb_file"] = v
             result["pdb_resolved_from_node_id"] = prep_id
 
-    for result_key, artifact_key in (
-        ("ligand_chemistry", "ligand_chemistry"),
-        ("metal_params", "metal_params"),
-    ):
-        value = find_ancestor_artifact(job_dir, node_id, "prep", artifact_key)
-        if value:
-            result[result_key] = value
+    value = find_ancestor_artifact(job_dir, node_id, "prep", "ligand_chemistry")
+    if value:
+        result["ligand_chemistry"] = value
 
     for result_key, artifact_key, expected_type in (
         ("modxna_params", "modxna_params", list),
@@ -457,8 +453,8 @@ def resolve_node_inputs(
                 to legacy ``structure_file`` artifacts when needed.
     - ``solv``: ``merged_pdb`` from nearest ``prep`` ancestor
     - ``topo``: ``solvated_pdb`` / ``box_dimensions`` from nearest ``solv``
-                ancestor, plus ``ligand_chemistry`` / ``metal_params`` from
-                nearest ``prep`` ancestor
+                ancestor, plus ``ligand_chemistry`` from nearest ``prep``
+                ancestor
     - ``min``:  same topology artifacts as ``eq``; writes a minimized
                 portable state for downstream equilibration
     - ``eq``:   ``system_xml`` + ``topology_pdb`` + ``state_xml`` from nearest

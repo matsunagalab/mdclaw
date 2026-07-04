@@ -1530,9 +1530,9 @@ def prepare_complex(
                             f"No cleaned PDB found for ligand {lig.get('ligand_id')}"
                         )
 
-            # Add ion files as-is (no cleaning needed). Multivalent metals
-            # must land in merged.pdb so parameterize_metal_ion can locate
-            # them; otherwise the metal would silently disappear between
+            # Add ion files as-is (no cleaning needed). Standard bare ions
+            # must land in merged.pdb so the water-model XML templates can
+            # match them; otherwise the ion would silently disappear between
             # split and merge even though "ion" was in include_types.
             for ion_pdb in result.get("retained_ion_files", split_result.get("ion_files", [])):
                 if ion_pdb and Path(ion_pdb).exists():

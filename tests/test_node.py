@@ -3261,9 +3261,7 @@ class TestDAGAutoResolve:
 
 
 class TestStructuredArtifactPropagation:
-    """Covers the DAG-based propagation of ``ligand_chemistry`` / ``metal_params``
-    / ``box_dimensions`` from prep/solv ancestors to the topo node.
-    """
+    """Covers DAG propagation of ligand chemistry and box dimensions."""
 
     @pytest.fixture
     def dag_with_ligand(self, job_dir):
@@ -3326,13 +3324,6 @@ class TestStructuredArtifactPropagation:
         assert isinstance(result, list)
         assert result == lp
 
-    def test_find_ancestor_missing_structured(self, dag_with_ligand):
-        """Absent structured artifact still returns None."""
-        job_dir, _lp, _box = dag_with_ligand
-        result = find_ancestor_artifact(str(job_dir), "topo_001", "prep",
-                                        "metal_params")
-        assert result is None
-
     def test_resolve_topo_inputs_three_level_dag(self, dag_with_ligand):
         """prep grandparent -> solv parent -> topo child: ligand_chemistry
         must be propagated all the way to topo."""
@@ -3351,12 +3342,8 @@ class TestStructuredArtifactPropagation:
         assert "box_dimensions" in inputs
         assert inputs["box_dimensions"] == box
 
-        # metal_params absent → key omitted (not None)
-        assert "metal_params" not in inputs
-
     def test_resolve_topo_omits_keys_when_prep_has_no_params(self, job_dir):
-        """If prep never wrote ligand/metal params, resolve_node_inputs
-        must silently omit them (not surface as None)."""
+        """If prep never wrote ligand params, resolve_node_inputs omits them."""
         jd = str(job_dir)
         create_node(jd, "prep")
         complete_node(jd, "prep_001",
@@ -3369,7 +3356,6 @@ class TestStructuredArtifactPropagation:
         inputs = resolve_node_inputs(jd, "topo_001", "topo")
         assert "pdb_file" in inputs
         assert "ligand_chemistry" not in inputs
-        assert "metal_params" not in inputs
         assert "box_dimensions" not in inputs
 
 

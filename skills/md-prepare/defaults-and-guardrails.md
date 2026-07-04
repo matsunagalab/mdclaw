@@ -25,12 +25,18 @@ Preparation-specific defaults:
   `prepare_complex` so explicit ions are removed during prep. Deliberate
   vacuum/no-solvent topologies may keep explicit ions, but they are not the
   default MD workflow.
-- Do not run `parameterize_metal_ion` for standard monatomic ions already
-  supported by the topology path, such as CA, MG, NA, K, or CL, just because
-  they are metals. Keep them as ions on explicit-solvent paths and let
-  `build_amber_system` handle them. Use explicit metal parameterization only
-  when a structured tool result reports unsupported or coordination-specific
-  metal parameters.
+- Do not create extra parameter artifacts for standard bare monatomic ions
+  already supported by the active water XML. Default OPC covers common ions
+  such as NA, CL, K, MG, CA, MN, ZN, FE/FE2, CU, CO, NI, CD, and HG. Keep them
+  as ions on explicit-solvent paths and let `build_amber_system` handle them.
+- Ion residue-name coverage differs by water model. If topology returns
+  `unsupported_ion_for_water_model`, use a water model whose active XML
+  supports the retained ion, or rename the bare ion residue to the selected
+  model's supported template name when chemically equivalent (for example
+  OPC `I` versus TIP3P-like `IOD`).
+- If a metal is not a standard bare ion, or needs bonded/coordination-specific
+  parameters, require a pre-converted OpenMM ForceField XML and route it through
+  `build_openmm_system(forcefield_xml=...)`.
 
 Guardrail handling:
 

@@ -590,18 +590,19 @@ class TestArgparseConstruction:
         assert prepare_params["protonation_states"]["cli_flag"] == "--protonation-states"
         assert prepare_params["protonation_states"]["expects_json"] is True
 
-    def test_pep604_optional_params_are_typed_in_parser_and_list_json(self):
+    def test_optional_params_are_typed_in_parser_and_list_json(self):
         from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
 
         tools = _discover_tools()
         parser = _build_parser(tools)
 
         args = parser.parse_args([
-            "parameterize_metal_ion",
-            "--metal-resname", "ZN",
-            "--metal-charge", "2",
+            "clean_ligand",
+            "--ligand-pdb", "ligand.pdb",
+            "--ligand-id", "LIG",
+            "--expected-net-charge", "2",
         ])
-        assert args.metal_charge == 2
+        assert args.expected_net_charge == 2
 
         if "search_structures" in tools:
             args = parser.parse_args([
@@ -612,12 +613,12 @@ class TestArgparseConstruction:
             assert args.has_ligand is False
 
         payload = _tool_list_json(tools)
-        parameterize = next(
+        clean_ligand = next(
             tool for tool in payload["tools"]
-            if tool["name"] == "parameterize_metal_ion"
+            if tool["name"] == "clean_ligand"
         )
-        params = {param["name"]: param for param in parameterize["parameters"]}
-        assert params["metal_charge"]["type"] == "Optional[int]"
+        params = {param["name"]: param for param in clean_ligand["parameters"]}
+        assert params["expected_net_charge"]["type"] == "Optional[int]"
 
 
 # ---------------------------------------------------------------------------

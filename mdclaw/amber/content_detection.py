@@ -42,6 +42,7 @@ from mdclaw._common import (  # noqa: E402
 )
 from mdclaw.chemistry_constants import (  # noqa: E402
     PHOSPHO_RESNAMES,
+    STANDARD_BARE_ION_RESNAMES,
     STANDARD_DNA_RESNAMES,
     STANDARD_RNA_RESNAMES,
 )
@@ -142,6 +143,16 @@ def _canonical_pablo_ion_resname(resname: str) -> Optional[str]:
     return _PABLO_ION_RESNAME_RENAMES.get(str(resname or "").strip().upper())
 
 
+def _standard_bare_ion_resname(resname: str) -> Optional[str]:
+    stripped = str(resname or "").strip()
+    canonical = _canonical_pablo_ion_resname(stripped)
+    if canonical is not None:
+        return canonical
+    if stripped in STANDARD_BARE_ION_RESNAMES:
+        return stripped
+    return None
+
+
 def _ion_element_symbol(canonical_resname: str) -> str:
     return canonical_resname[:1] + canonical_resname[1:].lower()
 
@@ -179,8 +190,13 @@ def _rewrite_pablo_ion_pdb_line(line: str) -> tuple[str, bool]:
 
 
 def _scan_pdb_ion_residue_names(path: Path) -> list[str]:
-    """Return canonical ion residue names present in a PDB file."""
-    ions: set[str] = set()
+    """Return retained standard bare-ion residue names in a PDB file.
+
+    Only single-atom HETATM residues are treated as bare ions. This avoids
+    misclassifying residues such as RNA inosine (``I``) or metal-containing
+    cofactors as water-model ion templates.
+    """
+    residues: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     try:
         lines = path.read_text().splitlines()
     except OSError:
@@ -188,9 +204,22 @@ def _scan_pdb_ion_residue_names(path: Path) -> list[str]:
     for line in lines:
         if not line.startswith("HETATM"):
             continue
-        canonical = _canonical_pablo_ion_resname(line[17:20])
-        if canonical:
-            ions.add(canonical)
+        ion_resname = _standard_bare_ion_resname(line[17:20])
+        if ion_resname is None:
+            continue
+        key = (
+            line[21:22],
+            line[22:26],
+            line[26:27],
+            line[17:20],
+        )
+        entry = residues.setdefault(key, {"resname": ion_resname, "atom_count": 0})
+        entry["atom_count"] += 1
+    ions = {
+        str(entry["resname"])
+        for entry in residues.values()
+        if int(entry["atom_count"]) == 1
+    }
     return sorted(ions)
 
 

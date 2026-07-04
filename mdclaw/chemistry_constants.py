@@ -34,14 +34,61 @@ PROTEIN_RESNAMES |= {f"N{aa}" for aa in AMINO_ACIDS} | {f"C{aa}" for aa in AMINO
 # Water residue names (light and deuterated variants).
 WATER_NAMES = {"HOH", "WAT", "H2O", "DOD", "D2O"}
 
-# Common monoatomic ions seen in crystallographic structures.
-COMMON_IONS = {"NA", "CL", "K", "MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
+# Bare monatomic ion residue names with templates in the default OpenMM water
+# XMLs shipped through openmmforcefields. These are exact ForceField template
+# names: mixed-case entries such as ``Ag`` or ``Be`` intentionally preserve the
+# XML spelling.
+OPC_STANDARD_ION_RESNAMES = frozenset({
+    "AG", "AL", "Ag", "BA", "BR", "Be", "CA", "CD", "CE", "CL",
+    "CO", "CR", "CS", "CU", "CU1", "Ce", "Cr", "Dy", "EU", "EU3",
+    "Er", "F", "FE", "FE2", "GD", "HG", "Hf", "I", "IN", "K",
+    "LA", "LI", "LU", "MG", "MN", "NA", "NI", "Nd", "PB", "PD",
+    "PR", "PT", "Pu", "RB", "Ra", "SM", "SR", "Sm", "Sn", "TB",
+    "TL", "Th", "Tl", "Tm", "U4+", "V2+", "Y", "YB2", "ZN", "Zr",
+})
 
-# Subset of COMMON_IONS that requires an explicit parameterize_metal_ion step.
-# Monovalent buffer ions (Na+, Cl-, K+) are covered by the OpenMM water-model
-# ion XML resolved through ``forcefield_catalog`` (e.g.
-# ``amber14/tip3p_HFE_multivalent.xml``); multivalent cofactors are not.
-MULTIVALENT_METAL_IONS = {"MG", "CA", "ZN", "FE", "MN", "CU", "CO", "NI", "CD", "HG"}
+TIP3P_LIKE_STANDARD_ION_RESNAMES = frozenset({
+    "AL", "Ag", "BA", "BR", "Be", "CA", "CD", "CE", "CL", "CO",
+    "CR", "CS", "CU", "Ce", "Cr", "Dy", "EU", "EU3", "Er", "F",
+    "FE", "FE2", "GD3", "HG", "Hf", "IN", "IOD", "K", "LA", "LI",
+    "LU", "MG", "MN", "NA", "NI", "Nd", "PB", "PD", "PR", "PT",
+    "Pu", "RB", "Ra", "SM", "SR", "Sm", "Sn", "TB", "Th", "Tl",
+    "Tm", "U4+", "V2+", "Y", "YB2", "ZN", "Zr",
+})
+
+TIP3P_STANDARD_ION_RESNAMES = TIP3P_LIKE_STANDARD_ION_RESNAMES
+SPCE_STANDARD_ION_RESNAMES = TIP3P_LIKE_STANDARD_ION_RESNAMES
+TIP4PEW_STANDARD_ION_RESNAMES = TIP3P_LIKE_STANDARD_ION_RESNAMES
+TIP3PFB_STANDARD_ION_RESNAMES = TIP3P_LIKE_STANDARD_ION_RESNAMES
+TIP4PFB_STANDARD_ION_RESNAMES = TIP3P_LIKE_STANDARD_ION_RESNAMES
+OPC3_STANDARD_ION_RESNAMES = OPC_STANDARD_ION_RESNAMES
+
+STANDARD_BARE_ION_RESNAMES = OPC_STANDARD_ION_RESNAMES | TIP3P_LIKE_STANDARD_ION_RESNAMES
+STANDARD_BARE_ION_RESNAME_KEYS = frozenset(
+    STANDARD_BARE_ION_RESNAMES | {name.upper() for name in STANDARD_BARE_ION_RESNAMES}
+)
+
+# Common monoatomic ions seen in crystallographic structures. Historically this
+# public name is also used by run-side solute filters, so keep it to common
+# unambiguous residue names and use STANDARD_BARE_ION_RESNAMES for full water-XML
+# template coverage.
+COMMON_IONS = {
+    "NA", "CL", "K", "MG", "CA", "ZN", "FE", "FE2", "MN", "CU", "CU1",
+    "CO", "NI", "CD", "HG",
+}
+
+
+def is_standard_bare_ion_resname(resname: str) -> bool:
+    """Return True for residue names covered by standard water-ion XMLs."""
+    value = str(resname or "").strip()
+    return value in STANDARD_BARE_ION_RESNAME_KEYS or value.upper() in STANDARD_BARE_ION_RESNAME_KEYS
+
+# Multivalent metal ions worth surfacing in inspection summaries. This is
+# diagnostic metadata only: standard bare ions covered by the active water XML
+# do not require extra parameter artifacts.
+MULTIVALENT_METAL_IONS = {
+    "MG", "CA", "ZN", "FE", "FE2", "MN", "CU", "CO", "NI", "CD", "HG",
+}
 
 # Phosphorylated amino acid residues recognized by the openmmforcefields
 # ``amber/phosaa*.xml`` bundles.
@@ -60,6 +107,17 @@ GAFF_SUPPORTED_ELEMENTS = {"H", "C", "N", "O", "S", "P", "F", "Cl", "Br", "I"}
 METAL_ELEMENTS = {
     "Li", "Be", "Na", "Mg", "Al", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn",
     "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Rb", "Sr", "Y", "Zr", "Nb", "Mo",
-    "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs", "Ba", "La", "Hf", "Ta",
-    "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi",
+    "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Cs", "Ba", "La",
+    "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb",
+    "Bi",
+}
+
+# Common metal-ion residue names with their typical formal charges. This is
+# used for diagnostics and packmol-memgen charge-delta compensation; topology
+# parameter coverage still comes from the active water-model XML.
+METAL_CHARGES: dict[str, int] = {
+    "ZN": 2, "MG": 2, "CA": 2, "MN": 2, "FE": 2, "CO": 2, "NI": 2, "CU": 2,
+    "FE3": 3, "AL": 3, "CR": 3,
+    "NA": 1, "K": 1, "CU1": 1, "AG": 1,
+    "HG": 2, "CD": 2, "PB": 2,
 }

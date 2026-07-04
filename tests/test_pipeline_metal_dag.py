@@ -6,7 +6,6 @@ import pytest
 from tests.pipeline_helpers import (
     fetch_pdb_node,
     node_artifact,
-    require_metalpdb2mol2,
     require_topology_builder_stack,
 )
 
@@ -14,7 +13,7 @@ pytestmark = [pytest.mark.integration, pytest.mark.slow]
 
 
 class TestPipelineMetalDag:
-    """Parameterize a real Zn-containing PDB and build topology from DAG artifacts."""
+    """Keep a real Zn ion as a standard bare ion and build topology from DAG artifacts."""
 
     @pytest.fixture(scope="class")
     def job_dir(self, tmp_path_factory):
@@ -55,40 +54,13 @@ class TestPipelineMetalDag:
         assert " ZN " in merged_text
         assert " CYS " in merged_text or " CYX " in merged_text
 
-    def test_step3_parameterize_metal(self, job_dir):
-        from mdclaw._node import read_node
-        from mdclaw.metal.parameterize import parameterize_metal_ion
-
-        require_metalpdb2mol2()
-        result = parameterize_metal_ion(
-            job_dir=str(job_dir),
-            node_id=self.prep_id,
-            water_model="opc",
-        )
-        assert result["success"], result.get("errors")
-        assert result["metal_params"]
-        assert result["metal_params"][0]["residue_name"] == "ZN"
-        assert result["metal_params"][0]["frcmod"] == "frcmod.ionslm_126_opc"
-
-        prep_node = read_node(str(job_dir), self.prep_id)
-        assert "metal_params" in prep_node["artifacts"]
-        assert prep_node["status"] == "completed"
-
-    def test_step4_topology_returns_metal_openmm_xml_required(self, job_dir):
-        """``build_amber_system`` fail-fasts on metal frcmod+mol2 inputs.
-
-        The openmmforcefields path does not yet provide a ParmEd → OpenMM
-        XML bridge for the AmberTools metal frcmod / mol2 artifacts that
-        ``parameterize_metal_ion`` writes. ``build_amber_system`` therefore
-        returns the structured code ``metal_openmm_xml_required`` and
-        directs callers to ``build_openmm_system`` with a pre-converted
-        OpenMM ForceField XML for the metal residue. This test pins that
-        contract until the bridge ships.
-        """
+    def test_step3_topology_builds_with_standard_zinc_ion(self, job_dir):
+        """Default OPC water XML provides a bare ZN template."""
         from mdclaw._node import create_node
         from mdclaw.amber.build_system import build_amber_system
 
         require_topology_builder_stack()
+
         node = create_node(str(job_dir), "topo", parent_node_ids=[self.prep_id])
         assert node["success"], node
         self.__class__.topo_id = node["node_id"]
@@ -99,8 +71,6 @@ class TestPipelineMetalDag:
             forcefield="ff14SB",
             water_model="opc",
         )
-        assert result["success"] is False
-        assert result.get("code") == "metal_openmm_xml_required"
-        joined = " ".join(result.get("errors") or [])
-        assert "build_openmm_system" in joined
-        assert "ParmEd" in joined or "parmed" in joined.lower()
+        assert result["success"], result.get("errors")
+        topology = node_artifact(job_dir, self.topo_id, "topology_pdb")
+        assert " ZN " in topology.read_text()

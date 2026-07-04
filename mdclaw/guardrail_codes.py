@@ -128,6 +128,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "phospho_detection_requires_gemmi": "Install gemmi to detect phosphorylation sites.",
     "phospho_forcefield_unsupported": "Phosphorylation is unsupported by the chosen forcefield.",
     "phospho_forcefield_atom_type_mismatch": "Phospho atom types mismatch the forcefield; pick a compatible ff.",
+    "removed_unsupported_5prime_terminal_phosphate": "A 5-prime terminal phosphate was removed; review the cleaned nucleic acid.",
 
     # --- modified nucleic acids (modxna) ---
     "invalid_modxna_parameters": "Provide valid modxna parameters.",
@@ -145,16 +146,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "unsupported_modified_nucleic_residue": "Modified nucleic residue is unsupported.",
 
     # --- metals ---
-    "invalid_metal_parameters": "Provide valid metal parameters.",
-    "metal_ions_not_found": "No metal ions found; check the structure/selection.",
     "metal_pdb_file_not_found": "Metal PDB file not found; verify the path.",
-    "metal_openmm_xml_required": "Provide the OpenMM XML required for metal parameterization.",
-    "metal_parameterization_failed": "Metal parameterization failed; inspect the structured error.",
-    "metal_1264_requires_parmed": "Install ParmEd to use the 12-6-4 metal model.",
-    "metal_unsupported_water_model": "Choose a water model supported by the metal model.",
-    "unknown_metal_ion_parameter_set": "Use a known metal-ion parameter set.",
-    "requested_metal_residue_not_found": "Requested metal residue not found in the structure.",
-    "single_metal_charge_for_multiple_metals": "Provide per-metal charges when multiple metals are present.",
 
     # --- side-chain / hydrogen packing (HPacker / nucleic) ---
     "hpacker_not_available": "HPacker is unavailable; run in a runtime that ships it.",
@@ -178,6 +170,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     # --- solvation / box / membrane ---
     "explicit_solvent_box_dimensions_missing": "Build topology from a completed explicit-solvent solv node.",
     "explicit_ions_in_implicit_solvent": "Remove explicit ions before an implicit build, or use explicit/vacuum.",
+    "unsupported_ion_for_water_model": "Use a water model whose ion XML supports the retained bare ion.",
     "solvation_topology_water_model_mismatch": "Match the topology water model to the solvation step.",
     "packmol_packing_quality_failed": "Packmol packing quality failed; adjust box/tolerance and retry.",
     "packmol_imperfect_primary_output_candidate": "Packmol primary output is imperfect; inspect candidates.",
@@ -191,6 +184,9 @@ GUARDRAIL_CODES: dict[str, str] = {
     "net_charge_exception": "Exact net-charge evaluation raised; membrane written without protein-charge neutralization.",
     "membrane_patch_invalid_patch": "Cached membrane patch PDB has no atoms; refresh the cache.",
     "membrane_patch_lipid_missing_after_carve": "Tiled patch insertion removed all requested lipids; adjust carve padding.",
+    "membrane_patch_state_missing_positions": "Membrane patch state export has no positions; rebuild the patch.",
+    "membrane_patch_state_missing_box": "Membrane patch state export has no box vectors; rebuild the patch.",
+    "membrane_patch_state_export_failed": "Membrane patch state export failed; inspect the patch state.",
     "memembed_unavailable": "memembed not found in PATH; pass a pre-oriented structure with --preoriented.",
     "memembed_timeout": "memembed orientation timed out.",
     "memembed_failed": "memembed orientation failed; inspect the structured error.",

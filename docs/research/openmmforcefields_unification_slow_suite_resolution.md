@@ -12,7 +12,7 @@ matters.
 Originally (slow suite run on 2026-05-08) **8 tests** failed:
 
 - `tests/test_server_smoke.py::TestMDSimulationServer::test_run_production_xml_restart_cross_ensemble_npt_state_into_nvt`
-- `tests/test_pipeline_metal_dag.py::TestPipelineMetalDag::test_step4_topology_auto_resolves_metal_params`
+- `tests/test_pipeline_metal_dag.py::TestPipelineMetalDag::test_step3_topology_builds_with_standard_zinc_ion`
 - `tests/test_pipeline_phospho_dag.py::TestPipelinePhosphoDag::test_step5_topology_loads_phosaa`
 - `tests/test_pipeline_3pwb_ligand_dag.py::TestPipeline3PWBLigandDag::test_step5_topology_with_ligands`
 - `tests/test_pipeline_3pwb_ligand_dag.py::TestPipeline3PWBLigandDag::test_step6_equilibration`
@@ -73,14 +73,17 @@ place, neither condition fired. Tightened all three sites to
 now matches `_effective_pressure_bar` and the docstring's "0 or
 None: NVT" rule.
 
-### `metal_dag::test_step4` — pin the structured fail-fast
+### `metal_dag` — standard bare ions vs custom metal XML
 
-The `parm7` retirement (PR `1aa3309`) replaced the metal /
-modxna build paths with a structured fail-fast
-(`metal_openmm_xml_required` / `modxna_openmm_xml_required`); the
-test still asserted the legacy success contract. Renamed the test
-and asserted the structured `code` per CLAUDE.md guidance to branch
-on stable codes rather than human-readable error strings.
+The `parm7` retirement (PR `1aa3309`) replaced legacy metal /
+modxna frcmod paths with structured fail-fast codes for unsupported
+custom parameters. Later ion-policy cleanup made the metal DAG assert
+the default path instead: standard bare ions such as ZN are kept in
+the PDB and matched by the active water-model XML; retained bare ions whose
+exact residue names are absent from that XML fail fast with
+`unsupported_ion_for_water_model`. Custom coordination-specific metal chemistry
+now belongs on the
+`build_openmm_system(forcefield_xml=...)` route.
 
 ### `phospho_dag::test_step5` — three layered issues
 
@@ -259,8 +262,8 @@ HOP3 only exist for the duration of the Pablo load.
   coverage (e.g. additional sialic / fucose linkages) means adding
   to this set or generalising to "any residue whose template comes
   from `GLYCAM_06j-1.xml`".
-- `metal_openmm_xml_required` and `modxna_openmm_xml_required` are
-  still intentional fail-fasts. The `build_openmm_system` research
-  escape hatch + a pre-converted OpenMM ForceField XML remains the
-  documented workaround until the ParmEd → OpenMM XML bridge ships
-  in `forcefield_catalog`.
+- `modxna_openmm_xml_required` is still an intentional fail-fast. The
+  `build_openmm_system` research escape hatch + a pre-converted OpenMM
+  ForceField XML remains the documented workaround until the ParmEd →
+  OpenMM XML bridge ships in `forcefield_catalog`. Custom metal-site
+  chemistry uses that XML route directly.

@@ -137,5 +137,7 @@ Current enforcement points include:
 
 - `amber.build_amber_system`: forcefield/water compatibility.
 - `solvation.solvate_structure`: OpenMM fallback water-model limits.
-- `metal.parameterize_metal_ion`: Amber ion set and water-model mapping.
+- `metal.detect_metal_ions`: metal-ion detection. Topology handles standard bare
+  ions through the active water-model XML and checks exact template coverage;
+  custom metal sites require OpenMM ForceField XML.
 - `slurm.submit_job`: partition, GPU, CPU, node, time, and memory policy.

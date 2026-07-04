@@ -40,6 +40,7 @@ from mdclaw.research.nucleic import (  # noqa: E402
 from mdclaw.chemistry_constants import (  # noqa: E402
     AMINO_ACIDS,
     WATER_NAMES,
+    is_standard_bare_ion_resname,
 )
 from mdclaw.selection_utils import (  # noqa: E402
     associated_ligand_candidates,
@@ -315,9 +316,6 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
         
         result["entities"] = entities_info
         
-        # Common ions for classification
-        COMMON_IONS = {'NA', 'CL', 'K', 'MG', 'CA', 'ZN', 'FE', 'MN', 'CU', 'CO', 'NI', 'CD', 'HG'}
-        
         # One-letter amino acid code mapping
         AA_CODE = {
             'ALA': 'A', 'ARG': 'R', 'ASN': 'N', 'ASP': 'D', 'CYS': 'C',
@@ -358,15 +356,16 @@ def _inspect_molecules_impl(structure_file: str) -> dict:
             
             for res in res_list:
                 res_name = res.name.strip()
+                res_atoms = list(res)
                 residue_names.add(res_name)
-                num_atoms += len(list(res))
+                num_atoms += len(res_atoms)
                 
                 if res_name in AMINO_ACIDS:
                     has_protein = True
                     sequence_parts.append(AA_CODE.get(res_name, 'X'))
                 elif res_name in WATER_NAMES:
                     has_water = True
-                elif res_name in COMMON_IONS:
+                elif len(res_atoms) == 1 and is_standard_bare_ion_resname(res_name):
                     has_ion = True
             
             # Get the author chain name (auth_asym_id) from the parent chain

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 
 import pytest
@@ -92,8 +91,3 @@ def require_packmol_memgen() -> None:
 
     if not packmol_memgen_wrapper.is_available():
         pytest.skip("packmol-memgen is required for this integration test")
-
-
-def require_metalpdb2mol2() -> None:
-    if shutil.which("metalpdb2mol2.py") is None:
-        pytest.skip("metalpdb2mol2.py is required for this integration test")

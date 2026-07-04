@@ -47,9 +47,13 @@ rejects `ff19SB + tip3p` with `code=forcefield_water_blocked`. Use
 together. Do not substitute legacy tutorial defaults from training-data memory.
 
 HMR is a build-time choice baked into `system.xml`; a run-side mismatch raises
-`modern_system_hmr_mismatch`. Keep supported crystallographic ions (CA, MG, NA,
-K, CL) on the explicit path by default and do not call `parameterize_metal_ion`
-for them unless a tool result reports missing/coordination-specific parameters.
+`modern_system_hmr_mismatch`. Keep standard bare crystallographic ions on the
+explicit path by default. Default OPC covers common ions such as NA, CL, K, MG,
+CA, MN, ZN, FE/FE2, CU, CO, NI, CD, and HG through its water XML. Other water
+models can differ; topology rejects retained bare ions absent from the active
+water XML with `unsupported_ion_for_water_model`. Custom or
+coordination-specific metal chemistry requires a pre-converted OpenMM
+ForceField XML through `build_openmm_system(forcefield_xml=...)`.
 
 ## Local-Execution / Platform Policy
 

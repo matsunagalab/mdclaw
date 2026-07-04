@@ -285,9 +285,10 @@ signature, update the relevant section here and the matching skill examples.
 
 ## `metal/`
 
-- `detect_metal_ions(...)`: scan structures for metal ions.
-- `parameterize_metal_ion(...)`: Amber ion parameter selection with water-model
-  and ion-set guardrails.
+- `detect_metal_ions(...)`: scan structures for metal ions. Standard bare ions
+  are handled by the active water-model XML during topology generation, with
+  exact residue-name coverage checked by `build_amber_system`; custom metal-site
+  chemistry requires `build_openmm_system(forcefield_xml=...)`.
 
 ## `slurm/`
 

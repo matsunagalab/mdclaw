@@ -1114,9 +1114,9 @@ _DEFAULT_WATER_RESIDUE_NAMES = (
 )
 # Monatomic cations recognized by every ion-aware check. This spans plain
 # monovalent counter-ions and the structural/catalytic metal ions MDClaw can
-# retain and parameterize with the nonbonded model (kept in sync with
-# ``mdclaw.metal._base.METAL_CHARGES``), so a retained Mn2+/Fe2+/etc. is not
-# mistaken for an unexpected nonstandard residue.
+# retain with the nonbonded model (kept in sync with
+# ``mdclaw.chemistry_constants.METAL_CHARGES``), so a retained Mn2+/Fe2+/etc.
+# is not mistaken for an unexpected nonstandard residue.
 _DEFAULT_CATION_RESIDUE_NAMES = (
     # Monovalent counter-ions
     "NA", "NA+", "K", "K+", "LI", "LI+", "CS", "CS+", "RB", "RB+",
@@ -2864,7 +2864,7 @@ def _monoatomic_metal_ion_indices(topology: Any) -> set[int]:
     if topology is None:
         return set()
     try:
-        from mdclaw.metal._base import METAL_ELEMENTS
+        from mdclaw.chemistry_constants import METAL_ELEMENTS
     except Exception:  # noqa: BLE001
         return set()
     indices: set[int] = set()

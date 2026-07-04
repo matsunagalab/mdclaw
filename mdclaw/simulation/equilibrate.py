@@ -453,13 +453,20 @@ def run_equilibration(
     # crash on virtual particles whose `element` is None. Filter by
     # residue name against the standard solvent set.
     from mdclaw.chemistry_constants import (
-        COMMON_IONS,
         WATER_NAMES,
+        is_standard_bare_ion_resname,
     )
-    _NON_SOLUTE_RESNAMES = WATER_NAMES | COMMON_IONS
+    _NON_SOLUTE_RESNAMES = WATER_NAMES
 
     def _is_solute_atom(atom) -> bool:
-        return atom.residue.name.upper() not in _NON_SOLUTE_RESNAMES
+        residue = atom.residue
+        resname = residue.name.strip()
+        if resname.upper() in _NON_SOLUTE_RESNAMES:
+            return False
+        residue_atoms = list(residue.atoms())
+        if len(residue_atoms) == 1 and is_standard_bare_ion_resname(resname):
+            return False
+        return True
 
     try:
         # Set up output directory

@@ -135,14 +135,11 @@ def test_builders_satisfy_contract():
 # ---------------------------------------------------------------------------
 
 
-def test_representative_tool_failures_satisfy_contract(tmp_path):
+def test_representative_tool_failures_satisfy_contract():
     from mdclaw.amber.build_system import build_amber_system
     from mdclaw.simulation.equilibrate import run_equilibration
-    from mdclaw.metal.parameterize import parameterize_metal_ion
+    from mdclaw.metal.detect import detect_metal_ions
     from mdclaw.solvation import solvate_structure
-
-    no_metal_pdb = tmp_path / "no_metal.pdb"
-    _write_minimal_pdb(no_metal_pdb)
 
     failures = [
         solvate_structure(pdb_file=None),
@@ -150,7 +147,7 @@ def test_representative_tool_failures_satisfy_contract(tmp_path):
         build_amber_system(
             pdb_file="missing.pdb", forcefield="ff19SB", water_model="opccc"
         ),
-        parameterize_metal_ion(pdb_file=str(no_metal_pdb)),
+        detect_metal_ions(pdb_file="missing_metal.pdb"),
     ]
 
     for raw in failures:

@@ -2067,6 +2067,19 @@ class TestBuildAmberSystemHmrAndImplicitContract:
 
         return captured, _fake
 
+    @staticmethod
+    def _pdb_with_single_atom_ion(resname: str, element: str) -> str:
+        ion_line = (
+            f"{'HETATM':<6}{2:5d} {element:^4s} {resname:>3s} {'A'}{101:4d}"
+            f"    {12.000:8.3f}{13.000:8.3f}{12.000:8.3f}"
+            f"{1.00:6.2f}{20.00:6.2f}          {element:>2s}\n"
+        )
+        return (
+            "ATOM      1  N   ALA A   1      11.104  13.207  12.011  1.00 20.00           N\n"
+            f"{ion_line}"
+            "END\n"
+        )
+
     def test_build_amber_system_does_not_pdbfixer_rewrite_prepared_input(
         self, tmp_path
     ):
@@ -2184,7 +2197,6 @@ class TestBuildAmberSystemHmrAndImplicitContract:
             is_membrane=False,
             box_dimensions=None,
             valid_ligands=[],
-            valid_metal_params=[],
             valid_modxna_params=[],
             disulfide_bonds=None,
             implicit_solvent="MAGIC_GB",
@@ -2311,6 +2323,74 @@ class TestBuildAmberSystemHmrAndImplicitContract:
         assert result["success"] is True
         assert captured["water_model"] == "opc"
         assert result["parameters"]["retained_ion_residue_names"] == ["CA"]
+
+    def test_explicit_iodine_ion_is_supported_by_opc_xml(self, tmp_path):
+        from unittest.mock import patch
+        from mdclaw.amber.build_system import build_amber_system
+
+        pdb = tmp_path / "iodine_input.pdb"
+        pdb.write_text(self._pdb_with_single_atom_ion("I", "I"))
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff19SB",
+                water_model="opc",
+                box_dimensions={"box_a": 40.0, "box_b": 40.0, "box_c": 40.0},
+                output_dir=str(tmp_path / "topo_opc_i"),
+            )
+
+        assert result["success"] is True
+        assert captured["water_model"] == "opc"
+        assert result["parameters"]["retained_ion_residue_names"] == ["I"]
+
+    def test_explicit_iodine_ion_is_rejected_for_tip3p_xml(self, tmp_path):
+        from mdclaw.amber.build_system import build_amber_system
+
+        pdb = tmp_path / "iodine_input.pdb"
+        pdb.write_text(self._pdb_with_single_atom_ion("I", "I"))
+
+        result = build_amber_system(
+            pdb_file=str(pdb),
+            forcefield="ff14SB",
+            water_model="tip3p",
+            box_dimensions={"box_a": 40.0, "box_b": 40.0, "box_c": 40.0},
+            output_dir=str(tmp_path / "topo_tip3p_i"),
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "unsupported_ion_for_water_model"
+        assert result["context"]["water_model"] == "tip3p"
+        assert result["context"]["unsupported_ion_residue_names"] == ["I"]
+        assert result["parameters"]["retained_ion_residue_names"] == ["I"]
+
+    def test_explicit_iodide_ion_is_supported_by_tip3p_xml(self, tmp_path):
+        from unittest.mock import patch
+        from mdclaw.amber.build_system import build_amber_system
+
+        pdb = tmp_path / "iodide_input.pdb"
+        pdb.write_text(self._pdb_with_single_atom_ion("IOD", "I"))
+
+        captured, fake = self._fake_om_build_capturing_kwargs()
+        with patch(
+            "mdclaw.amber.build_system._run_openmmforcefields_build",
+            side_effect=fake,
+        ):
+            result = build_amber_system(
+                pdb_file=str(pdb),
+                forcefield="ff14SB",
+                water_model="tip3p",
+                box_dimensions={"box_a": 40.0, "box_b": 40.0, "box_c": 40.0},
+                output_dir=str(tmp_path / "topo_tip3p_iod"),
+            )
+
+        assert result["success"] is True
+        assert captured["water_model"] == "tip3p"
+        assert result["parameters"]["retained_ion_residue_names"] == ["IOD"]
 
     def test_build_amber_system_provenance_records_hmr(self, tmp_path):
         """When ``hmr=True`` builds successfully via openmmforcefields, the
