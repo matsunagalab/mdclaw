@@ -65,7 +65,11 @@ def test_auto_nucleic_packmol_charge_delta_counts_standard_segments(tmp_path):
     serial = 1
     for chain, start in (("A", 1), ("B", 13)):
         for offset, resname in enumerate(["DC", "DG", "DA"]):
-            lines.append(_pdb_atom(serial, "P", resname, chain, start + offset, "P", x=serial))
+            lines.append(
+                _pdb_atom(
+                    serial, "P", resname, chain, start + offset, "P", x=serial
+                )
+            )
             serial += 1
     pdb.write_text("".join(lines) + "END\n")
 
@@ -160,6 +164,23 @@ def test_metal_ion_charge_delta_ignores_packmol_recognized_ions(tmp_path):
     report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
 
     assert report["charge_pdb_delta"] == 0
+
+
+def test_metal_ion_charge_delta_counts_packmol_resseq_collision(tmp_path):
+    # packmol-memgen tracks charged residues by residue number only, so two
+    # consecutive recognized ions with the same resseq are counted once.
+    pdb = tmp_path / "same_resseq_mg.pdb"
+    pdb.write_text(
+        _pdb_hetatm(1, "MG", "MG", "C", 101, "Mg")
+        + _pdb_hetatm(2, "MG", "MG", "D", 101, "Mg")
+        + "END\n"
+    )
+
+    report = _auto_metal_ion_packmol_charge_pdb_delta(pdb)
+
+    assert report["charge_pdb_delta"] == 2
+    assert [entry["packmol_recognized_charge"] for entry in report["ions"]] == [2, 0]
+    assert [entry["charge_pdb_delta"] for entry in report["ions"]] == [0, 2]
 
 
 def test_metal_ion_charge_delta_counts_deprotonated_cysteine(tmp_path):
@@ -261,7 +282,17 @@ def test_solvate_structure_passes_auto_nucleic_charge_delta(
     serial = 1
     for chain, start in (("A", 1), ("B", 13)):
         for offset, resname in enumerate(["DC", "DG", "DA"]):
-            lines.append(_pdb_atom(serial, "P", resname, chain, start + offset, "P", x=serial))
+            lines.append(
+                _pdb_atom(
+                    serial,
+                    "P",
+                    resname,
+                    chain,
+                    start + offset,
+                    "P",
+                    x=serial,
+                )
+            )
             serial += 1
     pdb.write_text("".join(lines) + "END\n")
     calls = []
@@ -306,6 +337,77 @@ def test_solvate_structure_passes_auto_nucleic_charge_delta(
     assert result["auto_charge_pdb_delta"] == 2
     assert result["auto_charge_pdb_delta_applied"] is True
     assert result["parameters"]["auto_charge_pdb_delta"] == 2
+
+
+def test_solvate_structure_includes_duplicate_mg_resseq_charge_delta(
+    tmp_path,
+    monkeypatch,
+):
+    pdb = tmp_path / "dna_mg.pdb"
+    lines = []
+    serial = 1
+    for chain, start in (("A", 1), ("B", 13)):
+        for offset, resname in enumerate(["DC", "DG", "DA"]):
+            lines.append(
+                _pdb_atom(
+                    serial,
+                    "P",
+                    resname,
+                    chain,
+                    start + offset,
+                    "P",
+                    x=serial,
+                )
+            )
+            serial += 1
+    lines.append(_pdb_hetatm(serial, "MG", "MG", "C", 101, "Mg", x=serial))
+    serial += 1
+    lines.append(_pdb_hetatm(serial, "MG", "MG", "D", 101, "Mg", x=serial))
+    pdb.write_text("".join(lines) + "END\n")
+    calls = []
+
+    def fake_run(args, cwd, timeout):
+        calls.append(list(args))
+        input_path = Path(args[args.index("--pdb") + 1])
+        output_path = Path(args[args.index("-o") + 1])
+        atom_lines = [
+            line
+            for line in input_path.read_text().splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+        output_path.write_text(
+            "CRYST1   40.000   40.000   40.000  90.00  90.00  90.00 P 1           1\n"
+            + "\n".join(atom_lines)
+            + "\nHETATM 9999  O   WAT W   1       9.000   0.000   0.000  1.00  0.00           O\n"
+            + "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="")
+
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.is_available",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "mdclaw.solvation._base.packmol_memgen_wrapper.run",
+        fake_run,
+    )
+
+    result = solv_water.solvate_structure(
+        pdb_file=str(pdb),
+        output_dir=str(tmp_path),
+        output_name="solvated",
+        salt=True,
+        water_model="opc",
+    )
+
+    assert result["success"] is True
+    assert calls[0][calls[0].index("--charge_pdb_delta") + 1] == "4"
+    assert result["auto_charge_pdb_delta"] == 4
+    assert result["metal_ion_charge_delta"] == 2
+    assert [
+        entry["charge_pdb_delta"]
+        for entry in result["metal_ion_charge_entries"]
+    ] == [0, 2]
 
 
 def test_packmol_box_extraction_uses_union_of_inside_boxes(tmp_path):

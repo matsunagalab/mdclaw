@@ -202,9 +202,10 @@ def _auto_nucleic_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     }
 
 
-# Monoatomic ion residue names whose formal charge packmol-memgen already
-# accounts for during neutralization (see packmol_memgen/lib/utils.py `charged`).
-# For these, the solute charge is already counted, so they contribute no delta.
+# Monoatomic ion residue names whose formal charge packmol-memgen can account
+# for during neutralization (see packmol_memgen/lib/utils.py `charged`). Its
+# parser only tracks the previous charged residue number, not chain/icode, so
+# same-resseq recognized ions can still be missed and need a delta.
 _PACKMOL_RECOGNIZED_ION_CHARGES: dict[str, int] = {
     "MG": 2,
     "CA": 2,
@@ -239,9 +240,27 @@ _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS: dict[str, int] = {
     "PSER": -1,
 }
 
+_PACKMOL_CHARGE_TRACKING_RESNAMES = (
+    set(_PACKMOL_RECOGNIZED_ION_CHARGES)
+    | set(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES)
+    | set(STANDARD_DNA_RESNAMES)
+    | set(STANDARD_RNA_RESNAMES)
+    | set(TERMINAL_DNA_RESNAMES)
+    | set(TERMINAL_RNA_RESNAMES)
+    | {
+        "PTR", "SEP", "TPO", "Y1P", "S1P", "T1P",
+        "H1D", "H2D", "H1E", "H2E", "NME", "ACE",
+    }
+)
+
 
 def _atom_names(residue: dict) -> set[str]:
     return {str(name).strip().upper() for name in residue.get("atom_names", [])}
+
+
+def _packmol_charge_tracking_resseq(residue: dict) -> str:
+    """Return the residue-number key packmol-memgen uses for charge tracking."""
+    return str(residue.get("residue_number") or "").strip()
 
 
 def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
@@ -254,6 +273,8 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
 
     - Transition-metal / non-MG/CA ions kept as components (ZN, MN, FE, CO,
       NI, CU, ...) are counted as neutral, so a catalytic Zn2+ leaves +2.
+    - MG/CA are normally counted, but packmol-memgen tracks charged residues
+      by residue number only; same-resseq ion collisions can drop later ions.
     - Protonated ASP/GLU residues that have been restored to canonical residue
       names are still counted as -1 by packmol-memgen, while OpenMM/Amber uses
       the explicit side-chain proton and treats them as neutral.
@@ -272,9 +293,17 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
     residues = _iter_pdb_residues(pdb_path)
     ions: list[dict] = []
     charge_delta = 0
+    packmol_charge_track: str | None = None
     for residue in residues:
         resname = (residue.get("resname") or "").strip().upper()
         atom_count = residue.get("atom_count", 0)
+        track_resseq = _packmol_charge_tracking_resseq(residue)
+        packmol_counts_this_residue = (
+            resname in _PACKMOL_CHARGE_TRACKING_RESNAMES
+            and packmol_charge_track != track_resseq
+        )
+        if packmol_counts_this_residue:
+            packmol_charge_track = track_resseq
 
         contribution: int | None = None
         formal_charge: int | None = None
@@ -285,19 +314,22 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
         # misreading a metal atom that belongs to a larger cofactor residue.
         if atom_count == 1 and resname in METAL_CHARGES:
             formal_charge = int(METAL_CHARGES[resname])
-            already_counted = int(_PACKMOL_RECOGNIZED_ION_CHARGES.get(resname, 0))
+            if packmol_counts_this_residue:
+                already_counted = int(_PACKMOL_RECOGNIZED_ION_CHARGES.get(resname, 0))
             contribution = formal_charge - already_counted
             kind = "metal_ion"
         elif resname in _CANONICAL_PROTONATED_ACID_HYDROGENS and (
             atom_names & _CANONICAL_PROTONATED_ACID_HYDROGENS[resname]
         ):
             formal_charge = 0
-            already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES[resname])
+            if packmol_counts_this_residue:
+                already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES[resname])
             contribution = formal_charge - already_counted
             kind = "neutral_protonated_acid"
         elif resname in _NEUTRAL_HISTIDINE_RESNAMES and {"HD1", "HE2"} <= atom_names:
             formal_charge = 1
-            already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES.get(resname, 0))
+            if packmol_counts_this_residue:
+                already_counted = int(_PACKMOL_RECOGNIZED_RESIDUE_CHARGES.get(resname, 0))
             contribution = formal_charge - already_counted
             kind = "protonated_histidine"
         elif resname in _PACKMOL_UNRECOGNIZED_RESIDUE_DELTAS:
@@ -315,6 +347,8 @@ def _auto_metal_ion_packmol_charge_pdb_delta(pdb_path: Path) -> dict:
             "formal_charge": formal_charge,
             "packmol_recognized_charge": already_counted,
             "charge_pdb_delta": contribution,
+            "packmol_charge_tracking_resseq": track_resseq,
+            "packmol_charge_counted": bool(packmol_counts_this_residue),
         }
         if kind == "neutral_protonated_acid":
             entry["sidechain_proton_atoms"] = sorted(
