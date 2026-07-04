@@ -1314,8 +1314,17 @@ def _run_public_submission_preflight(
         }
         _write_json(output_file, payload)
         return payload
+    # The openmm_bundle_loads check deserializes an OpenMM System/State bundle,
+    # so the preflight must run in an OpenMM-capable interpreter. When the
+    # harness runs in a bare venv (no openmm), delegate to the same SIF/conda
+    # science runtime the scorer uses instead of failing every task with a
+    # spurious ``invalid_openmm_bundle``.
+    if _openmm_available():
+        python_prefix = [sys.executable]
+    else:
+        python_prefix = shlex.split(_resolve_mdclaw_python())
     command = [
-        sys.executable,
+        *python_prefix,
         str(script),
         "--submission-dir",
         str(submission_dir),
