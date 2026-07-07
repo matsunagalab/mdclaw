@@ -180,6 +180,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "membrane_patch_build_failed": "Membrane patch packmol build failed; inspect the structured error.",
     "membrane_patch_build_no_output": "Membrane patch packmol build produced no output PDB.",
     "membrane_patch_build_invalid_output": "Membrane patch packmol build output is missing requested lipids.",
+    "membrane_embedding_geometry_failed": "Membrane embedding geometry failed; inspect protein/bilayer placement.",
     "membrane_patch_invalid_input": "Input protein PDB for membrane embedding has no atoms.",
     "net_charge_exception": "Exact net-charge evaluation raised; membrane written without protein-charge neutralization.",
     "membrane_patch_invalid_patch": "Cached membrane patch PDB has no atoms; refresh the cache.",

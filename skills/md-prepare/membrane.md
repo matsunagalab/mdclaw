@@ -19,6 +19,18 @@ mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
 solv node records `is_membrane=true`, so build topology with
 `build_amber_system --is-membrane` (see `explicit-water.md`).
 
+Use `--preoriented` only for structures that are already in a membrane frame
+(for example OPM/PPM-derived coordinates). For beta-barrel membrane proteins,
+pass `--memembed-beta-barrel` unless the job/task path or study text already
+contains beta-barrel wording. The patch-tile backend passes MEMEMBED `-b` in
+that mode, consumes MEMEMBED's oriented coordinates, and aligns the cached
+lipid patch to MEMEMBED's dummy-membrane midplane.
+
+By default the tool writes `membrane_embedding_geometry.json` and fails with
+`membrane_embedding_geometry_failed` when a PBC-aware post-build check shows
+that the protein does not intersect the lipid headgroup span. Treat that as a
+real membrane-placement failure, not a cosmetic rendering issue.
+
 ## Backend
 
 Membrane embedding defaults to the `patch-tile` backend
@@ -86,3 +98,4 @@ AMBER/LIPID residue-name postprocessing).
 | `packmol_packing_quality_failed` + `retry_membrane_with_larger_box` | No perfect packing after bounded adaptive retry; the box is not MD-ready. | Retry only with the CLI-provided larger xy/lateral box suggestion unless geometry was explicitly fixed. |
 | `forced_output_available` metadata | A `*_FORCED` PDB was written during a failed attempt. | Keep for debugging/provenance only; do not feed to topology generation. |
 | `salt_override_required` metadata | Neutralization needs more ions than the requested salt concentration. | Accept the automatic `--salt_override` rerun and record the warning/provenance. |
+| `membrane_embedding_geometry_failed` | Protein/lipid placement failed the post-build PBC-aware bilayer-intersection check. | Retry only after fixing orientation or membrane settings; for beta barrels use `--memembed-beta-barrel` and avoid `--preoriented` unless the input is truly pre-oriented. |

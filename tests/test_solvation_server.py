@@ -60,6 +60,104 @@ def test_memembed_restore_transforms_dropped_nonwater_heterogens():
     assert warnings == ["restored 1 non-water HETATM solute atom(s) dropped by MEMEMBED"]
 
 
+def test_memembed_orientation_uses_barrel_options_and_recenters_dummy_midplane(
+    tmp_path,
+    monkeypatch,
+):
+    input_pdb = tmp_path / "input.pdb"
+    input_pdb.write_text(
+        "ATOM      1  CA  ALA A   1       0.000   0.000   0.000  1.00  0.00           C\n"
+        "END\n"
+    )
+    commands = []
+
+    def fake_run(cmd, cwd, stdout, stderr, text, timeout):
+        commands.append(cmd)
+        output = Path(cmd[cmd.index("-o") + 1])
+        output.write_text(
+            "HETATM    1  O   DUM D   1       0.000   0.000   0.000  1.00  0.00           O\n"
+            "HETATM    2  N   DUM D   2       0.000   0.000  10.000  1.00  0.00           N\n"
+            "ATOM      3  CA  ALA A   1       1.000   2.000  15.000  1.00  0.00           C\n"
+            "END\n"
+        )
+        return SimpleNamespace(stdout="", stderr="", returncode=0)
+
+    monkeypatch.setattr(solv_membrane.shutil, "which", lambda name: "/bin/memembed")
+    monkeypatch.setattr(solv_membrane.subprocess, "run", fake_run)
+
+    result = solv_membrane._orient_protein_with_memembed(
+        protein_pdb=input_pdb,
+        out_dir=tmp_path,
+        beta_barrel=True,
+        force_span=True,
+    )
+
+    assert result["success"] is True
+    assert "-b" in commands[0]
+    assert "-l" in commands[0]
+    assert result["memembed"]["dummy_membrane"]["center_z"] == 5.0
+    assert result["membrane_center_z"] == 0.0
+    oriented = Path(result["oriented_pdb"]).read_text()
+    assert "DUM" not in oriented
+    assert float(oriented.splitlines()[0][46:54]) == 10.0
+
+
+def test_membrane_embedding_geometry_report_passes_transmembrane_layout(tmp_path):
+    pdb = tmp_path / "good_membrane.pdb"
+    lines = ["CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1"]
+    serial = 1
+    for z in (-18.0, -12.0, -6.0, 0.0, 6.0, 12.0, 18.0):
+        lines.append(
+            f"ATOM  {serial:5d}  CA  ALA A{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+        serial += 1
+    for z in (-20.0, 20.0):
+        for _ in range(4):
+            lines.append(
+                f"HETATM{serial:5d} P31  PC  M{serial:4d}    "
+                f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           P"
+            )
+            serial += 1
+    pdb.write_text("\n".join(lines) + "\nEND\n")
+
+    report = solv_membrane._membrane_embedding_geometry_report(
+        pdb_file=pdb,
+        box_dimensions={"box_c": 80.0},
+    )
+
+    assert report["status"] == "passed"
+    assert report["protein_headgroup_overlap_fraction"] == 1.0
+
+
+def test_membrane_embedding_geometry_report_fails_off_membrane_protein(tmp_path):
+    pdb = tmp_path / "bad_membrane.pdb"
+    lines = ["CRYST1   80.000   80.000   80.000  90.00  90.00  90.00 P 1           1"]
+    serial = 1
+    for z in (38.0, 42.0, 46.0, 50.0):
+        lines.append(
+            f"ATOM  {serial:5d}  CA  ALA A{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{z:8.3f}  1.00  0.00           C"
+        )
+        serial += 1
+    for _ in range(8):
+        lines.append(
+            f"HETATM{serial:5d} P31  PC  M{serial:4d}    "
+            f"{0.0:8.3f}{0.0:8.3f}{5.0:8.3f}  1.00  0.00           P"
+        )
+        serial += 1
+    pdb.write_text("\n".join(lines) + "\nEND\n")
+
+    report = solv_membrane._membrane_embedding_geometry_report(
+        pdb_file=pdb,
+        box_dimensions={"box_c": 80.0},
+    )
+
+    assert report["status"] == "failed"
+    assert "membrane_headgroup_span_too_narrow_near_protein" in report["failure_reasons"]
+    assert "protein_does_not_intersect_bilayer_headgroup_span" in report["failure_reasons"]
+
+
 def test_auto_nucleic_packmol_charge_delta_counts_standard_segments(tmp_path):
     pdb = tmp_path / "dna.pdb"
     lines = []
@@ -838,9 +936,22 @@ def _patch_pdb_text(lipids_by_group, waters=8, box=(40.0, 40.0, 81.0)):
         f"{90.0:7.2f}{90.0:7.2f}{90.0:7.2f} P 1           1"
     ]
     serial = 1
-    for resseq, (resname, atom, elem) in enumerate(lipids_by_group, start=1):
+    for index, (resname, atom, elem) in enumerate(lipids_by_group):
+        resseq = index // 3 + 1
         z = 5.0 if resseq % 2 == 0 else -5.0
-        lines.append(_pdb_hetatm(serial, atom, resname, "M", resseq, elem, x=0.0, y=0.0, z=z).rstrip())
+        lines.append(
+            _pdb_hetatm(
+                serial,
+                atom,
+                resname,
+                "M",
+                resseq,
+                elem,
+                x=0.0,
+                y=0.0,
+                z=z,
+            ).rstrip()
+        )
         serial += 1
     for widx in range(1, waters + 1):
         # Bulk waters well outside the membrane core (|z| large).
@@ -897,22 +1008,26 @@ def test_patch_molecule_ids_group_lipid_fragments_and_split_solvent():
     from mdclaw.solvation.patch_membrane import _parse_pdb_atoms, _patch_molecule_ids
 
     pdb = (
-        # One Lipid21 lipid: PA/PC/OL fragments sharing chain A, distinct resseq.
+        # One Lipid21 lipid: PA/PC/OL fragments share chain + residue number.
         _pdb_hetatm(1, "C12", "PA", "A", 1, "C")
-        + _pdb_hetatm(2, "P", "PC", "A", 2, "P")
-        + _pdb_hetatm(3, "C12", "OL", "A", 3, "C")
+        + _pdb_hetatm(2, "P", "PC", "A", 1, "P")
+        + _pdb_hetatm(3, "C12", "OL", "A", 1, "C")
+        # A neighboring lipid on the same chain must remain a separate molecule.
+        + _pdb_hetatm(4, "C12", "PA", "A", 2, "C")
+        + _pdb_hetatm(5, "P", "PC", "A", 2, "P")
+        + _pdb_hetatm(6, "C12", "OL", "A", 2, "C")
         # Two waters, each on its own (reused) chain letter.
-        + _pdb_hetatm(4, "O", "HOH", "B", 1, "O")
-        + _pdb_hetatm(5, "H1", "HOH", "B", 1, "H")
-        + _pdb_hetatm(6, "O", "HOH", "C", 1, "O")
-        + _pdb_hetatm(7, "H1", "HOH", "C", 1, "H")
+        + _pdb_hetatm(7, "O", "HOH", "B", 1, "O")
+        + _pdb_hetatm(8, "H1", "HOH", "B", 1, "H")
+        + _pdb_hetatm(9, "O", "HOH", "C", 1, "O")
+        + _pdb_hetatm(10, "H1", "HOH", "C", 1, "H")
     )
     path = Path("/tmp/mdclaw_wrap_ids.pdb")
     path.write_text(pdb)
     _lines, atoms = _parse_pdb_atoms(path)
     ids = _patch_molecule_ids(atoms)
-    # 3 molecules: one lipid (3 fragment atoms) + two waters (2 atoms each).
-    assert ids == [0, 0, 0, 1, 1, 2, 2]
+    # 4 molecules: two lipids (3 fragment atoms each) + two waters (2 atoms each).
+    assert ids == [0, 0, 0, 1, 1, 1, 2, 2, 3, 3]
 
 
 def test_wrap_patch_pdb_images_whole_molecules_into_box(tmp_path):
@@ -929,8 +1044,8 @@ def test_wrap_patch_pdb_images_whole_molecules_into_box(tmp_path):
     # molecule as a rigid unit, never splitting a lipid across the boundary.
     pdb = (
         _pdb_hetatm(1, "C12", "PA", "A", 1, "C", x=90.0, y=10.0, z=40.0)
-        + _pdb_hetatm(2, "P", "PC", "A", 2, "P", x=92.0, y=11.0, z=41.0)
-        + _pdb_hetatm(3, "C12", "OL", "A", 3, "C", x=91.0, y=10.0, z=39.0)
+        + _pdb_hetatm(2, "P", "PC", "A", 1, "P", x=92.0, y=11.0, z=41.0)
+        + _pdb_hetatm(3, "C12", "OL", "A", 1, "C", x=91.0, y=10.0, z=39.0)
         + _pdb_hetatm(4, "O", "HOH", "B", 1, "O", x=5.0, y=-5.0, z=10.0)
         + _pdb_hetatm(5, "H1", "HOH", "B", 1, "H", x=6.0, y=-4.0, z=10.0)
     )

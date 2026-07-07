@@ -569,6 +569,8 @@ def test_embed_in_membrane_node_mode_autoresolves_prep_merged_pdb(tmp_path):
             lipids="POPC",
             ratio="1",
             water_model="opc",
+            preoriented=True,
+            membrane_backend="packmol-memgen",
         )
 
     assert result["success"] is True, result.get("errors")
@@ -661,6 +663,8 @@ def test_embed_in_membrane_applies_salt_override_fallback_with_warning(tmp_path)
             salt_override=False,
             water_model="opc",
             packmol_race_lanes=1,
+            preoriented=True,
+            membrane_backend="packmol-memgen",
         )
 
     assert result["success"] is True
