@@ -179,6 +179,35 @@ def _normalize_nucleic_input_for_openmm(
     return normalized_path, report
 
 
+def _remove_heterogens_preserving_caps(fixer, keep_water: bool) -> dict:
+    """Remove heterogens like ``PDBFixer.removeHeterogens`` but keep terminal
+    caps (ACE/NME).
+
+    ``PDBFixer.removeHeterogens`` keeps only standard protein/nucleic residues
+    (+ water), so it deletes ACE/NME caps as heterogens — silently turning a
+    capped peptide into a charged free terminus. This mirrors that logic with
+    the terminal caps added to the keep set. Returns a summary with the number
+    of removed residues and the preserved cap names.
+    """
+    from openmm import app as _app
+    from pdbfixer.pdbfixer import dnaResidues, proteinResidues, rnaResidues
+
+    keep = set(proteinResidues) | set(dnaResidues) | set(rnaResidues)
+    keep |= {"N", "UNK"} | TERMINAL_CAP_RESIDUES
+    if keep_water:
+        keep.add("HOH")
+
+    to_delete = [r for r in fixer.topology.residues() if r.name not in keep]
+    preserved_caps = [
+        r.name for r in fixer.topology.residues() if r.name in TERMINAL_CAP_RESIDUES
+    ]
+    modeller = _app.Modeller(fixer.topology, fixer.positions)
+    modeller.delete(to_delete)
+    fixer.topology = modeller.topology
+    fixer.positions = modeller.positions
+    return {"removed_count": len(to_delete), "preserved_caps": preserved_caps}
+
+
 def _internal_missing_residue_records(
     missing_residues: dict,
     chains: list,
@@ -553,15 +582,25 @@ def clean_protein(
                 "details": "No non-standard residues found"
             })
         
-        # Step 3: Remove heterogens
+        # Step 3: Remove heterogens (preserving ACE/NME terminal caps, which
+        # PDBFixer.removeHeterogens would otherwise silently delete).
         if remove_heterogens:
             logger.info(f"Removing heterogens (keep_water={keep_water})")
-            fixer.removeHeterogens(keepWater=keep_water)
+            het_summary = _remove_heterogens_preserving_caps(fixer, keep_water)
             water_status = "kept" if keep_water else "removed"
+            details = (
+                f"Removed {het_summary['removed_count']} heterogen residue(s), "
+                f"water {water_status}"
+            )
+            if het_summary["preserved_caps"]:
+                details += (
+                    f"; preserved terminal caps {het_summary['preserved_caps']}"
+                )
+                result["preserved_terminal_caps"] = het_summary["preserved_caps"]
             result["operations"].append({
                 "step": "remove_heterogens",
                 "status": "success",
-                "details": f"Removed heterogens, water {water_status}"
+                "details": details,
             })
         else:
             result["operations"].append({
