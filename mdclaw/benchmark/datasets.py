@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.1"
+DEFAULT_BENCHMARK_VERSION = "MDPrepBench-v0.2"
 DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
 BUILTIN_DATASET_DIRS = (
     "benchmarks/mdprepbench",

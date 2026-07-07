@@ -1,7 +1,7 @@
 {
   "agent_independent": true,
   "benchmark_type": "artifact_based_agent_benchmark",
-  "benchmark_version": "MDPrepBench-v0.1",
+  "benchmark_version": "MDPrepBench-v0.2",
   "evaluation_unit": "submission_artifacts",
   "families": {
     "preparation_workflow_battery": {
@@ -73,7 +73,7 @@
       "tasks/<task_id>/submission_checklist.md"
     ]
   },
-  "released": "2026-05-16",
+  "released": "2026-07-07",
   "schema_version": "1.0",
   "task_count": 40,
   "task_ids": [

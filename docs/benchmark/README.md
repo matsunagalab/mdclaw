@@ -1,7 +1,7 @@
 # MDPrepBench
 
 MDPrepBench is the preparation-focused suite in the MDAgentBench benchmark
-family. The current dataset is `MDPrepBench-v0.1`.
+family. The current dataset is `MDPrepBench-v0.2`.
 
 For the full suite split, see `benchmarks/README.md`. For study-level
 scientific question tasks, see `docs/benchmark/mdstudybench.md`.
