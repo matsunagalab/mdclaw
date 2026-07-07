@@ -74,7 +74,9 @@ PATCH_CACHE_SCHEMA_VERSION = 2
 
 # packmol-memgen Lipid21 phospholipids are split into head/tail fragments that
 # share a residue number and must be carved as one lipid.
-PATCH_LIPID21_FRAGMENT_RESNAMES = {"PA", "PC", "PE", "OL"}
+PATCH_LIPID21_FRAGMENT_RESNAMES = {
+    "PA", "PC", "PE", "PGR", "PG", "PS", "PSER", "OL",
+}
 PATCH_STEROL_RESNAMES = {"CHL", "CHL1"}
 PATCH_WATER_RESNAMES = {"HOH", "WAT", "SOL", "TIP3", "OPC", "T3P", "T4E"}
 PATCH_ION_RESNAMES = {"NA", "K", "CL", "Na+", "Cl-", "K+"}
@@ -96,16 +98,26 @@ PATCH_LIPID_ALIAS_RESNAMES = {
     "DOPE": {"DOPE", "PE"},
     "DPPE": {"DPPE", "PE"},
     # phosphatidylglycerol (PGR head)
-    "POPG": {"POPG", "PGR", "PG"},
-    "DOPG": {"DOPG", "PGR", "PG"},
-    "DPPG": {"DPPG", "PGR", "PG"},
+    "POPG": {"POPG", "PGR", "PG", "OPG"},
+    "DOPG": {"DOPG", "PGR", "PG", "OPG"},
+    "DPPG": {"DPPG", "PGR", "PG", "OPG"},
     # phosphatidylserine (PS head)
-    "POPS": {"POPS", "PS"},
-    "DOPS": {"DOPS", "PS"},
+    "POPS": {"POPS", "PS", "PSER"},
+    "DOPS": {"DOPS", "PS", "PSER"},
     # cholesterol
     "CHL1": {"CHL1", "CHL"},
     "CHL": {"CHL", "CHL1"},
 }
+PATCH_KNOWN_LIPID_RESNAMES = (
+    PATCH_LIPID21_FRAGMENT_RESNAMES
+    | PATCH_STEROL_RESNAMES
+    | {
+        resname
+        for aliases in PATCH_LIPID_ALIAS_RESNAMES.values()
+        for resname in aliases
+    }
+)
+PATCH_LIPID_HEADGROUP_RESNAMES = PATCH_KNOWN_LIPID_RESNAMES - {"OL", "CHL", "CHL1"}
 
 # Small patch defaults. A ~40 A square patch converges fast in packmol even for
 # cholesterol mixtures and tiles cleanly after PBC equilibration.

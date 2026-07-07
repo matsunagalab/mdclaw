@@ -152,10 +152,16 @@ signature, update the relevant section here and the matching skill examples.
   under a protein-size-independent fingerprint (composition + build defaults;
   the packmol-memgen version is excluded so patches are reusable across conda
   and container environments), then orient the protein with MEMEMBED, restore
-  non-water HETATM solutes that MEMEMBED drops (e.g. pore ions/cofactors), tile
-  the patch to cover it, carve overlaps with periodic-boundary awareness, and
-  neutralize by swapping bulk waters for ions. The cold build runs once per
-  composition and is
+  non-water HETATM solutes that MEMEMBED drops (e.g. pore ions/cofactors), align
+  the cached patch to MEMEMBED's dummy-membrane midplane, tile the patch to
+  cover it, carve overlaps with periodic-boundary awareness, and neutralize by
+  swapping bulk waters for ions. Beta-barrel proteins can request MEMEMBED
+  `-b` via `memembed_beta_barrel`; MDClaw also enables it from beta-barrel
+  wording in the job/task context. `memembed_force_span` passes MEMEMBED `-l` on
+  the patch-tile path. A PBC-aware post-build geometry check writes
+  `membrane_embedding_geometry.json` and fails with
+  `membrane_embedding_geometry_failed` if the protein does not intersect the
+  bilayer headgroup span. The cold build runs once per composition and is
   surfaced via `warnings`, `patch_cold_build_notice`, and `patch_build`.
   Patch cold-build topology generation disables Pablo CCD auto-download
   (`pablo_auto_download=False`) because the patch contains known local
@@ -165,9 +171,12 @@ signature, update the relevant section here and the matching skill examples.
   CRYST1/manifest/box mismatches plus PBC close-contact overlaps.
   `membrane_backend="packmol-memgen"` runs the legacy full-box packing path
   (bounded adaptive Packmol as a 4-lane parallel race; set
-  `packmol_race_lanes=1` for sequential retries). `membrane_backend="auto"`
-  tries patch-tile then falls back to packmol-memgen. Patch caching honors
-  `membrane_cache_mode` (`off` / `read-only` / `auto` / `refresh`),
+  `packmol_race_lanes=1` for sequential retries). On that path
+  `memembed_beta_barrel` maps to packmol-memgen `--barrel`; `memembed_force_span`
+  is recorded as a warning because packmol-memgen does not expose MEMEMBED `-l`
+  directly. `membrane_backend="auto"` tries patch-tile then falls back to
+  packmol-memgen. Patch caching honors `membrane_cache_mode` (`off` /
+  `read-only` / `auto` / `refresh`),
   `membrane_cache_dir`, and the read-only bundled cache root
   `MDCLAW_MEMBRANE_BUNDLED_CACHE_DIR`. See `scripts/warmup_membrane_cache.py`.
 - `list_available_lipids(...)`: lipid inventory.

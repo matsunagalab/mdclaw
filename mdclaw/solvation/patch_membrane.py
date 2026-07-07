@@ -42,8 +42,10 @@ from mdclaw._common import ensure_directory, sha256_file
 from mdclaw._lock import file_lock
 from mdclaw.solvation.constants import (
     PATCH_CACHE_SCHEMA_VERSION,
+    PATCH_KNOWN_LIPID_RESNAMES,
     PATCH_LIPID21_FRAGMENT_RESNAMES,
     PATCH_LIPID_ALIAS_RESNAMES,
+    PATCH_LIPID_HEADGROUP_RESNAMES,
     PATCH_WATER_RESNAMES,
 )
 
@@ -240,6 +242,57 @@ def _canonical_coord(value: float, box_length: float) -> float:
     coord = value % box_length
     # Avoid occasionally placing a rounded value exactly at the upper edge.
     return 0.0 if math.isclose(coord, box_length) else coord
+
+
+def _periodic_mean(values: list[float], box_length: float) -> Optional[float]:
+    """Return the mean coordinate on a periodic one-dimensional box."""
+    if not values or box_length <= 0.0:
+        return None
+    coords = sorted(value % box_length for value in values)
+    if len(coords) == 1:
+        return coords[0]
+    gaps: list[tuple[float, int]] = []
+    for index, value in enumerate(coords):
+        nxt = coords[(index + 1) % len(coords)]
+        if index == len(coords) - 1:
+            nxt += box_length
+        gaps.append((nxt - value, index))
+    _, gap_index = max(gaps)
+    origin = coords[(gap_index + 1) % len(coords)]
+    unwrapped = [((value - origin) % box_length) for value in coords]
+    return (origin + sum(unwrapped) / len(unwrapped)) % box_length
+
+
+def _lipid_headgroup_z_values(atoms: list[PDBAtom]) -> list[float]:
+    """Return lipid headgroup z coordinates suitable for midplane estimation."""
+    zs: list[float] = []
+    for atom in atoms:
+        if atom.resname not in PATCH_LIPID_HEADGROUP_RESNAMES:
+            continue
+        name = atom.atom_name.upper()
+        if name.startswith(("P", "N")):
+            zs.append(atom.z)
+    return zs
+
+
+def _estimate_patch_membrane_center_z(
+    atoms: list[PDBAtom],
+    *,
+    box_c: float,
+) -> Optional[float]:
+    """Estimate the bilayer midplane from periodic lipid headgroup positions."""
+    headgroup_zs = _lipid_headgroup_z_values(atoms)
+    if len(headgroup_zs) >= 2:
+        return _periodic_mean(headgroup_zs, box_c)
+
+    lipid_zs = [
+        atom.z
+        for atom in atoms
+        if atom.resname in PATCH_KNOWN_LIPID_RESNAMES
+    ]
+    if lipid_zs:
+        return _periodic_mean(lipid_zs, box_c)
+    return None
 
 
 def _patch_geometry_report(
@@ -617,36 +670,28 @@ def _write_box_dimensions_json(out_dir: Path, box_dims: dict[str, Any]) -> Path:
 def _patch_molecule_ids(atoms: list[PDBAtom]) -> list[int]:
     """Assign a molecule id per atom for whole-molecule PBC wrapping.
 
-    packmol-memgen writes one Lipid21 lipid as consecutive PA/PC/OL fragments
-    sharing a PDB chain, then gives every water/ion its own (reused) chain
-    letter. So: start a new molecule whenever the chain letter changes, and also
-    treat each solvent/ion residue as its own molecule (consecutive Lipid21
-    fragments on the same chain stay merged as one lipid).
+    packmol-memgen writes one Lipid21 lipid as PA/head/OL fragments that share
+    chain + residue number.  Treat that residue identity as one molecule so a
+    carved lipid does not leave orphan fragments, but keep neighboring lipids on
+    the same chain separate.
     """
+    molecule_by_key: dict[tuple, int] = {}
     ids: list[int] = []
-    current = -1
-    prev_chain: Optional[str] = None
-    prev_residue: Optional[tuple] = None
-    prev_is_lipid = False
     for atom in atoms:
         is_lipid_fragment = atom.resname in PATCH_LIPID21_FRAGMENT_RESNAMES
-        residue_key = (atom.chain_id, atom.resseq, atom.insertion_code)
-        if current < 0 or atom.chain_id != prev_chain:
-            # Chain boundary always separates molecules.
-            new_molecule = True
-        elif residue_key == prev_residue:
-            # Same residue (e.g. the 4 atoms of one water) -> same molecule.
-            new_molecule = False
+        if is_lipid_fragment:
+            key = ("lipid", atom.chain_id, atom.resseq, atom.insertion_code)
         else:
-            # Residue changed within a chain: merge only consecutive Lipid21
-            # fragments (head + acyl tails of one lipid); otherwise split.
-            new_molecule = not (is_lipid_fragment and prev_is_lipid)
-        if new_molecule:
-            current += 1
-        ids.append(current)
-        prev_chain = atom.chain_id
-        prev_residue = residue_key
-        prev_is_lipid = is_lipid_fragment
+            key = (
+                "residue",
+                atom.chain_id,
+                atom.resseq,
+                atom.insertion_code,
+                atom.resname,
+            )
+        if key not in molecule_by_key:
+            molecule_by_key[key] = len(molecule_by_key)
+        ids.append(molecule_by_key[key])
     return ids
 
 
@@ -1594,6 +1639,7 @@ def embed_with_membrane_patch_tiles(
     cache_dir: Optional[str],
     carve_padding: float,
     preoriented: bool,
+    membrane_center_z: Optional[float],
     packmol_memgen_runner: Optional[CallableRunner],
     packmol_path: Optional[str],
     equilibrate_fn: Optional[CallableRunner],
@@ -1609,6 +1655,7 @@ def embed_with_membrane_patch_tiles(
 
     # 1) Orient the protein into the membrane frame (unless already oriented).
     oriented_pdb = protein_pdb
+    orientation_metadata: Optional[dict] = None
     if not preoriented and orient_fn is not None:
         orient_result = orient_fn(protein_pdb=protein_pdb, out_dir=output_dir)
         if not orient_result.get("success"):
@@ -1619,6 +1666,9 @@ def embed_with_membrane_patch_tiles(
                 "warnings": warnings + orient_result.get("warnings", []),
             }
         oriented_pdb = Path(str(orient_result["oriented_pdb"]))
+        if membrane_center_z is None:
+            membrane_center_z = orient_result.get("membrane_center_z")
+        orientation_metadata = orient_result.get("memembed")
         warnings.extend(orient_result.get("warnings", []))
     elif not preoriented and orient_fn is None:
         warnings.append(
@@ -1688,7 +1738,9 @@ def embed_with_membrane_patch_tiles(
     )
     tiled = build_tiled_membrane(patch_atoms, box_a=box_a, box_b=box_b, nx=nx, ny=ny)
 
-    # 4) Align tiled membrane center (XY) to protein center; keep membrane at z~0.
+    # 4) Align tiled membrane center (XY) to protein center.  For z, align the
+    # cached patch's lipid midplane to the membrane frame reported by MEMEMBED
+    # (or to z=0 for explicitly pre-oriented membrane-frame inputs).
     protein_center = _center(protein_atoms)
     tiled_center = (
         sum(t[2] for t in tiled) / len(tiled),
@@ -1697,7 +1749,19 @@ def embed_with_membrane_patch_tiles(
     )
     shift_x = protein_center[0] - tiled_center[0]
     shift_y = protein_center[1] - tiled_center[1]
-    shift_z = 0.0
+    patch_membrane_center_z = _estimate_patch_membrane_center_z(
+        patch_atoms,
+        box_c=box_c,
+    )
+    target_membrane_center_z = membrane_center_z
+    if target_membrane_center_z is None and preoriented:
+        target_membrane_center_z = 0.0
+    if target_membrane_center_z is not None and patch_membrane_center_z is not None:
+        shift_z = float(target_membrane_center_z) - float(patch_membrane_center_z)
+    elif target_membrane_center_z is not None:
+        shift_z = float(target_membrane_center_z)
+    else:
+        shift_z = 0.0
 
     shifted: list[tuple[PDBAtom, str, float, float, float]] = []
     carve_keys: list[tuple] = []
@@ -1812,6 +1876,12 @@ def embed_with_membrane_patch_tiles(
         "tiled_atoms_retained": len(retained),
         "removed_residue_groups": len(removed_groups),
         "neutralization": neutralization,
+        "membrane_alignment": {
+            "target_membrane_center_z": target_membrane_center_z,
+            "patch_membrane_center_z": patch_membrane_center_z,
+            "shift_z": shift_z,
+        },
+        "orientation": orientation_metadata,
     }
     _atomic_write_json(output_dir / "membrane_patch_metadata.json", metadata)
 
@@ -1831,6 +1901,8 @@ def embed_with_membrane_patch_tiles(
             "cache_source": patch.get("cache_source"),
             "equilibration_ran": bool(patch.get("equilibration_ran")),
         },
+        "membrane_alignment": metadata["membrane_alignment"],
+        "orientation": orientation_metadata,
         "metadata_file": str(output_dir / "membrane_patch_metadata.json"),
         "warnings": warnings + patch.get("warnings", []),
         "errors": [],

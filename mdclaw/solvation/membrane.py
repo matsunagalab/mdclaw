@@ -13,6 +13,7 @@ from concurrent.futures import CancelledError, Future, ThreadPoolExecutor, as_co
 from pathlib import Path
 from typing import Optional
 
+from mdclaw.chemistry_constants import PROTEIN_RESNAMES
 from mdclaw._common import (
     CANONICAL_WATER_MODELS,
     BaseToolWrapper,
@@ -28,6 +29,7 @@ from mdclaw.solvation.constants import (
     MEMBRANE_BACKENDS,
     MEMBRANE_CACHE_MODES,
     PATCH_EQUIL_FORCEFIELD,
+    PATCH_LIPID_HEADGROUP_RESNAMES,
     PATCH_SIDE_ANGSTROM,
     _normalize_water_model_name,
     patch_equilibration_params,
@@ -229,7 +231,253 @@ def _transform_heterogen_lines_like_memembed(
     ]
 
 
-def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
+def _parse_pdb_xyz_line(line: str) -> Optional[dict]:
+    if not line.startswith(("ATOM", "HETATM")):
+        return None
+    padded = line.ljust(80)
+    try:
+        x = float(padded[30:38])
+        y = float(padded[38:46])
+        z = float(padded[46:54])
+    except ValueError:
+        return None
+    return {
+        "line": line,
+        "record": padded[:6].strip(),
+        "name": padded[12:16].strip(),
+        "resname": padded[17:21].strip().upper(),
+        "x": x,
+        "y": y,
+        "z": z,
+    }
+
+
+def _mean(values: list[float]) -> Optional[float]:
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def _minimum_image_delta(delta: float, box_length: float) -> float:
+    return delta - round(delta / box_length) * box_length
+
+
+def _pdb_cryst1_box(path: Path) -> Optional[dict]:
+    for line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        if not line.startswith("CRYST1"):
+            continue
+        try:
+            return {
+                "box_a": float(line[6:15]),
+                "box_b": float(line[15:24]),
+                "box_c": float(line[24:33]),
+                "alpha": float(line[33:40]),
+                "beta": float(line[40:47]),
+                "gamma": float(line[47:54]),
+                "is_cubic": False,
+            }
+        except ValueError:
+            return None
+    return None
+
+
+def _memembed_dummy_report(lines: list[str]) -> dict:
+    dummy_zs: list[float] = []
+    for line in lines:
+        atom = _parse_pdb_xyz_line(line)
+        if atom and atom["resname"] == "DUM":
+            dummy_zs.append(atom["z"])
+    if not dummy_zs:
+        return {"count": 0}
+    center_z = float(sum(dummy_zs) / len(dummy_zs))
+    return {
+        "count": len(dummy_zs),
+        "center_z": center_z,
+        "z_min": min(dummy_zs),
+        "z_max": max(dummy_zs),
+        "half_thickness": max(abs(z - center_z) for z in dummy_zs),
+    }
+
+
+def _shift_pdb_atom_lines_z(lines: list[str], dz: float) -> list[str]:
+    if abs(dz) < 1.0e-9:
+        return lines
+    shifted: list[str] = []
+    for line in lines:
+        atom = _parse_pdb_xyz_line(line)
+        if atom is None:
+            shifted.append(line)
+            continue
+        shifted.append(_rewrite_pdb_xyz(line, (atom["x"], atom["y"], atom["z"] + dz)))
+    return shifted
+
+
+def _infer_beta_barrel_from_context(
+    *,
+    job_dir: Optional[str],
+    pdb_file: Optional[Path],
+) -> bool:
+    """Infer beta-barrel intent from nearby workflow/task text."""
+    haystacks: list[str] = []
+    if job_dir:
+        job_path = Path(job_dir)
+        haystacks.extend(str(part) for part in job_path.parts[-4:])
+        for path in (
+            job_path / "progress.json",
+            job_path.parent.parent / "study_plan.json",
+            job_path.parent.parent / "study.json",
+        ):
+            if path.exists():
+                try:
+                    haystacks.append(path.read_text(encoding="utf-8", errors="ignore"))
+                except OSError:
+                    pass
+    if pdb_file:
+        haystacks.append(str(pdb_file))
+
+    text = "\n".join(haystacks).lower()
+    return any(
+        needle in text
+        for needle in (
+            "beta_barrel",
+            "beta-barrel",
+            "beta barrel",
+            "β-barrel",
+            "β barrel",
+        )
+    )
+
+
+def _membrane_embedding_geometry_report(
+    *,
+    pdb_file: Path,
+    box_dimensions: Optional[dict],
+) -> dict:
+    """PBC-aware post-build check that the protein intersects the bilayer."""
+    atoms: list[dict] = []
+    for line in Path(pdb_file).read_text(encoding="utf-8", errors="ignore").splitlines():
+        atom = _parse_pdb_xyz_line(line)
+        if atom is not None:
+            atoms.append(atom)
+
+    box = box_dimensions or _pdb_cryst1_box(pdb_file)
+    try:
+        box_c = float((box or {})["box_c"])
+    except (KeyError, TypeError, ValueError):
+        box_c = 0.0
+
+    protein_atoms = [atom for atom in atoms if atom["resname"] in PROTEIN_RESNAMES]
+    headgroup_atoms = [
+        atom
+        for atom in atoms
+        if atom["resname"] in PATCH_LIPID_HEADGROUP_RESNAMES
+        and atom["name"].upper().startswith(("P", "N"))
+    ]
+    report = {
+        "status": "skipped",
+        "passed": True,
+        "reason": None,
+        "protein_atom_count": len(protein_atoms),
+        "lipid_headgroup_atom_count": len(headgroup_atoms),
+        "box_c": box_c or None,
+        "failure_reasons": [],
+    }
+    if not protein_atoms:
+        report["reason"] = "no_protein_atoms"
+        return report
+    if len(headgroup_atoms) < 8:
+        report["reason"] = "insufficient_lipid_headgroups"
+        return report
+    if box_c <= 0.0:
+        report["reason"] = "missing_periodic_box"
+        return report
+
+    protein_center_z = float(_mean([atom["z"] for atom in protein_atoms]) or 0.0)
+    mapped_headgroup_zs = [
+        protein_center_z + _minimum_image_delta(atom["z"] - protein_center_z, box_c)
+        for atom in headgroup_atoms
+    ]
+    headgroup_z_min = min(mapped_headgroup_zs)
+    headgroup_z_max = max(mapped_headgroup_zs)
+    headgroup_span = headgroup_z_max - headgroup_z_min
+    overlap_pad = 4.0
+    overlap_count = sum(
+        1
+        for atom in protein_atoms
+        if headgroup_z_min - overlap_pad <= atom["z"] <= headgroup_z_max + overlap_pad
+    )
+    overlap_fraction = overlap_count / len(protein_atoms)
+    min_headgroup_span = max(12.0, min(25.0, 0.25 * box_c))
+    min_overlap_fraction = 0.15
+
+    failure_reasons: list[str] = []
+    if headgroup_span < min_headgroup_span:
+        failure_reasons.append("membrane_headgroup_span_too_narrow_near_protein")
+    if overlap_fraction < min_overlap_fraction:
+        failure_reasons.append("protein_does_not_intersect_bilayer_headgroup_span")
+
+    report.update({
+        "status": "failed" if failure_reasons else "passed",
+        "passed": not failure_reasons,
+        "reason": None,
+        "protein_center_z": protein_center_z,
+        "headgroup_z_min": headgroup_z_min,
+        "headgroup_z_max": headgroup_z_max,
+        "headgroup_span": headgroup_span,
+        "min_headgroup_span": min_headgroup_span,
+        "protein_headgroup_overlap_fraction": overlap_fraction,
+        "min_overlap_fraction": min_overlap_fraction,
+        "failure_reasons": failure_reasons,
+    })
+    return report
+
+
+def _record_membrane_embedding_geometry(
+    *,
+    result: dict,
+    out_dir: Path,
+    output_file: Path,
+    box_dimensions: Optional[dict],
+) -> dict:
+    report = _membrane_embedding_geometry_report(
+        pdb_file=output_file,
+        box_dimensions=box_dimensions,
+    )
+    result["embedding_geometry"] = report
+    try:
+        (out_dir / "membrane_embedding_geometry.json").write_text(
+            json.dumps(report, indent=2, default=str),
+            encoding="utf-8",
+        )
+        result["embedding_geometry_file"] = str(out_dir / "membrane_embedding_geometry.json")
+    except OSError as exc:
+        result.setdefault("warnings", []).append(
+            f"could not write membrane_embedding_geometry.json: {exc}"
+        )
+    if not report.get("passed", True):
+        reasons = report.get("failure_reasons") or ["membrane_embedding_geometry_failed"]
+        result["success"] = False
+        result["code"] = "membrane_embedding_geometry_failed"
+        result.setdefault("errors", []).append(
+            "membrane embedding geometry failed: " + ", ".join(reasons)
+        )
+        quality = result.setdefault("packing_quality", {})
+        quality["passed"] = False
+        failure_reasons = list(quality.get("failure_reasons") or [])
+        for reason in reasons:
+            if reason not in failure_reasons:
+                failure_reasons.append(reason)
+        quality["failure_reasons"] = failure_reasons
+    return report
+
+
+def _orient_protein_with_memembed(
+    *,
+    protein_pdb: Path,
+    out_dir: Path,
+    beta_barrel: bool = False,
+    force_span: bool = False,
+) -> dict:
     """Orient a protein into the membrane frame (normal = z) using MEMEMBED.
 
     Returns ``{success, oriented_pdb, warnings, errors}``. Membrane dummy atoms
@@ -248,7 +496,12 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
 
     out_dir = Path(out_dir)
     raw_oriented = out_dir / "memembed_oriented.pdb"
-    cmd = [memembed_path, "-o", str(raw_oriented), str(Path(protein_pdb).resolve())]
+    cmd = [memembed_path, "-o", str(raw_oriented)]
+    if beta_barrel:
+        cmd.append("-b")
+    if force_span:
+        cmd.append("-l")
+    cmd.append(str(Path(protein_pdb).resolve()))
     logger.info("Orienting protein with memembed: %s", " ".join(cmd))
     try:
         proc = subprocess.run(
@@ -286,6 +539,8 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
         encoding="utf-8",
         errors="ignore",
     ).splitlines()
+    dummy_report = _memembed_dummy_report(oriented_lines)
+    membrane_center_z = dummy_report.get("center_z")
     kept: list[str] = []
     for line in oriented_lines:
         if line.startswith(("ATOM", "HETATM")):
@@ -302,12 +557,22 @@ def _orient_protein_with_memembed(*, protein_pdb: Path, out_dir: Path) -> dict:
         oriented_lines=oriented_lines,
     )
     kept.extend(restored_heterogens)
+    if membrane_center_z is not None:
+        kept = _shift_pdb_atom_lines_z(kept, -float(membrane_center_z))
+        dummy_report["center_z_after_recentering"] = 0.0
+        membrane_center_z = 0.0
     result["warnings"].extend(restore_warnings)
     cleaned.write_text("\n".join(kept) + "\nEND\n", encoding="utf-8")
 
     result["success"] = True
     result["oriented_pdb"] = str(cleaned)
     result["raw_oriented_pdb"] = str(raw_oriented)
+    result["membrane_center_z"] = membrane_center_z
+    result["memembed"] = {
+        "beta_barrel": beta_barrel,
+        "force_span": force_span,
+        "dummy_membrane": dummy_report,
+    }
     return result
 
 
@@ -1222,6 +1487,8 @@ def embed_in_membrane(
     dist_wat: float = 17.5,
     leaflet: float = 23.0,
     preoriented: bool = False,
+    memembed_beta_barrel: bool = False,
+    memembed_force_span: bool = False,
     salt: bool = True,
     salt_c: str = "Na+",
     salt_a: str = "Cl-",
@@ -1242,6 +1509,7 @@ def embed_in_membrane(
     membrane_carve_padding: float = 2.5,
     membrane_patch_side: float = PATCH_SIDE_ANGSTROM,
     membrane_patch_builder_timeout: Optional[int] = None,
+    membrane_geometry_validation: bool = True,
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None
 ) -> dict:
@@ -1278,6 +1546,11 @@ def embed_in_membrane(
         preoriented: Protein is pre-oriented for membrane (default: False)
                      Set to True if using OPM-derived structures or PPM server output.
                      If False, MEMEMBED will orient the protein automatically.
+        memembed_beta_barrel: Use MEMEMBED beta-barrel mode (``-b``). MDClaw
+                     also enables this automatically when the job/task context
+                     contains beta-barrel wording.
+        memembed_force_span: Pass MEMEMBED ``-l`` to force the target to span
+                     the membrane.
         salt: Add salt ions (default: True)
         salt_c: Cation type (default: "Na+")
         salt_a: Anion type (default: "Cl-")
@@ -1330,6 +1603,9 @@ def embed_in_membrane(
         membrane_patch_builder_timeout: patch-tile cold packmol build timeout in
                      seconds (default: 1800). Use 0 to keep the broader
                      membrane timeout.
+        membrane_geometry_validation: Fail the membrane build when a PBC-aware
+                     post-build check shows that the protein does not intersect
+                     the lipid headgroup span.
     
     Returns:
         Dict with:
@@ -1389,6 +1665,8 @@ def embed_in_membrane(
             "dist_wat": dist_wat,
             "leaflet": leaflet,
             "preoriented": preoriented,
+            "memembed_beta_barrel": memembed_beta_barrel,
+            "memembed_force_span": memembed_force_span,
             "salt": salt,
             "salt_c": salt_c,
             "salt_a": salt_a,
@@ -1406,6 +1684,7 @@ def embed_in_membrane(
             "membrane_carve_padding": membrane_carve_padding,
             "membrane_patch_side": membrane_patch_side,
             "membrane_patch_builder_timeout": membrane_patch_builder_timeout,
+            "membrane_geometry_validation": membrane_geometry_validation,
         },
         "packmol_log": None,
         "statistics": {},
@@ -1493,6 +1772,8 @@ def embed_in_membrane(
                 "dist_wat": dist_wat,
                 "leaflet": leaflet,
                 "preoriented": preoriented,
+                "memembed_beta_barrel": memembed_beta_barrel,
+                "memembed_force_span": memembed_force_span,
                 "salt": salt,
                 "salt_c": salt_c,
                 "salt_a": salt_a,
@@ -1507,6 +1788,7 @@ def embed_in_membrane(
                 "membrane_carve_padding": membrane_carve_padding,
                 "membrane_patch_side": membrane_patch_side,
                 "membrane_patch_builder_timeout": patch_builder_timeout,
+                "membrane_geometry_validation": membrane_geometry_validation,
             },
         )
         if not _ctx["success"]:
@@ -1550,6 +1832,18 @@ def embed_in_membrane(
             from mdclaw._node import fail_node
             fail_node(job_dir, node_id, errors=result.get("errors", []))
         return result
+
+    if (
+        not preoriented
+        and not memembed_beta_barrel
+        and _infer_beta_barrel_from_context(job_dir=job_dir, pdb_file=pdb_path)
+    ):
+        memembed_beta_barrel = True
+        result["warnings"].append(
+            "enabled MEMEMBED beta-barrel mode from job/task context"
+        )
+    result["parameters"]["memembed_beta_barrel"] = memembed_beta_barrel
+    result["parameters"]["memembed_force_span"] = memembed_force_span
     
     # Check packmol-memgen availability.  A warm patch-cache hit can still build
     # a membrane without the packer, but a cold patch build (and the full
@@ -1652,6 +1946,7 @@ def embed_in_membrane(
             cache_dir=membrane_cache_dir,
             carve_padding=membrane_carve_padding,
             preoriented=preoriented,
+            membrane_center_z=0.0 if preoriented else None,
             packmol_memgen_runner=(
                 _run_packmol_memgen_noninteractive
                 if packmol_memgen_available
@@ -1659,7 +1954,12 @@ def embed_in_membrane(
             ),
             packmol_path=packmol_path,
             equilibrate_fn=_equilibrate_membrane_patch,
-            orient_fn=_orient_protein_with_memembed,
+            orient_fn=lambda protein_pdb, out_dir: _orient_protein_with_memembed(
+                protein_pdb=protein_pdb,
+                out_dir=out_dir,
+                beta_barrel=memembed_beta_barrel,
+                force_span=memembed_force_span,
+            ),
             net_charge_fn=_compute_membrane_net_charge,
             timeout=patch_builder_timeout,
             packmol_memgen_version=packmol_memgen_version,
@@ -1696,6 +1996,27 @@ def embed_in_membrane(
             )
             result["warnings"].extend(patch_result.get("warnings", []))
 
+            if membrane_geometry_validation and result.get("output_file"):
+                _record_membrane_embedding_geometry(
+                    result=result,
+                    out_dir=out_dir,
+                    output_file=Path(str(result["output_file"])),
+                    box_dimensions=result.get("box_dimensions"),
+                )
+                if not result.get("success"):
+                    metadata_file = out_dir / "membrane_metadata.json"
+                    with open(metadata_file, "w") as f:
+                        json.dump(result, f, indent=2, default=str)
+                    if _node_mode:
+                        from mdclaw._node import fail_node
+                        fail_node(
+                            job_dir,
+                            node_id,
+                            errors=result.get("errors", []),
+                            warnings=result.get("warnings") or None,
+                        )
+                    return result
+
             metadata_file = out_dir / "membrane_metadata.json"
             with open(metadata_file, "w") as f:
                 json.dump(result, f, indent=2, default=str)
@@ -1711,6 +2032,10 @@ def embed_in_membrane(
                     artifacts["membrane_patch_metadata"] = (
                         "artifacts/membrane_patch_metadata.json"
                     )
+                if result.get("embedding_geometry_file"):
+                    artifacts["membrane_embedding_geometry"] = (
+                        "artifacts/membrane_embedding_geometry.json"
+                    )
                 complete_node(job_dir, node_id,
                     artifacts=artifacts,
                     metadata={
@@ -1723,6 +2048,9 @@ def embed_in_membrane(
                         "membrane_backend": "patch-tile",
                         "membrane_cache_hit": bool(patch_result.get("cache_hit")),
                         "membrane_cache_key": patch_result.get("cache_key"),
+                        "embedding_geometry": result.get("embedding_geometry"),
+                        "memembed_beta_barrel": memembed_beta_barrel,
+                        "memembed_force_span": memembed_force_span,
                         "patch_equilibration_ran": bool(
                             patch_result.get("equilibration_ran")
                         ),
@@ -1799,6 +2127,14 @@ def embed_in_membrane(
 
         if preoriented:
             args.append('--preoriented')
+        elif memembed_beta_barrel:
+            args.append('--barrel')
+
+        if memembed_force_span:
+            result["warnings"].append(
+                "memembed_force_span is only applied by the patch-tile MEMEMBED "
+                "path; packmol-memgen does not expose MEMEMBED -l directly."
+            )
 
         if salt:
             args.extend([
@@ -2144,6 +2480,13 @@ def embed_in_membrane(
                 result["warnings"].extend(
                     restore_report.get("solute_identity_restore_warnings", [])
                 )
+                if membrane_geometry_validation:
+                    _record_membrane_embedding_geometry(
+                        result=result,
+                        out_dir=out_dir,
+                        output_file=restored_output,
+                        box_dimensions=result.get("box_dimensions"),
+                    )
         
     except Exception as e:
         error_msg = f"Error during membrane embedding: {type(e).__name__}: {str(e)}"
@@ -2163,11 +2506,16 @@ def embed_in_membrane(
         from mdclaw._node import complete_node, fail_node, update_job_summaries
         if result.get("success"):
             artifact_output = Path(str(result.get("output_file") or output_file))
+            artifacts = {
+                "solvated_pdb": f"artifacts/{artifact_output.name}",
+                "box_dimensions": "artifacts/box_dimensions.json",
+            }
+            if result.get("embedding_geometry_file"):
+                artifacts["membrane_embedding_geometry"] = (
+                    "artifacts/membrane_embedding_geometry.json"
+                )
             complete_node(job_dir, node_id,
-                artifacts={
-                    "solvated_pdb": f"artifacts/{artifact_output.name}",
-                    "box_dimensions": "artifacts/box_dimensions.json",
-                },
+                artifacts=artifacts,
                 metadata={
                     "water_model": water_model,
                     "lipid_type": lipids,
@@ -2180,6 +2528,9 @@ def embed_in_membrane(
                         "packmol-memgen",
                     ),
                     "membrane_patch_fallback": result.get("membrane_patch_fallback"),
+                    "embedding_geometry": result.get("embedding_geometry"),
+                    "memembed_beta_barrel": memembed_beta_barrel,
+                    "memembed_force_span": memembed_force_span,
                     "forced_output_accepted": bool(
                         result.get("forced_output_accepted")
                     ),

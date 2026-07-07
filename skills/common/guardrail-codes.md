@@ -103,6 +103,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `ligand_resname_chain_auto_included` | A ligand resname's chain was auto-included; confirm intent. |
 | `ligand_template_coverage_failed` | Ligand template coverage failed; provide parameters or SMILES. |
 | `lipid21_external_bond_patching_failed` | Lipid21 external bond patching failed; inspect the lipid topology. |
+| `membrane_embedding_geometry_failed` | Membrane embedding geometry failed; inspect protein/bilayer placement. |
 | `membrane_patch_build_failed` | Membrane patch packmol build failed; inspect the structured error. |
 | `membrane_patch_build_invalid_output` | Membrane patch packmol build output is missing requested lipids. |
 | `membrane_patch_build_no_output` | Membrane patch packmol build produced no output PDB. |

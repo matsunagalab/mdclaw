@@ -94,6 +94,7 @@
   "ligand_resname_chain_auto_included",
   "ligand_template_coverage_failed",
   "lipid21_external_bond_patching_failed",
+  "membrane_embedding_geometry_failed",
   "membrane_patch_build_failed",
   "membrane_patch_build_invalid_output",
   "membrane_patch_build_no_output",
