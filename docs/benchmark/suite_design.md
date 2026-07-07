@@ -1,7 +1,7 @@
 # MDAgentBench Suite Design
 
 This design has been promoted into two focused benchmark suites:
-`MDPrepBench-v0.1` for preparation workflows and `MDStudyBench-v0.2` for the
+`MDPrepBench-v0.2` for preparation workflows and `MDStudyBench-v0.2` for the
 scientific question / study-bundle tasks. The long-term goal is to keep
 MDAgentBench organized around these two main suites:
 
@@ -52,7 +52,7 @@ until backend adapters are added.
 
 ### Current Prep Contract
 
-Every P01-P25 task requires these files in the submission directory (slim
+Every P01-P40 task requires these files in the submission directory (slim
 contract — `evidence_report.json` is optional unless a specific task lists it):
 
 - `manifest.json`
@@ -168,7 +168,7 @@ and further curation. All 40 tasks are part of the active prep battery.
 
 ### Coverage Refinements
 
-The P01-P25 list is broad enough for the first prep battery, but three details
+The P01-P40 list is broad enough for the first prep battery, but three details
 should be treated as explicit coverage requirements rather than left implicit:
 
 - **Assembly coverage is first-wave material.** P24 specifies `assembly_id`
@@ -337,7 +337,7 @@ agent tasks.
 
 Implemented:
 
-- P01-P40 task IDs are part of `MDPrepBench-v0.1`. P26-P40 extend coverage to
+- P01-P40 task IDs are part of `MDPrepBench-v0.2`. P26-P40 extend coverage to
   zinc and non-zinc multi-metal cofactors, custom drug-like ligand
   parameterization, protein-protein and protein-DNA complexes, histidine
   protonation, missing side-chain reconstruction, physiological NaCl, and
@@ -357,13 +357,13 @@ Implemented:
   `topology.pdb`, and `state.xml`, then rescanning finite potential energy and
   finite positions.
 - Public export omits evaluator-only `task.json`, `truth/`, and `scorer/`.
-- Synthetic honest/wrong fixtures cover all 25 tasks and exercise topology
+- Synthetic honest/wrong fixtures cover all 40 tasks and exercise topology
   absence, broken OpenMM XML, nonfinite minimization reports, and minimized
   structure component loss.
 
 Still to do:
 
-- Run real MDClaw reference submissions for all P01-P25 tasks, beginning with
+- Run real MDClaw reference submissions for all P01-P40 tasks, beginning with
   P01/P02/P03/P11/P24/P25.
 - Add stronger deterministic checks for force-field/water metadata, ion
   concentration from box volume and ion counts, lipid composition tolerance,
