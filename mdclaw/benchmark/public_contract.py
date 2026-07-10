@@ -18,8 +18,9 @@ MINIMIZED_STRUCTURE_GUIDANCE = {
     "required_filename": "minimized_structure.pdb",
     "manifest_path": "outputs.minimized_structure",
     "meaning": (
-        "PDB view of the coordinates after the required minimization / "
-        "finite-energy check."
+        "PDB view of the minimized coordinates; the system must be relaxed "
+        "(free of steric clashes, at a stable negative potential energy), "
+        "not merely finite-energy."
     ),
     "state_source": (
         "Submit one self-consistent OpenMM state after minimization. "

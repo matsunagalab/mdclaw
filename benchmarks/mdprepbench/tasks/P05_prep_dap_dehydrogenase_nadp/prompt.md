@@ -20,7 +20,7 @@ Your submission directory must contain:
 - `minimized_structure.pdb`
 - `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Run a short OpenMM minimization/finite-energy check, then record the result in `minimization_report.json` and `metrics.json`. Full equilibration, production MD, and explicit solvent are not required for this prep task; a compact vacuum or implicit-solvent OpenMM topology is acceptable if the scorer can reload it, the energy is finite, and both NDP cofactors are retained.
+Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Energy-minimize the built system to a relaxed state — free of steric clashes and at a stable, negative potential energy, not merely finite — then record the result in `minimization_report.json` and `metrics.json`. Full equilibration, production MD, and explicit solvent are not required for this prep task; a compact vacuum or implicit-solvent OpenMM topology is acceptable if the scorer can reload it, the energy is finite, and both NDP cofactors are retained.
 
 
 

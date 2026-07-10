@@ -159,11 +159,11 @@ use the HPacker-based `create_mutated_structure` branch in
    protonation, parameter, or chemistry correctness from the image. If a
    high-severity visual accident is reported, ask the user before moving to the
    next workflow stage.
-9. After the `topo` node completes, hand off to the equilibration skill on the
-   same `job_dir` (use the node id from `create_node`, not a literal copied
-   from an example). In harnesses with slash commands, `/md-equilibration` is the
-   shortcut. This skill does not auto-chain into equilibration — each stage is
-   user-initiated.
+9. The `topo` artifact still carries steric clashes from solvation/packing and
+   is not a usable system until energy minimized; minimization (the `min` node)
+   is the standard next step after topology, not an optional later stage. Hand
+   off to the equilibration skill (which owns `min`) on the same `job_dir`, using
+   the `create_node` node id. `/md-equilibration` is the shortcut; not auto-chained.
 
 ## Step 0: Parse and Confirm
 
