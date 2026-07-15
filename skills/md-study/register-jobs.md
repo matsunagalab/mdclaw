@@ -16,7 +16,8 @@ mdclaw bootstrap_md_workflow \
 mdclaw init_study --study-dir <study_dir> --title "<short title>" \
   --objective "<one sentence objective>"   # only if the study does not exist
 
-mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
+mdclaw record_study_plan --study-dir <study_dir> \
+  --plan-id <active-or-name> --plan '<plan-json>'
 ```
 
 Register planned jobs and propagate `execution_mode` as the interaction policy
@@ -30,7 +31,7 @@ mdclaw add_study_job --study-dir <study_dir> \
   --create-job-dir
 
 mdclaw update_workflow_state --job-dir <study_dir>/jobs/<id> \
-  --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
+  --params '{"execution_mode":"autonomous","solvent_regime":"explicit","study_dir":"<study_dir>","study_plan_id":"<active-or-name>","study_job_id":"<id>"}'
 ```
 
 Register jobs only when the job IDs are clear. Otherwise leave job creation to

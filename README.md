@@ -379,6 +379,8 @@ conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
 - `--agent-model AGENT=MODEL` overrides the model per harness; `--dry-run`
   prints the generated commands without launching agents; `--task-ids <id>`
   runs a short smoke subset.
+- `--agent-skills-dir skills` runs an explicit skill-enabled condition. The
+  wrapper selects `pi-user` for Pi unless `--agent-profile pi=...` overrides it.
 
 ### MDStudyBench
 
@@ -416,6 +418,7 @@ and `--judge-mode llm_judge`:
 conda run -n mdclaw python benchmarks/tools/run_mdstudybench_all_agents.py \
   --output-dir benchmark_runs \
   --run-id-prefix 20260702_mdstudybench_all \
+  --agent-skills-dir skills \
   --jobs 4 --gpus 4
 ```
 

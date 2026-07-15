@@ -415,7 +415,8 @@ signature, update the relevant section here and the matching skill examples.
   they are best-effort visual accident checks, not scientific validation.
 - `generate_md_methods_report(...)`: Methods Markdown for one job lineage.
 - `generate_study_methods_report(...)`: Methods report across registered jobs.
-- `generate_study_evidence_report(...)`: JSON evidence summary across a study.
+- `generate_study_evidence_report(...)`: JSON evidence summary across the
+  active study plan, or a named plan selected with `plan_id`.
   When `study_plan.json` exists, its question, MD goal, analysis list, and
   decision criteria are included in the study-level evidence report.
 

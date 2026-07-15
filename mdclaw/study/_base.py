@@ -155,8 +155,23 @@ def _validate_study_plan(plan: Any) -> list[str]:
         for key in ("question", "md_goal", "jobs", "analysis", "decision")
         if key not in plan
     ]
+    for key in ("question", "md_goal"):
+        if key in plan and (
+            not isinstance(plan[key], str) or not plan[key].strip()
+        ):
+            errors.append(f"plan.{key} must be a non-empty string")
     if "jobs" in plan and not isinstance(plan["jobs"], list):
         errors.append("plan.jobs must be a list")
+    elif "jobs" in plan:
+        for index, job in enumerate(plan["jobs"]):
+            if not isinstance(job, dict):
+                errors.append(f"plan.jobs[{index}] must be an object")
+                continue
+            job_id = job.get("job_id")
+            if not isinstance(job_id, str) or not job_id.strip():
+                errors.append(
+                    f"plan.jobs[{index}].job_id must be a non-empty string"
+                )
     if "analysis" in plan and not isinstance(plan["analysis"], list):
         errors.append("plan.analysis must be a list")
     if "decision" in plan and not isinstance(plan["decision"], dict):

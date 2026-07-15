@@ -14,9 +14,10 @@ run-side mismatch raises `modern_system_hmr_mismatch` (use `--no-hmr
 ### Local Execution
 
 Run the local-execution / platform preflight from
-`skills/common/solvent-regimes.md` first. The autonomous `0.1 ns` sanity default
-is a production-length policy, not a wall-time guarantee; a `slow_on_cpu` /
-`not_recommended` system should go to `/hpc-run` or an explicit short smoke test.
+`skills/common/solvent-regimes.md` first. The production-only `0.1 ns` sanity
+default is a production-length policy, not a wall-time guarantee; it never
+supports a scientific conclusion. A `slow_on_cpu` / `not_recommended` system
+should go to `/hpc-run` or an explicit short smoke test.
 
 ```bash
 mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
@@ -25,8 +26,10 @@ mdclaw --job-dir <job_dir> --node-id <prod_node_id> run_production \
   --output-frequency-ps 10.0
 ```
 
-If the user does not specify a run length and `execution_mode=autonomous`,
-use `--simulation-time-ns 0.1` as the default sanity check.
+If the stopping point is production, the user omitted a run length, and
+`execution_mode=autonomous`, use `--simulation-time-ns 0.1` as the direct-run
+sanity check. For a scientific-answer request, use the length selected by the
+default decision rule in `SKILL.md`; never substitute `0.1 ns`.
 
 `system_xml_file`, `topology_pdb_file`, `state_xml_file`, `restart_from`, and
 `pressure_bar` are auto-resolved from DAG ancestors. Ensemble is inherited from
@@ -53,7 +56,7 @@ Inside the job script, omit `--system-xml-file`, `--topology-pdb-file`, `--state
 
 | Purpose | Time | Notes |
 |---|---|---|
-| Sanity check | 0.1 ns | Quick validation; default when autonomous and omitted |
+| Sanity check | 0.1 ns | Quick validation for a production-only request |
 | Short | 1-10 ns | Initial testing |
 | Production | 50-500 ns | Conformational sampling |
 | Extended | 1+ us | Slow processes (folding, binding) |

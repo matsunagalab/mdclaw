@@ -651,3 +651,4 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
         "source, prep, prod, analysis, report" in item
         for item in contract["submission_checklist"]
     )
+    assert "production" in contract["submission_lifecycle"]["background_policy"]

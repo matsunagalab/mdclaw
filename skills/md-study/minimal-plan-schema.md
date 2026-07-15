@@ -38,9 +38,10 @@ precise replicate counts, production lengths, protonation states, or controls
 unless the user requested them or they are clearly part of the design. Use
 `unknown` or `to_be_decided` for uncertain details.
 
-An optional top-level `budget` block records the user's compute budget and the
-derived (replicates × length) plan. Include it only when the user mentioned
-compute; see `skills/md-study/compute-budget.md`.
+An optional top-level `budget` block records the compute assumption and the
+derived (replicates × length) plan. Include it when the user or harness states
+a budget, or when a scientific-answer request omitted production length; see
+`skills/md-study/compute-budget.md`.
 
 ## Solvent regime (required study-level intent)
 

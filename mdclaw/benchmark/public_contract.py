@@ -542,8 +542,9 @@ def submission_lifecycle(task: Task) -> dict[str, Any]:
             "submission record."
         ),
         "background_policy": (
-            "Do not leave evidence generation or analysis work running after "
-            "the agent process exits."
+            "Do not leave preparation, solvation, topology, minimization, "
+            "equilibration, production, analysis, evidence generation, or "
+            "packaging work running after the agent process exits."
         ),
         "agent_neutrality": (
             "No MDClaw-specific command sequence is required or rewarded."

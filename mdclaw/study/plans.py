@@ -23,6 +23,7 @@ def record_study_plan(
     status: str = "active",
     rationale: Optional[str] = None,
     metadata: Optional[dict] = None,
+    overwrite: bool = True,
 ) -> dict:
     """Persist a small study-level MD research plan.
 
@@ -48,6 +49,11 @@ def record_study_plan(
         now = _now_iso()
         with file_lock(sd / "study.lock"):
             study = _load_study(sd)
+            if plan_file.exists() and not overwrite:
+                result["errors"].append(
+                    f"study plan already exists at {plan_file}"
+                )
+                return result
             plan_payload = {
                 "plan_schema_version": plan.get("plan_schema_version", 2),
                 **plan,
@@ -159,4 +165,3 @@ def list_study_plans(study_dir: str) -> dict:
         logger.error(f"list_study_plans failed: {exc}")
         result["errors"].append(f"list_study_plans failed: {type(exc).__name__}: {exc}")
         return result
-

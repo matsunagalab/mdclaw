@@ -45,8 +45,9 @@ a scientific-answer request:
    different jobs during study-level synthesis, not with cross-job parents.
 2. Use `inspect_job` to verify those `prod` and `analyze` nodes are completed;
    do not use the evidence report's status as the completion check.
-3. Run `generate_study_evidence_report`, synthesize the actual analysis
-   artifacts against the plan's decision criteria, and record the conclusion
+3. Run `generate_study_evidence_report`, passing `--plan-id` when the selected
+   job params name a non-active `study_plan_id`. Synthesize the actual analysis
+   artifacts against that plan's decision criteria, and record the conclusion
    with `record_study_log --record-type decision`.
 4. Return the evidence-backed answer with limitations and provenance. If
    required work is still queued or running, report a resumable DAG handoff

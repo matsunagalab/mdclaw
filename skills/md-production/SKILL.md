@@ -19,7 +19,7 @@ canonical loop and node-CLI-invariant reference.
 | Target | (job directory) |
 | Execution mode | read `progress.json.params.execution_mode` |
 | Parent eq node | use a completed eq node from `inspect_job`, or an explicit branch parent |
-| Simulation time | user-specified, or `0.1 ns` skill-level sanity check when omitted in autonomous mode |
+| Simulation time | user-specified; plan-derived for a scientific answer; or `0.1 ns` only for an omitted production-only sanity run |
 | Other | (non-default parameters) |
 
 ## Prerequisites
@@ -40,18 +40,24 @@ are available).
 
 ## Default Decision Rule
 
-- If `execution_mode=autonomous` and the user did **not** specify a
-  production length, adopt `simulation_time_ns=0.1` as the default sanity
-  check run length and proceed without asking. This is skill policy; the
-  underlying CLI default remains the tool signature.
+- If the current request asks for a scientific answer, use its explicit
+  production length or the study plan's
+  `budget.derived.target_ns_per_replicate` and
+  `target_replicates_per_job`. If neither exists, return to `md-study`
+  planning or ask for a length before creating a production node. Never use
+  the `0.1 ns` sanity default as evidence for a scientific conclusion.
+- If `execution_mode=autonomous`, the stopping point is production, and the
+  user omitted a length, adopt `simulation_time_ns=0.1` as a direct-run sanity
+  check. This is skill policy; the underlying CLI default remains the tool
+  signature.
 - If the job belongs to a study with `study_plan.json`, treat its plan as the
   scientific intent. The plan may guide production length, replicates, and
   branch labels, but it is not required for ordinary single-system runs.
 - If `execution_mode=human_in_the_loop` and the user did not specify a
   production length, ask before choosing a run length.
-- If the user explicitly asks for a longer campaign, HPC submission, or a
-  specific scientific objective, prefer the user's stated intent over the
-  `0.1 ns` default.
+- If the user explicitly asks for a longer campaign or HPC submission, prefer
+  the user's stated intent. HPC submission still requires explicit current
+  authorization.
 
 ## Node Setup
 

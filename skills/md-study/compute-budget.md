@@ -1,15 +1,18 @@
 # Compute Budget
 
-Record a `budget` block on `study_plan.json` only when the user actually
-mentioned compute (GPUs, wall time, queues, or an ns budget) or when a harness
-imposes a per-task time limit. When compute is not mentioned, omit the `budget`
-key entirely — but MD length must never be left undetermined, so fall back to
-the default assumption below.
+Record a `budget` block on `study_plan.json` when the user mentioned compute
+(GPUs, wall time, queues, or an ns budget), when a harness imposes a per-task
+time limit, or when a scientific-answer request omitted production length and
+needs the labeled default assumption below. For other requests with no compute
+information, omit the `budget` key.
 
-Default assumption (no budget stated): ~1 day of wall time on 1 local GPU
-(`compute_target: "local"`, `gpu_count: 1`, `wall_time_hours: 24`,
-`notes: "default assumption; no budget stated"`). Do not auto-detect compute
-via `inspect_openmm_platforms` / `inspect_cluster`; those stay out of `md-study`.
+Default assumption (no budget stated): ~1 day of wall time on 1 A100 planning
+reference (`compute_target: "local"`, `gpu_type: "A100"`, `gpu_count: 1`,
+`wall_time_hours: 24`, `notes: "default assumption; no budget stated; A100 is
+a planning reference, not detected hardware"`). This supplies the GPU label
+required by `estimate_md_throughput`; it does not claim that an A100 is
+available. Do not auto-detect compute via `inspect_openmm_platforms` /
+`inspect_cluster`; those stay out of `md-study`.
 
 ## Derivation
 
@@ -77,8 +80,9 @@ via `inspect_openmm_platforms` / `inspect_cluster`; those stay out of `md-study`
    }
    ```
 
-The `budget` block is intent + derivation. Downstream skills (`md-prepare`,
-`md-equilibration`, `md-production`, `hpc-run`) do **not** read it as a contract
-today — they continue to take their own parameters. The block exists so the
-planner's reasoning stays attached to the study and is auditable when results
-come back.
+The `budget` block is intent + derivation, not compute authorization.
+`md-production` may use `derived.target_ns_per_replicate` and
+`derived.target_replicates_per_job` when a scientific-answer request omitted a
+length. Other downstream skills continue to take their own parameters. An HPC
+target still does not authorize submission; the current request or harness
+must do that explicitly.

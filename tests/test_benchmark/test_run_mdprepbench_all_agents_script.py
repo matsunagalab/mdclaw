@@ -27,6 +27,8 @@ def test_run_mdprepbench_all_agents_dry_run_writes_commands(tmp_path: Path):
             "--agents",
             "pi",
             "codex",
+            "--agent-skills-dir",
+            "skills",
             "--task-ids",
             TASK_ID,
         ],
@@ -41,10 +43,13 @@ def test_run_mdprepbench_all_agents_dry_run_writes_commands(tmp_path: Path):
     assert summary["success"] is True
     assert summary["dry_run"] is True
     assert summary["task_ids"] == [TASK_ID]
+    assert summary["agent_skills_dir"] == "skills"
     assert [run["agent_name"] for run in summary["runs"]] == ["pi", "codex"]
     assert all("run_benchmark_agent" in run["command"] for run in summary["runs"])
     assert "--task-ids P01_prep_simple_monomer_t4l" in summary["runs"][0]["command"]
     assert "--agent-name codex" in summary["runs"][1]["command"]
+    assert "--agent-skills-dir skills" in summary["runs"][0]["command"]
+    assert "--agent-profile pi-user" in summary["runs"][0]["command"]
 
 
 def test_run_mdprepbench_all_agents_executes_mdclaw_command(tmp_path: Path):

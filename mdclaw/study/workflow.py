@@ -16,10 +16,12 @@ from mdclaw.study._base import (
     _atomic_write_json,
     _load_study,
     _now_iso,
+    _study_plan_path,
     logger,
 )
 
 from mdclaw.study.plans import (
+    get_study_plan,
     record_study_plan,
 )
 
@@ -207,12 +209,91 @@ def bootstrap_md_workflow(
                 return result
             study = init_result["study"]
 
+        plan_key = plan_id or "active"
+        plan_file = _study_plan_path(sd, plan_key)
+        plan_exists = plan_file.exists()
+        if plan_exists:
+            plan_result = get_study_plan(str(sd), plan_id=plan_id)
+            if not plan_result.get("success"):
+                result["errors"].extend(plan_result.get("errors", []))
+                result["warnings"].extend(plan_result.get("warnings", []))
+                return result
+            result["warnings"].append(
+                f"reusing existing study plan {plan_key!r} at {plan_file}; "
+                "use record_study_plan or a new plan_id to revise scientific intent"
+            )
+            stored_plan = plan_result.get("plan", {}).get("plan", {})
+        else:
+            plan_payload = dict(plan or {})
+            plan_payload.setdefault("plan_schema_version", 2)
+            plan_payload.setdefault("question", question.strip())
+            plan_payload.setdefault("md_goal", md_goal or question.strip())
+            plan_payload.setdefault("solvent_regime", solvent_regime)
+            plan_payload.setdefault(
+                "jobs",
+                [
+                    {
+                        "job_id": safe_job_id,
+                        "purpose": job_description or "single-system MD workflow",
+                    }
+                ],
+            )
+            plan_payload.setdefault(
+                "analysis",
+                ["Run the planned analysis step after production completes."],
+            )
+            plan_payload.setdefault("decision", _default_decision())
+            plan_payload.setdefault(
+                "workflow_steps",
+                _default_workflow_steps(safe_job_id, solvent_regime),
+            )
+            plan_payload.setdefault(
+                "layout", {"type": "study_jobs", "job_root": "jobs"}
+            )
+            stored_plan = plan_payload
+
+        planned_job_ids = {
+            job.get("job_id")
+            for job in stored_plan.get("jobs", [])
+            if isinstance(job, dict)
+        }
+        if safe_job_id not in planned_job_ids:
+            result["errors"].append(
+                f"job_id {safe_job_id!r} is not present in study plan "
+                f"{plan_key!r}; use a matching job_id or revise the plan explicitly"
+            )
+            return result
+
+        if not plan_exists:
+            plan_result = record_study_plan(
+                str(sd),
+                plan_payload,
+                plan_id=plan_id,
+                metadata={
+                    "created_by": "bootstrap_md_workflow",
+                    "canonical_layout": True,
+                },
+                overwrite=False,
+            )
+            if not plan_result.get("success"):
+                result["errors"].extend(plan_result.get("errors", []))
+                result["warnings"].extend(plan_result.get("warnings", []))
+                return result
+
+        stored_solvent_regime = stored_plan.get("solvent_regime")
+        effective_solvent_regime = (
+            stored_solvent_regime
+            if stored_solvent_regime in SOLVENT_REGIMES
+            else solvent_regime
+        )
+
         job_dir_rel = f"jobs/{safe_job_id}"
         job_dir = (sd / job_dir_rel).resolve()
         jobs = study.setdefault("jobs", [])
         existing_job = next(
             (
-                entry for entry in jobs
+                entry
+                for entry in jobs
                 if isinstance(entry, dict) and entry.get("job_id") == safe_job_id
             ),
             None,
@@ -244,51 +325,11 @@ def bootstrap_md_workflow(
             job_record = existing_job
             result["warnings"].append(f"reusing existing study job {safe_job_id!r}")
 
-        plan_key = plan_id or "active"
-        plan_payload = dict(plan or {})
-        plan_payload.setdefault("plan_schema_version", 2)
-        plan_payload.setdefault("question", question.strip())
-        plan_payload.setdefault("md_goal", md_goal or question.strip())
-        plan_payload.setdefault("solvent_regime", solvent_regime)
-        plan_payload.setdefault(
-            "jobs",
-            [
-                {
-                    "job_id": safe_job_id,
-                    "purpose": job_description or "single-system MD workflow",
-                }
-            ],
-        )
-        plan_payload.setdefault(
-            "analysis",
-            ["Run the planned analysis step after production completes."],
-        )
-        plan_payload.setdefault("decision", _default_decision())
-        plan_payload.setdefault(
-            "workflow_steps",
-            _default_workflow_steps(safe_job_id, solvent_regime),
-        )
-        plan_payload.setdefault("layout", {"type": "study_jobs", "job_root": "jobs"})
-
-        plan_result = record_study_plan(
-            str(sd),
-            plan_payload,
-            plan_id=plan_id,
-            metadata={
-                "created_by": "bootstrap_md_workflow",
-                "canonical_layout": True,
-            },
-        )
-        if not plan_result.get("success"):
-            result["errors"].extend(plan_result.get("errors", []))
-            result["warnings"].extend(plan_result.get("warnings", []))
-            return result
-
         params_result = update_job_params(
             str(job_dir),
             {
                 "execution_mode": execution_mode,
-                "solvent_regime": solvent_regime,
+                "solvent_regime": effective_solvent_regime,
                 "study_dir": str(sd),
                 "study_plan_id": plan_key,
                 "study_job_id": safe_job_id,
@@ -466,4 +507,3 @@ def summarize_study(study_dir: str) -> dict:
         "node_type_counts": type_counts,
     }
     return listed
-

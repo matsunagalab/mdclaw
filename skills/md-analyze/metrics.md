@@ -17,7 +17,7 @@ mdclaw --job-dir <job_dir> --node-id <rmsd_analyze_node_id> analyze_rmsd
 | Request | Tool | Notes |
 |---|---|---|
 | Structural drift (backbone/protein) | `analyze_rmsd` | run on a combined or fitted node |
-| Per-residue flexibility | `analyze_rmsd` (RMSF mode) / RMSF helper | report the selection used |
+| Per-residue flexibility | `analyze_rmsf` | report the selection used |
 | Atom-pair or group distances | `analyze_distance` | residue/ligand interactions |
 | Native contact fraction | `analyze_q_value` | contacts vs a reference |
 | Frame alignment for viz / dim-reduction | `fit_trajectory` | prerequisite for some metrics |

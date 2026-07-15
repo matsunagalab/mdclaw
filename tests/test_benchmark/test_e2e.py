@@ -983,6 +983,8 @@ _fake_submissions.GENERATORS[args.task_id](
     assert "agent_skills" in result["tasks"][0]["agent_instruction"]
 
     run_dir = output_dir / "agent_runner_with_skills"
+    run_config = json.loads((run_dir / "run_config.json").read_text())
+    assert run_config["tooling_condition"] == "mdclaw-skills+cli"
     task_run_dir = run_dir / "tasks" / TASK_ID
     agent_run = json.loads((task_run_dir / "agent_run.json").read_text())
     assert agent_run["solver_context"]["skill_usage"] == "skill-system"

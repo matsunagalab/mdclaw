@@ -169,6 +169,10 @@ conda run -n mdclaw python benchmarks/tools/run_mdprepbench_all_agents.py \
   --jobs 5 --gpus 4
 ```
 
+Add `--agent-skills-dir skills` for a skill-enabled comparison. The wrapper
+then selects `pi-user` for Pi unless a per-agent profile override is supplied;
+without the flag, the existing plain/ablation defaults remain unchanged.
+
 This creates three runs:
 `20260613_mdprepbench_all_pi`,
 `20260613_mdprepbench_all_claude_code`, and

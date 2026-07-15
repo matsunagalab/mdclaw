@@ -107,6 +107,7 @@ def _build_command(
     gpus: int,
     agent_profile: str | None,
     agent_model: str | None,
+    agent_skills_dir: str | None,
 ) -> list[str]:
     command = [
         *shlex.split(mdclaw_cmd),
@@ -138,6 +139,8 @@ def _build_command(
         command.extend(["--agent-profile", agent_profile])
     if agent_model:
         command.extend(["--agent-model", agent_model])
+    if agent_skills_dir:
+        command.extend(["--agent-skills-dir", agent_skills_dir])
     return command
 
 
@@ -229,6 +232,7 @@ def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, An
         "execution_mode": args.execution_mode,
         "judge_mode": args.judge_mode,
         "mdclaw_cmd": args.mdclaw_cmd,
+        "agent_skills_dir": args.agent_skills_dir,
         "dry_run": args.dry_run,
         "runs": [],
     }
@@ -298,6 +302,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--judge-mode", default="deterministic")
     parser.add_argument("--max-walltime-minutes-per-task", type=int, default=30)
     parser.add_argument("--mdclaw-cli-policy", default="forbid-without-skill")
+    parser.add_argument(
+        "--agent-skills-dir",
+        default=None,
+        help=(
+            "Optional skills root passed to run_benchmark_agent. "
+            "When set, Pi defaults to the pi-user profile unless overridden."
+        ),
+    )
     parser.add_argument(
         "--jobs",
         type=int,
@@ -412,8 +424,12 @@ def main(argv: list[str] | None = None) -> int:
                 mdclaw_cli_policy=args.mdclaw_cli_policy,
                 jobs=args.jobs,
                 gpus=args.gpus,
-                agent_profile=agent_profiles.get(agent),
+                agent_profile=(
+                    agent_profiles.get(agent)
+                    or ("pi-user" if args.agent_skills_dir and agent == "pi" else None)
+                ),
                 agent_model=agent_models.get(agent),
+                agent_skills_dir=args.agent_skills_dir,
             )
             print(f"[benchmark-all-agents] {agent} rep{rep}: {shlex.join(command)}")
             record = _run_agent(

@@ -1483,6 +1483,18 @@ class TestStudyAndEvidenceCLIParameters:
         assert args.job_dir == "/tmp/job"
         assert args.target == '{"protein":"P12345"}'
 
+    def test_generate_study_evidence_report_accepts_plan_id(self):
+        from mdclaw._cli import _build_parser, _discover_tools
+
+        parser = _build_parser(_discover_tools())
+        args = parser.parse_args([
+            "generate_study_evidence_report",
+            "--study-dir", "/tmp/study",
+            "--plan-id", "revision-1",
+        ])
+
+        assert args.plan_id == "revision-1"
+
     def test_init_study_end_to_end(self, tmp_path):
         from mdclaw._cli import main
 

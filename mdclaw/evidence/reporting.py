@@ -11,6 +11,7 @@ from typing import Any, Optional
 
 from mdclaw._common import ensure_directory, setup_logger
 from mdclaw.evidence_schema import base_evidence_report
+from mdclaw.study._base import _study_plan_path
 
 logger = setup_logger(__name__)
 
@@ -1173,11 +1174,16 @@ def _load_study(study_dir: Path) -> dict:
     return data
 
 
-def _load_study_plan(study_dir: Path) -> tuple[dict | None, Path | None]:
-    plan_file = study_dir / "study_plan.json"
+def _load_study_plan(
+    study_dir: Path,
+    plan_id: Optional[str] = None,
+) -> tuple[dict | None, Path | None]:
+    plan_file = _study_plan_path(study_dir, plan_id)
+    if not plan_file.exists():
+        return None, None
     data = _read_json(plan_file)
     if data is None:
-        return None, None
+        raise ValueError(f"study plan is unreadable at {plan_file}")
     return data, plan_file
 
 
@@ -1497,6 +1503,7 @@ def generate_study_evidence_report(
     question: Optional[str] = None,
     summary: Optional[str] = None,
     output_name: str = "study_evidence_report.json",
+    plan_id: Optional[str] = None,
 ) -> dict:
     """Generate a minimal evidence report across jobs registered in a study."""
     result: dict[str, Any] = {
@@ -1509,23 +1516,70 @@ def generate_study_evidence_report(
     try:
         sd = Path(study_dir).expanduser().resolve()
         study = _load_study(sd)
-        study_plan_record, study_plan_file = _load_study_plan(sd)
+        study_plan_record, study_plan_file = _load_study_plan(sd, plan_id=plan_id)
+        if plan_id is not None and study_plan_record is None:
+            requested_plan_file = _study_plan_path(sd, plan_id)
+            raise FileNotFoundError(
+                f"study plan {plan_id!r} not found or unreadable at "
+                f"{requested_plan_file}"
+            )
         study_plan = (
             study_plan_record.get("plan", {})
             if isinstance(study_plan_record, dict)
             and isinstance(study_plan_record.get("plan"), dict)
             else {}
         )
-        jobs = [j for j in study.get("jobs", []) if isinstance(j, dict)]
+        registered_jobs = [
+            job for job in study.get("jobs", []) if isinstance(job, dict)
+        ]
+        registered_jobs_by_id = {
+            job.get("job_id"): job
+            for job in registered_jobs
+            if isinstance(job.get("job_id"), str)
+        }
+        registered_job_ids = list(registered_jobs_by_id)
+        planned_job_ids: list[str] = []
+        if study_plan_record is not None:
+            planned_job_ids = list(dict.fromkeys(
+                job.get("job_id")
+                for job in study_plan.get("jobs", [])
+                if isinstance(job, dict)
+                and isinstance(job.get("job_id"), str)
+                and job.get("job_id")
+            ))
+            jobs = [
+                registered_jobs_by_id[job_id]
+                for job_id in planned_job_ids
+                if job_id in registered_jobs_by_id
+            ]
+        else:
+            jobs = registered_jobs
+        missing_planned_job_ids = [
+            job_id for job_id in planned_job_ids
+            if job_id not in registered_jobs_by_id
+        ]
         job_reports: list[dict] = []
+        aggregate_analyze_metrics: list[dict] = []
         aggregate_status_counts: dict[str, int] = {}
         aggregate_type_counts: dict[str, int] = {}
+        analysis_required = bool(study_plan.get("analysis"))
         for job in jobs:
             job_dir_value = str(job.get("job_dir", ""))
             abs_job_dir = _resolve_study_job_dir(sd, job_dir_value)
             jd, _progress, nodes = _read_job(abs_job_dir)
             status_counts = _status_counts(nodes)
             type_counts = _node_type_counts(nodes)
+            completed_prod_nodes = [
+                node_id for node_id, _ in _completed_nodes(nodes, "prod")
+            ]
+            completed_analyze_nodes = [
+                node_id for node_id, _ in _completed_nodes(nodes, "analyze")
+            ]
+            analyze_metrics = _analyze_metrics(nodes).get("analyze", [])
+            aggregate_analyze_metrics.extend(
+                {"job_id": job.get("job_id"), **entry}
+                for entry in analyze_metrics
+            )
             for key, value in status_counts.items():
                 aggregate_status_counts[key] = aggregate_status_counts.get(key, 0) + value
             for key, value in type_counts.items():
@@ -1537,32 +1591,54 @@ def generate_study_evidence_report(
                 "node_count": len(nodes),
                 "node_status_counts": status_counts,
                 "node_type_counts": type_counts,
-                "completed_prod_nodes": [
-                    node_id for node_id, _ in _completed_nodes(nodes, "prod")
-                ],
-                "completed_analyze_nodes": [
-                    node_id for node_id, _ in _completed_nodes(nodes, "analyze")
-                ],
+                "completed_prod_nodes": completed_prod_nodes,
+                "completed_analyze_nodes": completed_analyze_nodes,
             })
 
         limitations: list[str] = []
-        if not jobs:
+        if not registered_jobs:
             limitations.append("Study has no registered jobs.")
-        if not any(j["completed_prod_nodes"] for j in job_reports):
-            limitations.append("No completed production nodes were found across study jobs.")
+        if study_plan_record is not None and not planned_job_ids:
+            limitations.append("Study plan has no planned jobs.")
+        if missing_planned_job_ids:
+            limitations.append(
+                "Study plan jobs are not registered: "
+                + ", ".join(missing_planned_job_ids)
+            )
+        for job_report in job_reports:
+            job_id = job_report.get("job_id") or job_report.get("job_dir")
+            if not job_report["completed_prod_nodes"]:
+                limitations.append(
+                    f"Job {job_id!r} has no completed production nodes."
+                )
+            if analysis_required and not job_report["completed_analyze_nodes"]:
+                limitations.append(
+                    f"Job {job_id!r} has no completed analyze nodes required by the study plan."
+                )
+
+        study_complete = not missing_planned_job_ids and bool(job_reports) and all(
+            job_report["completed_prod_nodes"]
+            and (not analysis_required or job_report["completed_analyze_nodes"])
+            for job_report in job_reports
+        )
 
         report_summary = summary or (
-            f"MDClaw study {study.get('title') or sd.name} contains "
-            f"{len(jobs)} registered job(s)."
+            f"MDClaw study {study.get('title') or sd.name} reports "
+            f"{len(jobs)} scoped job(s)."
         )
         report = base_evidence_report(
             evidence_type=evidence_type,
-            status="complete" if jobs else "incomplete",
+            status="complete" if study_complete else "incomplete",
             question=question or study_plan.get("question") or study.get("objective"),
             summary=report_summary,
             metrics={
                 "num_jobs": len(jobs),
+                "num_registered_jobs": len(registered_jobs),
+                "registered_job_ids": registered_job_ids,
+                "planned_job_ids": planned_job_ids,
+                "missing_planned_job_ids": missing_planned_job_ids,
                 "jobs": job_reports,
+                "analyze": aggregate_analyze_metrics,
                 "aggregate_node_status_counts": aggregate_status_counts,
                 "aggregate_node_type_counts": aggregate_type_counts,
                 "study_plan": {

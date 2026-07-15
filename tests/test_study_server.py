@@ -1,6 +1,9 @@
 """Tests for optional study/campaign helpers."""
 
 import json
+from pathlib import Path
+
+import pytest
 
 from mdclaw.study import (
     add_study_job,
@@ -86,6 +89,74 @@ def test_bootstrap_md_workflow_uses_solvent_regime_for_workflow_steps(tmp_path):
     assert [step["node_type"] for step in plan["workflow_steps"]] == [
         "source", "prep", "topo", "min", "eq", "prod", "analyze"
     ]
+
+
+@pytest.mark.parametrize("plan_id", [None, "revision-1"])
+def test_bootstrap_md_workflow_reuses_existing_plan(tmp_path, plan_id):
+    study_dir = tmp_path / "study"
+    first = bootstrap_md_workflow(
+        str(study_dir),
+        question="First question",
+        solvent_regime="implicit",
+        plan_id=plan_id,
+    )
+    assert first["success"] is True
+    plan_file = Path(first["plan_file"])
+    original = plan_file.read_text()
+
+    second = bootstrap_md_workflow(
+        str(study_dir),
+        question="Second question",
+        solvent_regime="explicit",
+        execution_mode="human_in_the_loop",
+        plan_id=plan_id,
+        plan={
+            "question": "Replacement question",
+            "md_goal": "Replace the plan",
+            "jobs": [{"job_id": "main"}],
+            "analysis": [],
+            "decision": {},
+        },
+    )
+
+    assert second["success"] is True
+    assert plan_file.read_text() == original
+    assert second["plan"]["plan"]["question"] == "First question"
+    assert any("reusing existing study plan" in item for item in second["warnings"])
+    progress = json.loads((study_dir / "jobs" / "main" / "progress.json").read_text())
+    assert progress["params"]["solvent_regime"] == "implicit"
+    assert progress["params"]["execution_mode"] == "human_in_the_loop"
+
+
+def test_bootstrap_md_workflow_does_not_replace_corrupt_existing_plan(tmp_path):
+    study_dir = tmp_path / "study"
+    first = bootstrap_md_workflow(str(study_dir), question="First question")
+    assert first["success"] is True
+    plan_file = study_dir / "study_plan.json"
+    plan_file.write_text("{")
+
+    second = bootstrap_md_workflow(str(study_dir), question="Second question")
+
+    assert second["success"] is False
+    assert plan_file.read_text() == "{"
+
+
+def test_bootstrap_md_workflow_rejects_job_outside_existing_plan(tmp_path):
+    study_dir = tmp_path / "study"
+    first = bootstrap_md_workflow(str(study_dir), question="First question")
+    assert first["success"] is True
+
+    second = bootstrap_md_workflow(
+        str(study_dir),
+        question="Second question",
+        job_id="other",
+    )
+
+    assert second["success"] is False
+    assert "is not present in study plan" in second["errors"][0]
+    study = json.loads((study_dir / "study.json").read_text())
+    assert [job["job_id"] for job in study["jobs"]] == ["main"]
+    assert not (study_dir / "jobs" / "other").exists()
 
 
 def test_bootstrap_md_workflow_rejects_pathlike_job_id(tmp_path):
@@ -179,6 +250,65 @@ def test_record_study_plan_rejects_missing_required_fields(tmp_path):
     assert result["success"] is False
     assert "plan missing required field: md_goal" in result["errors"]
     assert not (study_dir / "study_plan.json").exists()
+
+
+def test_record_study_plan_can_guard_against_overwrite(tmp_path):
+    study_dir = tmp_path / "study"
+    init_study(str(study_dir))
+    first_plan = {
+        "question": "First question",
+        "md_goal": "First goal",
+        "jobs": [{"job_id": "main"}],
+        "analysis": [],
+        "decision": {},
+    }
+    second_plan = {**first_plan, "question": "Second question"}
+    assert record_study_plan(str(study_dir), first_plan)["success"] is True
+
+    blocked = record_study_plan(
+        str(study_dir),
+        second_plan,
+        overwrite=False,
+    )
+
+    assert blocked["success"] is False
+    assert "already exists" in blocked["errors"][0]
+    stored = json.loads((study_dir / "study_plan.json").read_text())
+    assert stored["plan"]["question"] == "First question"
+    assert record_study_plan(str(study_dir), second_plan)["success"] is True
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("question", None, "plan.question must be a non-empty string"),
+        ("md_goal", [], "plan.md_goal must be a non-empty string"),
+        ("jobs", [1], "plan.jobs[0] must be an object"),
+        (
+            "jobs",
+            [{"job_id": ""}],
+            "plan.jobs[0].job_id must be a non-empty string",
+        ),
+    ],
+)
+def test_record_study_plan_rejects_invalid_required_field_types(
+    tmp_path, field, value, expected
+):
+    study_dir = tmp_path / "study"
+    init_study(str(study_dir))
+    plan = {
+        "question": "Question",
+        "md_goal": "Goal",
+        "jobs": [],
+        "analysis": [],
+        "decision": {},
+    }
+    plan[field] = value
+
+    result = record_study_plan(str(study_dir), plan)
+
+    assert result["success"] is False
+    assert expected in result["errors"]
 
 
 def test_summarize_study_counts_nodes(tmp_path):

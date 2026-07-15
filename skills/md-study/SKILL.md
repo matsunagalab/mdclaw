@@ -60,8 +60,11 @@ from `skills/common/run-loop.md`; full handoff behavior is in
    answers the question (prefer one baseline/control + one test variant), a
    short analysis list, and support/against/inconclusive decision criteria. See
    `skills/md-study/minimal-plan-schema.md`.
-6. Compute budget: only if the user mentioned compute, follow
-   `skills/md-study/compute-budget.md`; otherwise omit the `budget` block.
+6. Compute budget: follow `skills/md-study/compute-budget.md` when the user or
+   harness specified compute. Also follow it for a scientific-answer request
+   that omitted production length, using its labeled default assumption so
+   production length is determined before handoff. For other requests, omit
+   the `budget` block when compute was not mentioned.
 7. Record the plan and register jobs per `skills/md-study/register-jobs.md`.
 8. Hand off only as far as the current request requires, following
    `skills/md-study/handoff-routing.md`.

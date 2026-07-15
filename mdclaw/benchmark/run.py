@@ -2132,6 +2132,7 @@ def run_benchmark_agent(
     cfg_payload["agent_command_template"] = agent_command
     cfg_payload["mdclaw_runtime"] = resolved_mdclaw_runtime
     cfg_payload["agent_skills"] = agent_skills
+    cfg_payload["tooling_condition"] = tooling_condition
     cfg_payload["finalization_retries"] = max(0, int(finalization_retries or 0))
     _write_json(cfg_path, cfg_payload)
     benchmark_version = _benchmark_version_for_dataset(str(dataset))
