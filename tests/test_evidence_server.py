@@ -200,6 +200,10 @@ def test_generate_md_methods_report_from_terminal_lineage(tmp_path):
     assert result["facts"]["source_description"] == "RCSB PDB entry 4M3J"
     assert "OpenMM" in result["methods_paragraphs"][2]
     assert "Eastman2024OpenMM8" in result["citation_keys"]
+    assert any(
+        "@article{Eastman2024OpenMM8," in entry
+        for entry in result["bibtex_entries"]
+    )
 
     methods_file = job_dir / "evidence" / "mdclaw_methods_job_prod_001.md"
     assert methods_file.is_file()
