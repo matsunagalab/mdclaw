@@ -10,6 +10,7 @@ because the validation short-circuits before any HTTP call.
 """
 
 import asyncio
+import json
 import textwrap
 
 import pytest
@@ -119,6 +120,102 @@ class TestSourceStructureValidation:
         assert assembly["origin"]["assembly_id"] == "1"
         assert assembly["metrics"]["chain_count"] == 2
         assert assembly["exists"] is True
+
+    def test_invalid_assembly_mode_leaves_source_pending_for_cli_retry(
+        self,
+        job_dir,
+        tmp_path,
+        capsys,
+    ):
+        from mdclaw._cli import main
+
+        source_file = tmp_path / "input.pdb"
+        source_file.write_text(BIOMT_PDB)
+        source_node = create_node(str(job_dir), "source")["node_id"]
+        node_dir = job_dir / "nodes" / source_node
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--job-dir", str(job_dir),
+                "--node-id", source_node,
+                "fetch_structure",
+                "--source", "local",
+                "--file-path", str(source_file),
+                "--assembly-mode", "monomer",
+            ])
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "invalid_assembly_mode"
+        assert "none|preferred|all|ids" in payload["context"]["expected"]
+        assert any("without truncating" in hint for hint in payload["hints"])
+
+        pending = read_node(str(job_dir), source_node)
+        assert pending["status"] == "pending"
+        assert pending["artifacts"] == {}
+        assert not (node_dir / "artifacts" / "failure").exists()
+
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--job-dir", str(job_dir),
+                "--node-id", source_node,
+                "fetch_structure",
+                "--source", "local",
+                "--file-path", str(source_file),
+                "--assembly-mode", "none",
+            ])
+        assert exc_info.value.code == 0
+        capsys.readouterr()
+        assert read_node(str(job_dir), source_node)["status"] == "completed"
+
+    @pytest.mark.parametrize(
+        ("source_args", "expected_code"),
+        [
+            (["--source", "pdb"], "missing_pdb_id"),
+            (
+                ["--source", "pdb", "--pdb-id", "1AKE", "--format", "mmcif"],
+                "invalid_structure_format",
+            ),
+            (
+                ["--source", "local", "--assembly-output-format", "mol2"],
+                "invalid_assembly_output_format",
+            ),
+            (
+                ["--source", "local", "--assembly-chain-naming", "invented"],
+                "invalid_assembly_chain_naming",
+            ),
+        ],
+    )
+    def test_recoverable_fetch_inputs_leave_source_pending(
+        self,
+        source_args,
+        expected_code,
+        job_dir,
+        tmp_path,
+        capsys,
+    ):
+        from mdclaw._cli import main
+
+        source_file = tmp_path / "input.pdb"
+        source_file.write_text(BIOMT_PDB)
+        source_node = create_node(str(job_dir), "source")["node_id"]
+        args = [
+            "--job-dir", str(job_dir),
+            "--node-id", source_node,
+            "fetch_structure",
+            *source_args,
+        ]
+        if "local" in source_args:
+            args.extend(["--file-path", str(source_file)])
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(args)
+
+        assert exc_info.value.code == 1
+        assert json.loads(capsys.readouterr().out)["code"] == expected_code
+        pending = read_node(str(job_dir), source_node)
+        assert pending["status"] == "pending"
+        assert pending["artifacts"] == {}
+        assert not (job_dir / "nodes" / source_node / "artifacts" / "failure").exists()
 
 
 # ── compatibility wrappers ─────────────────────────────────────────────────

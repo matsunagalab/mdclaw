@@ -342,11 +342,13 @@ modeller_prepare -> system_generator_create_system -> initial_minimization ->
 serialization -> collect_provenance -> completed
 ```
 
-The `initial_minimization` stage is topology-time minimization: it validates
-the force-field-applied system and writes the initial `state.xml`. It is not an
-Equilibration Node and should not be described as an MD equilibration protocol.
-The schema-v3 `min` node is separate: it is a node-owned post-topology
-minimization step that creates the minimized restart state consumed by `eq`.
+The `initial_minimization` stage is a short topology-time initial relaxation
+(at most 10 minimizer iterations by default): it validates the
+force-field-applied system and writes the initial `state.xml`. Its report uses
+`scope="topology_initial_relaxation"` and
+`satisfies_min_node_contract=false`; it does not satisfy the schema-v3 `min`
+node contract. The separate `min` node owns post-topology minimization and
+creates the minimized restart state consumed by `eq`.
 
 Standard ligand records are loaded from `ligand_chemistry` into OpenFF
 Molecules. Ligand formal charge is taken from the charged molecule graph.

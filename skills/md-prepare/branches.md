@@ -12,8 +12,9 @@ mdclaw --job-dir <job_dir> --node-id <mutant_prep_node_id> create_mutated_struct
 ```
 
 Use `L99A` for an unambiguous single-chain protein, or `A:L99A` when residue
-numbering is shared across chains. The mutated PDB becomes the downstream
-`merged_pdb`.
+numbering is shared across chains. The tool writes `artifacts/mutated.pdb`, and
+the DAG resolver selects it automatically for downstream nodes. Do not rename
+it or pass it as a manual input file.
 
 ## PTM Restoration
 

@@ -26,6 +26,9 @@ Every skill uses the same three tiers:
 - **Single canonical home.** Each topic's full text lives in exactly one file.
   Everywhere else is at most one sentence plus a link. Do not paste the same
   paragraph into both `SKILL.md` and a leaf page.
+- **Make the first action obvious.** Put the supported execution surface and a
+  short, ordered startup read sequence near the top of `SKILL.md`; do not begin
+  with a long unordered list of required pages.
 - **Link, do not inline, the preamble.** Never copy `common/preamble.md`
   content (language, Bash/`mdclaw`, no GNU `timeout`, JSON-on-stdout) into a
   `SKILL.md`. Point to it.

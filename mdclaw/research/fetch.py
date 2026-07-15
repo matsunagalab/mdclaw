@@ -380,7 +380,50 @@ async def fetch_structure(
         err["source"] = source
         return err
 
-    from mdclaw.source_bundle import biological_assembly_request_enabled
+    if normalized_source in {"pdb", "alphafold"}:
+        normalized_format = str(format or "").strip().lower()
+        if normalized_format not in {"pdb", "cif"}:
+            err = create_validation_error(
+                "format",
+                "format must be 'pdb' or 'cif'",
+                expected="pdb|cif",
+                actual=format,
+                code="invalid_structure_format",
+            )
+            err["hints"] = [
+                "Use --format pdb or cif.",
+                "Run 'mdclaw fetch_structure --help' without truncating its output.",
+            ]
+            return err
+        format = normalized_format
+
+    from mdclaw.source_bundle import (
+        biological_assembly_request_enabled,
+        normalize_biological_assembly_generation_options,
+        normalize_biological_assembly_request,
+    )
+
+    try:
+        assembly_mode, assembly_ids = normalize_biological_assembly_request(
+            assembly_mode,
+            assembly_ids,
+        )
+    except ValueError as exc:
+        message = str(exc)
+        field = "assembly_mode" if "assembly_mode" in message else "assembly_ids"
+        code = "invalid_assembly_mode" if field == "assembly_mode" else "invalid_assembly_ids"
+        err = create_validation_error(
+            field,
+            message,
+            expected="assembly_mode=none|preferred|all|ids",
+            actual=assembly_mode if field == "assembly_mode" else assembly_ids,
+            code=code,
+        )
+        err["hints"] = [
+            "Use --assembly-mode none, preferred, all, or ids.",
+            "Run 'mdclaw fetch_structure --help' without truncating its output.",
+        ]
+        return err
 
     assembly_requested = biological_assembly_request_enabled(
         assembly_mode,
@@ -396,6 +439,38 @@ async def fetch_structure(
         )
         err["source"] = normalized_source
         return err
+
+    if normalized_source in {"pdb", "local"}:
+        try:
+            assembly_output_format, assembly_chain_naming = (
+                normalize_biological_assembly_generation_options(
+                    assembly_output_format,
+                    assembly_chain_naming,
+                )
+            )
+        except ValueError as exc:
+            message = str(exc)
+            output_error = "assembly_output_format" in message
+            field = (
+                "assembly_output_format" if output_error else "assembly_chain_naming"
+            )
+            err = create_validation_error(
+                field,
+                message,
+                expected="cif|pdb" if output_error else "short|add_number|dup",
+                actual=(
+                    assembly_output_format if output_error else assembly_chain_naming
+                ),
+                code=(
+                    "invalid_assembly_output_format"
+                    if output_error
+                    else "invalid_assembly_chain_naming"
+                ),
+            )
+            err["hints"] = [
+                "Use values shown by the complete 'mdclaw fetch_structure --help'."
+            ]
+            return err
 
     if normalized_source == "pdb":
         if not pdb_id:

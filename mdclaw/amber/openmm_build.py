@@ -1546,6 +1546,8 @@ def _run_openmmforcefields_build(
         "minimization": {
             "attempted": True,
             "completed": True,
+            "scope": "topology_initial_relaxation",
+            "satisfies_min_node_contract": False,
             "backend": "openmm",
             "max_iterations": minimize_max_iterations,
             "energy_initial_kj_mol": energy_initial_kj_mol,

@@ -50,7 +50,8 @@ evaluator workspace layout, see `docs/benchmark/evaluation-workflow.md`.
 The public package includes `tools/validate_submission.py`. It reads only
 `submission_contract.json` and the candidate `submission/` directory. For
 MDPrepBench preparation tasks it checks the required raw OpenMM files, relative
-paths, non-empty artifacts, and OpenMM bundle loadability. It does not inspect
+paths, non-empty artifacts, OpenMM bundle loadability, and the exact submitted
+state's finite energy and scorer-equivalent steric clashes. It does not inspect
 private truth, task-specific scorer files, or MDClaw DAG state.
 
 The per-task `submission_contract.json` also contains a

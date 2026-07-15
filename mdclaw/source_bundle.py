@@ -111,10 +111,11 @@ def biological_assembly_request_enabled(
     return bool(ids) or mode not in {"", "none"}
 
 
-def _normalize_assembly_request(
+def normalize_biological_assembly_request(
     assembly_mode: str | None,
     assembly_ids: list[str] | None,
 ) -> tuple[str, list[str]]:
+    """Validate and normalize biological-assembly selection arguments."""
     ids = [str(value).strip() for value in (assembly_ids or []) if str(value).strip()]
     mode = str(assembly_mode or "none").strip().lower()
     if not mode:
@@ -132,13 +133,20 @@ def _normalize_assembly_request(
     return mode, ids
 
 
-def _gemmi_assembly_naming_policy(gemmi, policy: str | None):
-    normalized = str(policy or "short").strip().lower().replace("-", "_")
-    attr = _ASSEMBLY_NAMING_POLICIES.get(normalized)
-    if not attr:
+def normalize_biological_assembly_generation_options(
+    output_format: str | None,
+    chain_naming: str | None,
+) -> tuple[str, str]:
+    """Validate and normalize biological-assembly output options."""
+    normalized_format = str(output_format or "cif").strip().lower()
+    if normalized_format not in {"cif", "pdb"}:
+        raise ValueError("assembly_output_format must be 'cif' or 'pdb'")
+
+    normalized_naming = str(chain_naming or "short").strip().lower().replace("-", "_")
+    if normalized_naming not in _ASSEMBLY_NAMING_POLICIES:
         valid = ", ".join(sorted({"short", "add_number", "dup"}))
         raise ValueError(f"assembly_chain_naming must be one of: {valid}")
-    return getattr(gemmi.HowToNameCopiedChain, attr), normalized
+    return normalized_format, normalized_naming
 
 
 def _model_counts(model) -> dict[str, int]:
@@ -197,7 +205,10 @@ def generate_biological_assembly_candidates(
     candidates are generated files plus metadata that can be passed to
     ``build_source_bundle(candidate_metadata=...)``.
     """
-    mode, requested_ids = _normalize_assembly_request(assembly_mode, assembly_ids)
+    mode, requested_ids = normalize_biological_assembly_request(
+        assembly_mode,
+        assembly_ids,
+    )
     if mode == "none":
         return {
             "mode": mode,
@@ -210,9 +221,12 @@ def generate_biological_assembly_candidates(
 
     structure_path = Path(structure_path).expanduser().resolve()
     output_dir = Path(output_dir).expanduser().resolve()
-    output_format = str(output_format or "cif").strip().lower()
-    if output_format not in {"cif", "pdb"}:
-        raise ValueError("assembly_output_format must be 'cif' or 'pdb'")
+    output_format, normalized_naming = (
+        normalize_biological_assembly_generation_options(
+            output_format,
+            chain_naming,
+        )
+    )
 
     structure, gemmi = _read_structure(structure_path)
     if len(structure) == 0:
@@ -222,9 +236,9 @@ def generate_biological_assembly_candidates(
     except Exception:
         pass
 
-    naming_policy, normalized_naming = _gemmi_assembly_naming_policy(
-        gemmi,
-        chain_naming,
+    naming_policy = getattr(
+        gemmi.HowToNameCopiedChain,
+        _ASSEMBLY_NAMING_POLICIES[normalized_naming],
     )
     assemblies = list(getattr(structure, "assemblies", []) or [])
     available_ids = [str(getattr(assembly, "name", "") or idx + 1)

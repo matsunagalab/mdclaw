@@ -75,27 +75,17 @@ Every completed prep submission must also set these manifest outputs:
 - `outputs.topology`: OpenMM topology artifacts. This must include
   `system.xml`, `topology.pdb`, and `state.xml`.
 - `outputs.minimized_structure`: a structure after minimization. In MDClaw DAG
-  runs, prefer the `min` node artifact `minimized_structure.pdb`; when packaging
-  a topology bundle directly, export the minimized coordinates from `state.xml`.
+  runs, use the `min` node artifact `minimized_structure.pdb`.
 - `outputs.minimization_report`: normally `minimization_report.json`.
-
-For MDClaw topology builds packaged without a standalone `min` node, `state.xml`
-carries the topology-time minimized coordinates and `topology.pdb` carries the
-atom/residue topology. To create the fixed benchmark file, export the state
-explicitly:
-
-```bash
-mdclaw export_state_pdb \
-  --topology-pdb-file topology/topology.pdb \
-  --state-xml-file topology/state.xml \
-  --output-pdb-file minimized_structure.pdb
-```
 
 The preferred MDClaw DAG path for MDPrepBench is `source -> prep -> solv -> topo
 -> min`. Full equilibration and production remain outside the prep suite.
-Topology-time minimization evidence is still accepted when a workflow packages a
-topology bundle directly, but provenance should record that as the `min` stage
-or the legacy alias `minimization`.
+The short relaxation inside a topology builder (10 iterations by default) is
+initial system validation, not the `min` node contract; its report records
+`scope="topology_initial_relaxation"` and
+`satisfies_min_node_contract=false`. A direct bundle may be treated as minimized
+only when its exact packaged state actually underwent a post-topology
+minimization equivalent to the `min` node contract.
 
 The standardized metrics fields are:
 

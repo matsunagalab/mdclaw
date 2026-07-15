@@ -190,8 +190,12 @@ signature, update the relevant section here and the matching skill examples.
   water-model, and PTM guardrails via
   `forcefield_catalog`. In node mode it resolves the PDB from `solv` or
   prep ancestors and stamps `system_xml` + `topology_pdb` + `state_xml`
-  artifacts plus a `forcefield_provenance` dict on the `topo` node. Standard
-  prep emits `ligand_chemistry`; ligand formal charge comes from the
+  artifacts plus a `forcefield_provenance` dict on the `topo` node. The
+  topology build performs a short initial relaxation (10 iterations by
+  default) and marks it `scope="topology_initial_relaxation"` with
+  `satisfies_min_node_contract=false`; the separate `min` node owns the
+  post-topology minimization contract. Standard prep emits
+  `ligand_chemistry`; ligand formal charge comes from the
   charged SMILES/SDF molecule graph, topology assigns small-molecule partial
   charges with OpenFF NAGL first, and falls back to
   `GAFFTemplateGenerator` AM1-BCC when NAGL is unavailable or fails. For
@@ -217,7 +221,10 @@ signature, update the relevant section here and the matching skill examples.
 
 - `build_openmm_system(...)`: research-mode escape hatch — accepts
   arbitrary OpenMM ForceField XML files plus optional ligand SMILES and
-  emits the same modern artifact triple. No FF×water guardrail matrix;
+  emits the same modern artifact triple. Its short topology-time initial
+  relaxation has the same `scope="topology_initial_relaxation"` and
+  `satisfies_min_node_contract=false` markers as `build_amber_system`; it is
+  not a replacement for a `min` node. No FF×water guardrail matrix;
   users supply XML they already trust. Implicit solvent has two
   research tiers: (a) **shipped GB XML** — pass
   `forcefield_xml=[..., "implicit/<model>.xml"]` *plus*

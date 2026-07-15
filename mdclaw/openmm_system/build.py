@@ -630,6 +630,8 @@ def build_openmm_system(
         "minimization": {
             "attempted": bool(minimize),
             "completed": bool(minimize),
+            "scope": "topology_initial_relaxation",
+            "satisfies_min_node_contract": False,
             "backend": "openmm",
             "max_iterations": minimize_max_iterations if minimize else 0,
             "energy_initial_kj_mol": energy_initial_kj_mol,

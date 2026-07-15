@@ -71,6 +71,8 @@ def test_build_openmm_system_with_amber14_xml(tmp_path):
     minimization = report["minimization"]
     assert minimization["attempted"] is True
     assert minimization["completed"] is True
+    assert minimization["scope"] == "topology_initial_relaxation"
+    assert minimization["satisfies_min_node_contract"] is False
     assert minimization["energy_is_finite"] is True
     assert minimization["positions_are_finite"] is True
     assert minimization["atom_count_preserved"] is True
@@ -298,7 +300,10 @@ class TestBuildOpenmmSystemNodeMode:
         for key in ("system_xml", "topology_pdb", "state_xml", "minimization_report"):
             rel = topo_node["artifacts"].get(key)
             assert rel and (node_artifacts / Path(rel).name).is_file()
-        assert topo_node["metadata"]["minimization"]["completed"] is True
+        minimization = topo_node["metadata"]["minimization"]
+        assert minimization["completed"] is True
+        assert minimization["scope"] == "topology_initial_relaxation"
+        assert minimization["satisfies_min_node_contract"] is False
 
     def test_node_mode_auto_resolves_pdb_from_prep(self, tmp_path):
         """When pdb_file is omitted, build_openmm_system must look up

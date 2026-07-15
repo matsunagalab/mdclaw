@@ -70,6 +70,10 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `inconsistent_minimized_artifacts` | Minimized artifacts are inconsistent; rerun minimization. |
 | `input_resolution_blocked` | Resolve inputs via the DAG or provide explicit paths. |
 | `invalid_agent_skills_dir` | Point to a valid agent skills directory. |
+| `invalid_assembly_chain_naming` | Use assembly_chain_naming one of: short, add_number, dup. |
+| `invalid_assembly_ids` | Use assembly_ids only with assembly_mode=ids. |
+| `invalid_assembly_mode` | Use assembly_mode one of: none, preferred, all, ids. |
+| `invalid_assembly_output_format` | Use assembly_output_format one of: cif, pdb. |
 | `invalid_atom_count` | Structure atom count is invalid; inspect the input structure. |
 | `invalid_claim_expiry` | Provide a valid claim expiry timestamp. |
 | `invalid_constraints` | Use a supported constraints value: HBonds, AllBonds, or None. |
@@ -92,6 +96,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `invalid_slurm_job_id` | Provide a valid SLURM job id. |
 | `invalid_source` | Provide a valid structural source bundle. |
 | `invalid_source_node` | The referenced source node is invalid. |
+| `invalid_structure_format` | Use structure format one of: pdb, cif. |
 | `invalid_study_record_type` | Use record_study_log --record-type one of: decision, question, token_usage. |
 | `invalid_terminal_cap` | Use a supported terminal cap type. |
 | `ligand_chain_auto_included` | A ligand chain was auto-included; confirm it is intended. |

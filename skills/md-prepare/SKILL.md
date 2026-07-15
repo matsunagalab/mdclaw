@@ -7,16 +7,23 @@ description: "Molecular dynamics simulation preparation using MDClaw CLI tools. 
 
 You are a computational biophysics expert helping users set up MD simulations using the MDClaw CLI tools.
 
-Read `skills/common/preamble.md`, `skills/common/tool-output.md`,
-`skills/common/run-loop.md`, `skills/common/solvent-regimes.md`, and
-`skills/common/guardrail-codes.md` before acting.
+Before any command, read in this order: `skills/common/preamble.md`,
+`skills/common/run-loop.md`, then `skills/md-prepare/happy-path.md`.
+
+This skill uses the MDClaw CLI and DAG path: do not replace it with a
+hand-written OpenMM workflow because the DAG has more steps, and read the
+complete, unfiltered `mdclaw <tool> --help` whenever a flag or value is
+uncertain.
+
+Read `skills/common/tool-output.md` when interpreting a tool response,
+`skills/common/solvent-regimes.md` before selecting solvent defaults, and
+`skills/common/guardrail-codes.md` when a tool returns `success: false`.
 
 `skills/common/run-loop.md` is the single canonical loop (it also carries the
 node-CLI invariants and the re-entry checklist): inspect the job DAG, create the
 node for the current stage, validate it with `explain_node`, then run the tool
-with node context. The prepare-specific compact checklist is
-`skills/md-prepare/happy-path.md`. Use IDs returned by `inspect_job`,
-`explain_node`, and `create_node`, never literal example IDs.
+with node context. Use IDs returned by `inspect_job`, `explain_node`, and
+`create_node`, never literal example IDs.
 
 ## Defaults — Source of Truth
 
@@ -32,6 +39,11 @@ run `prepare_complex` → `solvate_structure` → `build_amber_system`. Topology
 tools must consume the completed DAG parent artifact (`solvated_pdb` for
 explicit/membrane, `merged_pdb` for implicit/vacuum); never pass a raw/manual
 PDB file directly into topology generation.
+
+On this standard Amber path, pass catalog names such as `ff19SB` and `opc` to
+`build_amber_system`, or keep its defaults. The tool resolves the XML bundle;
+do not translate catalog names into XML filenames, search the filesystem for
+XML, or replace this step with `openmm.app.ForceField`.
 
 Do **not** infer defaults from prior AMBER knowledge. Tool signatures and
 guardrails are authoritative; the skill guidance provides quick references:
@@ -161,12 +173,12 @@ use the HPacker-based `create_mutated_structure` branch in
    protonation, parameter, or chemistry correctness from the image. If a
    high-severity visual accident is reported, ask the user before moving to the
    next workflow stage.
-9. The `topo` artifact still carries steric clashes from solvation/packing and
-   is not a usable system until energy minimized; minimization (the `min` node)
-   is the standard next step after topology, not an optional later stage. Hand
-   off to the equilibration skill (which owns `min`) on the same `job_dir` when
-   the current request continues beyond preparation. Otherwise report the
-   completed preparation and stop. `/md-equilibration` is the shortcut.
+9. The short minimization inside `topo` is initial topology relaxation only; it
+   does not satisfy the `min` node contract. When the preparation request
+   requires a minimized/relaxed state or post-minimization artifact, execute
+   `topo` -> `min` and stop before equilibration unless equilibration was also
+   requested. Otherwise report the completed topology and the `min` handoff.
+   `/md-equilibration` is the shortcut for continuing beyond preparation.
 
 ## Step 0: Parse and Confirm
 

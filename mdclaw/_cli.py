@@ -606,7 +606,16 @@ def _record_cli_node_failure(
     if not job_dir or not node_id:
         return
     try:
-        from mdclaw._node import cli_argv, record_node_failure
+        from mdclaw._node import cli_argv, read_node, record_node_failure
+
+        # A recoverable argument error detected before the tool starts is a
+        # corrected invocation of the same pending node, not a failed attempt.
+        if (
+            result.get("error_type") == "ValidationError"
+            and result.get("recoverable") is True
+            and read_node(job_dir, node_id).get("status") == "pending"
+        ):
+            return
 
         record_node_failure(
             job_dir,

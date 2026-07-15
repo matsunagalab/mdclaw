@@ -72,9 +72,14 @@ GUARDRAIL_CODES: dict[str, str] = {
     "source_cannot_have_parents": "Source nodes have no parents; omit --parent-node-ids.",
     "source_cannot_have_dependencies": "Source nodes have no dependencies; remove them.",
     "multiple_source_roots": "A job DAG must have exactly one source root.",
+    "invalid_assembly_mode": "Use assembly_mode one of: none, preferred, all, ids.",
+    "invalid_assembly_ids": "Use assembly_ids only with assembly_mode=ids.",
+    "invalid_assembly_output_format": "Use assembly_output_format one of: cif, pdb.",
+    "invalid_assembly_chain_naming": "Use assembly_chain_naming one of: short, add_number, dup.",
     "unsupported_assembly_source": "Use a supported assembly source type.",
 
     # --- fetch / structure acquisition ---
+    "invalid_structure_format": "Use structure format one of: pdb, cif.",
     "missing_pdb_id": "Provide a valid 4-character PDB ID.",
     "missing_pdb_file": "Use DAG auto-resolution or provide a valid PDB/mmCIF path.",
     "missing_structure_file": "Provide the structure file this tool requires.",

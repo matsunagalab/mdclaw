@@ -22,9 +22,10 @@ run). If any step returns `success: false`, stop and branch on the structured
    (see `skills/common/solvent-regimes.md`).
 7. Create and run a `topo` node with `build_amber_system`; let it auto-resolve
    the completed `solv` parent's artifact.
-8. Hand off to `skills/md-equilibration/SKILL.md` (harness shortcut:
-   `/md-equilibration`) only when the current request continues beyond
-   preparation; otherwise report the handoff and stop.
+8. Treat topology-time minimization as initial relaxation only. If the request
+   requires a minimized/relaxed state or post-minimization artifact, create a
+   `min` node, run `run_minimization`, and stop before equilibration unless it
+   was requested. Otherwise report the `min` handoff and stop.
 
 For implicit or vacuum regimes, skip steps 5-6 and follow
 `skills/md-prepare/implicit-water.md`.

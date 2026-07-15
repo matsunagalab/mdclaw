@@ -110,6 +110,12 @@ DAG handoff instead of claiming a scientific answer.
    Follow `recovery_options` / `next_commands` from that read-only trace; it
    explains which completed ancestor should be used for an explicit branch.
 
+   A recoverable CLI usage error changes the invocation, not the
+   implementation. Stay on the MDClaw DAG: correct and retry the same node only
+   while it remains `pending`; if it is `failed`, use `trace_failure` and its
+   recovery options. Do not replace a failed MDClaw step with a hand-written
+   OpenMM script.
+
 ## Node CLI Invariants
 
 - Create the workflow node first, then run the mutating tool with both
@@ -132,8 +138,9 @@ DAG handoff instead of claiming a scientific answer.
 - Never remove node directories with `rm -rf` as normal recovery. Preserve
   `node.json`, artifacts, and events; use `inspect_job` / `explain_node` to pick
   the next valid branch.
-- Use `mdclaw --list-json` when unsure about flags, defaults, or whether a tool
-  requires node context. Do not scrape `--help` text for automation.
+- When a flag or accepted value is uncertain, read the full
+  `mdclaw <tool> --help` before running the node; do not truncate it with
+  `head` or `grep`. Use `mdclaw --list-json` for programmatic discovery.
 
 The prepare-stage specialization of this loop (the compact source -> prep ->
 solv -> topo checklist) lives in `skills/md-prepare/happy-path.md`. Equilibration
