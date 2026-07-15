@@ -49,10 +49,11 @@ Every skill uses the same three tiers:
   example blocks.
 - **State the autonomous default.** Anywhere a skill says "ask the user", also
   give the value to use in `autonomous` mode without asking.
-- **One shared handoff.** Handoff to `md-prepare` (from prediction skills) and
-  the "next stage" handoff use one canonical wording. Preparation and each
-  compute-starting stage are user-initiated; only `study -> prepare`
-  auto-chains.
+- **One shared stopping rule.** `skills/common/run-loop.md` decides from the
+  current request whether to stop or continue at a stage boundary. Stage
+  skills link to that rule instead of defining their own auto-chain policy.
+  `execution_mode` controls confirmation pauses only; it never selects the
+  stopping point.
 - **Stable CLI flag names.** Use one flag name for one concept across skills.
   The source-candidate selector passed to `prepare_complex` is
   `--source-candidate-id` everywhere.

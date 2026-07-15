@@ -24,7 +24,7 @@ Run these manually after all automated tests pass.
 
 ## Claude Code Autonomous Mode
 
-- [ ] Run: `/md-prepare PDB 1AKE, chain A, no ligands, run end-to-end with defaults`
+- [ ] Run: `/md-prepare PDB 1AKE, chain A, no ligands, complete preparation through topology with defaults`
 - [ ] Claude proceeds without questions
 - [ ] All 5 steps complete
 - [ ] Modern topo artifacts exist: `system.system.xml`, `system.topology.pdb`,

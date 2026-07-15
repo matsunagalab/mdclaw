@@ -13,8 +13,8 @@ package evidence with provenance.
 ## What MDClaw Can Do
 
 - Turn a scientific question into a study plan (observables and decision
-  criteria) that organizes one or more job DAGs, then run those MD jobs
-  end-to-end.
+  criteria) that organizes one or more job DAGs, then, when requested, advance
+  them to a named stage or an evidence-backed scientific answer.
 - Prepare MD systems from PDB IDs, AlphaFold/UniProt entries, or local
   structure files.
 - Generate monomer conformational source ensembles from MD surrogate models
@@ -119,7 +119,7 @@ how to add or swap a model.
 ## Ask In Plain Language
 
 Users do not need to remember command names. The framing of your request
-decides how far MDClaw goes — three patterns:
+decides where MDClaw stops. There are three patterns:
 
 **Plan only.** Ask the agent to plan a study. It records a lightweight
 `study_plan.json` (question, MD goal, planned jobs, observables, decision
@@ -133,35 +133,40 @@ mutant jobs, peptide-contact and groove-dynamics observables, and decision
 criteria.
 ```
 
-**End-to-end.** Ask the agent to take the scientific question all the way to
-MD. It plans the study, then runs the planned jobs through preparation,
-equilibration, production, and analysis.
+**Run to a stage or resume.** Name the last stage you need: preparation,
+equilibration, production, or analysis. For an existing study or job, state
+the new purpose; MDClaw inspects the DAG, reuses completed artifacts, and
+continues only as far as that request requires. A direct one-system run still
+gets a thin study record with one `jobs/main` job.
+
+```text
+Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
+default force field and water model. Continue through default equilibration
+and stop before production.
+```
+
+**Scientific answer.** Explicitly ask the agent to answer the scientific
+question using MD. It advances every required job through the planned
+analysis, packages evidence, applies the decision criteria, and returns a
+supported conclusion.
 
 ```text
 Set up and run an apo-vs-holo MD study for the T4 lysozyme L99A
 benzene-binding cavity (benzene-bound PDB 4W53). Test whether benzene
 occupancy stabilizes the engineered hydrophobic cavity. Plan the minimal
-job set, then prepare, equilibrate, run 50 ns of production per job, and
-analyze cavity hydration and ligand-pose observables.
-```
-
-**Direct one-system run.** Skip the scientific framing and ask for a single
-MD run. MDClaw takes the fast path with a thin study record (one
-`jobs/main`).
-
-```text
-Prepare PDB 1AKE chain A as a protein-only explicit-water system using the
-default force field and water model. Continue through default equilibration,
-run 10 ns of production MD, and analyze RMSD, RMSF, and energy stability.
+job set, prepare and equilibrate it, run 50 ns of production per job,
+analyze cavity hydration and ligand-pose observables, and return an
+evidence-backed conclusion.
 ```
 
 Good prompts for **planning** state the scientific question, comparison
-groups, and what evidence would answer the question. Good prompts for
-**end-to-end runs** add a production length, replicate count, and the
-observables that decide the outcome. Good prompts for **direct runs**
-specify the structure source, molecular selection, solvent model, force
-field, runtime target, duration, ensemble, stopping policy, and desired
-evidence.
+groups, and what evidence would answer the question. Good prompts for a
+**stage or resume** name the target study or structure and the last required
+stage. Good prompts for a **scientific answer** add a production length,
+replicate count, observables, and the conclusion to be supported. If required
+work remains queued or running, MDClaw reports a resumable DAG handoff instead
+of claiming completion. HPC/SLURM submission occurs only when the current
+request explicitly asks for it.
 
 ## Repository Map
 

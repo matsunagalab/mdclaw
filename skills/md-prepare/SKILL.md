@@ -104,6 +104,8 @@ use the HPacker-based `create_mutated_structure` branch in
 2. Decide `execution_mode` from the user's request:
    - `execution_mode=autonomous` unless the user explicitly asks for
      checkpoint-by-checkpoint confirmation.
+   - Treat it only as an interaction policy. The current request determines
+     the stopping point per `skills/common/run-loop.md`.
    - Persistence to `progress.json` normally happens in
      `bootstrap_md_workflow`. If you are repairing an older study, write it via:
      ```bash
@@ -162,8 +164,9 @@ use the HPacker-based `create_mutated_structure` branch in
 9. The `topo` artifact still carries steric clashes from solvation/packing and
    is not a usable system until energy minimized; minimization (the `min` node)
    is the standard next step after topology, not an optional later stage. Hand
-   off to the equilibration skill (which owns `min`) on the same `job_dir`, using
-   the `create_node` node id. `/md-equilibration` is the shortcut; not auto-chained.
+   off to the equilibration skill (which owns `min`) on the same `job_dir` when
+   the current request continues beyond preparation. Otherwise report the
+   completed preparation and stop. `/md-equilibration` is the shortcut.
 
 ## Step 0: Parse and Confirm
 

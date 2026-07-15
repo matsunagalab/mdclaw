@@ -9,7 +9,8 @@ To resume a preparation workflow:
 4. If a node is `failed`, read `node.json.metadata.errors` or run
    `mdclaw trace_failure --job-dir <job_dir> --node-id <node_id>` before
    deciding whether to branch.
-5. Preserve `progress.json.params.execution_mode`.
+5. Use an interaction mode explicitly requested now; otherwise preserve
+   `progress.json.params.execution_mode`.
 
 Do not delete node directories or rerun the same prep/solv/topo node with
 changed molecular contents. Preserve evidence and create a fresh node from the

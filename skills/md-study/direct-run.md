@@ -21,8 +21,10 @@ mdclaw bootstrap_md_workflow \
 
 Replace `explicit` with `implicit`, `vacuum`, or `membrane` when the request
 names that regime. `study_plan.json` is still written (mandatory even for direct
-runs); the plan is minimal and just normalizes the target, solvent regime, stop
-policy, and default workflow steps. You may also hand off directly to
+runs); the plan is minimal and just normalizes the target, solvent regime, and
+default workflow steps. The current request decides where execution stops: a
+bare run or simulation request continues through production, while analysis or
+a conclusion must be requested explicitly. You may also hand off directly to
 `skills/md-prepare/SKILL.md`, which performs the same bootstrap.
 
 For a single named PDB, a database/literature review is optional: one

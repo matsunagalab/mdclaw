@@ -25,8 +25,8 @@ Then read by task:
 ## Ordered read sequence (campaign planning)
 
 1. Required baseline above.
-2. `direct-run.md` if the request is one concrete target — then stop and follow
-   it. Otherwise continue.
+2. `direct-run.md` if the request is one concrete target, then route only as
+   far as the current request requires. Otherwise continue.
 3. `minimal-plan-schema.md`, then `literature-lookup.md`.
 4. `compute-budget.md` only if the user mentioned compute.
 5. `register-jobs.md`, then `handoff-routing.md`.

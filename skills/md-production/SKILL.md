@@ -117,7 +117,9 @@ parse stderr, and do not retry a failed command with identical parameters.
    `register_visual_review`; `--style publication` for the final structure,
    `--style ligand_site` / `--style membrane` when relevant). If severity is
    `high`, ask the user before using the production output downstream.
-3. Present:
+3. Follow the stopping rule in `skills/common/run-loop.md`. If the current
+   request requires analysis or a scientific answer, invoke
+   `skills/md-analyze/SKILL.md` on this `job_dir`. Otherwise present:
    ```
    Production complete. Next:
      Continue with skills/md-analyze/SKILL.md on this job_dir.
@@ -127,6 +129,3 @@ parse stderr, and do not retry a failed command with identical parameters.
      Run this production skill again on the same job_dir.
      Shortcut, if available: /md-production <job_dir>
    ```
-
-Production does not auto-invoke analysis — the analysis skill is always a
-user-initiated follow-up step.

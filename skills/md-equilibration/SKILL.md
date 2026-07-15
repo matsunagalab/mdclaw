@@ -1,6 +1,6 @@
 ---
 name: md-equilibration
-description: "Standalone minimization node plus equilibration (min -> low-temperature NVT warmup -> NVT heating -> optional NPT density) of a prepared MD system using MDClaw CLI tools. Creates min and eq DAG nodes and writes restart artifacts for production handoff."
+description: "Standalone minimization plus equilibration of a prepared MD system using MDClaw CLI tools, including low-temperature NVT warmup, NVT heating, and optional NPT density. Creates min and eq DAG nodes and writes restart artifacts for production handoff."
 ---
 
 # MD Equilibration
@@ -88,11 +88,11 @@ parse stderr, and do not retry a failed command with identical parameters.
 2. Perform Visual QA per `skills/common/visual-qa.md` (render preview, inspect,
    `register_visual_review`). If severity is `high`, ask the user before
    production.
-3. Tell the user:
+3. Follow the stopping rule in `skills/common/run-loop.md`. If the current
+   request continues through production or beyond, invoke
+   `skills/md-production/SKILL.md` on this `job_dir`. Otherwise tell the user:
    ```
    Equilibration complete. Next:
      Continue with skills/md-production/SKILL.md on this job_dir.
      Shortcut, if available: /md-production <job_dir>
    ```
-   Equilibration does not auto-invoke production — each stage is
-   user-initiated.

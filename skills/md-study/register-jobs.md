@@ -19,8 +19,8 @@ mdclaw init_study --study-dir <study_dir> --title "<short title>" \
 mdclaw record_study_plan --study-dir <study_dir> --plan '<plan-json>'
 ```
 
-Register planned jobs and propagate `execution_mode` and `solvent_regime` so
-downstream skills inherit them:
+Register planned jobs and propagate `execution_mode` as the interaction policy
+and `solvent_regime` as the system policy so downstream skills inherit them:
 
 ```bash
 mdclaw add_study_job --study-dir <study_dir> \

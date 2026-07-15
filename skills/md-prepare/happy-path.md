@@ -1,6 +1,6 @@
 # MD Prepare Happy Path (Explicit Water)
 
-The compact end-to-end checklist for the default explicit-water preparation.
+The compact complete checklist for the default explicit-water preparation.
 It is the prepare-stage specialization of `skills/common/run-loop.md`; each
 numbered item below is one turn of that loop (inspect -> create -> explain ->
 run). If any step returns `success: false`, stop and branch on the structured
@@ -23,7 +23,8 @@ run). If any step returns `success: false`, stop and branch on the structured
 7. Create and run a `topo` node with `build_amber_system`; let it auto-resolve
    the completed `solv` parent's artifact.
 8. Hand off to `skills/md-equilibration/SKILL.md` (harness shortcut:
-   `/md-equilibration`). Do not auto-chain stages.
+   `/md-equilibration`) only when the current request continues beyond
+   preparation; otherwise report the handoff and stop.
 
 For implicit or vacuum regimes, skip steps 5-6 and follow
 `skills/md-prepare/implicit-water.md`.

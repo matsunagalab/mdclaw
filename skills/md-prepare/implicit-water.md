@@ -147,4 +147,4 @@ Failure codes you may see (run side, after the topology resolver):
 Verify the `topo` node is `completed` in `progress.json`, then follow the
 canonical handoff in `SKILL.md` step 9 (continue with
 `skills/md-equilibration/SKILL.md` on this `job_dir`; shortcut
-`/md-equilibration`). Preparation does not auto-invoke equilibration.
+`/md-equilibration`) when the current request continues beyond preparation.

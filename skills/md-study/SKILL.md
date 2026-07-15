@@ -1,6 +1,6 @@
 ---
 name: md-study
-description: "Study-level planning for MDClaw. Turns scientific questions into a small MD research plan, planned jobs, analysis intent, and decision criteria before handing off to stage skills."
+description: "Study-level planning and workflow routing for MDClaw. Use for scientific questions, comparative or campaign studies, plan-only requests, and requests to carry planned MD jobs through analysis to an evidence-backed answer."
 ---
 
 # MD Study
@@ -32,22 +32,25 @@ Extract parameters from the user's request and present a summary.
 |-----------|-------|
 | Scientific question | (one sentence, copied or restated from the user) |
 | Study directory | (path, e.g. `studies/<study_id>`) |
-| Execution mode | `autonomous` (default) / `human_in_the_loop` |
+| Stop after | plan / preparation / equilibration / production / analysis / scientific answer (from the current request; do not persist) |
+| Interaction mode (`execution_mode`) | `autonomous` (default) / `human_in_the_loop` |
 | Variants / planned jobs | (WT vs mutant, apo vs holo, etc., if named) |
 | Solvent regime | `explicit` (default) / `implicit` / `vacuum` / `membrane` |
 | Compute budget | (free text, e.g. "1x A100 for 7 days"; or "not specified") |
 | Other | (only parameters the user explicitly named) |
 
 Pick `autonomous` unless the user explicitly asks for checkpoint-by-checkpoint
-confirmation. The mode is propagated to each registered job's `progress.json`
-so downstream skills inherit it. Full interaction-mode behavior is in
+confirmation. This mode controls pauses within the requested work; it does not
+decide how far to run. Propagate it to each registered job's `progress.json` so
+downstream skills inherit the interaction policy. Determine the stopping point
+from `skills/common/run-loop.md`; full handoff behavior is in
 `skills/md-study/handoff-routing.md`.
 
 ## Workflow
 
 1. Parse the request; set `execution_mode` per Step 0 (default `autonomous`).
 2. If this is one concrete target, follow `skills/md-study/direct-run.md` and
-   stop. Otherwise continue with campaign planning.
+   skip campaign design. Otherwise continue with campaign planning.
 3. Ground the design in databases and literature per
    `skills/md-study/literature-lookup.md`. Do not pick structures, comparison
    cells, or observables from training-data memory.
@@ -60,7 +63,8 @@ so downstream skills inherit it. Full interaction-mode behavior is in
 6. Compute budget: only if the user mentioned compute, follow
    `skills/md-study/compute-budget.md`; otherwise omit the `budget` block.
 7. Record the plan and register jobs per `skills/md-study/register-jobs.md`.
-8. Hand off per `skills/md-study/handoff-routing.md`.
+8. Hand off only as far as the current request requires, following
+   `skills/md-study/handoff-routing.md`.
 
 ## Guardrails
 
@@ -75,6 +79,8 @@ so downstream skills inherit it. Full interaction-mode behavior is in
   next action.
 - Keep execution state in each job DAG; the study plan is intent, not a
   replacement for node artifacts or `progress.json`.
+- Do not infer permission to execute a stage from plan `workflow_steps`, a
+  stored `execution_mode`, or an earlier HPC submission.
 
 ## Error Handling
 

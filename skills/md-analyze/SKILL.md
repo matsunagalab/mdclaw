@@ -12,9 +12,9 @@ acting. Use `mdclaw inspect_job --job-dir <job_dir>` to confirm the job state
 and identify the production or analysis node(s) that answer the analysis
 question.
 
-Analysis is always user-initiated. Production does not chain into analysis;
-the user or harness invokes this skill when ready. In harnesses with slash
-commands, `/md-analyze` is the shortcut.
+Run this skill when the current request directly asks for analysis, or when a
+production handoff still needs analysis or a scientific answer. In harnesses
+with slash commands, `/md-analyze` is the shortcut.
 
 If the job belongs to a study with `study_plan.json`, use the plan's `analysis`
 list as the starting point for metric selection. Treat it as scientific intent,
@@ -33,6 +33,24 @@ Follow the canonical loop in `skills/common/run-loop.md`, specialized here as:
 4. Create an `analyze` node per metric and run the tool with `--job-dir` /
    `--node-id`: `skills/md-analyze/metrics.md`.
 5. Report results with node lineage, selection, and stride.
+
+## Study Completion
+
+For an analysis-only request, report the requested node results and stop. For
+a scientific-answer request:
+
+1. Repeat the required production and analysis work for every planned job
+   needed by the question.
+   Keep analysis nodes inside their own job DAG; compare artifacts from
+   different jobs during study-level synthesis, not with cross-job parents.
+2. Use `inspect_job` to verify those `prod` and `analyze` nodes are completed;
+   do not use the evidence report's status as the completion check.
+3. Run `generate_study_evidence_report`, synthesize the actual analysis
+   artifacts against the plan's decision criteria, and record the conclusion
+   with `record_study_log --record-type decision`.
+4. Return the evidence-backed answer with limitations and provenance. If
+   required work is still queued or running, report a resumable DAG handoff
+   instead of claiming completion.
 
 Read by task:
 
@@ -56,7 +74,9 @@ Confirm these fields before running analysis:
 | Atom selection | mdtraj selection, default `"protein"` |
 | Stride | integer, default `1` |
 
-For comparison analyses, create the node with explicit subjects and mapping:
+For comparisons between two branches in the same job DAG, create the node with
+explicit subjects and mapping. For different `job_dir`s, compare the separate
+analysis artifacts during study-level synthesis instead.
 
 - Parents: two completed `production_chain` analyze nodes.
 - Put `analysis_subjects` and `comparison_mapping` on the comparison node

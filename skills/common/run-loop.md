@@ -7,6 +7,39 @@ source of truth is the study plan plus the per-job DAG evidence, not a separate
 next-step planner. Use tool JSON to inspect state, create nodes, and validate
 candidate nodes before running them.
 
+## Decide How Far To Go
+
+Decide where the current work stops from the latest explicit user or harness
+request before creating a node. Do not store that stopping point in
+`study_plan.json` or `progress.json`.
+
+| Current request | Stop after |
+|---|---|
+| Plan, review, or inspect only | Record the plan or report DAG state; do not run a stage tool |
+| Names preparation, equilibration, production, or analysis as the last stage | Complete that stage for the required job(s) |
+| Asks to run or simulate MD without requesting analysis or a conclusion | Complete the requested production run |
+| Asks to answer the scientific question, compare, conclude, or provide evidence | Complete the required planned jobs and analyses, package evidence, and return an evidence-backed answer |
+| Resumes existing work for a stated purpose | Inspect the DAG, reuse completed artifacts, and stop when the current purpose is met |
+
+When several stages are named, the last named stage is the stopping point. If
+the request is unclear, plan or inspect and report the current state; do not
+start a new compute stage. At every stage boundary, continue to the next skill
+only when the current request requires it.
+
+The study plan describes scientific intent, and its `workflow_steps` do not
+authorize execution. `execution_mode` controls confirmation pauses only:
+`autonomous` skips routine confirmations within the requested work, while
+`human_in_the_loop` pauses at major checkpoints without changing the stopping
+point. An explicit mode in the current request overrides a stored mode;
+otherwise inherit the stored mode. Neither mode authorizes HPC/SLURM
+submission; the current request or harness must do that explicitly.
+
+For a scientific-answer request, verify the required `prod` and `analyze`
+nodes with `inspect_job`; do not treat an evidence report's status alone as
+proof that the study is complete. Keep monitoring required local work. If
+required work remains queued or running externally, preserve and report the
+DAG handoff instead of claiming a scientific answer.
+
 ## The Loop
 
 1. **Inspect the job DAG.**
