@@ -961,6 +961,7 @@ def main(argv: list[str] | None = None) -> None:
     info = tools[tool_name]
     fn = info["fn"]
     is_async = info["is_async"]
+    requires_node = info.get("requires_node", tool_requires_node(fn))
 
     # Resolve node-mode flags (global --job-dir/--node-id or per-tool kwargs)
     _global_job_dir = getattr(args, "_global_job_dir", None)
@@ -1067,14 +1068,15 @@ def main(argv: list[str] | None = None) -> None:
                         "code": "missing_required_arguments"},
             "recoverable": True,
         }
-        _record_cli_node_failure(
-            job_dir=effective_job_dir,
-            node_id=effective_node_id,
-            tool_name=tool_name,
-            result=error,
-            exit_code=1,
-            stdout_tail=_json_stdout_tail(error),
-        )
+        if requires_node:
+            _record_cli_node_failure(
+                job_dir=effective_job_dir,
+                node_id=effective_node_id,
+                tool_name=tool_name,
+                result=error,
+                exit_code=1,
+                stdout_tail=_json_stdout_tail(error),
+            )
         _json_error_and_exit(error)
 
     if effective_node_id and not effective_job_dir:
@@ -1089,9 +1091,7 @@ def main(argv: list[str] | None = None) -> None:
             "context": {"tool": tool_name, "code": "node_id_requires_job_dir"},
             "recoverable": True,
         })
-    if info.get("requires_node", tool_requires_node(fn)) and (
-        not effective_job_dir or not effective_node_id
-    ):
+    if requires_node and (not effective_job_dir or not effective_node_id):
         _json_error_and_exit({
             "success": False,
             "error_type": "ValidationError",
@@ -1175,7 +1175,7 @@ def main(argv: list[str] | None = None) -> None:
             recovery = _build_recovery_hint(effective_job_dir, effective_node_id)
             if recovery:
                 result["recovery_hint"] = recovery
-        if isinstance(result, dict) and exit_code:
+        if isinstance(result, dict) and exit_code and requires_node:
             _record_cli_node_failure(
                 job_dir=effective_job_dir,
                 node_id=effective_node_id,
@@ -1222,16 +1222,17 @@ def main(argv: list[str] | None = None) -> None:
             if tool_stdout_tail
             else _json_stdout_tail(error_out)
         )
-        _record_cli_node_failure(
-            job_dir=effective_job_dir,
-            node_id=effective_node_id,
-            tool_name=tool_name,
-            result=error_out,
-            exit_code=1,
-            stdout_tail=stdout_tail,
-            stderr_tail=tool_stderr_tail or None,
-            traceback_text=traceback.format_exc(),
-        )
+        if requires_node:
+            _record_cli_node_failure(
+                job_dir=effective_job_dir,
+                node_id=effective_node_id,
+                tool_name=tool_name,
+                result=error_out,
+                exit_code=1,
+                stdout_tail=stdout_tail,
+                stderr_tail=tool_stderr_tail or None,
+                traceback_text=traceback.format_exc(),
+            )
         json.dump(error_out, sys.stdout, indent=2, default=str)
         print()
         sys.exit(1)

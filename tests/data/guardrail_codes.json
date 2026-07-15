@@ -150,6 +150,7 @@
   "need_index_out_of_range",
   "net_charge_exception",
   "node_already_claimed",
+  "node_completion_requires_artifacts",
   "node_context_required",
   "node_execution_context_invalid",
   "node_id_requires_job_dir",

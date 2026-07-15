@@ -45,6 +45,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "invalid_node_type": "Use one of: source, prep, solv, topo, min, eq, prod, analyze.",
     "node_type_mismatch": "Select or create a node whose type matches the requested tool.",
     "invalid_node_status": "Use a valid node status value.",
+    "node_completion_requires_artifacts": "Run the node's producer tool so completion validates and hashes its artifacts.",
     "update_state_no_target": "Provide status (with node_id) and/or params to update_workflow_state.",
     "update_state_status_requires_node_id": "Pass node_id together with status to update_workflow_state.",
     "completed_node_sealed": "Completed nodes are immutable; branch a new node to change anything.",

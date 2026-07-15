@@ -8,6 +8,8 @@ import importlib
 
 import pytest
 
+from mdclaw._registry import SERVER_REGISTRY
+
 
 # ---------------------------------------------------------------------------
 # Server Registry
@@ -18,13 +20,9 @@ class TestServerRegistry:
     """Test the SERVER_REGISTRY dict in _registry.py."""
 
     def test_registry_has_all_servers(self):
-        from mdclaw._registry import SERVER_REGISTRY
-
         assert len(SERVER_REGISTRY) == 18
 
     def test_registry_keys(self):
-        from mdclaw._registry import SERVER_REGISTRY
-
         expected = {
             "research",
             "structure",
@@ -48,8 +46,6 @@ class TestServerRegistry:
         assert set(SERVER_REGISTRY.keys()) == expected
 
     def test_registry_module_paths(self):
-        from mdclaw._registry import SERVER_REGISTRY
-
         # Every server is now a canonical package under mdclaw/. The package
         # name matches the registry key except for md_simulation, whose package
         # is mdclaw.simulation.
@@ -68,20 +64,32 @@ class TestServerRegistry:
 class TestImportServers:
     """Test that server modules can be imported and have TOOLS dicts."""
 
-    def test_each_server_has_tools_dict(self):
+    @pytest.mark.parametrize(
+        ("name", "module_path"),
+        tuple(SERVER_REGISTRY.items()),
+        ids=tuple(SERVER_REGISTRY),
+    )
+    def test_each_server_has_tools_dict(self, name, module_path):
         """Each server module exposes a `TOOLS` dict."""
-        from mdclaw._registry import SERVER_REGISTRY
+        try:
+            mod = importlib.import_module(module_path)
+        except ModuleNotFoundError as exc:
+            missing_module = exc.name or ""
+            if missing_module == "mdclaw" or missing_module.startswith("mdclaw."):
+                pytest.fail(
+                    f"Registered server {name!r} is missing module {missing_module!r}"
+                )
+            pytest.skip(
+                f"Cannot import {module_path} (missing dependency {missing_module!r})"
+            )
+        except ImportError as exc:
+            pytest.fail(f"Cannot import registered server {module_path}: {exc}")
 
-        for name, module_path in SERVER_REGISTRY.items():
-            try:
-                mod = importlib.import_module(module_path)
-            except ImportError:
-                pytest.skip(f"Cannot import {module_path} (missing dependency)")
-            assert hasattr(mod, "TOOLS"), f"{module_path} missing 'TOOLS' dict"
-            assert isinstance(mod.TOOLS, dict), f"{module_path}.TOOLS is not a dict"
-            assert len(mod.TOOLS) > 0, f"{module_path}.TOOLS is empty"
-            for tool_name, fn in mod.TOOLS.items():
-                assert callable(fn), f"{module_path}.TOOLS['{tool_name}'] is not callable"
+        assert hasattr(mod, "TOOLS"), f"{module_path} missing 'TOOLS' dict"
+        assert isinstance(mod.TOOLS, dict), f"{module_path}.TOOLS is not a dict"
+        assert len(mod.TOOLS) > 0, f"{module_path}.TOOLS is empty"
+        for tool_name, fn in mod.TOOLS.items():
+            assert callable(fn), f"{module_path}.TOOLS['{tool_name}'] is not callable"
 
     def test_run_production_has_random_seed_param(self):
         """run_production accepts a random_seed parameter."""

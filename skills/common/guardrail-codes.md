@@ -159,6 +159,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `need_index_out_of_range` | Use a need index that exists on the node. |
 | `net_charge_exception` | Exact net-charge evaluation raised; membrane written without protein-charge neutralization. |
 | `node_already_claimed` | Another worker holds the claim; wait, or override only if stale. |
+| `node_completion_requires_artifacts` | Run the node's producer tool so completion validates and hashes its artifacts. |
 | `node_context_required` | Create the node, then run it with both --job-dir and --node-id. |
 | `node_execution_context_invalid` | Node context is invalid; fix node type/conditions or branch a new node. |
 | `node_id_requires_job_dir` | --node-id was passed without --job-dir; pass both together. |

@@ -39,6 +39,7 @@ from mdclaw._node import (
     update_job_summaries,
     update_node,
     update_node_status,
+    update_workflow_state,
     validate_node_execution_context,
     wait_node,
 )
@@ -1120,13 +1121,40 @@ class TestUpdateNodeStatusTool:
     def test_node_json_and_progress_stay_consistent(self, job_dir):
         """Multiple status changes keep both stores in sync."""
         create_node(str(job_dir), "prod")
-        for status in ("submitted", "running", "completed"):
+        for status in ("submitted", "running"):
             update_node_status(str(job_dir), "prod_001", status)
             node = read_node(str(job_dir), "prod_001")
             pj = json.loads((job_dir / "progress.json").read_text())
             expected = "queued" if status == "submitted" else status
             assert node["status"] == expected
             assert pj["nodes"]["prod_001"]["status"] == expected
+
+        complete_node(
+            str(job_dir),
+            "prod_001",
+            artifacts={"trajectory": "artifacts/trajectory.dcd"},
+        )
+        node = read_node(str(job_dir), "prod_001")
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert node["status"] == "completed"
+        assert pj["nodes"]["prod_001"]["status"] == "completed"
+
+    def test_workflow_state_rejects_direct_completion_without_mutation(self, job_dir):
+        create_node(str(job_dir), "prod")
+
+        result = update_workflow_state(
+            str(job_dir),
+            node_id="prod_001",
+            status="completed",
+        )
+
+        assert result["success"] is False
+        assert result["code"] == "node_completion_requires_artifacts"
+        node = read_node(str(job_dir), "prod_001")
+        pj = json.loads((job_dir / "progress.json").read_text())
+        assert node["status"] == "pending"
+        assert node["artifacts"] == {}
+        assert pj["nodes"]["prod_001"]["status"] == "pending"
 
     def test_rejects_invalid_status_without_mutating_node(self, job_dir):
         create_node(str(job_dir), "prep")

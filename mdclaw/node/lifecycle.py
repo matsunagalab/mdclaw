@@ -565,7 +565,8 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
     Delegates to :func:`_apply_status` so that every status edit in the
     system flows through the same single path. Returns
     ``{"success": True, "node_id", "status"}`` so it can be exposed as
-    a CLI tool.
+    a CLI tool. Direct completion is rejected because only
+    :func:`complete_node` validates and hashes artifacts.
     """
     canonical_status = _normalize_node_status(status)
     if canonical_status is None:
@@ -592,6 +593,29 @@ def update_node_status(job_dir: str, node_id: str, status: str) -> dict:
                 "expected": sorted(NODE_STATUSES),
                 "aliases": NODE_STATUS_ALIASES,
                 "code": "invalid_node_status",
+            },
+            "recoverable": True,
+        }
+    if canonical_status == "completed":
+        message = (
+            "Cannot set status to 'completed' directly. Node completion must "
+            "go through complete_node() so artifacts are validated and hashed."
+        )
+        return {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "node_completion_requires_artifacts",
+            "message": message,
+            "errors": [message],
+            "warnings": [],
+            "hints": [
+                "Run the node's producer tool to complete it with artifacts.",
+                "Use update_workflow_state only for operational status changes.",
+            ],
+            "context": {
+                "node_id": node_id,
+                "requested_status": canonical_status,
+                "code": "node_completion_requires_artifacts",
             },
             "recoverable": True,
         }
@@ -633,9 +657,11 @@ def update_workflow_state(
     Consolidates the former ``update_node_status`` (per-node status) and
     ``update_job_params`` (job-level params, e.g. ``execution_mode``) tools:
 
-    - Pass ``node_id`` + ``status`` to set a node's status.
+    - Pass ``node_id`` + ``status`` to set an operational node status.
     - Pass ``params`` to merge job-level params.
     - Both may be given together; at least one target is required.
+
+    ``completed`` is reserved for producer tools calling :func:`complete_node`.
     """
     if status is None and params is None:
         return {

@@ -248,6 +248,7 @@ class TestArgparseConstruction:
                 "is_async": False,
                 "server": "fake",
                 "description": "Fake failure tool.",
+                "requires_node": True,
             }
         })
 
@@ -287,6 +288,7 @@ class TestArgparseConstruction:
                 "is_async": False,
                 "server": "fake",
                 "description": "Fake crashing tool.",
+                "requires_node": True,
             }
         })
 
@@ -308,6 +310,41 @@ class TestArgparseConstruction:
         assert "crash stdout line" in (manifest.parent / "stdout_tail.txt").read_text()
         assert "unhandled_exception" in (manifest.parent / "stdout_tail.txt").read_text()
         assert "crash stderr line" in (manifest.parent / "stderr_tail.txt").read_text()
+
+    def test_management_failure_does_not_fail_target_node(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from mdclaw import _cli
+        from mdclaw._node import create_node, read_node
+        from mdclaw.node.lifecycle import update_workflow_state
+
+        job_dir = tmp_path / "job_management_failure"
+        job_dir.mkdir()
+        node = create_node(str(job_dir), "prod")
+        monkeypatch.setattr(_cli, "_discover_tools", lambda: {
+            "update_workflow_state": {
+                "fn": update_workflow_state,
+                "is_async": False,
+                "server": "node",
+                "description": "Update workflow state.",
+                "requires_node": False,
+            }
+        })
+
+        with pytest.raises(SystemExit) as exc_info:
+            _cli.main([
+                "update_workflow_state",
+                "--job-dir", str(job_dir),
+                "--node-id", node["node_id"],
+                "--status", "completed",
+            ])
+
+        assert exc_info.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "node_completion_requires_artifacts"
+        latest = read_node(str(job_dir), node["node_id"])
+        assert latest["status"] == "pending"
+        assert latest["artifacts"] == {}
 
     def test_optional_params_have_defaults(self):
         from mdclaw._cli import _build_parser, _discover_tools
