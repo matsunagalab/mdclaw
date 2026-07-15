@@ -68,10 +68,10 @@ RUN sed -e '/- -e \./d' -e '/openmm-torch/d' environment.yml > environment-docke
 RUN mamba run -n mdclaw pip install --force-reinstall "torch==2.7.1+cu118" --index-url https://download.pytorch.org/whl/cu118 && \
     mamba run -n mdclaw pip cache purge
 
-# Install mdclaw package into the environment. Include ruff in the packaged
-# runtime so SIF-based development/test workflows can run the repository lint
-# command without requiring a separate host conda environment.
-RUN mamba run -n mdclaw pip install . "ruff>=0.1.0" && \
+# Install mdclaw plus its development tools into the packaged environment so
+# SIF overlay workflows can run repository lint and tests without a separate
+# host conda environment.
+RUN mamba run -n mdclaw pip install ".[dev]" && \
     mamba run -n mdclaw pip cache purge
 
 # Apply packmol-memgen numpy compatibility patch

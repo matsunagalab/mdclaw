@@ -34,6 +34,8 @@ check "mdclaw --list" mdclaw --list
 # venvs, not baked into the image, so only verify the management CLI exists.
 check "model-backend CLI discoverable" bash -c "mdclaw --list | grep -q setup_model_backend"
 check "ruff" python -m ruff --version
+check "pytest" python -m pytest --version
+check "pytest-asyncio" python -c "import pytest_asyncio"
 
 # --- Python imports ---
 echo ""

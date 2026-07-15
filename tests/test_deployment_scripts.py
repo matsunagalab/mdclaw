@@ -32,12 +32,14 @@ def test_release_versions_stay_in_sync():
     assert len(set(versions.values())) == 1, versions
 
 
-def test_container_definition_includes_ruff_for_sif_lint_workflows():
+def test_container_definition_includes_dev_tools_for_sif_workflows():
     dockerfile = (REPO_ROOT / "container" / "Dockerfile").read_text()
     test_script = (REPO_ROOT / "container" / "scripts" / "test-container.sh").read_text()
 
-    assert '"ruff>=0.1.0"' in dockerfile
+    assert 'pip install ".[dev]"' in dockerfile
     assert "python -m ruff --version" in test_script
+    assert "python -m pytest --version" in test_script
+    assert "import pytest_asyncio" in test_script
 
 
 def test_gen_cli_contract_imports_its_checkout_before_installed_package(tmp_path):

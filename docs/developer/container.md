@@ -65,9 +65,9 @@ singularity exec --nv \
   (the master commit that added `PythonTorchForce`, #179) because no tagged
   release ships it yet. Bumping `openmm`, `pytorch`, or `OPENMM_TORCH_COMMIT`
   requires a container rebuild + push (container contents changed).
-- `ruff` is installed in the conda-packed `/opt/mdclaw` environment so
-  Singularity/Apptainer SIF workflows can run repository lint checks without a
-  separate host conda environment.
+- The `dev` extra (`ruff`, `pytest`, and `pytest-asyncio`) is installed in the
+  conda-packed `/opt/mdclaw` environment so Singularity/Apptainer SIF workflows
+  can run repository lint and tests without a separate host conda environment.
 
 ## Model Backends (BioEmu, Boltz-2)
 
