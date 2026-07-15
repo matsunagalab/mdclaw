@@ -1,6 +1,7 @@
 # Keep the build context lean. Dockerfile COPYs only environment.yml,
-# pyproject.toml, README.md, mdclaw/, and container/scripts/. Everything
-# else is either noise or huge (SabDab job artifacts can reach many GB).
+# pyproject.toml, README.md, mdclaw/, container/scripts/, and the single
+# build-time helper scripts/warmup_membrane_cache.py. Everything else is
+# either noise or huge (SabDab job artifacts can reach many GB).
 
 # Python / build caches
 __pycache__/
@@ -63,8 +64,10 @@ sabdab*.tsv
 # Tests are baked into the image via mdclaw/ — don't re-send from tests/
 tests/
 
-# Scripts are developer tooling, not runtime
+# Scripts are developer tooling, not runtime -- except the membrane patch
+# warm-up helper, which the Dockerfile COPYs and runs at build time.
 scripts/
+!scripts/warmup_membrane_cache.py
 
 # Plan / memory files
 plans/
