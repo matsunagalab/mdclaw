@@ -138,7 +138,7 @@ def _check_gb99_openmm_version_compatible(forcefield_xml: List[str]) -> Optional
     return None
 
 
-@node_tool
+@node_tool(node_type="topo")
 def build_openmm_system(
     pdb_file: Optional[str] = None,
     forcefield_xml: Optional[List[str]] = None,

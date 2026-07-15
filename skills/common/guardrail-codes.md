@@ -166,6 +166,7 @@ This table is generated from `mdclaw/guardrail_codes.py`
 | `node_missing` | Node id does not exist; use IDs from inspect_job/explain_node. |
 | `node_mode_required` | Specify the node mode required by this tool. |
 | `node_terminal` | Node is terminal (completed/failed); branch a new node instead. |
+| `node_type_mismatch` | Select or create a node whose type matches the requested tool. |
 | `node_wait_timeout` | Waiting on the node timed out; check the running job or lease. |
 | `nucleic_hydrogen_rebuild_failed` | Nucleic hydrogen rebuild failed; inspect residues. |
 | `nucleic_hydrogen_rebuild_unavailable` | Nucleic hydrogen rebuild tool is unavailable in this runtime. |

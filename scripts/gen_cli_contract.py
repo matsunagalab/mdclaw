@@ -3,8 +3,8 @@
 Run with: conda run -n mdclaw python scripts/gen_cli_contract.py
 
 The golden pins the agent-facing CLI surface (tool -> server, node-context
-requirement, job_dir-is-data flag, and required parameters) so refactors that
-would silently change the contract fail loudly in CI.
+requirement and type, job_dir-is-data flag, and required parameters) so
+refactors that would silently change the contract fail loudly in CI.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ def build_contract() -> dict:
         contract[tool["name"]] = {
             "server": tool["server"],
             "requires_node": tool["requires_node"],
+            "node_type": tool["node_type"],
             "job_dir_is_data": tool["job_dir_is_data"],
             "required_params": required,
         }

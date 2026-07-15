@@ -28,7 +28,7 @@ from typing import TextIO, Union, get_args, get_origin
 from mdclaw import __version__
 from mdclaw._common import finalize_error
 from mdclaw._registry import SERVER_REGISTRY
-from mdclaw._tool_meta import tool_job_dir_is_data, tool_requires_node
+from mdclaw._tool_meta import tool_job_dir_is_data, tool_node_type, tool_requires_node
 
 # Tools consolidated during the schema-v3 refactor. Old names are no longer
 # registered as CLI subcommands; invoking one returns a structured
@@ -170,6 +170,7 @@ def _discover_tools() -> dict[str, dict]:
                 "server": server_name,
                 "description": inspect.getdoc(fn) or "",
                 "requires_node": tool_requires_node(fn),
+                "node_type": tool_node_type(fn),
                 "job_dir_is_data": tool_job_dir_is_data(fn),
             }
     return tools
@@ -634,6 +635,52 @@ def _json_error_and_exit(error: dict) -> None:
     sys.exit(1)
 
 
+def _node_type_preflight_error(
+    *,
+    tool_name: str,
+    job_dir: str,
+    node_id: str,
+    expected_node_type: str,
+) -> dict | None:
+    """Return a structured error when a tool is pointed at the wrong node type."""
+    actual_node_type = None
+    try:
+        from mdclaw._node import read_node
+
+        node = read_node(job_dir, node_id)
+        actual_node_type = node.get("node_type")
+    except FileNotFoundError:
+        code = "node_missing"
+        message = f"Node '{node_id}' does not exist under {job_dir}"
+    except (AttributeError, OSError, ValueError) as exc:
+        code = "node_json_invalid"
+        message = f"Cannot read node '{node_id}': {exc}"
+    else:
+        if actual_node_type == expected_node_type:
+            return None
+        code = "node_type_mismatch"
+        message = (
+            f"Tool '{tool_name}' requires a '{expected_node_type}' node, but "
+            f"'{node_id}' has type '{actual_node_type}'"
+        )
+
+    error = _cli_validation_error(
+        "node_id",
+        message,
+        code=code,
+        actual=actual_node_type,
+        expected=expected_node_type,
+    )
+    error["context"].update({
+        "tool": tool_name,
+        "job_dir": job_dir,
+        "node_id": node_id,
+        "expected_node_type": expected_node_type,
+        "actual_node_type": actual_node_type,
+    })
+    return error
+
+
 def _load_json_cli(value: str, field: str):
     try:
         return json.loads(value)
@@ -797,6 +844,7 @@ def _tool_list_json(tools: dict[str, dict]) -> dict:
             "description": description,
             "is_async": info["is_async"],
             "requires_node": info.get("requires_node", tool_requires_node(info["fn"])),
+            "node_type": info.get("node_type", tool_node_type(info["fn"])),
             "job_dir_is_data": info.get("job_dir_is_data", tool_job_dir_is_data(info["fn"])),
             "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
         })
@@ -919,6 +967,7 @@ def main(argv: list[str] | None = None) -> None:
     _global_node_id = getattr(args, "_global_node_id", None)
 
     # Build kwargs
+    missing: list[str] = []
     if args.json_input:
         kwargs = _load_json_cli(args.json_input, "--json-input")
         sig = inspect.signature(fn)
@@ -944,7 +993,6 @@ def main(argv: list[str] | None = None) -> None:
             pass
 
         kwargs = {}
-        missing = []
         args_dict = vars(args)
         # Propagate global --job-dir/--node-id into the per-tool namespace so
         # that downstream missing-arg checks see them. The subparser declares
@@ -977,35 +1025,6 @@ def main(argv: list[str] | None = None) -> None:
                 if not (tool_name == "fetch_structure" and item == "--source")
             ]
 
-        if missing:
-            error = {
-                "success": False,
-                "error_type": "ValidationError",
-                "code": "missing_required_arguments",
-                "message": (
-                    f"{tool_name} is missing required arguments: "
-                    f"{', '.join(missing)}"
-                ),
-                "errors": [f"missing required argument: {m}" for m in missing],
-                "warnings": [],
-                "hints": [
-                    f"Run 'mdclaw {tool_name} --help' or 'mdclaw --list-json' "
-                    "to see required parameters.",
-                ],
-                "context": {"tool": tool_name, "missing": missing,
-                            "code": "missing_required_arguments"},
-                "recoverable": True,
-            }
-            _record_cli_node_failure(
-                job_dir=_global_job_dir or args_dict.get("job_dir"),
-                node_id=_global_node_id or args_dict.get("node_id"),
-                tool_name=tool_name,
-                result=error,
-                exit_code=1,
-                stdout_tail=_json_stdout_tail(error),
-            )
-            _json_error_and_exit(error)
-
     # Resolve effective job_dir/node_id: global flags take precedence over
     # per-tool kwargs (which come from the subparser's --job-dir/--node-id).
     effective_job_dir = (
@@ -1014,6 +1033,49 @@ def main(argv: list[str] | None = None) -> None:
         else _global_job_dir or kwargs.get("job_dir")
     )
     effective_node_id = _global_node_id or kwargs.get("node_id")
+    # Use one canonical path for preflight, failure recording, and execution.
+    if effective_job_dir:
+        effective_job_dir = str(Path(effective_job_dir).resolve())
+
+    expected_node_type = info.get("node_type", tool_node_type(fn))
+    if expected_node_type and effective_job_dir and effective_node_id:
+        preflight_error = _node_type_preflight_error(
+            tool_name=tool_name,
+            job_dir=effective_job_dir,
+            node_id=effective_node_id,
+            expected_node_type=expected_node_type,
+        )
+        if preflight_error:
+            _json_error_and_exit(preflight_error)
+
+    if missing:
+        error = {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "missing_required_arguments",
+            "message": (
+                f"{tool_name} is missing required arguments: "
+                f"{', '.join(missing)}"
+            ),
+            "errors": [f"missing required argument: {m}" for m in missing],
+            "warnings": [],
+            "hints": [
+                f"Run 'mdclaw {tool_name} --help' or 'mdclaw --list-json' "
+                "to see required parameters.",
+            ],
+            "context": {"tool": tool_name, "missing": missing,
+                        "code": "missing_required_arguments"},
+            "recoverable": True,
+        }
+        _record_cli_node_failure(
+            job_dir=effective_job_dir,
+            node_id=effective_node_id,
+            tool_name=tool_name,
+            result=error,
+            exit_code=1,
+            stdout_tail=_json_stdout_tail(error),
+        )
+        _json_error_and_exit(error)
 
     if effective_node_id and not effective_job_dir:
         _json_error_and_exit({
@@ -1059,11 +1121,6 @@ def main(argv: list[str] | None = None) -> None:
             },
             "recoverable": True,
         })
-
-    # Resolve job_dir to absolute path so that external tools (packmol-memgen
-    # etc.) and all derived node/artifacts paths are always absolute.
-    if effective_job_dir:
-        effective_job_dir = str(Path(effective_job_dir).resolve())
 
     # Inject global schema-v3 context when the tool accepts it.
     sig = inspect.signature(fn)

@@ -146,7 +146,7 @@ def _resolve_build_amber_node_inputs(
     }
 
 
-@node_tool
+@node_tool(node_type="topo")
 def build_amber_system(
     pdb_file: Optional[str] = None,
     ligand_chemistry: Optional[List[Dict[str, Any]]] = None,

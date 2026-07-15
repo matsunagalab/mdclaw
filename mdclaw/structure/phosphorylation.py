@@ -601,7 +601,7 @@ def _apply_phosphorylation_to_pdb(
             "not_found": not_found, "ambiguous": ambiguous}
 
 
-@node_tool
+@node_tool(node_type="prep")
 def phosphorylate_residues(
     pdb_file: Optional[str] = None,
     sites: Optional[List[Dict[str, Any]]] = None,

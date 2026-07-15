@@ -43,6 +43,7 @@ GUARDRAIL_CODES: dict[str, str] = {
     "node_wait_timeout": "Waiting on the node timed out; check the running job or lease.",
     "node_already_claimed": "Another worker holds the claim; wait, or override only if stale.",
     "invalid_node_type": "Use one of: source, prep, solv, topo, min, eq, prod, analyze.",
+    "node_type_mismatch": "Select or create a node whose type matches the requested tool.",
     "invalid_node_status": "Use a valid node status value.",
     "update_state_no_target": "Provide status (with node_id) and/or params to update_workflow_state.",
     "update_state_status_requires_node_id": "Pass node_id together with status to update_workflow_state.",

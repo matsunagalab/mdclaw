@@ -133,6 +133,19 @@ class TestToolDiscovery:
                 continue
             assert server_name in servers_found, f"Server '{server_name}' has no tools"
 
+    def test_node_tools_declare_valid_node_types(self):
+        from mdclaw._cli import _discover_tools
+        from mdclaw.node.constants import NODE_TYPES
+
+        tools = _discover_tools()
+        for tool_name, info in tools.items():
+            if info["requires_node"]:
+                assert info["node_type"] in NODE_TYPES, (
+                    f"{tool_name} has invalid node type {info['node_type']!r}"
+                )
+            else:
+                assert info["node_type"] is None
+
 
 # ---------------------------------------------------------------------------
 # argparse Construction
@@ -579,6 +592,7 @@ class TestArgparseConstruction:
         solvate = next(tool for tool in payload["tools"]
                        if tool["name"] == "solvate_structure")
         assert solvate["requires_node"] is True
+        assert solvate["node_type"] == "solv"
         params = {param["name"]: param for param in solvate["parameters"]}
         assert params["pdb_file"]["cli_flag"] == "--pdb-file"
         assert params["water_model"]["default"] == "opc"

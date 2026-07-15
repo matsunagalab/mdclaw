@@ -33,7 +33,7 @@ from mdclaw.research.fetch import _fetch_local_structure  # noqa: E402
 from mdclaw.research.source_core import _resolve_source_bundle_file  # noqa: E402
 
 
-@node_tool
+@node_tool(node_type="source")
 def register_local_structure(
     file_path: str,
     job_dir: str,

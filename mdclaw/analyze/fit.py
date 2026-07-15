@@ -23,7 +23,7 @@ from mdclaw.analyze.inputs import _rel_to_node_root, _resolve_analyze_branches, 
 logger = setup_logger(__name__)
 
 
-@node_tool
+@node_tool(node_type="analyze")
 def fit_trajectory(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,

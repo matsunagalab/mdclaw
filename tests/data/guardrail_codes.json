@@ -157,6 +157,7 @@
   "node_missing",
   "node_mode_required",
   "node_terminal",
+  "node_type_mismatch",
   "node_wait_timeout",
   "nucleic_hydrogen_rebuild_failed",
   "nucleic_hydrogen_rebuild_unavailable",

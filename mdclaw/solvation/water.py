@@ -162,7 +162,7 @@ def _solvate_with_openmm(
     return result
 
 
-@node_tool
+@node_tool(node_type="solv")
 def solvate_structure(
     pdb_file: Optional[str] = None,
     output_dir: Optional[str] = None,

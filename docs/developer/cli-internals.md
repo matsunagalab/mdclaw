@@ -58,9 +58,11 @@ Workflow tools require both flags. The CLI injects them into tool kwargs before
 execution.
 
 Which tools require node context is declared on the tool functions themselves
-via the `@node_tool` decorator (`mdclaw/_tool_meta.py`), not a hand-maintained
-list. `_discover_tools()` reads that marker into each tool's `requires_node`
-flag (also surfaced by `--list-json`). The module-level
+via `@node_tool(node_type="...")` (`mdclaw/_tool_meta.py`), not a
+hand-maintained list. `_discover_tools()` exposes both `requires_node` and
+`node_type` through `--list-json`. Before execution, the CLI compares the
+declared type with the selected node's `node.json` and rejects a mismatch
+without changing that node. The module-level
 `_NODE_REQUIRED_TOOLS` / `_JOB_DIR_DATA_TOOLS` names in `mdclaw/_cli.py` are
 computed on access from the decorators for backward compatibility.
 
@@ -79,6 +81,8 @@ stable `code`:
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
 - `node_context_required`: a node-required workflow tool (one marked with
   `@node_tool`) ran without both `--job-dir` and `--node-id`.
+- `node_type_mismatch`: the selected node's type does not match the tool's
+  declared `node_type`.
 - `tool_renamed`: a consolidated/renamed tool name was invoked; the message and
   `context.replacement` name the current tool.
 

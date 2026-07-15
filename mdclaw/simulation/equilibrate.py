@@ -38,7 +38,7 @@ from mdclaw.simulation.restart import _close_reporter_stream, _load_state_into_s
 from mdclaw.simulation.xml_contract import _ModernSystemContractError, _deserialize_xml_system, _effective_pressure_bar, _integrator_signature, _load_xml_topology_inputs, _system_signature, _validate_xml_system_contract  # noqa: E402
 
 
-@node_tool
+@node_tool(node_type="eq")
 def run_equilibration(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,

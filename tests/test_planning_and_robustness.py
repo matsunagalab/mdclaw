@@ -242,6 +242,50 @@ class TestCliPreflightJson:
         assert payload["success"] is False
         assert payload["code"] == "node_context_required"
 
+    @pytest.mark.parametrize(
+        ("tool_name", "expected_node_type"),
+        [
+            ("concat_trajectory", "analyze"),
+            ("download_structure", "source"),
+        ],
+    )
+    def test_wrong_node_type_is_rejected_without_mutation(
+        self,
+        job_dir,
+        capsys,
+        tool_name,
+        expected_node_type,
+    ):
+        from mdclaw._cli import main
+
+        source_id = _complete(
+            job_dir,
+            "source",
+            {"source_bundle": "artifacts/source_bundle.json"},
+        )
+        created = create_node(
+            str(job_dir),
+            "prep",
+            parent_node_ids=[source_id],
+        )
+        prep_id = created["node_id"]
+
+        with pytest.raises(SystemExit) as exc:
+            main([
+                tool_name,
+                "--job-dir", str(job_dir),
+                "--node-id", prep_id,
+            ])
+
+        assert exc.value.code == 1
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["code"] == "node_type_mismatch"
+        assert payload["context"]["expected_node_type"] == expected_node_type
+        assert payload["context"]["actual_node_type"] == "prep"
+        node = read_node(str(job_dir), prep_id)
+        assert node["status"] == "pending"
+        assert not (job_dir / "nodes" / prep_id / "artifacts" / "failure").exists()
+
     def test_missing_required_args_is_json(self, capsys):
         from mdclaw._cli import main
 

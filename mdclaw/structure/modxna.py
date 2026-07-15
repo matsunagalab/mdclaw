@@ -200,7 +200,7 @@ def _terminal_modxna_targets(merged_pdb: Path, resolved_targets: list[dict]) -> 
     return terminal
 
 
-@node_tool
+@node_tool(node_type="prep")
 def prepare_modified_nucleic(
     modifications: Optional[List[Dict[str, Any]]] = None,
     modxna_dir: Optional[str] = None,

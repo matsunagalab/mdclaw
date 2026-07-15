@@ -5,6 +5,7 @@ tool, the fields a weak agent branches on:
 
 - which server owns it,
 - whether it requires node context (``--job-dir`` + ``--node-id``),
+- which node type a workflow tool executes,
 - whether ``job_dir`` is data rather than execution context,
 - the set of required parameters.
 
@@ -33,6 +34,7 @@ def _build_current_contract() -> dict:
         contract[tool["name"]] = {
             "server": tool["server"],
             "requires_node": tool["requires_node"],
+            "node_type": tool["node_type"],
             "job_dir_is_data": tool["job_dir_is_data"],
             "required_params": required,
         }

@@ -316,7 +316,7 @@ def _fetch_local_structure(
     return result
 
 
-@node_tool
+@node_tool(node_type="source")
 async def fetch_structure(
     source: str,
     pdb_id: Optional[str] = None,
@@ -479,7 +479,7 @@ async def fetch_structure(
     return result
 
 
-@node_tool
+@node_tool(node_type="source")
 async def download_structure(
     pdb_id: str,
     format: str = "cif",
@@ -501,7 +501,7 @@ async def download_structure(
     )
 
 
-@node_tool
+@node_tool(node_type="source")
 async def get_alphafold_structure(
     uniprot_id: str,
     format: str = "pdb",

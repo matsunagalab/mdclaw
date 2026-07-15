@@ -50,7 +50,7 @@ pdb2pqr_wrapper = BaseToolWrapper("pdb2pqr")
 pdb4amber_wrapper = BaseToolWrapper("pdb4amber")
 
 
-@node_tool
+@node_tool(node_type="prep")
 def create_mutated_structure(
     pdb_file: Optional[str] = None,
     mutations: Optional[List[str]] = None,

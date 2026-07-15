@@ -471,7 +471,7 @@ def _prepare_complex_initial_result(job_id: str, structure_file: Optional[str]) 
     }
 
 
-@node_tool
+@node_tool(node_type="prep")
 def prepare_complex(
     structure_file: Optional[str] = None,
     output_dir: Optional[str] = None,

@@ -23,7 +23,7 @@ from mdclaw.analyze.registry import _finalize_concat_node
 logger = setup_logger(__name__)
 
 
-@node_tool
+@node_tool(node_type="analyze")
 def concat_trajectory(
     job_dir: Optional[str] = None,
     node_id: Optional[str] = None,

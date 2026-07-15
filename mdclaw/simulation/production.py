@@ -64,7 +64,7 @@ def _safe_custom_force_signature(
         }
 
 
-@node_tool
+@node_tool(node_type="prod")
 def run_production(
     system_xml_file: Optional[str] = None,
     topology_pdb_file: Optional[str] = None,
