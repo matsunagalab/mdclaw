@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -37,6 +38,46 @@ def test_container_definition_includes_ruff_for_sif_lint_workflows():
 
     assert '"ruff>=0.1.0"' in dockerfile
     assert "python -m ruff --version" in test_script
+
+
+def test_gen_cli_contract_imports_its_checkout_before_installed_package(tmp_path):
+    checkout = tmp_path / "checkout"
+    installed = tmp_path / "installed"
+    (checkout / "scripts").mkdir(parents=True)
+    shutil.copy2(
+        REPO_ROOT / "scripts" / "gen_cli_contract.py",
+        checkout / "scripts" / "gen_cli_contract.py",
+    )
+
+    for root, origin in ((checkout, "checkout"), (installed, "installed")):
+        package = root / "mdclaw"
+        package.mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "_cli.py").write_text(
+            "def _discover_tools():\n"
+            f"    return {origin!r}\n\n"
+            "def _tool_list_json(tools):\n"
+            "    return {}\n"
+        )
+
+    script = checkout / "scripts" / "gen_cli_contract.py"
+    probe = (
+        "import runpy\n"
+        f"namespace = runpy.run_path({str(script)!r}, run_name='contract_probe')\n"
+        "print(namespace['_discover_tools']())\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(installed)
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=tmp_path,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "checkout"
 
 
 def test_tracked_skill_mirrors_have_common_and_no_broken_symlinks():
