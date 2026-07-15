@@ -26,107 +26,31 @@ def _write(path: Path, payload: dict | str) -> None:
         path.write_text(str(payload))
 
 
-def _set_path(payload: dict[str, Any], dotted: str, value: Any) -> None:
-    cursor = payload
-    parts = dotted.split(".")
-    for part in parts[:-1]:
-        child = cursor.get(part)
-        if not isinstance(child, dict):
-            child = {}
-            cursor[part] = child
-        cursor = child
-    cursor[parts[-1]] = value
-
-
-def _wrong_value(value: Any) -> Any:
-    if isinstance(value, bool):
-        return not value
-    if isinstance(value, (int, float)):
-        return value + 1
-    if isinstance(value, str):
-        return f"wrong_{value}"
-    return None
-
-
-def _common_provenance(run_id: str, task_id: str, mode: str) -> dict:
-    return {
+def _write_harness_record(sub_dir: Path, run_id: str, task_id: str) -> None:
+    _write(sub_dir.parent / "harness_execution.json", {
         "schema_version": "1.0",
         "run_id": run_id,
         "task_id": task_id,
-        "agent": {"name": "fake_submissions.py", "mode": mode},
-        "backend": {"name": "synthetic-fixture", "version": "prep-v0.1"},
-        "harness": {"name": "fake_submissions.py"},
-        "command_log": [
+        "recorded_by": "fake_submissions.py",
+        "records": [
             {
-                "stage": "source",
-                "command": f"synthetic fixture source retrieval for {task_id}",
-                "exit_code": 0,
-                "walltime_seconds": 0.1,
-            },
-            {
-                "stage": "prep",
-                "command": f"synthetic fixture preparation for {task_id}",
-                "exit_code": 0,
-                "walltime_seconds": 0.1,
-            },
-            {
-                "stage": "topo",
-                "command": f"synthetic fixture topology build for {task_id}",
-                "exit_code": 0,
-                "walltime_seconds": 0.1,
-            },
-            {
+                "run_id": run_id,
+                "task_id": task_id,
                 "stage": "min",
                 "command": f"synthetic fixture minimization for {task_id}",
                 "exit_code": 0,
                 "walltime_seconds": 0.1,
-            },
+            }
         ],
-        "scripts": [],
-        "raw_outputs": [],
-    }
-
-
-def _raw_output_hashes(sub_dir: Path, outputs: dict[str, Any]) -> list[dict[str, str]]:
-    import hashlib
-
-    rels: set[str] = {"manifest.json"}
-    for key, value in outputs.items():
-        if key == "provenance" or value == "provenance.json":
-            continue
-        if isinstance(value, str):
-            rels.add(value)
-        elif isinstance(value, list):
-            rels.update(item for item in value if isinstance(item, str))
-    entries: list[dict[str, str]] = []
-    for rel in sorted(rels):
-        path = sub_dir / rel
-        if not path.is_file():
-            continue
-        h = hashlib.new("md5")
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1 << 16), b""):
-                h.update(chunk)
-        entries.append({"path": rel, "md5": h.hexdigest()})
-    return entries
-
-
-def _write_harness_record(sub_dir: Path, provenance: dict[str, Any]) -> None:
-    command_log = provenance.get("command_log") or []
-    _write(sub_dir.parent / "harness_execution.json", {
-        "schema_version": "1.0",
-        "run_id": provenance.get("run_id"),
-        "task_id": provenance.get("task_id"),
-        "recorded_by": "fake_submissions.py",
-        "records": command_log,
     })
 
 
 def _pdb_line(serial: int, atom: str, resname: str, chain: str, resseq: int,
               record: str = "ATOM") -> str:
     element = "".join(ch for ch in atom if ch.isalpha())[:1] or "C"
+    residue_field = f"{resname:>3} " if len(resname) <= 3 else f"{resname:>4}"
     return (
-        f"{record:<6}{serial:5d} {atom:<4} {resname:>4} {chain:1}{resseq:4d}    "
+        f"{record:<6}{serial:5d} {atom:<4} {residue_field}{chain:1}{resseq:4d}    "
         f"{float(serial):8.3f}{0.0:8.3f}{0.0:8.3f}  1.00  0.00           {element:>2}\n"
     )
 
@@ -277,130 +201,26 @@ def _topology_component_residues(
             if normalized in ion_residue_names or normalized in nucleic_residue_names:
                 continue
             residues.append((str(resname), n_atoms, int(count)))
-    return residues
-
-
-def _apply_check_to_metrics(metrics: dict[str, Any], check: dict[str, Any],
-                            mode: str) -> None:
-    check_type = check.get("check_type")
-    if check_type == "json_equals" and check.get("json_path"):
-        value = check.get("equals")
-        _set_path(metrics, check["json_path"],
-                  value if mode == "honest" else _wrong_value(value))
-    elif check_type == "json_allowed_values" and check.get("json_path"):
-        values = check.get("allowed_values") or []
-        value = values[0] if mode == "honest" and values else "__wrong_value__"
-        _set_path(metrics, check["json_path"], value)
-    elif check_type == "json_min_length" and check.get("json_path"):
-        minimum = int(check.get("min_length") or 1)
-        value = list(range(minimum)) if mode == "honest" else []
-        _set_path(metrics, check["json_path"], value)
-    elif check_type == "json_min" and check.get("json_path"):
-        minimum = float(check.get("min_value") or 0.0)
-        value = minimum if mode == "honest" else minimum - 1.0
-        _set_path(metrics, check["json_path"], value)
-    elif check_type == "rmsd_recompute" and check.get("json_path"):
-        _set_path(metrics, check["json_path"], 0.0 if mode == "honest" else 9.9)
-    elif check_type == "assembly_identity_check":
-        assembly_id = check.get("required_assembly_id")
-        assembly_path = check.get("assembly_id_json_path")
-        if assembly_path:
-            _set_path(metrics, assembly_path,
-                      assembly_id if mode == "honest" else _wrong_value(assembly_id))
-        mapping_path = check.get("chain_identity_json_path")
-        if mapping_path:
-            count = int(check.get("min_mapping_entries") or 1)
-            operator_ids = check.get("required_operator_ids") or []
-            chain_ids = ["A", "B", "C", "D", "E", "F", "G", "H"]
-            mapping = []
-            if mode == "honest":
-                for index in range(count):
-                    operator_id = (
-                        str(operator_ids[index])
-                        if index < len(operator_ids)
-                        else str(index + 1)
-                    )
-                    mapping.append({
-                        "source_pdb_id": "1STP",
-                        "assembly_id": assembly_id,
-                        "source_auth_asym_id": "A",
-                        "source_label_asym_id": "A",
-                        "operator_id": operator_id,
-                        "output_chain_id": chain_ids[index % len(chain_ids)],
-                        "naming_policy": "short",
-                    })
-            _set_path(metrics, mapping_path, mapping)
-
-
-def _source_selection_for_task(task: dict[str, Any], mode: str) -> dict[str, Any] | None:
     for check in task["scoring"]["deterministic_checks"]:
-        if check.get("check_type") != "candidate_selection_check":
+        if (
+            check.get("check_type") != "solvent_regime_rescan"
+            or str(check.get("required_solvent_regime") or "").lower()
+            != "membrane"
+        ):
             continue
-        expected_rank = int(check.get("required_model_rank") or 1)
-        candidate_id = str(
-            check.get("required_candidate_id") or f"candidate_{expected_rank:03d}"
+        lipid_names = [str(name) for name in (check.get("lipid_residue_names") or [])]
+        if not lipid_names:
+            lipid_names = ["POPC"]
+        normalized_names = {name.upper() for name in lipid_names}
+        existing = sum(
+            count
+            for resname, _n_atoms, count in residues
+            if resname.upper() in normalized_names
         )
-        if mode != "honest":
-            candidate_id = "candidate_001" if candidate_id != "candidate_001" else "candidate_002"
-            expected_rank = 1 if expected_rank != 1 else 2
-        return {
-            "schema_version": 1,
-            "source_bundle": "source/source_bundle.json",
-            "selection": {
-                "structure_id": candidate_id,
-                "reason": (
-                    f"Selected model rank {expected_rank} from the public prompt."
-                ),
-            },
-            "selected_structure": {
-                "structure_id": candidate_id,
-                "candidate_id": candidate_id,
-                "rank": expected_rank,
-                "path": f"artifacts/candidates/{candidate_id}.pdb",
-                "origin": {
-                    "kind": "pdb",
-                    "model_index": expected_rank - 1,
-                    "model_rank": expected_rank,
-                    "model_id": str(expected_rank),
-                },
-            },
-        }
-    return None
-
-
-def _provenance_text_for_checks(task: dict[str, Any], mode: str) -> str:
-    if mode != "honest":
-        return "Synthetic wrong fixture intentionally omits required provenance text."
-    chunks: list[str] = []
-    for check in task["scoring"]["deterministic_checks"]:
-        if check.get("check_type") != "artifact_provenance_text":
-            continue
-        for group in check.get("required_text_groups") or []:
-            if group:
-                chunks.append(str(group[0]))
-    return " ".join(chunks)
-
-
-def _set_standard_topology_minimization_metrics(metrics: dict[str, Any],
-                                                mode: str) -> None:
-    honest = mode == "honest"
-    metrics["topology"] = {
-        "backend": "openmm",
-        "build_success": honest,
-        "forcefield": "synthetic-fixture",
-        "water_model": "none",
-        "solvent_model": "vacuum",
-    }
-    metrics["minimization"] = {
-        "attempted": True,
-        "completed": honest,
-        "energy_initial_kj_mol": 0.0 if honest else float("nan"),
-        "energy_final_kj_mol": 0.0 if honest else float("nan"),
-        "energy_is_finite": honest,
-        "positions_are_finite": honest,
-        "atom_count_preserved": honest,
-        "backend": "openmm",
-    }
+        missing = max(0, int(check.get("min_lipid_residues") or 1) - existing)
+        if missing:
+            residues.append((lipid_names[0], 1, missing))
+    return residues
 
 
 def _bundle_recompute_requirements(task: dict[str, Any] | None) -> dict[str, Any]:
@@ -812,8 +632,11 @@ def _prepared_structure(
                 else ["DA", "DC", "DG", "DT"]
             )
             chain_ids = ["A", "B", "C", "D", "E", "F"]
+            residue_count = int(check.get("min_nucleic_residue_count") or 4)
+            per_chain = max(1, (residue_count + chain_count - 1) // chain_count)
             for chain_i in range(chain_count):
-                for resname in residue_names:
+                for residue_i in range(per_chain):
+                    resname = residue_names[residue_i % len(residue_names)]
                     serial = _add_residue(
                         lines, serial, resname, chain_ids[chain_i], residue_index,
                         ["P", "C1", "N1"],
@@ -839,116 +662,13 @@ def _parent_prepared_structure(task: dict[str, Any], mode: str) -> str:
 def make_prep_submission(sub_dir: Path, run_id: str, mode: str, task_id: str) -> None:
     task_dir = DATASET_DIR / "tasks" / task_id
     task = json.loads((task_dir / "task.json").read_text())
-    metrics: dict[str, Any] = {"schema_version": "1.0", "task_id": task_id}
-    for check in task["scoring"]["deterministic_checks"]:
-        _apply_check_to_metrics(metrics, check, mode)
-    _set_standard_topology_minimization_metrics(metrics, mode)
-
     prepared_structure = _prepared_structure(task_dir, task, mode)
-    topology_outputs = _write_openmm_fixture_bundle(sub_dir, mode, task)
-    minimized_structure = (
-        (sub_dir / "topology" / "topology.pdb").read_text()
-        if mode == "honest"
-        else "END\n"
-    )
-    source_selection = _source_selection_for_task(task, mode)
-
-    status = "completed"
-    outputs = {
-        "metrics": "metrics.json",
-        "provenance": "provenance.json",
-        "evidence_report": "evidence_report.json",
-        "prepared_structure": "prepared_structure.pdb",
-        "topology": topology_outputs,
-        "minimized_structure": "minimized_structure.pdb",
-        "minimization_report": "minimization_report.json",
-    }
-    if source_selection is not None:
-        outputs["source_selection"] = "source_selection.json"
-    if "wt_prepared_structure.pdb" in (task.get("required_outputs") or []):
-        outputs["parent_prepared_structure"] = "wt_prepared_structure.pdb"
-
-    _write(sub_dir / "manifest.json", {
-        "schema_version": "1.0",
-        "run_id": run_id,
-        "task_id": task_id,
-        "status": status,
-        "outputs": outputs,
-        "limitations": ["synthetic CI fixture; no real MD preparation was run"],
-    })
-    _write(sub_dir / "metrics.json", metrics)
-    _write(sub_dir / "minimization_report.json", {
-        "schema_version": "1.0",
-        "task_id": task_id,
-        "backend": "openmm",
-        "minimization": metrics["minimization"],
-    })
-    provenance = _common_provenance(run_id, task_id, mode)
-    provenance["artifact_provenance_text_evidence"] = _provenance_text_for_checks(
-        task, mode,
-    )
-    if source_selection is not None:
-        provenance["source_selection"] = source_selection
-    _write(sub_dir / "evidence_report.json", {
-        "schema_version": "1.0",
-        "task_id": task_id,
-        "summary": (
-            "Synthetic honest prep fixture that satisfies task checks."
-            if mode == "honest"
-            else "Synthetic wrong prep fixture that intentionally violates task checks."
-        ),
-        "evidence": {
-            "public_sources": [ref.get("source") for ref in task.get("references", [])],
-            "preparation_decisions": [
-                "fixture-generated artifacts for scorer tests",
-                _provenance_text_for_checks(task, mode),
-            ],
-        },
-        "limitations": [
-            "This is a benchmark framework fixture, not a scientific result.",
-            "No real structure retrieval, topology build, or MD run was performed.",
-        ],
-    })
+    _write_openmm_fixture_bundle(sub_dir, mode, task)
     _write(sub_dir / "prepared_structure.pdb", prepared_structure)
-    _write(sub_dir / "minimized_structure.pdb", minimized_structure)
-    if source_selection is not None:
-        _write(sub_dir / "source_selection.json", source_selection)
     if "wt_prepared_structure.pdb" in (task.get("required_outputs") or []):
         _write(sub_dir / "wt_prepared_structure.pdb",
                _parent_prepared_structure(task, mode))
-    if "component_disposition.json" in (task.get("required_outputs") or []):
-        excluded_count = int(
-            metrics.get("preparation", {}).get("experimental_isotope_atoms_excluded", 0) or 0
-        )
-        disposition = {
-            "schema_version": "mdclaw.component_disposition.v1",
-            "summary": {
-                "experimental_isotope_atoms_excluded": excluded_count,
-                "excluded_atom_count": excluded_count,
-                "excluded_component_count": 1 if excluded_count else 0,
-            },
-            "entries": [
-                {
-                    "component_id": "experimental_isotope_deuterium",
-                    "classification": "experimental_isotope",
-                    "default_action": "exclude",
-                    "action_taken": "excluded",
-                    "atom_count": excluded_count,
-                    "reason": "synthetic fixture",
-                }
-            ] if excluded_count else [],
-        }
-        _write(sub_dir / "component_disposition.json", disposition)
-        _write(sub_dir / "excluded_components.json", {
-            **disposition,
-            "entries": [
-                entry for entry in disposition["entries"]
-                if entry.get("action_taken") == "excluded"
-            ],
-        })
-    provenance["raw_outputs"] = _raw_output_hashes(sub_dir, outputs)
-    _write(sub_dir / "provenance.json", provenance)
-    _write_harness_record(sub_dir, provenance)
+    _write_harness_record(sub_dir, run_id, task_id)
 
 
 def _load_task_ids() -> list[str]:

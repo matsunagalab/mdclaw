@@ -16,8 +16,9 @@ Every skill uses the same three tiers:
 1. **`common/` shared contract** — invocation rules, the DAG run loop, defaults,
    tool-output rules, guardrail codes, visual QA. One responsibility per file.
 2. **`<skill>/SKILL.md` spine** — the short, always-read entry point: front
-   matter, one-line pointers to required reading, `Step 0` confirmation, a
-   numbered happy-path workflow (titles + links, not full detail), and handoff.
+   matter that exposes the pre-command gate, a self-contained normal-path gate,
+   `Step 0` confirmation, a numbered happy-path workflow, conditional links,
+   and handoff.
 3. **`<skill>/*.md` leaf pages** — conditional and edge-case detail routed by an
    `[if:...]` tagged router (see `setup.md` style).
 
@@ -27,8 +28,9 @@ Every skill uses the same three tiers:
   Everywhere else is at most one sentence plus a link. Do not paste the same
   paragraph into both `SKILL.md` and a leaf page.
 - **Make the first action obvious.** Put the supported execution surface and a
-  short, ordered startup read sequence near the top of `SKILL.md`; do not begin
-  with a long unordered list of required pages.
+  self-contained pre-command gate near the top of `SKILL.md`, and mention that
+  gate in the frontmatter description. Correctness must not depend on reading
+  linked pages in a fixed order.
 - **Link, do not inline, the preamble.** Never copy `common/preamble.md`
   content (language, Bash/`mdclaw`, no GNU `timeout`, JSON-on-stdout) into a
   `SKILL.md`. Point to it.
@@ -44,9 +46,16 @@ Every skill uses the same three tiers:
   `inspect_molecules` (call it `Step 0b`). Use the heading `## Step 0: Parse and
   Confirm` in every skill that confirms inputs.
 - **Route with `[if:...]` tags.** Skills with leaf pages use a router page
-  (`setup.md`-style) listing `[required:always]`, `[required:hitl]`, and
-  `[if:<condition>]` entries. Provide an ordered read sequence for the default
-  path.
+  (`setup.md`-style) for conditional detail. Put always-required correctness
+  rules in the `SKILL.md` pre-command gate instead of requiring a baseline set
+  of pages or an ordered read sequence.
+- **Show the executable node sequence.** Runnable workflow examples use
+  `create_node` -> `explain_node` -> stage tool. Require `inspect_job` after
+  bootstrap, on re-entry, before shared-job work, and for ambiguous parents;
+  do not require it before every node in a fresh unambiguous serial run.
+- **Keep CLI discovery targeted.** The spine names normal-path tools. Direct
+  agents to `mdclaw --list-json <tool>` for one signature and prohibit bare
+  global-list scans or truncated help output during an active workflow.
 - **Prose walls become tables.** Guardrail/failure codes, restraint options,
   and mode-by-flag command variants are tables, not bullet lists or repeated
   example blocks.

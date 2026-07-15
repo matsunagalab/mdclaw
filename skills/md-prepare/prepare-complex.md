@@ -7,6 +7,7 @@ Create a `prep` node after `source` and run `prepare_complex`. The
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep
+mdclaw explain_node --job-dir <job_dir> --node-id <prep_node_id>
 mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
   --solvent-type explicit \
   --select-chains A \
@@ -16,12 +17,8 @@ mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
 In node mode, `structure_file` resolves from the source ancestor's normalized
 candidate files. Do not pass `--source-node-id`; the prep node's parent edge is
 the source selection. If `source_bundle.json` lists more than one candidate,
-pass an explicit selector:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --source-candidate-id <candidate_id>
-```
+add `--source-candidate-id <candidate_id>` to the validated
+`prepare_complex` command.
 
 For NMR-style model numbering, `--source-model-index 2` selects the second
 model-derived candidate.
@@ -38,14 +35,9 @@ explicit ions may be retained.
 
 For chain-associated ligands, use `inspect_molecules.associated_ligand_candidates`.
 If the task names a target residue/cofactor such as `NDP`, `ATP`, or `AP5`,
-prefer residue-name scoped selection:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --select-chains A B \
-  --include-types protein ligand \
-  --include-ligand-resnames NDP
-```
+prefer residue-name scoped selection by adding `--select-chains A B
+--include-types protein ligand --include-ligand-resnames NDP` to the validated
+run command.
 
 This selects matching associated ligands even when their ligand label chain IDs
 differ from the selected protein chain IDs. If the exact instance matters, use
@@ -61,14 +53,8 @@ by the default `--include-types` and then fail here or at topology with
 (`skills/md-prepare/inspection-and-chains.md`); the safe default is to omit
 `ligand` and keep only `protein`/`nucleic`/`glycan`/`ion`.
 
-Ligand-free systems:
-
-```bash
-mdclaw --job-dir <job_dir> --node-id <prep_node_id> prepare_complex \
-  --select-chains A \
-  --include-types protein nucleic glycan \
-  --no-process-ligands
-```
+For a ligand-free system, use `--select-chains A --include-types protein
+nucleic glycan --no-process-ligands` in the validated run command.
 
 Do not express "no ligands" as `--include-ligand-ids []` or as a bare
 `--include-ligand-ids` flag. Omit the flag entirely unless one or more ligand

@@ -6,15 +6,21 @@ Common sources:
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type source
+mdclaw explain_node --job-dir <job_dir> --node-id <source_node_id>
 mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE
-mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source pdb --pdb-id 1AKE --assembly-ids 1
-mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source alphafold --uniprot-id P12345
-mdclaw --job-dir <job_dir> --node-id <source_node_id> fetch_structure --source local --file-path /abs/input.pdb
-mdclaw --job-dir <job_dir> --node-id <source_node_id> modeller_from_alignment --template-pdb /abs/template.pdb --target-sequence MVLSPADK...
 ```
+
+That example fetches a deposited PDB entry. Change only the final run command
+for another source: add `--assembly-ids 1` for a named assembly; use
+`fetch_structure --source alphafold --uniprot-id P12345` for AlphaFold;
+`fetch_structure --source local --file-path /abs/input.pdb` for a local file;
+or `modeller_from_alignment --template-pdb /abs/template.pdb
+--target-sequence MVLSPADK...` for comparative modelling.
 
 Rules:
 
+- Run exactly one source tool after `explain_node` reports
+  `ready_to_run=true`.
 - Use the exact `node_id` returned by `create_node`; do not leave `--node-id`
   empty and do not create a second `source` node for the same job.
 - Copy the target identifier exactly from the user's request.

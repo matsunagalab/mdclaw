@@ -26,7 +26,7 @@ mdclaw init_benchmark_run \
   --backend-name mdcrow-openmm \
   --model-name <llm-used-by-mdcrow> \
   --tooling-condition mdclaw-free \
-  --task-ids P01_prep_apo_t4_lysozyme
+  --task-ids P01_prep_simple_monomer_t4l
 ```
 
 This writes `run_config.json` and `attestation.json` with
@@ -89,44 +89,36 @@ MDClaw-free toolchain:
 ```bash
 python benchmarks/tools/package_submission.py \
   --submission-dir .../submission \
-  --task-id P01_prep_apo_t4_lysozyme \
+  --task-id P01_prep_simple_monomer_t4l \
   --system-xml system.xml \
   --topology-pdb topology.pdb \
   --state-xml state.xml \
-  --run-id 20260613_mdcrow_prep \
-  --command-log mdcrow_command_log.json \
-  --evidence-report evidence_report.json
+  --prepared-structure prepared_structure.pdb
 ```
 
-When MDClaw is installed, `mdclaw package_openmm_submission` is a compatibility
-wrapper around the same optional helper:
+When MDClaw is installed, `mdclaw package_openmm_submission` provides the same
+raw-only copy operation:
 
 ```bash
 mdclaw package_openmm_submission \
-  --submission-dir benchmark_runs/20260613_mdcrow_prep/tasks/P01_prep_apo_t4_lysozyme/submission \
-  --task-id P01_prep_apo_t4_lysozyme \
+  --submission-dir benchmark_runs/20260613_mdcrow_prep/tasks/P01_prep_simple_monomer_t4l/submission \
+  --task-id P01_prep_simple_monomer_t4l \
   --system-xml-file system.xml \
   --topology-pdb-file topology.pdb \
   --state-xml-file state.xml \
-  --run-id 20260613_mdcrow_prep \
-  --force-field <ff-mdcrow-used-or-omit> \
-  --water-model <water-model-or-omit> \
-  --command-log-file mdcrow_command_log.json \
-  --evidence-report-file evidence_report.json
+  --prepared-structure-file prepared_structure.pdb
 ```
 
-Both packagers are convenience tools. Neither packager invents force field,
-water model, chains, ions, or mutations: anything the agent did not declare is
-recorded as `"unspecified"` and recomputed from the artifact at scoring time.
+Both packagers are convenience tools. They copy raw files and do not invent or
+write force-field declarations, metrics, hashes, reports, or timing records.
 
 Do not hand-edit evaluator-generated `manifest.json`, `metrics.json`, or
 `provenance.json`. If raw artifacts are wrong, fix the raw artifacts and rescore
 so the evaluator can regenerate derived metadata.
 
-Provide the agent's real execution steps via `--command-log` for the standalone
-packager or `--command-log-file` for the MDClaw wrapper (a JSON list, or an
-object with a `command_log` list). Without it, the scorer's execution-evidence
-check will flag the submission — the packager will not fabricate steps.
+Use the runner-provided stage wrapper for substantive commands. The harness
+records measured execution outside `submission/`; neither packager accepts a
+solver command log or walltime estimate.
 
 ## 5. Score with the same neutral scorer
 
@@ -143,9 +135,6 @@ comparable to an MDClaw reference run and to the MDClaw-free baseline floor
 
 ## Artifact-as-truth contract
 
-Writing correct `metrics.json` over a wrong topology gains nothing: the scorer
-deserializes the submitted OpenMM bundle and recomputes force-field
-application, net charge, the water-model fingerprint, and ion molarity from the
-artifact itself. Declared `metrics.json` values are cross-checked against the
-recomputed values and a mismatch is recorded as an integrity warning. Build the
-right system; the paperwork is secondary.
+MDPrepBench agents submit no metrics declaration. The evaluator deserializes
+the raw OpenMM bundle and recomputes force-field application, net charge, the
+water-model fingerprint, and ion molarity from the artifacts themselves.

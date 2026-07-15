@@ -41,7 +41,7 @@ exclude ion residues during preparation.
 
 ---
 
-## Step 4: Skip Solvation And Explicit Ions
+## Skip Solvation And Explicit Ions
 
 No solvation step is needed for implicit solvent. Proceed directly to topology.
 Before topology, verify the prep `merged_pdb` contains no explicit ion residues
@@ -51,10 +51,11 @@ an implicit topology.
 
 ---
 
-## Step 5: Build Topology (no box, no water)
+## Build Topology (no box, no water)
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type topo
+mdclaw explain_node --job-dir <job_dir> --node-id <topo_node_id>
 mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
   --forcefield ff14SB \
   --implicit-solvent GBn2 \

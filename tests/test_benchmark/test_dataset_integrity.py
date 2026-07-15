@@ -124,8 +124,29 @@ def test_public_agent_prompts_exist_and_define_access_boundary():
         assert "truth/" in prompt
         assert "scorer/" in prompt
         assert "input/" not in prompt
-        for rel_path in task.required_outputs:
-            assert rel_path in prompt, f"{task_id} prompt omits output {rel_path}"
+        evaluator_outputs = {
+            "manifest.json",
+            "metrics.json",
+            "provenance.json",
+            "minimized_structure.pdb",
+            "minimization_report.json",
+        }
+        raw_outputs = {
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+            "prepared_structure.pdb",
+        } | {
+            rel for rel in task.required_outputs if rel not in evaluator_outputs
+        }
+        for rel_path in raw_outputs:
+            assert f"- `{rel_path}`" in prompt, (
+                f"{task_id} prompt omits raw output {rel_path}"
+            )
+        for rel_path in evaluator_outputs:
+            assert f"- `{rel_path}`" not in prompt, (
+                f"{task_id} prompt requests evaluator output {rel_path}"
+            )
         assert "topology" in prompt.lower()
         assert "minimization" in prompt.lower()
 
@@ -139,9 +160,8 @@ def test_prep_tasks_require_topology_and_minimization_contract():
         "forcefield_applied_rescan",
         "minimization_report_check",
     }
-    # Slim contract: evidence_report.json is no longer a required core artifact,
-    # so the evidence-report byte-floor / template-marker integrity checks are
-    # gone. The structural integrity floor + execution-evidence checks stay.
+    # v0.3 accepts raw physical artifacts only. Evaluator-normalized structural
+    # floors and harness-owned execution checks remain part of scoring.
     required_integrity_check_types = {
         "status_artifact_floor",
         "provenance_execution_evidence",
@@ -185,11 +205,6 @@ def test_ground_truth_references_exist_but_truth_payload_is_not_embedded():
 def test_p03_ligand_pose_truth_is_real_181l_protein_ligand_reference():
     task_dir = DATASET_DIR / "tasks" / "P03_prep_ligand_pose_t4l_benzene"
     truth_path = task_dir / "truth" / "ligand_reference.pdb"
-    private_reference = (
-        DATASET_DIR / "private_references" / "P03_181L_protein_bnz_reference.pdb"
-    )
-
-    assert truth_path.read_text() == private_reference.read_text()
 
     lines = truth_path.read_text().splitlines()
     protein_atoms = [line for line in lines if line.startswith("ATOM  ")]
@@ -466,8 +481,8 @@ def test_nmr_prep_tasks_pin_public_model_selection_in_prompt_and_contract():
     assert "PDB 2LOP NMR ensemble" in p18_prompt
     assert "submitted coordinates" in p18_prompt
     assert "no self-reported source-selection evidence is required" in p18_prompt
-    assert "still-running" in p18_prompt
-    assert "completed raw artifacts" in p18_prompt
+    assert "Write only these raw artifacts" in p18_prompt
+    assert "harness owns the final record and measures walltime" in p18_prompt
 
     p19_dir = DATASET_DIR / "tasks" / "P19_prep_nmr_model_selection"
     p19_prompt = (p19_dir / "prompt.md").read_text()

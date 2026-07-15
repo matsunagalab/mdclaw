@@ -1,6 +1,5 @@
 {
   "capability_tags_extra": [
-    "forcefield_selection",
     "water_model"
   ],
   "public_source": "PDB 2LZM",
@@ -50,5 +49,5 @@
     ]
   },
   "task_id": "P22_prep_forcefield_water_fidelity",
-  "task_intent": "Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults."
+  "task_intent": "OPC water-model fidelity: build an explicit-solvent system with the requested 4-site OPC water model rather than silently falling back to a different water model."
 }

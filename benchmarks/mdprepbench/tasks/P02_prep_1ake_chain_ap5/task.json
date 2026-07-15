@@ -55,6 +55,15 @@
         "weight": 0.5
       },
       {
+        "check_id": "single_prepared_polymer_chain",
+        "check_type": "assembly_identity_check",
+        "count_polymer_chains_only": true,
+        "exact_chain_count": 1,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "topology_artifact_bundle_present",
         "check_type": "topology_artifact_bundle",
         "min_topology_artifact_count": 1,
@@ -126,6 +135,15 @@
         "weight": 0.5
       },
       {
+        "check_id": "single_minimized_polymer_chain",
+        "check_type": "assembly_identity_check",
+        "count_polymer_chains_only": true,
+        "exact_chain_count": 1,
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "check_id": "minimized_ap5_retained",
         "check_type": "minimized_structure_component_rescan",
         "min_residue_counts": {
@@ -152,7 +170,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -165,15 +186,8 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P02_prep_1ake_chain_ap5",
   "task_intent": "Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain.",
   "time_limit_minutes": 60

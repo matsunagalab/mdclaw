@@ -129,7 +129,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -142,15 +145,8 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P29_prep_protein_protein_interface_1emv",
   "task_intent": "Protein-protein complex preparation: prepare the colicin E9 DNase domain in complex with its Im9 immunity protein from PDB 1EMV, keeping both binding partners as two distinct protein chains rather than dropping one partner or merging them. Exclude crystallographic buffer components and neutralize the system.",
   "time_limit_minutes": 60

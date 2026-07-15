@@ -36,10 +36,14 @@ evaluator workspace layout, see `docs/benchmark/evaluation-workflow.md`.
    directory). Injecting chains, ligands, ions, mutations, force-field choices,
    water models, membrane geometry, or model indices that are not stated in the
    public prompt is forbidden and breaks comparability.
-6. **Runtime evidence is measured by the harness.** Solver-written
-   `provenance.command_log` is an audit trail, not a trusted timing source.
-   Strict scoring requires a harness-owned `harness_execution.json` outside
-   `submission/` with stage, command/action, exit status, and walltime.
+6. **Runtime evidence is measured by the harness.** MDPrepBench v0.3 does not
+   accept solver-written command logs or walltime estimates. Strict scoring uses
+   a harness-owned `harness_execution.json` outside `submission/` with stage,
+   command/action, exit status, and walltime.
+   This audits a runner-recorded measured command labeled `min` while
+   independent checks load the raw state and verify finite energy/coordinates
+   and geometry. For an external wrapper the solver chooses the stage label, so
+   neither that label nor raw state alone proves a historical minimization run.
 7. **No MDPrepBench-specific skills.** Benchmark robustness must come from the
    public contract, the tool-neutral preflight, and harness diagnostics, not
    from a hidden or MDClaw-only skill that teaches agents how to solve this
@@ -57,8 +61,8 @@ private truth, task-specific scorer files, or MDClaw DAG state.
 The per-task `submission_contract.json` also contains a
 `submission_lifecycle` block: work in scratch space, copy completed raw
 artifacts into the exact `submission_dir`, run public preflight, and exit only
-after preflight passes or after declaring an explicit incomplete/failed
-submission. Leaving topology/minimization work running after agent exit is a
+after preflight passes. The harness records incomplete or failed handoffs.
+Leaving topology/minimization work running after agent exit is a
 harness/contract failure, not a successful handoff.
 
 `summary.json` keeps artifact scoring separate from harness control-plane
@@ -78,7 +82,7 @@ complete, auditable handoff.
 | Adding `--select-model 5` or `--salt 0.15` not in the public prompt | Forbidden |
 | Hand-editing artifacts to pass a check without doing the work | Forbidden |
 | Giving the solver `truth/`, `scorer/`, or canonical `task.json` | Forbidden |
-| Writing `provenance.json` after the fact without a harness execution record | Forbidden |
+| Writing MDPrepBench metadata or timing logs in `submission/` | Forbidden |
 | Creating an MDPrepBench-only skill or task-specific recipe for one solver | Forbidden |
 
 ## Comparison conditions (`tooling_condition`)
@@ -117,7 +121,7 @@ gets a machine-readable `attestation.json`:
 {
   "schema_version": "1.0",
   "run_id": "20260613_mdclaw_ref",
-  "benchmark_version": "mdprepbench-0.1",
+  "benchmark_version": "MDPrepBench-v0.3",
   "scorer": "mdclaw",
   "scorer_version": "<mdclaw version>",
   "public_package_sha256": "<sha256 of the exported public_tasks/ tree>",

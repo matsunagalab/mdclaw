@@ -13,14 +13,20 @@
   "analyze_contact_frequency": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
   "analyze_distance": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
@@ -36,21 +42,30 @@
   "analyze_q_value": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
   "analyze_rmsd": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
   "analyze_rmsf": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
@@ -85,14 +100,20 @@
   "build_amber_system": {
     "job_dir_is_data": false,
     "node_type": "topo",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "amber"
   },
   "build_openmm_system": {
     "job_dir_is_data": false,
     "node_type": "topo",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "openmm_system"
   },
@@ -172,7 +193,10 @@
   "concat_trajectory": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
@@ -186,7 +210,10 @@
   "create_mutated_structure": {
     "job_dir_is_data": false,
     "node_type": "prep",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "structure"
   },
@@ -220,6 +247,8 @@
     "job_dir_is_data": false,
     "node_type": "source",
     "required_params": [
+      "job_dir",
+      "node_id",
       "pdb_id"
     ],
     "requires_node": true,
@@ -228,7 +257,10 @@
   "embed_in_membrane": {
     "job_dir_is_data": false,
     "node_type": "solv",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "solvation"
   },
@@ -291,6 +323,8 @@
     "job_dir_is_data": false,
     "node_type": "source",
     "required_params": [
+      "job_dir",
+      "node_id",
       "source"
     ],
     "requires_node": true,
@@ -299,7 +333,10 @@
   "fit_trajectory": {
     "job_dir_is_data": false,
     "node_type": "analyze",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "analyze"
   },
@@ -352,6 +389,8 @@
     "job_dir_is_data": false,
     "node_type": "source",
     "required_params": [
+      "job_dir",
+      "node_id",
       "uniprot_id"
     ],
     "requires_node": true,
@@ -531,6 +570,7 @@
     "job_dir_is_data": false,
     "node_type": null,
     "required_params": [
+      "prepared_structure_file",
       "state_xml_file",
       "submission_dir",
       "system_xml_file",
@@ -543,7 +583,10 @@
   "phosphorylate_residues": {
     "job_dir_is_data": false,
     "node_type": "prep",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "structure"
   },
@@ -557,14 +600,20 @@
   "prepare_complex": {
     "job_dir_is_data": false,
     "node_type": "prep",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "structure"
   },
   "prepare_modified_nucleic": {
     "job_dir_is_data": false,
     "node_type": "prep",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "structure"
   },
@@ -688,7 +737,10 @@
   "run_equilibration": {
     "job_dir_is_data": false,
     "node_type": "eq",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "md_simulation"
   },
@@ -706,14 +758,20 @@
   "run_minimization": {
     "job_dir_is_data": false,
     "node_type": "min",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "md_simulation"
   },
   "run_production": {
     "job_dir_is_data": false,
     "node_type": "prod",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "md_simulation"
   },
@@ -787,7 +845,10 @@
   "solvate_structure": {
     "job_dir_is_data": false,
     "node_type": "solv",
-    "required_params": [],
+    "required_params": [
+      "job_dir",
+      "node_id"
+    ],
     "requires_node": true,
     "server": "solvation"
   },

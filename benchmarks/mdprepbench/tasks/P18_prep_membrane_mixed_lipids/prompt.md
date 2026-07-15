@@ -1,4 +1,4 @@
-# P18_prep_membrane_mixed_lipids: Membrane embedding and lipid composition
+# P18_prep_membrane_mixed_lipids: MD system preparation
 
 You are evaluating an MD agent on `P18_prep_membrane_mixed_lipids`.
 
@@ -6,25 +6,15 @@ Use this prompt as the task statement. Retrieve public sources as needed, and do
 
 Task: Membrane embedding and lipid composition: prepare model 1 of TMEM14A from the PDB 2LOP NMR ensemble in a mixed POPC/POPE/CHL1 membrane. Use a packmol-memgen-style nominal composition request of `--lipids POPC:POPE:CHL1 --ratio 2:1:1` or an equivalent membrane-builder setting, but allow the realized integer lipid counts to follow the builder's box-size, area-per-lipid, and rounding behavior. The scorer verifies model selection from the submitted coordinates against a fixed model-1 reference, so no self-reported source-selection evidence is required.
 
-Membrane construction can legitimately take tens of minutes or longer. Do not
-submit a result that depends on background or still-running preparation,
-membrane embedding, topology, or minimization work; wait until those steps have
-completed or failed and submit only completed raw artifacts.
-
 Public source anchors: PDB 2LOP.
 
-Your submission directory must contain:
+Prepare the requested system and energy-minimize it. Write only these raw artifacts to the exact submission directory:
 
-- `manifest.json`
-- `metrics.json`
-- `provenance.json`
-- `evidence_report.json`
+- `topology/system.xml`
+- `topology/topology.pdb`
+- `topology/state.xml`
 - `prepared_structure.pdb`
-- `minimized_structure.pdb`
-- `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Energy-minimize the built system to a relaxed state — free of steric clashes and at a stable, negative potential energy, not merely finite — then record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+`topology/state.xml` must contain the post-minimization OpenMM state and must be self-consistent with `topology/system.xml` and `topology/topology.pdb`. Full equilibration and production MD are not required.
 
-
-
-You may use MDClaw, direct OpenMM scripts, or another preparation workflow upstream, but the final submitted topology must be an OpenMM artifact triple that the scorer can reload. Record sources retrieved, commands or tool actions, preparation decisions, limitations, and any non-default choices in `provenance.json` and `evidence_report.json`.
+Do not write `manifest.json`, `metrics.json`, `provenance.json`, `minimized_structure.pdb`, `minimization_report.json`, `evidence_report.json`, a command log, walltime estimates, or artifact hashes. The evaluator derives the normalized metadata, minimized view, minimization report, and hashes from the raw artifacts. Evidence reports and solver command logs are not part of MDPrepBench v0.3. The harness owns the final record and measures walltime; non-MDClaw stage labels are solver-declared.

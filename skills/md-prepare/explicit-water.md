@@ -3,21 +3,18 @@
 Solvent-regime mapping, the explicit-water constant defaults (`ff19SB + opc`,
 15 Å buffer, 0.15 M salt, box/HMR), the `ff19SB + tip3p` guardrail, the
 supported-ion policy, and the local-run/platform preflight all live in
-`skills/common/solvent-regimes.md`. Read it once; this page only covers the
-prepare-stage solvation and topology steps.
+`skills/common/solvent-regimes.md`. Open that reference only when a regime or
+default needs clarification; this page covers the solvation and topology steps.
 
-Prepare-time details (source acquisition, inspection, chain/ligand selection,
-metals, PTMs, mutations, and confirmation policy) live in `setup.md` and apply
-identically for explicit and implicit solvent. Continue here only after a
-completed `prep` node exists.
+Continue here only after a completed `prep` node exists. For special source,
+chemistry, or branch handling, use the conditional links in `setup.md`.
 
 ---
 
 ## Preparation Prerequisite
 
-Complete `setup.md` through `prepare_complex` first. Continue here only after
-a completed `prep` node exists. If inspection found multivalent metals or
-PTMs, finish the corresponding branched prep steps in `setup.md` before
+Confirm that the selected `prep` node is completed. If inspection found
+multivalent metals or PTMs, finish the matching explicit prep branch before
 solvation.
 
 Before solvation, verify that any source ions intentionally kept by the request
@@ -26,18 +23,20 @@ use `implicit-water.md` instead and do not retain explicit ions.
 
 ---
 
-## Step 4: Solvation
+## Solvation
 
 ### Bulk Water
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type solv
+mdclaw explain_node --job-dir <job_dir> --node-id <solv_node_id>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> solvate_structure \
   --dist 15.0 --salt --saltcon 0.15
 ```
 
-`pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact.
-To override, pass `--pdb-file` explicitly.
+`pdb_file` is auto-resolved from the `prep` parent's `merged_pdb` artifact. If
+that artifact is wrong, create a corrected prep branch instead of overriding
+the path on the solv node.
 
 Before topology, do a quick request-match check: for ligand-free systems,
 the prep node must not carry `ligand_chemistry`, and the `solvated_pdb` must not
@@ -72,10 +71,11 @@ Packmol race, salt override, failure codes) lives in
 
 ---
 
-## Step 5: Build Topology
+## Build Topology
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type topo
+mdclaw explain_node --job-dir <job_dir> --node-id <topo_node_id>
 mdclaw --job-dir <job_dir> --node-id <topo_node_id> build_amber_system \
   --no-is-membrane
 ```

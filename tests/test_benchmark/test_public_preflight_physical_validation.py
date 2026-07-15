@@ -80,6 +80,7 @@ def _write_bundle(
         json.dumps(
             {
                 "task_id": "P_test",
+                "primary_score": "preparation",
                 "required_outputs": [
                     "topology/system.xml",
                     "topology/topology.pdb",
@@ -221,3 +222,88 @@ def test_skip_openmm_preserves_previous_behavior(tmp_path: Path):
         "warnings": ["OpenMM validation skipped by --skip-openmm"],
         "errors": [],
     }
+
+
+def test_public_preflight_rejects_symlinked_artifact(tmp_path: Path):
+    submission, contract = _write_bundle(
+        tmp_path,
+        state_x_nm=[0.0, 1.0],
+    )
+    state = submission / "topology" / "state.xml"
+    outside = tmp_path / "private-state.xml"
+    state.replace(outside)
+    state.symlink_to(outside)
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 1
+    assert payload["failure_class"] == "unsafe_submission_path"
+    assert any("must not be a symlink" in err for err in payload["errors"])
+
+
+def test_public_preflight_rejects_symlinked_submission_root(tmp_path: Path):
+    submission, contract = _write_bundle(
+        tmp_path,
+        state_x_nm=[0.0, 1.0],
+    )
+    real_submission = tmp_path / "real-submission"
+    submission.rename(real_submission)
+    submission.symlink_to(real_submission, target_is_directory=True)
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 1
+    assert payload["failure_class"] == "unsafe_submission_path"
+    assert any("submission_dir must not be a symlink" in err for err in payload["errors"])
+
+
+def test_public_preflight_rejects_file_outside_raw_allowlist(tmp_path: Path):
+    submission, contract = _write_bundle(
+        tmp_path,
+        state_x_nm=[0.0, 1.0],
+    )
+    (submission / "notes.json").write_text("{}\n")
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 1
+    assert payload["failure_class"] == "unsafe_submission_path"
+    assert any(
+        "unexpected file outside public raw contract: notes.json" in err
+        for err in payload["errors"]
+    )
+
+
+def test_public_preflight_allows_study_manifest_artifacts(tmp_path: Path):
+    submission = tmp_path / "submission"
+    trajectory = submission / "trajectories" / "trajectory_1.dcd"
+    trajectory.parent.mkdir(parents=True)
+    trajectory.write_bytes(b"CORD\x00\x00\x00\x00")
+    (submission / "manifest.json").write_text("{}\n")
+    contract = tmp_path / "submission_contract.json"
+    contract.write_text(json.dumps({
+        "task_id": "S_test",
+        "primary_score": "scientific_answer",
+        "required_outputs": ["manifest.json"],
+    }))
+
+    completed, payload = _run_preflight(
+        submission,
+        contract,
+        "--skip-openmm",
+    )
+
+    assert completed.returncode == 0, payload
+    assert payload["success"] is True

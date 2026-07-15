@@ -59,12 +59,11 @@ cholesterol mixtures (e.g. `POPC:POPE:CHL1 2:1:1`, MDPrepBench P18).
 
 ### Benchmark Integrity Rollout
 
-MDPrepBench v0.1 now uses `integrity_policy="reject"` for the prep task set and
-requires structured provenance execution evidence in addition to artifact byte
-floors, template-marker rejection, topology bundle checks, and minimization
-checks. Public exports include a `submission_blueprint` and
-`submission_checklist.md` so external agents can build contract-complete
-submissions without seeing scorer-only task metadata.
+MDPrepBench v0.3 uses `integrity_policy="reject"` for the prep task set and
+requires scorer-owned harness execution evidence in addition to artifact byte
+floors, topology bundle checks, and minimization checks. Public exports include
+raw artifact requirements and `submission_checklist.md` so external agents can
+build contract-complete submissions without seeing scorer-only task metadata.
 
 Future external-agent calibration should tune task wording or public contract
 helpers if an honest run emits an integrity warning that does not represent a

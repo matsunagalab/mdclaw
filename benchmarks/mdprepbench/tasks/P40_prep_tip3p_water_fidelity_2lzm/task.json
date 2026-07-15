@@ -1,7 +1,6 @@
 {
   "capability_tags": [
     "preparation_workflow",
-    "forcefield_selection",
     "water_model",
     "non_opc_water"
   ],
@@ -125,7 +124,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -138,16 +140,9 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P40_prep_tip3p_water_fidelity_2lzm",
-  "task_intent": "Water-model fidelity (non-OPC): honor a supported user-specified force-field/water pair using ff14SB with the 3-site TIP3P water model, rather than silently falling back to a different water model such as OPC.",
+  "task_intent": "TIP3P water-model fidelity: build an explicit-solvent system with the requested 3-site TIP3P water model rather than silently falling back to a different water model such as OPC.",
   "time_limit_minutes": 60
 }

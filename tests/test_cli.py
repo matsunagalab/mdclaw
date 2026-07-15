@@ -614,7 +614,10 @@ class TestArgparseConstruction:
         parser = _build_parser(tools)
 
         args = parser.parse_args(["--list-json"])
-        assert args.list_tools_json is True
+        assert args.list_tools_json == ""
+
+        args = parser.parse_args(["--list-json", "run_minimization"])
+        assert args.list_tools_json == "run_minimization"
 
     def test_tool_list_json_schema(self):
         from mdclaw._cli import _tool_list_json, _discover_tools
@@ -634,12 +637,70 @@ class TestArgparseConstruction:
         assert params["pdb_file"]["cli_flag"] == "--pdb-file"
         assert params["water_model"]["default"] == "opc"
         assert params["salt"]["cli_action"] == "boolean_optional"
+        assert params["job_dir"]["required"] is True
+        assert params["job_dir"]["has_default"] is False
+        assert params["node_id"]["required"] is True
+        assert params["node_id"]["has_default"] is False
 
         prepare = next(tool for tool in payload["tools"]
                        if tool["name"] == "prepare_complex")
         prepare_params = {param["name"]: param for param in prepare["parameters"]}
         assert prepare_params["protonation_states"]["cli_flag"] == "--protonation-states"
         assert prepare_params["protonation_states"]["expects_json"] is True
+
+        targeted = _tool_list_json(tools, "solvate_structure")
+        assert targeted["success"] is True
+        assert targeted["total"] == 1
+        assert targeted["tools"] == [
+            {key: value for key, value in solvate.items() if key != "description"}
+        ]
+
+    def test_text_tool_list_is_a_compact_name_index(self, capsys):
+        from mdclaw._cli import _print_tool_list
+
+        _print_tool_list({
+            "example_tool": {
+                "server": "example",
+                "description": "description that should not fill the index",
+            },
+        })
+
+        output = capsys.readouterr().out
+        assert "example_tool" in output
+        assert "mdclaw --list-json <tool>" in output
+        assert "description that should not fill the index" not in output
+
+    def test_targeted_list_json_is_compact_and_unknown_is_structured(self, capsys):
+        from mdclaw._cli import main
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--list-json", "run_minimization"])
+        assert exc_info.value.code == 0
+        output = capsys.readouterr().out
+        assert len(output.splitlines()) == 1
+        payload = json.loads(output)
+        assert payload["total"] == 1
+        assert payload["tools"][0]["name"] == "run_minimization"
+        assert "description" not in payload["tools"][0]
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--list-json", "record_study_decision"])
+        assert exc_info.value.code == 1
+        output = capsys.readouterr().out
+        assert len(output.splitlines()) == 1
+        payload = json.loads(output)
+        assert payload["code"] == "tool_not_available"
+        assert payload["context"]["tool"] == "record_study_decision"
+
+        with pytest.raises(SystemExit) as exc_info:
+            main(["--list-json", "not_a_real_mdclaw_tool"])
+        assert exc_info.value.code == 1
+        output = capsys.readouterr().out
+        assert len(output.splitlines()) == 1
+        payload = json.loads(output)
+        assert payload["success"] is False
+        assert payload["code"] == "tool_not_available"
+        assert payload["context"]["tool"] == "not_a_real_mdclaw_tool"
 
     def test_optional_params_are_typed_in_parser_and_list_json(self):
         from mdclaw._cli import _build_parser, _discover_tools, _tool_list_json
@@ -803,6 +864,7 @@ class TestSubprocessCLI:
         )
         assert result.returncode == 0
         assert "solvate_structure" in result.stdout
+        assert "mdclaw --list-json <tool>" in result.stdout
         assert "Total:" in result.stdout
 
     def test_list_json(self):
@@ -1554,6 +1616,16 @@ class TestStudyAndEvidenceCLIParameters:
         assert exc_info.value.code == 0
         plan = json.loads((study_dir / "study_plan.json").read_text())
         assert plan["plan"]["question"] == "q"
+
+
+def test_benchmark_min_stage_is_reserved_for_run_minimization():
+    from mdclaw._cli import _benchmark_stage_for_tool
+
+    assert _benchmark_stage_for_tool("run_minimization", {}) == "min"
+    assert _benchmark_stage_for_tool("create_node", {"node_type": "min"}) == "dag"
+    assert _benchmark_stage_for_tool("package_mdprep_submission", {}) == "package"
+    assert _benchmark_stage_for_tool("package_openmm_submission", {}) == "package"
+    assert _benchmark_stage_for_tool("export_state_pdb", {}) == "export"
 
 
 if __name__ == "__main__":

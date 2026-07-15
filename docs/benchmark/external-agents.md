@@ -3,7 +3,7 @@
 MDPrepBench and MDStudyBench share an artifact-based benchmark contract. Your
 agent does not need to use MDClaw. It may use OpenMM scripts, Amber, GROMACS,
 MDCrow, another workflow manager, or a custom LLM runner upstream. For
-MDPrepBench v0.1, a completed submission must export an OpenMM `system.xml` +
+MDPrepBench v0.3, a completed submission must export an OpenMM `system.xml` +
 `topology.pdb` + `state.xml` bundle so the scorer can reload and rescan the
 system. MDStudyBench tasks instead require study evidence such as comparative
 trajectories, analysis metrics, methods drafts, provenance, and decision logs.
@@ -64,8 +64,8 @@ To compare skill-assisted and skill-free runs, use the harness-owned
 `solver_context` field in `run_config.json`, `attestation.json`,
 `summary.json`, or `tasks/<task_id>/agent_run.json`. It records whether the
 runner exposed no skill context, a real agent skill system, or injected skill
-text into the prompt. Submitted `provenance.json` may repeat that declaration,
-but it is not trusted as the source of truth.
+text into the prompt. MDPrepBench submissions do not repeat this harness-owned
+declaration.
 Use `--agent-skills-dir skills` when the automated runner should expose the
 MDClaw skills through the agent's normal discovery mechanism. The runner copies
 the source into `skills/`, `.agents/skills/`, `.claude/skills/`,
@@ -122,8 +122,8 @@ The evaluated agent should read only files from the selected public package:
   public prompt suitable for handing directly to an MD agent.
 - `benchmark_public/mdprepbench/tasks/<task_id>/submission_contract.json`:
   public output contract containing required outputs, time limit, execution
-  mode, failure policy, `submission_blueprint`, and machine-readable metric
-  requirements. It contains no scoring checks or held-back truth.
+  mode, failure policy, raw artifact requirements, harness requirements, and
+  lifecycle. It contains no scorer checks or held-back truth.
 - `benchmark_public/mdprepbench/tasks/<task_id>/submission_checklist.md`:
   per-task pre-submission checklist derived from the public contract.
 - `benchmark_public/mdprepbench/tools/validate_submission.py`: tool-neutral
@@ -131,9 +131,8 @@ The evaluated agent should read only files from the selected public package:
   `submission_contract.json` before the agent exits.
 
 Use the analogous `benchmark_public/mdstudybench/...` paths when running
-MDStudyBench tasks. The StudyBench public contract uses the same
-`submission_blueprint` / `submission_checklist.md` helpers, but without
-MDPrepBench topology or minimization requirements.
+MDStudyBench tasks. StudyBench retains its manifest-oriented
+`submission_blueprint`; MDPrepBench does not expose one.
 
 A benchmark runner should pass those files plus the target submission directory
 to the agent. It must not silently add task-specific command-line options such
@@ -153,9 +152,9 @@ workspaces. The private evaluator package first appears in the evaluator
 workspace after solving is complete.
 
 Agent handoff is complete only when final artifacts are in the exact
-`submission_dir` and the public preflight passes, or when the agent explicitly
-declares an incomplete/failed submission. The automated runner records
-`finalization.json` and includes `contract_status`, `harness_status`,
+`submission_dir` and the public preflight passes. The automated runner records
+incomplete or failed handoffs in `finalization.json` and includes
+`contract_status`, `harness_status`,
 `failure_class`, and `harness_evidence_status` in `summary.json`; this keeps
 scientific artifact score separate from harness/runtime failures such as
 background processes or running MDClaw DAG nodes.
@@ -209,13 +208,10 @@ benchmark evaluator derives the common metadata files:
 - `provenance.json`: generated raw-output md5 hashes and normalization metadata.
 - `minimized_structure.pdb`: exported from `topology/state.xml` by the evaluator.
 - `minimization_report.json`: generated from the submitted OpenMM bundle.
-- `evidence_report.json` (optional under the slim contract): preparation
-  decisions, evidence, limitations, and any non-default chemistry choices.
-  Required only when a specific task's contract lists it.
 - Harness execution evidence is recorded outside `submission/` by the benchmark
-  stage wrapper. Listing scripts alone is not enough. Strict scoring also requires a harness-owned
-  `harness_execution.json` outside `submission/` with measured walltime for the
-  required stages; agent-written provenance is not trusted as runtime evidence.
+  stage wrapper. Strict scoring requires a harness-owned
+  `harness_execution.json` with measured walltime for the required stages.
+  Solver command logs and walltime estimates are not part of MDPrepBench v0.3.
 - Task artifacts: `prepared_structure.pdb`, OpenMM topology files, and any
   task-specific raw files named in `submission_contract.json`.
 
@@ -259,27 +255,24 @@ The scorer does not read chat transcripts, tool-call logs, or private runner
 state. It reads `task.json`, scorer-only `truth/` when needed, scorer helper
 files, and your `submission/` files.
 
-- Preparation tasks compare required artifacts, metadata,
+- Preparation tasks compare required raw artifacts,
   residue/component counts in submitted and minimized structures, site-specific
   residue states, ligand-pose RMSD when a scorer-side reference is provided,
   topology artifact completeness, and minimization evidence. Completed prep
   submissions must provide an OpenMM topology bundle, which is reloaded for
   finite-energy rescans.
 - Artifact-as-truth: OpenMM is detected by deserializing the
-  `system.xml` + `topology.pdb` + `state.xml` triple, not by trusting a declared
-  `topology.backend` label. Force-field application, net charge, water-model
-  fingerprint, and ion molarity are recomputed from the artifact; `metrics.json`
-  is a cross-checked declaration and a declared-vs-recomputed mismatch is an
-  integrity warning (the recomputed value scores). A declared non-OpenMM backend
-  whose bundle still deserializes as OpenMM is scored as OpenMM with a warning.
+  `system.xml` + `topology.pdb` + `state.xml` triple. Force-field application,
+  net charge, water-model fingerprint, and ion molarity are recomputed from
+  those raw artifacts; prep agents do not submit declared metrics or backend
+  labels.
 - Graded scoring: a small physical-validity gate (system loads, finite energy,
   force field applied to every atom, required minimized structure present) must
-  pass or the task scores zero. Identity/fidelity/provenance checks then give
+  pass or the task scores zero. Identity/fidelity/harness-audit checks then give
   weighted partial credit, rolled up into a per-capability profile.
-- Integrity rejection stays hard: unsafe manifest paths, fabricated or
-  undersized required artifacts, and missing execution evidence clamp the score
-  to zero. For strict tasks, execution evidence means both solver-side
-  `provenance.command_log` and scorer-side `harness_execution.json`.
+- Integrity rejection stays hard: unsafe paths, fabricated or undersized
+  required artifacts, and missing harness execution evidence clamp the score to
+  zero.
 - The current prep battery does not score MDClaw-specific guardrail codes.
   MDClaw guardrails are covered by ordinary MDClaw regression tests.
 - The contract never requires any MDClaw-specific field, so MDClaw-free agents
@@ -301,11 +294,10 @@ by benchmark tests are for scorer CI only and should not be interpreted as
 agent performance.
 
 External sources are allowed when the prompt names or implies public retrieval
-(for example PDB IDs, UniProt accessions, DOIs, and public URLs). Record what
-was retrieved in `provenance.json` and explain how it was used in
-`evidence_report.json`. For artifact-backed tasks, a literature or PDB-page
-claim without matching submitted artifacts should not receive leaderboard
-credit.
+(for example PDB IDs, UniProt accessions, DOIs, and public URLs). MDPrepBench
+credits the resulting raw physical artifacts, not an agent-authored account of
+the retrieval. A literature or PDB-page claim without matching submitted
+artifacts receives no leaderboard credit.
 
 ## MDCrow-Style File Registries
 
@@ -350,10 +342,9 @@ python run_agent.py \
   --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission
 ```
 
-It should solve the prompt, retrieve public sources as needed, and write real
-metrics, evidence, provenance, and artifacts. When the submission is genuinely
-complete, set `manifest.status` to `completed`; otherwise use `partial`,
-`blocked`, or intentional `failed` as appropriate.
+It should solve the prompt, retrieve public sources as needed, and write the
+required raw artifacts. The evaluator generates preparation metadata and status
+after validating those artifacts.
 For MDClaw-generated run directories, the shortest safe launch prompt is:
 
 ```text
@@ -362,35 +353,32 @@ benchmark_runs/<run_id>/tasks/<task_id>/agent_prompt.md
 ```
 
 Use `submission_contract.json` for machine-readable requirements. In particular,
-`outputs.topology` is a list of artifact paths. For prep battery v0.1 this must
-be an OpenMM bundle, usually
+the raw preparation topology must be an OpenMM bundle, usually
 `["topology/system.xml", "topology/topology.pdb", "topology/state.xml"]`,
 and task-specific artifact requirements describe any additional files such as a
-WT parent structure. `metrics.json` is intentionally minimal; the scorer
-recomputes model/assembly choice, component presence, neutrality, water model,
-and ion molarity from submitted artifacts whenever possible. Use the exported
+WT parent structure. The evaluator generates normalized metadata and recomputes
+model/assembly choice, component presence, neutrality, water model, and ion
+molarity from submitted artifacts whenever possible. Use the exported
 `submission_checklist.md` as the final agent-side self-check before validation.
 
-Validate and score:
+Run the exported raw preflight, then score the prepared run:
 
 ```bash
-mdclaw validate_benchmark_submission \
-  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
-  --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission
-
-mdclaw score_benchmark_submission \
-  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+python benchmark_public/mdprepbench/tools/validate_submission.py \
   --submission-dir benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/submission \
-  --run-id 20260516_external_prep_p11 \
-  --output-file benchmark_runs/20260516_external_prep_p11/tasks/P11_prep_site_protonation_t4l_glu11/score.json
+  --submission-contract benchmark_public/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/submission_contract.json
+
+mdclaw score_benchmark_run \
+  --run-dir benchmark_runs/20260516_external_prep_p11 \
+  --dataset-dir benchmarks/mdprepbench
 ```
 
 ## Minimal P11 Submission
 
 For `P11_prep_site_protonation_t4l_glu11`, a completed external-agent
 submission must include a prepared structure where chain A residue 11 is named
-`GLH` and contains the `HE2` side-chain hydrogen, plus topology and
-minimization evidence. The key deterministic checks are:
+`GLH` and contains the `HE2` side-chain hydrogen, plus the raw OpenMM bundle.
+The key deterministic checks are:
 
 ```text
 submission/prepared_structure.pdb: residue A:11 is GLH with atom HE2
@@ -400,23 +388,9 @@ submission/topology/state.xml: post-minimization OpenMM State XML
 normalized minimization_report.json: finite energies/positions derived by evaluator
 ```
 
-Example `evidence_report.json`:
-
-```json
-{
-  "schema_version": "1.0",
-  "run_id": "20260516_external_prep_p11",
-  "task_id": "P11_prep_site_protonation_t4l_glu11",
-  "summary": "Prepared T4 lysozyme chain A with residue 11 set to GLH, built topology artifacts, and verified a short minimization.",
-  "limitations": [
-    "Example only; include full provenance, prepared/minimized structures, topology artifacts, and minimization evidence in real submissions."
-  ]
-}
-```
-
-This example illustrates the report shape only; it is not a valid leaderboard
-submission by itself. The structures, topology artifacts, minimization evidence,
-and matching metrics are required.
+No `evidence_report.json`, solver command log, or walltime estimate belongs in a
+MDPrepBench v0.3 submission. The evaluator derives normalized reports and the
+harness records timing.
 
 ## Schemas
 
@@ -424,7 +398,8 @@ Machine-readable schemas are checked in under each suite, for example
 `benchmarks/mdprepbench/schemas/` and `benchmarks/mdstudybench/schemas/`:
 
 - `task.schema.json`: evaluator-side task contract.
-- `submission_manifest.schema.json`: `submission/manifest.json` shape.
+- `submission_manifest.schema.json`: evaluator/Study submission manifest shape;
+  it is not included in prep-only public packages.
 - `score.schema.json`: scorer output shape.
 
 Use the schemas from the same suite as the task when building runners for other

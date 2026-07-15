@@ -135,7 +135,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -148,15 +151,8 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P37_prep_beta_barrel_membrane_1bxw",
   "task_intent": "Beta-barrel membrane protein preparation: prepare the transmembrane domain of outer-membrane protein A (OmpA) from PDB 1BXW embedded in a POPC lipid bilayer, excluding the crystallographic detergent (C8E), and neutralizing the system. This exercises membrane embedding for a beta-barrel architecture rather than an alpha-helical membrane protein.",
   "time_limit_minutes": 60

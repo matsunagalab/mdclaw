@@ -147,6 +147,17 @@ def validate_submission(
     if not task_id:
         task_id = str(contract.get("task_id") or "")
 
+    if submission_dir.is_symlink():
+        return _result(
+            success=False,
+            task_id=task_id,
+            submission_dir=submission_dir,
+            contract_file=contract_file,
+            failure_class="unsafe_submission_path",
+            errors=[f"submission_dir must not be a symlink: {submission_dir}"],
+            warnings=warnings,
+            checks=checks,
+        )
     if not submission_dir.is_dir():
         return _result(
             success=False,
@@ -164,6 +175,27 @@ def validate_submission(
         for rel in contract.get("required_outputs", [])
         if isinstance(rel, str)
     ]
+    strict_raw_allowlist = contract.get("primary_score") == "preparation"
+    traversal = _scan_submission_paths(
+        submission_dir,
+        set(required_outputs) if strict_raw_allowlist else None,
+    )
+    checks.append({
+        "name": "submission_paths_stay_inside_submission",
+        "passed": not traversal,
+    })
+    if traversal:
+        return _result(
+            success=False,
+            task_id=task_id,
+            submission_dir=submission_dir,
+            contract_file=contract_file,
+            failure_class="unsafe_submission_path",
+            errors=traversal,
+            warnings=warnings,
+            checks=checks,
+        )
+
     invalid_paths = [
         rel for rel in required_outputs if _invalid_relative_path_reason(rel)
     ]
@@ -196,14 +228,6 @@ def validate_submission(
         "empty": empty,
     })
 
-    traversal = _scan_submission_paths(submission_dir)
-    if traversal:
-        errors.extend(traversal)
-    checks.append({
-        "name": "submission_paths_stay_inside_submission",
-        "passed": not traversal,
-    })
-
     has_openmm_contract = all(rel in required_outputs for rel in OPENMM_TRIPLE)
     if has_openmm_contract:
         openmm_result = _validate_openmm_bundle(
@@ -214,23 +238,6 @@ def validate_submission(
         warnings.extend(openmm_result.get("warnings") or [])
         if not openmm_result.get("passed"):
             errors.extend(openmm_result.get("errors") or [])
-
-    generated_present = [
-        rel
-        for rel in (
-            "manifest.json",
-            "metrics.json",
-            "provenance.json",
-            "minimized_structure.pdb",
-            "minimization_report.json",
-        )
-        if (submission_dir / rel).exists() and rel not in required_outputs
-    ]
-    if generated_present:
-        warnings.append(
-            "evaluator-generated files are present and will be ignored or "
-            f"regenerated for MDPrepBench preparation tasks: {generated_present}"
-        )
 
     failure_class = _failure_class(errors)
     return _result(
@@ -282,17 +289,30 @@ def _invalid_relative_path_reason(rel: str) -> str:
     return ""
 
 
-def _scan_submission_paths(submission_dir: Path) -> list[str]:
+def _scan_submission_paths(
+    submission_dir: Path,
+    allowed_outputs: set[str] | None,
+) -> list[str]:
     errors: list[str] = []
     root = submission_dir.resolve()
     for path in submission_dir.rglob("*"):
+        if path.is_symlink():
+            errors.append(f"submission path must not be a symlink: {path}")
+            continue
         try:
-            resolved = path.resolve()
+            resolved = path.resolve(strict=True)
         except OSError as exc:
             errors.append(f"cannot resolve submission path {path}: {exc}")
             continue
         if root != resolved and root not in resolved.parents:
             errors.append(f"submission path escapes submission_dir: {path}")
+            continue
+        if path.is_file() and allowed_outputs is not None:
+            relative = path.relative_to(submission_dir).as_posix()
+            if relative not in allowed_outputs:
+                errors.append(
+                    f"unexpected file outside public raw contract: {relative}"
+                )
     return errors
 
 

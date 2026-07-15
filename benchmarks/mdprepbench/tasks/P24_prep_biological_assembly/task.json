@@ -120,7 +120,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -133,15 +136,8 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P24_prep_biological_assembly",
   "task_intent": "Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. The scorer verifies the submitted coordinates against a fixed assembly-1 reference and checks that the submitted structure contains four protein chains, so assembly identity is not accepted from self-reported JSON alone.",
   "time_limit_minutes": 60

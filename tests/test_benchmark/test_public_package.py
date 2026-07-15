@@ -27,163 +27,50 @@ def test_export_public_package_contains_agent_visible_contract(tmp_path: Path):
 
     assert result["success"], result
     dataset = json.loads((out_dir / "dataset.json").read_text())
-    assert result["task_count"] == dataset["task_count"]
+    assert dataset["benchmark_version"] == "MDPrepBench-v0.3"
+    assert result["task_count"] == 40
     assert (out_dir / "tools" / "package_submission.py").is_file()
     assert (out_dir / "tools" / "validate_submission.py").is_file()
-    assert str(out_dir / "tools" / "package_submission.py") in result["files_written"]
-    assert str(out_dir / "tools" / "validate_submission.py") in result["files_written"]
+    assert not (out_dir / "schemas" / "submission_manifest.schema.json").exists()
 
+    forbidden_agent_outputs = {
+        "manifest.json",
+        "metrics.json",
+        "provenance.json",
+        "minimized_structure.pdb",
+        "minimization_report.json",
+        "evidence_report.json",
+    }
     for task_id in dataset["task_ids"]:
         task_dir = out_dir / "tasks" / task_id
-        assert (task_dir / "prompt.md").is_file()
-        contract_path = task_dir / "submission_contract.json"
-        assert contract_path.is_file()
-
-        contract = json.loads(contract_path.read_text())
-        assert contract["task_id"] == task_id
-        assert contract["required_outputs"]
+        contract = json.loads((task_dir / "submission_contract.json").read_text())
+        assert contract["secondary_scores"] == []
         assert "topology/system.xml" in contract["required_outputs"]
         assert "topology/topology.pdb" in contract["required_outputs"]
         assert "topology/state.xml" in contract["required_outputs"]
-        assert "manifest.json" not in contract["required_outputs"]
-        assert "metrics.json" not in contract["required_outputs"]
-        assert "provenance.json" not in contract["required_outputs"]
-        assert "minimized_structure.pdb" not in contract["required_outputs"]
-        assert "minimized_structure.pdb" in contract["normalized_outputs"]
-        assert contract["manifest_contract"]["completed_status"] == "completed"
-        assert contract["manifest_contract"]["topology_output_shape"] == "list[str]"
-        assert contract["manifest_contract"]["required_topology_backend"] == "openmm"
-        assert contract["manifest_contract"]["openmm_topology_example"] == [
-            "topology/system.xml",
-            "topology/topology.pdb",
-            "topology/state.xml",
-        ]
-        guidance = contract["manifest_contract"]["minimized_structure_guidance"]
-        assert guidance["required_filename"] == "minimized_structure.pdb"
-        assert "MDClaw, plain OpenMM" in guidance["state_source"]
-        assert "tools/package_submission.py" in (
-            guidance["generic_openmm_command_template"]
-        )
-        assert "run_minimization" in guidance["mdclaw_dag_command_template"]
-        assert "package_mdprep_submission" in guidance["mdclaw_export_command_template"]
-        packaging = contract["manifest_contract"]["packaging_guidance"]
-        assert "raw OpenMM artifact contract" in packaging["artifact_contract"]
-        assert "evaluator" in packaging["benchmark_normalization"]
-        assert "manifest.json" in packaging["benchmark_normalization"]
-        assert "tools/package_submission.py" in packaging["optional_packager"]
-        assert "tools/validate_submission.py" in packaging["tool_neutral_preflight"]
-        assert "mdclaw package_openmm_submission" in (
-            packaging["optional_packager"]
-        )
-        assert "mdclaw package_mdprep_submission" in (
-            packaging["mdclaw_dag_helper"]
-        )
-        assert "manifest.json" in packaging["normalizer_writes"]
-        assert "provenance.json with raw output hashes" in packaging["normalizer_writes"]
-        assert "topology/system.xml" in packaging["required_agent_inputs"]
-        assert packaging["standalone_preflight"] == "tools/validate_submission.py"
-        assert "output-only" in packaging["submission_dir_policy"]
-        assert "exact submission_dir" in packaging["submission_dir_policy"]
-        assert "work_dir/submission" in packaging["submission_dir_policy"]
-        assert "still running" in packaging["completion_requirement"]
-        assert "background" in packaging["completion_requirement"]
-        assert "Do not hand-write" in packaging["post_submission_rule"]
-        assert "optional convenience" in packaging["post_submission_rule"]
-        assert "--evidence-report-file" in packaging["mdclaw_dag_command_template"]
-        assert "--preparation-summary" in (
-            packaging["generic_command_template"]
-        )
-        assert "tools/package_submission.py" in (
-            packaging["generic_command_template"]
-        )
-        assert "--preparation-summary-file" in (
-            packaging["mdclaw_openmm_wrapper_command_template"]
-        )
-        assert "--submission-dir <exact_submission_dir>" in (
-            packaging["generic_command_template"]
-        )
-        assert "--force-field" in packaging["generic_command_template"]
-        assert "--water-model" in packaging["generic_command_template"]
-        assert "chains" in packaging["does_not_choose"]
-        assert "provenance_text_requirements" in contract
-        assert "submission_lifecycle" in contract
-        assert "validate_submission.py" in (
-            contract["submission_lifecycle"]["preflight_command_template"]
-        )
-        assert "No MDClaw-specific command sequence" in (
-            contract["submission_lifecycle"]["agent_neutrality"]
-        )
-        assert "submission_blueprint" in contract
-        assert contract["submission_blueprint"]["raw_artifact_minimum"][
-            "topology/state.xml"
-        ] == "<OpenMM State XML after minimization>"
-        assert contract["submission_blueprint"]["manifest_minimum"]["outputs"][
-            "topology"
-        ] == [
-            "topology/system.xml",
-            "topology/topology.pdb",
-            "topology/state.xml",
-        ]
-        assert contract["submission_blueprint"]["manifest_minimum"][
-            "generated_by"
-        ]["tool"] == "mdprepbench-normalizer"
-        assert contract["submission_blueprint"]["provenance_minimum"][
-            "generated_by"
-        ]["tool"] == "mdprepbench-normalizer"
+        assert "prepared_structure.pdb" in contract["required_outputs"]
+        assert forbidden_agent_outputs.isdisjoint(contract["required_outputs"])
+        assert "normalized_outputs" not in contract
+        assert "manifest_contract" not in contract
+        assert "submission_blueprint" not in contract
+        assert contract["harness_evidence_requirements"]
         assert (
-            "tools/package_submission.py"
-            in contract["submission_blueprint"]["minimized_structure_export"][
-                "generic_package_command"
-            ]
+            contract["harness_evidence_requirements"][0]["record_owner"]
+            == "benchmark_harness"
         )
-        harness_requirements = contract["harness_evidence_requirements"]
-        assert harness_requirements
-        assert "required_stages" not in harness_requirements[0]
-        assert "stage" not in harness_requirements[0]["required_fields_per_record"]
-        assert (
-            "package_mdprep_submission"
-            in contract["submission_blueprint"]["minimized_structure_export"][
-                "optional_mdclaw_dag_package_command"
-            ]
-        )
-        assert any(
-            "topology/state.xml" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "exact submission_dir" in item and "work_dir/submission" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "outside submission_dir" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "do not hand-write manifest.json" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "background preparation" in item
-            for item in contract["submission_checklist"]
-        )
-        assert any(
-            "evaluator normalizes raw artifacts" in item
-            for item in contract["submission_checklist"]
-        )
+        for key in ("required_components", "artifact_requirements"):
+            for requirement in contract[key]:
+                assert "manifest_path" not in requirement
+                assert "default_path" not in requirement
+                assert requirement["raw_artifact_sources"]
+        prompt = (task_dir / "prompt.md").read_text()
+        assert "Do not write `manifest.json`" in prompt
         checklist = (task_dir / "submission_checklist.md").read_text()
         assert "Pre-Submission Checks" in checklist
         assert "Submission Lifecycle" in checklist
-        assert "validate_submission.py" in checklist
-        assert "outputs.topology" in checklist
-        assert "Minimized Structure Export" in checklist
-        assert "run_minimization" in checklist
-        assert "tools/package_submission.py" in checklist
-        assert "package_mdprep_submission" in checklist
-        assert "metric_requirements" in contract
-        assert "required_components" in contract
-        assert contract["submission_manifest_schema"].endswith(
-            "submission_manifest.schema.json"
-        )
+        assert "## Manifest Outputs" not in checklist
+        assert "command_log" not in checklist
+
 
 
 def test_export_public_package_omits_private_evaluator_material(tmp_path: Path):
@@ -310,14 +197,25 @@ def test_export_public_package_exposes_required_components(tmp_path: Path):
         ("structure", "topology_no_unrequested_nonstandard_residues")
     ]
     minimized = components[("minimized_structure", "minimized_ap5_retained")]
-    assert prepared["manifest_path"] == "outputs.prepared_structure"
+    assert prepared["raw_artifact_sources"] == ["prepared_structure.pdb"]
     assert prepared["min_residue_counts"] == {"AP5": 1}
     assert no_extra["allowed_nonstandard_residue_names"] == ["AP5"]
-    assert topology["manifest_path"] == "outputs.topology"
+    assert topology["raw_artifact_sources"] == [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
     assert topology["min_residue_counts"] == {"AP5": 1}
-    assert topology_no_extra["manifest_path"] == "outputs.topology"
+    assert topology_no_extra["raw_artifact_sources"] == [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
     assert topology_no_extra["allowed_nonstandard_residue_names"] == ["AP5"]
-    assert minimized["manifest_path"] == "outputs.minimized_structure"
+    assert minimized["raw_artifact_sources"] == [
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
     assert minimized["min_residue_counts"] == {"AP5": 1}
 
     checklist = (task_dir / "submission_checklist.md").read_text()
@@ -354,25 +252,26 @@ def test_export_public_package_exposes_p18_mixed_lipid_requirements(
         for item in contract["artifact_requirements"]
     }
 
-    assert "still-running" in prompt
-    assert "completed raw artifacts" in prompt
+    assert "Write only these raw artifacts" in prompt
+    assert "Do not write `manifest.json`" in prompt
     assert "lipid_ratio_rescanned" not in artifact_requirements
     component_requirements = {
         item["check_id"]: item
         for item in contract["required_components"]
     }
     lipid_species = component_requirements["lipid_species_present"]
-    assert lipid_species["manifest_path"] == "outputs.topology"
-    assert lipid_species["default_path"] == "topology/topology.pdb"
+    assert lipid_species["raw_artifact_sources"] == [
+        "topology/system.xml",
+        "topology/topology.pdb",
+        "topology/state.xml",
+    ]
     assert lipid_species["min_residue_counts"] == {
         "POPC": 2,
         "POPE": 1,
         "CHL1": 1,
     }
     assert contract["candidate_selection_requirements"] == []
-    assert "outputs.source_selection" not in contract["manifest_contract"][
-        "recommended_optional_outputs"
-    ]
+    assert "manifest_contract" not in contract
     model_check = artifact_requirements["nmr_model_1_coordinate_match"]
     assert model_check["check_type"] == "rmsd_recompute"
     assert model_check["selection"] == "protein and name CA"
@@ -391,14 +290,13 @@ def test_export_public_package_exposes_p19_coordinate_model_contract(tmp_path: P
     task_dir = out_dir / "tasks" / "P19_prep_nmr_model_selection"
     prompt = (task_dir / "prompt.md").read_text()
     assert "model 5" in prompt
-    assert "submitted coordinates" in prompt
-    assert "no self-reported source-selection evidence is required" in prompt
+    assert "Do not write `manifest.json`" in prompt
+    assert "Do not write `manifest.json`, `metrics.json`, `provenance.json`" in prompt
+    assert "`evidence_report.json`" in prompt
 
     contract = json.loads((task_dir / "submission_contract.json").read_text())
     assert contract["metric_requirements"] == []
-    assert "outputs.source_selection" not in contract["manifest_contract"][
-        "recommended_optional_outputs"
-    ]
+    assert "manifest_contract" not in contract
     assert contract["candidate_selection_requirements"] == []
     artifact_requirements = {
         item["check_id"]: item
@@ -434,8 +332,8 @@ def test_export_public_package_exposes_p10_isotope_and_disulfide_contract(
         for item in contract["artifact_requirements"]
     }
 
-    assert "component_disposition.json" in contract["required_outputs"]
-    assert "excluded_components.json" in contract["required_outputs"]
+    assert "component_disposition.json" not in contract["required_outputs"]
+    assert "excluded_components.json" not in contract["required_outputs"]
     disulfides = artifact_requirements["three_disulfides_rescanned"]
     assert disulfides["check_type"] == "disulfide_bond_rescan"
     assert disulfides["min_disulfide_count"] == 3
@@ -472,7 +370,7 @@ def test_export_public_package_exposes_p25_net_neutrality_contract(
     assert molarity["cation_residue_names"] == ["K", "K+"]
 
 
-def test_export_public_package_documents_mdclaw_free_packaging(tmp_path: Path):
+def test_export_public_package_documents_raw_lifecycle(tmp_path: Path):
     out_dir = tmp_path / "public_mdprepbench"
     result = cli.export_benchmark_public_package(
         dataset_dir=str(DATASET_DIR),
@@ -488,16 +386,14 @@ def test_export_public_package_documents_mdclaw_free_packaging(tmp_path: Path):
             / "submission_contract.json"
         ).read_text()
     )
-    guidance = contract["manifest_contract"]["packaging_guidance"]
-
-    assert "raw OpenMM artifact contract" in guidance["artifact_contract"]
-    assert guidance["standalone_packager"] == "tools/package_submission.py"
-    assert "python tools/package_submission.py" in (
-        guidance["standalone_command_template"]
+    assert contract["submission_lifecycle"]["required_raw_outputs"] == (
+        contract["required_outputs"]
     )
-    assert "finite coordinates/energy" in guidance["purpose"]
-    assert "optional convenience helpers" in guidance["optional_packager"]
-    assert "--extra-output" in guidance["standalone_command_template"]
+    assert "tools/validate_submission.py" in (
+        contract["submission_lifecycle"]["preflight_command_template"]
+    )
+    assert "manifest_contract" not in contract
+    assert "submission_blueprint" not in contract
 
 
 def test_export_public_package_exposes_p08_parent_artifact_contract(
@@ -519,20 +415,14 @@ def test_export_public_package_exposes_p08_parent_artifact_contract(
         ).read_text()
     )
     assert "wt_prepared_structure.pdb" in contract["required_outputs"]
-    assert (
-        contract["submission_blueprint"]["manifest_minimum"]["outputs"][
-            "parent_prepared_structure"
-        ]
-        == "wt_prepared_structure.pdb"
-    )
+    assert "wt_prepared_structure.pdb" in contract["required_outputs"]
     artifact_requirements = {
         item["check_id"]: item
         for item in contract["artifact_requirements"]
     }
     parent = artifact_requirements["wt_parent_l99_preserved"]
     assert parent["check_type"] == "pdb_residue_state"
-    assert parent["manifest_path"] == "outputs.parent_prepared_structure"
-    assert parent["default_path"] == "wt_prepared_structure.pdb"
+    assert parent["raw_artifact_sources"] == ["wt_prepared_structure.pdb"]
     assert parent["required_residue_name"] == "LEU"
 
 
@@ -565,7 +455,7 @@ def test_export_public_package_exposes_p24_coordinate_assembly_contract(
     assert coordinate["reference"] == "scorer-private fixed reference structure"
     chains = artifact_requirements["assembly_four_chains"]
     assert chains["check_type"] == "assembly_identity_check"
-    assert chains["manifest_path"] == "outputs.prepared_structure"
+    assert chains["raw_artifact_sources"] == ["prepared_structure.pdb"]
     assert chains["exact_chain_count"] == 4
 
 
@@ -616,6 +506,7 @@ def test_export_studybench_public_package_uses_study_contract(tmp_path: Path):
     dataset = json.loads((out_dir / "dataset.json").read_text())
     assert dataset["benchmark_version"] == "MDStudyBench-v0.2"
     assert result["task_count"] == 4
+    assert (out_dir / "schemas" / "submission_manifest.schema.json").is_file()
 
     contract = json.loads(
         (

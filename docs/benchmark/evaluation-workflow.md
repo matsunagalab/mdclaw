@@ -189,9 +189,9 @@ not inject task-specific chains, ligands, model numbers, membrane geometry,
 salt settings, or workflow knobs that are absent from the public prompt or
 contract.
 
-The solver writes artifacts under `submission/`. It may write
-`provenance.json`, but solver-written provenance is an audit trail, not trusted
-runtime evidence.
+For MDPrepBench v0.3, the solver writes only the raw OpenMM triple,
+`prepared_structure.pdb`, and task-specific raw files under `submission/`.
+MDStudyBench keeps its suite-specific manifest, provenance, and evidence files.
 
 ## 3. Record Harness-Measured Execution
 
@@ -230,10 +230,11 @@ harness execution record into the evaluator workspace:
 ```text
 evaluator-workspace/runs/<run_id>/tasks/<task_id>/
   submission/
-    manifest.json
-    metrics.json
-    provenance.json
-    ...
+    topology/system.xml
+    topology/topology.pdb
+    topology/state.xml
+    prepared_structure.pdb
+    <task-specific raw artifacts>
   harness_execution.json
 ```
 
@@ -269,9 +270,8 @@ mdclaw score_benchmark_run \
 
 This workflow prevents the evaluated agent from reading scorer-only task
 contracts, hidden truth files, and deterministic check details during solving.
-It also prevents a solver from passing strict provenance checks by hand-editing
-`provenance.json` after the fact, because the scorer requires a separate
-harness-owned execution record.
+It also prevents a solver from fabricating runtime by hand-editing a submission
+file, because the scorer uses a separate harness-owned execution record.
 
 It does not protect a benchmark if the solver is allowed to read the canonical
 repository, the private package, or the evaluator workspace. In that case the

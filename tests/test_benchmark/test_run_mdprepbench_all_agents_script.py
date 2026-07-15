@@ -52,6 +52,27 @@ def test_run_mdprepbench_all_agents_dry_run_writes_commands(tmp_path: Path):
     assert "--agent-profile pi-user" in summary["runs"][0]["command"]
 
 
+def test_run_mdprepbench_all_agents_rejects_llm_judge(tmp_path: Path):
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPT),
+            "--dry-run",
+            "--output-dir",
+            str(tmp_path),
+            "--judge-mode",
+            "llm_judge",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        cwd=REPO_ROOT,
+    )
+
+    assert result.returncode != 0
+    assert "invalid choice" in result.stderr
+
+
 def test_run_mdprepbench_all_agents_executes_mdclaw_command(tmp_path: Path):
     fake_mdclaw = tmp_path / "fake_mdclaw.py"
     fake_mdclaw.write_text(

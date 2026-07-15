@@ -1,11 +1,10 @@
 # Run Loop
 
 This is the single canonical loop every stage skill follows to advance a job.
-It merges the per-step loop, the node CLI invariants, and the
-explicit-water/resume checklists that used to live in separate pages. The
-source of truth is the study plan plus the per-job DAG evidence, not a separate
-next-step planner. Use tool JSON to inspect state, create nodes, and validate
-candidate nodes before running them.
+The source of truth is the study plan plus the per-job DAG evidence, not a
+separate next-step planner. Inspect once when entering work that needs a state
+snapshot, then use tool JSON to create and validate each candidate node before
+running it.
 
 ## Decide How Far To Go
 
@@ -42,18 +41,21 @@ DAG handoff instead of claiming a scientific answer.
 
 ## The Loop
 
-1. **Inspect the job DAG.**
+1. **Inspect when entering or disambiguating a job.**
 
    ```bash
    mdclaw inspect_job --job-dir <job_dir>
    ```
 
-   Read `params.solvent_regime`, `nodes`, `leaf_nodes`, `pending_nodes`,
-   `running_nodes`, `failed_nodes`, `claims`, and `open_needs`. The current stage
-   skill plus study plan decide which node type/tool to create or run. If a
-   relevant node is already `running`, keep monitoring or explain that node; do
-   not create a sibling retry unless the running node fails, the user asks for an
-   explicit branch, or a tool result recommends superseding it.
+   Run `inspect_job` immediately after bootstrap, when re-entering an existing
+   job, before working a shared job, or before choosing among ambiguous branch
+   parents. Read `params.solvent_regime`, `nodes`, `leaf_nodes`, `pending_nodes`,
+   `running_nodes`, `failed_nodes`, `claims`, and `open_needs`. If a relevant
+   node is already `running`, keep monitoring or explain that node; do not create
+   a sibling retry unless it fails, the user requests a branch, or a tool result
+   recommends superseding it. During one fresh, unambiguous serial run, do not
+   repeat `inspect_job` before every node; the state-changing core is
+   `create_node` -> `explain_node` -> stage tool.
 
 2. **Create the node (parents resolve themselves).**
 
@@ -138,9 +140,11 @@ DAG handoff instead of claiming a scientific answer.
 - Never remove node directories with `rm -rf` as normal recovery. Preserve
   `node.json`, artifacts, and events; use `inspect_job` / `explain_node` to pick
   the next valid branch.
-- When a flag or accepted value is uncertain, read the full
-  `mdclaw <tool> --help` before running the node; do not truncate it with
-  `head` or `grep`. Use `mdclaw --list-json` for programmatic discovery.
+- Do not scan the global registry with bare `mdclaw --list`; the active skill
+  names the normal-path tools. Check a tool's signature with targeted
+  `mdclaw --list-json <tool>`. Only if it is insufficient, read the full
+  `mdclaw <tool> --help` before running the node. Never pipe CLI discovery or
+  help through `head`, `tail`, or `grep`.
 
 The prepare-stage specialization of this loop (the compact source -> prep ->
 solv -> topo checklist) lives in `skills/md-prepare/happy-path.md`. Equilibration

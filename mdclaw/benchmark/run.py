@@ -904,13 +904,23 @@ def _task_agent_prompt(
     primary_score: str = "preparation",
 ) -> str:
     """Short prompt intended for the evaluated task agent."""
-    skill_line = (
-        "Agent skills may be available; artifacts/evidence are scored."
-        if skills_available
-        else (
-            "MDClaw skills are neither required nor rewarded; artifacts/evidence count."
+    if primary_score == "preparation":
+        skill_line = (
+            "Agent skills may be available; only the required raw artifacts are scored."
+            if skills_available
+            else (
+                "MDClaw skills are neither required nor rewarded; only the required "
+                "raw artifacts are scored."
+            )
         )
-    )
+    else:
+        skill_line = (
+            "Agent skills may be available; artifacts/evidence are scored."
+            if skills_available
+            else (
+                "MDClaw skills are neither required nor rewarded; artifacts/evidence count."
+            )
+        )
     # Artifact guidance is suite-aware: preparation tasks submit a raw OpenMM
     # artifact bundle the evaluator normalizes; study tasks author their own
     # manifest/metrics/provenance/evidence and (for scientific-answer tasks)
@@ -931,33 +941,51 @@ def _task_agent_prompt(
         )
     else:
         artifact_guidance = (
-            "For OpenMM prep tasks, put raw artifacts in submission/: "
+            "Put raw artifacts in submission/: "
             "topology/{system.xml,topology.pdb,state.xml}, prepared_structure.pdb, "
-            "and task-specific raw files. The evaluator generates metadata, "
-            "hashes, and minimized artifacts. "
+            "and task-specific files. The evaluator derives metadata and the "
+            "minimized view. "
             "Do not hand-write or edit evaluator-generated metadata files. "
         )
+    exit_guidance = (
+        "Run public preflight; exit after preflight passes. On incomplete prep, "
+        "the harness records failure/status."
+        if primary_score == "preparation"
+        else (
+            "Run public preflight after writing submission/. Exit after "
+            "preflight passes or explicit incomplete failure."
+        )
+    )
+    stage_guidance = (
+        "Wrap non-MDClaw commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER "
+        "--stage <source|prep|topo|min> --`; minimization must use `--stage min`. "
+        "Bare `mdclaw ...` is auto-recorded; do not wrap it."
+        if primary_score == "preparation"
+        else (
+            "For non-MDClaw commands, use the stage wrapper with the matching "
+            "required stage from submission_contract.json. Bare `mdclaw ...` "
+            "commands are recorded automatically, so do not double-wrap them."
+        )
+    )
     return (
         f"# MD Benchmark Task Agent: {task_id}\n\n"
-        "Use this agent-safe instruction file:\n\n"
+        "Instructions:\n\n"
         f"{instruction_file}\n\n"
         f"Use MD. {skill_line}\n\n"
-        "Read task_instructions.json: prompt_file, contract, checklist, "
+        "Read task_instructions.json for prompt, contract, checklist, "
         "submission_dir, work_dir, stage_recording, submission_packaging, "
         "submission_preflight, agent_skills. Use work_dir for study/job/work "
-        "files; final outputs "
-        "only to exact submission_dir path, never work_dir/submission.\n\n"
+        "files. Write final outputs only to exact submission_dir path, never "
+        "work_dir/submission.\n\n"
         "Solve only this task. Do not inspect siblings, categorize suite, "
         "or write benchmark-wide solver scripts.\n\n"
-        "Record commands with `$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- "
-        "<command>`. Do not create/edit harness_execution.json.\n\n"
-        "Use bare `mdclaw ...` only if mdclaw_cli.allowed.\n\n"
-        "Run IDs and directory names are labels only; infer no shortcuts.\n\n"
+        f"{stage_guidance} Do not create/edit harness_execution.json.\n\n"
+        "Bare `mdclaw ...` requires mdclaw_cli.allowed.\n\n"
+        "Run IDs and directory names are labels only.\n\n"
         "Do not read harness_instructions.json, harness_tasks.json, task.json, "
         "truth/, scorer/. Do not fabricate.\n\n"
         f"{artifact_guidance}\n\n"
-        "Run public preflight after writing submission/. Exit after "
-        "preflight passes or explicit incomplete failure. "
+        f"{exit_guidance} "
         "The evaluator scores separately.\n"
     )
 
@@ -967,6 +995,7 @@ def _task_agent_finalization_prompt(
     instruction_file: Path,
     original_prompt_file: Path,
     finalization_file: Path,
+    primary_score: str,
 ) -> str:
     """Prompt for a tool-neutral final packaging retry.
 
@@ -974,6 +1003,15 @@ def _task_agent_finalization_prompt(
     packager on the agent's behalf. This retry gives every agent one identical
     chance to finish the public submission contract using its own work products.
     """
+    stage_guidance = (
+        "For a non-MDClaw minimization command, use "
+        "`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage min -- <command>`."
+        if primary_score == "preparation"
+        else (
+            "For non-MDClaw commands, use the stage wrapper with the matching "
+            "required stage from submission_contract.json."
+        )
+    )
     return (
         f"# MD Benchmark Finalization Retry: {task_id}\n\n"
         "The previous agent process exited before the public submission "
@@ -993,8 +1031,8 @@ def _task_agent_finalization_prompt(
         "submission_dir, using any public packager or direct file export that "
         "is appropriate for your workflow. If the work is incomplete, leave the "
         "submission incomplete and exit with a clear nonzero failure.\n\n"
-        "Record any real commands with "
-        "`$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage run -- <command>`.\n\n"
+        f"{stage_guidance} Bare `mdclaw ...` commands are recorded automatically; "
+        "do not double-wrap them.\n\n"
         "Run the public preflight from task_instructions.json before exiting. "
         "Exit 0 only after preflight passes.\n"
     )
@@ -1096,6 +1134,10 @@ def _delegate_score_benchmark_run(
     run_dir: str,
     dataset_dir: Optional[str],
     llm_judge_file: Optional[str],
+    require_validation_success: bool,
+    summarize: bool,
+    run_judge: bool,
+    judge_model: str,
 ) -> dict[str, Any]:
     """Re-run ``score_benchmark_run`` through an OpenMM-capable runtime."""
     cmd = [
@@ -1108,6 +1150,14 @@ def _delegate_score_benchmark_run(
         cmd += ["--dataset-dir", str(Path(dataset_dir).resolve())]
     if llm_judge_file:
         cmd += ["--llm-judge-file", str(Path(llm_judge_file).resolve())]
+    cmd.append(
+        "--require-validation-success"
+        if require_validation_success
+        else "--no-require-validation-success"
+    )
+    cmd.append("--summarize" if summarize else "--no-summarize")
+    cmd.append("--run-judge" if run_judge else "--no-run-judge")
+    cmd += ["--judge-model", judge_model]
     sub_env = os.environ.copy()
     sub_env["MDCLAW_SCORE_INPROCESS"] = "1"  # prevent re-delegation loop
     proc = subprocess.run(cmd, env=sub_env, capture_output=True, text=True)
@@ -1180,14 +1230,7 @@ def _harness_record_identity(record: dict[str, Any]) -> str:
 
 
 def _read_harness_jsonl_records(*paths: Path) -> list[dict[str, Any]]:
-    """Read harness JSONL from all known locations without double-counting.
-
-    The benchmark runner sets ``MDCLAW_BENCHMARK_HARNESS_LOG`` to the
-    harness-owned task-run file, but some evaluated agents also mirror or move
-    stage-wrapper output into their solver task directory. Keep the runner
-    tolerant of that layout so real measured command records are not lost
-    before scoring.
-    """
+    """Read runner-owned harness JSONL without double-counting."""
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for path in paths:
@@ -1802,6 +1845,15 @@ def prepare_benchmark_run(
             "mdclaw-skills+cli",
             "mdclaw-cli-only",
         }
+        primary_score = _task_primary_score(dataset, task_id)
+        stage_usage = (
+            f"{stage_wrapper_path} --stage <source|prep|topo|min> -- <command>; "
+            f"minimization: {stage_wrapper_path} --stage min -- <command>"
+            if primary_score == "preparation"
+            else (
+                f"{stage_wrapper_path} --stage <required_stage> -- <command>"
+            )
+        )
         instruction = {
             "task_id": task_id,
             "agent_prompt": str(agent_prompt_path),
@@ -1816,10 +1868,7 @@ def prepare_benchmark_run(
             "work_dir": str(task_run_dir / "work"),
             "stage_recording": {
                 "wrapper": str(stage_wrapper_path),
-                "usage": (
-                    f"{stage_wrapper_path} --stage source -- <command>; "
-                    "repeat with prep, topo, min, or run as applicable"
-                ),
+                "usage": stage_usage,
             },
             "mdclaw_cli": _mdclaw_cli_instruction(
                 mdclaw_runtime=resolved_mdclaw_runtime,
@@ -1860,7 +1909,7 @@ def prepare_benchmark_run(
             _task_agent_prompt(
                 task_id,
                 task_instruction_path,
-                primary_score=_task_primary_score(dataset, task_id),
+                primary_score=primary_score,
             ),
         )
         _write_json(task_run_dir / "harness_instructions.json", harness_instruction)
@@ -2224,6 +2273,7 @@ def run_benchmark_agent(
         dataset_dir=str(private_dir),
         require_validation_success=require_validation_success,
         summarize=summarize,
+        run_judge=judge_mode == "llm_judge",
     )
     failed_agent_runs = [t for t in task_records if t.get("exit_code") != 0]
     policy_violations = [
@@ -2349,6 +2399,17 @@ def _run_one_benchmark_agent_task(
         "Amber, GROMACS, or another non-MDClaw workflow."
     )
 
+    primary_score = _task_primary_score(private_dir, task_id)
+    stage_usage = (
+        f"{stage_wrapper_path} --stage <source|prep|topo|min> -- <command>; "
+        "use --stage min for the actual non-MDClaw minimization command; "
+        "bare mdclaw commands are recorded automatically"
+        if primary_score == "preparation"
+        else (
+            f"{stage_wrapper_path} --stage <required_stage> -- <command>; "
+            "bare mdclaw commands are recorded automatically"
+        )
+    )
     instruction = {
         "task_id": task_id,
         "agent_prompt": str(agent_prompt_path),
@@ -2363,10 +2424,7 @@ def _run_one_benchmark_agent_task(
         "work_dir": str(solver_work_dir),
         "stage_recording": {
             "wrapper": str(stage_wrapper_path),
-            "usage": (
-                f"{stage_wrapper_path} --stage run -- <command>; "
-                "repeat for real task commands/actions as applicable"
-            ),
+            "usage": stage_usage,
         },
         "mdclaw_cli": _mdclaw_cli_instruction(
             mdclaw_runtime=mdclaw_runtime,
@@ -2397,7 +2455,7 @@ def _run_one_benchmark_agent_task(
             task_id,
             task_instruction_path,
             skills_available=bool(agent_skills),
-            primary_score=_task_primary_score(private_dir, task_id),
+            primary_score=primary_score,
         ),
     )
 
@@ -2522,6 +2580,8 @@ def _run_one_benchmark_agent_task(
         if background_processes:
             _terminate_process_group_id(process_group_id)
         record = {
+            "run_id": run_id,
+            "task_id": task_id,
             "stage": "agent_run",
             "phase": phase,
             "attempt_index": attempt_index,
@@ -2557,8 +2617,7 @@ def _run_one_benchmark_agent_task(
         else:
             ensure_directory(evaluator_submission)
 
-        solver_harness_jsonl = solver_task_dir / "harness_execution.jsonl"
-        records = _read_harness_jsonl_records(harness_jsonl, solver_harness_jsonl)
+        records = _read_harness_jsonl_records(harness_jsonl)
         if records:
             _write_jsonl(harness_jsonl, records)
         finalization = _finalize_task_submission(
@@ -2602,6 +2661,7 @@ def _run_one_benchmark_agent_task(
                 task_instruction_path,
                 agent_prompt_path,
                 task_run_dir / "finalization.json",
+                primary_score,
             ),
         )
         retry_values = dict(template_values)
@@ -3007,15 +3067,15 @@ def score_benchmark_run(
 ) -> dict[str, Any]:
     """Validate and score every task submission in a benchmark run directory.
 
-    For tasks that declare ``llm_judge_rubrics`` (the study suite), the LLM
-    judge is run automatically on the host (``run_judge=True``) before scoring,
-    writing a per-task ``llm_judge.json`` that the scorer consumes. The judge
-    runs here on the host because it uses the ``claude`` CLI, while the scorer
-    itself may be delegated to the SIF for OpenMM — so it must precede that
-    delegation.
+    When ``run_config.json`` selects ``judge_mode="llm_judge"``, rubric-bearing
+    tasks run the LLM judge on the host before scoring. Deterministic runs never
+    launch or consume an LLM judge, even if a stale judge file is present.
     """
+    config = _read_json_dict(Path(run_dir) / "run_config.json")
+    llm_judge_enabled = config.get("judge_mode", "deterministic") == "llm_judge"
+    should_run_judge = run_judge and llm_judge_enabled
     if (
-        run_judge
+        should_run_judge
         and not os.environ.get("MDCLAW_SCORE_INPROCESS")
         and not os.environ.get("MDCLAW_DISABLE_LLM_JUDGE")
     ):
@@ -3028,6 +3088,10 @@ def score_benchmark_run(
                 run_dir=run_dir,
                 dataset_dir=dataset_dir,
                 llm_judge_file=llm_judge_file,
+                require_validation_success=require_validation_success,
+                summarize=summarize,
+                run_judge=run_judge,
+                judge_model=judge_model,
             )
 
     rd = Path(run_dir)
@@ -3074,7 +3138,9 @@ def score_benchmark_run(
         # Prefer a per-task judge file written by the host judge step; fall back
         # to an operator-supplied file.
         judge_path = task_run_dir / "llm_judge.json"
-        task_judge = str(judge_path) if judge_path.is_file() else llm_judge_file
+        task_judge = None
+        if llm_judge_enabled:
+            task_judge = str(judge_path) if judge_path.is_file() else llm_judge_file
         _finalize_manual_harness_record(task_run_dir, run_id=run_id, task_id=task_id)
         result = benchmark_cli.validate_and_score_benchmark_submission(
             task_file=str(task_file),
@@ -3093,7 +3159,7 @@ def score_benchmark_run(
         # is deliberately off (run_judge=False or MDCLAW_DISABLE_LLM_JUDGE) the
         # operator opted out and the result is left as-is.
         judge_expected = (
-            run_judge
+            should_run_judge
             and _task_has_rubrics(task_file)
             and not os.environ.get("MDCLAW_DISABLE_LLM_JUDGE")
         )

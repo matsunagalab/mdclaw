@@ -1,8 +1,6 @@
 {
   "capability_tags_extra": [
-    "pdb_cleanup",
-    "altloc",
-    "numbering"
+    "pdb_cleanup"
   ],
   "public_source": "PDB 4Q5T",
   "references": [
@@ -62,5 +60,5 @@
     ]
   },
   "task_id": "P21_prep_cleanup_altloc_mse_numbering",
-  "task_intent": "PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block."
+  "task_intent": "MSE cleanup: convert deposited MSE residues to standard MET, exclude unrequested nonstandard residues, and build a minimized MD-ready system."
 }

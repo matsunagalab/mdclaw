@@ -42,6 +42,15 @@ and collects the `TOOLS` dict assembled in its `__init__.py`.
 Exit code `0` means success. Exit code `1` means the tool returned
 `success: False` or raised an exception.
 
+`mdclaw --list` is a compact server-grouped tool-name index; use it only when
+the tool name is not already known. `mdclaw --list-json` returns the full
+discovered tool contract. Pass one exact tool name, for example
+`mdclaw --list-json run_minimization`, to return only its summary, execution
+metadata, and parameter schema as compact single-line JSON.
+The targeted form omits the long docstring; use full `--help` only when that
+compact contract is insufficient. An unknown name returns the structured
+`tool_not_available` error instead of argparse text.
+
 When a command runs with both `--job-dir` and `--node-id`, CLI-level failures
 are also recorded on that node. The node stays small (`metadata.errors`,
 optional `metadata.failure_code`, and `artifacts.failure`); detailed evidence
@@ -77,7 +86,8 @@ CLI preflight failures emit the standard validation envelope on stdout (exit
 code 1) instead of an argparse stderr message, so weak agents can branch on a
 stable `code`:
 
-- `missing_required_arguments`: a required tool flag was omitted.
+- `missing_required_arguments`: a required tool flag was omitted; query the
+  exact contract with `mdclaw --list-json <tool>`.
 - `node_id_requires_job_dir`: `--node-id` without `--job-dir`.
 - `node_context_required`: a node-required workflow tool (one marked with
   `@node_tool`) ran without both `--job-dir` and `--node-id`.

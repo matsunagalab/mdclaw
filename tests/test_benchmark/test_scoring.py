@@ -69,33 +69,70 @@ def _raw_output_hashes(tmp: Path, rel_paths: list[str]) -> list[dict[str, str]]:
     return out
 
 
-def _prep_command_log() -> list[dict]:
+def _prep_command_log(task_id: str = "") -> list[dict]:
     return [
         {
+            "task_id": task_id,
             "stage": "source",
             "command": "fixture source retrieval",
             "exit_code": 0,
             "walltime_seconds": 1.0,
         },
         {
+            "task_id": task_id,
             "stage": "prep",
             "command": "fixture prepare_complex",
             "exit_code": 0,
             "walltime_seconds": 1.0,
         },
         {
+            "task_id": task_id,
             "stage": "topo",
             "command": "fixture build_openmm_system",
             "exit_code": 0,
             "walltime_seconds": 1.0,
         },
         {
+            "task_id": task_id,
             "stage": "min",
             "command": "fixture minimization",
             "exit_code": 0,
             "walltime_seconds": 1.0,
         },
     ]
+
+
+def test_prep_runtime_uses_enclosing_harness_agent_run():
+    runtime = scoring._extract_runtime(
+        {"runtime": {"walltime_minutes": 999}},
+        {},
+        harness_record={
+            "records": [
+                {"stage": "prep", "walltime_seconds": 20.0},
+                {"stage": "min", "walltime_seconds": 30.0},
+                {"stage": "agent_run", "walltime_seconds": 120.0},
+            ]
+        },
+        use_harness=True,
+    )
+
+    assert runtime.walltime_minutes == pytest.approx(2.0)
+
+
+def test_prep_runtime_sums_manual_harness_stages_without_agent_run():
+    runtime = scoring._extract_runtime(
+        {},
+        {},
+        harness_record={
+            "records": [
+                {"stage": "prep", "walltime_seconds": 20.0},
+                {"stage": "min", "walltime_seconds": 40.0},
+            ]
+        },
+        use_harness=True,
+    )
+
+    assert runtime.walltime_minutes == pytest.approx(1.0)
 
 
 def _write_openmm_bundle(
@@ -554,6 +591,151 @@ def test_prep_normalization_reports_incomplete_background_work(tmp_path: Path):
     assert any("still running in the background" in err for err in result["errors"])
 
 
+def test_prep_normalization_rejects_root_level_topology_aliases(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+    for name in ("system.xml", "topology.pdb", "state.xml"):
+        (raw_dir / name).write_text("not used")
+    (raw_dir / "prepared_structure.pdb").write_text("END\n")
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=tmp_path / "normalized_submission",
+    )
+
+    assert result["success"] is False
+    assert any(
+        "unexpected file outside MDPrepBench raw contract: system.xml" in err
+        for err in result["errors"]
+    )
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "manifest.json",
+        "metrics.json",
+        "provenance.json",
+        "minimized_structure.pdb",
+        "minimization_report.json",
+    ],
+)
+def test_prep_normalization_rejects_evaluator_generated_outputs(
+    tmp_path: Path,
+    filename: str,
+):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+    (raw_dir / filename).write_text("agent supplied")
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=tmp_path / "normalized_submission",
+    )
+
+    assert result["success"] is False
+    assert any(
+        f"unexpected file outside MDPrepBench raw contract: {filename}" in err
+        for err in result["errors"]
+    )
+
+
+def test_prep_normalization_rejects_symlinked_raw_artifact(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    topology_dir = raw_dir / "topology"
+    topology_dir.mkdir(parents=True)
+    outside = tmp_path / "private-system.xml"
+    outside.write_text("private")
+    (topology_dir / "system.xml").symlink_to(outside)
+    (topology_dir / "topology.pdb").write_text("END\n")
+    (topology_dir / "state.xml").write_text("state")
+    (raw_dir / "prepared_structure.pdb").write_text("END\n")
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=tmp_path / "normalized_submission",
+    )
+
+    assert result["success"] is False
+    assert any("must not be a symlink" in err for err in result["errors"])
+
+
+def test_prep_normalization_rejects_symlinked_raw_root(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    real_dir = tmp_path / "real-submission"
+    real_dir.mkdir()
+    raw_dir = tmp_path / "submission"
+    raw_dir.symlink_to(real_dir, target_is_directory=True)
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=tmp_path / "normalized_submission",
+    )
+
+    assert result["success"] is False
+    assert any("directory must not be a symlink" in err for err in result["errors"])
+
+
+def test_prep_normalization_rejects_raw_directory_as_output(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=raw_dir,
+    )
+
+    assert result["success"] is False
+    assert any("must differ" in error for error in result["errors"])
+
+
+def test_prep_normalization_preserves_unowned_output_directory(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+    out_dir = tmp_path / "normalized_submission"
+    out_dir.mkdir()
+    sentinel = out_dir / "keep.txt"
+    sentinel.write_text("user data\n")
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=out_dir,
+    )
+
+    assert result["success"] is False
+    assert any("refusing to replace" in error for error in result["errors"])
+    assert sentinel.read_text() == "user data\n"
+
+
+def test_prep_normalization_preserves_existing_output_file(tmp_path: Path):
+    task = _make_task(primary="preparation")
+    raw_dir = tmp_path / "submission"
+    raw_dir.mkdir()
+    out_path = tmp_path / "normalized_submission"
+    out_path.write_text("user data\n")
+
+    result = normalization.normalize_preparation_submission(
+        task=task,
+        raw_submission_dir=raw_dir,
+        normalized_submission_dir=out_path,
+    )
+
+    assert result["success"] is False
+    assert any("not a directory" in error for error in result["errors"])
+    assert out_path.read_text() == "user data\n"
+
+
 def test_study_answer_validation_requires_trajectory_manifest_outputs(
     tmp_path: Path,
 ):
@@ -754,8 +936,9 @@ def test_score_submission_accepts_harness_execution_record_when_required(
         provenance={"command_log": command_log},
         evidence={},
     )
+    bound_log = [{**entry, "task_id": task.task_id} for entry in command_log]
     (tmp_path.parent / "harness_execution.json").write_text(
-        json.dumps({"records": command_log})
+        json.dumps({"task_id": task.task_id, "records": bound_log})
     )
 
     score = scoring.score_submission(
@@ -768,7 +951,7 @@ def test_score_submission_accepts_harness_execution_record_when_required(
     assert score.weighted_total == 1.0
 
 
-def test_score_submission_accepts_jsonl_harness_execution_record_when_required(
+def test_score_submission_rejects_anonymous_jsonl_harness_execution_record(
     tmp_path: Path,
 ):
     task = _make_task(
@@ -818,8 +1001,9 @@ def test_score_submission_accepts_jsonl_harness_execution_record_when_required(
         harness_record_file=harness_path,
     )
 
-    assert score.status == "passed"
-    assert score.weighted_total == 1.0
+    assert score.status == "failed"
+    assert score.weighted_total == 0.0
+    assert any("top-level JSON object" in warning for warning in score.integrity_warnings)
 
 
 def test_status_failed_keeps_score_when_allowed_truth_passes(tmp_path: Path):
@@ -1421,7 +1605,7 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
         provenance={
             "schema_version": "1.0",
             "task_id": task.task_id,
-            "command_log": _prep_command_log(),
+            "command_log": _prep_command_log(task.task_id),
         },
         evidence={
             "schema_version": "1.0",
@@ -1452,7 +1636,10 @@ def test_p01_corrected_openmm_submission_scores_passed(tmp_path: Path):
     )
     (tmp_path / "provenance.json").write_text(json.dumps(provenance))
     (tmp_path.parent / "harness_execution.json").write_text(
-        json.dumps({"records": _prep_command_log()})
+        json.dumps({
+            "task_id": task.task_id,
+            "records": _prep_command_log(task.task_id),
+        })
     )
 
     validation_result = validation.validate_submission(task_file, tmp_path)

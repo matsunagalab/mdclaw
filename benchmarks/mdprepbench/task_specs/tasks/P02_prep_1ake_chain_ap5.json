@@ -33,6 +33,15 @@
         "weight": 0.5
       },
       {
+        "check_id": "single_prepared_polymer_chain",
+        "check_type": "assembly_identity_check",
+        "count_polymer_chains_only": true,
+        "exact_chain_count": 1,
+        "structure_manifest_path": "outputs.prepared_structure",
+        "structure_path": "prepared_structure.pdb",
+        "weight": 0.5
+      },
+      {
         "$bundle": "topology_minimization"
       },
       {
@@ -60,6 +69,15 @@
         ],
         "check_id": "minimized_no_unrequested_nonstandard_residues",
         "check_type": "unexpected_residue_rescan",
+        "structure_manifest_path": "outputs.minimized_structure",
+        "structure_path": "minimized_structure.pdb",
+        "weight": 0.5
+      },
+      {
+        "check_id": "single_minimized_polymer_chain",
+        "check_type": "assembly_identity_check",
+        "count_polymer_chains_only": true,
+        "exact_chain_count": 1,
         "structure_manifest_path": "outputs.minimized_structure",
         "structure_path": "minimized_structure.pdb",
         "weight": 0.5

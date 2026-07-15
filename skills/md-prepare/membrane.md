@@ -9,14 +9,16 @@ embedding replaces bulk solvation: use the same `solv` node type but run
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type solv
+mdclaw explain_node --job-dir <job_dir> --node-id <solv_node_id>
 mdclaw --job-dir <job_dir> --node-id <solv_node_id> embed_in_membrane \
   --lipids POPC --ratio "1" --dist 15.0 --dist-wat 17.5 \
   --salt --saltcon 0.15
 ```
 
-`pdb_file` auto-resolves from the `prep` parent's `merged_pdb` artifact; pass
-`--pdb-file` only to override (e.g. a manually oriented PDB). On success the
-solv node records `is_membrane=true`, so build topology with
+`pdb_file` auto-resolves from the `prep` parent's `merged_pdb` artifact. If a
+manually oriented structure is required, register it on an explicit prep
+branch instead of overriding the solv input path. On success the solv node
+records `is_membrane=true`, so build topology with
 `build_amber_system --is-membrane` (see `explicit-water.md`).
 
 Use `--preoriented` only for structures that are already in a membrane frame

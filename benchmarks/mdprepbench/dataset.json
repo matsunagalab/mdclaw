@@ -1,12 +1,12 @@
 {
   "agent_independent": true,
   "benchmark_type": "artifact_based_agent_benchmark",
-  "benchmark_version": "MDPrepBench-v0.2",
+  "benchmark_version": "MDPrepBench-v0.3",
   "evaluation_unit": "submission_artifacts",
   "families": {
     "preparation_workflow_battery": {
       "display_name": "Preparation Workflow Battery",
-      "intent": "Evaluate whether an agent can turn structurally messy public inputs into MD-ready preparation artifacts with backend-neutral provenance.",
+      "intent": "Evaluate whether an agent can turn structurally messy public inputs into physically valid, MD-ready raw OpenMM artifacts.",
       "score_axis": "preparation",
       "task_ids": [
         "P01_prep_simple_monomer_t4l",
@@ -54,7 +54,7 @@
   },
   "notes": [
     "Preparation-focused suite in the MDAgentBench benchmark family.",
-    "The current prep contract includes OpenMM topology build and minimization evidence.",
+    "The current prep contract requires a self-consistent OpenMM topology and minimized state; the evaluator derives validation metadata.",
     "No public task requires an MDClaw-specific guardrail code.",
     "Scientific question answering tasks live in MDStudyBench."
   ],
@@ -73,7 +73,7 @@
       "tasks/<task_id>/submission_checklist.md"
     ]
   },
-  "released": "2026-07-07",
+  "released": "2026-07-15",
   "schema_version": "1.0",
   "task_count": 40,
   "task_ids": [

@@ -1,22 +1,20 @@
-# P30_prep_protein_dna_zinc_1aay: Protein-DNA complex with metal
+# P30_prep_protein_dna_zinc_1aay: MD system preparation
 
 You are evaluating an MD agent on `P30_prep_protein_dna_zinc_1aay`.
 
 Use this prompt as the task statement. Retrieve public sources as needed, and do not read `truth/` or `scorer/` if those directories exist.
 
-Task: Protein-DNA complex with metal: prepare the Zif268 zinc-finger-DNA complex from PDB 1AAY. Keep the DNA duplex (both strands), all three structural Zn2+ ions, and the zinc-finger protein together in one mixed-polymer system. Select DNA-compatible and metal-ion-compatible force-field libraries, and neutralize the highly charged nucleic-acid system with counterions.
+Task: Protein-DNA complex with metal: prepare the Zif268 zinc-finger-DNA complex from PDB 1AAY, keeping the DNA duplex (both strands), all three structural Zn2+ ions, and the protein together in one mixed-polymer system. Select DNA-compatible and metal-ion-compatible force-field libraries and neutralize the highly charged nucleic-acid system.
 
 Public source anchors: PDB 1AAY.
 
-Your submission directory must contain:
+Prepare the requested system and energy-minimize it. Write only these raw artifacts to the exact submission directory:
 
-- `manifest.json`
-- `metrics.json`
-- `provenance.json`
+- `topology/system.xml`
+- `topology/topology.pdb`
+- `topology/state.xml`
 - `prepared_structure.pdb`
-- `minimized_structure.pdb`
-- `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Energy-minimize the built system to a relaxed state — free of steric clashes and at a stable, negative potential energy, not merely finite — then record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+`topology/state.xml` must contain the post-minimization OpenMM state and must be self-consistent with `topology/system.xml` and `topology/topology.pdb`. Full equilibration and production MD are not required.
 
-You may use MDClaw, direct OpenMM scripts, or another preparation workflow upstream, but the final submitted topology must be an OpenMM artifact triple that the scorer can reload. Record sources retrieved, commands or tool actions, preparation decisions, limitations, and any non-default choices in `provenance.json`.
+Do not write `manifest.json`, `metrics.json`, `provenance.json`, `minimized_structure.pdb`, `minimization_report.json`, `evidence_report.json`, a command log, walltime estimates, or artifact hashes. The evaluator derives the normalized metadata, minimized view, minimization report, and hashes from the raw artifacts. Evidence reports and solver command logs are not part of MDPrepBench v0.3. The harness owns the final record and measures walltime; non-MDClaw stage labels are solver-declared.

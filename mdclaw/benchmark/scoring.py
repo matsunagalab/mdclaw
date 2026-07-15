@@ -88,11 +88,34 @@ def score_submission(
     metrics = integrity.read_json_safe(submission_dir / "metrics.json")
     provenance = integrity.read_json_safe(submission_dir / "provenance.json")
     evidence = integrity.read_json_safe(submission_dir / "evidence_report.json")
-    harness_record = _read_harness_record(submission_dir, harness_record_file)
+    requires_harness_record = any(
+        check.require_harness_record
+        for check in task.scoring.integrity_checks
+    )
+    harness_record = (
+        _read_harness_record(submission_dir, harness_record_file)
+        if harness_record_file is not None or requires_harness_record
+        else {}
+    )
+    harness_identity_warnings = (
+        _harness_record_identity_warnings(
+            harness_record,
+            expected_run_id=run_id,
+            expected_task_id=task.task_id,
+        )
+        if task.primary_score == "preparation"
+        else []
+    )
+    if harness_identity_warnings:
+        harness_record = {}
 
     deterministic_results: list[CheckResult] = []
     ground_truth_results: list[CheckResult] = []
     integrity_warnings: list[str] = []
+    integrity_warnings.extend(
+        f"[harness_execution_identity] {warning}"
+        for warning in harness_identity_warnings
+    )
 
     # 1. provenance md5 verification
     integrity_warnings.extend(
@@ -240,7 +263,12 @@ def score_submission(
         # happens to match.
         score_status = "failed"
 
-    runtime = _extract_runtime(manifest, metrics)
+    runtime = _extract_runtime(
+        manifest,
+        metrics,
+        harness_record=harness_record,
+        use_harness=task.primary_score == "preparation",
+    )
 
     return Score(
         schema_version="1.0",
@@ -301,6 +329,34 @@ def _read_json_or_jsonl(path: Path) -> Any:
             except json.JSONDecodeError:
                 return {}
         return records
+
+
+def _harness_record_identity_warnings(
+    payload: Any,
+    *,
+    expected_run_id: str,
+    expected_task_id: str,
+) -> list[str]:
+    """Bind scorer-owned execution evidence to this run and task."""
+    if not payload:
+        return []
+    if not isinstance(payload, dict):
+        return ["harness execution record must be a top-level JSON object"]
+
+    warnings: list[str] = []
+    task_id = str(payload.get("task_id") or "")
+    if task_id != expected_task_id:
+        warnings.append(
+            f"task_id {task_id!r} does not match {expected_task_id!r}"
+        )
+    run_id = str(payload.get("run_id") or "")
+    if expected_run_id and run_id != expected_run_id:
+        warnings.append(f"run_id {run_id!r} does not match {expected_run_id!r}")
+
+    records = payload.get("records")
+    if not isinstance(records, list):
+        warnings.append("records is missing or not a list")
+    return warnings
 
 
 # ---------------------------------------------------------------------------
@@ -3517,10 +3573,41 @@ def _build_llm_judge_record(task: Task, payload: Optional[dict[str, Any]]
     )
 
 
-def _extract_runtime(manifest: dict, metrics: dict) -> RuntimeRecord:
+def _extract_runtime(
+    manifest: dict,
+    metrics: dict,
+    *,
+    harness_record: Any = None,
+    use_harness: bool = False,
+) -> RuntimeRecord:
     runtime = manifest.get("runtime") or metrics.get("runtime") or {}
+    walltime_minutes = float(runtime.get("walltime_minutes", 0.0) or 0.0)
+    if use_harness:
+        records = integrity._execution_log_from_payload(harness_record)
+        agent_records = [
+            record
+            for record in records
+            if isinstance(record, dict)
+            and integrity._canonical_stage(record.get("stage")) == "agent_run"
+        ]
+        measured_records = agent_records or [
+            record for record in records if isinstance(record, dict)
+        ]
+        measured_seconds = [
+            record.get(
+                "walltime_seconds",
+                record.get("duration_seconds", record.get("elapsed_seconds")),
+            )
+            for record in measured_records
+        ]
+        valid_seconds = [
+            float(value)
+            for value in measured_seconds
+            if integrity._is_nonnegative_finite_number(value)
+        ]
+        walltime_minutes = sum(valid_seconds) / 60.0
     return RuntimeRecord(
-        walltime_minutes=float(runtime.get("walltime_minutes", 0.0) or 0.0),
+        walltime_minutes=walltime_minutes,
         tokens=int(runtime.get("tokens", 0) or 0),
         gpu_hours=float(runtime.get("gpu_hours", 0.0) or 0.0),
     )
@@ -3722,13 +3809,8 @@ def _read_submission_json_path(submission_dir: Path, json_file: str | None,
     elif target_file == "metrics.json":
         payload = metrics_default
     else:
-        # paths in check.json_file are relative to submission_dir; allow
-        # bare filenames (manifest.json, evidence_report.json, etc.) and
-        # also the "submission/<file>" prefix used in v0.1 task.json.
-        rel = target_file
-        if rel.startswith("submission/"):
-            rel = rel.split("/", 1)[1]
-        payload = integrity.read_json_safe(submission_dir / rel)
+        # Paths in check.json_file are relative to submission_dir.
+        payload = integrity.read_json_safe(submission_dir / target_file)
     return integrity._safe_path(payload, json_path)
 
 

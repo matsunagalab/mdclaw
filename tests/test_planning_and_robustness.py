@@ -151,6 +151,14 @@ class TestDAGReentry:
 
 class TestAutoParent:
 
+    def test_create_returns_explain_node_command(self, job_dir):
+        res = create_node(str(job_dir), "prep")
+
+        assert res["next_command"] == (
+            "mdclaw explain_node "
+            f"--job-dir {job_dir.resolve()} --node-id {res['node_id']}"
+        )
+
     def test_single_candidate_auto_attaches(self, job_dir):
         src = _complete(job_dir, "source", {"source_bundle": "artifacts/sb.json"})
         res = create_node(str(job_dir), "prep")  # no explicit parent

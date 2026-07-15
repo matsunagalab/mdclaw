@@ -2,6 +2,7 @@
 
 Usage:
     mdclaw --list                          # List all tools
+    mdclaw --list-json [tool]              # Machine-readable tool contract
     mdclaw --version                       # Show version
     mdclaw <tool> --help                   # Tool-specific help
     mdclaw <tool> [--param value ...]      # Run a tool
@@ -48,7 +49,7 @@ _RENAMED_TOOLS = {
 
 # Global options that consume a following value, used to locate the subcommand
 # token when scanning argv for a renamed tool.
-_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id"}
+_GLOBAL_VALUE_OPTIONS = {"--job-dir", "--node-id", "--list-json"}
 
 
 def _detect_subcommand(argv: list[str]) -> str | None:
@@ -322,8 +323,12 @@ def _build_parser(tools: dict[str, dict]) -> argparse.ArgumentParser:
         help="List all available tools grouped by server.",
     )
     parser.add_argument(
-        "--list-json", action="store_true", dest="list_tools_json",
-        help="List available tools and CLI parameters as machine-readable JSON.",
+        "--list-json", nargs="?", const="", default=None,
+        dest="list_tools_json", metavar="TOOL",
+        help=(
+            "List available tools and CLI parameters as machine-readable JSON; "
+            "optionally show one exact tool."
+        ),
     )
     parser.add_argument(
         "--job-dir", type=str, default=None, dest="_global_job_dir",
@@ -464,9 +469,7 @@ def _run_tool(fn, is_async: bool, kwargs: dict):
 def _benchmark_stage_for_tool(tool_name: str, kwargs: dict) -> str:
     """Best-effort stage label for benchmark harness execution records."""
     if tool_name == "create_node":
-        node_type = str(kwargs.get("node_type") or "").strip().lower()
-        if node_type in {"source", "prep", "topo", "min", "eq", "prod", "analyze"}:
-            return "analysis" if node_type == "analyze" else node_type
+        return "dag"
     mapping = {
         "fetch_structure": "source",
         "download_structure": "source",
@@ -481,10 +484,10 @@ def _benchmark_stage_for_tool(tool_name: str, kwargs: dict) -> str:
         "embed_in_membrane": "prep",
         "build_amber_system": "topo",
         "build_openmm_system": "topo",
-        "package_openmm_submission": "topo",
-        "package_mdprep_submission": "min",
+        "package_openmm_submission": "package",
+        "package_mdprep_submission": "package",
         "run_minimization": "min",
-        "export_state_pdb": "min",
+        "export_state_pdb": "export",
         "run_equilibration": "eq",
         "run_production": "prod",
         "concat_trajectory": "analysis",
@@ -795,6 +798,7 @@ def _jsonable_default(value):
 
 def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     sig = inspect.signature(fn)
+    requires_node_context = tool_requires_node(fn)
     hints = {}
     try:
         hints = {k: v for k, v in inspect.get_annotations(fn, eval_str=True).items()
@@ -810,15 +814,21 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
         if hint is inspect.Parameter.empty:
             hint = str
         inner, is_optional = _unwrap_optional(hint)
-        required = param.default is inspect.Parameter.empty and not is_optional
+        required = (
+            param.default is inspect.Parameter.empty and not is_optional
+        ) or (
+            requires_node_context and pname in {"job_dir", "node_id"}
+        )
         cli_flag = f"--{pname.replace('_', '-')}"
         entry = {
             "name": pname,
             "cli_flag": cli_flag,
             "type": _type_label(hint),
             "required": required,
-            "has_default": param.default is not inspect.Parameter.empty,
-            "default": _jsonable_default(param.default),
+            "has_default": (
+                not required and param.default is not inspect.Parameter.empty
+            ),
+            "default": None if required else _jsonable_default(param.default),
         }
         if inner is bool:
             entry["cli_action"] = "boolean_optional"
@@ -835,43 +845,66 @@ def _tool_parameter_schemas(tool_name: str, fn) -> list[dict]:
     return params
 
 
-def _tool_list_json(tools: dict[str, dict]) -> dict:
-    """Build a machine-readable projection of discovered CLI tools."""
+def _tool_list_json(
+    tools: dict[str, dict],
+    requested_tool: str | None = None,
+) -> dict:
+    """Build a machine-readable projection of all tools or one exact tool."""
+    if requested_tool is not None and requested_tool not in tools:
+        return {
+            "success": False,
+            "error_type": "ValidationError",
+            "code": "tool_not_available",
+            "message": f"Unknown MDClaw tool '{requested_tool}'",
+            "errors": [f"Tool '{requested_tool}' is not present in CLI discovery"],
+            "warnings": [],
+            "hints": [
+                "Run 'mdclaw --list-json' to see exact available tool names.",
+            ],
+            "context": {"tool": requested_tool, "code": "tool_not_available"},
+            "recoverable": True,
+        }
+
+    selected_tools = (
+        {requested_tool: tools[requested_tool]}
+        if requested_tool is not None
+        else tools
+    )
     payload = {
         "success": True,
         "version": __version__,
-        "total": len(tools),
+        "total": len(selected_tools),
         "tools": [],
     }
-    for tool_name, info in sorted(tools.items()):
+    for tool_name, info in sorted(selected_tools.items()):
         description = info["description"]
         summary = description.split("\n")[0].strip() if description else ""
-        payload["tools"].append({
+        tool_payload = {
             "name": tool_name,
             "server": info["server"],
             "summary": summary,
-            "description": description,
             "is_async": info["is_async"],
             "requires_node": info.get("requires_node", tool_requires_node(info["fn"])),
             "node_type": info.get("node_type", tool_node_type(info["fn"])),
             "job_dir_is_data": info.get("job_dir_is_data", tool_job_dir_is_data(info["fn"])),
             "parameters": _tool_parameter_schemas(tool_name, info["fn"]),
-        })
+        }
+        if requested_tool is None:
+            tool_payload["description"] = description
+        payload["tools"].append(tool_payload)
     return payload
 
 
 def _print_tool_list(tools: dict[str, dict]) -> None:
-    """Print tools grouped by server."""
-    by_server: dict[str, list[tuple[str, str]]] = {}
+    """Print a compact tool-name index grouped by server."""
+    by_server: dict[str, list[str]] = {}
     for tool_name, info in tools.items():
-        by_server.setdefault(info["server"], []).append(
-            (tool_name, info["description"].split("\n")[0].strip() if info["description"] else "")
-        )
+        by_server.setdefault(info["server"], []).append(tool_name)
 
+    print("Tool index. Inspect one: mdclaw --list-json <tool>")
     for server_name in sorted(by_server):
         print(f"\n[{server_name}]")
-        for tname, desc in sorted(by_server[server_name]):
-            print(f"  {tname:40s} {desc[:60]}")
+        print("  " + "  ".join(sorted(by_server[server_name])))
     print(f"\nTotal: {len(tools)} tools")
 
 
@@ -956,10 +989,17 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(0)
 
     # --list-json
-    if args.list_tools_json:
-        json.dump(_tool_list_json(tools), sys.stdout, indent=2, default=str)
+    if args.list_tools_json is not None:
+        requested_tool = args.list_tools_json or None
+        payload = _tool_list_json(tools, requested_tool)
+        if requested_tool is None:
+            json.dump(payload, sys.stdout, indent=2, default=str)
+        else:
+            if not payload.get("success"):
+                payload = finalize_error(payload)
+            json.dump(payload, sys.stdout, separators=(",", ":"), default=str)
         print()
-        sys.exit(0)
+        sys.exit(0 if payload.get("success") else 1)
 
     # No subcommand
     if not args.tool_name:
@@ -1070,8 +1110,8 @@ def main(argv: list[str] | None = None) -> None:
             "errors": [f"missing required argument: {m}" for m in missing],
             "warnings": [],
             "hints": [
-                f"Run 'mdclaw {tool_name} --help' or 'mdclaw --list-json' "
-                "to see required parameters.",
+                f"Run 'mdclaw --list-json {tool_name}' to see the exact "
+                "required parameters and defaults.",
             ],
             "context": {"tool": tool_name, "missing": missing,
                         "code": "missing_required_arguments"},

@@ -516,6 +516,110 @@ def test_provenance_execution_evidence_requires_harness_record_when_strict():
     assert "harness execution record required" in warnings[0]
 
 
+def test_strict_harness_evidence_does_not_count_agent_run_stage():
+    warnings = integrity.check_provenance_execution_evidence(
+        {},
+        required_stages=[],
+        min_command_count=1,
+        harness_record={
+            "records": [
+                {
+                    "stage": "agent_run",
+                    "command": "agent process",
+                    "exit_code": 0,
+                    "walltime_seconds": 2.0,
+                }
+            ]
+        },
+        require_harness_record=True,
+    )
+
+    assert len(warnings) == 1
+    assert "missing or empty" in warnings[0]
+
+
+def test_strict_harness_evidence_requires_successful_min_labeled_stage():
+    warnings = integrity.check_provenance_execution_evidence(
+        {},
+        required_stages=["min"],
+        min_command_count=1,
+        harness_record={
+            "records": [
+                {
+                    "stage": "agent_run",
+                    "command": "agent process",
+                    "exit_code": 0,
+                    "walltime_seconds": 3.0,
+                },
+                {
+                    "stage": "topo",
+                    "command": "mdclaw build_openmm_system",
+                    "exit_code": 0,
+                    "walltime_seconds": 2.0,
+                },
+                {
+                    "stage": "package",
+                    "command": "mdclaw package_mdprep_submission",
+                    "exit_code": 0,
+                    "walltime_seconds": 1.0,
+                },
+            ]
+        },
+        require_harness_record=True,
+    )
+
+    assert any("missing required stage(s): ['min']" in item for item in warnings)
+
+
+def test_strict_harness_evidence_rejects_failed_min_stage():
+    warnings = integrity.check_provenance_execution_evidence(
+        {},
+        required_stages=["min"],
+        min_command_count=1,
+        harness_record={
+            "records": [
+                {
+                    "stage": "min",
+                    "command": "mdclaw run_minimization",
+                    "exit_code": 1,
+                    "walltime_seconds": 2.0,
+                }
+            ]
+        },
+        require_harness_record=True,
+    )
+
+    assert any("0 successful structured entry(ies)" in item for item in warnings)
+    assert any("missing required stage(s): ['min']" in item for item in warnings)
+
+
+def test_strict_harness_evidence_accepts_successful_min_retry():
+    warnings = integrity.check_provenance_execution_evidence(
+        {},
+        required_stages=["min"],
+        min_command_count=1,
+        harness_record={
+            "records": [
+                {
+                    "stage": "min",
+                    "command": "mdclaw run_minimization",
+                    "exit_code": 1,
+                    "walltime_seconds": 2.0,
+                },
+                {
+                    "stage": "min",
+                    "command": "mdclaw run_minimization --retry",
+                    "exit_code": 0,
+                    "walltime_seconds": 3.0,
+                },
+            ]
+        },
+        require_harness_record=True,
+    )
+
+    assert warnings == []
+
+
 def test_provenance_execution_evidence_accepts_measured_harness_record():
     command_log = [
         {

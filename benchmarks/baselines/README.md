@@ -27,20 +27,26 @@ Expected behavior:
 
 This is the "no-MDClaw floor": a credible general-purpose MD-prep workflow must
 beat it on the discriminating capabilities, not just on the trivial task.
+Because this script performs minimization itself, invoke it through the harness
+wrapper so strict v0.3 scoring records that successful stage:
 
-## `json_only_no_run.py`
+```bash
+$MDCLAW_BENCHMARK_STAGE_WRAPPER --stage min -- \
+  python benchmarks/baselines/naive_pdbfixer_prep.py \
+  --pdb-id 2LZM \
+  --submission-dir <task_run_dir>/submission \
+  --task-id P01_prep_simple_monomer_t4l
+```
 
-Writes a confident `manifest.json` + `metrics.json` declaring a completed,
-minimized, force-field-applied system, but ships no real artifacts.
+## `empty_submission.py`
+
+Creates the requested submission directory but writes no raw artifacts.
 
 Expected behavior:
 
-- Rejected / scored zero. Because the artifact is the source of truth, a
-  `completed` submission with no loadable OpenMM bundle and no minimized
-  structure fails the hard physical-validity gate, and the empty `command_log`
-  fails the execution-evidence integrity check. A correct benchmark must not
-  credit this; a non-zero score here would indicate the scorer trusts JSON over
-  artifacts.
+- Rejected before scoring because the required raw OpenMM triple and
+  `prepared_structure.pdb` are missing. A correct benchmark must not infer a
+  completed preparation from an empty handoff.
 
 ## `study_literature_guess_no_md.py` (MDStudyBench)
 
@@ -72,7 +78,7 @@ from each `summary.json`:
 | --- | --- | --- |
 | MDClaw reference | `mdclaw-skills+cli` | full-capability reference |
 | `naive_pdbfixer_prep` | `mdclaw-free` | weak no-MDClaw floor |
-| `json_only_no_run` | `mdclaw-free` | fabrication, must be rejected |
+| `empty_submission` | `mdclaw-free` | missing-artifact floor, must be rejected |
 | MDCrow (when run) | `mdclaw-free` | external entrant |
 
 All are scored by the same neutral MDClaw scorer. The spread between the MDClaw

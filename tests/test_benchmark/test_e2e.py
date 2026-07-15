@@ -27,6 +27,43 @@ MEMBRANE_TASK_ID = "P18_prep_membrane_mixed_lipids"
 STUDY_TASK_ID = "S03_stability_nuclease_h124l"
 
 
+def test_prep_score_api_has_no_normalization_bypass():
+    signature = inspect.signature(cli.score_benchmark_submission)
+    assert "normalize_preparation" not in signature.parameters
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("task_id", "P_wrong"), ("run_id", "wrong_run")),
+)
+def test_prep_score_rejects_mismatched_harness_envelope(
+    tmp_path: Path,
+    field: str,
+    value: str,
+):
+    run_id = "bound_run"
+    sub_dir = tmp_path / "submission"
+    _fake_submissions.GENERATORS[TASK_ID](sub_dir, run_id=run_id, mode="honest")
+    harness_path = tmp_path / "harness_execution.json"
+    harness = json.loads(harness_path.read_text())
+    harness[field] = value
+    harness_path.write_text(json.dumps(harness))
+
+    result = cli.score_benchmark_submission(
+        task_file=str(DATASET_DIR / "tasks" / TASK_ID / "task.json"),
+        submission_dir=str(sub_dir),
+        run_id=run_id,
+        output_file=str(tmp_path / "score.json"),
+    )
+
+    assert result["success"] is True
+    assert result["score"]["weighted_total"] == 0.0
+    assert any(
+        warning.startswith("[harness_execution_identity]")
+        for warning in result["score"]["integrity_warnings"]
+    )
+
+
 def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
     """Init a run, drop a synthetic P11 submission, validate, score, summarize."""
     output_dir = tmp_path / "benchmark_runs"
@@ -69,6 +106,23 @@ def test_e2e_smoke_run_for_prep_task(tmp_path: Path):
     assert summ["scores"]["scientific_answer"] is None
 
 
+def test_prep_validation_does_not_replace_sibling_directory(tmp_path: Path):
+    sub_dir = tmp_path / "submission"
+    _fake_submissions.GENERATORS[TASK_ID](sub_dir, run_id="validate_p11", mode="honest")
+    sibling = tmp_path / "normalized_submission"
+    sibling.mkdir()
+    sentinel = sibling / "keep.txt"
+    sentinel.write_text("user data\n")
+
+    result = cli.validate_benchmark_submission(
+        str(DATASET_DIR / "tasks" / TASK_ID / "task.json"),
+        str(sub_dir),
+    )
+
+    assert result["success"], result
+    assert sentinel.read_text() == "user data\n"
+
+
 def test_validate_and_score_wrapper_returns_normalized_fields(tmp_path: Path):
     sub_dir = tmp_path / "submission"
     _fake_submissions.GENERATORS[TASK_ID](sub_dir, run_id="wrapper_p11", mode="honest")
@@ -102,7 +156,7 @@ def test_validate_and_score_normalizes_raw_prep_artifacts(tmp_path: Path):
         "minimized_structure.pdb",
         "minimization_report.json",
     ):
-        (sub_dir / name).unlink()
+        assert not (sub_dir / name).exists()
     task_file = str(DATASET_DIR / "tasks" / TASK_ID / "task.json")
 
     result = cli.validate_and_score_benchmark_submission(
@@ -448,7 +502,7 @@ _fake_submissions.GENERATORS[args.task_id](
     assert cuda_by_task[task_ids[1]] == "1"
 
 
-def test_run_benchmark_agent_folds_solver_local_harness_jsonl(
+def test_run_benchmark_agent_ignores_solver_local_harness_jsonl(
     tmp_path: Path,
 ):
     fake_agent = tmp_path / "fake_agent_solver_harness.py"
@@ -456,6 +510,9 @@ def test_run_benchmark_agent_folds_solver_local_harness_jsonl(
         """
 import argparse
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from tests.test_benchmark import _fake_submissions
@@ -477,6 +534,12 @@ with solver_harness.open("w") as handle:
             "exit_code": 0,
             "walltime_seconds": 0.01,
         }) + "\\n")
+
+subprocess.run(
+    [sys.executable, os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"],
+     "--stage", "min", "--", sys.executable, "-c", "pass"],
+    check=True,
+)
 
 _fake_submissions.GENERATORS[args.task_id](
     Path(args.submission_dir),
@@ -509,9 +572,9 @@ _fake_submissions.GENERATORS[args.task_id](
     task_run_dir = output_dir / "agent_runner_solver_harness" / "tasks" / TASK_ID
     harness = json.loads((task_run_dir / "harness_execution.json").read_text())
     stages = {record.get("stage") for record in harness["records"]}
-    assert {"source", "prep", "topo", "min", "agent_run"} <= stages
+    assert {"min", "agent_run"} <= stages
     merged_jsonl = (task_run_dir / "harness_execution.jsonl").read_text()
-    assert "synthetic source" in merged_jsonl
+    assert "synthetic source" not in merged_jsonl
     score_payload = json.loads((task_run_dir / "score.json").read_text())
     score = score_payload.get("score", score_payload)
     assert score["status"] == "passed"
@@ -729,7 +792,7 @@ args = parser.parse_args()
 agent_prompt = Path(args.agent_prompt)
 prompt_text = agent_prompt.read_text()
 instruction_path = prompt_text.split(
-    "Use this agent-safe instruction file:\\n\\n", 1
+    "Instructions:\\n\\n", 1
 )[1].split("\\n\\n", 1)[0].strip()
 instruction = json.loads(Path(instruction_path).read_text())
 assert Path(instruction["agent_prompt"]).read_text() == prompt_text
@@ -800,6 +863,7 @@ def test_run_benchmark_agent_flags_mdclaw_cli_without_skill_context(
     fake_agent.write_text(
         """
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -830,6 +894,11 @@ for stage in ("source", "prep", "topo", "min"):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+subprocess.run(
+    [sys.executable, os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"],
+     "--stage", "min", "--", sys.executable, "-c", "pass"],
+    check=True,
+)
 
 _fake_submissions.GENERATORS[args.task_id](
     Path(args.submission_dir),
@@ -885,6 +954,7 @@ def test_run_benchmark_agent_installs_explicit_skills_for_agent_discovery(
         """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -942,6 +1012,11 @@ for stage in ("source", "prep", "topo", "min"):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+subprocess.run(
+    [sys.executable, os.environ["MDCLAW_BENCHMARK_STAGE_WRAPPER"],
+     "--stage", "min", "--", sys.executable, "-c", "pass"],
+    check=True,
+)
 
 _fake_submissions.GENERATORS[args.task_id](
     Path(args.submission_dir),
@@ -1232,6 +1307,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert "Solve only this task." in agent_prompt
     assert "benchmark-wide solver scripts" in agent_prompt
     assert "MDCLAW_BENCHMARK_STAGE_WRAPPER" in agent_prompt
+    assert "--stage min" in agent_prompt
+    assert "--stage run" not in agent_prompt
     assert "Do not create/edit harness_execution.json" in agent_prompt
     assert "Use work_dir for study/job/work files" in agent_prompt
     assert "exact submission_dir path" in agent_prompt
@@ -1247,6 +1324,8 @@ def test_prepare_benchmark_run_keeps_agent_instructions_prompt_only(
     assert task_instructions["work_dir"].endswith("/work")
     assert Path(task_instructions["work_dir"]).is_dir()
     assert task_instructions["stage_recording"]["wrapper"].endswith("record_stage.py")
+    assert "--stage min" in task_instructions["stage_recording"]["usage"]
+    assert "--stage run" not in task_instructions["stage_recording"]["usage"]
     assert Path(task_instructions["stage_recording"]["wrapper"]).is_file()
     assert task_instructions["mdclaw_cli"]["runtime"] == "auto"
     assert task_instructions["mdclaw_cli"]["command"] == "mdclaw"
@@ -1487,6 +1566,26 @@ def test_validate_and_score_wrapper_stops_on_validation_failure(tmp_path: Path):
     assert result["benchmark_passed"] is False
     assert not (tmp_path / "score.json").exists()
     assert (tmp_path / "validation.json").is_file()
+
+
+def test_prep_normalization_failure_cannot_be_scored(tmp_path: Path):
+    sub_dir = tmp_path / "submission"
+    sub_dir.mkdir()
+    (sub_dir / "manifest.json").write_text("{}\n")
+    score_file = tmp_path / "score.json"
+
+    result = cli.validate_and_score_benchmark_submission(
+        task_file=str(DATASET_DIR / "tasks" / TASK_ID / "task.json"),
+        submission_dir=str(sub_dir),
+        output_file=str(score_file),
+        require_validation_success=False,
+    )
+
+    assert result["success"] is False
+    assert result["score_success"] is False
+    assert any("unexpected file outside MDPrepBench raw contract" in error
+               for error in result["errors"])
+    assert not score_file.exists()
 
 
 def test_summary_dedup_on_re_run(tmp_path: Path):

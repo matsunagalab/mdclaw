@@ -1,29 +1,45 @@
 ---
 name: md-prepare
-description: "Molecular dynamics simulation preparation using MDClaw CLI tools. Covers structure acquisition, protein/nucleic/ligand selection, structure cleaning, solvation, and topology generation."
+description: "Molecular dynamics preparation with MDClaw CLI tools: acquisition, molecule selection, cleaning, solvation, and topology. Before any state-changing command, follow the pre-command gate in this skill; open linked pages only when their condition applies."
 ---
 
 # MD Prepare
 
-You are a computational biophysics expert helping users set up MD simulations using the MDClaw CLI tools.
+You are a computational biophysics expert helping users prepare MD simulations
+with the MDClaw CLI. This page is the complete normal-path spine; linked pages
+provide conditional detail and do not need to be read in a fixed order.
 
-Before any command, read in this order: `skills/common/preamble.md`,
-`skills/common/run-loop.md`, then `skills/md-prepare/happy-path.md`.
+## Pre-command Gate
 
-This skill uses the MDClaw CLI and DAG path: do not replace it with a
-hand-written OpenMM workflow because the DAG has more steps, and read the
-complete, unfiltered `mdclaw <tool> --help` whenever a flag or value is
-uncertain.
+Before the first state-changing command:
 
-Read `skills/common/tool-output.md` when interpreting a tool response,
-`skills/common/solvent-regimes.md` before selecting solvent defaults, and
-`skills/common/guardrail-codes.md` when a tool returns `success: false`.
+1. Copy the target exactly from the current request. Decide the requested
+   stopping stage, `solvent_regime`, and interaction mode, and prepare the Step
+   0 summary below. Explicit solvent and `autonomous` are the defaults unless
+   the user says otherwise.
+2. Use the MDClaw CLI and DAG. Do not replace a stage with a hand-written OpenMM
+   workflow or search for force-field XML files.
+3. Start new work with `bootstrap_md_workflow`; broader comparisons use
+   `md-study`. Immediately inspect the returned job once. Also run `inspect_job`
+   on re-entry, before shared-job work, or when branch parents are ambiguous.
+   A fresh unambiguous serial run does not need inspection before every node.
+4. For every state-changing stage, run `create_node`, then `explain_node`, then
+   the stage tool with the returned `job_dir` and `node_id`. Run only when
+   `ready_to_run=true` with no blocking codes or missing inputs.
+5. The workflow below already names the normal-path tools; do not scan the
+   global registry with bare `mdclaw --list`. To check one tool's signature,
+   use `mdclaw --list-json <tool>`. Only if that is insufficient, read the
+   complete `mdclaw <tool> --help`. Never pipe CLI discovery or help through
+   `head`, `tail`, or `grep`.
+6. On `success: false`, branch on the structured `code`. Correct a recoverable
+   CLI usage error on the same node only while it remains `pending`; otherwise
+   trace the failure and create an explicit branch.
 
-`skills/common/run-loop.md` is the single canonical loop (it also carries the
-node-CLI invariants and the re-entry checklist): inspect the job DAG, create the
-node for the current stage, validate it with `explain_node`, then run the tool
-with node context. Use IDs returned by `inspect_job`, `explain_node`, and
-`create_node`, never literal example IDs.
+Use IDs returned by tools, never literal example IDs. Read
+`skills/common/run-loop.md` for re-entry, shared-job, and failure detail;
+`skills/common/tool-output.md` for unfamiliar responses; and
+`skills/common/guardrail-codes.md` after a structured failure. Use
+`skills/md-prepare/setup.md` only to route to task-specific preparation pages.
 
 ## Defaults — Source of Truth
 
@@ -54,14 +70,14 @@ guardrails are authoritative; the skill guidance provides quick references:
   (forcefield, water model, box geometry, salt) and regime mapping
 - `skills/md-prepare/implicit-water.md` — implicit-solvent defaults
 
-Read the relevant guidance page **before** writing any value into the Step 0
-confirmation summary or executing any tool.
+Open the matching solvent page before its `prep`, `solv`, or `topo` stage when
+the regime is implicit, vacuum, or membrane, or when overriding explicit-water
+defaults. Tool-level defaults do not belong in the Step 0 confirmation table.
 
 ## Workflow
 
-The required execution order is **read → confirm → execute**. Do not
-present defaults to the user, and do not run any tool, before the
-guidance pages for the relevant solvation mode have been read.
+Complete the pre-command gate, confirm the run identity, and then execute the
+workflow below. Load a linked page only when its condition applies.
 
 Every MD workflow starts from a study plan and uses the same folder layout.
 For a clear single-system request such as "simulate 1AKE chain A" or "run this
@@ -75,6 +91,7 @@ mdclaw bootstrap_md_workflow \
   --md-goal "<one sentence MD goal>" \
   --solvent-regime explicit \
   --execution-mode autonomous
+mdclaw inspect_job --job-dir <returned_job_dir>
 ```
 
 Replace `"explicit"` with `"implicit"`, `"vacuum"`, or `"membrane"` when the
@@ -111,61 +128,30 @@ structure before creating an MD-ready physical system. Use DAG branching after
 use the HPacker-based `create_mutated_structure` branch in
 `skills/md-prepare/branches.md`.
 
-1. Ensure the canonical study layout exists with `bootstrap_md_workflow` or a
-   richer `md-study` plan. Use the returned `job_dir` for all DAG commands.
-2. Decide `execution_mode` from the user's request:
-   - `execution_mode=autonomous` unless the user explicitly asks for
-     checkpoint-by-checkpoint confirmation.
-   - Treat it only as an interaction policy. The current request determines
-     the stopping point per `skills/common/run-loop.md`.
-   - Persistence to `progress.json` normally happens in
-     `bootstrap_md_workflow`. If you are repairing an older study, write it via:
-     ```bash
-     mdclaw update_workflow_state --job-dir <job_dir> \
-       --params '{"execution_mode":"autonomous","solvent_regime":"explicit"}'
-     ```
-3. **Read `skills/md-prepare/setup.md` first** — it routes to the focused
-   setup guidance for acquisition, inspection, cleaning, branches, and resume.
-   For a normal explicit-water autonomous run, keep
-   `skills/md-prepare/happy-path.md` as the short execution spine and
-   open only the task-specific guidance pages tagged by `setup.md`.
-4. Determine the effective `solvent_regime` from the study plan / job params.
-   Then read the matching guidance page. If the current job lacks
-   `solvent_regime`, repair the bootstrap with `update_workflow_state --params ...`
-   before running `prepare_complex`.
-5. **Read the solvation-specific guidance page** — required before stating
-   any forcefield / water / box default to the user:
-   - Explicit water (default) → `skills/md-prepare/explicit-water.md`
-   - Implicit solvent → `skills/md-prepare/implicit-water.md`
-   - Membrane → `skills/md-prepare/explicit-water.md` plus
-     `skills/md-prepare/membrane.md`
-   - Vacuum/no-solvent → the "Implicit / Vacuum Topology Contract" section of
-     `skills/common/solvent-regimes.md`; do not pass `--implicit-solvent`
-6. **Now present the Step 0 confirmation summary** (see Step 0 below)
-   to the user. Only the fields enumerated there belong in the table —
-   forcefield, water model, box geometry, etc. are tool-level defaults
-   surfaced from the guidance pages read in steps 4–5 and are not part of
-   the user-facing summary unless the user explicitly named them.
-7. **Execute the happy path**: run `prep` → (optional `mutate`/PTM branch) →
-   `solv` → `topo`, following `skills/md-prepare/happy-path.md` and the
-   solvation page. The invariants that always apply:
-   - Create each node first, then run the tool with both `--job-dir` and
-     `--node-id` (see `skills/common/run-loop.md`).
-   - Pass the effective solvent regime to `prepare_complex`
-     (`--solvent-type explicit|implicit|vacuum`).
-   - Let `build_amber_system` auto-resolve its parent artifact when creating the
-     `topo` node; never pass a free-standing `--pdb-file` or re-enter from a raw
-     PDB.
-
-   Read a focused page only when the request needs it:
-   - Ions kept/excluded by regime → `skills/md-prepare/ion-policy.md`
-   - Site-specific protonation, terminal caps, DNA/RNA hydrogen rebuild,
-     isotopes/deuterium, glycoproteins, large-assembly chain identity →
-     `skills/md-prepare/prep-chemistry.md`
-   - Biological assemblies and candidate selection →
-     `skills/md-prepare/acquisition.md`
-   - Mutations / supported PTMs → `skills/md-prepare/branches.md`
-   - Membrane embedding → `skills/md-prepare/membrane.md`
+1. Present the Step 0 run-identity summary below. `execution_mode=autonomous`
+   unless the user requested checkpoint-by-checkpoint confirmation; it controls
+   pauses, not the stopping stage.
+2. Ensure the canonical study layout exists with `bootstrap_md_workflow` or a
+   richer `md-study` plan. Use its returned `job_dir` for all DAG commands and
+   run `inspect_job` once after bootstrap. For an older study missing workflow
+   params, repair them with `update_workflow_state --params ...`.
+3. Create, explain, and run the `source` node. Read `acquisition.md` only for a
+   remote/generated source, biological assembly, or multi-candidate bundle.
+4. Run `inspect_molecules`, confirm Step 0b, then create, explain, and run the
+   `prep` node with `prepare_complex --solvent-type
+   explicit|implicit|vacuum`. Read `inspection-and-chains.md` or
+   `prepare-complex.md` when molecule selection is not trivial.
+5. When requested, create an explicit mutation/PTM prep branch using
+   `branches.md`. Read `ion-policy.md` or `prep-chemistry.md` only when the
+   corresponding chemistry is present.
+6. For explicit solvent, create, explain, and run a `solv` node using
+   `explicit-water.md`; for membrane use `membrane.md`. Skip `solv` for
+   implicit/vacuum and use `implicit-water.md` or the vacuum section of
+   `skills/common/solvent-regimes.md`.
+7. Run the platform preflight when later local compute is requested. Then
+   create, explain, and run `topo`; let `build_amber_system` resolve the
+   completed `solv` parent for explicit/membrane or `prep` parent for
+   implicit/vacuum. Never pass a free-standing raw PDB.
 8. After each completed structural node where human inspection is useful
    (`source`, `prep`, `solv`, `topo`), perform Visual QA per
    `skills/common/visual-qa.md` and register it with `register_visual_review`.
@@ -182,13 +168,12 @@ use the HPacker-based `create_mutated_structure` branch in
 
 ## Step 0: Parse and Confirm
 
-Run this **after** Workflow steps 4–5 (the solvation guidance page has been
-read). Confirm in two parts, because chains and ligands can only be finalized
-after molecule inspection.
+Run this after the pre-command gate and before bootstrap/source acquisition.
+Confirm in two parts because chains and ligands can only be finalized after
+molecule inspection.
 
 Do **not** add forcefield, water model, box geometry, or any other tool-level
-default to these tables — those values come from the guidance pages and are
-applied silently by the tools unless the user explicitly named one.
+default to these tables; tools apply them unless the user explicitly named one.
 
 The target identifier is the most important parameter — copy it exactly from
 the user's message without relying on conversation history; earlier parts of

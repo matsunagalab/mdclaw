@@ -1,13 +1,13 @@
 # MDAgentBench Suite Design
 
 This design has been promoted into two focused benchmark suites:
-`MDPrepBench-v0.2` for preparation workflows and `MDStudyBench-v0.2` for the
+`MDPrepBench-v0.3` for preparation workflows and `MDStudyBench-v0.2` for the
 scientific question / study-bundle tasks. The long-term goal is to keep
 MDAgentBench organized around these two main suites:
 
 1. **Preparation Workflow Battery**: can an agent turn structurally messy
    public inputs into topology-built, minimized MD-ready systems with
-   agent-neutral provenance and a scorer-loadable OpenMM artifact bundle?
+   a scorer-loadable raw OpenMM artifact bundle?
 2. **Scientific MD Reasoning**: can an agent plan, run/analyze, and defend a
    scientific conclusion for an experimentally validated question?
 
@@ -35,32 +35,30 @@ only `prompt.md` and `submission_contract.json` to the evaluated agent. The
 scorer keeps `task.json`, reference structures, hidden ligand poses, expected
 component truth, and any truth/rescan material private.
 
-Recommended scoring split:
+MDPrepBench v0.3 is scored entirely with deterministic artifact checks. There
+is no preparation-specific LLM judge or agent-authored evidence axis.
 
-- 70-85% deterministic artifact checks.
-- 10-20% provenance and decision trace checks.
-- 0-15% LLM judge for concise rationale, only where a choice must be explained.
-
-The submission is agent-neutral, but prep battery v0.1 requires a common
+The submission is agent-neutral, but MDPrepBench v0.3 requires a common
 OpenMM topology artifact format for completed submissions. MDClaw/OpenMM XML
 triples are accepted directly, and other workflows can be used upstream if they
 export `system.xml`, `topology.pdb`, and `state.xml` for scoring. Every
-completed prep submission must include topology artifacts, a minimized
-structure, and minimization evidence. OpenMM artifacts are reloaded and
-rescanned for finite energy; native-only Amber/GROMACS validation is deferred
-until backend adapters are added.
+completed prep submission must include the raw topology triple and
+`prepared_structure.pdb`. OpenMM artifacts are reloaded and rescanned for
+finite energy; native-only Amber/GROMACS validation is deferred until backend
+adapters are added.
 
 ### Current Prep Contract
 
-Every P01-P40 task requires these files in the submission directory (slim
-contract — `evidence_report.json` is optional unless a specific task lists it):
+Every P01-P40 task requires these raw files in the submission directory:
 
-- `manifest.json`
-- `metrics.json`
-- `provenance.json`
+- `topology/system.xml`
+- `topology/topology.pdb`
+- `topology/state.xml` containing the minimized state
 - `prepared_structure.pdb`
-- `minimization_report.json`
-- `minimized_structure.pdb`
+
+Task-specific raw files are listed explicitly in each public contract. The
+evaluator derives metadata, hashes, the minimized PDB, and the minimization
+report; the agent does not author those outputs.
 
 Scoring is artifact-as-truth and graded: OpenMM is detected by deserializing the
 triple (not a declared backend label), physical properties (force-field applied,
@@ -70,14 +68,6 @@ replaces blanket pass/fail. Each run records a `tooling_condition`, an
 `attestation.json`, and a `verified` flag. See `docs/benchmark/fairness-protocol.md`
 and `docs/benchmark/capability-coverage.md`.
 
-Every completed prep submission must also set these manifest outputs:
-
-- `outputs.topology`: OpenMM topology artifacts. This must include
-  `system.xml`, `topology.pdb`, and `state.xml`.
-- `outputs.minimized_structure`: a structure after minimization. In MDClaw DAG
-  runs, use the `min` node artifact `minimized_structure.pdb`.
-- `outputs.minimization_report`: normally `minimization_report.json`.
-
 The preferred MDClaw DAG path for MDPrepBench is `source -> prep -> solv -> topo
 -> min`. Full equilibration and production remain outside the prep suite.
 The short relaxation inside a topology builder (10 iterations by default) is
@@ -85,56 +75,47 @@ initial system validation, not the `min` node contract; its report records
 `scope="topology_initial_relaxation"` and
 `satisfies_min_node_contract=false`. A direct bundle may be treated as minimized
 only when its exact packaged state actually underwent a post-topology
-minimization equivalent to the `min` node contract.
-
-The standardized metrics fields are:
-
-- `topology.backend`, `topology.build_success`, `topology.forcefield`,
-  `topology.water_model`, and `topology.solvent_model`.
-- `minimization.attempted`, `minimization.completed`,
-  `minimization.energy_initial_kj_mol`,
-  `minimization.energy_final_kj_mol`,
-  `minimization.energy_is_finite`,
-  `minimization.positions_are_finite`,
-  `minimization.atom_count_preserved`, and `minimization.backend`.
+minimization equivalent to the `min` node contract. The evaluator derives the
+minimized PDB, minimization report, metrics, normalized manifest, and hashes;
+they are not agent outputs in v0.3.
 
 All tasks include common deterministic checks for `topology_artifact_bundle`,
 `openmm_system_load`, `openmm_energy_rescan`, `forcefield_applied_rescan`,
 `minimization_report_check`, and `structure_geometry_quality` (a steric-clash /
 geometry sanity scan recomputed from the artifact). Task-specific
 structure/component checks are also mirrored onto the minimized structure when
-applicable. If a submission declares `manifest.status = "completed"` but fails a
-topology/minimization/geometry critical check, the scorer treats it as a failed
-prep submission rather than a partial success. Any deterministic check can also
-be promoted to this gate per task with `hard_fail: true`.
+applicable. If a submitted raw bundle fails a topology/minimization/geometry
+critical check, the scorer gives it zero rather than partial credit. Any
+deterministic check can also be promoted to this gate per task with
+`hard_fail: true`.
 
 ### Current Prep Tasks
 
 | ID | Theme | Candidate public input | Prompt | Main scorer checks | Priority |
 |---|---|---|---|---|---:|
-| P01 | Simple monomer preparation | PDB 2LZM | Task: Simple monomer preparation: retrieve T4 lysozyme chain A, clean it, prepare an explicit-water-compatible topology, and report that no unintended ligands were retained. | source PDB, explicit solvent, no BEN/AP5, topology-ready metadata, common topology/minimization checks. | 1 |
-| P02 | Chain and ligand selection | PDB 1AKE | Task: Chain and ligand selection: prepare adenylate kinase chain A while retaining the AP5 ligand, even if the ligand is represented under a separate mmCIF label chain. | chain A selected, AP5 retained, ligand selection metadata, common topology/minimization checks. | 1 |
+| P01 | Simple monomer preparation | PDB 2LZM | Task: retrieve T4 lysozyme chain A, clean it, and prepare an explicit-water system without unintended ligands. | explicit solvent and absence of BEN/AP5 from raw structures, common topology/minimization checks. | 1 |
+| P02 | Chain and ligand selection | PDB 1AKE | Task: prepare adenylate kinase chain A while retaining AP5, including when mmCIF labels separate it from the protein. | AP5 count and absence of unrequested nonstandard residues in raw structures, common topology/minimization checks. | 1 |
 | P03 | Ligand pose preservation | PDB 181L | Task: Ligand pose preservation: Prepare the T4 lysozyme L99A-benzene complex from PDB 181L. Keep protein chain A and the deposited benzene ligand (BNZ) together, and preserve the crystallographic benzene pose. Do not submit a ligand-only structure. Some tools may list BNZ separately from the protein during inspection, so make sure it is still included. | hidden protein+BNZ RMSD reference, L99A residue, BNZ retained in prepared/minimized structures, common topology/minimization checks. | 1 |
-| P04 | Multi-ligand inclusion and exclusion | PDB 3PWB | Task: Multi-ligand inclusion and exclusion: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens. | requested BEN/GOL retained, excluded heterogens absent, filtering metadata, common topology/minimization checks. | 1 |
-| P05 | Charged cofactor-like ligand stress | PDB 1DAP | Task: Charged cofactor-like ligand stress: prepare DAP dehydrogenase with both deposited NDP cofactors (NADPH dihydro-nicotinamide-adenine-dinucleotide phosphate; chains C and F, auth chains A and B) without silently dropping either cofactor or changing its charge without provenance. | both NDP cofactors retained, charge/provenance metadata, common topology/minimization checks. | 2 |
-| P06 | Supported metal ion retention | PDB 1CLL | Task: Supported metal ion retention: prepare calcium-bound calmodulin while treating Ca2+ as supported ions rather than generic ligands. | four Ca ions retained, ion parameter metadata, common topology/minimization checks. | 1 |
-| P07 | Crystallographic ion triage | PDB 4RBQ | Task: Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system. | RNA residue retention from artifacts, K ion retention from artifacts, deposited-water/buffer triage from provenance/evidence, common topology/minimization checks. | 2 |
-| P08 | Point mutation branch | PDB 2LZM | Task: Point mutation branch: prepare WT T4 lysozyme and a branched L99A mutant without overwriting the WT artifacts or shifting residue numbering. | A:99 ALA, branch parent recorded, WT/mutant artifacts separated, common topology/minimization checks. | 1 |
-| P09 | Multi-mutant branch | PDB 2LZM | Task: Multi-mutant branch: apply L99A and M102Q from one prompt on a branched prep node. | A:99 ALA, A:102 GLN, mutation count recorded, common topology/minimization checks. | 2 |
-| P10 | Disulfide auto/override | PDB 5PTI | Task: Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components. | three disulfide pairs recorded, detection method recorded, component disposition recorded, experimental deuterium excluded from prepared/minimized structures, common topology/minimization checks. | 2 |
-| P11 | Specific residue protonation | PDB 2LZM | Task: Specific residue protonation: override the default pH assignment for chain A residue 11 so Glu11 is protonated as GLH. | requested GLH metadata, A:11 GLH with HE2 in prepared/minimized structures, common topology/minimization checks. | 1 |
-| P12 | Phosphorylated residue restore | PDB 5K9P | Task: Phosphorylated residue restore: detect deposited SEP, clean the standard protein, restore phosphorylation, and build a topology-ready structure. | A:20 SEP with P atom, phosphorylation library metadata, common topology/minimization checks. | 1 |
-| P13 | User-requested phosphorylation | PDB 1UBQ | Task: User-requested phosphorylation: apply phosphorylation to unmodified ubiquitin Ser20 and prepare the resulting SEP-containing system. | A:20 SEP with P atom, requested phosphorylation metadata, common topology/minimization checks. | 2 |
-| P14 | Glycoprotein/glycan pass-through | PDB 6YA2 | Task: Glycoprotein/glycan pass-through: keep N-linked glycans as glycans rather than treating them as ordinary small-molecule ligands. | NAG retained in prepared/minimized structures, glycan metadata, common topology/minimization checks. | 1 |
-| P15 | Standard DNA topology | PDB 5MVQ | Task: Standard DNA topology: prepare a DNA dodecamer without assuming protein or ligand defaults. | DNA type and library metadata, common topology/minimization checks. | 2 |
-| P16 | Standard RNA topology | PDB 4RBQ | Task: Standard RNA topology: prepare RNA and choose an RNA-compatible force-field library. | RNA type and library metadata, common topology/minimization checks. | 2 |
-| P17 | DNA duplex chain retention and neutralization | PDB 1BNA | Task: DNA duplex chain retention and neutralization: prepare both chains of the standard B-DNA duplex, select a DNA-compatible force-field library, and record counterion neutralization rather than treating the duplex as a single protein-like chain. | DNA type, two chains, DA/DC/DG/DT retained in prepared/minimized structures, neutralization metadata, common topology/minimization checks. | 2 |
+| P04 | Multi-ligand inclusion and exclusion | PDB 3PWB | Task: retain requested BEN/GOL-like ligands while excluding irrelevant buffer molecules and unrequested heterogens. | requested components present and excluded heterogens absent in raw structures, common topology/minimization checks. | 1 |
+| P05 | Charged cofactor-like ligand stress | PDB 1DAP | Task: prepare DAP dehydrogenase with both deposited NDP cofactors (chains C and F, auth chains A and B) without silently dropping either cofactor. | both NDP cofactors retained in raw artifacts, common topology/minimization checks. | 2 |
+| P06 | Supported metal ion retention | PDB 1CLL | Task: prepare calcium-bound calmodulin while retaining its four Ca2+ ions. | exact Ca ion count in raw structures, common topology/minimization checks. | 1 |
+| P07 | Crystallographic ion triage | PDB 4RBQ | Task: Crystallographic ion triage: prepare oligo(U) RNA while retaining prompt-designated crystallographic K+ ions, excluding deposited crystallographic waters or buffer molecules as selected source components, and building an explicit-solvent topology/minimization system. | RNA and K ion retention plus deposited-water/buffer exclusion from raw artifacts, common topology/minimization checks. | 2 |
+| P08 | Point mutation branch | PDB 2LZM | Task: prepare WT T4 lysozyme and a branched L99A mutant without overwriting the WT artifact. | A:99 ALA in mutant plus separate WT raw structure, common topology/minimization checks. | 1 |
+| P09 | Multi-mutant branch | PDB 2LZM | Task: apply L99A and M102Q together. | A:99 ALA and A:102 GLN in raw structures, common topology/minimization checks. | 2 |
+| P10 | Disulfide auto/override | PDB 5PTI | Task: Disulfide auto/override: prepare 5PTI as a standard classical MD system and preserve the canonical BPTI disulfides. | three disulfide pairs present and experimental deuterium excluded from raw structures, common topology/minimization checks. | 2 |
+| P11 | Specific residue protonation | PDB 2LZM | Task: protonate chain A residue 11 as GLH. | A:11 GLH with HE2 in raw structures, common topology/minimization checks. | 1 |
+| P12 | Phosphorylated residue restore | PDB 5K9P | Task: restore deposited SEP and build an MD-ready system. | A:20 SEP with P atom in raw structures, common topology/minimization checks. | 1 |
+| P13 | User-requested phosphorylation | PDB 1UBQ | Task: convert ubiquitin Ser20 to SEP and prepare the resulting system. | A:20 SEP with P atom in raw structures, common topology/minimization checks. | 2 |
+| P14 | Glycoprotein/glycan pass-through | PDB 6YA2 | Task: retain N-linked glycans as glycans. | NAG retained in raw structures, common topology/minimization checks. | 1 |
+| P15 | Standard DNA topology | PDB 5MVQ | Task: prepare a DNA dodecamer without protein defaults. | DNA residue content in raw structures, common topology/minimization checks. | 2 |
+| P16 | Standard RNA topology | PDB 4RBQ | Task: prepare an RNA system. | RNA residue content in raw structures, common topology/minimization checks. | 2 |
+| P17 | DNA duplex chain retention and neutralization | PDB 1BNA | Task: retain both B-DNA duplex chains and neutralize the system. | two chains, DNA residues, and neutral topology charge recomputed from raw artifacts, common topology/minimization checks. | 2 |
 | P18 | Membrane embedding and lipid composition | PDB 2LOP | Task: Membrane embedding and lipid composition: prepare TMEM14A model 1 in a mixed POPC:POPE:CHL1 membrane with nominal 2:1:1 composition. | membrane regime from topology, model-1 coordinate RMSD, POPC/POPE/CHL1 retained in topology/minimized structure, common topology/minimization checks. | 1 |
 | P19 | Candidate/model selection | PDB 2K39 | Task: Candidate/model selection: select model 5 from the NMR ensemble before preparation rather than silently using model 1 or averaging the ensemble. | model-5 coordinate RMSD against scorer-private reference, common topology/minimization checks. | 2 |
-| P20 | Terminal capping | PDB 5AWL | Task: Terminal capping: prepare CLN025/chignolin from PDB 5AWL with an acetylated N terminus (ACE) and an N-methylamide C terminus (NME), and record the cap choices. | ACE/NME retained in prepared/minimized structures, cap choices recorded, common topology/minimization checks. | 1 |
-| P21 | PDB cleanup, missing residues, and numbering | PDB 4Q5T | Task: PDB cleanup, missing residues, and numbering: resolve altloc choice, author numbering, MSE-to-MET handling, missing loops, termini, and whether to model or block. | MSE removed, cleanup/altloc/numbering/missing-residue decisions recorded, common topology/minimization checks. | 2 |
-| P22 | Force-field/water model fidelity | PDB 2LZM | Task: Force-field/water model fidelity: honor a supported user-specified force-field/water pair, such as ff19SB with OPC, rather than silently falling back to defaults. | requested force-field/water pair and explicit solvent metadata, common topology/minimization checks. | 1 |
-| P23 | Implicit vs explicit solvent | PDB 5AWL | Task: Implicit vs explicit solvent: respect an explicit implicit-solvent request and avoid creating an explicit water box. | implicit solvent metadata, no explicit waters/ions in prepared/minimized structures, common topology/minimization checks. | 2 |
+| P20 | Terminal capping | PDB 5AWL | Task: prepare CLN025/chignolin with ACE and NME terminal caps. | ACE/NME retained in raw structures, common topology/minimization checks. | 1 |
+| P21 | MSE cleanup | PDB 4Q5T | Task: convert deposited MSE residues to standard MET and exclude unrequested nonstandard residues. | MSE absent and MET present in raw structures, common topology/minimization checks. | 2 |
+| P22 | OPC water-model fidelity | PDB 2LZM | Task: build an explicit-solvent system with the requested 4-site OPC water model. | explicit solvent and OPC water fingerprint from the raw topology, common topology/minimization checks. | 1 |
+| P23 | Implicit vs explicit solvent | PDB 5AWL | Task: use implicit solvent and avoid an explicit water box. | absence of explicit waters/ions in raw structures, common topology/minimization checks. | 2 |
 | P24 | Assembly/biological unit choice | PDB 1STP, stress reference PDB 2MS2 | Task: Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. | assembly-1 coordinate RMSD, four submitted protein chains, common topology/minimization checks. | 1 |
 | P25 | Specified ion concentration | PDB 5AWL | Task: Specified ion concentration: build an explicit-solvent chignolin system that honors 0.30 M KCl while preserving net neutrality. | explicit solvent, K/CL retained in topology/minimized structure, 0.30 M KCl recomputed from ion count and box volume, net charge recomputed from OpenMM charges, common topology/minimization checks. | 1 |
 | P26 | Zinc metalloenzyme retention | PDB 2CBA | Task: prepare human carbonic anhydrase II, keep the catalytic Zn2+ as a supported metal ion and its His94/96/119 shell, and neutralize. | Zn2+ retained (prepared/minimized), coordinating His94 present, net neutral, common topology/minimization checks. | 1 |
@@ -151,7 +132,7 @@ be promoted to this gate per task with `hard_fail: true`.
 | P37 | Beta-barrel membrane protein | PDB 1BXW | Task: embed OmpA in POPC, excluding crystallographic detergent. | membrane regime, beta-barrel protein retained, detergent excluded, net neutral, common topology/minimization checks. | 1 |
 | P38 | Implicit protein-peptide complex | PDB 1YCR | Task: prepare the MDM2-p53 peptide complex in implicit solvent. | implicit regime, two partners retained, no explicit water box, common topology/minimization checks. | 2 |
 | P39 | Oligomeric potassium-channel membrane | PDB 1BL8 | Task: embed biological tetrameric KcsA in POPC while retaining deposited pore K+ ions. | membrane regime, four protein chains retained, pore K+ retained (prepared/minimized), net neutral, common topology/minimization checks. | 1 |
-| P40 | TIP3P water-model fidelity | PDB 2LZM | Task: honor an ff14SB + TIP3P explicit-solvent request. | explicit solvent, TIP3P water fingerprint, no unrequested nonstandard residues, common topology/minimization checks. | 1 |
+| P40 | TIP3P water-model fidelity | PDB 2LZM | Task: honor a 3-site TIP3P explicit-solvent request. | explicit solvent, TIP3P water fingerprint, no unrequested nonstandard residues, common topology/minimization checks. | 1 |
 
 Priority now indicates the preferred order for real MDClaw baseline smoke runs
 and further curation. All 40 tasks are part of the active prep battery.
@@ -162,31 +143,28 @@ The P01-P40 list is broad enough for the first prep battery, but three details
 should be treated as explicit coverage requirements rather than left implicit:
 
 - **Assembly coverage is first-wave material.** P24 specifies `assembly_id`
-  and the submission should expose enough provenance for the scorer to verify
-  the generated biological unit. Use a normal dimer/tetramer case first, then
+  and the raw structure should let the scorer verify the generated biological
+  unit. Use a normal dimer/tetramer case first, then
   add a many-chain stress case under the same P24 family or as a follow-up
   variant.
 - **Many-chain identity must not depend on one-character PDB chain IDs.** In
-  P24-style tasks, scoring should check stable component identity through
-  provenance, source auth/label/subchain IDs, topology chain index, or an
-  equivalent chain-identity map. Reused PDB chain labels are acceptable only if
-  adjacent components and submitted metadata remain unambiguous.
-- **PDB cleanup hazards belong in P21.** Missing loops alone are too narrow.
-  P21 should also test altloc choice, insertion codes / author numbering,
-  common nonstandard cleanup such as MSE, chain breaks, termini/capping, and
-  explicit decisions to model or block.
+  P24-style tasks, scoring should check stable component identity from raw
+  coordinates and topology chain order. Reused PDB chain labels are acceptable
+  only when the submitted artifacts remain unambiguous.
+- **P21 keeps only artifact-verifiable cleanup.** It checks MSE-to-MET conversion
+  and exclusion of unrequested nonstandard residues.
 
 ### Backend Neutrality
 
 The public prep benchmark should score reproducible MD-prep artifacts, not
 MDClaw-specific policy names, internal node IDs, or local refusal codes. If a
-backend truly cannot complete a public task, the submission can still explain
-the concrete blocked stage through the standard manifest, provenance, and
-evidence files when that task explicitly allows blocked outcomes.
+backend cannot complete a public task, the harness records the failed stage;
+the solver must not invent a completed raw bundle or write status metadata into
+the MDPrepBench submission.
 
 ### Prep Battery Scorer Extensions
 
-The scorer now covers file presence, JSON checks, trajectory rescan, solvent
+The scorer now covers file presence, evaluator-derived metadata, solvent
 rescan, RMSD recompute, caption/metrics consistency, OpenMM topology loading,
 OpenMM finite-energy rescan, minimization report checks, minimized-structure
 component rescans, and assembly identity checks. Remaining useful deterministic
@@ -210,9 +188,8 @@ check types include:
   biological assemblies. P24 also uses coordinate RMSD against a scorer-private
   assembly reference, so assembly identity is judged from submitted structure
   artifacts rather than from a self-reported assembly map.
-- `pdb_cleanup_decision_check`: verify altloc selection, insertion-code /
-  author-numbering preservation, MSE/nonstandard-residue handling, missing-loop
-  decisions, and termini/capping decisions.
+- Additional PDB-cleanup checks should be added only when their outcome can be
+  recomputed from the submitted raw structures.
 - `protonation_state_check`: verify user-specified residue protonation states
   where the artifact format makes that possible, including named residue sites
   rather than only global pH defaults. Implemented via `pdb_residue_state`,
@@ -228,12 +205,10 @@ check types include:
   too easy to fabricate.
 
 Do not add a public prep-benchmark scorer primitive that requires MDClaw-local
-codes. Backend-neutral blocked evidence can be validated through the standard
-manifest/provenance contract when a task explicitly allows blocked submissions.
+codes. Backend-neutral failures belong in harness-owned execution records.
 
-These should remain deterministic. LLM judge should only evaluate whether the
-brief rationale explains a non-obvious choice, not whether the chemistry is
-correct.
+These should remain deterministic. MDPrepBench v0.3 has no LLM-judged rationale
+or agent-authored evidence axis.
 
 ## Suite B: Scientific MD Reasoning
 
@@ -327,7 +302,7 @@ agent tasks.
 
 Implemented:
 
-- P01-P40 task IDs are part of `MDPrepBench-v0.2`. P26-P40 extend coverage to
+- P01-P40 task IDs are part of `MDPrepBench-v0.3`. P26-P40 extend coverage to
   zinc and non-zinc multi-metal cofactors, custom drug-like ligand
   parameterization, protein-protein and protein-DNA complexes, histidine
   protonation, missing side-chain reconstruction, physiological NaCl, and
@@ -418,8 +393,8 @@ Still to do:
 - Do not score scientific tasks as "experiment matched = pass, otherwise fail."
 - Do not expose `task.json`, hidden truth, scorer prompts, or reference poses to
   evaluated agents.
-- Do not require MDClaw-specific artifact names in the public prompt; prep
-  battery v0.1 requires an OpenMM topology triple, while backend-specific native
+- Do not require MDClaw-internal artifact names in the public prompt; prep
+  battery v0.3 requires a public OpenMM topology triple, while backend-specific native
   adapters are deferred.
 - Do not add full equilibration or production MD to the prep battery. Those
   belong in execution or scientific reasoning suites.

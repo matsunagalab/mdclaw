@@ -336,7 +336,8 @@ signature, update the relevant section here and the matching skill examples.
   `auto_resolved_parent`; ambiguous or empty frontiers stay parent-less so
   branching/sketching is unaffected. Failure returns carry a stable `code`
   (e.g. `invalid_node_type`, `source_already_exists`, `analyze_parents_mixed`,
-  `referenced_node_missing`).
+  `referenced_node_missing`). Successful creation returns a `next_command`
+  pointing to the read-only `explain_node` preflight for the new node.
 - `inspect_job(...)`: read-only summary of node statuses, leaves, unfinished-node
   claims/open needs, warnings, and the progress index for weak-agent re-entry.
 - `wait_node(...)`: read-only polling helper for long-running nodes. It waits
@@ -432,8 +433,12 @@ signature, update the relevant section here and the matching skill examples.
 - `list_benchmark_tasks(...)`: list benchmark tasks, families, scoring axes,
   modes, and short intent summaries.
 - `validate_benchmark_task(...)`, `validate_benchmark_submission(...)`: validate
-  task contracts and submitted artifacts.
-- `score_benchmark_submission(...)`: score one task submission.
+  task contracts and submissions. Raw MDPrepBench input is normalized in a
+  temporary directory before validation; MDStudyBench input is validated
+  directly. Evaluated agents use the exported `tools/validate_submission.py`
+  because they do not receive the private task contract.
+- `score_benchmark_submission(...)`: score one task submission. Raw MDPrepBench
+  input is normalized into the evaluator-owned sibling directory first.
 - `write_benchmark_schemas(...)`: regenerate task / manifest / score JSON
   schemas from pydantic models.
 

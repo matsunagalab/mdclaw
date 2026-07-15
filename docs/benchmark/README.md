@@ -1,15 +1,15 @@
 # MDPrepBench
 
 MDPrepBench is the preparation-focused suite in the MDAgentBench benchmark
-family. The current dataset is `MDPrepBench-v0.2`.
+family. The current dataset is `MDPrepBench-v0.3`.
 
 For the full suite split, see `benchmarks/README.md`. For study-level
 scientific question tasks, see `docs/benchmark/mdstudybench.md`.
 
 The benchmark is agent-agnostic. An evaluated agent receives only the public
 prompt and submission contract, then writes a standard submission directory.
-Prep battery v0.1 requires an OpenMM topology bundle for completed submissions
-so the scorer can reload the system and rescan finite energy. The scorer reads
+MDPrepBench v0.3 requires a raw OpenMM topology bundle for completed submissions
+so the scorer can reload the system and rescan physical validity. The scorer reads
 the submitted artifacts and private task metadata; it does not inspect chat
 transcripts or MDClaw-internal state.
 
@@ -17,9 +17,9 @@ Prefer artifact-derived checks over self-report whenever a property is visible
 in the submitted files. Current prep tasks rescan the OpenMM artifact triple and
 PDB structures for water/ion content, solvent regime, residue identities,
 lipid ratios, nucleic-acid content, disulfide-like SG pairs, net charge, ion
-concentration, and minimization sanity. `metrics.json` remains useful for
-declared metadata and backward-compatible packaging, but it should not be the
-source of truth for scoreable physical properties.
+concentration, minimization sanity, and geometry. The evaluator generates
+`manifest.json`, `metrics.json`, `provenance.json`, and minimization summaries;
+agent-authored metadata is not part of the preparation contract.
 
 The runner is not a hidden solution script. It may create run directories,
 launch agents, enforce time limits, and call validation/scoring, but it must not
@@ -95,8 +95,7 @@ provided: Pi uses `spark1-vllm/deepseek-v4-flash`, Claude Code uses
 For comparison, the runner also records harness-owned skill context in
 `solver_context`: `none`, `skill-system`, `skill-text-injected`, or `unknown`.
 Read it from `run_config.json`, `attestation.json`, `summary.json`, or each
-task's `agent_run.json`; do not rely on agent-written `submission/provenance.json`
-alone to decide whether skills were visible to the solver.
+task's `agent_run.json`; MDPrepBench submissions do not contain this metadata.
 Pass `--agent-skills-dir skills` to copy a skill root into the solver workspace
 for agent discovery. The runner writes `skills/`, `.agents/skills/`,
 `.claude/skills/`, `.codex/skills/`, and a `package.json` with
@@ -113,7 +112,7 @@ For agents that do not call the MDClaw CLI, the runner provides a neutral
 `record_stage.py` wrapper in each task workspace and exposes it as
 `stage_recording` in `task_instructions.json` and as
 `$MDCLAW_BENCHMARK_STAGE_WRAPPER`. Use it to record measured source, prep,
-topology, and minimization commands for strict provenance.
+topology, and minimization commands for the harness audit.
 
 For Claude Code or Codex skill-system runs, set `--agent-name` and expose the
 skills directory. The built-in profiles include the non-interactive
@@ -207,8 +206,8 @@ mdclaw score_benchmark_run \
 `harness_tasks.json`. The wrappers append measured records to
 `tasks/<task_id>/harness_execution.jsonl`; `score_benchmark_run` materializes
 that JSONL as the scorer-owned `harness_execution.json` before scoring. If the
-agent does not use the wrapper, strict provenance checks fail instead of
-silently accepting solver-written self-report. `score_benchmark_run` produces
+agent does not use the wrapper, strict harness checks fail.
+`score_benchmark_run` produces
 `summary.json` with the per-axis scores, the per-capability profile,
 `tooling_condition`, and `verified`.
 
@@ -226,7 +225,7 @@ optional helpers, not eligibility requirements. Full recipe:
 
 **4. Weak baselines (discrimination check).**
 `benchmarks/baselines/naive_pdbfixer_prep.py` (no-MDClaw floor) and
-`json_only_no_run.py` (fabrication, must score zero). See
+`empty_submission.py` (missing-artifact floor, must be rejected). See
 `benchmarks/baselines/README.md`.
 
 Compare runs by grouping `summary.json` records on `tooling_condition` and
@@ -240,8 +239,8 @@ The current task set replaces the former mixed benchmark's preparation tasks.
 Scientific question answering and study-bundle tasks live separately in
 `benchmarks/mdstudybench/` as MDStudyBench; see
 `docs/benchmark/mdstudybench.md`. MDPrepBench asks whether an agent can convert
-messy public structural inputs into minimizable MD-ready systems with clear
-provenance.
+messy public structural inputs into minimizable MD-ready systems whose raw
+artifacts can be independently verified.
 
 Public benchmark tasks do **not** require MDClaw-specific guardrail codes.
 MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
@@ -250,7 +249,7 @@ MDClaw guardrail behavior belongs in ordinary MDClaw unit/regression tests.
 
 | Family | What It Tests | Scored By | Tasks |
 |---|---|---|---|
-| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, metal cofactors (zinc, non-zinc Mn/Ca/Mg), custom ligand parameterization, protein-protein, protein-DNA, and protein-RNA complexes, side-chain reconstruction, topology build, minimization, and provenance. | File presence, JSON metadata checks, PDB residue/component rescans, ligand-pose RMSD recomputation, topology/minimization rescans, and artifact integrity checks. | P01-P40 |
+| Preparation Workflow Battery | Structure retrieval, chain/ligand selection, protonation, mutations, PTMs, glycans, nucleic acids, membranes, biological assemblies, ion concentration, metal cofactors (zinc, non-zinc Mn/Ca/Mg), custom ligand parameterization, protein-protein, protein-DNA, and protein-RNA complexes, side-chain reconstruction, topology build, and minimization. | Raw file presence, PDB residue/component rescans, ligand-pose RMSD recomputation, topology/minimization rescans, and artifact integrity checks. | P01-P40 |
 
 The machine-readable scoring axis is still `preparation`. Secondary qualitative
 axes can be added later via LLM judge payloads, but deterministic artifact
@@ -304,37 +303,36 @@ including where to store solver outputs and `harness_execution.json`.
 
 | Task | Short Name | Public Anchor | Main Requirement |
 |---|---|---|---|
-| P01_prep_simple_monomer_t4l | Simple monomer | PDB 2LZM | Clean one protein chain and report explicit-solvent-ready prep. |
+| P01_prep_simple_monomer_t4l | Simple monomer | PDB 2LZM | Clean one protein chain and build an explicit-solvent-ready system. |
 | P02_prep_1ake_chain_ap5 | Chain + ligand | PDB 1AKE | Include chain A and AP5 despite chain-label ambiguity. |
 | P03_prep_ligand_pose_t4l_benzene | Ligand pose | PDB 181L | Preserve the protein+BNZ complex and crystallographic benzene pose. |
 | P04_prep_multi_ligand_filter_3pwb | Ligand filtering | PDB 3PWB | Include requested ligands and exclude irrelevant heterogens. |
-| P05_prep_dap_dehydrogenase_nadp | Charged cofactor | PDB 1DAP | Retain and document the deposited NDP/NADPH-like cofactor in chains C/F. |
+| P05_prep_dap_dehydrogenase_nadp | Charged cofactor | PDB 1DAP | Retain the deposited NDP/NADPH-like cofactors in chains C/F. |
 | P06_prep_calmodulin_ca_ions | Supported ions | PDB 1CLL | Retain four Ca2+ ions as supported ions. |
 | P07_prep_rna_crystallographic_ions | Ion triage | PDB 4RBQ | Prepare RNA while preserving designated K+ ions. |
 | P08_prep_t4l_l99a_branch | Point mutation | PDB 2LZM | Branch WT to L99A without renumbering drift. |
 | P09_prep_t4l_double_mutant | Multi-mutant | PDB 2LZM | Apply L99A and M102Q together. |
-| P10_prep_bpti_disulfides | Disulfides | PDB 5PTI | Record canonical BPTI disulfides and exclude experimental deuterium with component disposition evidence. |
+| P10_prep_bpti_disulfides | Disulfides | PDB 5PTI | Preserve canonical BPTI disulfides and exclude experimental deuterium. |
 | P11_prep_site_protonation_t4l_glu11 | Protonation | PDB 2LZM | Preserve explicit A:11 GLH protonation. |
-| P12_prep_restore_deposited_sep | Deposited PTM | PDB 5K9P | Restore deposited SEP and PTM provenance. |
+| P12_prep_restore_deposited_sep | Deposited PTM | PDB 5K9P | Restore deposited SEP in the raw structures. |
 | P13_prep_user_requested_sep | Requested PTM | PDB 1UBQ | Convert Ser20 to SEP on request. |
 | P14_prep_glycoprotein_glycan | Glycan | PDB 6YA2 | Preserve N-linked glycans as glycans. |
 | P15_prep_standard_dna | DNA | PDB 5MVQ | Prepare DNA without protein defaults. |
-| P16_prep_standard_rna | RNA | PDB 4RBQ | Prepare RNA with RNA-compatible metadata. |
-| P17_prep_dna_duplex_neutralization | DNA duplex | PDB 1BNA | Preserve both DNA chains and record neutralization. |
+| P16_prep_standard_rna | RNA | PDB 4RBQ | Prepare RNA with an RNA-compatible force field. |
+| P17_prep_dna_duplex_neutralization | DNA duplex | PDB 1BNA | Preserve both DNA chains and neutralize the system. |
 | P18_prep_membrane_mixed_lipids | Membrane | PDB 2LOP | Honor POPC:POPE:CHL1 = 2:1:1. |
 | P19_prep_nmr_model_selection | Candidate selection | PDB 2K39 | Select a specified NMR model before prep. |
 | P20_prep_terminal_capping | Terminal capping | PDB 5AWL | Honor requested N-terminal ACE and C-terminal NME caps. |
-| P21_prep_cleanup_altloc_mse_numbering | PDB cleanup | PDB 4Q5T | Handle MSE, altloc, numbering, and missing residues. |
-| P22_prep_forcefield_water_fidelity | FF/water fidelity | PDB 2LZM | Honor supported ff19SB + OPC request. |
+| P21_prep_cleanup_altloc_mse_numbering | MSE cleanup | PDB 4Q5T | Convert deposited MSE to MET and exclude other unrequested nonstandard residues. |
+| P22_prep_forcefield_water_fidelity | OPC fidelity | PDB 2LZM | Honor the requested 4-site OPC water model. |
 | P23_prep_implicit_solvent_chignolin | Implicit solvent | PDB 5AWL | Avoid explicit water when implicit solvent is requested. |
-| P24_prep_biological_assembly | Biological assembly | PDB 1STP / 2MS2 | Generate assembly 1 and map output chains to source auth/label/operator provenance. |
+| P24_prep_biological_assembly | Biological assembly | PDB 1STP / 2MS2 | Generate assembly 1 with the expected raw coordinates and chain count. |
 | P25_prep_kcl_ion_concentration | Ion concentration | PDB 5AWL | Honor 0.30 M KCl and neutrality. |
 
 ## Submission Contract
 
-Every preparation task requires a `submission/` directory with raw physical
-artifacts (`evidence_report.json` is optional unless a specific task's contract
-lists it):
+Every preparation task requires a `submission/` directory containing only the
+raw physical artifacts listed by its public contract:
 
 ```text
 topology/system.xml
@@ -351,44 +349,28 @@ normalizes this raw directory into `manifest.json`, `metrics.json`,
 `provenance.json`, raw-output md5 hashes, `minimized_structure.pdb`, and
 `minimization_report.json`.
 
-For MDClaw DAG runs, the standard post-topology workflow is `topo -> min`; the
-`min` node writes `minimized_structure.pdb`, `minimized.xml`, and
-`minimization_report.json`. For benchmark submissions that are packaging an
-existing topology bundle, `state.xml` is the source of post-build topology-time
-minimized coordinates and `topology.pdb` supplies the topology. Export the
-benchmark PDB artifact explicitly:
+For MDClaw DAG runs, the standard post-topology workflow is `topo -> min`.
+Package the completed `min` state as `topology/state.xml`; the evaluator derives
+the minimized PDB and minimization report from that state and the submitted
+topology.
 
-```bash
-mdclaw export_state_pdb \
-  --topology-pdb-file topology/topology.pdb \
-  --state-xml-file topology/state.xml \
-  --output-pdb-file minimized_structure.pdb
-```
-
-That command is now an optional local inspection helper. In MDPrepBench scoring,
-the evaluator derives `minimized_structure.pdb` from the submitted
-`topology/topology.pdb` + `topology/state.xml` pair and writes the
-minimization report itself. Solver-side provenance should describe the commands
-that produced the raw OpenMM triple and prepared structure; it is not a source
-of truth for hashes, final energies, or minimized coordinates.
-
-The public `submission_contract.json` records the raw artifact requirements
-plus a `submission_blueprint` describing evaluator-generated normalized outputs.
-It also records `submission_lifecycle`, including the exact handoff rule:
+The public `submission_contract.json` records raw artifact requirements,
+harness requirements, its checklist, and `submission_lifecycle`, including the
+exact handoff rule:
 finish work outside `submission_dir`, copy completed raw artifacts into
 `submission_dir`, run the public `tools/validate_submission.py` preflight, and
-exit only after preflight passes or after explicitly declaring the submission
-incomplete/failed. This is deliberately tool-neutral; MDPrepBench does not
+exit only after preflight passes; the harness records incomplete or failed
+handoffs. This is deliberately tool-neutral; MDPrepBench does not
 provide or require a benchmark-specific MDClaw skill.
-MDPrepBench intentionally keeps solver-authored structured metadata small: the
-scorer recomputes scientific and physical facts from artifacts whenever
-possible instead of accepting self-reported JSON. Agents should place only raw
-physical artifacts and task-specific evidence in `submission/`; the evaluator
+
+MDPrepBench does not accept solver-authored structured metadata. The scorer
+recomputes scientific and physical facts from artifacts. Agents place only raw
+physical artifacts and task-specific raw files in `submission/`; the evaluator
 writes relative `manifest.outputs`, normalized metrics, provenance hashes, and
 minimization reports. Strict tasks also require a harness-owned
 `harness_execution.json` outside `submission/`, with measured walltime for each
-required stage. A solver-written provenance note alone is not sufficient
-execution evidence.
+required stage. Solver-written command logs and walltime estimates are not part
+of the v0.3 submission contract.
 
 Automated runs additionally write `finalization.json` per task and aggregate
 `contract_diagnostics` / `harness_diagnostics` in `summary.json`. The
@@ -411,7 +393,7 @@ molarity from the OpenMM bundle.
 Scoring is deterministic and artifact-as-truth: the scorer detects OpenMM by
 deserializing the `system.xml` + `topology.pdb` + `state.xml` triple (not by a
 declared `topology.backend` label) and recomputes physical properties from the
-artifact. `metrics.json` is auxiliary metadata; current MDPrepBench preparation
+artifact. `metrics.json` is evaluator-generated metadata; MDPrepBench preparation
 facts are scored from artifacts where possible.
 
 Check types:
@@ -433,20 +415,19 @@ Check types:
 - `water_model_fingerprint` (3-site vs 4/5-site classification)
 - `ion_concentration_recompute` (molarity from ion count + box volume)
 - `minimization_report_check`
-- artifact integrity checks such as byte floors, safe manifest paths, and
-  provenance execution evidence
+- artifact integrity checks such as byte floors, safe normalized paths, and
+  harness execution evidence
 
 Scoring uses a small physical-validity gate plus graded per-capability partial
 credit. The gate (system loads, finite energy, force field applied to every
 atom, required minimized structure present) must pass or the task scores zero;
-identity / fidelity / provenance checks then contribute weighted partial credit
+identity / fidelity / harness-audit checks then contribute weighted partial credit
 that rolls up into a per-capability profile (`identity`, `physical_validity`,
-`fidelity`, `provenance`). Integrity rejection stays hard: unsafe manifest
-paths, fabricated or undersized required artifacts, and missing execution
-evidence clamp the score to zero. Under the strict provenance policy, execution
-evidence means both solver-side `provenance.command_log` and scorer-side
-`harness_execution.json`; the latter must be written outside solver-writable
-`submission/` by the benchmark harness. OpenMM topology artifacts are required
+`fidelity`, `provenance`). Integrity rejection stays hard: unsafe paths,
+fabricated or undersized required artifacts, and missing execution
+evidence clamp the score to zero. Execution evidence comes only from scorer-side
+`harness_execution.json`, written outside solver-writable `submission/` by the
+benchmark harness. OpenMM topology artifacts are required
 for completed submissions; native-only Amber/GROMACS reload adapters can be
 added later. Each run also records a `tooling_condition`, an `attestation.json`,
 and a `verified` flag (see `docs/benchmark/fairness-protocol.md`).
@@ -456,18 +437,16 @@ current standard topology path does not support MD-ready parameterization of
 modified nucleotides. Those cases belong in MDClaw regression or optional
 unsupported-chemistry handling tests, not in the core prep score.
 
-Run validation and scoring with:
+Run the exported raw preflight, then score the prepared run:
 
 ```bash
-conda run -n mdclaw mdclaw validate_benchmark_submission \
-  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
-  --submission-dir benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/submission
-
-conda run -n mdclaw mdclaw score_benchmark_submission \
-  --task-file benchmarks/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/task.json \
+python benchmark_public/mdprepbench/tools/validate_submission.py \
   --submission-dir benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/submission \
-  --run-id <run_id> \
-  --output-file benchmark_runs/<run_id>/tasks/P11_prep_site_protonation_t4l_glu11/score.json
+  --submission-contract benchmark_public/mdprepbench/tasks/P11_prep_site_protonation_t4l_glu11/submission_contract.json
+
+mdclaw score_benchmark_run \
+  --run-dir benchmark_runs/<run_id> \
+  --dataset-dir benchmarks/mdprepbench
 ```
 
 ## Developer Validation

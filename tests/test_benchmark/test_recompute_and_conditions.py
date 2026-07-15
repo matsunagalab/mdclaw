@@ -629,244 +629,92 @@ def _make_external_triple(tmp: Path) -> tuple[Path, Path, Path]:
     return sx, tp, st
 
 
-def test_package_openmm_submission_builds_scorer_valid_bundle(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    sub = tmp_path / "submission"
-    res = cli.package_openmm_submission(
-        submission_dir=str(sub), task_id="P01_demo",
-        system_xml_file=str(sx), topology_pdb_file=str(tp),
-        state_xml_file=str(st), run_id="pkg",
-    )
-    assert res["success"]
-    # Does not invent scored FF/water declarations.
-    metrics = json.loads((sub / "metrics.json").read_text())
-    assert metrics["preparation"] == {}
-    assert "force_field" not in metrics["preparation"]
-    provenance = json.loads((sub / "provenance.json").read_text())
-    assert provenance["declared_preparation"]["force_field"] == "unspecified"
-    assert provenance["declared_preparation"]["water_model"] == "unspecified"
-    # Topology bundle is loadable by the scorer.
-    manifest = json.loads((sub / "manifest.json").read_text())
-    assert manifest["generated_by"]["tool"] == "mdprepbench-packager"
-    assert manifest["generated_by"]["tool_variant"] == "mdclaw-openmm-wrapper"
-    assert scoring._openmm_bundle_is_loadable(sub, manifest)
-
-
-def test_package_openmm_submission_can_include_evidence_report(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    sub = tmp_path / "submission"
-    sub.mkdir()
-    evidence = sub / "evidence_report.json"
-    evidence.write_text('{"schema_version":"1.0","notes":"ok"}\n')
-
-    res = cli.package_openmm_submission(
-        submission_dir=str(sub), task_id="P01_demo",
-        system_xml_file=str(sx), topology_pdb_file=str(tp),
-        state_xml_file=str(st), run_id="pkg",
-        evidence_report_file=str(evidence),
-    )
-
-    assert res["success"]
-    manifest = json.loads((sub / "manifest.json").read_text())
-    assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
-    assert json.loads((sub / "evidence_report.json").read_text())["notes"] == "ok"
-    assert str(sub / "evidence_report.json") in res["files_written"]
-
-
-def test_package_openmm_submission_rejects_stale_evidence_report(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    sub = tmp_path / "submission"
-    sub.mkdir()
-    evidence = tmp_path / "evidence_report.json"
-    evidence.write_text(
-        json.dumps({"schema_version": "1.0", "task_id": "P25_old_task"})
-    )
-
-    res = cli.package_openmm_submission(
-        submission_dir=str(sub),
-        task_id="P18_prep_membrane_mixed_lipids",
-        system_xml_file=str(sx),
-        topology_pdb_file=str(tp),
-        state_xml_file=str(st),
-        run_id="pkg",
-        evidence_report_file=str(evidence),
-    )
-
-    assert not res["success"]
-    assert any("task_id mismatch" in err for err in res["errors"])
-
-
-def test_package_openmm_submission_can_include_source_selection(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    source_selection = tmp_path / "source_selection.json"
-    payload = {
-        "selected_structure": {
-            "structure_id": "candidate_001",
-            "candidate_id": "candidate_001",
-            "origin": {"model_rank": 1},
-        },
-        "selection": {"reason": "task requested model 1"},
-    }
-    source_selection.write_text(json.dumps(payload))
-    sub = tmp_path / "submission"
-
-    res = cli.package_openmm_submission(
-        submission_dir=str(sub),
-        task_id="P18_prep_membrane_mixed_lipids",
-        system_xml_file=str(sx),
-        topology_pdb_file=str(tp),
-        state_xml_file=str(st),
-        run_id="pkg",
-        source_selection_file=str(source_selection),
-    )
-
-    assert res["success"]
-    manifest = json.loads((sub / "manifest.json").read_text())
-    assert manifest["outputs"]["source_selection"] == "source_selection.json"
-    assert json.loads((sub / "source_selection.json").read_text()) == payload
-    assert json.loads((sub / "provenance.json").read_text())["source_selection"] == payload
-    assert json.loads((sub / "metrics.json").read_text())["source_selection"] == payload
-    assert str(sub / "source_selection.json") in res["files_written"]
-
-
-def test_package_openmm_submission_can_include_extra_outputs(tmp_path: Path):
+def test_package_openmm_submission_builds_raw_bundle(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
     parent = tmp_path / "wt_prepared_structure.pdb"
-    parent.write_text(
-        "ATOM      1  CA  LEU A  99       0.000   0.000   0.000  1.00  0.00           C\n"
-        "END\n"
-    )
+    parent.write_text(tp.read_text())
     sub = tmp_path / "submission"
 
-    res = cli.package_openmm_submission(
+    result = cli.package_openmm_submission(
         submission_dir=str(sub),
-        task_id="P08_prep_t4l_l99a_branch",
+        task_id="P08_demo",
         system_xml_file=str(sx),
         topology_pdb_file=str(tp),
         state_xml_file=str(st),
-        run_id="pkg",
-        extra_output_files=[f"parent_prepared_structure={parent}"],
+        prepared_structure_file=str(tp),
+        extra_output_files=[f"wt_prepared_structure.pdb={parent}"],
     )
 
-    assert res["success"]
-    manifest = json.loads((sub / "manifest.json").read_text())
-    assert manifest["outputs"]["parent_prepared_structure"] == (
-        "wt_prepared_structure.pdb"
-    )
+    assert result["success"], result
+    assert (sub / "topology" / "system.xml").read_text() == sx.read_text()
+    assert (sub / "topology" / "state.xml").read_text() == st.read_text()
     assert (sub / "wt_prepared_structure.pdb").read_text() == parent.read_text()
-    assert str(sub / "wt_prepared_structure.pdb") in res["files_written"]
-
-
-def test_standalone_packager_matches_shape(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    sub = tmp_path / "submission"
-    evidence = tmp_path / "evidence_report.json"
-    evidence.write_text('{"schema_version":"1.0","standalone":true}\n')
-    parent = tmp_path / "wt_prepared_structure.pdb"
-    parent.write_text(
-        "ATOM      1  CA  LEU A  99       0.000   0.000   0.000  1.00  0.00           C\n"
-        "END\n"
-    )
-    rc = subprocess.run(
-        [sys.executable, str(STANDALONE_PACKAGER),
-         "--submission-dir", str(sub), "--task-id", "P01_demo",
-         "--system-xml", str(sx), "--topology-pdb", str(tp),
-         "--state-xml", str(st), "--run-id", "standalone",
-         "--evidence-report", str(evidence),
-         "--extra-output", f"parent_prepared_structure={parent}"],
-        capture_output=True, text=True,
-    )
-    assert rc.returncode == 0, rc.stderr
-    for name in ("manifest.json", "metrics.json", "provenance.json",
-                 "prepared_structure.pdb", "minimized_structure.pdb",
-                 "minimization_report.json"):
-        assert (sub / name).is_file(), name
-    manifest = json.loads((sub / "manifest.json").read_text())
-    assert manifest["generated_by"]["tool"] == "mdprepbench-packager"
-    assert manifest["generated_by"]["tool_variant"] == "openmm-standalone"
-    assert manifest["outputs"]["evidence_report"] == "evidence_report.json"
-    assert manifest["outputs"]["parent_prepared_structure"] == (
-        "wt_prepared_structure.pdb"
-    )
-    assert (sub / "wt_prepared_structure.pdb").read_text() == parent.read_text()
-    assert json.loads((sub / "evidence_report.json").read_text())["standalone"]
-    metrics = json.loads((sub / "metrics.json").read_text())
-    assert "force_field" not in metrics["preparation"]
-    provenance = json.loads((sub / "provenance.json").read_text())
-    assert provenance["generated_by"] == manifest["generated_by"]
-    assert provenance["declared_preparation"]["force_field"] == "unspecified"
-    assert scoring._openmm_bundle_is_loadable(sub, manifest)
-    # MDClaw-free: the packager imports no mdclaw module.
-    text = STANDALONE_PACKAGER.read_text()
-    assert "import mdclaw" not in text
-    assert "from mdclaw" not in text
-
-
-@pytest.mark.parametrize("missing", ["system_xml_file", "topology_pdb_file",
-                                     "state_xml_file"])
-def test_package_openmm_submission_reports_missing_inputs(tmp_path: Path,
-                                                          missing: str):
-    sx, tp, st = _make_external_triple(tmp_path)
-    kwargs = {
-        "system_xml_file": str(sx),
-        "topology_pdb_file": str(tp),
-        "state_xml_file": str(st),
-    }
-    kwargs[missing] = str(tmp_path / "does_not_exist")
-    res = cli.package_openmm_submission(
-        submission_dir=str(tmp_path / "submission"), task_id="P01_demo",
-        run_id="pkg", **kwargs,
-    )
-    assert not res["success"]
-    assert res["errors"]
-
-
-def test_package_openmm_submission_rejects_invalid_openmm_bundle(tmp_path: Path):
-    sx, tp, st = _make_external_triple(tmp_path)
-    sx.write_text("<OpenMMSystem><AtomTypes/></OpenMMSystem>\n")
-
-    sub = tmp_path / "submission"
-    res = cli.package_openmm_submission(
-        submission_dir=str(sub),
-        task_id="P01_demo",
-        system_xml_file=str(sx),
-        topology_pdb_file=str(tp),
-        state_xml_file=str(st),
-        run_id="pkg",
-    )
-
-    assert not res["success"]
-    assert res["code"] == "invalid_openmm_bundle"
-    assert "OpenMM bundle validation failed" in res["errors"][0]
     assert not (sub / "manifest.json").exists()
+    assert not (sub / "metrics.json").exists()
+    assert not (sub / "provenance.json").exists()
 
 
-def test_standalone_packager_rejects_invalid_openmm_bundle(tmp_path: Path):
+def test_standalone_packager_writes_same_raw_contract(tmp_path: Path):
     sx, tp, st = _make_external_triple(tmp_path)
-    sx.write_text("<OpenMMSystem><AtomTypes/></OpenMMSystem>\n")
+    parent = tmp_path / "wt_prepared_structure.pdb"
+    parent.write_text(tp.read_text())
     sub = tmp_path / "submission"
-
-    rc = subprocess.run(
+    result = subprocess.run(
         [
             sys.executable,
             str(STANDALONE_PACKAGER),
             "--submission-dir",
             str(sub),
             "--task-id",
-            "P01_demo",
+            "P08_demo",
             "--system-xml",
             str(sx),
             "--topology-pdb",
             str(tp),
             "--state-xml",
             str(st),
-            "--run-id",
-            "standalone",
+            "--prepared-structure",
+            str(tp),
+            "--extra-output",
+            f"wt_prepared_structure.pdb={parent}",
         ],
         capture_output=True,
         text=True,
     )
 
-    assert rc.returncode != 0
-    assert "OpenMM bundle validation failed" in rc.stderr
+    assert result.returncode == 0, result.stderr
+    assert (sub / "topology" / "system.xml").is_file()
+    assert (sub / "topology" / "topology.pdb").is_file()
+    assert (sub / "topology" / "state.xml").is_file()
+    assert (sub / "prepared_structure.pdb").is_file()
+    assert (sub / "wt_prepared_structure.pdb").is_file()
     assert not (sub / "manifest.json").exists()
+    text = STANDALONE_PACKAGER.read_text()
+    assert "import mdclaw" not in text
+    assert "from mdclaw" not in text
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["system_xml_file", "topology_pdb_file", "state_xml_file"],
+)
+def test_package_openmm_submission_reports_missing_inputs(
+    tmp_path: Path,
+    missing: str,
+):
+    sx, tp, st = _make_external_triple(tmp_path)
+    kwargs = {
+        "system_xml_file": str(sx),
+        "topology_pdb_file": str(tp),
+        "state_xml_file": str(st),
+        "prepared_structure_file": str(tp),
+    }
+    kwargs[missing] = str(tmp_path / "does_not_exist")
+    result = cli.package_openmm_submission(
+        submission_dir=str(tmp_path / "submission"),
+        task_id="P01_demo",
+        **kwargs,
+    )
+
+    assert not result["success"]
+    assert result["errors"]

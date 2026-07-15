@@ -65,5 +65,5 @@
     ]
   },
   "task_id": "P01_prep_simple_monomer_t4l",
-  "task_intent": "Simple monomer preparation: retrieve T4 lysozyme chain A, clean it, prepare an explicit-water-compatible topology, and report that no unintended ligands were retained."
+  "task_intent": "Simple monomer preparation: retrieve T4 lysozyme chain A, clean it, exclude unintended ligands, and prepare an explicit-water-compatible topology."
 }

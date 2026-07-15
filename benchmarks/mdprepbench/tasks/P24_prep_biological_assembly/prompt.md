@@ -1,4 +1,4 @@
-# P24_prep_biological_assembly: Assembly/biological unit choice
+# P24_prep_biological_assembly: MD system preparation
 
 You are evaluating an MD agent on `P24_prep_biological_assembly`.
 
@@ -6,20 +6,15 @@ Use this prompt as the task statement. Retrieve public sources as needed, and do
 
 Task: Assembly/biological unit choice: generate or select biological assembly 1 of PDB 1STP. The scorer verifies the submitted coordinates against a fixed assembly-1 reference and checks that the submitted structure contains four protein chains, so assembly identity is not accepted from self-reported JSON alone.
 
-Public source anchors: PDB 1STP, PDB 2MS2.
+Public source anchors: PDB 1STP assembly 1; stress variant PDB 2MS2 assembly 1.
 
-Your submission directory must contain:
+Prepare the requested system and energy-minimize it. Write only these raw artifacts to the exact submission directory:
 
-- `manifest.json`
-- `metrics.json`
-- `provenance.json`
-- `evidence_report.json`
+- `topology/system.xml`
+- `topology/topology.pdb`
+- `topology/state.xml`
 - `prepared_structure.pdb`
-- `minimized_structure.pdb`
-- `minimization_report.json`
 
-Your `manifest.json` must also point `outputs.topology` to an OpenMM topology bundle and `outputs.minimized_structure` to a structure after minimization. For prep battery v0.1, `outputs.topology` must be a JSON list containing the OpenMM `system.xml`, `topology.pdb`, and `state.xml` artifact triple. Energy-minimize the built system to a relaxed state — free of steric clashes and at a stable, negative potential energy, not merely finite — then record the result in `minimization_report.json` and `metrics.json`. Full equilibration and production MD are not required for this prep task.
+`topology/state.xml` must contain the post-minimization OpenMM state and must be self-consistent with `topology/system.xml` and `topology/topology.pdb`. Full equilibration and production MD are not required.
 
-The submitted structure should represent assembly 1 rather than the asymmetric unit alone. The expected assembly chain count refers to the polymer protein chains of the biological assembly; bound cofactors or ligands may be assigned their own chain IDs and are not counted toward that total.
-
-You may use MDClaw, direct OpenMM scripts, or another preparation workflow upstream, but the final submitted topology must be an OpenMM artifact triple that the scorer can reload. Record sources retrieved, commands or tool actions, preparation decisions, limitations, and any non-default choices in `provenance.json` and `evidence_report.json`.
+Do not write `manifest.json`, `metrics.json`, `provenance.json`, `minimized_structure.pdb`, `minimization_report.json`, `evidence_report.json`, a command log, walltime estimates, or artifact hashes. The evaluator derives the normalized metadata, minimized view, minimization report, and hashes from the raw artifacts. Evidence reports and solver command logs are not part of MDPrepBench v0.3. The harness owns the final record and measures walltime; non-MDClaw stage labels are solver-declared.

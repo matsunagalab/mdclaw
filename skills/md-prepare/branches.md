@@ -8,6 +8,7 @@ Mutation branches use HPacker side-chain packing.
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids <base_prep_node_id>
+mdclaw explain_node --job-dir <job_dir> --node-id <mutant_prep_node_id>
 mdclaw --job-dir <job_dir> --node-id <mutant_prep_node_id> create_mutated_structure --mutations L99A
 ```
 
@@ -20,6 +21,7 @@ it or pass it as a manual input file.
 
 ```bash
 mdclaw create_node --job-dir <job_dir> --node-type prep --parent-node-ids <base_prep_node_id>
+mdclaw explain_node --job-dir <job_dir> --node-id <ptm_prep_node_id>
 mdclaw --job-dir <job_dir> --node-id <ptm_prep_node_id> phosphorylate_residues --restore-from-detection
 ```
 

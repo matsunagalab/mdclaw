@@ -17,8 +17,8 @@ The scorer treats the submitted artifact as the source of truth:
 - Physical and identity properties are **recomputed** from artifacts whenever
   possible: force-field application, model/assembly choice, net charge,
   water-model fingerprint, ion molarity, component presence, and residue state.
-- `metrics.json` is auxiliary metadata. Current MDPrepBench scoring does not
-  rely on submitted `metrics.preparation.*` self-reports.
+- Normalized metadata is evaluator-generated. Prep agents submit no metrics or
+  backend declarations.
 
 Every completed preparation task must clear the **physical-validity gate** (it
 appears in every task): the OpenMM system loads (`openmm_system_load`), has
@@ -84,8 +84,8 @@ deterministic check to the gate with `hard_fail: true`.
 | Mixed-lipid membrane + model selection | P18 | `rmsd_recompute` vs model-1 reference, `solvent_regime_rescan`, `structure_component_rescan` (lipids) |
 | NMR model selection | P19 | `rmsd_recompute` vs model-5 reference |
 | Terminal capping | P20 | `structure_component_rescan` / `minimized_structure_component_rescan` (ACE/NME caps) |
-| Altloc / MSE / numbering cleanup | P21 | `structure_component_rescan` |
-| Force-field + water-model fidelity | P22 | `water_model_fingerprint` (requested model), `solvent_regime_rescan` |
+| MSE cleanup | P21 | `structure_component_rescan` (MSE absent, MET present) |
+| OPC water-model fidelity | P22 | `water_model_fingerprint` (OPC), `solvent_regime_rescan` |
 | Implicit vs explicit solvent | P23 | `solvent_regime_rescan`, `structure_component_rescan` (no spurious water box) |
 | Biological assembly choice | P24 | `rmsd_recompute` vs assembly-1 reference, `assembly_identity_check` (four chains) |
 | Specified ion concentration + neutrality | P25 | `ion_concentration_recompute` (molarity from box), `net_charge_check`, `structure_component_rescan` |
@@ -115,7 +115,8 @@ Each check is tagged with a capability axis and rolled up into a per-run profile
   force field applied, neutral/integer charge, minimized).
 - **fidelity** — explicit requests were honored where artifact-verifiable
   (water model fingerprint, ion molarity, ligand-pose RMSD, declared metrics).
-- **provenance** — non-obvious decisions and execution evidence are recorded.
+- **provenance** — the harness recorded the required execution stages. This axis
+  does not use agent-authored MDPrepBench evidence or command logs.
 
 ## Candidate gaps (future work only)
 

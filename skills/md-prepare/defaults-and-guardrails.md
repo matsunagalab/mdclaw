@@ -1,8 +1,8 @@
 # Preparation Defaults And Guardrails
 
-Read `skills/common/solvent-regimes.md` first; it is the single source of truth
-for regime mapping and the explicit-water constant defaults (`ff19SB + opc`,
-15 Å buffer, 0.15 M NaCl, 300 K / 1 bar, HMR 4 fs).
+`skills/common/solvent-regimes.md` is the detailed source for regime mapping
+and explicit-water constants (`ff19SB + opc`, 15 Å buffer, 0.15 M NaCl,
+300 K / 1 bar, HMR 4 fs). Open it when those details are needed.
 
 Preparation-specific defaults:
 

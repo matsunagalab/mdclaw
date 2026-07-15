@@ -23,10 +23,11 @@ MDClaw-free; only the shared scorer (run separately) uses MDClaw.
 
 Usage:
 
-    python benchmarks/baselines/naive_pdbfixer_prep.py \\
-        --pdb-id 181L \\
+    $MDCLAW_BENCHMARK_STAGE_WRAPPER --stage min -- \\
+      python benchmarks/baselines/naive_pdbfixer_prep.py \\
+        --pdb-id 2LZM \\
         --submission-dir runs/<run_id>/tasks/P01_.../submission \\
-        --task-id P01_prep_apo_t4_lysozyme
+        --task-id P01_prep_simple_monomer_t4l
 
 This is a reference runner; running it across the suite is operator-driven.
 """
@@ -47,10 +48,10 @@ _DEFAULT_WATER_FF = "amber14/tip3pfb.xml"
 _DEFAULT_WATER_MODEL = "tip3p"
 
 
-def _build(pdb_id: str, work: Path) -> tuple[Path, Path, Path]:
+def _build(pdb_id: str, work: Path) -> tuple[Path, Path, Path, Path]:
     """Run the naive pdbfixer + default-FF + minimize pipeline.
 
-    Returns paths to (system.xml, topology.pdb, state.xml).
+    Returns paths to (system.xml, topology.pdb, state.xml, prepared_structure.pdb).
     """
     from openmm import LangevinMiddleIntegrator, Platform, XmlSerializer, unit
     from openmm.app import PME, ForceField, HBonds, Modeller, PDBFile, Simulation
@@ -61,6 +62,10 @@ def _build(pdb_id: str, work: Path) -> tuple[Path, Path, Path]:
     fixer.findMissingAtoms()
     fixer.addMissingAtoms()
     fixer.addMissingHydrogens(7.0)
+
+    prepared_structure = work / "prepared_structure.pdb"
+    with prepared_structure.open("w") as fh:
+        PDBFile.writeFile(fixer.topology, fixer.positions, fh, keepIds=True)
 
     forcefield = ForceField(_DEFAULT_PROTEIN_FF, _DEFAULT_WATER_FF)
     modeller = Modeller(fixer.topology, fixer.positions)
@@ -96,7 +101,7 @@ def _build(pdb_id: str, work: Path) -> tuple[Path, Path, Path]:
     state_xml.write_text(XmlSerializer.serialize(state))
     with topology_pdb.open("w") as fh:
         PDBFile.writeFile(modeller.topology, state.getPositions(), fh, keepIds=True)
-    return system_xml, topology_pdb, state_xml
+    return system_xml, topology_pdb, state_xml, prepared_structure
 
 
 def main() -> int:
@@ -105,35 +110,37 @@ def main() -> int:
                         help="Primary PDB ID named in the public prompt.")
     parser.add_argument("--submission-dir", required=True)
     parser.add_argument("--task-id", required=True)
-    parser.add_argument("--run-id", default="naive_pdbfixer")
     args = parser.parse_args()
 
-    work = Path(tempfile.mkdtemp(prefix="naive_pdbfixer_"))
-    try:
-        system_xml, topology_pdb, state_xml = _build(args.pdb_id, work)
-    except Exception as exc:  # noqa: BLE001
-        print(f"naive pdbfixer build failed: {type(exc).__name__}: {exc}",
-              file=sys.stderr)
-        return 1
+    with tempfile.TemporaryDirectory(prefix="naive_pdbfixer_") as temp_dir:
+        work = Path(temp_dir)
+        try:
+            system_xml, topology_pdb, state_xml, prepared_structure = _build(
+                args.pdb_id,
+                work,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"naive pdbfixer build failed: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
+            return 1
 
-    # Package via the standalone no-MDClaw packager to keep the solver path
-    # fully MDClaw-free. Declared FF/water are honest for this baseline.
-    packager = Path(__file__).resolve().parents[1] / "tools" / "package_submission.py"
-    cmd = [
-        sys.executable, str(packager),
-        "--submission-dir", args.submission_dir,
-        "--task-id", args.task_id,
-        "--system-xml", str(system_xml),
-        "--topology-pdb", str(topology_pdb),
-        "--state-xml", str(state_xml),
-        "--run-id", args.run_id,
-        "--force-field", _DEFAULT_PROTEIN_FF,
-        "--water-model", _DEFAULT_WATER_MODEL,
-        "--agent", "naive-pdbfixer-baseline",
-        "--backend", "openmm-pdbfixer",
-        "--harness", "baseline-script",
-    ]
-    return subprocess.run(cmd, check=False).returncode
+        # Package via the raw-only standalone helper to keep the solver path
+        # fully MDClaw-free.
+        packager = (
+            Path(__file__).resolve().parents[1]
+            / "tools"
+            / "package_submission.py"
+        )
+        cmd = [
+            sys.executable, str(packager),
+            "--submission-dir", args.submission_dir,
+            "--task-id", args.task_id,
+            "--system-xml", str(system_xml),
+            "--topology-pdb", str(topology_pdb),
+            "--state-xml", str(state_xml),
+            "--prepared-structure", str(prepared_structure),
+        ]
+        return subprocess.run(cmd, check=False).returncode
 
 
 if __name__ == "__main__":

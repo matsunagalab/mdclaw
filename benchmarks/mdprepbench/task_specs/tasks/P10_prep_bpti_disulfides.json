@@ -10,10 +10,6 @@
       "url": "https://www.rcsb.org/structure/5PTI"
     }
   ],
-  "required_outputs_extra": [
-    "component_disposition.json",
-    "excluded_components.json"
-  ],
   "scoring": {
     "deterministic_checks": [
       {
@@ -24,15 +20,6 @@
         "structure_manifest_path": "outputs.prepared_structure",
         "structure_path": "prepared_structure.pdb",
         "weight": 0.55
-      },
-      {
-        "check_id": "component_disposition_artifacts_present",
-        "check_type": "required_files",
-        "required_outputs": [
-          "component_disposition.json",
-          "excluded_components.json"
-        ],
-        "weight": 0.2
       },
       {
         "check_id": "prepared_structure_has_no_deuterium",
@@ -70,5 +57,5 @@
     ]
   },
   "task_id": "P10_prep_bpti_disulfides",
-  "task_intent": "Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and record any excluded experimental components."
+  "task_intent": "Disulfide auto/override: prepare 5PTI as a standard classical MD system, detect the canonical BPTI disulfides, and exclude experimental deuterium and non-system components from the prepared structure."
 }

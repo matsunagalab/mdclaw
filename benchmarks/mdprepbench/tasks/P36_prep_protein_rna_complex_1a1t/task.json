@@ -145,7 +145,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",
@@ -158,15 +161,8 @@
         "coordinate_tolerance_nm": 0.001
       }
     ],
-    "integrity_policy": "reject",
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ]
+    "integrity_policy": "reject"
   },
-  "secondary_scores": [
-    "evidence_communication"
-  ],
   "task_id": "P36_prep_protein_rna_complex_1a1t",
   "task_intent": "Protein-RNA complex preparation: prepare model 1 of the HIV-1 nucleocapsid protein NCp7 bound to the SL3 RNA stem-loop from the PDB 1A1T NMR ensemble, keeping the protein and its bound RNA stem-loop together in one mixed-polymer explicit-solvent system, retaining both structural Zn2+ zinc-knuckle ions, and neutralizing the charged nucleic-acid system.",
   "time_limit_minutes": 60

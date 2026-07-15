@@ -5,9 +5,6 @@
     "schema_version": "1.0",
     "category": "system_preparation",
     "primary_score": "preparation",
-    "secondary_scores": [
-      "evidence_communication"
-    ],
     "execution_mode": "lite",
     "time_limit_minutes": 60,
     "failure_policy": {
@@ -33,10 +30,6 @@
   ],
   "scoring_defaults": {
     "ground_truth_checks": [],
-    "llm_judge_rubrics": [
-      "provenance_traceability",
-      "limitations"
-    ],
     "integrity_checks": [
       {
         "check_id": "prepared_structure_real_bytes",
@@ -51,7 +44,10 @@
         "check_id": "workflow_execution_recorded",
         "check_type": "provenance_execution_evidence",
         "min_command_count": 1,
-        "require_harness_record": true
+        "require_harness_record": true,
+        "required_stages": [
+          "min"
+        ]
       },
       {
         "check_id": "submitted_artifacts_are_hashed",

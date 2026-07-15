@@ -71,16 +71,18 @@ own comparative MD, not just a recall of the textbook direction:
   template markers, evidence completeness, trajectory artifact floor and
   signatures, citation pool membership, and harness-backed provenance execution
   evidence across `source/prep/prod/analysis/report`.
-- **LLM judge (mandatory, auto-run)** feeds the secondary `evidence_communication`
-  axis. `mdclaw run_llm_judge` (Claude sonnet by default) is run automatically on
-  the host by `score_benchmark_run` / `run_benchmark_agent` for every study task.
+- **LLM judge (required for the full reported score)** feeds the secondary
+  `evidence_communication` axis. When the run is created with
+  `--judge-mode llm_judge`, `mdclaw run_llm_judge` (Claude sonnet by default) is
+  run automatically on the host by `score_benchmark_run` /
+  `run_benchmark_agent` for every study task.
   Because the numeric truth is now verified deterministically (grounding +
   recompute-consistency), the judge scores only the qualitative rubrics
   `reasoning_logic` (the written argument correctly connects the reported
   observables to the conclusion), `confidence_calibration`, and
   `overclaim_detection`. The scorer itself stays offline; the judge is a separate
-  host step. A study task scored without its judge is marked **incomplete** (it
-  does not count as passed).
+  host step. In `llm_judge` mode, a study task without its judge is marked
+  **incomplete**. Deterministic mode deliberately skips and ignores judge files.
 
 Net effect: a literature guess with no real comparative MD, garbage/copied
 trajectories, or a wrong/absent mutation scores **0** (hard-fail gates) — exactly

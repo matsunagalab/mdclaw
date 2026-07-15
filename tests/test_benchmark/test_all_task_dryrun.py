@@ -70,7 +70,7 @@ def test_all_task_honest_fake_submission_scores_are_stable(tmp_path: Path):
 
     summary, tasks = _score_fake_run(tmp_path, "honest")
 
-    assert summary["n_tasks"] == 34
+    assert summary["n_tasks"] == 40
     assert summary["overall_score"] == pytest.approx(1.0)
     assert summary["scores"] == {
         "preparation": pytest.approx(summary["overall_score"]),
@@ -89,7 +89,7 @@ def test_all_task_wrong_fake_submission_scores_are_stable(tmp_path: Path):
 
     summary, tasks = _score_fake_run(tmp_path, "wrong")
 
-    assert summary["n_tasks"] == 34
+    assert summary["n_tasks"] == 40
     assert summary["overall_score"] == pytest.approx(0.0)
     assert summary["scores"]["preparation"] == pytest.approx(summary["overall_score"])
     assert all(payload["weighted_total"] == 0.0 for payload in tasks.values())

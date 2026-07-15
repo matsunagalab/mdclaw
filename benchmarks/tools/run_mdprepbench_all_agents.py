@@ -299,7 +299,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Number of repeat runs per agent for run-to-run variance. Default 1.",
     )
     parser.add_argument("--execution-mode", default="lite")
-    parser.add_argument("--judge-mode", default="deterministic")
+    parser.add_argument(
+        "--judge-mode",
+        choices=("deterministic",),
+        default="deterministic",
+    )
     parser.add_argument("--max-walltime-minutes-per-task", type=int, default=30)
     parser.add_argument("--mdclaw-cli-policy", default="forbid-without-skill")
     parser.add_argument(
@@ -364,7 +368,6 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--jobs must be >= 1")
     if args.gpus < 0:
         parser.error("--gpus must be >= 0")
-
     try:
         agent_profiles = _parse_agent_map(args.agent_profile, option_name="--agent-profile")
         agent_models = _parse_agent_map(args.agent_model, option_name="--agent-model")

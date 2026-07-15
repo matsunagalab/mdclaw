@@ -84,6 +84,7 @@ def test_missing_judge_marks_study_task_incomplete(tmp_path: Path, monkeypatch):
     (rd / "run_config.json").write_text(json.dumps({
         "schema_version": "1.0", "run_id": "r",
         "task_ids": [task_id], "dataset_dir": dataset,
+        "judge_mode": "llm_judge",
     }))
     # in-process (no SIF delegation, no auto-judge run), judge expected but absent
     monkeypatch.setenv("MDCLAW_SCORE_INPROCESS", "1")
@@ -96,3 +97,65 @@ def test_missing_judge_marks_study_task_incomplete(tmp_path: Path, monkeypatch):
     assert task["judge_status"] == "missing"
     assert task["benchmark_passed"] is False
     assert result["failed_task_count"] == 1
+
+
+def test_deterministic_run_does_not_launch_llm_judge(tmp_path: Path, monkeypatch):
+    from mdclaw.benchmark import run as benchmark_run
+
+    dataset = str(REPO_ROOT / "benchmarks" / "mdstudybench")
+    rd = tmp_path / "run"
+    rd.mkdir()
+    (rd / "run_config.json").write_text(json.dumps({
+        "schema_version": "1.0",
+        "run_id": "r",
+        "task_ids": ["S01_stability_t4l_l99a"],
+        "dataset_dir": dataset,
+        "judge_mode": "deterministic",
+    }))
+    launched: list[bool] = []
+    monkeypatch.setattr(
+        benchmark_run,
+        "_autorun_run_judges",
+        lambda *args, **kwargs: launched.append(True),
+    )
+    monkeypatch.delenv("MDCLAW_SCORE_INPROCESS", raising=False)
+    monkeypatch.setattr(benchmark_run, "_scorer_delegate_argv", lambda: None)
+
+    benchmark_run.score_benchmark_run(
+        str(rd), dataset_dir=dataset, run_judge=True, summarize=False,
+    )
+
+    assert launched == []
+
+
+def test_scorer_delegation_preserves_run_judge_opt_out(tmp_path: Path, monkeypatch):
+    from mdclaw.benchmark import run as benchmark_run
+
+    captured: dict[str, object] = {}
+
+    class Completed:
+        returncode = 0
+        stdout = '{"success": true}'
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        captured["env"] = kwargs["env"]
+        return Completed()
+
+    monkeypatch.setattr(benchmark_run.subprocess, "run", fake_run)
+    result = benchmark_run._delegate_score_benchmark_run(
+        ["mdclaw"],
+        run_dir=str(tmp_path / "run"),
+        dataset_dir=None,
+        llm_judge_file=None,
+        require_validation_success=True,
+        summarize=False,
+        run_judge=False,
+        judge_model="sonnet",
+    )
+
+    assert result["success"] is True
+    assert "--no-run-judge" in captured["cmd"]
+    assert "--no-summarize" in captured["cmd"]
+    assert captured["env"]["MDCLAW_SCORE_INPROCESS"] == "1"

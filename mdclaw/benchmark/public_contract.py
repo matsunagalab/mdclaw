@@ -2,57 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from mdclaw.benchmark.models import Task
 
 PREPARATION_SCORE_AXIS = "preparation"
-OPENMM_TOPOLOGY_EXAMPLE = [
-    "topology/system.xml",
-    "topology/topology.pdb",
-    "topology/state.xml",
-]
-STANDALONE_PACKAGER_RELATIVE_PATH = "tools/package_submission.py"
 STANDALONE_PREFLIGHT_RELATIVE_PATH = "tools/validate_submission.py"
-MINIMIZED_STRUCTURE_GUIDANCE = {
-    "required_filename": "minimized_structure.pdb",
-    "manifest_path": "outputs.minimized_structure",
-    "meaning": (
-        "PDB view of the minimized coordinates; the system must be relaxed "
-        "(free of steric clashes, at a stable negative potential energy), "
-        "not merely finite-energy."
-    ),
-    "state_source": (
-        "Submit one self-consistent OpenMM state after minimization. "
-        "topology/state.xml and minimized_structure.pdb must represent the "
-        "same minimized coordinates, regardless of whether the workflow used "
-        "MDClaw, plain OpenMM, AmberTools, or another MD agent."
-    ),
-    "generic_openmm_command_template": (
-        f"python {STANDALONE_PACKAGER_RELATIVE_PATH} "
-        "--submission-dir <exact_submission_dir> --task-id <task_id> "
-        "--system-xml <system.xml> --topology-pdb <topology.pdb> "
-        "--state-xml <minimized_state.xml> "
-        "--prepared-structure <prepared_structure.pdb> "
-        "--command-log <command_log.json>"
-    ),
-    "mdclaw_dag_command_template": (
-        "mdclaw create_node --job-dir <job_dir> --node-type min "
-        "--parent-node-ids <topo_node_id>; "
-        "mdclaw --job-dir <job_dir> --node-id <min_node_id> run_minimization"
-    ),
-    "mdclaw_export_command_template": (
-        "mdclaw package_mdprep_submission --submission-dir <exact_submission_dir> "
-        "--task-id <task_id> --job-dir <job_dir> --node-id <min_node_id> "
-        "--command-log-file <command_log.json>"
-    ),
-    "topology_pdb_note": (
-        "Do not assume topology/topology.pdb is post-minimization coordinates. "
-        "Use it directly only if your workflow documents that it was written "
-        "with the minimized positions."
-    ),
-}
-
 _PUBLIC_METRIC_CHECKS = {
     "json_equals": ("equals", "equals"),
     "json_min": ("min", "min_value"),
@@ -170,8 +126,11 @@ def public_harness_evidence_requirements(task: Task) -> list[dict[str, Any]]:
             "min_command_count": int(check.min_command_count or 1),
             "required_fields_per_record": required_fields,
             "note": (
-                "provenance.command_log is still useful, but strict scoring "
-                "also requires a harness-owned measured execution record"
+                "The harness owns the final record and measures walltime; a "
+                "non-MDClaw stage label is solver-declared. Prep agents must "
+                "not create or edit the final record."
+                if task.primary_score == PREPARATION_SCORE_AXIS
+                else "Strict scoring uses the harness-owned measured execution record."
             ),
         }
         if required_stages:
@@ -361,136 +320,6 @@ def public_artifact_requirements(task: Task) -> list[dict[str, Any]]:
     return requirements
 
 
-def packaging_guidance(task: Task) -> dict[str, Any] | None:
-    """Return artifact-only guidance for preparation submissions."""
-    if task.primary_score != PREPARATION_SCORE_AXIS:
-        return None
-    return {
-        "artifact_contract": (
-            "MDPrepBench accepts MDClaw and non-MDClaw submissions through a "
-            "raw OpenMM artifact contract. Put a self-consistent "
-            "system.xml, topology.pdb, and post-minimization state.xml under "
-            "submission/topology/."
-        ),
-        "benchmark_normalization": (
-            "The benchmark evaluator, not the agent, generates manifest.json, "
-            "metrics.json, provenance.json, raw-output md5 hashes, "
-            "minimized_structure.pdb, and minimization_report.json from the "
-            "submitted raw artifacts before scoring."
-        ),
-        "optional_packager": (
-            f"{STANDALONE_PACKAGER_RELATIVE_PATH}, "
-            "mdclaw package_openmm_submission, and mdclaw package_mdprep_submission "
-            "remain optional convenience helpers. They are not required for "
-            "benchmark eligibility."
-        ),
-        "tool_neutral_preflight": (
-            f"python {STANDALONE_PREFLIGHT_RELATIVE_PATH} "
-            "--submission-dir <exact_submission_dir> "
-            "--submission-contract <submission_contract.json>. This checks only "
-            "the public contract and raw artifact loadability; it is not a "
-            "task-specific MDClaw recipe."
-        ),
-        "mdclaw_dag_helper": (
-            "If the workflow used MDClaw's DAG, mdclaw package_mdprep_submission "
-            "can collect the same contract from a completed min node. It is a "
-            "convenience helper, not a benchmark requirement."
-        ),
-        "purpose": (
-            "Keep agent output small and objective. The scorer validates that "
-            "the OpenMM bundle deserializes, has finite coordinates/energy, "
-            "and matches the task-specific structural requirements."
-        ),
-        "completion_requirement": (
-            "Do not submit while preparation, solvation, topology, or "
-            "minimization work is still running in the background. The final "
-            "raw artifacts in the exact submission_dir must be the completed "
-            "post-minimization OpenMM bundle, not paths to in-progress work."
-        ),
-        "required_agent_inputs": [
-            "topology/system.xml",
-            "topology/topology.pdb",
-            "topology/state.xml",
-            "prepared_structure.pdb",
-            "task-specific raw artifacts listed in required_outputs",
-        ],
-        "normalizer_writes": [
-            "manifest.json",
-            "metrics.json",
-            "provenance.json with raw output hashes",
-            "minimized_structure.pdb",
-            "minimization_report.json",
-        ],
-        "submission_dir_policy": (
-            "Use the exact submission_dir path from task_instructions.json as "
-            "the output root. It is output-only; do not write final files to "
-            "work_dir/submission or cwd-relative ./submission unless that is "
-            "the exact submission_dir. Create study_dir/job_dir/work "
-            "directories outside it, e.g. under the provided work_dir."
-        ),
-        "post_submission_rule": (
-            "Do not hand-write manifest.json, metrics.json, provenance.json, "
-            "md5 hashes, minimized_structure.pdb, or minimization_report.json. "
-            "The evaluator derives those from the raw artifacts. If a helper "
-            "packager is used, it is still treated as optional convenience."
-        ),
-        "does_not_choose": [
-            "chains",
-            "ligands",
-            "force field",
-            "water model",
-            "scientific answer",
-        ],
-        "generic_command_template": (
-            f"python {STANDALONE_PACKAGER_RELATIVE_PATH} "
-            "--submission-dir <exact_submission_dir> --task-id <task_id> "
-            "--system-xml <system.xml> --topology-pdb <topology.pdb> "
-            "--state-xml <minimized_state.xml> "
-            "--prepared-structure <prepared_structure.pdb> "
-            "--command-log <command_log.json> "
-            "[--preparation-summary <prepare_summary.json>] "
-            "[--force-field <forcefield>] [--water-model <water_model>] "
-            "[--solvent-model <solvent_model>] "
-            "[--evidence-report <evidence_report.json>] "
-            "[--extra-output <manifest_key=artifact_path>]"
-        ),
-        "mdclaw_openmm_wrapper_command_template": (
-            "mdclaw package_openmm_submission --submission-dir <exact_submission_dir> "
-            "--task-id <task_id> --system-xml-file <system.xml> "
-            "--topology-pdb-file <topology.pdb> --state-xml-file <minimized_state.xml> "
-            "--prepared-structure-file <prepared_structure.pdb> "
-            "--command-log-file <command_log.json> "
-            "[--preparation-summary-file <prepare_summary.json>] "
-            "[--force-field <forcefield>] [--water-model <water_model>] "
-            "[--solvent-model <solvent_model>] "
-            "[--evidence-report-file <evidence_report.json>] "
-            "[--extra-output-files <manifest_key=artifact_path> ...]"
-        ),
-        "mdclaw_dag_command_template": (
-            "mdclaw package_mdprep_submission --submission-dir <exact_submission_dir> "
-            "--task-id <task_id> --job-dir <job_dir> --node-id <min_node_id> "
-            "--command-log-file <command_log.json> "
-            "[--evidence-report-file <evidence_report.json>] "
-            "[--extra-output-files <manifest_key=artifact_path> ...]"
-        ),
-        "standalone_packager": STANDALONE_PACKAGER_RELATIVE_PATH,
-        "standalone_preflight": STANDALONE_PREFLIGHT_RELATIVE_PATH,
-        "standalone_command_template": (
-            f"python {STANDALONE_PACKAGER_RELATIVE_PATH} "
-            "--submission-dir <exact_submission_dir> --task-id <task_id> "
-            "--system-xml <system.xml> --topology-pdb <topology.pdb> "
-            "--state-xml <minimized_state.xml> "
-            "[--prepared-structure <prepared_structure.pdb>] "
-            "[--command-log <command_log.json>] "
-            "[--preparation-summary <prepare_summary.json>] "
-            "[--force-field <forcefield>] [--water-model <water_model>] "
-            "[--solvent-model <solvent_model>] "
-            "[--evidence-report <evidence_report.json>] "
-            "[--extra-output <manifest_key=artifact_path>]"
-        ),
-    }
-
-
 def submission_lifecycle(task: Task) -> dict[str, Any]:
     """Return the tool-neutral lifecycle contract for solver handoff."""
     if task.primary_score == PREPARATION_SCORE_AXIS:
@@ -512,8 +341,8 @@ def submission_lifecycle(task: Task) -> dict[str, Any]:
             ),
             "exit_condition": (
                 "Exit only after required raw outputs are present in "
-                "submission_dir and the public preflight passes, or after "
-                "writing an explicit incomplete/failed submission record."
+                "submission_dir and the public preflight passes. If the task "
+                "cannot be completed, leave status recording to the harness."
             ),
             "background_policy": (
                 "Do not leave preparation, solvation, topology, minimization, "
@@ -559,73 +388,30 @@ def manifest_contract(task: Task) -> dict[str, Any]:
         "completed_status": "completed",
         "required_outputs_for_completed_submission": list(task.required_outputs),
     }
-    if task.primary_score != PREPARATION_SCORE_AXIS:
-        # Study tasks: surface the manifest output keys completion depends on,
-        # mirroring prep's required_output_fields_for_completed_prep so agents
-        # do not learn the trajectory/topology/methods requirement only from the
-        # checklist. (required_outputs alone lists JSON files, not these.)
-        study_required = {
-            "scientific_answer": ["outputs.trajectories", "outputs.topology"],
-            "evidence_communication": ["outputs.methods", "outputs.decision_log"],
-        }.get(task.primary_score)
-        if study_required:
-            contract["required_manifest_output_fields"] = study_required
-        return contract
-
-    recommended_optional_outputs: list[str] = []
-    if _has_candidate_selection(task):
-        recommended_optional_outputs.append("outputs.source_selection")
-
-    contract.update({
-        "topology_output_shape": "list[str]",
-        "required_topology_backend": "openmm",
-        "openmm_topology_example": OPENMM_TOPOLOGY_EXAMPLE,
-        "minimized_structure_guidance": MINIMIZED_STRUCTURE_GUIDANCE,
-        "packaging_guidance": packaging_guidance(task),
-        "required_output_fields_for_completed_prep": [
-            "outputs.topology",
-            "outputs.minimized_structure",
-            "outputs.minimization_report",
-        ],
-        "recommended_optional_outputs": recommended_optional_outputs,
-    })
+    study_required = {
+        "scientific_answer": ["outputs.trajectories", "outputs.topology"],
+        "evidence_communication": ["outputs.methods", "outputs.decision_log"],
+    }.get(task.primary_score)
+    if study_required:
+        contract["required_manifest_output_fields"] = study_required
     return contract
 
 
 def submission_blueprint(task: Task) -> dict[str, Any]:
     """Return a concrete submission skeleton for agent-side self-checks."""
     outputs = _manifest_output_blueprint(task)
-    is_prep = task.primary_score == PREPARATION_SCORE_AXIS
-    # Preparation manifests/provenance are written by the evaluator normalizer;
-    # study submissions are authored by the agent and scored as written, so the
-    # illustrative generated_by tool differs by suite.
-    generated_by_tool = "mdprepbench-normalizer" if is_prep else "agent"
-    if is_prep:
-        outputs["topology"] = OPENMM_TOPOLOGY_EXAMPLE
-        if _has_candidate_selection(task):
-            outputs["source_selection"] = "source_selection.json"
-
     blueprint: dict[str, Any] = {
-        "raw_artifact_minimum": (
-            {
-                "topology/system.xml": "<OpenMM System XML>",
-                "topology/topology.pdb": "<PDB topology atoms>",
-                "topology/state.xml": "<OpenMM State XML after minimization>",
-                "prepared_structure.pdb": "<prepared input structure>",
-            }
-            if task.primary_score == PREPARATION_SCORE_AXIS
-            else None
-        ),
+        "raw_artifact_minimum": None,
         "manifest_minimum": {
             "schema_version": "1.0",
-            "generated_by": {"tool": generated_by_tool},
+            "generated_by": {"tool": "agent"},
             "task_id": task.task_id,
             "status": "completed",
             "outputs": outputs,
         },
         "provenance_minimum": {
             "schema_version": "1.0",
-            "generated_by": {"tool": generated_by_tool},
+            "generated_by": {"tool": "agent"},
             "task_id": task.task_id,
             "command_log": _command_log_blueprint(task),
             "raw_outputs": [
@@ -641,8 +427,6 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
             "schema_version": "1.0",
             "task_id": task.task_id,
         }
-        if task.primary_score == PREPARATION_SCORE_AXIS:
-            metrics_minimum["topology"] = {"backend": "openmm"}
         for item in public_metric_requirements(task):
             _set_nested(
                 metrics_minimum,
@@ -665,24 +449,6 @@ def submission_blueprint(task: Task) -> dict[str, Any]:
                 "energy_initial_kj_mol": "<number>",
                 "energy_final_kj_mol": "<number>",
             },
-        }
-    if task.primary_score == PREPARATION_SCORE_AXIS and "minimized_structure" in outputs:
-        blueprint["minimized_structure_export"] = {
-            "purpose": (
-                "Create a self-consistent submission from one post-minimization "
-                "OpenMM topology/state bundle. MDClaw DAG runs can use the "
-                "optional helper, but the benchmark contract is tool-agnostic."
-            ),
-            "generic_package_command": (
-                MINIMIZED_STRUCTURE_GUIDANCE["generic_openmm_command_template"]
-            ),
-            "optional_mdclaw_dag_command": (
-                MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_dag_command_template"]
-            ),
-            "optional_mdclaw_dag_package_command": (
-                MINIMIZED_STRUCTURE_GUIDANCE["mdclaw_export_command_template"]
-            ),
-            "record_in": "provenance.command_log",
         }
     return blueprint
 
@@ -811,29 +577,53 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
         "",
     ]
     lines.extend(f"- `{rel}`" for rel in _agent_required_outputs(task))
-    lines.extend([
-        "",
-        "## Manifest Outputs",
-        "",
-    ])
-    for key, value in contract["submission_blueprint"]["manifest_minimum"]["outputs"].items():
-        lines.append(f"- `outputs.{key}`: `{value}`")
+    manifest_blueprint = (contract.get("submission_blueprint") or {}).get(
+        "manifest_minimum"
+    )
+    if manifest_blueprint:
+        lines.extend([
+            "",
+            "## Manifest Outputs",
+            "",
+        ])
+        for key, value in manifest_blueprint["outputs"].items():
+            lines.append(f"- `outputs.{key}`: `{value}`")
     required_components = contract.get("required_components") or []
-    if required_components:
+    component_lines: list[str] = []
+    for item in required_components:
+        if task.primary_score == PREPARATION_SCORE_AXIS:
+            details = []
+            for key in (
+                "min_residue_counts",
+                "exact_residue_counts",
+                "max_residue_counts",
+                "allowed_nonstandard_residue_names",
+                "forbidden_residue_names",
+            ):
+                value = item.get(key)
+                if value:
+                    details.append(f"`{key}={json.dumps(value, sort_keys=True)}`")
+            suffix = f"; {', '.join(details)}" if details else ""
+            component_lines.append(
+                f"- `{item['check_id']}` from raw "
+                f"`{item['raw_artifact_sources']}`{suffix}"
+            )
+            continue
+        counts = item.get("min_residue_counts") or item.get(
+            "exact_residue_counts"
+        )
+        if counts:
+            component_lines.append(
+                f"- `{item['structure_role']}` via `{item['manifest_path']}`: "
+                f"`{counts}`"
+            )
+    if component_lines:
         lines.extend([
             "",
             "## Required Components",
             "",
         ])
-        for item in required_components:
-            counts = item.get("min_residue_counts") or item.get(
-                "exact_residue_counts"
-            )
-            if counts:
-                lines.append(
-                    f"- `{item['structure_role']}` via `{item['manifest_path']}`: "
-                    f"`{counts}`"
-                )
+        lines.extend(component_lines)
     artifact_requirements = contract.get("artifact_requirements") or []
     if artifact_requirements:
         lines.extend([
@@ -842,10 +632,16 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
             "",
         ])
         for item in artifact_requirements:
-            lines.append(
-                f"- `{item['check_id']}`: `{item['check_type']}` via "
-                f"`{item.get('manifest_path')}`"
-            )
+            if task.primary_score == PREPARATION_SCORE_AXIS:
+                lines.append(
+                    f"- `{item['check_id']}`: `{item['check_type']}` derived "
+                    f"from raw `{item['raw_artifact_sources']}`"
+                )
+            else:
+                lines.append(
+                    f"- `{item['check_id']}`: `{item['check_type']}` via "
+                    f"`{item.get('manifest_path')}`"
+                )
     provenance_requirements = contract.get("provenance_text_requirements") or []
     if provenance_requirements:
         lines.extend([
@@ -876,21 +672,6 @@ def submission_checklist_markdown(task: Task, contract: dict[str, Any]) -> str:
             f"- Background policy: {lifecycle['background_policy']}",
             f"- Public preflight: `{lifecycle['preflight_command_template']}`",
         ])
-    guidance = contract.get("manifest_contract", {}).get(
-        "minimized_structure_guidance"
-    )
-    if guidance:
-        lines.extend([
-            "",
-            "## Minimized Structure Export",
-            "",
-            f"- `{guidance['required_filename']}`: {guidance['meaning']}",
-            f"- State source: {guidance['state_source']}",
-            f"- Generic package command: `{guidance['generic_openmm_command_template']}`",
-            f"- Optional MDClaw DAG command: `{guidance['mdclaw_dag_command_template']}`",
-            f"- Optional MDClaw DAG package command: `{guidance['mdclaw_export_command_template']}`",
-            f"- Note: {guidance['topology_pdb_note']}",
-        ])
     lines.append("")
     return "\n".join(lines)
 
@@ -901,7 +682,17 @@ def public_submission_contract(
     benchmark_version: str,
 ) -> dict[str, Any]:
     """Build the complete agent-facing submission contract for one task."""
-    return {
+    required_components = public_required_components(task)
+    artifact_requirements = public_artifact_requirements(task)
+    if task.primary_score == PREPARATION_SCORE_AXIS:
+        required_components = [
+            _as_raw_prep_requirement(item) for item in required_components
+        ]
+        artifact_requirements = [
+            _as_raw_prep_requirement(item) for item in artifact_requirements
+        ]
+
+    contract: dict[str, Any] = {
         "schema_version": "1.0",
         "benchmark_version": benchmark_version,
         "task_id": task.task_id,
@@ -912,22 +703,46 @@ def public_submission_contract(
         "time_limit_minutes": task.time_limit_minutes,
         "failure_policy": task.failure_policy.model_dump(),
         "required_outputs": _agent_required_outputs(task),
-        "normalized_outputs": list(task.required_outputs),
         "capability_tags": list(task.capability_tags),
         "environment_type": task.environment_type,
         "requires_tools": list(task.requires_tools),
         "metric_requirements": public_metric_requirements(task),
-        "required_components": public_required_components(task),
-        "artifact_requirements": public_artifact_requirements(task),
+        "required_components": required_components,
+        "artifact_requirements": artifact_requirements,
         "candidate_selection_requirements": public_candidate_selection_requirements(task),
         "provenance_text_requirements": public_provenance_text_requirements(task),
         "harness_evidence_requirements": public_harness_evidence_requirements(task),
-        "manifest_contract": manifest_contract(task),
         "submission_lifecycle": submission_lifecycle(task),
-        "submission_blueprint": submission_blueprint(task),
         "submission_checklist": submission_checklist(task),
-        "submission_manifest_schema": "../../schemas/submission_manifest.schema.json",
     }
+    if task.primary_score != PREPARATION_SCORE_AXIS:
+        contract["normalized_outputs"] = list(task.required_outputs)
+        contract["manifest_contract"] = manifest_contract(task)
+        contract["submission_blueprint"] = submission_blueprint(task)
+        contract["submission_manifest_schema"] = (
+            "../../schemas/submission_manifest.schema.json"
+        )
+    return contract
+
+
+def _as_raw_prep_requirement(item: dict[str, Any]) -> dict[str, Any]:
+    requirement = dict(item)
+    manifest_path = str(requirement.pop("manifest_path", ""))
+    default_path = requirement.pop("default_path", None)
+    if manifest_path == "outputs.topology":
+        raw_sources = [
+            "topology/system.xml",
+            "topology/topology.pdb",
+            "topology/state.xml",
+        ]
+    elif manifest_path == "outputs.minimized_structure":
+        raw_sources = ["topology/topology.pdb", "topology/state.xml"]
+    elif isinstance(default_path, str) and default_path:
+        raw_sources = [default_path]
+    else:
+        raw_sources = ["prepared_structure.pdb"]
+    requirement["raw_artifact_sources"] = raw_sources
+    return requirement
 
 
 def _has_candidate_selection(task: Task) -> bool:

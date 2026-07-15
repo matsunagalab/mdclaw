@@ -23,26 +23,23 @@ _NORMALIZER_TOOL = "mdprepbench-normalizer"
 _NORMALIZER_SCHEMA_VERSION = "1.0"
 _HASH_ALGORITHM = "md5"
 
-_STANDARD_OUTPUTS = {
+_CORE_RAW_OUTPUTS = {
+    "topology/system.xml",
+    "topology/topology.pdb",
+    "topology/state.xml",
+    "prepared_structure.pdb",
+}
+
+_EVALUATOR_GENERATED_OUTPUTS = {
     "manifest.json",
     "metrics.json",
     "provenance.json",
-    "prepared_structure.pdb",
     "minimized_structure.pdb",
     "minimization_report.json",
 }
 
 _FIXED_OUTPUT_KEYS = {
-    "metrics.json": "metrics",
-    "provenance.json": "provenance",
-    "evidence_report.json": "evidence_report",
-    "prepared_structure.pdb": "prepared_structure",
-    "minimized_structure.pdb": "minimized_structure",
-    "minimization_report.json": "minimization_report",
     "wt_prepared_structure.pdb": "parent_prepared_structure",
-    "source_selection.json": "source_selection",
-    "component_disposition.json": "component_disposition",
-    "excluded_components.json": "excluded_components",
 }
 
 
@@ -55,15 +52,24 @@ def normalize_preparation_submission(
 ) -> dict[str, Any]:
     """Create a scorer-facing submission bundle from raw artifacts.
 
-    The raw directory may contain only the OpenMM artifact triple and optional
-    task-specific files.  Any agent-written manifest/provenance/metrics are
-    treated as optional source material, not as truth.
+    The raw directory contains the OpenMM artifact triple, prepared structure,
+    and optional task-specific raw files. Agent-written manifest, provenance,
+    metrics, evidence, and timing files are outside the v0.3 contract and are
+    rejected.
     """
     raw_dir = Path(raw_submission_dir)
     out_dir = Path(normalized_submission_dir)
     errors: list[str] = []
     warnings: list[str] = []
 
+    if raw_dir.is_symlink():
+        return _normalization_result(
+            False,
+            raw_dir,
+            out_dir,
+            [f"raw submission directory must not be a symlink: {raw_dir}"],
+            warnings,
+        )
     if not raw_dir.is_dir():
         return {
             "success": False,
@@ -73,28 +79,38 @@ def normalize_preparation_submission(
             "warnings": [],
         }
 
-    system_xml = _find_artifact(
-        raw_dir,
-        preferred=("topology/system.xml", "system.xml"),
-        suffixes=("system.xml",),
-    )
-    topology_pdb = _find_artifact(
-        raw_dir,
-        preferred=("topology/topology.pdb", "topology.pdb"),
-        suffixes=("topology.pdb",),
-    )
-    state_xml = _find_artifact(
-        raw_dir,
-        preferred=("topology/state.xml", "state.xml", "minimized.xml"),
-        suffixes=("state.xml", "minimized.xml"),
-    )
+    output_error = _normalized_output_dir_error(raw_dir, out_dir, task.task_id)
+    if output_error:
+        return _normalization_result(
+            False,
+            raw_dir,
+            out_dir,
+            [output_error],
+            warnings,
+        )
 
-    if system_xml is None:
+    allowed_raw_outputs = _CORE_RAW_OUTPUTS | {
+        rel
+        for rel in task.required_outputs
+        if rel not in _EVALUATOR_GENERATED_OUTPUTS
+    }
+    errors.extend(_raw_submission_path_errors(raw_dir, allowed_raw_outputs))
+    if errors:
+        return _normalization_result(False, raw_dir, out_dir, errors, warnings)
+
+    system_xml = raw_dir / "topology" / "system.xml"
+    topology_pdb = raw_dir / "topology" / "topology.pdb"
+    state_xml = raw_dir / "topology" / "state.xml"
+    prepared_src = raw_dir / "prepared_structure.pdb"
+
+    if not system_xml.is_file():
         errors.append("missing OpenMM system XML artifact (expected topology/system.xml)")
-    if topology_pdb is None:
+    if not topology_pdb.is_file():
         errors.append("missing OpenMM topology PDB artifact (expected topology/topology.pdb)")
-    if state_xml is None:
+    if not state_xml.is_file():
         errors.append("missing OpenMM state XML artifact (expected topology/state.xml)")
+    if not prepared_src.is_file():
+        errors.append("missing prepared structure artifact (expected prepared_structure.pdb)")
     if errors:
         errors.append(
             "submission appears incomplete: do not submit while preparation, "
@@ -122,11 +138,6 @@ def normalize_preparation_submission(
         _copy_file(topology_pdb, topology_out / "topology.pdb")
         _copy_file(state_xml, topology_out / "state.xml")
 
-        prepared_src = _find_artifact(
-            raw_dir,
-            preferred=("prepared_structure.pdb", "prepared.pdb"),
-            suffixes=("prepared_structure.pdb", "prepared.pdb"),
-        ) or topology_pdb
         _copy_file(prepared_src, staging / "prepared_structure.pdb")
 
         minimized_pdb = staging / "minimized_structure.pdb"
@@ -138,15 +149,7 @@ def normalize_preparation_submission(
             errors.append("failed to export minimized_structure.pdb from topology/state.xml")
             return _normalization_result(False, raw_dir, out_dir, errors, warnings)
         if not openmm_valid:
-            minimized_src = _find_artifact(
-                raw_dir,
-                preferred=("minimized_structure.pdb", "minimized.pdb"),
-                suffixes=("minimized_structure.pdb", "minimized.pdb"),
-            )
-            if minimized_src is not None:
-                _copy_file(minimized_src, minimized_pdb)
-            else:
-                minimized_pdb.write_text("END\n")
+            minimized_pdb.write_text("END\n")
 
         topology_atom_count = _topology_atom_count(topology_out / "topology.pdb")
         atom_count_preserved = bool(
@@ -198,7 +201,7 @@ def normalize_preparation_submission(
             ],
         }
 
-        _copy_optional_artifacts(task, raw_dir, staging, outputs, warnings)
+        _copy_optional_artifacts(task, raw_dir, staging, outputs)
 
         manifest = {
             "schema_version": "1.0",
@@ -226,7 +229,6 @@ def normalize_preparation_submission(
         }
         _write_json(staging / "metrics.json", metrics)
 
-        raw_agent_provenance = _read_json(raw_dir / "provenance.json")
         provenance = {
             "schema_version": "1.0",
             "generated_by": _generated_by(),
@@ -240,8 +242,6 @@ def normalize_preparation_submission(
                 "state_xml": _relative_or_absolute(raw_dir, state_xml),
                 "prepared_structure": _relative_or_absolute(raw_dir, prepared_src),
             },
-            "command_log": _agent_command_log(raw_agent_provenance),
-            "agent_provenance": raw_agent_provenance,
             "raw_outputs": _raw_output_entries(staging, manifest),
         }
         _write_json(staging / "provenance.json", provenance)
@@ -287,26 +287,35 @@ def _normalization_result(
     }
 
 
-def _find_artifact(
-    root: Path,
-    *,
-    preferred: tuple[str, ...],
-    suffixes: tuple[str, ...],
-) -> Optional[Path]:
-    for rel in preferred:
-        path = root / rel
-        if path.is_file():
-            return path
-    matches: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        lower = path.name.lower()
-        if any(lower == suffix.lower() or lower.endswith("." + suffix.lower()) for suffix in suffixes):
-            matches.append(path)
-    if len(matches) == 1:
-        return matches[0]
-    return None
+def _normalized_output_dir_error(
+    raw_dir: Path,
+    out_dir: Path,
+    task_id: str,
+) -> str:
+    if raw_dir.resolve() == out_dir.resolve():
+        return "normalized_submission_dir must differ from raw_submission_dir"
+    if out_dir.is_symlink():
+        return f"normalized_submission_dir must not be a symlink: {out_dir}"
+    if not out_dir.exists():
+        return ""
+    if not out_dir.is_dir():
+        return f"normalized_submission_dir exists and is not a directory: {out_dir}"
+    manifest_path = out_dir / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return (
+            "refusing to replace normalized_submission_dir not owned by the "
+            f"MDPrepBench evaluator: {out_dir}"
+        )
+    generated_by = manifest.get("generated_by")
+    owner = generated_by.get("tool") if isinstance(generated_by, dict) else None
+    if owner != _NORMALIZER_TOOL or manifest.get("task_id") != task_id:
+        return (
+            "refusing to replace normalized_submission_dir not owned by this "
+            f"MDPrepBench task: {out_dir}"
+        )
+    return ""
 
 
 def _copy_optional_artifacts(
@@ -314,10 +323,9 @@ def _copy_optional_artifacts(
     raw_dir: Path,
     staging: Path,
     outputs: dict[str, Any],
-    warnings: list[str],
 ) -> None:
     for rel in task.required_outputs:
-        if rel in _STANDARD_OUTPUTS or rel.startswith("topology/"):
+        if rel in _CORE_RAW_OUTPUTS or rel in _EVALUATOR_GENERATED_OUTPUTS:
             continue
         src = _raw_file(raw_dir, rel)
         if src is None:
@@ -328,57 +336,39 @@ def _copy_optional_artifacts(
         if key:
             outputs[key] = rel
 
-    for rel in ("evidence_report.json", "source_selection.json"):
-        src = _raw_file(raw_dir, rel)
-        if src is None:
-            continue
-        _copy_file(src, staging / rel)
-        key = _FIXED_OUTPUT_KEYS[rel]
-        outputs[key] = rel
-
-    for check in task.scoring.deterministic_checks:
-        _copy_manifest_mapped_structure(check, raw_dir, staging, outputs, warnings)
-
-
-def _copy_manifest_mapped_structure(
-    check: Any,
-    raw_dir: Path,
-    staging: Path,
-    outputs: dict[str, Any],
-    warnings: list[str],
-) -> None:
-    manifest_path = getattr(check, "structure_manifest_path", None)
-    structure_path = getattr(check, "structure_path", None)
-    if not manifest_path or not structure_path:
-        return
-    key = _output_key(manifest_path)
-    if key is None or key in outputs:
-        return
-    src = _raw_file(raw_dir, structure_path)
-    if src is None:
-        return
-    _copy_file(src, staging / structure_path)
-    outputs[key] = structure_path
-
-
-def _output_key(manifest_path: str) -> Optional[str]:
-    prefix = "outputs."
-    if not manifest_path.startswith(prefix):
-        return None
-    rest = manifest_path[len(prefix):]
-    if not rest:
-        return None
-    return rest.split(".", 1)[0]
-
 
 def _raw_file(raw_dir: Path, rel: str) -> Optional[Path]:
-    candidates = [raw_dir / rel]
-    if rel.startswith("submission/"):
-        candidates.insert(0, raw_dir / rel.split("/", 1)[1])
-    for path in candidates:
-        if path.is_file():
-            return path
+    relative = Path(rel)
+    if relative.is_absolute() or ".." in relative.parts:
+        return None
+    path = raw_dir / relative
+    if path.is_file() and not path.is_symlink():
+        return path
     return None
+
+
+def _raw_submission_path_errors(
+    raw_dir: Path,
+    allowed_raw_outputs: set[str],
+) -> list[str]:
+    errors: list[str] = []
+    root = raw_dir.resolve()
+    for path in raw_dir.rglob("*"):
+        if path.is_symlink():
+            errors.append(f"raw submission path must not be a symlink: {path}")
+            continue
+        try:
+            path.resolve(strict=True).relative_to(root)
+        except (OSError, ValueError):
+            errors.append(f"raw submission path escapes submission directory: {path}")
+            continue
+        if path.is_file():
+            relative = path.relative_to(raw_dir).as_posix()
+            if relative not in allowed_raw_outputs:
+                errors.append(
+                    f"unexpected file outside MDPrepBench raw contract: {relative}"
+                )
+    return errors
 
 
 def _copy_file(src: Path, dst: Path) -> None:
@@ -479,22 +469,6 @@ def _topology_atom_count(topology_pdb: Path) -> Optional[int]:
         return PDBFile(str(topology_pdb)).topology.getNumAtoms()
     except Exception:
         return None
-
-
-def _read_json(path: Path) -> dict[str, Any]:
-    try:
-        payload = json.loads(path.read_text())
-    except Exception:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
-def _agent_command_log(provenance: dict[str, Any]) -> list[Any]:
-    for key in ("command_log", "commands", "execution_log", "attempts"):
-        value = provenance.get(key)
-        if isinstance(value, list):
-            return value
-    return []
 
 
 def _write_json(path: Path, payload: Any) -> None:

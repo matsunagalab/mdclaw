@@ -235,12 +235,12 @@ request explicitly asks for it.
 MDClaw includes two artifact-based benchmark suites under the MDAgentBench
 family:
 
-- `MDPrepBench-v0.1` in `benchmarks/mdprepbench/`: a 34-task preparation
+- `MDPrepBench-v0.3` in `benchmarks/mdprepbench/`: a 40-task preparation
   workflow battery covering ligand/chain selection, residue protonation, PTMs,
   glycans, nucleic acids, membranes, assemblies, ion concentration, metal
   cofactors (zinc, non-zinc Mn/Ca), custom drug-like ligand parameterization,
   protein-protein and protein-DNA complexes, side-chain reconstruction, and
-  backend-neutral provenance.
+  backend-neutral raw OpenMM artifact validation.
 - `MDStudyBench-v0.2` in `benchmarks/mdstudybench/`: four uniform-load
   scientific-answer and auditable study-bundle comparisons spanning
   destabilizing, weakened-binding, stabilizing, and ligand-affinity directions,
@@ -317,18 +317,8 @@ mdclaw --job-dir <job_dir> --node-id min_001 run_minimization
 The `min` node writes `minimized_structure.pdb`, `minimized.xml`, and
 `minimization_report.json`; downstream `eq` nodes should parent from `min_001`.
 
-For MDPrepBench prep submissions that only need a PDB view of an existing
-topology `state.xml`, create `minimized_structure.pdb` with:
-
-```bash
-mdclaw export_state_pdb \
-  --topology-pdb-file <topology.pdb> \
-  --state-xml-file <state.xml> \
-  --output-pdb-file <submission_dir>/minimized_structure.pdb
-```
-
-Do not assume `topology.pdb` itself contains minimized coordinates unless that
-workflow explicitly wrote it that way.
+For MDPrepBench v0.3, submit the completed minimized state as
+`topology/state.xml`; the evaluator derives the minimized PDB view and report.
 
 For non-MDClaw solvers, package an already-built OpenMM artifact triple with
 the standalone helper instead of importing MDClaw into the solver:
@@ -337,15 +327,15 @@ the standalone helper instead of importing MDClaw into the solver:
 python benchmarks/tools/package_submission.py \
   --submission-dir <submission_dir> \
   --task-id <task_id> \
-  --run-id <run_id> \
   --system-xml <system.xml> \
   --topology-pdb <topology.pdb> \
-  --state-xml <state.xml>
+  --state-xml <state.xml> \
+  --prepared-structure <prepared_structure.pdb>
 ```
 
-Add task-specific extra artifacts only when the public contract asks for them,
-for example `--extra-output parent_prepared_structure=wt_prepared_structure.pdb`
-for branching tasks.
+Add task-specific raw artifacts only when the public contract asks for them,
+for example `--extra-output wt_prepared_structure.pdb=<source_file>` for a
+branching task.
 
 After the agent writes the task `submission/` directories, evaluate the run:
 
@@ -392,7 +382,8 @@ mdclaw prepare_benchmark_run \
   --output-dir benchmark_runs \
   --run-id study_full_run \
   --dataset-dir benchmarks/mdstudybench \
-  --execution-mode lite
+  --execution-mode lite \
+  --judge-mode llm_judge
 ```
 
 After submissions are written, evaluate with:
@@ -406,8 +397,9 @@ mdclaw score_benchmark_run \
 All four tasks expect comparative WT/mutant (or paired-ligand) MD evidence with
 index-aligned `outputs.trajectories` / `outputs.topology`; the scorer reloads the
 trajectories and verifies the substitution, so a literature guess without real MD
-scores zero. Every task is scored by the LLM judge, which
-`score_benchmark_run` auto-runs for tasks that declare judge rubrics.
+scores zero. When `run_config.json` selects `judge_mode=llm_judge`,
+`score_benchmark_run` auto-runs the judge for tasks that declare rubrics.
+Deterministic mode neither launches nor consumes judge files.
 
 To run every agent over the suite, use the study wrapper. It shares the
 MDPrepBench operator flags (`--agents`, `--jobs`, `--gpus`, `--repeats`,

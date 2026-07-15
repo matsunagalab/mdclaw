@@ -5,7 +5,7 @@ scientific study tasks do not share one overloaded dataset.
 
 | Suite | Path | Version | Focus |
 |---|---|---|---|
-| MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.1` | System preparation, topology artifacts, min-stage evidence, and preparation provenance. |
+| MDPrepBench | `benchmarks/mdprepbench/` | `MDPrepBench-v0.3` | System preparation validated from raw topology and minimized-state artifacts. |
 | MDStudyBench | `benchmarks/mdstudybench/` | `MDStudyBench-v0.2` | A small curated set of scientific question answering and study-bundle tasks. |
 
 Both suites use the same artifact-based scorer framework:
@@ -17,7 +17,7 @@ Both suites use the same artifact-based scorer framework:
 
 MDPrepBench task contracts are maintained from compact specs under
 `benchmarks/mdprepbench/task_specs/`. Regenerate the canonical scorer-facing
-`tasks/<task_id>/task.json` files with:
+`tasks/<task_id>/task.json` and `prompt.md` files with:
 
 ```bash
 conda run -n mdclaw python benchmarks/mdprepbench/scripts/generate_tasks.py
@@ -43,9 +43,9 @@ mdclaw export_benchmark_public_package \
   --output-dir benchmark_public/mdstudybench
 ```
 
-For MDPrepBench, the exported contract includes a `submission_blueprint` and
-checklist so agents can build a complete `submission/` directory without seeing
-scorer-only checks.
+For MDPrepBench, the exported contract lists only the required raw outputs,
+raw artifact requirements, harness requirements, lifecycle, and checklist. It
+does not expose scorer-only checks or evaluator manifest internals.
 
 ## Artifact-as-truth scoring (fairness redesign)
 
@@ -56,19 +56,19 @@ to make them, and the same MDClaw scorer judges every entrant. Key properties:
   `system.xml` + `topology.pdb` + `state.xml` triple, not by a declared backend
   label. Force-field application, model/assembly choice, net charge,
   water-model fingerprint, ion molarity, and component presence are recomputed
-  from the submitted artifacts whenever possible. `metrics.json` is auxiliary
-  metadata, not a trusted scoring oracle.
+  from the submitted artifacts whenever possible. Evaluator-generated metadata
+  is not a scoring oracle.
 - **Graded scoring.** A small physical-validity gate (loads + finite energy +
   force field applied + required minimized structure) must pass or the task
-  scores zero. Identity / fidelity / provenance checks then give weighted
+  scores zero. Identity / fidelity / harness-audit checks then give weighted
   partial credit and roll up into a per-capability profile.
 - **Slim solver output.** Solvers submit raw artifacts: the OpenMM triple,
   `prepared_structure.pdb`, and any task-specific raw files. The evaluator
   generates `manifest.json`, `metrics.json`, `provenance.json`, md5 hashes,
   `minimized_structure.pdb`, and `minimization_report.json` before scoring.
-  `evidence_report.json` is optional unless a task's contract lists it. Unsafe
-  paths, fabricated or undersized required artifacts, and missing execution
-  evidence remain hard failures.
+  Evidence reports and solver command logs are not part of MDPrepBench v0.3.
+  Unsafe paths, fabricated or undersized required artifacts, and missing
+  harness execution evidence remain hard failures.
 - **MDClaw-free solve path.** Solvers do not need to import or call MDClaw.
   Direct OpenMM, Amber/GROMACS-to-OpenMM exports, MDCrow-style runners, or other
   MD-prep stacks are valid if they submit the same raw artifact contract.

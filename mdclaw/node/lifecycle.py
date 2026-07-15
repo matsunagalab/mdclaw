@@ -11,6 +11,7 @@ Design principle:
 
 import json
 import logging
+import shlex
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -119,6 +120,7 @@ def create_node(
             "node_id": "eq_001",
             "node_dir": "<job_dir>/nodes/eq_001",
             "artifacts_dir": "<job_dir>/nodes/eq_001/artifacts",
+            "next_command": "mdclaw explain_node --job-dir ... --node-id eq_001",
         }
     """
     if node_type not in NODE_TYPES:
@@ -401,6 +403,10 @@ def create_node(
         "node_dir": str(node_dir),
         "artifacts_dir": str(artifacts_dir),
         "parent_node_ids": parents,
+        "next_command": (
+            "mdclaw explain_node "
+            f"--job-dir {shlex.quote(str(jd))} --node-id {shlex.quote(node_id)}"
+        ),
     }
     if auto_parent_node_id is not None:
         result["auto_resolved_parent"] = auto_parent_node_id

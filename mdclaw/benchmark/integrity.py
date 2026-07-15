@@ -859,7 +859,14 @@ def check_provenance_execution_evidence(
         return ["provenance.json is not a JSON object"]
 
     if require_harness_record:
-        harness_log = _execution_log_from_payload(harness_record)
+        harness_log = [
+            entry
+            for entry in _execution_log_from_payload(harness_record)
+            if not (
+                isinstance(entry, dict)
+                and _canonical_stage(entry.get("stage")) == "agent_run"
+            )
+        ]
         if not harness_log:
             return [
                 "harness execution record required but missing or empty; "
@@ -917,16 +924,23 @@ def _check_execution_log_entries(
     structured: list[dict[str, Any]] = [
         entry for entry in command_log if isinstance(entry, dict)
     ]
+    successful = [
+        entry
+        for entry in structured
+        if _execution_status_succeeded(
+            entry.get("exit_code", entry.get("status", entry.get("result")))
+        )
+    ]
     warnings: list[str] = []
-    if len(structured) < min_command_count:
+    if len(successful) < min_command_count:
         warnings.append(
-            f"{source_label} has {len(structured)} structured "
+            f"{source_label} has {len(successful)} successful structured "
             f"entry(ies); require >= {min_command_count}"
         )
 
     require_stage_labels = bool(required_stages)
     stages_seen: set[str] = set()
-    for index, entry in enumerate(structured):
+    for index, entry in enumerate(successful):
         stage = _canonical_stage(entry.get("stage"))
         command = _first_nonempty(entry, "command", "action", "tool")
         status = entry.get("exit_code", entry.get("status", entry.get("result")))
@@ -967,6 +981,21 @@ def _is_nonnegative_finite_number(value: Any) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
     return math.isfinite(float(value)) and float(value) >= 0.0
+
+
+def _execution_status_succeeded(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value == 0
+    return str(value or "").strip().lower() in {
+        "0",
+        "completed",
+        "ok",
+        "passed",
+        "success",
+        "succeeded",
+    }
 
 
 def _canonical_stage(stage: Any) -> str:

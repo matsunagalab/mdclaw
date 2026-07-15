@@ -48,6 +48,8 @@ def _common_provenance(
         "harness": {"name": "fake_study_submissions.py"},
         "command_log": [
             {
+                "run_id": run_id,
+                "task_id": task_id,
                 "stage": stage,
                 "command": f"synthetic fixture {stage} action for {task_id}",
                 "exit_code": 0,
