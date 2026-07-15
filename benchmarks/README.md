@@ -83,6 +83,13 @@ to make them, and the same MDClaw scorer judges every entrant. Key properties:
 See `docs/benchmark/fairness-protocol.md`, `docs/benchmark/capability-coverage.md`,
 `docs/benchmark/mdcrow-runner.md`, and `benchmarks/baselines/README.md`.
 
+Full-suite operator runs automatically write per-task `workflow_audit.json`
+files and a run-level `workflow_audit_summary.json`. The audit uses session
+JSONL for agent tool-call behavior and runner-owned harness/finalization files
+for execution facts; it is diagnostic and never changes the artifact score.
+See `docs/benchmark/README.md` for metric definitions and the standalone
+re-audit command.
+
 For MDStudyBench, the same public-contract helpers are used without prep-only
 topology requirements. All four tasks require trajectory-backed comparative
 evidence: the scorer reloads the submitted WT/mutant (or paired-ligand)

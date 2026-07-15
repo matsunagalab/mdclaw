@@ -183,6 +183,29 @@ scores each agent as one run. The agents themselves run sequentially. Omit
 `--run-id-prefix` to use a timestamped prefix. For a quick command check without
 launching agents, add `--dry-run`; for smoke tests, add `--task-ids <task_id>`.
 
+Each completed agent run is also audited without changing its benchmark score:
+
+- `tasks/<task_id>/workflow_audit.json` records completion, entry/re-entry
+  handling, `create_node -> explain_node -> stage tool` compliance, skill and
+  CLI discovery usage, wrong/suspect tool calls, raw-artifact completeness,
+  runner-owned harness evidence, and reason-coded estimated extra tool calls.
+- `workflow_audit_summary.json` aggregates completion/pass rates, artifact and
+  evidence completeness, entry and true re-entry denominators, node-lifecycle
+  success, wrong-tool reasons, and tool-call overhead across P01-P40.
+- `*_all_agents_operator_summary.json` links the audit and embeds its aggregate.
+
+`true_reentry_success_rate` is `null` when every task starts from a fresh
+bootstrap. `entry_protocol_success_rate` still checks the required
+post-bootstrap `inspect_job`. `estimated_extra_tool_call_count` is explicitly a
+reason-coded heuristic (duplicate calls, repeated global lists, truncated CLI
+discovery, and failed MDClaw invocations), not a claim about the minimum number
+of scientifically necessary operations. Re-audit an existing run with:
+
+```bash
+python benchmarks/tools/audit_mdprepbench_run.py \
+  benchmark_runs/<run_id>
+```
+
 **2. Manual MDClaw self-run (`mdclaw-skills+cli`).** Prepare a workspace, solve each
 task, then score:
 

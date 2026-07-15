@@ -44,12 +44,14 @@ def test_run_mdprepbench_all_agents_dry_run_writes_commands(tmp_path: Path):
     assert summary["dry_run"] is True
     assert summary["task_ids"] == [TASK_ID]
     assert summary["agent_skills_dir"] == "skills"
+    assert summary["workflow_audit_enabled"] is True
     assert [run["agent_name"] for run in summary["runs"]] == ["pi", "codex"]
     assert all("run_benchmark_agent" in run["command"] for run in summary["runs"])
     assert "--task-ids P01_prep_simple_monomer_t4l" in summary["runs"][0]["command"]
     assert "--agent-name codex" in summary["runs"][1]["command"]
     assert "--agent-skills-dir skills" in summary["runs"][0]["command"]
     assert "--agent-profile pi-user" in summary["runs"][0]["command"]
+    assert summary["runs"][0]["workflow_audit"]["reason"] == "dry_run"
 
 
 def test_run_mdprepbench_all_agents_rejects_llm_judge(tmp_path: Path):
@@ -79,14 +81,19 @@ def test_run_mdprepbench_all_agents_executes_mdclaw_command(tmp_path: Path):
         """
 import json
 import sys
+from pathlib import Path
 
 args = sys.argv[1:]
 run_id = args[args.index("--run-id") + 1]
 agent = args[args.index("--agent-name") + 1]
+output_dir = Path(args[args.index("--output-dir") + 1])
+task_id = args[args.index("--task-ids") + 1]
+run_dir = output_dir / run_id
+(run_dir / "tasks" / task_id).mkdir(parents=True)
 print(json.dumps({
     "success": True,
     "run_id": run_id,
-    "run_dir": f"/tmp/{run_id}",
+    "run_dir": str(run_dir),
     "agent_profile": f"{agent}-profile",
     "agent_model": f"{agent}-model",
     "score": {"summary": {"summary": {"overall_score": 1.0}}},
@@ -122,6 +129,10 @@ print(json.dumps({
     assert run["runner_payload"]["run_id"] == "exec_pi"
     assert run["runner_payload"]["agent_model"] == "pi-model"
     assert Path(run["stdout_log"]).is_file()
+    assert run["workflow_audit"]["available"] is True
+    audit_path = Path(run["workflow_audit"]["summary_file"])
+    assert audit_path.is_file()
+    assert run["workflow_audit"]["aggregate"]["task_count"] == 1
 
 
 def test_run_mdprepbench_all_agents_repeats_run_ids_and_aggregates(tmp_path: Path):

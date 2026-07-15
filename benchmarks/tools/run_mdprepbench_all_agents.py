@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from audit_mdprepbench_run import audit_run
+
 DEFAULT_AGENTS = ("pi", "claude-code", "codex")
 DEFAULT_DATASET_DIR = "benchmarks/mdprepbench"
 DEFAULT_OUTPUT_DIR = "benchmark_runs"
@@ -215,6 +217,41 @@ def _run_agent(
     return record
 
 
+def _attach_workflow_audit(record: dict[str, Any]) -> None:
+    """Attach a best-effort audit without changing runner success semantics."""
+    run_dir = Path(str(record.get("run_dir") or ""))
+    audit_path = run_dir / "workflow_audit_summary.json"
+    if record.get("dry_run"):
+        record["workflow_audit"] = {
+            "available": False,
+            "reason": "dry_run",
+            "summary_file": str(audit_path),
+        }
+        return
+    if not run_dir.is_dir():
+        record["workflow_audit"] = {
+            "available": False,
+            "reason": "run_directory_missing",
+            "summary_file": str(audit_path),
+        }
+        return
+    try:
+        payload = audit_run(run_dir, audit_path)
+    except Exception as exc:  # noqa: BLE001
+        record["workflow_audit"] = {
+            "available": False,
+            "reason": "audit_failed",
+            "error": str(exc),
+            "summary_file": str(audit_path),
+        }
+        return
+    record["workflow_audit"] = {
+        "available": bool(payload["aggregate"]["task_count"]),
+        "summary_file": str(audit_path),
+        "aggregate": payload["aggregate"],
+    }
+
+
 def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, Any]:
     return {
         "schema_version": "1.0",
@@ -233,6 +270,7 @@ def _build_summary(args: argparse.Namespace, run_id_prefix: str) -> dict[str, An
         "judge_mode": args.judge_mode,
         "mdclaw_cmd": args.mdclaw_cmd,
         "agent_skills_dir": args.agent_skills_dir,
+        "workflow_audit_enabled": True,
         "dry_run": args.dry_run,
         "runs": [],
     }
@@ -442,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
                 output_dir=output_dir,
                 dry_run=args.dry_run,
             )
+            _attach_workflow_audit(record)
             record["repeat"] = rep
             summary["runs"].append(record)
             _write_json(summary_path, summary)
